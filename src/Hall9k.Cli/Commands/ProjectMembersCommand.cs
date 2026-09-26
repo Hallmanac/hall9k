@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Trust;
-using Hall9k.Domain.Features.Owner;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
@@ -12,11 +12,13 @@ namespace Hall9k.Cli.Commands;
 
 /// <summary>
 /// Lists this project's members as the ledger's own chain read currently sees them (idea 202383dc,
-/// T1) — root fingerprint, this install's own login for that root when it happens to be known
-/// locally, role, that root's own fleet (<see cref="TrustedOwner.FleetNodeIds"/>: its own root node
-/// plus every currently vouched node), and verified state. Recomputed fresh every run; nothing here
-/// is read from a local cache, so a revocation or a removal another node made shows up the moment
-/// this command runs again.
+/// T1) — root fingerprint, the GitHub accounts that root's nodes declare for themselves in their own
+/// signed node files, role, that root's own fleet (<see cref="TrustedOwner.FleetNodeIds"/>: its own
+/// root node plus every currently vouched node), and how each declared account stands against the
+/// repository's collaborator roster. A declaration is a claim, so the column says "declared" and
+/// what the roster showed, never "verified". The roster is re-read through GitHub first when gh
+/// answers and taken from the stored mirror, dated, when it cannot. The chain is recomputed fresh
+/// every run, so a revocation or a removal another node made shows up the moment this runs again.
 /// </summary>
 public sealed class ProjectMembersCommand : Hall9kAsyncCommand<ProjectMembersCommand.Settings>
 {
@@ -30,12 +32,14 @@ public sealed class ProjectMembersCommand : Hall9kAsyncCommand<ProjectMembersCom
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
         using var store = CliStore.Open();
-        await using IQuerySession session = store.QuerySession();
-        return await RunAsync(session, settings, new GitLedgerChainReader(), cancellationToken);
+        // A writing session: refreshing the collaborator roster appends the observation to the project's stream.
+        await using IDocumentSession session = store.LightweightSession();
+        return await RunAsync(session, settings, new GitLedgerChainReader(), new ProjectGitHubRosterReader(), cancellationToken);
     }
 
     internal static async Task<int> RunAsync(
-        IQuerySession session, Settings settings, ILedgerChainReader chainReader, CancellationToken cancellationToken)
+        IDocumentSession session, Settings settings, ILedgerChainReader chainReader, ProjectGitHubRosterReader rosterReader,
+        CancellationToken cancellationToken)
     {
         ProjectDetails project = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
 
@@ -64,14 +68,14 @@ public sealed class ProjectMembersCommand : Hall9kAsyncCommand<ProjectMembersCom
             return ExitCodes.Ok;
         }
 
+        ProjectGitHubRoster roster = await rosterReader.ReadAsync(session, project, DateTimeOffset.UtcNow, cancellationToken);
+
         Table table = new Table().Border(TableBorder.Rounded);
         table.AddColumns("Root", "Login", "Role", "Nodes", "Verified");
         foreach (ProjectMember member in chain.Members.OrderByDescending(m => m.Role == MembershipRole.Owner).ThenBy(m => m.IssuedAt))
         {
-            OwnerDetails? localOwner = await session.Query<OwnerDetails>()
-                .Where(owner => owner.RootFingerprint == member.RootFingerprint)
-                .FirstOrDefaultAsync(cancellationToken);
-            string login = localOwner is not null ? localOwner.Name.EscapeMarkup() : "[dim]unknown[/]";
+            IReadOnlyList<DeclaredGitHubAccount> accounts = chain.DeclaredAccountsOf(member.RootFingerprint);
+            (string loginCell, string standingCell) = RenderAccounts(accounts, roster);
             IReadOnlyList<Guid> nodes = chain.OwnerChains.TryGetValue(member.RootFingerprint, out TrustedOwner? owner)
                 ? [.. owner.FleetNodeIds()]
                 : [];
@@ -81,16 +85,51 @@ public sealed class ProjectMembersCommand : Hall9kAsyncCommand<ProjectMembersCom
 
             table.AddRow(
                 member.RootFingerprint.EscapeMarkup(),
-                login,
+                loginCell,
                 member.Role == MembershipRole.Owner ? "owner" : "member",
                 nodesCell,
-                "[green]verified[/]");
+                standingCell);
         }
 
         AnsiConsole.Write(table);
+        if (RosterNote(roster) is { } note)
+        {
+            AnsiConsole.MarkupLine($"[dim]{note.EscapeMarkup()}[/]");
+        }
+
         WriteUnverifiedWrites(chain);
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// The Login and Verified cells for one member: one line per distinct declared account, the two
+    /// columns aligned line for line, or "unknown" in both when none of the member's nodes declares one.
+    /// </summary>
+    internal static (string Login, string Standing) RenderAccounts(
+        IReadOnlyList<DeclaredGitHubAccount> accounts, ProjectGitHubRoster roster) =>
+        accounts.Count == 0
+            ? ("[dim]unknown[/]", "[dim]unknown[/]")
+            : (
+                string.Join("\n", accounts.Select(account => account.Login.EscapeMarkup())),
+                string.Join("\n", accounts.Select(account => DescribeStanding(roster.Check(account)))));
+
+    internal static string DescribeStanding(DeclaredAccountStanding standing) =>
+        standing switch
+        {
+            DeclaredAccountStanding.PushConfirmed => "[green]declared, push confirmed[/]",
+            DeclaredAccountStanding.ReadOnly => "[yellow]declared, read only[/]",
+            DeclaredAccountStanding.NotACollaborator => "[red]declared, not a collaborator[/]",
+            _ => "[dim]declared, unchecked here[/]",
+        };
+
+    /// <summary>The line printed under the table when the roster is not a fresh read, or null when it is.</summary>
+    internal static string? RosterNote(ProjectGitHubRoster roster) =>
+        roster switch
+        {
+            { Live: true } => null,
+            { Held: true, AsOf: { } asOf } => $"collaborator roster as of {asOf:u}",
+            _ => "collaborator roster unavailable: gh did not answer and this node has none stored",
+        };
 
     /// <summary>
     /// Names every vouch, revocation, or membership write the chain read found but could not

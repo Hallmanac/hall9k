@@ -4,6 +4,7 @@ using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Trust;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -43,6 +44,12 @@ public sealed class ProjectMembersCommandTests : IClassFixture<PostgresFixture>,
         return Task.CompletedTask;
     }
 
+    private const string CollaboratorsJson =
+        """[{"id":42,"login":"octocat","role_name":"write"},{"id":43,"login":"reader","role_name":"read"}]""";
+
+    private static readonly Guid RootNodeId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    private static readonly Guid SecondNodeId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+
     [Fact]
     public async Task Members_lists_the_chains_own_current_members()
     {
@@ -51,12 +58,159 @@ public sealed class ProjectMembersCommandTests : IClassFixture<PostgresFixture>,
             new Dictionary<string, TrustedOwner> { ["root-a"] = new("root-a", "ssh-ed25519 AAA root-a", []) },
             [new ProjectMember("root-a", MembershipRole.Owner, Now)]);
 
-        await using IQuerySession session = _postgres.Store.QuerySession();
-        int exitCode = await ProjectMembersCommand.RunAsync(
-            session, new ProjectMembersCommand.Settings { Project = project.Name }, new FakeLedgerChainReader(chain),
-            CancellationToken.None);
+        (int exitCode, string output) = await RunMembersAsync(project, chain, GitHubAccessFakes.GrantingPush());
 
         exitCode.Should().Be(ExitCodes.Ok);
+        output.Should().Contain("root-a");
+    }
+
+    [Fact]
+    public async Task A_declared_account_with_push_in_the_roster_reads_declared_push_confirmed()
+    {
+        ProjectDetails project = await SeedProjectAsync(CancellationToken.None);
+
+        (_, string output) = await RunMembersAsync(
+            project, ChainDeclaring((RootNodeId, new DeclaredGitHubAccount(42, "octocat"))),
+            GitHubAccessFakes.GrantingPush(collaboratorsJson: CollaboratorsJson));
+
+        output.Should().Contain("octocat").And.Contain("declared, push confirmed");
+        output.Should().NotContain("verified").And.NotContain("collaborator roster as of");
+    }
+
+    [Fact]
+    public async Task A_declared_account_without_push_in_the_roster_reads_declared_read_only()
+    {
+        ProjectDetails project = await SeedProjectAsync(CancellationToken.None);
+
+        (_, string output) = await RunMembersAsync(
+            project, ChainDeclaring((RootNodeId, new DeclaredGitHubAccount(43, "reader"))),
+            GitHubAccessFakes.GrantingPush(collaboratorsJson: CollaboratorsJson));
+
+        output.Should().Contain("reader").And.Contain("declared, read only");
+    }
+
+    [Fact]
+    public async Task A_declared_account_absent_from_the_roster_reads_declared_not_a_collaborator()
+    {
+        ProjectDetails project = await SeedProjectAsync(CancellationToken.None);
+
+        (_, string output) = await RunMembersAsync(
+            project, ChainDeclaring((RootNodeId, new DeclaredGitHubAccount(99, "stranger"))),
+            GitHubAccessFakes.GrantingPush(collaboratorsJson: CollaboratorsJson));
+
+        output.Should().Contain("stranger").And.Contain("declared, not a collaborator");
+    }
+
+    [Fact]
+    public async Task A_node_without_push_holds_no_roster_so_a_declared_account_reads_declared_unchecked_here()
+    {
+        ProjectDetails project = await SeedProjectAsync(CancellationToken.None);
+
+        (_, string output) = await RunMembersAsync(
+            project, ChainDeclaring((RootNodeId, new DeclaredGitHubAccount(42, "octocat"))), GitHubAccessFakes.DenyingPush());
+
+        output.Should().Contain("octocat").And.Contain("declared, unchecked here");
+        output.Should().NotContain("collaborator roster as of", "gh answered, so the roster is not a stored fallback");
+    }
+
+    [Fact]
+    public async Task A_member_whose_nodes_declare_nothing_reads_unknown_in_both_columns()
+    {
+        ProjectDetails project = await SeedProjectAsync(CancellationToken.None);
+
+        (_, string output) = await RunMembersAsync(
+            project, ChainDeclaring(), GitHubAccessFakes.GrantingPush(collaboratorsJson: CollaboratorsJson));
+
+        output.Should().Contain("unknown").And.NotContain("declared,");
+    }
+
+    [Fact]
+    public async Task Every_distinct_declared_account_of_a_member_is_listed_with_its_own_standing()
+    {
+        ProjectDetails project = await SeedProjectAsync(CancellationToken.None);
+
+        (_, string output) = await RunMembersAsync(
+            project,
+            ChainDeclaring(
+                (RootNodeId, new DeclaredGitHubAccount(42, "octocat")), (SecondNodeId, new DeclaredGitHubAccount(99, "work-account"))),
+            GitHubAccessFakes.GrantingPush(collaboratorsJson: CollaboratorsJson));
+
+        output.Should().Contain("octocat").And.Contain("work-account")
+            .And.Contain("declared, push confirmed").And.Contain("declared, not a collaborator");
+    }
+
+    [Fact]
+    public async Task The_cross_check_matches_on_account_id_first_and_login_second()
+    {
+        ProjectDetails project = await SeedProjectAsync(CancellationToken.None);
+
+        // Id 42 is octocat in the roster whatever name the file declares (a rename); id 500 matches
+        // nobody by id, so its login ("Reader", any casing) is what finds the collaborator.
+        (_, string output) = await RunMembersAsync(
+            project,
+            ChainDeclaring(
+                (RootNodeId, new DeclaredGitHubAccount(42, "octocat-renamed")), (SecondNodeId, new DeclaredGitHubAccount(500, "Reader"))),
+            GitHubAccessFakes.GrantingPush(collaboratorsJson: CollaboratorsJson));
+
+        output.Should().Contain("declared, push confirmed", "the id matched a collaborator with push").And.Contain("declared, read only", "the login matched the read-only collaborator");
+        output.Should().NotContain("not a collaborator");
+    }
+
+    [Fact]
+    public async Task When_gh_cannot_answer_the_stored_roster_is_used_and_dated_under_the_table()
+    {
+        ProjectDetails project = await SeedProjectAsync(CancellationToken.None);
+        TrustChain chain = ChainDeclaring((RootNodeId, new DeclaredGitHubAccount(42, "octocat")));
+        await RunMembersAsync(project, chain, GitHubAccessFakes.GrantingPush(collaboratorsJson: CollaboratorsJson));
+
+        (int exitCode, string output) = await RunMembersAsync(project, chain, GitHubAccessFakes.Unreachable());
+
+        exitCode.Should().Be(ExitCodes.Ok);
+        output.Should().Contain("declared, push confirmed", "the stored roster still lists the account with push");
+        output.Should().MatchRegex(@"collaborator roster as of \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z");
+    }
+
+    [Fact]
+    public async Task When_gh_cannot_answer_and_nothing_was_ever_stored_the_account_reads_unchecked_and_the_gap_is_said()
+    {
+        ProjectDetails project = await SeedProjectAsync(CancellationToken.None);
+
+        (int exitCode, string output) = await RunMembersAsync(
+            project, ChainDeclaring((RootNodeId, new DeclaredGitHubAccount(42, "octocat"))), GitHubAccessFakes.Unreachable());
+
+        exitCode.Should().Be(ExitCodes.Ok);
+        output.Should().Contain("declared, unchecked here").And.Contain("collaborator roster unavailable");
+    }
+
+    private async Task<(int ExitCode, string Output)> RunMembersAsync(
+        ProjectDetails project, TrustChain chain, ProjectGitHubAccessMirror mirror)
+    {
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        int exitCode = 0;
+        string output = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
+            exitCode = await ProjectMembersCommand.RunAsync(
+                session, new ProjectMembersCommand.Settings { Project = project.Name }, new FakeLedgerChainReader(chain),
+                new ProjectGitHubRosterReader(mirror), CancellationToken.None));
+        return (exitCode, output);
+    }
+
+    /// <summary>One owner root with its own node and a second vouched node, declaring the given accounts (keyed by node id, each signed by the node's own key).</summary>
+    private static TrustChain ChainDeclaring(params (Guid NodeId, DeclaredGitHubAccount Account)[] declarations)
+    {
+        TrustedNode second = new(SecondNodeId.ToString(), "ssh-ed25519 AAAsecond second", "second-fingerprint", Now);
+        TrustedOwner owner = new("root-a", "ssh-ed25519 AAA root-a", [second], RootNodeId: RootNodeId.ToString());
+        return new TrustChain(
+            new Dictionary<string, TrustedOwner> { ["root-a"] = owner },
+            [new ProjectMember("root-a", MembershipRole.Owner, Now)])
+        {
+            NodeDeclarations = declarations.ToDictionary(
+                declaration => declaration.NodeId.ToString(),
+                declaration => new NodeGitHubDeclaration(
+                    declaration.NodeId.ToString(),
+                    declaration.NodeId == RootNodeId ? "root-a" : "second-fingerprint",
+                    declaration.Account,
+                    Now)),
+        };
     }
 
     [Fact]
@@ -162,7 +316,7 @@ public sealed class ProjectMembersCommandTests : IClassFixture<PostgresFixture>,
         projectSession.Events.StartStream<ProjectAggregate>(
             projectId,
             ProjectDecider.Register(
-                projectId, context.OwnerId, DomainId.New(), "smoke", RepositoryPath, null, null, Now));
+                projectId, context.OwnerId, context.ConnectionId, "smoke", RepositoryPath, null, null, Now));
         await projectSession.SaveChangesAsync(cancellationToken);
 
         return (await projectSession.LoadAsync<ProjectDetails>(projectId, cancellationToken))!;
