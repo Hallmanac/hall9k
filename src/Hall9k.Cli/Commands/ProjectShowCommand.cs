@@ -219,6 +219,11 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         Table table = new Table().Border(TableBorder.None).HideHeaders();
         table.AddColumns("k", "v");
         table.AddRow("Orchestrator model", OrchestratorModelRow(project, operatingSettings));
+        if (project.Effort.IsWellFormed)
+        {
+            table.AddRow("Effort", $"{project.Effort.Value} [dim](project override, wins over the node's; a task's own wins over it)[/]");
+        }
+
         table.AddRow("Skip permissions", SkipPermissionsRow(
             project, history.WasRecorded(change => change.SkipPermissions)));
         table.AddRow("Max parallel tasks", MaxParallelTasksRow(project));

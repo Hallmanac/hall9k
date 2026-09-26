@@ -194,13 +194,11 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // VerifyGateTimeout to read here — DefaultCommandTimeout mirrors its default, held to it
         // by ClaudeSettingsFileTests, exactly as h9k task work's own settings file already does.
         string settingsFile = RunPaths.SettingsFile(resolvedRunDirectory);
-        // The node's configured effort level rides in it too, read through the same resolver the
-        // daemon's own binding mirrors, so this headless build runs at the level a dispatcher-launched
-        // one on this node would (a headless session honors only this file, not the owner's own
-        // user-level effortLevel).
-        OperatingSettingsReport effortSettings = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
-        string settingsContent = ClaudeSettingsFile.Build(
-            ClaudeSettingsFile.DefaultCommandTimeout, effort: AgentEffort.FromInput(effortSettings.Effort.Value));
+        // The build session's effort rides in it too, resolved over the same chain a dispatcher-launched
+        // build on this node would use (ResolveBuildEffortAsync), so this headless build runs at that
+        // level (a headless session honors only this file, not the owner's own user-level effortLevel).
+        AgentEffort effort = await ResolveBuildEffortAsync(taskDetails, project, cancellationToken);
+        string settingsContent = ClaudeSettingsFile.Build(ClaudeSettingsFile.DefaultCommandTimeout, effort: effort);
         await File.WriteAllTextAsync(settingsFile, settingsContent, cancellationToken);
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {worktreePath}[/]");
@@ -649,6 +647,26 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
 
         return model;
     }
+
+    /// <summary>
+    /// The build session's effort, resolved beside <see cref="ResolveBuildModelAsync"/> over the chain
+    /// <c>DaemonOptions.ResolveEffort</c> gives a dispatcher-launched build: the task's value, then the
+    /// project's, then this node's build value, then the node-wide value, all read from the same durable
+    /// settings <c>h9k config show</c> renders. Unknown when nothing sets one, which leaves the level out of
+    /// the settings file so the model's own default decides. Shared with <see cref="TaskDelegateCommand"/>.
+    /// </summary>
+    internal static async Task<AgentEffort> ResolveBuildEffortAsync(
+        TaskDetails taskDetails, ProjectDetails project, CancellationToken cancellationToken) =>
+        ResolveBuildEffort(taskDetails, project, await OperatingSettingsResolver.ResolveAsync(cancellationToken));
+
+    /// <summary>The pure half of <see cref="ResolveBuildEffortAsync"/>, over an already-resolved report.</summary>
+    internal static AgentEffort ResolveBuildEffort(
+        TaskDetails taskDetails, ProjectDetails project, OperatingSettingsReport operatingSettings) =>
+        AgentEffort.Resolve(
+            taskDetails.Effort, project.Effort,
+            AgentEffort.FromInput(operatingSettings.EffortByRole
+                .First(role => role.Role == nameof(RoleEffortSettings.Build)).Effort.Value),
+            AgentEffort.FromInput(operatingSettings.Effort.Value));
 
     /// <summary>
     /// The atomic decision behind the Published entry: assigns <paramref name="task"/> to

@@ -200,6 +200,8 @@ public static class CliCommandTree
                 .WithExample("project", "set", "hall9k", "--priority", "normal")
                 .WithExample("project", "set", "hall9k", "--home", "~/.hall9k/projects/hall9k")
                 .WithExample("project", "set", "hall9k", "--model", "claude-opus-5")
+                .WithExample("project", "set", "hall9k", "--effort", "high")
+                .WithExample("project", "set", "hall9k", "--effort", "default")
                 .WithExample("project", "set", "hall9k", "--orchestrator-model", "sonnet")
                 .WithExample("project", "set", "hall9k", "--rerequest-review", "on")
                 .WithExample("project", "set", "hall9k", "--jira", "PROJ")
@@ -1188,7 +1190,7 @@ public static class CliCommandTree
                     "--objective", "\"Update the README\"", "--criteria", "\"docs/README.md covers it\"");
             task.AddCommand<TaskReviseCommand>("revise")
                 .WithDescription(
-                    "Revise a draft: objective, acceptance criteria, agent context, type, model, dependencies, "
+                    "Revise a draft: objective, acceptance criteria, agent context, type, model, effort, dependencies, "
                     + "or — settable on a Draft or a Published spike alone — its kind, exit criterion, and "
                     + "budget (--max-turns/--max-tokens/--max-wall-clock, or --clear-budget to drop one already "
                     + "set). Draft-only for everything else — a published task promises it may be assigned at any moment "
@@ -1206,6 +1208,8 @@ public static class CliCommandTree
                 .WithExample("task", "revise", "28b19893", "--clear-dependencies")
                 .WithExample("task", "revise", "28b19893", "--epic", "3f2a91b2")
                 .WithExample("task", "revise", "28b19893", "--clear-epic")
+                .WithExample("task", "revise", "28b19893", "--effort", "xhigh")
+                .WithExample("task", "revise", "28b19893", "--effort", "default")
                 .WithExample("task", "revise", "28b19893", "--queue-first")
                 .WithExample("task", "revise", "28b19893", "--clear-queue-first")
                 .WithExample("task", "revise", "28b19893", "--review-stage-composition", "default")

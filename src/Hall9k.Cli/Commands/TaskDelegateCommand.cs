@@ -11,7 +11,6 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
-using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -115,12 +114,10 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         // own settings file exactly. Session-scoped for the identical truncation reason as the
         // stream/prompt files above.
         string settingsFile = RunPaths.SessionSettingsFile(resolvedRunDirectory, plan.SessionFileKey);
-        // The node's configured effort level rides in it too, exactly as h9k task start's does: this
-        // contractor is headless and honors only this file, so it runs at the level a dispatcher-launched
-        // session on this node would.
-        OperatingSettingsReport effortSettings = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
-        string settingsContent = ClaudeSettingsFile.Build(
-            ClaudeSettingsFile.DefaultCommandTimeout, effort: AgentEffort.FromInput(effortSettings.Effort.Value));
+        // The build effort rides in it too, exactly as h9k task start's does: this contractor is headless
+        // and honors only this file, so it runs at the level a dispatcher-launched build on this node
+        // would, resolved once by PrepareAsync beside the model.
+        string settingsContent = ClaudeSettingsFile.Build(ClaudeSettingsFile.DefaultCommandTimeout, effort: plan.Effort);
         await File.WriteAllTextAsync(settingsFile, settingsContent, cancellationToken);
 
         // Fetched here, before the RunDetails reload below, not immediately before the append —
@@ -444,6 +441,7 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         string? delegationBaseCommit = await InteractiveWorktreeGit.GetHeadShaAsync(run.WorktreePath, cancellationToken);
 
         AgentModel model = await TaskStartCommand.ResolveBuildModelAsync(taskDetails, project, cancellationToken);
+        AgentEffort effort = await TaskStartCommand.ResolveBuildEffortAsync(taskDetails, project, cancellationToken);
 
         // Minted once for this dispatch — the first (only, for this delegation) session records it
         // as this InteractiveSessionStarted's own ClaudeSessionId, exactly as a fresh h9k task start
@@ -493,7 +491,7 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
             lessons: await LessonPromptFeed.LoadAsync(session, project.Id, cancellationToken));
 
         return new DelegationPlan(
-            runId, run.WorktreePath, run.Branch, run.RunDirectory, resumesPreviousWork, model, prompt,
+            runId, run.WorktreePath, run.Branch, run.RunDirectory, resumesPreviousWork, model, effort, prompt,
             claudeSessionId, sessionName, sessionFileKey, context.OwnerId, project.SkipPermissions,
             crossMachineNoticeShown);
     }
@@ -501,6 +499,6 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
     /// <summary>Everything <see cref="ExecuteAsync"/> needs to actually spawn the contractor, decided once by <see cref="PrepareAsync"/>.</summary>
     internal sealed record DelegationPlan(
         Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork,
-        AgentModel Model, string Prompt, Guid ClaudeSessionId, string SessionName, string SessionFileKey,
+        AgentModel Model, AgentEffort Effort, string Prompt, Guid ClaudeSessionId, string SessionName, string SessionFileKey,
         Guid OwnerId, bool SkipPermissions, bool CrossMachineNoticeShown);
 }
