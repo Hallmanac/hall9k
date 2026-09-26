@@ -129,12 +129,19 @@ public sealed class OperatingSettings
 
     /// <summary>
     /// The reasoning effort level every dispatched session runs at (<c>low</c>, <c>medium</c>,
-    /// <c>high</c>, <c>xhigh</c>). Null leaves <c>effortLevel</c> out of the generated
-    /// settings file, so the model's own default decides. Written into that file because a headless
-    /// session ignores the owner's user-level <c>effortLevel</c> and honors only the
-    /// <c>--settings</c> file it is handed. Binds to <c>DaemonOptions.Effort</c>.
+    /// <c>high</c>, <c>xhigh</c>). Null leaves the level out of the generated settings file, so the
+    /// model's own default decides. Written into that file because a headless session ignores the
+    /// owner's user-level setting and honors only the <c>--settings</c> file it is handed. Binds to
+    /// <c>DaemonOptions.Effort</c>.
     /// </summary>
     public string? Effort { get; set; }
+
+    /// <summary>
+    /// The node's reasoning effort per session role, the same named shape as <see cref="ModelByRole"/>.
+    /// A role's value sits above <see cref="Effort"/> and below a project's or a task's own. Binds to
+    /// <c>DaemonOptions.EffortByRole</c>.
+    /// </summary>
+    public RoleEffortSettings EffortByRole { get; set; } = new();
 
     public RoleModelSettings ModelByRole { get; set; } = new();
 
@@ -382,6 +389,56 @@ public sealed class RoleModelSettings
 
     /// <summary>Every named role and its configured model, in the order <c>h9k config show</c> renders them.</summary>
     public IEnumerable<(string Role, string? Model)> AsPairs()
+    {
+        yield return (nameof(Build), Build);
+        yield return (nameof(Review), Review);
+        yield return (nameof(ReviewVerify), ReviewVerify);
+        yield return (nameof(ReviewFinalFullPass), ReviewFinalFullPass);
+        yield return (nameof(Fix), Fix);
+        yield return (nameof(Synthesis), Synthesis);
+        yield return (nameof(Refinement), Refinement);
+        yield return (nameof(Publication), Publication);
+        yield return (nameof(Courier), Courier);
+    }
+}
+
+/// <summary>
+/// Per-role effort levels (<c>low</c>, <c>medium</c>, <c>high</c>, <c>xhigh</c>), named rather than held in
+/// a dictionary for the same reason <see cref="RoleModelSettings"/> is: <c>h9k config set --help</c> states
+/// exactly which sessions are configurable. Null means no opinion at this level, and the chain falls
+/// through to the node-wide <see cref="OperatingSettings.Effort"/>.
+/// </summary>
+public sealed class RoleEffortSettings
+{
+    public string? Build { get; set; }
+
+    public string? Review { get; set; }
+
+    public string? Fix { get; set; }
+
+    public string? Synthesis { get; set; }
+
+    public string? Refinement { get; set; }
+
+    public string? Publication { get; set; }
+
+    public string? Courier { get; set; }
+
+    /// <summary>
+    /// The Review role's effort for a Verify-shape pass specifically: null falls through to
+    /// <see cref="Review"/>, so this is a narrower override under review rather than another role,
+    /// exactly as <see cref="RoleModelSettings.ReviewVerify"/> is for the model.
+    /// </summary>
+    public string? ReviewVerify { get; set; }
+
+    /// <summary>The Review role's effort for the mandatory FinalFullPass specifically; null falls through to <see cref="Review"/>.</summary>
+    public string? ReviewFinalFullPass { get; set; }
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? Extra { get; set; }
+
+    /// <summary>Every named role and its configured effort, in the order <c>h9k config show</c> renders them (the same order <see cref="RoleModelSettings.AsPairs"/> uses).</summary>
+    public IEnumerable<(string Role, string? Effort)> AsPairs()
     {
         yield return (nameof(Build), Build);
         yield return (nameof(Review), Review);

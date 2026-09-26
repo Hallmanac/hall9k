@@ -32,6 +32,15 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         "Hall9k__SessionCapPerRun",
         "Hall9k__DefaultModel",
         "Hall9k__Effort",
+        "Hall9k__EffortByRole__Build",
+        "Hall9k__EffortByRole__Review",
+        "Hall9k__EffortByRole__ReviewVerify",
+        "Hall9k__EffortByRole__ReviewFinalFullPass",
+        "Hall9k__EffortByRole__Fix",
+        "Hall9k__EffortByRole__Synthesis",
+        "Hall9k__EffortByRole__Refinement",
+        "Hall9k__EffortByRole__Publication",
+        "Hall9k__EffortByRole__Courier",
         "Hall9k__ModelByRole__Build",
         "Hall9k__ModelByRole__Review",
         "Hall9k__ModelByRole__ReviewVerify",
@@ -462,6 +471,74 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         report.Effort.Origin.Should().Be(SettingOrigin.Default);
         report.UnusableEnvironmentVariables.Should().ContainSingle(
             warning => warning.Contains("Hall9k__Effort") && warning.Contains("ludicrous"));
+    }
+
+    [Fact]
+    public async Task Every_role_effort_is_unset_when_nothing_configures_it()
+    {
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.EffortByRole.Select(role => role.Role).Should().Equal(
+            "Build", "Review", "ReviewVerify", "ReviewFinalFullPass", "Fix", "Synthesis", "Refinement",
+            "Publication", "Courier");
+        report.EffortByRole.Should().OnlyContain(
+            role => role.Effort.Origin == SettingOrigin.Default && role.Effort.Value == null);
+    }
+
+    [Fact]
+    public async Task A_role_effort_written_to_the_config_file_is_reported_with_that_origin_for_that_role_only()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(
+            s => s.EffortByRole.ReviewFinalFullPass = "medium", CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        RoleEffortSetting finalPass = report.EffortByRole.Single(role => role.Role == "ReviewFinalFullPass");
+        finalPass.Effort.Value.Should().Be("medium");
+        finalPass.Effort.Origin.Should().Be(SettingOrigin.PlatformConfigFile);
+        report.EffortByRole.Where(role => role.Role != "ReviewFinalFullPass").Should().OnlyContain(
+            role => role.Effort.Value == null);
+        report.Effort.Value.Should().BeNull("a role value never writes the node-wide level");
+    }
+
+    [Fact]
+    public async Task A_role_effort_environment_variable_outranks_the_config_file()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.EffortByRole.Build = "low", CancellationToken.None);
+        Environment.SetEnvironmentVariable("Hall9k__EffortByRole__Build", "xhigh");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        RoleEffortSetting build = report.EffortByRole.Single(role => role.Role == "Build");
+        build.Effort.Value.Should().Be("xhigh");
+        build.Effort.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
+        build.Effort.Source.Should().Be("Hall9k__EffortByRole__Build");
+    }
+
+    [Fact]
+    public async Task An_unrecognized_role_effort_is_reported_by_key_and_treated_as_unset()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.EffortByRole.Fix = "max", CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.EffortByRole.Single(role => role.Role == "Fix").Effort.Value.Should().BeNull();
+        report.UnusableEnvironmentVariables.Should().ContainSingle(
+            warning => warning.Contains(Hall9kDatabase.ConfigFile) && warning.Contains("effortByRole.fix")
+                && warning.Contains("\"max\"") && warning.Contains("low, medium, high, xhigh"));
+    }
+
+    [Fact]
+    public async Task An_unrecognized_role_effort_in_the_environment_does_not_fall_through_to_the_file()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.EffortByRole.Courier = "high", CancellationToken.None);
+        Environment.SetEnvironmentVariable("Hall9k__EffortByRole__Courier", "ludicrous");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.EffortByRole.Single(role => role.Role == "Courier").Effort.Value.Should().BeNull();
+        report.UnusableEnvironmentVariables.Should().ContainSingle(
+            warning => warning.Contains("Hall9k__EffortByRole__Courier") && warning.Contains("ludicrous"));
     }
 
     /// <summary>

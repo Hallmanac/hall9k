@@ -46,6 +46,7 @@ public static class OperatingSettingsRendering
             ("max-concurrent-agent-sessions (retired)", DescribeMaxConcurrentAgentSessions(report)),
             ("default-model", $"{report.DefaultModel.Value} ({report.DefaultModel.DescribeOrigin()})"),
             ("effort", DescribeEffort(report)),
+            .. report.EffortByRole.Select(role => ($"effort ({RoleLabel(role.Role)})", DescribeRoleEffort(role))),
             ("max-compliance-review-cycles",
                 $"{report.MaxComplianceReviewCycles.Value} ({report.MaxComplianceReviewCycles.DescribeOrigin()})"),
             ("max-adversarial-review-cycles",
@@ -95,6 +96,33 @@ public static class OperatingSettingsRendering
         report.Effort.Value is { } level
             ? $"{level} ({report.Effort.DescribeOrigin()})"
             : $"not set ({report.Effort.DescribeOrigin()}), so sessions run at the model's own default";
+
+    /// <summary>
+    /// One role's effort row, in the shape the per-role model rows use: the value and where it came from,
+    /// or, when the role sets none, the level it falls through to. A blank environment variable is not
+    /// silence for the same reason it is not for a model, so its origin is named too.
+    /// </summary>
+    private static string DescribeRoleEffort(RoleEffortSetting role) =>
+        (role.Effort.Value, role.Effort.Origin) switch
+        {
+            ({ Length: > 0 } value, _) => $"{value} ({role.Effort.DescribeOrigin()})",
+            (_, SettingOrigin.EnvironmentVariable) =>
+                $"(empty) ({role.Effort.DescribeOrigin()}), falls through to {EffortFallthroughDescription(role.Role)}",
+            _ => $"not set, falls through to {EffortFallthroughDescription(role.Role)}",
+        };
+
+    /// <summary>
+    /// What a role with no effort of its own resolves to. A verify or final pass sits beneath review's own
+    /// value, exactly as its model does (<see cref="FallthroughDescription"/>), so naming the node-wide level
+    /// for either would skip a configured <c>--effort-review</c>. Every role's own value is also outranked by
+    /// a project's or a task's, which the row leaves out because neither is a node setting.
+    /// </summary>
+    private static string EffortFallthroughDescription(string role) => role switch
+    {
+        nameof(RoleEffortSettings.ReviewVerify) or nameof(RoleEffortSettings.ReviewFinalFullPass) =>
+            "whatever --effort-review itself resolves to",
+        _ => "the node-wide effort above, or the model's own default when that is not set either",
+    };
 
     /// <summary>
     /// The spend-budget-tokens row's value: "not set" reads as unbudgeted dispatch — the

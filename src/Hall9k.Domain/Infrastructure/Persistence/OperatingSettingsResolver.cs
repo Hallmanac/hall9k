@@ -98,7 +98,19 @@ public static class OperatingSettingsResolver
         ResolvedSetting<string> reviewStageComposition =
             ResolveReviewStageComposition(configured.ReviewStageComposition, unusableEnvironmentVariables);
 
-        ResolvedSetting<string?> effort = ResolveEffort(configured.Effort, unusableEnvironmentVariables);
+        ResolvedSetting<string?> effort = ResolveEffort(
+            $"{EnvironmentPrefix}Effort", configured.Effort, "effort",
+            "so dispatched sessions carry no effort setting and run at the model's own default",
+            unusableEnvironmentVariables);
+
+        List<RoleEffortSetting> effortByRole = [.. configured.EffortByRole.AsPairs().Select(pair =>
+            new RoleEffortSetting(
+                pair.Role,
+                ResolveEffort(
+                    $"{EnvironmentPrefix}EffortByRole__{pair.Role}", pair.Effort,
+                    $"effortByRole.{char.ToLowerInvariant(pair.Role[0])}{pair.Role[1..]}",
+                    "so that role falls through to the next level of its chain",
+                    unusableEnvironmentVariables)))];
 
         ResolvedSetting<int> autoPrReviewMintHold = ResolveInt(
             $"{EnvironmentPrefix}AutoPrReviewMintHoldSeconds",
@@ -113,7 +125,7 @@ public static class OperatingSettingsResolver
             concurrency, read.MaxConcurrentAgentSessionsIsFabricatedZero, maxConcurrentTaskRuns, convertedFromLegacy,
             shadowsConfigFileValue, sessionCapPerRun, defaultModel, roles, read.Problem, unusableEnvironmentVariables,
             maxComplianceReviewCycles, maxAdversarialReviewCycles, maxFinalFullPassRounds, lifetimeReviewCycleBudget,
-            spendBudgetTokens, spendPeriod, reviewStageComposition, effort, autoPrReviewMintHold);
+            spendBudgetTokens, spendPeriod, reviewStageComposition, effort, autoPrReviewMintHold, effortByRole);
     }
 
     /// <summary>
@@ -199,15 +211,18 @@ public static class OperatingSettingsResolver
     }
 
     /// <summary>
-    /// The effort level dispatched sessions run at, mirroring what the daemon binds: an environment
+    /// One effort level, the node-wide one or a role's, mirroring what the daemon binds: an environment
     /// variable outranks the config file, and a value that is not one of the four accepted names is
     /// treated as absent at the level that supplied it (it never falls through to the file, exactly as
     /// <see cref="ResolveString"/> does for a model), so nothing unrecognized reaches a settings file.
     /// Unlike every other string setting here there is no compiled fallback: unset resolves to null.
+    /// <paramref name="settingName"/> names the config-file key in a problem line, and
+    /// <paramref name="consequence"/> completes the sentence that says what an unusable value does to
+    /// the sessions it governs.
     /// </summary>
-    private static ResolvedSetting<string?> ResolveEffort(string? configured, List<string> unusable)
+    private static ResolvedSetting<string?> ResolveEffort(
+        string environmentVariable, string? configured, string settingName, string consequence, List<string> unusable)
     {
-        string environmentVariable = $"{EnvironmentPrefix}Effort";
         if (GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
         {
             AgentEffort fromEnvironmentEffort = AgentEffort.FromInput(fromEnvironment);
@@ -219,8 +234,7 @@ public static class OperatingSettingsResolver
 
             unusable.Add(
                 $"{environmentVariable} is set to \"{fromEnvironment}\", which is not one of {AgentEffort.DescribeAccepted()} "
-                + "and is treated as absent, so dispatched sessions carry no effortLevel and run at the model's own "
-                + "default (it does not fall through to the config file's value).");
+                + $"and is treated as absent, {consequence} (it does not fall through to the config file's value).");
             return new ResolvedSetting<string?>(null, SettingOrigin.Default, null);
         }
 
@@ -234,9 +248,8 @@ public static class OperatingSettingsResolver
             }
 
             unusable.Add(
-                $"{Hall9kDatabase.ConfigFile} sets effort to \"{value}\", which is not one of {AgentEffort.DescribeAccepted()} "
-                + "and is treated as absent, so dispatched sessions carry no effortLevel and run at the model's own "
-                + "default.");
+                $"{Hall9kDatabase.ConfigFile} sets {settingName} to \"{value}\", which is not one of {AgentEffort.DescribeAccepted()} "
+                + $"and is treated as absent, {consequence}.");
         }
 
         return new ResolvedSetting<string?>(null, SettingOrigin.Default, null);

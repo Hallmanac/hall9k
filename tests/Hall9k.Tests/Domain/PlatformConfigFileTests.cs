@@ -211,6 +211,39 @@ public sealed class PlatformConfigFileTests : IDisposable
         settings.ModelByRole.Build.Should().BeNull();
     }
 
+    [Fact]
+    public async Task An_explicit_null_effort_by_role_reads_back_as_an_empty_instance_rather_than_null()
+    {
+        await File.WriteAllTextAsync(Hall9kDatabase.ConfigFile, """{"hall9k": {"effortByRole": null}}""");
+
+        OperatingSettings settings = await PlatformConfigFile.ReadOperatingSettingsAsync(CancellationToken.None);
+
+        settings.EffortByRole.Should().NotBeNull();
+        settings.EffortByRole.Build.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task A_role_effort_round_trips_through_the_file_and_leaves_the_model_and_the_node_wide_effort_alone()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(
+            s =>
+            {
+                s.Effort = "low";
+                s.ModelByRole.Build = "sonnet";
+            },
+            CancellationToken.None);
+
+        await PlatformConfigFile.WriteOperatingSettingsAsync(
+            s => s.EffortByRole.ReviewFinalFullPass = "xhigh", CancellationToken.None);
+
+        OperatingSettings settings = await PlatformConfigFile.ReadOperatingSettingsAsync(CancellationToken.None);
+        settings.EffortByRole.ReviewFinalFullPass.Should().Be("xhigh");
+        settings.EffortByRole.Build.Should().BeNull();
+        settings.Effort.Should().Be("low");
+        settings.ModelByRole.Build.Should().Be("sonnet");
+        (await File.ReadAllTextAsync(Hall9kDatabase.ConfigFile)).Should().Contain("\"effortByRole\"");
+    }
+
     /// <summary>
     /// The daemon binds this section through <c>IConfiguration</c>, where every key comparison is
     /// case-insensitive, so a hand-edit using the casing the env-var table and the daemon's own

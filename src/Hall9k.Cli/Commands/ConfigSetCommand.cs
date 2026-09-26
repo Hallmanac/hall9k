@@ -30,6 +30,9 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
     /// </summary>
     private const string SpendBudgetNoneWord = "none";
 
+    /// <summary>One per-role effort option: its flag, the label its change is reported under, the raw input, and where a vetted value is stored.</summary>
+    internal sealed record RoleEffortOption(string Flag, string Label, string? Input, Action<RoleEffortSettings, string?> Assign);
+
     public sealed class Settings : CommandSettings
     {
         [CommandOption("--max-concurrent-agent-sessions <N>")]
@@ -72,8 +75,9 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
 
         [CommandOption("--effort <low|medium|high|xhigh>")]
         [Description(
-            "The reasoning effort level every headless agent session runs at, whether the daemon dispatched it or h9k task start or h9k task delegate launched it (DaemonOptions.Effort), written into "
-            + "each session's settings file as effortLevel, as one node-wide level rather than per role. A headless session "
+            "The node-wide reasoning effort level every headless agent session runs at, whether the daemon dispatched it or h9k task start or h9k task delegate launched it (DaemonOptions.Effort), written into "
+            + "each session's settings file as effortLevel. It is the level beneath every other one: a task's own (h9k task revise --effort), "
+            + "a project's (h9k project set --effort) and this node's per-role value (--effort-build and its siblings) each win over it. A headless session "
             + "ignores the owner's own user-level effortLevel and honors only that file, and Claude Opus 5.5 defaults "
             + "to medium where earlier Opus models defaulted to high, so this is how an operator asks for high. "
             + "Accepts low, medium, high or xhigh (Claude Code's effortLevel key has no max; max is session-only). 'default' clears it, leaving the key out so each model's own "
@@ -140,6 +144,87 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "deliberately inexpensive model rather than falling through to the same tier a build or "
             + "review session runs on.")]
         public string? ModelCourier { get; init; }
+
+        [CommandOption("--effort-build <low|medium|high|xhigh>")]
+        [Description(
+            "This node's reasoning effort for the Build role, the session that writes the feature. It sits above the node-wide --effort and below a "
+            + "project's (h9k project set --effort) and a task's (h9k task revise --effort) own value. Accepts low, "
+            + "medium, high or xhigh; 'default' clears it, falling through to the node-wide --effort, then the model's own default.")]
+        public string? EffortBuild { get; init; }
+
+        [CommandOption("--effort-fix <low|medium|high|xhigh>")]
+        [Description(
+            "This node's reasoning effort for the Fix role, the session that applies review findings. It sits above the node-wide --effort and below a "
+            + "project's (h9k project set --effort) and a task's (h9k task revise --effort) own value. Accepts low, "
+            + "medium, high or xhigh; 'default' clears it, falling through to the node-wide --effort, then the model's own default.")]
+        public string? EffortFix { get; init; }
+
+        [CommandOption("--effort-review <low|medium|high|xhigh>")]
+        [Description(
+            "This node's reasoning effort for the Review role, the independent reviewer over a run's diff. It sits above the node-wide --effort and below a "
+            + "project's (h9k project set --effort) and a task's (h9k task revise --effort) own value. Accepts low, "
+            + "medium, high or xhigh; 'default' clears it, falling through to the node-wide --effort, then the model's own default.")]
+        public string? EffortReview { get; init; }
+
+        [CommandOption("--effort-review-verify <low|medium|high|xhigh>")]
+        [Description(
+            "This node's reasoning effort for a Verify-shape review pass specifically (a middle cycle confirming a fix and checking its blast radius), a narrower knob under --effort-review rather than a new role. It sits above the node-wide --effort and below a "
+            + "project's (h9k project set --effort) and a task's (h9k task revise --effort) own value. Accepts low, "
+            + "medium, high or xhigh; 'default' clears it, falling through to whatever --effort-review itself resolves to.")]
+        public string? EffortReviewVerify { get; init; }
+
+        [CommandOption("--effort-review-finalpass <low|medium|high|xhigh>")]
+        [Description(
+            "This node's reasoning effort for the mandatory FinalFullPass review specifically, the fresh both-lenses read immediately before a run may settle, a narrower knob under --effort-review rather than a new role. It sits above the node-wide --effort and below a "
+            + "project's (h9k project set --effort) and a task's (h9k task revise --effort) own value. Accepts low, "
+            + "medium, high or xhigh; 'default' clears it, falling through to whatever --effort-review itself resolves to.")]
+        public string? EffortReviewFinalpass { get; init; }
+
+        [CommandOption("--effort-synthesis <low|medium|high|xhigh>")]
+        [Description(
+            "This node's reasoning effort for the Synthesis role, condensing a fan-in of blocker handoffs. It sits above the node-wide --effort and below a "
+            + "project's (h9k project set --effort) and a task's (h9k task revise --effort) own value. Accepts low, "
+            + "medium, high or xhigh; 'default' clears it, falling through to the node-wide --effort, then the model's own default.")]
+        public string? EffortSynthesis { get; init; }
+
+        [CommandOption("--effort-refinement <low|medium|high|xhigh>")]
+        [Description(
+            "This node's reasoning effort for the (future) Refinement role, draft refinement runs. It sits above the node-wide --effort and below a "
+            + "project's (h9k project set --effort) and a task's (h9k task revise --effort) own value. Accepts low, "
+            + "medium, high or xhigh; 'default' clears it, falling through to the node-wide --effort, then the model's own default.")]
+        public string? EffortRefinement { get; init; }
+
+        [CommandOption("--effort-publication <low|medium|high|xhigh>")]
+        [Description(
+            "This node's reasoning effort for the Publication role, writing a task up as an external tracker card. It sits above the node-wide --effort and below a "
+            + "project's (h9k project set --effort) and a task's (h9k task revise --effort) own value. Accepts low, "
+            + "medium, high or xhigh; 'default' clears it, falling through to the node-wide --effort, then the model's own default.")]
+        public string? EffortPublication { get; init; }
+
+        [CommandOption("--effort-courier <low|medium|high|xhigh>")]
+        [Description(
+            "This node's reasoning effort for the Courier role, delivering a project's orchestrator feed to its live orchestrator session. It sits above the node-wide --effort and below a "
+            + "project's (h9k project set --effort) and a task's (h9k task revise --effort) own value. Accepts low, "
+            + "medium, high or xhigh; 'default' clears it, falling through to the node-wide --effort, then the model's own default.")]
+        public string? EffortCourier { get; init; }
+
+        /// <summary>Every per-role effort option, paired with where its value lands, so validation, the no-op check and the write all walk one list.</summary>
+        internal IReadOnlyList<RoleEffortOption> RoleEfforts =>
+        [
+            new("--effort-build", "effort (build)", EffortBuild, (roles, value) => roles.Build = value),
+            new("--effort-review", "effort (review)", EffortReview, (roles, value) => roles.Review = value),
+            new(
+                "--effort-review-verify", "effort (review-verify)", EffortReviewVerify,
+                (roles, value) => roles.ReviewVerify = value),
+            new(
+                "--effort-review-finalpass", "effort (review-finalpass)", EffortReviewFinalpass,
+                (roles, value) => roles.ReviewFinalFullPass = value),
+            new("--effort-fix", "effort (fix)", EffortFix, (roles, value) => roles.Fix = value),
+            new("--effort-synthesis", "effort (synthesis)", EffortSynthesis, (roles, value) => roles.Synthesis = value),
+            new("--effort-refinement", "effort (refinement)", EffortRefinement, (roles, value) => roles.Refinement = value),
+            new("--effort-publication", "effort (publication)", EffortPublication, (roles, value) => roles.Publication = value),
+            new("--effort-courier", "effort (courier)", EffortCourier, (roles, value) => roles.Courier = value),
+        ];
 
         [CommandOption("--max-compliance-review-cycles <N>")]
         [Description(
@@ -357,7 +442,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
                 || settings.LessonPromptMaxLessons is not null || settings.LessonPromptMaxCharacters is not null)
             && settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
-            && settings.Effort is null
+            && settings.Effort is null && settings.RoleEfforts.All(option => option.Input is null)
             && settings.OrchestratorModel is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelReviewFinalPass is null
@@ -395,7 +480,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
     {
         if (settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
-            && settings.Effort is null
+            && settings.Effort is null && settings.RoleEfforts.All(option => option.Input is null)
             && settings.OrchestratorModel is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelReviewFinalPass is null
@@ -470,7 +555,15 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
 
         if (settings.Effort is { } effort)
         {
-            VetEffort(effort);
+            EffortInput.Parse("--effort", effort);
+        }
+
+        foreach (RoleEffortOption option in settings.RoleEfforts)
+        {
+            if (option.Input is { } roleEffort)
+            {
+                EffortInput.Parse(option.Flag, roleEffort);
+            }
         }
 
         if (settings.SpendPeriod is { } spendPeriod
@@ -637,7 +730,11 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         }
 
         ApplyModel("default-model", settings.DefaultModel, value => operating.DefaultModel = value, changed);
-        ApplyEffort(settings.Effort, operating, changed);
+        ApplyEffort("effort", "--effort", settings.Effort, value => operating.Effort = value, changed);
+        foreach (RoleEffortOption option in settings.RoleEfforts)
+        {
+            ApplyEffort(option.Label, option.Flag, option.Input, value => option.Assign(operating.EffortByRole, value), changed);
+        }
         ApplyModel("orchestrator-model", settings.OrchestratorModel, value => operating.OrchestratorModel = value, changed);
         ApplyModel("model (build)", settings.ModelBuild, value => operating.ModelByRole.Build = value, changed);
         ApplyModel("model (review)", settings.ModelReview, value => operating.ModelByRole.Review = value, changed);
@@ -771,38 +868,23 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
     }
 
     /// <summary>
-    /// The level <paramref name="input"/> names, or null for the clearing word 'default'. Anything else
-    /// is refused here with the four accepted names quoted, so an unrecognized word never reaches the
-    /// config file, whether it arrives through <see cref="Validate"/> or a direct <see cref="Apply"/>.
+    /// Stores the level <paramref name="input"/> names through <paramref name="assign"/>, or clears it for the
+    /// clearing word 'default'. <see cref="EffortInput.Parse"/> refuses anything else here with the four
+    /// accepted names quoted, so an unrecognized word never reaches the config file, whether it arrives
+    /// through <see cref="Validate"/> or a direct <see cref="Apply"/>.
     /// </summary>
-    private static AgentEffort? VetEffort(string input)
-    {
-        AgentEffort effort = AgentEffort.FromInput(input);
-        if (effort.IsWellFormed)
-        {
-            return effort;
-        }
-
-        if (string.Equals(input.Trim(), AgentEffort.ClearingWord, StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        throw new DomainValidationException(
-            $"--effort must be one of {AgentEffort.DescribeAccepted()}, or '{AgentEffort.ClearingWord}' "
-            + "to clear it so each model's own default decides again. It is the reasoning effort level written "
-            + "into every dispatched session's settings file as effortLevel.");
-    }
-
-    private static void ApplyEffort(string? input, OperatingSettings operating, List<string> changed)
+    private static void ApplyEffort(
+        string label, string flag, string? input, Action<string?> assign, List<string> changed)
     {
         if (input is null)
         {
             return;
         }
 
-        operating.Effort = VetEffort(input)?.Value;
-        changed.Add($"effort = {operating.Effort ?? "(cleared)"}");
+        AgentEffort effort = EffortInput.Parse(flag, input);
+        string? value = effort.IsWellFormed ? effort.Value : null;
+        assign(value);
+        changed.Add($"{label} = {value ?? "(cleared)"}");
     }
 
     /// <summary>
