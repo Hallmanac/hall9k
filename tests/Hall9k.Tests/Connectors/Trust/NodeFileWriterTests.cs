@@ -74,12 +74,12 @@ public sealed class NodeFileWriterTests
     }
 
     [Fact]
-    public async Task Refresh_adds_only_the_two_fields_to_an_existing_file_as_an_update_signed_by_the_nodes_key()
+    public async Task Refresh_adds_only_the_two_fields_and_keeps_the_invite_proof_as_an_update_signed_by_the_nodes_key()
     {
         FakeLedger ledger = await SeedAsync(OldFile);
 
         NodeFileRefreshOutcome outcome = await NodeFileWriter.RefreshGitHubDeclarationAsync(
-            ledger, Repository, NodeId, Octocat, Committer, SigningKey, CancellationToken.None);
+            ledger, Repository, NodeId, Octocat, Key.PublicKeyLine, Committer, SigningKey, CancellationToken.None);
 
         outcome.Should().Be(NodeFileRefreshOutcome.Written);
         LedgerWriteRequest write = ledger.Writes[^1];
@@ -89,24 +89,13 @@ public sealed class NodeFileWriterTests
     }
 
     [Fact]
-    public async Task Refresh_leaves_a_pending_invite_proof_untouched()
-    {
-        FakeLedger ledger = await SeedAsync(OldFile);
-
-        await NodeFileWriter.RefreshGitHubDeclarationAsync(
-            ledger, Repository, NodeId, Octocat, Committer, SigningKey, CancellationToken.None);
-
-        ledger.Writes[^1].Content.Should().Contain("invite_proof: \"pending-proof\"\n");
-    }
-
-    [Fact]
     public async Task Refresh_replaces_a_changed_declaration_in_place_and_touches_nothing_else()
     {
         string declared = OldFile.Replace("invite_proof", "github_login: \"old-name\"\ngithub_account_id: \"42\"\ninvite_proof");
         FakeLedger ledger = await SeedAsync(declared);
 
         await NodeFileWriter.RefreshGitHubDeclarationAsync(
-            ledger, Repository, NodeId, Octocat, Committer, SigningKey, CancellationToken.None);
+            ledger, Repository, NodeId, Octocat, Key.PublicKeyLine, Committer, SigningKey, CancellationToken.None);
 
         ledger.Writes[^1].Content.Should().Be(declared.Replace("old-name", "octocat"));
     }
@@ -118,7 +107,7 @@ public sealed class NodeFileWriterTests
         FakeLedger ledger = await SeedAsync(crlf);
 
         await NodeFileWriter.RefreshGitHubDeclarationAsync(
-            ledger, Repository, NodeId, Octocat, Committer, SigningKey, CancellationToken.None);
+            ledger, Repository, NodeId, Octocat, Key.PublicKeyLine, Committer, SigningKey, CancellationToken.None);
 
         ledger.Writes[^1].Content.Should().Be(crlf + "github_login: \"octocat\"\r\ngithub_account_id: \"42\"\r\n");
     }
@@ -130,7 +119,7 @@ public sealed class NodeFileWriterTests
         int writesBefore = ledger.Writes.Count;
 
         NodeFileRefreshOutcome outcome = await NodeFileWriter.RefreshGitHubDeclarationAsync(
-            ledger, Repository, NodeId, Octocat, Committer, SigningKey, CancellationToken.None);
+            ledger, Repository, NodeId, Octocat, Key.PublicKeyLine, Committer, SigningKey, CancellationToken.None);
 
         outcome.Should().Be(NodeFileRefreshOutcome.Unchanged);
         ledger.Writes.Should().HaveCount(writesBefore);
@@ -142,10 +131,23 @@ public sealed class NodeFileWriterTests
         FakeLedger ledger = new();
 
         NodeFileRefreshOutcome outcome = await NodeFileWriter.RefreshGitHubDeclarationAsync(
-            ledger, Repository, NodeId, Octocat, Committer, SigningKey, CancellationToken.None);
+            ledger, Repository, NodeId, Octocat, Key.PublicKeyLine, Committer, SigningKey, CancellationToken.None);
 
         outcome.Should().Be(NodeFileRefreshOutcome.NoNodeFile);
         ledger.Writes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Refresh_writes_nothing_when_the_file_names_a_different_key_than_the_one_that_would_sign()
+    {
+        FakeLedger ledger = await SeedAsync(OldFile);
+        int writesBefore = ledger.Writes.Count;
+
+        NodeFileRefreshOutcome outcome = await NodeFileWriter.RefreshGitHubDeclarationAsync(
+            ledger, Repository, NodeId, Octocat, "ssh-ed25519 AAAAregenerated node", Committer, SigningKey, CancellationToken.None);
+
+        outcome.Should().Be(NodeFileRefreshOutcome.SigningKeyDiffers);
+        ledger.Writes.Should().HaveCount(writesBefore);
     }
 
     private static async Task<FakeLedger> SeedAsync(string content)

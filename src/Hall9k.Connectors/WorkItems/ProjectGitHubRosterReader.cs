@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Connectors.Trust;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
@@ -58,9 +59,10 @@ public sealed record ProjectGitHubRoster(
 }
 
 /// <summary>
-/// Reads a project's collaborator roster: refreshed through
-/// <see cref="ProjectGitHubAccessMirror.ObserveAsync"/> when gh answers, and from the stored
-/// <see cref="ProjectGitHubMembers"/> mirror when it cannot. The one place the roster is read for
+/// Reads a project's collaborator roster: the list <see cref="ProjectGitHubAccessMirror.ObserveAsync"/>
+/// just read from gh when it answers, and the stored <see cref="ProjectGitHubMembers"/> mirror, dated,
+/// when it cannot (or answers without a collaborator list). The mirror is never the fresh answer: it
+/// keeps a collaborator GitHub has since removed. The one place the roster is read for
 /// checking a declared account, so <c>h9k project members</c> and any later verify command share it.
 /// </summary>
 public sealed class ProjectGitHubRosterReader(ProjectGitHubAccessMirror? mirror = null)
@@ -72,12 +74,14 @@ public sealed class ProjectGitHubRosterReader(ProjectGitHubAccessMirror? mirror 
     {
         bool refreshed;
         bool holdsRoster = false;
+        IReadOnlyList<GitHubCollaboratorRole>? observed = null;
         try
         {
             ProjectGitHubAccessResult access = await mirror.ObserveAsync(session, project, now, cancellationToken);
             await session.SaveChangesAsync(cancellationToken);
             refreshed = true;
             holdsRoster = access.OwnRole.HasPush;
+            observed = access.Collaborators;
         }
         // gh not installed, not authenticated, wedged, or answering with something unreadable: every
         // one is "gh cannot answer", which falls back to whatever was last observed.
@@ -85,6 +89,19 @@ public sealed class ProjectGitHubRosterReader(ProjectGitHubAccessMirror? mirror 
             or TimeoutException or Win32Exception)
         {
             refreshed = false;
+        }
+
+        // The collaborator list gh just returned is the roster, not the stored mirror: the mirror
+        // never drops a collaborator GitHub removed, so checking against it would keep confirming
+        // an account that no longer has access.
+        if (observed is not null)
+        {
+            return new ProjectGitHubRoster(
+                [.. observed.Select(collaborator => new ProjectGitHubMemberView(
+                    collaborator.AccountId, collaborator.Login, collaborator.Role, now))],
+                true,
+                true,
+                null);
         }
 
         ProjectGitHubMembers? stored = await session.LoadAsync<ProjectGitHubMembers>(project.Id, cancellationToken);
@@ -101,8 +118,11 @@ public sealed class ProjectGitHubRosterReader(ProjectGitHubAccessMirror? mirror 
                 && ownView.Role.HasPush;
         }
 
-        return holdsRoster
-            ? new ProjectGitHubRoster(collaborators, true, refreshed, refreshed ? null : collaborators.Max(member => member.LastObservedAt))
+        // Reaching here with a successful refresh means gh answered the repository but returned no
+        // collaborator list (a failed or unreadable collaborator call, or no push): that is not a
+        // live roster, so it is reported as the stored mirror with its date, never as a fresh read.
+        return holdsRoster && collaborators.Count > 0
+            ? new ProjectGitHubRoster(collaborators, true, false, collaborators.Max(member => member.LastObservedAt))
             : new ProjectGitHubRoster([], false, refreshed, null);
     }
 }

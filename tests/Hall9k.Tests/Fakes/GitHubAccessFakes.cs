@@ -33,6 +33,15 @@ internal static class GitHubAccessFakes
             (_, _, _, _, _) => Task.FromResult(new ProcessResult(1, string.Empty, "gh: not logged in")),
             (_, _, _, _) => Task.FromResult(new ProcessResult(0, "gh-token-for-test", string.Empty))));
 
+    /// <summary>A gh that answers <c>repo view</c> with push but fails the collaborator list, so the roster cannot be read fresh.</summary>
+    public static ProjectGitHubAccessMirror GrantingPushWithFailingCollaboratorList(string repository = "acme/widgets") =>
+        new(new ProjectGitHubClient(
+            (_, arguments, _, _, _) => Task.FromResult(
+                arguments.Any(argument => argument.Contains("collaborators", StringComparison.Ordinal))
+                    ? new ProcessResult(1, string.Empty, "gh: HTTP 502")
+                    : new ProcessResult(0, $$"""{"viewerPermission":"ADMIN","nameWithOwner":"{{repository}}"}""", string.Empty)),
+            (_, _, _, _) => Task.FromResult(new ProcessResult(0, "gh-token-for-test", string.Empty))));
+
     public static ProjectGitHubAccessMirror DenyingPush(string repository = "acme/widgets", string role = "READ") =>
         new(Client(repository, role));
 }

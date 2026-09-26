@@ -9,8 +9,14 @@ using Marten;
 
 namespace Hall9k.Connectors.WorkItems;
 
-/// <summary>This install's own role on a project's repository, plus the repository's own <c>owner/repo</c> name, as just observed.</summary>
-public sealed record ProjectGitHubAccessResult(GitHubRepositoryRole OwnRole, string Repository);
+/// <summary>
+/// This install's own role on a project's repository, plus the repository's own <c>owner/repo</c>
+/// name, as just observed. <see cref="Collaborators"/> is the collaborator list gh returned in this
+/// same observation, or null when it was not read (this install lacks push, or the read failed),
+/// which is not the same as the stored mirror: that one never drops a collaborator GitHub removed.
+/// </summary>
+public sealed record ProjectGitHubAccessResult(
+    GitHubRepositoryRole OwnRole, string Repository, IReadOnlyList<GitHubCollaboratorRole>? Collaborators = null);
 
 /// <summary>
 /// Hall9k's own read-only mirror of a project's GitHub repository access (idea 202383dc, A2b,
@@ -76,10 +82,10 @@ public sealed class ProjectGitHubAccessMirror(ProjectGitHubClient? client = null
             session.Events.Append(project.Id, ownObserved);
         }
 
+        IReadOnlyList<GitHubCollaboratorRole>? collaborators = null;
         if (role.HasPush)
         {
-            IReadOnlyList<GitHubCollaboratorRole>? collaborators =
-                await TryReadCollaboratorsAsync(account, project.RepositoryPath, repository, cancellationToken);
+            collaborators = await TryReadCollaboratorsAsync(account, project.RepositoryPath, repository, cancellationToken);
             if (collaborators is not null
                 && ProjectDecider.ObserveGitHubCollaborators(aggregate, collaborators, observedAt) is { } collaboratorsObserved)
             {
@@ -87,7 +93,7 @@ public sealed class ProjectGitHubAccessMirror(ProjectGitHubClient? client = null
             }
         }
 
-        return new ProjectGitHubAccessResult(role, repository);
+        return new ProjectGitHubAccessResult(role, repository, collaborators);
     }
 
     /// <summary>
