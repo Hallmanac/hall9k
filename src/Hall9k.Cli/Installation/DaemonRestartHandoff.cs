@@ -98,7 +98,12 @@ public static class DaemonRestartHandoff
     /// </summary>
     public static IReadOnlyList<RestartStep> PlanSteps() =>
     [
-        new RestartStep("stop the daemon still running on the previous binaries", ["daemon", "stop"]),
+        // "any daemon" rather than "the daemon": --restart now runs this same plan whether or not
+        // a daemon was running on the previous binaries (independent pre-PR review, cycle 1, both
+        // lenses), and h9k daemon stop is itself a no-op when nothing is running, so the label has
+        // to read true in both states rather than contradicting the child's own "nothing to stop"
+        // line.
+        new RestartStep("stop any daemon still running on the previous binaries", ["daemon", "stop"]),
         new RestartStep("bring the store schema current", ["doctor", "--yes", "--no-configure"]),
         new RestartStep("start the daemon on the new binaries", ["daemon", "start"]),
     ];

@@ -1425,11 +1425,11 @@ and it asks first.
 |---|---|
 | `h9k install --repo <path>` | Publishes from a hall9k repository checkout, meaning the directory holding `Hall9k.slnx`, taken as given and never searched upward. |
 | `h9k install --from-release <dir>` | Installs from an already-downloaded, already-extracted release payload (binaries, `skills/`, `templates/`, and a `VERSION` file) instead of building, which is what the bootstrap scripts and `h9k update` use. |
-| `h9k install --restart` | Restarts a running daemon onto the fresh binaries without asking. |
-| `h9k install --no-restart` | Leaves a running daemon on its current binaries, and it picks up the new ones at its next start. |
+| `h9k install --restart` | Brings the daemon up on the fresh binaries without asking, whether or not one was already running: `h9k daemon stop`, then `h9k doctor --yes --no-configure` (which recreates a stale `hall9k-postgres` binding and repairs the schema), then `h9k daemon start`. |
+| `h9k install --no-restart` | Leaves things as they already were — a running daemon on its current binaries, or a stopped one left stopped — until the next `h9k daemon start` or an explicit `--restart`. |
 | `h9k update --repo <owner/repo>` | Names the GitHub repository releases are fetched from. |
-| `h9k update --restart` | Restarts a running daemon onto the fresh binaries without asking, the same as on `install`. |
-| `h9k update --no-restart` | Leaves a running daemon on its current binaries until its next start. |
+| `h9k update --restart` | Brings the daemon up on the fresh binaries without asking, whether or not one was already running, the same as on `install`. |
+| `h9k update --no-restart` | Leaves things as they already were — a running daemon on its current binaries, or a stopped one left stopped — until the next start or an explicit `--restart`. |
 | `h9k daemon start --binary <path>` | Starts an explicit `h9kd` binary directly, rather than through a registered autostart job, where a relative path is resolved against the current directory and must exist. |
 | `h9k daemon autostart launch --binary <path>` | Names the installed `h9kd` this launch starts, which is the one `autostart enable` recorded and is never resolved afresh. |
 | `h9k daemon autostart launch --log <path>` | Names the log `h9kd`'s standard output and error are appended to, `~/.hall9k/h9kd.log` by default. |

@@ -140,12 +140,15 @@ h9k update
 
 This is `h9k install --from-release`'s download half, wired to the same idempotent finish:
 it fetches the latest release for your platform via `gh`, verifies the checksum, republishes
-the binaries, the canonical skill set, and the canonical template set, and offers to restart a
-running daemon onto the fresh binaries — no repo checkout, no .NET SDK, on the machine that runs
-it. `h9k update
---restart` skips the restart prompt; if a verification gate is live on the node it still waits
-for that gate to finish, up to thirty minutes, printing what it is waiting on, before it stops
-the daemon — pass `--now` too if you want the restart to proceed at once regardless. Every
+the binaries, the canonical skill set, and the canonical template set, and offers to restart
+onto the fresh binaries, whether or not a daemon was already running — no repo checkout, no
+.NET SDK, on the machine that runs it. `h9k update
+--restart` skips the restart prompt and always runs the hand-off, even on a machine whose
+daemon was already stopped: if a daemon is running and a verification gate is live on the node,
+it still waits for that gate to finish, up to thirty minutes, printing what it is waiting on,
+before it stops the daemon — pass `--now` too if you want the restart to proceed at once
+regardless; with no daemon running there is no gate to wait for, so the hand-off proceeds
+straight to `h9k doctor --yes` and `h9k daemon start`. Every
 merged change has shipped as its own patch release (`v0.10.x`) since `v0.10.0`, so `h9k update`
 typically finds something new nearly every day; there is nothing to configure about that
 cadence, only an expectation to set.
