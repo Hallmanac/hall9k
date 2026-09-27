@@ -746,6 +746,35 @@ public sealed class ProjectDeciderTests
     }
 
     /// <summary>
+    /// The orchestrator-window effort override (task: the orchestrator window's effort becomes a
+    /// rendered project and node setting) is independent of the agent-dispatch <c>Effort</c> field
+    /// above — the same clearing idiom, but a distinct field, so raising or lowering the effort
+    /// dispatched agents run on never silently moves the operator's own window.
+    /// </summary>
+    [Fact]
+    public void Change_settings_carries_an_orchestrator_effort_override_independent_of_the_agent_dispatch_effort()
+    {
+        ProjectAggregate project = Registered();
+
+        ProjectSettingsChanged set = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            effort: Optional<AgentEffort>.Of(AgentEffort.FromInput("low")),
+            orchestratorEffort: Optional<AgentEffort>.Of(AgentEffort.FromInput("high")));
+        project.Apply(set);
+        project.Effort.Should().Be(AgentEffort.Low);
+        project.OrchestratorEffort.Should().Be(AgentEffort.High);
+
+        ProjectSettingsChanged cleared = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            orchestratorEffort: Optional<AgentEffort>.Of(AgentEffort.FromInput("default")));
+        project.Apply(cleared);
+        project.OrchestratorEffort.Should().Be(AgentEffort.Unknown, "'default' hands the decision back to the chain");
+        project.Effort.Should().Be(AgentEffort.Low, "clearing the orchestrator override leaves the dispatch effort untouched");
+    }
+
+    /// <summary>
     /// Task: the review pipeline's stage composition becomes configuration recorded per run —
     /// the project-level door, h9k project set, canonicalizes an alias and 'default' clears it,
     /// the same shape --model already has.

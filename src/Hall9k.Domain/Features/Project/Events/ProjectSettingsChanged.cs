@@ -297,4 +297,17 @@ public sealed record ProjectSettingsChanged(
     /// the node's per-role and node-wide values and is outranked only by a task's own. Absent leaves it
     /// alone; present with <see cref="AgentEffort.Unknown"/> clears it.
     /// </summary>
-    Optional<AgentEffort> Effort = default);
+    Optional<AgentEffort> Effort = default,
+    /// <summary>
+    /// This project's orchestrator-window effort override (task: the orchestrator window's effort
+    /// becomes a rendered project and node setting) — outranks <see cref="Effort"/> for the
+    /// project's <c>recipes/settings.json</c> alone, the same independence
+    /// <see cref="OrchestratorModel"/> has from <see cref="Model"/>. Unlike <see cref="Model"/>'s
+    /// own orchestrator override, there is no legacy "fall through to the project's dispatch value"
+    /// step here: this window setting has no history predating it to preserve, so its chain is
+    /// this override, then the node's own <c>--orchestrator-effort</c>, then the model's default.
+    /// Present-with-null (Unknown) clears the override, the same clearing idiom <see cref="Effort"/>
+    /// itself already uses. Node-scoped like <see cref="Effort"/>: it never replicates to a
+    /// teammate's node.
+    /// </summary>
+    Optional<AgentEffort> OrchestratorEffort = default);
