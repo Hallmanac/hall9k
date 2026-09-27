@@ -24,7 +24,8 @@ namespace Hall9k.Tests.Cli;
 /// "release" is one marker file, and the running daemon is a pid file under this class's own
 /// scoped home naming this test process itself — which is genuinely alive, so
 /// <c>DaemonProcess.Probe</c> confirms it exactly as it would a real h9kd, with nothing to stop
-/// and nothing to start.
+/// and nothing to start. A test modelling the already-stopped starting state deletes that pid
+/// file first, so the same probe genuinely comes back null instead.
 /// </para>
 /// </summary>
 public sealed class InstallCommandRestartOrderTests : IDisposable
@@ -156,6 +157,97 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
         TheSwapHasHappened().Should().BeTrue("--no-restart still installs; it only leaves the daemon alone");
         gateWasChecked.Should().BeFalse("there is no restart to hold back");
         aChildRan.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The other half of the same regression: a plain <c>h9k update</c> (no <c>--restart</c>) must
+    /// never finish quietly, on either starting state, since the compose rewrite it just made can
+    /// leave a real container bound the old way until something actually runs the doctor step
+    /// against it. It has to say which command does that, in words an operator can paste.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task No_restart_names_the_exact_command_that_finishes_the_migration_on_either_starting_state(
+        bool daemonWasRunningBefore)
+    {
+        if (!daemonWasRunningBefore)
+        {
+            File.Delete(DaemonRuntime.PidFile);
+        }
+
+        string output = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
+        {
+            int exitCode = await InstallCommand.FinishAsync(
+                _staging,
+                skillsSource: null,
+                version: "0.0.0-test",
+                restart: false,
+                noRestart: true,
+                linkOntoPath: false,
+                commandName: "update",
+                containerRuntimeRunner: RecordingProcessRunner.Failing("docker not reached in this test").Runner,
+                cancellationToken: CancellationToken.None);
+
+            exitCode.Should().Be(ExitCodes.Ok);
+        });
+
+        output.Should().Contain("h9k update --restart");
+    }
+
+    /// <summary>
+    /// The regression this class exists to pin (notes/decisions-2026-09-27-hall9k-6b.md, task
+    /// ff8b71b8): with the daemon stopped by hand, <c>h9k update --restart</c> used to short-circuit
+    /// on a null <c>DaemonProcess.Probe()</c> before ever asking whether to restart at all — the
+    /// compose rewrite landed but the doctor step and the daemon start never ran, leaving the
+    /// container bound the old way. <c>--restart</c> now runs the identical hand-off (the doctor
+    /// step and the daemon start, the two steps a Postgres migration actually needs) whether or not
+    /// a daemon was running to begin with; only the leading "daemon stop" is a no-op in the
+    /// already-stopped case, and that no-op is <c>h9k daemon stop</c>'s own job, not this hand-off's.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Restart_runs_the_doctor_step_and_the_daemon_start_whether_or_not_the_daemon_was_already_running(
+        bool daemonWasRunningBefore)
+    {
+        if (!daemonWasRunningBefore)
+        {
+            // The constructor pretends one is running by default; this undoes that so
+            // DaemonProcess.Probe() genuinely comes back null, the same as a node whose daemon was
+            // stopped by hand before the update ran.
+            File.Delete(DaemonRuntime.PidFile);
+        }
+
+        List<string> commandLines = [];
+
+        int exitCode = await InstallCommand.FinishAsync(
+            _staging,
+            skillsSource: null,
+            version: "0.0.0-test",
+            restart: true,
+            noRestart: false,
+            now: true,
+            linkOntoPath: false,
+            restartChildRunner: (_, arguments, _) =>
+            {
+                commandLines.Add($"h9k {string.Join(' ', arguments)}");
+                if (arguments is ["daemon", "start"])
+                {
+                    // Models what the real h9k daemon start step would have left behind — a live
+                    // pid — so the post-restart probe RestartThroughNewBinaryAsync runs afterward
+                    // reads the daemon as up, exactly as it would for a real successful start.
+                    PretendADaemonIsRunning();
+                }
+
+                return Task.FromResult(RestartStepResult.Exited(ExitCodes.Ok));
+            },
+            containerRuntimeRunner: RecordingProcessRunner.Failing("docker not reached in this test").Runner,
+            cancellationToken: CancellationToken.None);
+
+        exitCode.Should().Be(ExitCodes.Ok);
+        commandLines.Should().Contain("h9k doctor --yes --no-configure")
+            .And.Contain("h9k daemon start");
     }
 
     [Fact]
