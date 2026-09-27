@@ -1,0 +1,32 @@
+hall9k-task-record: 1
+task-id: 01a0e37a-a609-7231-829e-88386ec90cb1
+project: hall9k
+type: feature
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#598
+objective: The orchestrator window's effort becomes a rendered project and node setting rather than a side effect of its model's default
+criteria:
+  - h9k project set and h9k config set accept --orchestrator-effort, parsed by EffortInput and stored as AgentEffort (one list of values, AgentEffort.All), with `default` clearing it; the refusal for an unknown word names the window's own chain, not the dispatch chain. The node value is OperatingSettings.OrchestratorEffort (config key orchestratorEffort), read from the config file alone with no Hall9k__ environment variable, exactly like the orchestrator model. The project value is a trailing Optional<AgentEffort> OrchestratorEffort on ProjectSettingsChanged, applied in ProjectAggregate and ProjectDetailsProjection, with present-and-Unknown clearing it; like the project's --effort, it is node-scoped and never replicates across the fleet.
+  - The window's effort resolves from the project's orchestrator effort, then the node's orchestrator effort, then the model's own default. No dispatch effort (a task's, the project's --effort, a per-role effort, or the node-wide --effort) feeds it. RecipeSettingsDocument renders the resolved value as the executor's effort key (effortLevel for Claude Code) in recipes/settings.json.
+  - |-
+    Every path that renders recipes/settings.json today renders the resolved effort: h9k install and h9k update (InstallCommand), h9k project add and h9k project init (ProjectHomeRecipe), h9k config set, and h9k project set. Setting or clearing --orchestrator-effort re-renders the file it governs on the spot, as the model flags do. A node-level value reaches a project window at that project's next h9k project init, the same accepted behavior as the node-level orchestrator model. h9k project show and h9k config show print the value with its source.
+  - With no orchestrator effort configured at either level, recipes/settings.json renders byte for byte as it does today, with no effort key, so existing projects see no change until the operator sets a value.
+  - |-
+    Tests: RecipeSettingsDocumentTests cover the key rendered and the key absent; resolver tests beside OrchestratorModelTests cover project over node over unset and show that every dispatch effort is ignored; ConfigSetCommandTests cover setting only that field, `default` clearing it, and an unknown word refused; a ProjectDeciderTests case covers the new event field; a show-row test sits beside ProjectOrchestratorModelRowTests.
+  - docs/cli.md (sibling rows beside the --orchestrator-model rows near lines 1062 and 1486, and the two-levers paragraph near 1512 to 1520) and docs/operations.md (the config table row near 996, the orchestrator window section near 1060 to 1087 including its re-render list, and the example blocks near 882 and 1103) describe the setting and its chain, say why the dispatch efforts and the model chain's legacy project --model step are absent from it, and state that scoped sessions launched with --settings recipes/settings.json inherit it unless their launch line passes --effort.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/6ec90cb1-the-orchestrator-window-s-effo
+published: 2026-09-27 16:29:08Z
+context: |-
+  The orchestrator window's effort today is a side effect of its model's default (Opus 5.5 defaults to medium); this makes it a setting (idea 5bb4df1b). Read first: this task's journal.md, which holds the challenge verdict (items 1 to 10, file and line citations against origin/main 52552e4d4) and Brian's rulings, and the idea's workspace journal.md State section.
+
+  Mirror --orchestrator-model exactly (OperatingSettings.cs near 328, ProjectSettingsChanged.cs near 191, ProjectAggregate near 289, ProjectDetails.cs near 329, ConfigSetCommand.cs 413 to 423, ProjectSetCommand.cs near 1036, OrchestratorModel and its tests). The two re-render gates at ConfigSetCommand.cs:423 and ProjectSetCommand.cs:1036 are the silent gap: widen them for the new flag.
+
+  Boundaries: one pull request, not stacked. The recipe generator skill draft 521ac1cc (published as #597) is separate; it makes every scoped launch line pass --effort, so a spawn never inherits this value by accident.
+
+  For the build: run `h9k orchestrator measure` once with the key set and confirm the probe (OrchestratorMeasureProbe.cs 54 to 61, which runs on Haiku with the same settings file) still answers, or say in the pull request that it could not be run.
+
+  For the orchestrator, not the build: whether a spawn's --effort flag outranks the settings file's effortLevel is Claude Code behavior; the first scoped spawn after the key is set settles it from its transcript's effort field, recorded in notes/prototype-feedback.md.
