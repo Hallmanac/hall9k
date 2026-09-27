@@ -25,8 +25,16 @@ namespace Hall9k.Cli.Diagnostics;
 /// <see cref="ProjectDetails"/> straight off Postgres when it can, and degrades to the git-only
 /// check when it cannot — an unconfigured or unreachable database is exactly the situation the
 /// database section diagnoses next, not a reason to skip the tool check that runs before it. That
-/// read is bounded to <see cref="ProjectReadTimeout"/> and never creates schema itself (it opens
-/// through <see cref="CliStore.Open(string, JasperFx.AutoCreate)"/> with
+/// read passes the caller's own <see cref="CancellationToken"/> straight through to reachability,
+/// schema, and query in turn — never wrapping it in a deadline of its own — the identical
+/// connection path <see cref="DatabaseDoctor"/>'s own "Postgres is healthy" section and
+/// <c>ProjectListCommand</c> already use. A now-retired version of this probe wrapped all three in
+/// one shared 3-second budget, which on a node where <c>localhost</c> resolves to <c>::1</c> before
+/// <c>127.0.0.1</c> was tight enough that three sequential IPv6-refused-then-IPv4-retry connections
+/// could exhaust it even though a single one, unbounded like every other reader, never came close
+/// (task 2f9bc330, field report 4fa918ac); <see cref="Hall9k.Domain.Infrastructure.Persistence.Hall9kDatabase.DefaultConnectionString"/>
+/// naming <c>127.0.0.1</c> directly closes the same gap at its source. It never creates schema
+/// itself either (it opens through <see cref="CliStore.Open(string, JasperFx.AutoCreate)"/> with
 /// <see cref="AutoCreate.None"/>, and only after confirming the schema is already there): the
 /// database section below is the one place <c>h9k doctor</c> is allowed to write to an
 /// unconfigured database, and only after asking.
@@ -48,14 +56,6 @@ namespace Hall9k.Cli.Diagnostics;
 /// </summary>
 public static class ToolDoctor
 {
-    /// <summary>
-    /// How long the project read (reachability, schema check, and the query together) gets before
-    /// giving up and reporting the <c>gh</c> requirement as unconfirmed — the same budget
-    /// <see cref="DatabaseReachability"/>'s own probe uses, so an unreachable database is named
-    /// quickly here too instead of stalling ahead of the database section's own diagnosis of it.
-    /// </summary>
-    private static readonly TimeSpan ProjectReadTimeout = TimeSpan.FromSeconds(3);
-
     public static Task RunAsync(CancellationToken cancellationToken) =>
         RunAsync(GhAwareRunner(), ConnectionStringSource.Process, cancellationToken);
 
@@ -111,7 +111,7 @@ public static class ToolDoctor
         AnsiConsole.WriteLine();
     }
 
-    private enum GitHubCliRequirement
+    internal enum GitHubCliRequirement
     {
         /// <summary>Confirmed: the database is reachable, its schema is there (or has never been
         /// created, which means nothing could have been registered yet), and no registered project
@@ -129,10 +129,9 @@ public static class ToolDoctor
 
     /// <summary>
     /// Reads every registered, non-archived project's <see cref="ProjectDetails"/> to ask whether
-    /// any of them binds a GitHub remote, bounded to <see cref="ProjectReadTimeout"/> and never
-    /// creating schema. An archived project is excluded the same way
-    /// <see cref="Hall9k.Cli.Commands.ProjectListCommand"/> and task start/assign/publish already
-    /// treat it as removed: nothing active needs gh on its account.
+    /// any of them binds a GitHub remote, and never creates schema. An archived project is
+    /// excluded the same way <see cref="Hall9k.Cli.Commands.ProjectListCommand"/> and task
+    /// start/assign/publish already treat it as removed: nothing active needs gh on its account.
     /// A database that is reachable, with its schema already there, but with zero registered
     /// projects, is the only case where <see cref="GitHubCliRequirement.NotNeeded"/> is an observed
     /// fact rather than a guess — including a schema that has never been created yet, which means
@@ -148,9 +147,22 @@ public static class ToolDoctor
     /// that same unconfigured state, so "no connection string resolves" is never proof that nothing
     /// was ever registered. AGENTS.md's "never guess at unobserved facts" rule applies here the same
     /// as anywhere else.
+    /// <para>
+    /// <paramref name="probe"/>, <paramref name="schemaPresent"/> and <paramref name="readProjects"/>
+    /// default to the real reachability probe, schema check, and store-opening query below, each
+    /// getting <paramref name="cancellationToken"/> exactly as the caller passed it — no combined
+    /// deadline layered on top, matching <see cref="DatabaseDoctor"/>'s own successful "Postgres is
+    /// healthy" section and every other Postgres reader in this codebase. The seam exists so a test
+    /// can pin that fact (each step sees the caller's own token, unwrapped) without a real database,
+    /// the same way <see cref="DatabaseDoctor"/>'s own readiness probe is injectable for its tests.
+    /// </para>
     /// </summary>
-    private static async Task<GitHubCliRequirement> GitHubCliRequirementAsync(
-        ConnectionStringSource connection, CancellationToken cancellationToken)
+    internal static async Task<GitHubCliRequirement> GitHubCliRequirementAsync(
+        ConnectionStringSource connection,
+        Func<string, CancellationToken, Task<ReachabilityReport>> probe,
+        Func<string, CancellationToken, Task<bool>> schemaPresent,
+        Func<string, CancellationToken, Task<IReadOnlyList<ProjectDetails>>> readProjects,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -171,17 +183,13 @@ public static class ToolDoctor
                 return GitHubCliRequirement.Unknown;
             }
 
-            using CancellationTokenSource timeout = new(ProjectReadTimeout);
-            using CancellationTokenSource linked =
-                CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
-
-            ReachabilityReport reachability = await DatabaseReachability.ProbeAsync(connectionString, linked.Token);
+            ReachabilityReport reachability = await probe(connectionString, cancellationToken);
             if (reachability.Status != ReachabilityStatus.Reachable)
             {
                 return GitHubCliRequirement.Unknown;
             }
 
-            if (!await DatabaseReachability.SchemaPresentAsync(connectionString, linked.Token))
+            if (!await schemaPresent(connectionString, cancellationToken))
             {
                 // Reachable, but Hall9k's schema has never been created — nothing has ever
                 // registered a project here, so there is nothing that could need gh yet. Opening a
@@ -189,22 +197,33 @@ public static class ToolDoctor
                 return GitHubCliRequirement.NotNeeded;
             }
 
-            using DocumentStore store = CliStore.Open(connectionString, AutoCreate.None);
-            await using IDocumentSession session = store.LightweightSession();
-            IReadOnlyList<ProjectDetails> projects = await session.Query<ProjectDetails>().ToListAsync(linked.Token);
+            IReadOnlyList<ProjectDetails> projects = await readProjects(connectionString, cancellationToken);
             return projects.Where(project => !project.IsArchived).Any(ProjectAgentsDocument.NeedsGitHubCli)
                 ? GitHubCliRequirement.Needed
                 : GitHubCliRequirement.NotNeeded;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            // The 3s project-read timeout fired, not the caller's own token.
             return GitHubCliRequirement.Unknown;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             return GitHubCliRequirement.Unknown;
         }
+    }
+
+    private static Task<GitHubCliRequirement> GitHubCliRequirementAsync(
+        ConnectionStringSource connection, CancellationToken cancellationToken) =>
+        GitHubCliRequirementAsync(
+            connection, DatabaseReachability.ProbeAsync, DatabaseReachability.SchemaPresentAsync,
+            ReadRegisteredProjectsAsync, cancellationToken);
+
+    private static async Task<IReadOnlyList<ProjectDetails>> ReadRegisteredProjectsAsync(
+        string connectionString, CancellationToken cancellationToken)
+    {
+        using DocumentStore store = CliStore.Open(connectionString, AutoCreate.None);
+        await using IDocumentSession session = store.LightweightSession();
+        return await session.Query<ProjectDetails>().ToListAsync(cancellationToken);
     }
 
     private static async Task ProbeAsync(
