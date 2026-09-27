@@ -28,7 +28,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
         public string? Repository { get; init; }
 
         [CommandOption("--restart")]
-        [Description("Restart a running daemon onto the fresh binaries without asking — the newly installed h9k then runs h9k daemon stop, h9k doctor --yes --no-configure and h9k daemon start in that order, so an update carrying a schema change ends with the daemon up on a current schema; that doctor step will start a stopped hall9k-postgres container to get there, but --no-configure keeps it from recording a connection string on a machine where none resolves")]
+        [Description("Restart a running daemon onto the fresh binaries without asking — the newly installed h9k then runs h9k daemon stop, h9k doctor --yes --no-configure and h9k daemon start in that order, so an update carrying a schema change ends with the daemon up on a current schema; that doctor step will start a stopped hall9k-postgres container to get there, and recreates it first if it is publishing port 5432 on anything but 127.0.0.1 (including a stopped one, never just docker-started with its old binding), but --no-configure keeps it from recording a connection string on a machine where none resolves")]
         public bool Restart { get; init; }
 
         [CommandOption("--no-restart")]
@@ -67,7 +67,11 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
     /// settings and calls this, and tests call it directly with a fake <paramref name="gh"/>.
     /// <paramref name="linkOntoPath"/> defaults true for the real command; a test passes
     /// false to keep <see cref="InstallCommand.FinishAsync"/> from touching this
-    /// machine's actual PATH and home directory (see the comment at its call site).</summary>
+    /// machine's actual PATH and home directory (see the comment at its call site).
+    /// <paramref name="containerRuntimeRunner"/> is the same kind of test seam, for the docker
+    /// calls <see cref="InstallCommand.FinishAsync"/>'s own port-binding check makes: it defaults
+    /// to the real docker CLI, and a test passes a fake so the check never depends on whatever
+    /// Docker happens to be running on the machine the test suite executes on.</summary>
     internal static async Task<int> RunAsync(
         ProcessRunner gh,
         string repository,
@@ -75,6 +79,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
         bool noRestart,
         bool now = false,
         bool linkOntoPath = true,
+        ProcessRunner? containerRuntimeRunner = null,
         CancellationToken cancellationToken = default)
     {
         string? rid = ReleasePlatform.CurrentRid();
@@ -191,6 +196,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
                 noRestart,
                 now,
                 linkOntoPath,
+                containerRuntimeRunner: containerRuntimeRunner,
                 cancellationToken: cancellationToken);
         }
         finally

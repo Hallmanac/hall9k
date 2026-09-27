@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
 using Xunit;
 
@@ -128,5 +129,9 @@ public sealed class InstallCommandConnectionStringTests : IDisposable
             // directory (cycle-6 review, which found the earlier comment above claiming
             // hermeticity that connectionStringStartDirectory alone did not actually provide).
             currentDirectoryOverride: home,
+            // The port-binding check's own docker calls have the identical hermeticity problem
+            // as the port-5432 listen check above — a fake that never answers keeps this test's
+            // outcome independent of whatever Docker happens to be running on the test host.
+            containerRuntimeRunner: RecordingProcessRunner.Failing("docker not reached in this test").Runner,
             cancellationToken: CancellationToken.None);
 }

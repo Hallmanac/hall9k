@@ -146,10 +146,29 @@ public static class DatabaseDoctor
     /// </summary>
     public static Task CheckContainerPortBindingAsync(bool assumeYes, CancellationToken cancellationToken) =>
         CheckContainerPortBindingAsync(
-            assumeYes, ExternalProcess.Runner, () => DaemonProcess.Probe() is not null, cancellationToken);
+            assumeYes, ExternalProcess.Runner,
+            () => DaemonProcess.ProbeBootStatus().State != DaemonBootState.NotRunning,
+            cancellationToken);
 
+    internal static Task CheckContainerPortBindingAsync(
+        bool assumeYes, ProcessRunner runner, Func<bool> daemonRunning, CancellationToken cancellationToken) =>
+        CheckContainerPortBindingAsync(
+            assumeYes, runner, daemonRunning, ProbeDefaultConnectionStringAsync,
+            ReadinessTimeout, ReadinessPollInterval, TimeProvider.System, cancellationToken);
+
+    /// <summary>
+    /// Same check, with the post-recreate readiness poll's probe, timeout, interval and clock
+    /// injectable — the same seam <see cref="OfferAndStartAsync"/>'s own readiness poll already
+    /// exposes through <see cref="WaitForReadinessAsync(Func{CancellationToken,Task{ReachabilityReport}},TimeSpan,TimeSpan,TimeProvider,CancellationToken)"/>,
+    /// needed here for the identical reason: a test asserting the recreate branch cannot depend on
+    /// a real Postgres answering at <see cref="Hall9kDatabase.DefaultConnectionString"/> within the
+    /// real 30s timeout.
+    /// </summary>
     internal static async Task CheckContainerPortBindingAsync(
-        bool assumeYes, ProcessRunner runner, Func<bool> daemonRunning, CancellationToken cancellationToken)
+        bool assumeYes, ProcessRunner runner, Func<bool> daemonRunning,
+        Func<CancellationToken, Task<ReachabilityReport>> readinessProbe,
+        TimeSpan readinessTimeout, TimeSpan readinessPollInterval, TimeProvider timeProvider,
+        CancellationToken cancellationToken)
     {
         PostgresRuntime.WriteComposeFile();
 
@@ -200,19 +219,77 @@ public static class DatabaseDoctor
         {
             AnsiConsole.MarkupLine($"[dim]Recreating it now: {composeUpCommand}[/]");
             bool recreated = await ContainerRuntimeProbe.RecreateFromComposeAsync(runner, cancellationToken);
-            AnsiConsole.MarkupLine(recreated
+            if (!recreated)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[red]Docker could not recreate it[/] — check docker logs {PostgresRuntime.ContainerName}, "
+                        + "or run the command by hand.");
+                return;
+            }
+
+            // docker compose up -d returns once the container has started, not once Postgres
+            // inside it is accepting connections — the very next question this doctor asks
+            // (or the caller it just returned to) tries the database once, with no retry of its
+            // own, and a container still booting reads as either a refused connection or "the
+            // database system is starting up" (cycle-1 pre-PR review, both lenses).
+            AnsiConsole.Markup("[dim]Waiting for it to come up…[/]");
+            bool ready = await WaitForReadinessAsync(
+                readinessProbe, readinessTimeout, readinessPollInterval, timeProvider, cancellationToken);
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine(ready
                 ? $"[green]Recreated[/] — {PostgresRuntime.ContainerName} now publishes 5432 on 127.0.0.1 only."
-                : $"[red]Docker could not recreate it[/] — check docker logs {PostgresRuntime.ContainerName}, "
-                    + "or run the command by hand.");
+                : $"[red]Recreated, but it was not answering within {readinessTimeout.TotalSeconds:0}s.[/] "
+                    + $"Check docker logs {PostgresRuntime.ContainerName}, then try again.");
             return;
         }
 
+        // Only a mismatched volume or a mismatched compose label makes a hand recreate unsafe —
+        // either means this container was not created by this exact install's own compose file,
+        // so running that compose file's "up -d" now could create a fresh, empty pinned volume
+        // alongside real data sitting under a different name, or collide with a different
+        // compose project's own container of the same name (cycle-1 pre-PR review, adversarial
+        // lens). Naming which guard actually failed, and never printing the recreate command for
+        // either of those two cases, is what makes the remaining "safe to hand-recreate" message
+        // below actually true every time it prints.
+        if (!mountsExactlyPinnedVolume)
+        {
+            string observedVolumes = mountedVolumes.Count == 0 ? "no named volume" : string.Join(", ", mountedVolumes);
+            AnsiConsole.MarkupLine(
+                $"[dim]Not recreating it automatically — {PostgresRuntime.ContainerName} does not mount exactly "
+                + $"the pinned {PostgresRuntime.VolumeName} volume (it mounts: {observedVolumes.EscapeMarkup()}). "
+                + $"Recreating it from {PostgresRuntime.ComposeFile.EscapeMarkup()} now would either create a "
+                + $"fresh, empty {PostgresRuntime.VolumeName} volume alongside this data, or collide with a "
+                + "different install's container of the same name. See docs/operations.md's Provisioning "
+                + "section to migrate the volume forward by hand, then run h9k doctor again.[/]");
+            return;
+        }
+
+        if (!labelNamesThisComposeFile)
+        {
+            AnsiConsole.MarkupLine(
+                $"[dim]Not recreating it automatically — {PostgresRuntime.ContainerName} was created from a "
+                + $"different compose file ({(configFilesLabel ?? "none recorded").EscapeMarkup()}), not "
+                + $"{PostgresRuntime.ComposeFile.EscapeMarkup()}. Recreating from this compose file now could "
+                + "fail outright with a name conflict, or act on a container this install does not actually "
+                + "own. See docs/operations.md's Provisioning section, then run h9k doctor again once that is "
+                + "resolved.[/]");
+            return;
+        }
+
+        List<string> blockedBy = [];
+        if (!assumeYes)
+        {
+            blockedBy.Add("--yes was not given");
+        }
+
+        if (daemonRunning())
+        {
+            blockedBy.Add("a daemon is running, and a live connection would be caught mid-swap");
+        }
+
         AnsiConsole.MarkupLine(
-            "[dim]Not recreating it automatically — that is only safe once the container mounts exactly the "
-            + $"pinned {PostgresRuntime.VolumeName} volume, its compose project's config_files label names "
-            + $"this exact file, and no daemon is running to be caught mid-swap"
-            + (assumeYes ? " — one of those does not hold here" : ", and --yes was not given")
-            + ". Recreate it by hand once that is true:[/]\n"
+            $"[dim]Not recreating it automatically — {string.Join(" and ", blockedBy)}. Recreate it by hand once "
+            + "that is dealt with:[/]\n"
             + "  h9k daemon stop\n"
             + $"  {composeUpCommand}\n"
             + "  h9k daemon start");
@@ -719,6 +796,28 @@ public static class DatabaseDoctor
         {
             // Already running, so whatever is actually wrong, starting it again is not the fix.
             return false;
+        }
+
+        if (container == PostgresContainerStatus.Stopped)
+        {
+            // A plain docker start never rolls a container's port binding forward — Docker only
+            // reads the compose file's port line again at creation — so starting a stopped
+            // container still bound to every interface would bring hall9k's own Postgres, and
+            // its known default credentials, straight back onto the network the moment this
+            // offer runs, on every path that reaches it: h9k doctor after its own port-binding
+            // check declined to recreate, and h9k daemon start, which never runs that check at
+            // all (cycle-1 pre-PR review, conformance lens).
+            (bool inspected, string? hostIp, _, _) = await ContainerRuntimeProbe.InspectPortBindingAsync(runner, cancellationToken);
+            if (inspected && hostIp is not (null or "127.0.0.1"))
+            {
+                AnsiConsole.MarkupLine(
+                    $"[red]Not starting[/] — {PostgresRuntime.ContainerName} publishes port 5432 on "
+                    + $"{hostIp.EscapeMarkup()}, not 127.0.0.1, and a plain docker start would keep that "
+                    + "binding — Docker only reads the compose file's port mapping again when the container is "
+                    + "recreated. Run h9k doctor --yes to recreate it safely, or see docs/operations.md's "
+                    + "Network exposure section for the hand commands.");
+                return false;
+            }
         }
 
         if (!assumeYes && !AnsiConsole.Profile.Capabilities.Interactive)

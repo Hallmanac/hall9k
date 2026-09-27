@@ -331,25 +331,46 @@ the daemon for exactly that reason — it has to work while the daemon is down.
 ### Network exposure
 
 `hall9k-postgres` publishes port 5432 on `127.0.0.1` only (`"127.0.0.1:5432:5432"` in the compose
-file) — never on every interface, and there is no durable way to widen that. Every `h9k install`,
+file), never on every interface, and there is no durable way to widen that. Every `h9k install`,
 `h9k update`, and `h9k doctor` rewrite `~/.hall9k/postgres/docker-compose.yml` from the binary's
 own shipped copy before doing anything else, so a hand-edited port line there is lost the next time
 any of them run; and every one of them names that file explicitly with `docker compose -f ...`,
-which — unlike a bare `docker compose up` run from the file's own directory — never merges in a
+which (unlike a bare `docker compose up` run from the file's own directory) never merges in a
 sibling `docker-compose.override.yml` either. If you need this database reachable from another
 machine, run Postgres natively instead (see [The doctor check](#the-doctor-check) above for the
-install commands) and point `HALL9K_CONNECTION_STRING` (or `~/.hall9k/config.json`) at it — that
+install commands) and point `HALL9K_CONNECTION_STRING` (or `~/.hall9k/config.json`) at it; that
 connection string is unaffected by anything in this section.
 
-`h9k doctor` also checks the *running* container's own binding, not just the compose file: a
-container created by an older, wider-binding compose file keeps that binding until it is
-recreated, since Docker only reads the port line again at creation. Finding one bound to anything
-but `127.0.0.1`, `h9k doctor --yes` recreates it onto its existing data volume with
-`docker compose -f ~/.hall9k/postgres/docker-compose.yml up -d` — but only when the container
-mounts exactly the pinned `hall9k-pgdata` volume, was itself created from that same compose file,
-and no daemon is running (a live connection would be caught mid-swap). Any other case is left
-alone, and the check prints the exact commands to recreate it by hand instead: `h9k daemon stop`,
-the same `docker compose up -d`, then `h9k daemon start`.
+`h9k install`, `h9k update`, and `h9k doctor` all also check the *running* container's own
+binding, not just the compose file: a container created by an older, wider-binding compose file
+keeps that binding until it is recreated, since Docker only reads the port line again at creation.
+Finding one bound to anything but `127.0.0.1`, `h9k doctor --yes` recreates it onto its existing
+data volume with `docker compose -f ~/.hall9k/postgres/docker-compose.yml up -d`, then waits for
+Postgres to accept connections before reporting success, but only when the container mounts
+exactly the pinned `hall9k-pgdata` volume, was itself created from that same compose file, and no
+daemon is running (a live connection would be caught mid-swap). A stopped drifted container is
+recreated the same way, never plainly `docker start`ed: that would only bring the old, wider
+binding back, since Docker never rereads the port mapping outside of creation, so this same
+guard blocks the plain start offer too, whether it is reached from `h9k doctor` or from
+`h9k daemon start` directly.
+
+Any other case is left alone, and the check names which guard actually failed:
+
+- A container mounting a volume other than the pinned `hall9k-pgdata`, or created from a compose
+  file other than the one just rewritten, is never recreated automatically, and the hand commands
+  below are not printed for it either: running this compose file's `up -d` against it could create
+  a fresh, empty `hall9k-pgdata` volume alongside real data sitting under a different name, or
+  collide with a different install's own container of the same name. See Provisioning below to
+  migrate the volume forward by hand first, then run `h9k doctor` again.
+- Once the volume and the compose file both match, the only thing left blocking an automatic
+  recreate is `--yes` not being given, or a daemon still running. There, the check prints the
+  exact commands to recreate it by hand instead: `h9k daemon stop`, the same `docker compose up
+  -d`, then `h9k daemon start`.
+
+A plain `h9k install` or `h9k update`, restarting or not, runs this same check too, but never
+recreates anything itself (nothing here ever passes `--yes` on an operator's behalf): it only
+reports the drift and, once the volume and compose file both match, prints the hand commands
+above.
 
 **Verifying a recreate by hand** (there is no automated test for this: composing the real
 container would fight a developer's own live one for its name and its port):
@@ -360,8 +381,8 @@ docker inspect hall9k-postgres --format '{{range .Mounts}}{{.Name}}{{"\n"}}{{end
 ```
 
 Then confirm nothing is listening on every interface: `lsof -nP -iTCP:5432 -sTCP:LISTEN` on macOS,
-`Get-NetTCPConnection -LocalPort 5432 -State Listen` on Windows — neither should show a `0.0.0.0`,
-`*`, or `::` entry, only `127.0.0.1`. The daemon needs no reconfiguration either way: its
+`Get-NetTCPConnection -LocalPort 5432 -State Listen` on Windows (neither should show a `0.0.0.0`,
+`*`, or `::` entry, only `127.0.0.1`). The daemon needs no reconfiguration either way: its
 connection string already names `localhost`, which resolves to the loopback address the recreated
 container still answers on.
 

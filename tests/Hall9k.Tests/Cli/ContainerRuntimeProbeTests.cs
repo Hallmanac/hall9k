@@ -519,14 +519,6 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
     }
 
     [Fact]
-    public void The_repositorys_own_compose_file_publishes_postgres_on_loopback_only()
-    {
-        string contents = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "docker-compose.yml"));
-
-        contents.Should().Contain("\"127.0.0.1:5432:5432\"");
-    }
-
-    [Fact]
     public void The_shipped_constant_and_the_repositorys_own_compose_file_cannot_drift()
     {
         // The two files' own leading comments already differ on purpose (one talks about h9k
