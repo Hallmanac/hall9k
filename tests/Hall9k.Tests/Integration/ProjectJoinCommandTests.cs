@@ -292,6 +292,101 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         ledger.Writes.Should().Contain(w => w.RefName.StartsWith("refs/hall9k/ledger/nodes/"), "the node file still lands, exactly like h9k project join --invite");
     }
 
+    /// <summary>
+    /// The new-shape lookup's own security gate (independent pre-PR review, cycle 1, conformance and
+    /// adversarial lenses, both high): a new-shape secret carries no minting root, so the joiner has
+    /// to search every <c>owners/*</c> ref for a record whose hash matches — and that hash is the
+    /// record's own public content, known to any repository collaborator who can read the real
+    /// record. A collaborator with push copies it under a ref of their own, naming a different root,
+    /// hoping the join trusts whichever ref is read first and hands that root the joiner's own owner
+    /// claim. This proves the join refuses outright instead of picking one.
+    /// </summary>
+    [Fact]
+    public async Task A_forged_copy_of_the_real_invite_under_a_different_owner_root_is_refused()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+        string realOwnerFingerprint = new string('d', 64);
+        await SeedGenesisOwnerMemberAsync(ledger, project.RepositoryPath, realOwnerFingerprint, cts.Token);
+
+        string secret = InviteSecret.Generate();
+        Guid inviteId = InviteSecret.DeriveId(secret);
+        string secretHash = InviteSecret.Hash(secret);
+        InviteLedgerRecord record = new(
+            secretHash, InviteClaimKind.MemberOfProject, ProjectMemberRole.Member, DateTimeOffset.UtcNow.AddHours(72), Spent: false);
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                project.RepositoryPath, InviteLedgerRecord.RefName(realOwnerFingerprint), InviteLedgerRecord.PathFor(realOwnerFingerprint, inviteId),
+                record.ToYaml(), ExpectedBlobId: null, "seed the real member-of-project invite", new LedgerCommitter("Test", "t@test.local"),
+                new LedgerSigningKey("/does/not/matter")),
+            cts.Token);
+
+        // The forged copy: same secret_hash, same invite id, but under a root the attacker
+        // controls — and re-tagged node-of-owner, since that is the shape that would hand the
+        // attacker the joiner's own owner claim rather than merely a role.
+        string attackerFingerprint = new string('0', 64);
+        InviteLedgerRecord forgedRecord = record with { Claim = InviteClaimKind.NodeOfOwner, Role = null };
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                project.RepositoryPath, InviteLedgerRecord.RefName(attackerFingerprint), InviteLedgerRecord.PathFor(attackerFingerprint, inviteId),
+                forgedRecord.ToYaml(), ExpectedBlobId: null, "the attacker's own forged copy", new LedgerCommitter("Attacker", "attacker@test.local"),
+                new LedgerSigningKey("/does/not/matter")),
+            cts.Token);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        Func<Task> join = () => ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, secret, ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
+
+        (await join.Should().ThrowAsync<DomainValidationException>(
+            "two owner roots both hold a record matching this secret's own hash, which a genuine, unplanted "
+            + "secret can never produce — refusing rather than guessing which root actually minted it"))
+            .WithMessage($"*{inviteId}*");
+        ledger.Writes.Should().NotContain(
+            w => w.RefName.StartsWith("refs/hall9k/ledger/nodes/"), "a refused lookup must never reach the point of writing this node's own file");
+    }
+
+    /// <summary>A ref name under the owners prefix that is not itself a real fingerprint (a
+    /// collaborator with push can name a ref anything) is never a candidate root — skipped before it
+    /// is even read, so it can neither be returned as this invite's own minting root nor count toward
+    /// the ambiguity refusal above.</summary>
+    [Fact]
+    public async Task A_malformed_owner_ref_name_is_skipped_and_the_real_invite_still_resolves()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+        string realOwnerFingerprint = new string('d', 64);
+        await SeedGenesisOwnerMemberAsync(ledger, project.RepositoryPath, realOwnerFingerprint, cts.Token);
+
+        string secret = InviteSecret.Generate();
+        Guid inviteId = InviteSecret.DeriveId(secret);
+        string secretHash = InviteSecret.Hash(secret);
+        InviteLedgerRecord record = new(
+            secretHash, InviteClaimKind.MemberOfProject, ProjectMemberRole.Member, DateTimeOffset.UtcNow.AddHours(72), Spent: false);
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                project.RepositoryPath, InviteLedgerRecord.RefName(realOwnerFingerprint), InviteLedgerRecord.PathFor(realOwnerFingerprint, inviteId),
+                record.ToYaml(), ExpectedBlobId: null, "seed the real member-of-project invite", new LedgerCommitter("Test", "t@test.local"),
+                new LedgerSigningKey("/does/not/matter")),
+            cts.Token);
+
+        const string malformedRoot = "0";
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                project.RepositoryPath, InviteLedgerRecord.RefName(malformedRoot), InviteLedgerRecord.PathFor(malformedRoot, inviteId),
+                record.ToYaml(), ExpectedBlobId: null, "a ref name that is not a real fingerprint", new LedgerCommitter("Attacker", "attacker@test.local"),
+                new LedgerSigningKey("/does/not/matter")),
+            cts.Token);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, secret, ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
+
+        outcome.EstablishedRoot.Should().BeTrue(
+            "the malformed ref name is skipped entirely, so the real, fingerprint-shaped root's own record is the only match");
+    }
+
     /// <summary>Pressing enter at the same on-the-spot prompt (a blank answer) defers exactly like a
     /// non-interactive run, and names the exact command to run once a token is actually in hand.</summary>
     [Fact]

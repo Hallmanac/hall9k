@@ -760,9 +760,11 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         }
     }
 
-    /// <summary>The prefix every owner root's own ref lives under — shared between the new-shape
-    /// invite lookup below and <see cref="LedgerRefRegistry.OwnersPrefix"/>'s own registration.</summary>
-    private const string OwnersRefPrefix = "refs/hall9k/ledger/owners/";
+    /// <summary>The prefix every owner root's own ref lives under — the new-shape invite lookup
+    /// below reads <see cref="LedgerRefRegistry.OwnersPrefix"/>'s own registration directly rather
+    /// than repeating its literal, so the two can never drift apart (independent pre-PR review,
+    /// cycle 1, conformance lens, low).</summary>
+    private static string OwnersRefPrefix => LedgerRefRegistry.OwnersPrefix.RefspecSource;
 
     /// <summary>The legacy 162-character shape's own direct read: <paramref name="minterRoot"/> and
     /// <paramref name="inviteId"/> both came straight out of the secret itself, so there is exactly
@@ -791,26 +793,59 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
     /// no root prefix"): a new-shape secret carries no minting root of its own, so the only way to
     /// find <c>owners/&lt;root&gt;/invites/&lt;derived-id&gt;.yaml</c> is to list every owner root this
     /// project's own ledger currently has a ref for (<see cref="ILedger.ListRefsAsync"/>) and read
-    /// that exact path under each one. The hash check stays authoritative here too — a file that
-    /// happens to exist at the derived id's own path under some unrelated owner (astronomically
-    /// unlikely for a 128-bit id, but never assumed) is skipped rather than trusted, exactly the same
-    /// way the legacy path already refuses a record whose hash does not match.
+    /// that exact path under each one. The hash check alone is NOT authoritative here, unlike the
+    /// legacy path above: <paramref name="secret"/>'s own hash is the record's own public content —
+    /// anyone who can read the real record at <c>owners/&lt;realRoot&gt;/invites/&lt;id&gt;.yaml</c>
+    /// (a repository collaborator needs no membership to do that) already knows it, and the derived
+    /// id is exactly as public. A collaborator with push could otherwise plant a byte-identical copy
+    /// under a ref of their own choosing and this lookup would return whichever ref
+    /// <see cref="ILedger.ListRefsAsync"/> happened to list first — the root that copy names then
+    /// drives the joiner's own owner claim (independent pre-PR review, cycle 1, conformance and
+    /// adversarial lenses, both high). Two things close that: a ref whose own name is not a real
+    /// fingerprint is never even a candidate, and every ref that DOES carry a matching record is
+    /// collected rather than short-circuited on the first — a genuine, unplanted secret can only
+    /// ever have minted one such record, so more than one match is never a legitimate ambiguity to
+    /// resolve, only a forged copy sitting beside the real one, and this refuses rather than guesses
+    /// which is which.
     /// </summary>
     private static async Task<(string Root, InviteLedgerRecord Record)> FindInviteAcrossOwnersAsync(
         ILedger ledger, string repositoryPath, Guid inviteId, string secret, CancellationToken cancellationToken)
     {
         IReadOnlyList<LedgerRef> ownerRefs = await ledger.ListRefsAsync(repositoryPath, OwnersRefPrefix, cancellationToken);
         string expectedHash = InviteSecret.Hash(secret);
+        List<(string Root, InviteLedgerRecord Record)> matches = [];
         foreach (LedgerRef ownerRef in ownerRefs)
         {
             string root = ownerRef.RefName[OwnersRefPrefix.Length..];
+            if (!NodeKeyStore.IsFingerprint(root))
+            {
+                // Never a real owner root — skipped before it is ever read, so a malformed or
+                // nested ref name (idea 6be68ee2 follow-up: "owners/0", "owners/a/b") can neither
+                // be returned as this invite's own minting root nor count toward the ambiguity
+                // check below.
+                continue;
+            }
+
             string path = InviteLedgerRecord.PathFor(root, inviteId);
             LedgerFile file = await ledger.ReadAsync(repositoryPath, ownerRef.RefName, path, cancellationToken);
             InviteLedgerRecord? record = InviteLedgerRecord.Parse(file.Content);
             if (record is not null && record.SecretHash == expectedHash)
             {
-                return (root, record);
+                matches.Add((root, record));
             }
+        }
+
+        if (matches.Count > 1)
+        {
+            throw new DomainValidationException(
+                $"Invite {inviteId} matched more than one owner root in this project's own ledger — refusing "
+                + "rather than guessing which one actually minted it. A genuine secret is only ever minted "
+                + "once, so this means something pushed a forged copy; report it rather than retrying.");
+        }
+
+        if (matches.Count == 1)
+        {
+            return matches[0];
         }
 
         throw new DomainValidationException(
