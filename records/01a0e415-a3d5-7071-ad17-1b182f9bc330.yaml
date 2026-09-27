@@ -1,0 +1,20 @@
+hall9k-task-record: 1
+task-id: 01a0e415-a3d5-7071-ad17-1b182f9bc330
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#603
+objective: Every hall9k path that reads Postgres works on a node where localhost resolves to ::1 first, now that the container publishes on loopback only, so h9k doctor's GitHub check reads the registered projects instead of reporting they could not be read
+criteria:
+  - On a node where localhost resolves to ::1 before 127.0.0.1 and the container publishes only on 127.0.0.1 (the 359e0d7a shape), h9k doctor's GitHub section reads the registered projects; the chosen fix is either publishing the port on [::1] as well as 127.0.0.1, or connecting to 127.0.0.1 rather than localhost in the shipped connection string and every code path that builds its own, and the PR says which and why
+  - |-
+    Postgres is still reachable on no non-loopback interface: the compose constant, the repository docker-compose.yml, and their identity test (ContainerRuntimeProbeTests) agree, and docker port hall9k-postgres lists loopback addresses only
+  - Find why the daemon and h9k project list fall through to 127.0.0.1 while the doctor's GitHub check does not, and make that check use the same connection path; a unit test pins the doctor's check to it
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/2f9bc330-every-hall9k-path-that-reads-p
+published: 2026-09-27 18:17:28Z
+context: |-
+  Field report from Windows, 2026-09-27 14:14 EDT (transport note 4fa918ac), after v0.10.57 (#601, task 359e0d7a): on Windows localhost resolves to ::1 first and the container publishes only on IPv4 127.0.0.1, so ::1:5432 refuses. The daemon and h9k project list work (Npgsql falls through to 127.0.0.1), but h9k doctor's gh check says 'the registered projects could not be read' on every run while its Postgres section says healthy. macOS may resolve localhost the same way; check the Mac after its own move.
