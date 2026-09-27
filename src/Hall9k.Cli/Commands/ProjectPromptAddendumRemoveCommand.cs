@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -37,7 +38,8 @@ public sealed class ProjectPromptAddendumRemoveCommand : Hall9kAsyncCommand<Proj
         return await RunAsync(session, settings, cancellationToken);
     }
 
-    internal static async Task<int> RunAsync(IDocumentSession session, Settings settings, CancellationToken cancellationToken)
+    internal static async Task<int> RunAsync(
+        IDocumentSession session, Settings settings, CancellationToken cancellationToken, ILedgerChainReader? chainReader = null)
     {
         ProjectDetails project = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
         PromptBuilderKey builder = PromptBuilderKey.Parse(settings.Builder);
@@ -52,6 +54,17 @@ public sealed class ProjectPromptAddendumRemoveCommand : Hall9kAsyncCommand<Proj
             project.Id, builder, context.OwnerId, DateTimeOffset.UtcNow);
         session.Events.Append(project.Id, removed);
         await session.SaveChangesAsync(cancellationToken);
+
+        bool nodeOwnerIsProjectOwner = await PromptAddendumOwnerRoleGate.NodeOwnerIsProjectOwnerAsync(
+            session, project, context.OwnerId, chainReader ?? new GitLedgerChainReader(), cancellationToken);
+        if (!nodeOwnerIsProjectOwner)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]Recorded, but this node's own owner is not an Owner-role member of "
+                + $"'{project.Name.EscapeMarkup()}', so this removal will never reach the ledger from here — only "
+                + "the project's own owner materializes a prompt addendum.[/]");
+            return ExitCodes.Ok;
+        }
 
         AnsiConsole.MarkupLine(
             $"[green]Removed[/] the {builder.Value} addendum from '{project.Name.EscapeMarkup()}'. "

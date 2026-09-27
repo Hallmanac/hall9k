@@ -1,6 +1,7 @@
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
@@ -38,7 +39,7 @@ public sealed record PromptAddendaSweepResult(int Pushed, int Materialized);
 /// </summary>
 public sealed class PromptAddendaSweepEngine(
     IDocumentStore store, NodeContext node, ILedger ledger, NodeKeyStore keyStore,
-    ILogger<PromptAddendaSweepEngine> logger)
+    ILogger<PromptAddendaSweepEngine> logger, ILedgerChainReader chainReader, ILedgerCommitReader commitReader)
 {
     private const int MaxConflictRetries = 5;
 
@@ -60,8 +61,15 @@ public sealed class PromptAddendaSweepEngine(
     /// stayed empty until something else (a remove, a set) moved the tip again (independent pre-PR
     /// review, cycle 1, conformance lens, medium).
     /// </para>
+    /// <para>
+    /// Paired with a signature over every currently Owner-role member's own root and vouched-node
+    /// keys (<see cref="ComputeOwnerRoleKeySetSignature"/>), not the ledger tip alone (idea 6be68ee2,
+    /// trust-ledger finding 6): the owner test below depends on the live chain, not merely on the
+    /// ledger's own content, so a node revoked or an owner demoted between two ticks must still
+    /// re-materialize even though nothing pushed to the prompt-addenda ref itself moved.
+    /// </para>
     /// </summary>
-    private readonly Dictionary<(string RepositoryPath, string Home), string?> _lastKnownPromptAddendaTips = [];
+    private readonly Dictionary<(string RepositoryPath, string Home), (string? Tip, string OwnerRoleKeySet)> _lastKnownPromptAddendaTips = [];
 
     /// <summary>Per-project backoff for a failing <see cref="ILedger.ListRefsAsync"/> call — doubled
     /// on every consecutive failure up to <see cref="ListRefsBackoffCeiling"/>, and forgotten the
@@ -94,9 +102,28 @@ public sealed class PromptAddendaSweepEngine(
         int materialized = 0;
         foreach (ProjectDetails project in projects.Where(project => project.RepositoryPath.IsNotBlank()))
         {
+            // Computed once per project, up front, and handed to both halves below: PushAsync's own
+            // new owner-role gate and MaterializeAsync's own owner test both need the identical live
+            // chain, and a read that fails must fail closed for both — never push under a stale
+            // notion of who is Owner-role, and never materialize over the last good files
+            // (MessageSweepEngine.SweepOnceAsync's own per-project "skip this tick, retry next
+            // sweep" pattern, idea 6be68ee2, trust-ledger finding 6).
+            TrustChain trustChain;
             try
             {
-                int pushedForProject = await PushAsync(project, cancellationToken);
+                trustChain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(
+                    exception, "Prompt-addenda trust chain read failed for project {ProjectId}; push and "
+                    + "materialize are both skipped this tick and retried next sweep", project.Id);
+                continue;
+            }
+
+            try
+            {
+                int pushedForProject = await PushAsync(project, trustChain, cancellationToken);
                 pushed += pushedForProject;
 
                 // Cleared on every tick that reaches here at all, not only one that actually
@@ -118,7 +145,7 @@ public sealed class PromptAddendaSweepEngine(
 
             try
             {
-                materialized += await MaterializeAsync(project, cancellationToken);
+                materialized += await MaterializeAsync(project, trustChain, cancellationToken);
             }
             catch (Exception exception)
             {
@@ -181,10 +208,27 @@ public sealed class PromptAddendaSweepEngine(
     /// <summary>
     /// Scans this project's own event log, past wherever the last sweep left off, for a prompt-
     /// addendum change this node's own stream carries, and pushes each one to the ledger in order.
+    /// <para>
+    /// Skips entirely — before touching this project's own sync position at all — when this node's
+    /// own owner is not currently an Owner-role member of <paramref name="project"/> (idea 6be68ee2,
+    /// trust-ledger finding 6): the ledger holds exactly one file per builder for the whole project
+    /// (<see cref="LedgerRefRegistry.PromptAddenda"/>, no owner segment), so a member's own push
+    /// would be refused everywhere it is read back — including this same node's own next
+    /// <see cref="MaterializeAsync"/> — the moment <c>MaterializeAsync</c>'s own owner test ships.
+    /// Owner-only is the honest rule rather than a wasted, silently-inert push. Left untouched on
+    /// skip (never advanced) so a later promotion picks up exactly where this node left off, with
+    /// nothing lost in between.
+    /// </para>
     /// </summary>
-    private async Task<int> PushAsync(ProjectDetails project, CancellationToken cancellationToken)
+    private async Task<int> PushAsync(ProjectDetails project, TrustChain trustChain, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
+
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(session, project.OwnerId, cancellationToken);
+        if (ownerRootFingerprint is null || trustChain.RoleOf(ownerRootFingerprint) != MembershipRole.Owner)
+        {
+            return 0;
+        }
 
         PromptAddendaSyncPosition? position =
             await session.LoadAsync<PromptAddendaSyncPosition>(project.Id, cancellationToken);
@@ -340,31 +384,36 @@ public sealed class PromptAddendaSweepEngine(
     }
 
     /// <summary>
-    /// Reads the ledger's own current content for every builder key and keeps this node's local
-    /// disk copy in step — the copy every prompt builder's loader actually reads. Read-only against
-    /// the ledger itself; only ever writes local disk.
+    /// Per builder path, materializes the state at the NEWEST commit touching that path that passes
+    /// the owner test (idea 6be68ee2, trust-ledger finding 6) — signed by a root key or a currently
+    /// vouched node key of some member whose <see cref="TrustChain.RoleOf"/> is
+    /// <see cref="MembershipRole.Owner"/> (<see cref="OwnerChainAuthorization.IsAuthorizedByAnyOwnerRoleMemberAsync"/>,
+    /// the identical rule <see cref="GitLedgerChainReader"/> applies to the members ref itself) — and
+    /// keeps this node's local disk copy in step — the copy every prompt builder's loader actually
+    /// reads. A member's overwrite, a member's delete, an unsigned commit from a repository
+    /// collaborator, and a revoked node's commit are all walked PAST rather than trusted, so the
+    /// owner's own last authorized state is restored rather than removed or overwritten. Read-only
+    /// against the ledger itself; only ever writes local disk.
     /// <para>
     /// A cheap <see cref="ILedger.ListRefsAsync"/> (<c>git ls-remote</c>, no fetch) decides whether
-    /// this project's prompt-addenda ref moved since this node's last look; only a moved tip pays
-    /// for the real fetch <see cref="ILedger.ReadAllAsync"/> costs, and that one call reads every
-    /// builder's file under <see cref="LedgerRefRegistry.PromptAddendaPathPrefix"/> at once rather
-    /// than one <see cref="ILedger.ReadAsync"/> fetch per builder key.
+    /// this project's prompt-addenda ref moved since this node's last look; only a moved tip, OR a
+    /// changed owner-role key set (<see cref="ComputeOwnerRoleKeySetSignature"/> — a node revoked or
+    /// an owner demoted since the last look), pays for walking every builder's own commit history.
     /// </para>
     /// <para>
     /// The tip is banked into <see cref="_lastKnownPromptAddendaTips"/> only once this call is about
-    /// to return successfully — never as soon as it is read — so a throw anywhere in between (the
-    /// fetch itself, or a <see cref="File.WriteAllTextAsync(string,string,CancellationToken)"/>/
+    /// to return successfully — never as soon as it is read — so a throw anywhere in between (a
+    /// commit read, or a <see cref="File.WriteAllTextAsync(string,string,CancellationToken)"/>/
     /// <see cref="File.Delete(string)"/> partway through the builder loop) leaves the cache exactly
-    /// as it was. The next tick then sees the same "unmoved" tip it saw before this attempt and
+    /// as it was. The next tick then sees the same "unmoved" state it saw before this attempt and
     /// retries the whole materialize from scratch, matching what <see cref="SweepOnceAsync"/>'s own
-    /// catch already tells the log it will do. Banking the tip up front, before any of that local
-    /// disk work even started, is what independent pre-PR review, cycle 1 (conformance and
-    /// adversarial lenses, both medium) flagged: a failure partway through was banked as if it had
-    /// fully succeeded, so the remaining builders' files stayed stale or missing for the life of the
-    /// daemon process while the only trace was a warning claiming the opposite.
+    /// catch already tells the log it will do — the identical fail-closed pattern
+    /// <c>MessageSweepEngine.SweepOnceAsync</c> already applies to its own per-project trust chain
+    /// read: a failure here (banked up front, before any local disk work starts) leaves the last
+    /// good files standing rather than losing or corrupting them.
     /// </para>
     /// </summary>
-    private async Task<int> MaterializeAsync(ProjectDetails project, CancellationToken cancellationToken)
+    private async Task<int> MaterializeAsync(ProjectDetails project, TrustChain trustChain, CancellationToken cancellationToken)
     {
         if (!project.HomeDirectory.HasValue)
         {
@@ -398,25 +447,67 @@ public sealed class PromptAddendaSweepEngine(
 
         _listRefsBackoff.Remove(project.Id);
         string? tip = refs.FirstOrDefault(reference => reference.RefName == refName)?.Sha;
+        string ownerRoleKeySet = ComputeOwnerRoleKeySetSignature(trustChain);
 
-        if (_lastKnownPromptAddendaTips.TryGetValue(tipKey, out string? knownTip) && knownTip == tip)
+        if (_lastKnownPromptAddendaTips.TryGetValue(tipKey, out (string? Tip, string OwnerRoleKeySet) known)
+            && known.Tip == tip && known.OwnerRoleKeySet == ownerRoleKeySet)
         {
             return 0;
         }
-
-        IReadOnlyList<LedgerEntry> entries = tip is null
-            ? []
-            : await ledger.ReadAllAsync(project.RepositoryPath, refName, LedgerRefRegistry.PromptAddendaPathPrefix, cancellationToken);
-
-        Dictionary<string, string> contentByBuilder = entries.ToDictionary(
-            entry => Path.GetFileNameWithoutExtension(entry.Path), entry => entry.Content);
 
         int changed = 0;
         foreach (PromptBuilderKey builder in PromptBuilderKey.All)
         {
             string localPath = ProjectHomePaths.PromptAddendumFile(home, builder);
+            string? content = null;
 
-            if (!contentByBuilder.TryGetValue(builder.Value, out string? content))
+            if (tip is not null)
+            {
+                string path = LedgerRefRegistry.PromptAddendumPath(builder.Value);
+                IReadOnlyList<LedgerPathCommit> commits =
+                    await commitReader.ReadCommitsTouchingPathAsync(project.RepositoryPath, refName, path, cancellationToken);
+
+                // Stops at the first authorized commit rather than checking every remaining, older
+                // one in the path's whole history: SelectMaterializedContent only ever picks the
+                // FIRST authorized entry out of a newest-first list, so an older commit's own
+                // verdict — authorized or not — can never change the result once one is found, and
+                // each check costs a real signature verification in production
+                // (GitLedgerCommitReader.IsSignedByAsync).
+                List<PromptAddendumCommitVerdict> verdicts = new(commits.Count);
+                foreach (LedgerPathCommit commit in commits)
+                {
+                    bool authorized = await OwnerChainAuthorization.IsAuthorizedByAnyOwnerRoleMemberAsync(
+                        trustChain,
+                        (key, token) => commitReader.IsSignedByAsync(project.RepositoryPath, commit.RawCommitBytes, key, token),
+                        cancellationToken);
+                    verdicts.Add(new PromptAddendumCommitVerdict(commit.CommitSha, commit.Content, authorized));
+                    if (authorized)
+                    {
+                        break;
+                    }
+                }
+
+                content = SelectMaterializedContent(verdicts);
+
+                // Logged once per tip (this whole method only reaches here on a moved tip or
+                // owner-role key set — the cache check above) rather than once per skipped commit:
+                // the newest commit is the one an operator actually pushed and had refused, so
+                // naming it — never the whole skipped chain behind it — is what "the refusal is
+                // logged once per tip with ref, path, commit, and reason" asks for. No
+                // UnverifiedLedgerWrite here: h9k project members already prints the chain reader's
+                // own live list, and a persisted record for this sweep would flap on every tick a
+                // member keeps pushing over it.
+                if (verdicts.Count > 0 && !verdicts[0].AuthorizedByOwner)
+                {
+                    logger.LogWarning(
+                        "Prompt-addenda write refused for project {ProjectId}: {Ref} {Path} at commit {Commit} is "
+                        + "not signed by a root key or a currently vouched node key of an Owner-role member; the "
+                        + "newest authorized state is materialized instead",
+                        project.Id, refName, path, verdicts[0].CommitSha);
+                }
+            }
+
+            if (content is null)
             {
                 if (File.Exists(localPath))
                 {
@@ -435,7 +526,39 @@ public sealed class PromptAddendaSweepEngine(
             }
         }
 
-        _lastKnownPromptAddendaTips[tipKey] = tip;
+        _lastKnownPromptAddendaTips[tipKey] = (tip, ownerRoleKeySet);
         return changed;
     }
+
+    /// <summary>
+    /// A deterministic signature over every root and vouched-node key of every currently Owner-role
+    /// member — order-independent (sorted before joining), so the identical live set always signs
+    /// identically regardless of dictionary enumeration order. Changes the moment a node is revoked,
+    /// re-vouched, or an owner is promoted or demoted, which is exactly what
+    /// <see cref="_lastKnownPromptAddendaTips"/> needs to re-materialize on.
+    /// </summary>
+    private static string ComputeOwnerRoleKeySetSignature(TrustChain trustChain)
+    {
+        IEnumerable<string> keys = trustChain.OwnerChains
+            .Where(pair => trustChain.RoleOf(pair.Key) == MembershipRole.Owner)
+            .SelectMany(pair => new[] { pair.Value.RootPublicKeyLine }.Concat(pair.Value.Nodes.Select(node => node.PublicKeyLine)))
+            .OrderBy(key => key, StringComparer.Ordinal);
+        return string.Join('\n', keys);
+    }
+
+    /// <summary>
+    /// Pure reducer over one builder path's own commit history, newest first (the order
+    /// <see cref="ILedgerCommitReader.ReadCommitsTouchingPathAsync"/> reports): the content to
+    /// materialize is whatever the NEWEST authorized commit produced — null when that commit deleted
+    /// the path, or when nothing in the whole list was ever authorized. A member's overwrite or
+    /// delete sitting ahead of an owner's own last authorized commit is simply skipped over: the
+    /// owner's own last state is restored, never removed (idea 6be68ee2, trust-ledger finding 6).
+    /// </summary>
+    internal static string? SelectMaterializedContent(IReadOnlyList<PromptAddendumCommitVerdict> commitsNewestFirst) =>
+        commitsNewestFirst.FirstOrDefault(commit => commit.AuthorizedByOwner).Content;
 }
+
+/// <summary>One ledger commit touching a prompt-addendum path, paired with whether
+/// <see cref="OwnerChainAuthorization.IsAuthorizedByAnyOwnerRoleMemberAsync"/> authorized it —
+/// <see cref="PromptAddendaSweepEngine.SelectMaterializedContent"/>'s own input shape.</summary>
+internal readonly record struct PromptAddendumCommitVerdict(string CommitSha, string? Content, bool AuthorizedByOwner);
