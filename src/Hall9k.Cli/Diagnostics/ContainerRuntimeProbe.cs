@@ -329,6 +329,83 @@ public static class ContainerRuntimeProbe
             PostgresRuntime.ComposeDirectory, cancellationToken);
         return (result is { ExitCode: 0 } ? ComposeUpResult.Started : ComposeUpResult.Failed, []);
     }
+
+    /// <summary>
+    /// One <c>docker inspect</c> call answering every question the port-binding drift check
+    /// (<see cref="Hall9k.Cli.Diagnostics.DatabaseDoctor.CheckContainerPortBindingAsync(bool,System.Threading.CancellationToken)"/>)
+    /// needs about the container's current shape: what host address port 5432 is actually
+    /// published on, which compose file (if any) created it, and which named volume(s) it
+    /// mounts — the mount and the compose label are what that check uses to decide whether a
+    /// recreate is safe, never assumed from this call alone. A single inspect rather than three
+    /// separate ones, since the doctor's own report of what it found describes reading the
+    /// container "with docker inspect" once.
+    /// <para>
+    /// <c>PortHostIp</c> is <see langword="null"/> when the container publishes no host binding
+    /// for 5432/tcp at all — nothing to report drift about — and otherwise the host address it
+    /// is bound to, with Docker's own <c>HostIp: ""</c> for a bare <c>"5432:5432"</c> line (bound
+    /// to every interface, both IPv4 and IPv6 — <c>docker port</c> shows it as two lines,
+    /// <c>0.0.0.0</c> and <c>[::]</c>) mapped to the literal <c>0.0.0.0</c> by the template below,
+    /// rather than left blank: an empty string could otherwise not be told apart from the range
+    /// producing no iterations at all (confirmed live against a container actually created this
+    /// way, this task's own review — the format used until then read every real installed
+    /// instance of the drift this check exists to find as "nothing published", the opposite of
+    /// its own purpose). A caller checks the result against <c>"127.0.0.1"</c> exactly.
+    /// </para>
+    /// <para>
+    /// <c>Confirmed</c> is <see langword="false"/> when the inspect itself failed or could not be
+    /// run — the same stdout-versus-exit-code distinction every other probe in this file already
+    /// makes, and never a fact this check may read as an observed absence of drift.
+    /// </para>
+    /// </summary>
+    public static async Task<(bool Confirmed, string? PortHostIp, string? ComposeConfigFilesLabel, IReadOnlyList<string> MountedVolumeNames)>
+        InspectPortBindingAsync(ProcessRunner runner, CancellationToken cancellationToken)
+    {
+        ProcessResult? result = await TryRunAsync(
+            runner,
+            "docker",
+            [
+                "inspect",
+                PostgresRuntime.ContainerName,
+                "--format",
+                "{{range (index .HostConfig.PortBindings \"5432/tcp\")}}{{if .HostIp}}{{.HostIp}}{{else}}0.0.0.0{{end}}{{end}}|"
+                    + "{{index .Config.Labels \"com.docker.compose.project.config_files\"}}|"
+                    + "{{range .Mounts}}{{if eq .Type \"volume\"}}{{.Name}} {{end}}{{end}}",
+            ],
+            Directory.GetCurrentDirectory(),
+            cancellationToken);
+        if (result is null || result.ExitCode != 0)
+        {
+            return (false, null, null, []);
+        }
+
+        string[] fields = result.StandardOutput.TrimEnd('\n').Split('|');
+        if (fields.Length != 3)
+        {
+            return (false, null, null, []);
+        }
+
+        string? portHostIp = fields[0].Length > 0 ? fields[0] : null;
+        string? composeConfigFilesLabel = fields[1].Length > 0 ? fields[1] : null;
+        string[] mountedVolumeNames = fields[2].Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return (true, portHostIp, composeConfigFilesLabel, mountedVolumeNames);
+    }
+
+    /// <summary>
+    /// Recreates <c>hall9k-postgres</c> from the pinned compose file, onto its existing named
+    /// volume — the port-binding drift check's own remediation, and only ever run once that
+    /// check has confirmed the container mounts exactly the pinned volume, was itself created
+    /// from this exact compose file, and no daemon is running to be caught mid-swap. Unlike
+    /// <see cref="ComposeUpAsync"/>, this runs no legacy-volume check of its own: the container
+    /// this recreates has already been confirmed, by the caller, to mount the one volume this
+    /// compose file names, so there is nothing left here for that check to protect against.
+    /// </summary>
+    public static async Task<bool> RecreateFromComposeAsync(ProcessRunner runner, CancellationToken cancellationToken)
+    {
+        ProcessResult? result = await TryRunAsync(
+            runner, "docker", ["compose", "-f", PostgresRuntime.ComposeFile, "up", "-d"],
+            PostgresRuntime.ComposeDirectory, cancellationToken);
+        return result is { ExitCode: 0 };
+    }
 }
 
 /// <summary>What <see cref="ContainerRuntimeProbe.ComposeUpAsync"/> actually did — four
