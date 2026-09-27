@@ -7,7 +7,6 @@ using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
-using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -97,8 +96,8 @@ public sealed class ProjectInviteCommand : Hall9kAsyncCommand<ProjectInviteComma
                 + "hold the owner role here and h9k project invite succeed.");
         }
 
-        Guid inviteId = DomainId.New();
-        string secret = InviteSecret.Generate(myRoot, inviteId);
+        string secret = InviteSecret.Generate();
+        Guid inviteId = InviteSecret.DeriveId(secret);
         string secretHash = InviteSecret.Hash(secret);
         OperatingSettings configured = await PlatformConfigFile.ReadOperatingSettingsAsync(cancellationToken);
         DateTimeOffset expiresAt = now.AddHours(configured.InviteExpiryHours ?? OperatingSettings.DefaultInviteExpiryHours);

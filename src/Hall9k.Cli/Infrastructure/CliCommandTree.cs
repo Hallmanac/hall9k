@@ -108,7 +108,7 @@ public static class CliCommandTree
                 .WithExample("project", "add", "--name", "hall9k", "--repo-url",
                     "https://github.com/Hallmanac/hall9k", "--rename-archived-to", "hall9k-old")
                 .WithExample("project", "add", "--name", "hall9k", "--repo-url",
-                    "https://github.com/Hallmanac/hall9k", "--invite", "3f9c2a7e...d1908f7e.9a41c6...");
+                    "https://github.com/Hallmanac/hall9k", "--invite", "invthbrpoigf3cbfnobm2o4rak3vrj");
             project.AddCommand<ProjectJoinCommand>("join")
                 .WithDescription(
                     "Establish or confirm this node's identity in a project's ledger (idea 202383dc, "
@@ -139,7 +139,7 @@ public static class CliCommandTree
                     + "revoked on the source, or the project being joined already has a root.")
                 .WithExample("project", "join", "hall9k")
                 .WithExample("project", "join", "hall9k", "--owner", "3f9c2a7e1b5d84a6f0c3e2b1a9d8c7f6e5d4c3b2a1908f7e6d5c4b3a29180716")
-                .WithExample("project", "join", "hall9k", "--invite", "3f9c2a7e...d1908f7e.9a41c6...")
+                .WithExample("project", "join", "hall9k", "--invite", "invthbrpoigf3cbfnobm2o4rak3vrj")
                 .WithExample("project", "join", "bioage-calc", "--from-project", "hall9k");
             project.AddCommand<ProjectAssignKeyCommand>("assign-key")
                 .WithDescription(

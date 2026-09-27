@@ -471,8 +471,8 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         }
 
         string root = genesis.ClaimedOwnerFingerprint;
-        Guid inviteId = DomainId.New();
-        string secret = InviteSecret.Generate(root, inviteId);
+        string secret = InviteSecret.Generate();
+        Guid inviteId = InviteSecret.DeriveId(secret);
         string secretHash = InviteSecret.Hash(secret);
         DateTimeOffset expiresAt = Now.AddHours(-1);
 
@@ -524,8 +524,8 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         }
 
         string root = genesis.ClaimedOwnerFingerprint;
-        Guid inviteId = DomainId.New();
-        string secret = InviteSecret.Generate(root, inviteId);
+        string secret = InviteSecret.Generate();
+        Guid inviteId = InviteSecret.DeriveId(secret);
         string secretHash = InviteSecret.Hash(secret);
         InviteLedgerRecord record = new(
             secretHash, InviteClaimKind.MemberOfProject, ProjectMemberRole.Member, DateTimeOffset.UtcNow.AddHours(72), Spent: false);

@@ -384,30 +384,16 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         string? inviteMinterRoot = null;
         if (invite.IsNotBlank())
         {
-            if (!InviteSecret.TryParse(invite, out string inviteRoot, out Guid inviteId))
+            if (!InviteSecret.TryParse(invite, out Guid inviteId, out string? legacyMinterRoot))
             {
                 throw new DomainValidationException(
-                    $"'{invite}' is not a recognized invite secret — h9k node invite/h9k project invite print "
+                    "That is not a recognized invite secret — h9k node invite/h9k project invite print "
                     + "the exact value to pass here.");
             }
 
-            string inviteRefName = InviteLedgerRecord.RefName(inviteRoot);
-            string invitePath = InviteLedgerRecord.PathFor(inviteRoot, inviteId);
-            LedgerFile inviteFile = await ledger.ReadAsync(project.RepositoryPath, inviteRefName, invitePath, cancellationToken);
-            InviteLedgerRecord? inviteRecord = InviteLedgerRecord.Parse(inviteFile.Content);
-            if (inviteRecord is null)
-            {
-                throw new DomainValidationException(
-                    $"No invite {inviteId} found in '{project.Name}'s own ledger — it may have been minted into "
-                    + "a different project, or this project's own copy has not been fetched yet.");
-            }
-
-            if (inviteRecord.SecretHash != InviteSecret.Hash(invite))
-            {
-                throw new DomainValidationException(
-                    $"'{invite}' does not match invite {inviteId}'s own recorded secret — check it was typed "
-                    + "or pasted correctly.");
-            }
+            (string inviteRoot, InviteLedgerRecord inviteRecord) = legacyMinterRoot is not null
+                ? await ReadLegacyInviteAsync(ledger, project.RepositoryPath, legacyMinterRoot, inviteId, invite, cancellationToken)
+                : await FindInviteAcrossOwnersAsync(ledger, project.RepositoryPath, inviteId, invite, cancellationToken);
 
             if (inviteRecord.Spent)
             {
@@ -768,6 +754,64 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
                 "[yellow]This node's claimed owner changed. Any other project this node already joined still "
                 + "has the old claim in its own node.yaml until h9k project join <project> runs there too.[/]");
         }
+    }
+
+    /// <summary>The prefix every owner root's own ref lives under — shared between the new-shape
+    /// invite lookup below and <see cref="LedgerRefRegistry.OwnersPrefix"/>'s own registration.</summary>
+    private const string OwnersRefPrefix = "refs/hall9k/ledger/owners/";
+
+    /// <summary>The legacy 162-character shape's own direct read: <paramref name="minterRoot"/> and
+    /// <paramref name="inviteId"/> both came straight out of the secret itself, so there is exactly
+    /// one path to check, same as before this task shortened the new shape. The hash check stays
+    /// authoritative regardless of shape — a record existing at the expected path is not enough on
+    /// its own to prove <paramref name="secret"/> is the one that minted it.</summary>
+    private static async Task<(string Root, InviteLedgerRecord Record)> ReadLegacyInviteAsync(
+        ILedger ledger, string repositoryPath, string minterRoot, Guid inviteId, string secret, CancellationToken cancellationToken)
+    {
+        string refName = InviteLedgerRecord.RefName(minterRoot);
+        string path = InviteLedgerRecord.PathFor(minterRoot, inviteId);
+        LedgerFile file = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
+        InviteLedgerRecord? record = InviteLedgerRecord.Parse(file.Content);
+        if (record is null || record.SecretHash != InviteSecret.Hash(secret))
+        {
+            throw new DomainValidationException(
+                $"No invite {inviteId} found in this project's own ledger, or it does not match the secret given — "
+                + "check it was typed or pasted correctly, or that it was minted into this project.");
+        }
+
+        return (minterRoot, record);
+    }
+
+    /// <summary>
+    /// The new shape's own lookup (task: "the invite id is derived from the secret so the join needs
+    /// no root prefix"): a new-shape secret carries no minting root of its own, so the only way to
+    /// find <c>owners/&lt;root&gt;/invites/&lt;derived-id&gt;.yaml</c> is to list every owner root this
+    /// project's own ledger currently has a ref for (<see cref="ILedger.ListRefsAsync"/>) and read
+    /// that exact path under each one. The hash check stays authoritative here too — a file that
+    /// happens to exist at the derived id's own path under some unrelated owner (astronomically
+    /// unlikely for a 128-bit id, but never assumed) is skipped rather than trusted, exactly the same
+    /// way the legacy path already refuses a record whose hash does not match.
+    /// </summary>
+    private static async Task<(string Root, InviteLedgerRecord Record)> FindInviteAcrossOwnersAsync(
+        ILedger ledger, string repositoryPath, Guid inviteId, string secret, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<LedgerRef> ownerRefs = await ledger.ListRefsAsync(repositoryPath, OwnersRefPrefix, cancellationToken);
+        string expectedHash = InviteSecret.Hash(secret);
+        foreach (LedgerRef ownerRef in ownerRefs)
+        {
+            string root = ownerRef.RefName[OwnersRefPrefix.Length..];
+            string path = InviteLedgerRecord.PathFor(root, inviteId);
+            LedgerFile file = await ledger.ReadAsync(repositoryPath, ownerRef.RefName, path, cancellationToken);
+            InviteLedgerRecord? record = InviteLedgerRecord.Parse(file.Content);
+            if (record is not null && record.SecretHash == expectedHash)
+            {
+                return (root, record);
+            }
+        }
+
+        throw new DomainValidationException(
+            $"No invite {inviteId} found in this project's own ledger — it may have been minted into a different "
+            + "project, or this project's own copy has not been fetched yet.");
     }
 
     /// <summary>What <see cref="CheckGenesisDeferralAsync"/> decided: <see cref="Defer"/> means the
