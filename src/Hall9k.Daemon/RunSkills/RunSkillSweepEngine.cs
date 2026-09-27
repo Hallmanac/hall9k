@@ -9,6 +9,7 @@ using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -484,7 +485,16 @@ public sealed class RunSkillSweepEngine(
         // The projection is read after the events, so it has applied every event scanned above.
         ProjectDetails? applied = await session.LoadAsync<ProjectDetails>(project.Id, cancellationToken);
         int pushed = 0;
-        if (candidates.Select(candidate => candidate.Data).OfType<ProjectRunSkillRecorded>()
+
+        // A teammate's own recorded skill lands on this identical stream through
+        // EventReplicationInbox, which stamps ReceivedFromNodeId on every record it merges — never
+        // something the sender claims. Excluded here for the identical reason
+        // PromptAddendaSweepEngine.PushAsync excludes its own replicated candidates: pushing it would
+        // re-sign a teammate's content under this node's own committer and signing key (idea
+        // 6be68ee2, trust-ledger finding 6).
+        if (candidates
+            .Where(candidateEvent => candidateEvent.GetHeader(ReplicationEventHeaders.ReceivedFromNodeId) is null)
+            .Select(candidateEvent => candidateEvent.Data).OfType<ProjectRunSkillRecorded>()
             .LastOrDefault(candidate => applied?.RunSkill is not { } current || candidate.RecordedAt >= current.RecordedAt)
             is { } recorded)
         {

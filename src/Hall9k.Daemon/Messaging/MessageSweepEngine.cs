@@ -548,7 +548,7 @@ public sealed class MessageSweepEngine(
                 try
                 {
                     int replayed = await eventInbox.ReplayHeldTailAsync(
-                        heldTailSession, streamId, now, cancellationToken);
+                        heldTailSession, streamId, now, trustChain, cancellationToken);
                     logger.LogInformation(
                         "Replayed {Replayed} held record(s) for stream {StreamId} in project {ProjectId}, whose "
                         + "own local stream already exists — the genesis was never what they were waiting on",

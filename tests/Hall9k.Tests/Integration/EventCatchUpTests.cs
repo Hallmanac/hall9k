@@ -136,7 +136,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeC.LightweightSession())
         {
             EventReplicationReadResult firstRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(3), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(3), trustChain: TrustChain.Empty, cts.Token);
             firstRead.EventsApplied.Should().BeGreaterThan(0);
         }
 
@@ -154,7 +154,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeC.LightweightSession())
         {
             EventReplicationReadResult secondRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(6), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(6), trustChain: TrustChain.Empty, cts.Token);
             secondRead.EventsApplied.Should().BeGreaterThan(0);
         }
 
@@ -182,7 +182,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(9), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(9), trustChain: TrustChain.Empty, cts.Token);
             read.EventsApplied.Should().BeGreaterThan(0, "task1's own envelope at seq 1 still applies cleanly");
             read.StalledAtSeq.Should().Be(3, "task2's own envelope is gone, so the read stops short of task3's own, later one");
         }
@@ -217,7 +217,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventCatchUpInboxReadResult catchUpRead = await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeB, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(11),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             catchUpRead.RequestsAnswered.Should().Be(1);
         }
 
@@ -234,7 +234,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult fillRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(13), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(13), trustChain: TrustChain.Empty, cts.Token);
             fillRead.EventsApplied.Should().BeGreaterThan(0, "task2's own events, forwarded by node C, now apply");
         }
 
@@ -333,7 +333,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeC.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectIdA, nodeC, "owner-c-fingerprint", Now.AddSeconds(3), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectIdA, nodeC, "owner-c-fingerprint", Now.AddSeconds(3), trustChain: TrustChain.Empty, cts.Token);
             read.EventsApplied.Should().BeGreaterThan(0);
         }
 
@@ -359,7 +359,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventCatchUpInboxReadResult catchUpRead = await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeB, projectIdA, nodeC, "owner-c-fingerprint", Now.AddSeconds(5),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             catchUpRead.RequestsAnswered.Should().Be(1);
         }
 
@@ -373,7 +373,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult bootstrapRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeC, projectIdB, nodeB, "owner-b-fingerprint", Now.AddSeconds(7), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeC, projectIdB, nodeB, "owner-b-fingerprint", Now.AddSeconds(7), trustChain: TrustChain.Empty, cts.Token);
             bootstrapRead.EventsApplied.Should().BeGreaterThan(0, "node C's answer bootstraps node B's own, empty store");
         }
 
@@ -566,7 +566,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             int envelopesQueued = await responder.AnswerAsync(
                 session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, ForStreamId: null),
-                Now.AddSeconds(3), trustChain: null, cts.Token);
+                Now.AddSeconds(3), trustChain: TrustChain.Empty, cts.Token);
             envelopesQueued.Should().BeGreaterThan(0, "the public task's own events still answer");
             await session.SaveChangesAsync(cts.Token);
         }
@@ -865,7 +865,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             int envelopesQueued = await responder.AnswerAsync(
                 session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, ForStreamId: null),
-                Now.AddSeconds(2), trustChain: null, cts.Token);
+                Now.AddSeconds(2), trustChain: TrustChain.Empty, cts.Token);
             envelopesQueued.Should().BeGreaterThan(0, "the other task's own events still answer");
             await session.SaveChangesAsync(cts.Token);
         }
@@ -965,7 +965,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventCatchUpInboxReadResult catchUpRead = await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeB, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(1),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             catchUpRead.RequestsAnswered.Should().Be(1, "node C did process the request, answering with events-unavailable");
         }
 
@@ -980,7 +980,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventCatchUpInboxReadResult declineRead = await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(3),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             declineRead.DeclinesObserved.Should().Be(1);
         }
 
@@ -1143,7 +1143,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeC.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(3), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(3), trustChain: TrustChain.Empty, cts.Token);
             read.EventsApplied.Should().BeGreaterThan(0);
         }
 
@@ -1171,7 +1171,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventCatchUpInboxReadResult catchUpRead = await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeB, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(5),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             catchUpRead.RequestsAnswered.Should().Be(1);
         }
 
@@ -1185,7 +1185,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult fillRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(7), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(7), trustChain: TrustChain.Empty, cts.Token);
             fillRead.EventsApplied.Should().BeGreaterThan(0, "node C's answer brings the broadcast stream in");
         }
 
@@ -1278,7 +1278,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             int gapFillEnvelopes = await responder.AnswerAsync(
                 session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(DomainId.New(), nodeA, SinceOriginSequence: 0, ForStreamId: null),
-                Now.AddSeconds(4), trustChain: null, cts.Token);
+                Now.AddSeconds(4), trustChain: TrustChain.Empty, cts.Token);
             gapFillEnvelopes.Should().Be(0, "a gap-fill keeps the switch-on exclusion");
 
             // A bootstrap (everything null) is asked once, by a node holding nothing of this
@@ -1286,7 +1286,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             int bootstrapEnvelopes = await responder.AnswerAsync(
                 session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, ForStreamId: null),
-                Now.AddSeconds(5), trustChain: null, cts.Token);
+                Now.AddSeconds(5), trustChain: TrustChain.Empty, cts.Token);
             bootstrapEnvelopes.Should().Be(1, "a brand-new node's own bootstrap lifts the switch-on exclusion");
 
             // The one named stream, explicitly asked for — served in full, switch-on point and all.
@@ -1294,14 +1294,14 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
                 session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(
                     DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, preSwitchOnTaskId),
-                Now.AddSeconds(6), trustChain: null, cts.Token);
+                Now.AddSeconds(6), trustChain: TrustChain.Empty, cts.Token);
             explicitEnvelopes.Should().Be(1, "an explicit stream request lifts the switch-on exclusion");
 
             int privateEnvelopes = await responder.AnswerAsync(
                 session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(
                     DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, preSwitchOnPrivateTaskId),
-                Now.AddSeconds(7), trustChain: null, cts.Token);
+                Now.AddSeconds(7), trustChain: TrustChain.Empty, cts.Token);
             privateEnvelopes.Should().Be(0, "a private task is never served, however explicit the ask");
 
             await session.SaveChangesAsync(cts.Token);
@@ -1397,7 +1397,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
                 session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(
                     DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, taskId),
-                Now.AddSeconds(3), trustChain: null, cts.Token);
+                Now.AddSeconds(3), trustChain: TrustChain.Empty, cts.Token);
             envelopes.Should().Be(1);
             await session.SaveChangesAsync(cts.Token);
         }
@@ -1469,7 +1469,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
                 session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(
                     DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, taskId),
-                Now.AddSeconds(4), trustChain: null, cts.Token);
+                Now.AddSeconds(4), trustChain: TrustChain.Empty, cts.Token);
             envelopes.Should().Be(1);
             await session.SaveChangesAsync(cts.Token);
         }
@@ -1598,7 +1598,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventCatchUpInboxReadResult catchUpRead = await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeB, projectIdA, nodeA, "owner-a-fingerprint", Now.AddSeconds(4),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             catchUpRead.RequestsAnswered.Should().Be(1);
         }
 
@@ -1613,7 +1613,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventReplicationReadResult bootstrapRead = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectIdB, nodeB, "owner-b-fingerprint", Now.AddSeconds(6),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             bootstrapRead.EventsApplied.Should().Be(
                 7, "every event of both streams applies — four on the task, two on the run, and the completion "
                 + "that closed the task behind them");
@@ -1712,7 +1712,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventCatchUpInboxReadResult catchUpRead = await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeB, projectIdA, nodeA, "owner-a-fingerprint", Now.AddSeconds(4),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             catchUpRead.RequestsAnswered.Should().Be(1);
         }
 
@@ -1727,7 +1727,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventReplicationReadResult bootstrapRead = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectIdB, nodeB, "owner-b-fingerprint", Now.AddSeconds(6),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             bootstrapRead.EventsApplied.Should().Be(3, "the whole task arrives, and the headless run stream does not");
         }
 
@@ -1820,7 +1820,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectIdB, nodeB, "owner-b-fingerprint", Now.AddSeconds(4),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             read.EventsApplied.Should().Be(
                 5, "the task's own three, the run's genesis, and the tail that was held until it landed");
         }
@@ -1904,7 +1904,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectIdB, nodeB, "owner-b-fingerprint", Now.AddSeconds(4),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             read.EventsApplied.Should().Be(
                 5, "the task's own three, the run's reconstructed genesis, and the tail held until it landed");
         }
@@ -2008,7 +2008,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventCatchUpInboxReadResult catchUpRead = await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeB, projectId, nodeA, "owner-a-fingerprint", Now.AddSeconds(4),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             catchUpRead.RequestsAnswered.Should().Be(1);
         }
 
@@ -2023,7 +2023,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(6),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             read.EventsApplied.Should().BeGreaterThan(0, "the explicit stream request brings the pre-switch-on stream in");
         }
 
@@ -2055,7 +2055,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventCatchUpInboxReadResult catchUpRead = await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeB, projectId, nodeA, "owner-a-fingerprint", Now.AddSeconds(8),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             catchUpRead.RequestsAnswered.Should().Be(1);
         }
 
@@ -2070,7 +2070,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(10),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             read.EventsApplied.Should().BeGreaterThan(0, "the never-seen stream arrives on the pull");
         }
 
@@ -2133,7 +2133,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventReplicationReadResult liveRead = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(15),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             liveRead.EventsApplied.Should().BeGreaterThan(0, "an ordinary flush of a brand-new task still applies");
         }
 
@@ -2156,7 +2156,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventCatchUpInboxReadResult catchUpRead = await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeB, projectId, nodeA, "owner-a-fingerprint", Now.AddSeconds(16),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             catchUpRead.RequestsAnswered.Should().Be(1);
         }
 
@@ -2171,7 +2171,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventReplicationReadResult redundantRead = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(18),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             redundantRead.EventsApplied.Should().Be(0, "node B already holds every event node A's answer carries");
         }
 
@@ -2244,7 +2244,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventCatchUpInboxReadResult catchUpRead = await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeB, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(1),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             catchUpRead.RequestsAnswered.Should().Be(1, "node C did process the pull, answering with events-unavailable");
         }
 
@@ -2259,7 +2259,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventCatchUpInboxReadResult declineRead = await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(3),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             declineRead.DeclinesObserved.Should().Be(1);
         }
 
@@ -2336,7 +2336,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             (await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeB, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(1),
-                trustChain: null, cts.Token)).RequestsAnswered.Should().Be(1);
+                trustChain: TrustChain.Empty, cts.Token)).RequestsAnswered.Should().Be(1);
         }
 
         await using (IDocumentSession session = storeC.LightweightSession())
@@ -2350,7 +2350,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             (await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(3),
-                trustChain: null, cts.Token)).DeclinesObserved.Should().Be(1);
+                trustChain: TrustChain.Empty, cts.Token)).DeclinesObserved.Should().Be(1);
         }
 
         await using (IQuerySession session = storeC.QuerySession())
@@ -2406,7 +2406,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             (await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeB, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(7),
-                trustChain: null, cts.Token)).RequestsAnswered.Should().Be(2, "node C declines both asks it just read");
+                trustChain: TrustChain.Empty, cts.Token)).RequestsAnswered.Should().Be(2, "node C declines both asks it just read");
         }
 
         await using (IDocumentSession session = storeC.LightweightSession())
@@ -2420,7 +2420,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(9),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
         }
 
         await using (IQuerySession session = storeC.QuerySession())
@@ -2540,7 +2540,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             (await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeB, projectId, nodeA, "owner-a-fingerprint", Now.AddSeconds(2),
-                trustChain: null, cts.Token)).RequestsAnswered.Should().Be(1);
+                trustChain: TrustChain.Empty, cts.Token)).RequestsAnswered.Should().Be(1);
         }
 
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
@@ -2562,7 +2562,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             (await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(5),
-                trustChain: null, cts.Token)).EventsApplied.Should().BeGreaterThan(0);
+                trustChain: TrustChain.Empty, cts.Token)).EventsApplied.Should().BeGreaterThan(0);
         }
 
         await using (IQuerySession session = storeB.QuerySession())
@@ -2668,7 +2668,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventReplicationReadResult liveRead = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(5),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             liveRead.EventsApplied.Should().Be(
                 0, "the post-switch-on event never carries TaskAdded, so it is held rather than starting a "
                 + "headless document");
@@ -2700,7 +2700,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventCatchUpInboxReadResult catchUpRead = await catchUpInbox.ReadFromAsync(
                 session, RepositoryPath, nodeB, projectId, nodeA, "owner-a-fingerprint", Now.AddSeconds(7),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             catchUpRead.RequestsAnswered.Should().Be(1);
         }
 
@@ -2715,7 +2715,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventReplicationReadResult pullRead = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(9),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             pullRead.EventsApplied.Should().Be(
                 7, "the partial stream's own genesis, middle, and tail all apply from this one answer, in order "
                 + "(4) — the tail's own already-held copy is a no-op once its deferred replay runs behind it — "

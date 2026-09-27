@@ -321,7 +321,7 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
 
         if (candidateSeqs.Count == 0)
         {
-            return TransportReadResult.Ok([], effectiveSinceSeq, prunedBelowSeq: prunedBelowSeq);
+            return TransportReadResult.Ok([], effectiveSinceSeq, prunedBelowSeq: prunedBelowSeq, senderFingerprint: senderFingerprint);
         }
 
         // Every candidate path above the cursor is verified against the commit that actually
@@ -392,7 +392,8 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
             highestSeqInspected = seq;
         }
 
-        return TransportReadResult.Ok(envelopes, highestSeqInspected, rejectedSeqs, stalledAtSeq, prunedBelowSeq);
+        return TransportReadResult.Ok(
+            envelopes, highestSeqInspected, rejectedSeqs, stalledAtSeq, prunedBelowSeq, senderFingerprint);
     }
 
     private static string OutboxRef(Guid nodeId) => $"refs/hall9k/messages/{nodeId}";

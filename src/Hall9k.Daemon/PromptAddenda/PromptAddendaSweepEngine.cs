@@ -5,6 +5,7 @@ using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Infrastructure.Storage;
 using JasperFx.Events;
 using Marten;
@@ -208,6 +209,14 @@ public sealed class PromptAddendaSweepEngine(
         bool Superseded(string builderKey, DateTimeOffset stamp) =>
             applied is not null && applied.PromptAddendumStamps.TryGetValue(builderKey, out DateTimeOffset newest) && stamp < newest;
 
+        // A teammate's own addendum lands on this identical stream through EventReplicationInbox,
+        // which stamps ReceivedFromNodeId on every record it merges — never something the sender
+        // claims, so it cannot be forged by whatever the event's own payload says. Never pushed from
+        // here: doing so would re-sign a teammate's content under this node's own committer and
+        // signing key, as if this install had authored it (idea 6be68ee2, trust-ledger finding 6).
+        bool ReceivedFromPeer(IEvent candidateEvent) =>
+            candidateEvent.GetHeader(ReplicationEventHeaders.ReceivedFromNodeId) is not null;
+
         int pushed = 0;
         LedgerCommitter? committer = null;
         LedgerSigningKey? signingKey = null;
@@ -216,8 +225,9 @@ public sealed class PromptAddendaSweepEngine(
         {
             switch (candidate.Data)
             {
-                case ProjectPromptAddendumSet set when Superseded(set.BuilderKey, set.SetAt):
-                case ProjectPromptAddendumRemoved removed when Superseded(removed.BuilderKey, removed.RemovedAt):
+                case ProjectPromptAddendumSet set when Superseded(set.BuilderKey, set.SetAt) || ReceivedFromPeer(candidate):
+                case ProjectPromptAddendumRemoved removed
+                    when Superseded(removed.BuilderKey, removed.RemovedAt) || ReceivedFromPeer(candidate):
                     break;
                 case ProjectPromptAddendumSet set:
                     (committer, signingKey) = await EnsureIdentityAsync(session, project, committer, signingKey, cancellationToken);

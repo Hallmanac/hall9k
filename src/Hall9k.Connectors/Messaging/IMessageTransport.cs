@@ -38,7 +38,13 @@ public sealed record TransportEnvelope(long Seq, string Content);
 /// <see cref="StalledAtSeq"/>, the cursor does advance past it, but a peer may still hold the
 /// content it names, so a caller wanting a gap-fill request for it (<c>EventReplicationInbox</c>'s
 /// own use) can fold this in alongside <see cref="StalledAtSeq"/> rather than treating the mark's
-/// prune as if nothing had ever been missed at all.
+/// prune as if nothing had ever been missed at all. <see cref="SenderFingerprint"/> is the verified
+/// key fingerprint this call resolved for the sender — always set alongside <see cref="SenderVouched"/>
+/// true, never merely the sender's own self-announced claim on its own: <see cref="GitLedgerMessageTransport"/>
+/// resolves it from the sender's own node file before any vouch check even runs, and
+/// <see cref="InMemoryMessageTransport"/> does the same. <c>EventReplicationInbox</c> is what actually
+/// gates a project-settings-shaped event on it — the fingerprint alone proves nothing past "this is
+/// the key the node file names", which is exactly what <see cref="SenderVouched"/> already covers.
 /// </summary>
 public sealed record TransportReadResult(
     bool SenderVouched,
@@ -47,7 +53,8 @@ public sealed record TransportReadResult(
     IReadOnlyList<long> RejectedSeqs,
     long? StalledAtSeq = null,
     string? NotVouchedReason = null,
-    long? PrunedBelowSeq = null)
+    long? PrunedBelowSeq = null,
+    string? SenderFingerprint = null)
 {
     /// <summary>The stale, M1a-era default reason: no node file at all vouches for the sender's
     /// own outbox. <see cref="NotVouched"/> is used instead whenever a more specific reason is
@@ -62,8 +69,9 @@ public sealed record TransportReadResult(
 
     public static TransportReadResult Ok(
         IReadOnlyList<TransportEnvelope> envelopes, long highestSeqInspected, IReadOnlyList<long>? rejectedSeqs = null,
-        long? stalledAtSeq = null, long? prunedBelowSeq = null) =>
-        new(true, envelopes, highestSeqInspected, rejectedSeqs ?? [], stalledAtSeq, PrunedBelowSeq: prunedBelowSeq);
+        long? stalledAtSeq = null, long? prunedBelowSeq = null, string? senderFingerprint = null) =>
+        new(true, envelopes, highestSeqInspected, rejectedSeqs ?? [], stalledAtSeq, PrunedBelowSeq: prunedBelowSeq,
+            SenderFingerprint: senderFingerprint);
 }
 
 /// <summary>One outbox ref the messages prefix currently holds, and its current tip — what one

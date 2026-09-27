@@ -1,6 +1,8 @@
+using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Replication;
+using Hall9k.Connectors.Trust;
 using Hall9k.Daemon;
 using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Domain.Features.Owner;
@@ -121,7 +123,37 @@ internal sealed class ReplicatedFleet : IAsyncDisposable
         await using IDocumentSession receiving = to.Store.LightweightSession();
         return await _eventInbox.ReadFromAsync(
             receiving, RepositoryPath, from.Node.NodeId, ProjectId, to.Node.NodeId, to.Fingerprint, _clock,
-            trustChain: null, cancellationToken);
+            OneOwnerChain(), cancellationToken);
+    }
+
+    /// <summary>
+    /// One owner root vouching for both A and B's own real node keys (the ones
+    /// <see cref="SeedNodeFileAsync"/> wrote), each one an Owner-role project member: the shape a
+    /// genuine one-owner fleet has today (every node under the same root, the Mac and Windows),
+    /// which is what the trust chain <see cref="EventReplicationInbox"/>'s own gate now requires
+    /// before it ever applies a project-settings-shaped event. A null chain, as this used to pass,
+    /// would gate every one of those out unconditionally rather than exercise the ordinary,
+    /// already-trusted case this fleet stands in for.
+    /// </summary>
+    private TrustChain OneOwnerChain()
+    {
+        const string root = "fleet-owner-root-fingerprint";
+        TrustedOwner owner = new(
+            root, "ssh-ed25519 AAAAFAKEroot test",
+            [NodeFor(A), NodeFor(B)]);
+        return new TrustChain(
+            new Dictionary<string, TrustedOwner> { [root] = owner },
+            [new ProjectMember(root, MembershipRole.Owner, DateTimeOffset.UnixEpoch)]);
+    }
+
+    /// <summary>Mirrors <see cref="SeedNodeFileAsync"/>'s own key line exactly, so the fingerprint
+    /// this vouches matches the one <see cref="InMemoryMessageTransport"/> resolves for the same
+    /// node from that identical node file.</summary>
+    private static TrustedNode NodeFor(ReplicatedPeer peer)
+    {
+        string publicKeyLine = $"ssh-ed25519 AAAAFAKE{peer.Node.NodeId:N} test";
+        return new TrustedNode(
+            peer.Node.NodeId.ToString(), publicKeyLine, NodeKeyStore.Fingerprint(publicKeyLine), DateTimeOffset.UnixEpoch);
     }
 
     /// <summary>Both directions, the way two nodes whose sweeps interleave eventually see each other.</summary>
