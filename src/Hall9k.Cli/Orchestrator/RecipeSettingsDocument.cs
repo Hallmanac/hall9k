@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Hall9k.Cli.ProjectHomes;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Cli.Orchestrator;
 
@@ -28,10 +29,15 @@ public static class RecipeSettingsDocument
     /// <summary>
     /// Renders the settings document for <paramref name="model"/> — the effective model this
     /// window's sessions should run on, already resolved by the caller from the project or node
-    /// chain (Decisions Log #33). Display and notification preferences are fixed platform
-    /// defaults today; there is no CLI surface to override them yet.
+    /// chain (Decisions Log #33) — and, when <paramref name="effort"/> names a level
+    /// (task: the orchestrator window's effort becomes a rendered project and node setting), the
+    /// executor's own effort key (<c>effortLevel</c> for Claude Code) resolved from the window's
+    /// own effort chain. Null or <see cref="AgentEffort.Unknown"/> leaves the key out, so a window
+    /// with no orchestrator effort configured at either level renders byte for byte as it always
+    /// has. Display and notification preferences are fixed platform defaults today; there is no
+    /// CLI surface to override them yet.
     /// </summary>
-    public static string Render(string model)
+    public static string Render(string model, AgentEffort? effort = null)
     {
         JsonObject document = new()
         {
@@ -50,22 +56,27 @@ public static class RecipeSettingsDocument
             ["voiceEnabled"] = true,
         };
 
+        if (effort is { IsWellFormed: true })
+        {
+            document["effortLevel"] = effort.Value;
+        }
+
         return document.ToJsonString(Options);
     }
 
     /// <summary>Writes the settings file at <paramref name="path"/>, overwriting whatever was there.</summary>
-    public static void Write(string path, string model)
+    public static void Write(string path, string model, AgentEffort? effort = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
-        File.WriteAllText(path, Render(model));
+        File.WriteAllText(path, Render(model, effort));
     }
 
     /// <summary>The same write, reported as a <see cref="ProjectHomeStep"/> for the recipe's own report.</summary>
-    public static ProjectHomeStep WriteStep(string path, string model)
+    public static ProjectHomeStep WriteStep(string path, string model, AgentEffort? effort = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
         bool existed = File.Exists(path);
-        string rendered = Render(model);
+        string rendered = Render(model, effort);
         if (existed && File.ReadAllText(path) == rendered)
         {
             return ProjectHomeStep.AlreadyThere($"settings.json already current at {path}");
