@@ -127,6 +127,54 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
         commandLines.Should().Equal("h9k daemon stop", "h9k doctor --yes --no-configure", "h9k daemon start");
     }
 
+    /// <summary>
+    /// The fix for the medium finding from independent pre-PR review (cycle 1, adversarial lens):
+    /// with no daemon running to begin with, there is nothing supervising a gate for the wait to
+    /// protect — any live pid the query would find is already an orphan from an earlier stop — so
+    /// the wait is skipped the same as <c>--now</c>, without needing <c>--now</c> passed at all.
+    /// </summary>
+    [Fact]
+    public async Task The_gate_wait_is_skipped_when_the_daemon_was_already_stopped()
+    {
+        File.Delete(DaemonRuntime.PidFile);
+
+        bool gateWasChecked = false;
+        List<string> commandLines = [];
+
+        int exitCode = await InstallCommand.FinishAsync(
+            _staging,
+            skillsSource: null,
+            version: "0.0.0-test",
+            restart: true,
+            noRestart: false,
+            linkOntoPath: false,
+            liveGateFinder: _ =>
+            {
+                gateWasChecked = true;
+                return Task.FromResult<IReadOnlyList<LiveGate>?>([]);
+            },
+            restartChildRunner: (_, arguments, _) =>
+            {
+                commandLines.Add($"h9k {string.Join(' ', arguments)}");
+                if (arguments is ["daemon", "start"])
+                {
+                    // Models what the real h9k daemon start step would have left behind — a live
+                    // pid — so the post-restart probe RestartThroughNewBinaryAsync runs afterward
+                    // reads the daemon as up, exactly as it would for a real successful start.
+                    PretendADaemonIsRunning();
+                }
+
+                return Task.FromResult(RestartStepResult.Exited(ExitCodes.Ok));
+            },
+            containerRuntimeRunner: RecordingProcessRunner.Failing("docker not reached in this test").Runner,
+            cancellationToken: CancellationToken.None);
+
+        exitCode.Should().Be(ExitCodes.Ok);
+        gateWasChecked.Should().BeFalse(
+            "there is no daemon supervising a gate for the wait to protect when none was running to begin with");
+        commandLines.Should().Equal("h9k daemon stop", "h9k doctor --yes --no-configure", "h9k daemon start");
+    }
+
     [Fact]
     public async Task No_restart_swaps_the_binaries_and_never_reaches_the_gate_or_the_child()
     {
@@ -196,6 +244,35 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
     }
 
     /// <summary>
+    /// A <c>--from-release</c> bootstrap install has no repo checkout for a later
+    /// <c>h9k install --restart</c> (default <c>--repo</c>) to publish from — the bootstrap scripts
+    /// run <c>h9k install --from-release &lt;payload&gt; --no-restart</c> on a bare machine with
+    /// neither a checkout nor the .NET SDK — so the not-restarting message must not point at a
+    /// command that would fail there (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public async Task No_restart_leaves_off_the_command_hint_when_it_would_not_work_standing_alone()
+    {
+        string output = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
+        {
+            int exitCode = await InstallCommand.FinishAsync(
+                _staging,
+                skillsSource: null,
+                version: "0.0.0-test",
+                restart: false,
+                noRestart: true,
+                linkOntoPath: false,
+                suggestRestartCommand: false,
+                containerRuntimeRunner: RecordingProcessRunner.Failing("docker not reached in this test").Runner,
+                cancellationToken: CancellationToken.None);
+
+            exitCode.Should().Be(ExitCodes.Ok);
+        });
+
+        output.Should().NotContain("--restart");
+    }
+
+    /// <summary>
     /// The regression this class exists to pin (notes/decisions-2026-09-27-hall9k-6b.md, task
     /// ff8b71b8): with the daemon stopped by hand, <c>h9k update --restart</c> used to short-circuit
     /// on a null <c>DaemonProcess.Probe()</c> before ever asking whether to restart at all — the
@@ -204,20 +281,18 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
     /// step and the daemon start, the two steps a Postgres migration actually needs) whether or not
     /// a daemon was running to begin with; only the leading "daemon stop" is a no-op in the
     /// already-stopped case, and that no-op is <c>h9k daemon stop</c>'s own job, not this hand-off's.
+    /// The running-daemon case is already proved through this same seam by
+    /// <see cref="The_gate_wait_is_skipped_by_now_and_the_hand_off_still_runs"/> (independent
+    /// pre-PR review, cycle 1, both lenses: the two duplicated each other when this was a
+    /// <c>[Theory]</c> covering both states), so only the stopped state earns a case of its own here.
     /// </summary>
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task Restart_runs_the_doctor_step_and_the_daemon_start_whether_or_not_the_daemon_was_already_running(
-        bool daemonWasRunningBefore)
+    [Fact]
+    public async Task Restart_runs_the_doctor_step_and_the_daemon_start_when_the_daemon_was_already_stopped()
     {
-        if (!daemonWasRunningBefore)
-        {
-            // The constructor pretends one is running by default; this undoes that so
-            // DaemonProcess.Probe() genuinely comes back null, the same as a node whose daemon was
-            // stopped by hand before the update ran.
-            File.Delete(DaemonRuntime.PidFile);
-        }
+        // The constructor pretends one is running by default; this undoes that so
+        // DaemonProcess.Probe() genuinely comes back null, the same as a node whose daemon was
+        // stopped by hand before the update ran.
+        File.Delete(DaemonRuntime.PidFile);
 
         List<string> commandLines = [];
 

@@ -151,6 +151,10 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             settings.Restart,
             settings.NoRestart,
             settings.Now,
+            // A --from-release bootstrap has no repo checkout for a later h9k install --restart
+            // (default --repo) to publish from, so the not-restarting message below leaves off the
+            // shortcut it cannot back up.
+            suggestRestartCommand: settings.FromRelease is null,
             writeDefaultConnectionStringIfUnconfigured: true,
             connectionStringStartDirectory: connectionStringStartDirectory,
             cancellationToken: cancellationToken);
@@ -191,6 +195,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         bool now = false,
         bool linkOntoPath = true,
         string commandName = "install",
+        bool suggestRestartCommand = true,
         bool writeDefaultConnectionStringIfUnconfigured = false,
         string? connectionStringStartDirectory = null,
         Func<CancellationToken, Task<bool>>? portListeningProbe = null,
@@ -452,8 +457,18 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             // standing between an operator finding out the migration is not actually finished and
             // the command silently leaving it that way.
             string state = runningBefore is null ? "Not running" : "Left running";
+            // The parenthetical shortcut only names a command that actually works standing alone:
+            // h9k update --restart always does, and h9k install --restart does too once a repo
+            // checkout is what fed this run — but a --from-release bootstrap install has no such
+            // command to paste (default --repo needs a checkout that a from-release payload
+            // directory, itself scratch and about to be deleted, was never a substitute for), so
+            // that path leaves the parenthetical off rather than pointing at a command that fails
+            // (independent pre-PR review, cycle 1, adversarial lens).
+            string restartHint = suggestRestartCommand
+                ? $" (h9k {commandName} --restart does all three)"
+                : string.Empty;
             AnsiConsole.MarkupLineInterpolated(
-                $"[dim]{state} — the schema and the container's binding stay whatever they already were until h9k daemon stop, h9k doctor --yes and h9k daemon start actually run (h9k {commandName} --restart does all three).[/]");
+                $"[dim]{state} — the schema and the container's binding stay whatever they already were until h9k daemon stop, h9k doctor --yes and h9k daemon start actually run{restartHint}.[/]");
             return ExitCodes.Ok;
         }
 
@@ -2145,8 +2160,10 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// <paramref name="runningBefore"/> is null on a node whose daemon was already stopped before
     /// this run started — an explicit <c>--restart</c> still runs the full post-swap hand-off there
     /// (the doctor step and the daemon start are what actually finish a Postgres migration, whether
-    /// or not there was a daemon to stop first), it is only the ambiguous no-flag prompt below that
-    /// needs a daemon actually running to make sense of asking "restart it".
+    /// or not there was a daemon to stop first). The ambiguous no-flag prompt below needs a daemon
+    /// actually running to make sense of asking "restart it", and the live-gate wait needs one too —
+    /// with no daemon running there is nothing supervising a gate for the wait to protect, so it is
+    /// skipped the same as <c>--now</c>.
     /// </para>
     /// </summary>
     private static async Task<bool> PrepareRestartAsync(
@@ -2188,8 +2205,13 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // outright — --now is the explicit override for whoever wants the restart at once
         // regardless (Brian, 2026-09-20: wait, flag as override). h9k daemon stop's own
         // warning still fires later, inside the child, whichever way this goes.
+        // With no daemon running to begin with, there is no daemon supervising a gate for this
+        // wait to protect — any live pid the query finds is already an orphan from an earlier
+        // stop, and waiting on it only blocks up to VerifyGateLimit for nothing (independent
+        // pre-PR review, cycle 1, adversarial lens), so a stopped runningBefore skips the wait
+        // the same as --now.
         await LiveGateGuard.WaitUnlessNowAsync(
-            now, findLiveGates, Task.Delay, LiveGateGuard.VerifyGateLimit, cancellationToken);
+            now || runningBefore is null, findLiveGates, Task.Delay, LiveGateGuard.VerifyGateLimit, cancellationToken);
         return true;
     }
 
