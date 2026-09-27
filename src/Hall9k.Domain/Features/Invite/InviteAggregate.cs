@@ -32,6 +32,13 @@ public sealed class InviteAggregate
 
     private readonly Dictionary<Guid, VouchedProjectRecord> _vouchedProjects = [];
 
+    /// <summary>Every losing node this invite's own sweep has already sent a spent-invite notice to
+    /// (idea 6be68ee2) — checked before queuing another one, so a still-outstanding, unexpired
+    /// invite never re-notifies the same loser on a later sweep tick.</summary>
+    public IReadOnlySet<Guid> NotifiedLosers => _notifiedLosers;
+
+    private readonly HashSet<Guid> _notifiedLosers = [];
+
     public void Apply(InviteMinted @event)
     {
         Id = @event.InviteId;
@@ -60,6 +67,8 @@ public sealed class InviteAggregate
         _vouchedProjects[@event.ProjectId] = new VouchedProjectRecord(
             @event.VouchedAt, @event.CandidateNodeId, @event.CandidateKeyFingerprint, @event.CandidateOwnerFingerprint);
     }
+
+    public void Apply(InviteLossNotified @event) => _notifiedLosers.Add(@event.LosingNodeId);
 }
 
 /// <summary>One project's own vouch write, and which candidate it was written for — see

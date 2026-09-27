@@ -185,6 +185,7 @@ builder.Services.AddSingleton(ProcessManagers.ForCurrentPlatform());
 builder.Services.AddSingleton<IWorktreeManager, GitWorktreeManager>();
 builder.Services.AddSingleton<ILedger, GitLedger>();
 builder.Services.AddSingleton<ILedgerChainReader, GitLedgerChainReader>();
+builder.Services.AddSingleton<ILedgerCommitReader, GitLedgerCommitReader>();
 builder.Services.AddSingleton(services => new TrackerClaimGate(
     services.GetRequiredService<ProcessRunner>(), services.GetRequiredService<JiraRequester>()));
 builder.Services.AddSingleton<DispatchEngine>();
