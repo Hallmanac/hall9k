@@ -135,21 +135,30 @@ public sealed class InviteSweepEngine(
     /// is seen — deduplicated by this invite's own local, never-replicated
     /// <see cref="InviteLossNotified"/> record, so a still-outstanding invite never re-notifies the
     /// same loser on a later tick. Logs one warning per loser at the point the note is queued, for
-    /// the minting node's own operator to see in its log.
+    /// the minting node's own operator to see in its log. Each loser gets its own
+    /// <see cref="IDocumentSession"/> (independent pre-PR review, cycle 1, adversarial lens, low): a
+    /// session shared across every loser would let one loser's failed <see cref="MessageOutbox.QueueAsync"/>
+    /// leave that call's own pending stream start sitting in the session, for the very next loser's
+    /// unrelated save to flush alongside its own — the identical reason <see cref="TryClaimAsync"/>'s
+    /// own doc comment already gives for never sharing one session across two different invites.
     /// </summary>
     private async Task NotifySpentInviteLosersAsync(
         InviteDetails invite, Dictionary<string, IReadOnlyList<CandidateNode>> projectCandidates, DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        await using IDocumentSession session = store.LightweightSession();
-
-        InviteAggregate? aggregate = await session.Events.AggregateStreamAsync<InviteAggregate>(invite.Id, token: cancellationToken);
-        if (aggregate is null || !aggregate.Spent)
+        InviteAggregate? aggregate;
+        IReadOnlyList<ProjectDetails> projects;
+        await using (IDocumentSession readSession = store.LightweightSession())
         {
-            return;
+            aggregate = await readSession.Events.AggregateStreamAsync<InviteAggregate>(invite.Id, token: cancellationToken);
+            if (aggregate is null || !aggregate.Spent)
+            {
+                return;
+            }
+
+            projects = await TargetProjectsAsync(readSession, aggregate, cancellationToken);
         }
 
-        IReadOnlyList<ProjectDetails> projects = await TargetProjectsAsync(session, aggregate, cancellationToken);
         HashSet<Guid> notifiedThisTick = [];
         foreach (ProjectDetails project in projects)
         {
@@ -162,6 +171,7 @@ public sealed class InviteSweepEngine(
                     continue;
                 }
 
+                await using IDocumentSession session = store.LightweightSession();
                 try
                 {
                     await MessageOutbox.QueueAsync(

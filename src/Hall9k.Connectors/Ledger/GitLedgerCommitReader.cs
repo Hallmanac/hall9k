@@ -66,7 +66,16 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
                 "git", ["hash-object", "-w", "-t", "commit", tempCommitFile], repositoryPath, cancellationToken);
             if (hashResult.ExitCode != 0)
             {
-                return false;
+                // Thrown, never returned as false: this step has not even reached
+                // git verify-commit yet, so a non-zero exit here is an infrastructure failure (a
+                // disk or permissions problem, an unavailable git binary) rather than a genuine
+                // "not signed" verdict — a caller that caches this return value against an unmoved
+                // ref tip (InviteSweepEngine's own _lastKnownRefs) must never mistake a transient
+                // hiccup here for a real signature failure and cache it as one forever (independent
+                // pre-PR review, cycle 1, conformance lens, low).
+                throw new InvalidOperationException(
+                    $"git hash-object -w -t commit {tempCommitFile} failed in {repositoryPath} (exit "
+                    + $"{hashResult.ExitCode}): {hashResult.StandardError.Trim()}");
             }
 
             string injectedSha = hashResult.StandardOutput.Trim();

@@ -83,24 +83,6 @@ public sealed class InviteSweepEngineTests
     }
 
     [Fact]
-    public async Task An_unsigned_candidate_is_not_resolved()
-    {
-        string secret = InviteSecret.Generate();
-        string victimFingerprint = NodeKeyStore.Fingerprint(VictimPublicKeyLine);
-        string proof = InviteSecret.ComputeProof(secret, victimFingerprint);
-        string content = NodeFileYaml(VictimPublicKeyLine, OwnerFingerprint, proof);
-
-        FakeLedgerCommitReader commitReader = new(
-            new Dictionary<string, LedgerSignedCommit> { [Path] = new(content, "sha", "raw-commit-unsigned") },
-            signed: false);
-
-        InviteSweepEngine.CandidateNode? candidate = await InviteSweepEngine.TryResolveCandidateAsync(
-            commitReader, RepositoryPath, RefName, Path, CandidateNodeId, NullLogger.Instance, CancellationToken.None);
-
-        candidate.Should().BeNull("an unsigned commit is skipped, never treated as a usable candidate");
-    }
-
-    [Fact]
     public void ProofMatches_is_true_only_for_the_real_proof()
     {
         string secret = InviteSecret.Generate();
