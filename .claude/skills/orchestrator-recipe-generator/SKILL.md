@@ -121,8 +121,8 @@ actually ruled on. Where the discovery above turns up an observed pattern worth 
 attention (the pre-approval pattern, an unfamiliar log timezone), report it as an observation in
 your own summary to the human, not as a rule baked into the recipe.
 
-**One narrow carve-out.** A line the operator has placed in a recipe's *Model and effort* section,
-in exactly one of three forms, is not a rule this generator invented and is never treated as one:
+**One narrow carve-out.** A line the operator has placed anywhere in a recipe, in exactly one of
+three forms, is not a rule this generator invented and is never treated as one:
 
 - `Standing grant (<who>, <YYYY-MM-DD>):` grants the window authority to act without asking, for
   whatever scope the line states (today, only the hardest-reasoning tier's propose-and-confirm
@@ -133,9 +133,10 @@ in exactly one of three forms, is not a rule this generator invented and is neve
   triple, or one named kind of spawn's triple, for this project.
 
 Regenerating an existing recipe carries every line of these three forms into the `.new` file
-verbatim, in place, and lists each one in the generator's own summary; the generator never writes a
-new one of its own. Anything else observed in a hand-edited recipe still falls under the rule
-above and is never carried forward by inference: only these three exact forms are.
+verbatim, in place, wherever in the recipe it appears, and lists each one in the generator's own
+summary; the generator never writes a new one of its own. Anything else observed in a hand-edited
+recipe still falls under the rule above and is never carried forward by inference: only these
+three exact forms are.
 
 ## Leanness is a ceiling, not just a floor
 
@@ -249,12 +250,12 @@ other or from what this skill says next time it runs.
 > grant, and recorded in the registry.
 >
 > A dispute park is prepared by reading depth, by default: a claim checkable in a line or two is
-> checked and ruled on here; a claim needing cross-file reading, a test run, or a design weighing
-> goes to a deep-reading-tier spawn that writes a recommended ruling. Who applies that ruling
-> follows whatever delegation the operator has granted this project; with none granted, every
-> ruling goes to the operator with the spawn's prepared evidence. A dated `Opt-out` line placed in
-> this section turns this split off for this project: every dispute park then goes to the operator
-> directly, prepared or not.
+> checked here; a claim needing cross-file reading, a test run, or a design weighing goes to a
+> deep-reading-tier spawn that writes a recommended ruling. Who rules, on either path, this window
+> or the operator, follows whatever delegation the operator has granted this project; with none
+> granted, both go to the operator: the short claim with this window's own check, the other with
+> the spawn's prepared evidence. A dated `Opt-out` line placed in this section turns this split off
+> for this project: every dispute park then goes to the operator directly, prepared or not.
 >
 > Daemon-dispatched runs, including any future daemon refinement role, keep the node's own
 > per-stage model configuration; nothing here changes it.
@@ -699,7 +700,8 @@ their own. Both:
   own `journal.md` and end the turn there, since a headless session cannot wait on an answer that
   cannot arrive mid-flight. Otherwise write the result into the workspace, rewrite the journal, and
   end with a short summary and the open questions the operator still has to settle.
-- Carry both canonical blocks, verbatim.
+- Carry the *Writing conventions* and *Talking to the operator* canonical blocks, verbatim; the
+  *Model and effort* block is not one of them here (see *The canonical blocks* above).
 
 ## Launch text
 
@@ -708,12 +710,6 @@ scoped session* above, the scoped-session command itself, which you do write, in
 `recipes/orchestrator.md` — and you never edit `launch-anchor.md` or
 `settings.json` — both are platform-owned, always overwritten, and carry no fact a recipe would
 ever need to restate. Instead, for each agent CLI discovery found installed:
-
-If a project's `Model and effort` block, whether the shipped default table or a `Tier override`
-line replacing part of it, names an agent CLI with no computed launch shape (anything other than
-`claude-code` today, per *What you discover* above), do not render a launch line for that tier in
-*Spawning a scoped session*: name the gap in this run's own summary instead, the same way a CLI
-with no computed default is handled below for the orchestrator's own launch line.
 
 - Read what the platform already has: `h9k orchestrator launch-text show --cli <name>` in node
   mode, or `... --cli <name> --project <name>` in project mode. Before anything has ever been set,
@@ -760,6 +756,12 @@ with no computed default is handled below for the orchestrator's own launch line
   something broken — fix the line and set it again before moving on. For any other CLI discovery
   found installed, `show` has no computed default to store in the first place (bullet above); leave
   it alone rather than inventing a line to set — there is nothing for that CLI to measure yet.
+
+If a project's `Model and effort` block, whether the shipped default table or a `Tier override`
+line replacing part of it, names an agent CLI with no computed launch shape (anything other than
+`claude-code` today, per *What you discover* above), do not render a launch line for that tier in
+*Spawning a scoped session*: name the gap in this run's own summary instead, the same way a CLI
+with no computed default is handled above for the orchestrator's own launch line.
 
 ## Finish
 
