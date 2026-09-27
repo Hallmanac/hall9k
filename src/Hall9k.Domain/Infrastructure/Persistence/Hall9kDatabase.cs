@@ -38,9 +38,18 @@ public static class Hall9kDatabase
     /// fully determines this string, so that write is a record of what install already
     /// provisioned rather than a guess. <see cref="Resolve"/> never reaches this constant on
     /// its own — every write of it is one of those two explicit, recorded acts.
+    /// <para>
+    /// Names <c>127.0.0.1</c> rather than <c>localhost</c>: the container publishes on that
+    /// literal address only (<see cref="PostgresRuntime.ComposeFileContents"/>), and on a node
+    /// where <c>localhost</c> resolves to <c>::1</c> first, connecting to it pays an IPv6-refused
+    /// then-IPv4-retry cost on every attempt — small on a single connection, but large enough to
+    /// blow a tight combined budget across several sequential ones (task 2f9bc330, field report
+    /// 4fa918ac). Naming the literal address <see cref="PostgresRuntime"/> actually binds removes
+    /// the ambiguity at the source instead of asking every caller to budget around it.
+    /// </para>
     /// </summary>
     public const string DefaultConnectionString =
-        "Host=localhost;Port=5432;Database=hall9k;Username=postgres;Password=hall9k";
+        "Host=127.0.0.1;Port=5432;Database=hall9k;Username=postgres;Password=hall9k";
 
     public const string EnvironmentVariableName = "HALL9K_CONNECTION_STRING";
 

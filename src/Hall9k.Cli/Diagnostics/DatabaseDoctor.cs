@@ -346,10 +346,10 @@ public static class DatabaseDoctor
         (ContainerRuntimeStatus runtime, bool containerConfirmed, PostgresContainerStatus container) =
             await ReportContainerRuntimeStatusAsync(runner, connectionStringAlreadyConfigured: false, cancellationToken);
 
-        if (await ContainerRuntimeProbe.PortListeningAsync("localhost", 5432, cancellationToken))
+        if (await ContainerRuntimeProbe.PortListeningAsync("127.0.0.1", 5432, cancellationToken))
         {
             AnsiConsole.MarkupLine(
-                $"[dim]Something is already listening on localhost:5432 — if that is your Postgres, point "
+                $"[dim]Something is already listening on 127.0.0.1:5432 — if that is your Postgres, point "
                 + $"{Hall9kDatabase.EnvironmentVariableName} at it.[/]");
         }
 
@@ -613,7 +613,7 @@ public static class DatabaseDoctor
                 {
                     AnsiConsole.MarkupLine(
                         $"[dim]Found {PostgresRuntime.ContainerName} confirmed running[/] — if that is what is "
-                        + $"listening at localhost:5432, point {Hall9kDatabase.EnvironmentVariableName} at it "
+                        + $"listening at 127.0.0.1:5432, point {Hall9kDatabase.EnvironmentVariableName} at it "
                         + "directly, or run h9k doctor --yes to configure it automatically.");
                 }
 
