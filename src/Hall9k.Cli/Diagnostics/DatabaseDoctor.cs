@@ -461,10 +461,18 @@ public static class DatabaseDoctor
                 return null;
 
             default:
-                AnsiConsole.MarkupLine(
-                    $"[red]Reached Postgres at {reachability.Host.EscapeMarkup()}:{reachability.Port}[/], but it "
-                    + $"reported: {reachability.Detail.EscapeMarkup()}");
-                return null;
+                reachability = await DiagnoseOtherErrorAsync(
+                    reachability, offerFixes, runner, reachabilityProbe, readinessTimeout, readinessPollInterval,
+                    timeProvider, cancellationToken);
+                if (reachability.Status != ReachabilityStatus.Reachable)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[red]Reached Postgres at {reachability.Host.EscapeMarkup()}:{reachability.Port}[/], but it "
+                        + $"reported: {reachability.Detail.EscapeMarkup()}");
+                    return null;
+                }
+
+                break;
         }
 
         bool schemaPresent = await DatabaseReachability.SchemaPresentAsync(connectionString, cancellationToken);
@@ -608,13 +616,21 @@ public static class DatabaseDoctor
             // but Docker Desktop, and so hall9k-postgres, not yet back up).
             (ContainerRuntimeStatus runtime, bool containerConfirmed, PostgresContainerStatus container) =
                 await ReportContainerRuntimeStatusAsync(runner, connectionStringAlreadyConfigured: true, cancellationToken);
-            if (offerFixes && runtime == ContainerRuntimeStatus.Running
-                && await OfferAndStartAsync(connectionString, containerConfirmed, container, assumeYes, runner, cancellationToken))
+
+            bool justStarted = offerFixes && runtime == ContainerRuntimeStatus.Running
+                && await OfferAndStartAsync(connectionString, containerConfirmed, container, assumeYes, runner, cancellationToken);
+
+            if (justStarted || (offerFixes && containerConfirmed && container == PostgresContainerStatus.Running))
             {
-                reachability = await reachabilityProbe(cancellationToken);
-            }
-            else if (containerConfirmed && container == PostgresContainerStatus.Running)
-            {
+                // OfferAndStartAsync's own readiness wait (when justStarted) already saw one clean
+                // answer, and a container this doctor never had to start but finds already
+                // confirmed Running is in the same still-booting window either way — a fresh
+                // connection moments later can still catch Postgres transiently dropping it while
+                // it finishes starting (field reports 2026-09-27, Mac and Windows), so both cases
+                // get the same bounded retry rather than a single fresh sample (cycle-1 pre-PR
+                // review, adversarial lens — the justStarted case used to take only one more
+                // sample here). Gated on offerFixes so a passive diagnosis after an ordinary
+                // command's own failure never adds up to 30s to that failure on its own.
                 AnsiConsole.Markup(
                     $"[dim]Retrying for up to {readinessTimeout.TotalSeconds:0}s, in case it is still finishing startup…[/]");
                 reachability = await WaitForReachableAsync(
@@ -633,6 +649,55 @@ public static class DatabaseDoctor
         }
 
         return reachability;
+    }
+
+    /// <summary>
+    /// The <see cref="ReachabilityStatus.OtherError"/> sibling of <see cref="DiagnoseRefusedConnectionAsync"/>:
+    /// a container still booting reads as either a refused connection or Postgres answering "the
+    /// database system is starting up" (57P03, which <see cref="DatabaseReachability.ProbeAsync"/>
+    /// turns into <see cref="ReachabilityStatus.OtherError"/>) — only the first got the bounded
+    /// retry, so the second still failed on a single sample (cycle-1 pre-PR review, conformance
+    /// lens). Gated the same way as the refused-connection retry: only for a local default address,
+    /// only when the caller is offering fixes at all (<paramref name="offerFixes"/> — a passive
+    /// diagnosis after an ordinary command's own failure should not add up to 30s to that failure),
+    /// and only once <c>hall9k-postgres</c> is itself confirmed <see cref="PostgresContainerStatus.Running"/>,
+    /// since only then does "still starting up" actually explain the error. Internal, the same
+    /// visibility <see cref="DiagnoseRefusedConnectionAsync"/> already uses, so a test can drive it
+    /// directly with a fake probe and a fake process runner rather than going through
+    /// <see cref="CheckReachabilityAndSchemaAsync(string,ConnectionStringResolution,bool,bool,ProcessRunner,Func{CancellationToken,Task{ReachabilityReport}},TimeSpan,TimeSpan,TimeProvider,CancellationToken,bool)"/>,
+    /// which would reach a real schema check the moment reachability turns Reachable.
+    /// </summary>
+    internal static async Task<ReachabilityReport> DiagnoseOtherErrorAsync(
+        ReachabilityReport reachability,
+        bool offerFixes,
+        ProcessRunner runner,
+        Func<CancellationToken, Task<ReachabilityReport>> reachabilityProbe,
+        TimeSpan readinessTimeout,
+        TimeSpan readinessPollInterval,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        bool looksLocal = reachability.Host is "localhost" or "127.0.0.1" && reachability.Port == 5432;
+        if (!offerFixes || !looksLocal
+            || await ContainerRuntimeProbe.RuntimeStatusAsync(runner, cancellationToken) != ContainerRuntimeStatus.Running)
+        {
+            return reachability;
+        }
+
+        (bool containerConfirmed, PostgresContainerStatus container) =
+            await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner, cancellationToken);
+        if (!containerConfirmed || container != PostgresContainerStatus.Running)
+        {
+            return reachability;
+        }
+
+        AnsiConsole.Markup(
+            $"[dim]{PostgresRuntime.ContainerName} is confirmed running — retrying for up to "
+            + $"{readinessTimeout.TotalSeconds:0}s, in case it is still finishing startup…[/]");
+        ReachabilityReport retried = await WaitForReachableAsync(
+            reachabilityProbe, readinessTimeout, readinessPollInterval, timeProvider, cancellationToken);
+        AnsiConsole.WriteLine();
+        return retried;
     }
 
     /// <summary>
@@ -684,11 +749,15 @@ public static class DatabaseDoctor
                 }
                 else if (container == PostgresContainerStatus.Running && connectionStringAlreadyConfigured)
                 {
+                    // Never "retry in a moment" here: the only caller that reaches this branch
+                    // (DiagnoseRefusedConnectionAsync) is about to retry automatically, on its own,
+                    // right after this prints, whenever it is offering fixes at all — telling the
+                    // operator to retry by hand for something the doctor already retries itself was
+                    // the contradiction cycle-1's conformance lens flagged on this message.
                     AnsiConsole.MarkupLine(
                         $"[dim]Found {PostgresRuntime.ContainerName} confirmed running[/] — but nothing answered "
                         + "when the already-configured connection string just tried it, so Postgres inside it may "
-                        + "still be finishing initialisation, or something else is bound to that address. Retry in "
-                        + "a moment, or check the container's own logs.");
+                        + "still be finishing initialisation, or something else is bound to that address.");
                 }
                 else if (container == PostgresContainerStatus.Running)
                 {
