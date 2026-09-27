@@ -100,9 +100,14 @@ prose.
   `work`, `review-lap`, `agent`, or `mention-follow-up`, and from then on it is spliced into that
   builder's every prompt after its rules section. It lives on the project's ledger
   (`refs/hall9k/ledger/prompt-addenda`), so every member's node composes the same prompt; the CLI
-  only records that you set one, and the daemon is the sole writer of the ledger. An addendum that
-  runs past the length cap is refused unless you accept it with `--over-cap "<reason>"`, and the
-  prompt then says so under its heading.
+  only records that you set one, and the daemon is the sole writer of the ledger. The ledger holds
+  exactly one file per builder for the whole project, with no per-member segment, so only a node
+  whose own owner currently holds the Owner role actually pushes it — `set`/`remove` on any other
+  node still records the fact locally but says so and goes no further, and every node's own
+  materialize only ever honors the newest commit an Owner-role member's own chain signed, so a
+  member's overwrite, delete, or an unsigned push can neither reach another node's prompts nor
+  delete or suppress the owner's own guidance. An addendum that runs past the length cap is refused
+  unless you accept it with `--over-cap "<reason>"`, and the prompt then says so under its heading.
 - **Lessons** are what earlier runs learned, recorded with `h9k learn`. Every implementation,
   follow-up, review, and fix prompt carries a bounded section of this project's active lessons,
   newest first, and the section announces what it held back rather than truncating silently. A
