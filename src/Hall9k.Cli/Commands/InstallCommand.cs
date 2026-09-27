@@ -10,6 +10,7 @@ using Hall9k.Cli.Installation;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Cli.Prompts;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -194,6 +195,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         RestartChildRunner? restartChildRunner = null,
         string? pathVariable = null,
         string? userProfileDirectory = null,
+        ProcessRunner? containerRuntimeRunner = null,
         CancellationToken cancellationToken = default)
     {
         // The actual last point before staging becomes ~/.hall9k/bin, run for every caller —
@@ -227,6 +229,21 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         AnsiConsole.MarkupLine(
             $"[dim]Wrote Hall9k's own Postgres definition to {PostgresRuntime.ComposeFile.EscapeMarkup()} "
             + "(not started — h9k doctor or h9k daemon start will offer to when it's needed).[/]");
+
+        // The port-binding check the doctor runs unconditionally (security review idea 6be68ee2)
+        // used to be wired only into DoctorCommand, so a plain h9k update — one whose daemon is
+        // not running, or one run with --no-restart — never told the operator a running
+        // hall9k-postgres kept publishing on every interface after this call just rewrote the
+        // compose file out from under it (cycle-1 pre-PR review, conformance lens). assumeYes is
+        // false here on purpose: install and update stay boring (Decisions Log #58) and never
+        // tear a container down themselves — h9k doctor --yes, run by hand or by the --restart
+        // hand-off below, is what actually recreates it. containerRuntimeRunner is the same test
+        // seam as portListeningProbe and liveGateFinder below: it defaults to the real docker CLI,
+        // and a unit test substitutes a fake so this never shells out to whatever Docker happens
+        // to be running on the machine the test suite executes on.
+        await DatabaseDoctor.CheckContainerPortBindingAsync(
+            assumeYes: false, containerRuntimeRunner ?? ExternalProcess.Runner,
+            () => DaemonProcess.ProbeBootStatus().State != DaemonBootState.NotRunning, cancellationToken);
 
         if (writeDefaultConnectionStringIfUnconfigured)
         {

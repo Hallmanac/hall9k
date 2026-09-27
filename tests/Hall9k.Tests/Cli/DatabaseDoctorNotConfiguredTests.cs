@@ -108,6 +108,36 @@ public sealed class DatabaseDoctorNotConfiguredTests : IDisposable
             "--yes has to reach the actual start attempt without anybody confirming it first");
     }
 
+    /// <summary>
+    /// The same drift <c>h9k doctor</c>'s own port-binding check finds (security review idea
+    /// 6be68ee2), reached through a different door: a stopped <c>hall9k-postgres</c> still
+    /// publishing on every interface used to be plainly <c>docker start</c>ed here, which keeps
+    /// the old binding forever, since Docker only re-reads the compose file's port mapping at
+    /// creation — the same defect on both the path where the port-binding check ran and declined
+    /// to recreate, and the path (<c>h9k daemon start</c>) that never runs that check at all
+    /// (cycle-1 pre-PR review, adversarial lens, <c>DatabaseDoctor.cs:215</c>).
+    /// </summary>
+    [Fact]
+    public async Task A_stopped_container_still_publishing_on_every_interface_is_never_plainly_started()
+    {
+        RecordingProcessRunner runner = null!;
+        runner = new RecordingProcessRunner(() => runner.Calls[^1].Arguments switch
+        {
+            ["info"] => new(0, string.Empty, string.Empty),
+            ["ps", "-a", ..] => new(0, "exited\n", string.Empty),
+            ["inspect", ..] => new(0, "0.0.0.0|/somewhere/docker-compose.yml|hall9k-pgdata \n", string.Empty),
+            _ => new(1, string.Empty, "unexpected call"),
+        });
+
+        string output = await ScopedAnsiConsoleCapture.CaptureAsync(() =>
+            DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: true, runner.Runner, CancellationToken.None));
+
+        runner.Calls.Should().NotContain(
+            call => call.Arguments.Count > 0 && call.Arguments[0] == "start",
+            "a plain docker start would keep publishing on every interface — Docker only re-reads the port mapping at creation");
+        output.Should().Contain("Not starting").And.Contain("127.0.0.1");
+    }
+
     [Fact]
     public async Task No_configure_stops_yes_short_of_the_start_that_only_exists_to_be_recorded()
     {

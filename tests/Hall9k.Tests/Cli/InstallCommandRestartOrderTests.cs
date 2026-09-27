@@ -5,6 +5,7 @@ using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Installation;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
 using Xunit;
 
@@ -81,6 +82,7 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
                 commandLines.Add($"{Path.GetFileNameWithoutExtension(binary)} {string.Join(' ', arguments)}");
                 return Task.FromResult(RestartStepResult.Exited(ExitCodes.Ok));
             },
+            containerRuntimeRunner: RecordingProcessRunner.Failing("docker not reached in this test").Runner,
             cancellationToken: CancellationToken.None);
 
         exitCode.Should().Be(ExitCodes.Ok);
@@ -116,6 +118,7 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
                 commandLines.Add($"h9k {string.Join(' ', arguments)}");
                 return Task.FromResult(RestartStepResult.Exited(ExitCodes.Ok));
             },
+            containerRuntimeRunner: RecordingProcessRunner.Failing("docker not reached in this test").Runner,
             cancellationToken: CancellationToken.None);
 
         exitCode.Should().Be(ExitCodes.Ok);
@@ -146,6 +149,7 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
                 aChildRan = true;
                 return Task.FromResult(RestartStepResult.Exited(ExitCodes.Ok));
             },
+            containerRuntimeRunner: RecordingProcessRunner.Failing("docker not reached in this test").Runner,
             cancellationToken: CancellationToken.None);
 
         exitCode.Should().Be(ExitCodes.Ok);
@@ -177,6 +181,7 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
                 arguments[0] == "doctor"
                     ? RestartStepResult.Exited(ExitCodes.BusinessRule)
                     : RestartStepResult.Exited(ExitCodes.Ok)),
+            containerRuntimeRunner: RecordingProcessRunner.Failing("docker not reached in this test").Runner,
             cancellationToken: CancellationToken.None);
 
         exitCode.Should().Be(

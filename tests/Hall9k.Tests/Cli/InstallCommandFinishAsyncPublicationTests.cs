@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
 using Xunit;
 
@@ -51,6 +52,7 @@ public sealed class InstallCommandFinishAsyncPublicationTests : IDisposable
             restart: false,
             noRestart: false,
             linkOntoPath: false,
+            containerRuntimeRunner: RecordingProcessRunner.Failing("docker not reached in this test").Runner,
             cancellationToken: CancellationToken.None);
 
         exitCode.Should().Be(0);

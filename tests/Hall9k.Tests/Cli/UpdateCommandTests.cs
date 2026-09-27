@@ -276,7 +276,12 @@ public sealed class UpdateCommandTests : IDisposable
 
     private static Task<int> Run(ProcessRunner gh) =>
         UpdateCommand.RunAsync(
-            gh, ReleasePlatform.DefaultRepository, restart: false, noRestart: true, linkOntoPath: false, cancellationToken: CancellationToken.None);
+            gh, ReleasePlatform.DefaultRepository, restart: false, noRestart: true, linkOntoPath: false,
+            // The port-binding check InstallCommand.FinishAsync now runs unconditionally shells
+            // out to docker — a fake that never answers keeps this test's outcome independent of
+            // whatever Docker happens to be running on the machine the test suite executes on.
+            containerRuntimeRunner: (_, _, _, _) => Task.FromResult(new ProcessResult(1, string.Empty, "docker not reached in this test")),
+            cancellationToken: CancellationToken.None);
 
     /// <summary>
     /// A fake `gh release download`: on the expected arguments, it writes the same shape
