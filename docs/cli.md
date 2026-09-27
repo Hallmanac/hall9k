@@ -726,7 +726,7 @@ also appear elsewhere on this page stays where it is.
 |---|---|
 | `h9k project join <project>` | Generates this node's signing key the first time it runs, writes this node's identity into the project's ledger (including the GitHub login and account id this install's connection observed, as a claim the node signs for itself), and establishes your owner root when the project has no owner yet. |
 | `h9k project join <project> --owner <fingerprint>` | Claims an existing owner root instead of establishing a new one, unverified until a node already enrolled under that root vouches for this one. |
-| `h9k project join <project> --invite <secret>` | Proves you hold a single-use secret from `h9k node invite` or `h9k project invite`, so the minting node's daemon vouches you in with no further prompt. |
+| `h9k project join <project> --invite <secret>` | Proves you hold a single-use secret from `h9k node invite` or `h9k project invite`, so the minting node's daemon vouches you in with no further prompt. Pass `-` to read the secret from stdin instead of argv, keeping it out of shell history; passing it directly still works but prints a one-line warning. |
 | `h9k project join <project> --from-project <name>` | Names the registered project whose ledger already vouches for this node, so the vouch is carried into a brand-new project's ledger without the root-holding node ever touching it. |
 | `h9k project add --invite <token>` | Registers a project and finishes the join in the same call with an invite, which is the flow when the project belongs to someone else. |
 | `h9k project assign-key <project>` | Backfills the project's generated key on a ledger that predates it, once, before the first `project invite` on an adopted project. |
@@ -847,9 +847,13 @@ add` refuses up front when this install has no confirmed GitHub account — a Ji
 this node's identity in a project's ledger: it generates this node's own signing key the first time
 any project is joined, and `project add` runs it automatically once the project's repository is
 reachable on disk, pushing a signed commit to the project's own remote. `join` also takes
-`--invite <secret>`, proving possession of a single-use secret from `h9k node invite` (a new node
-of an already-enrolled owner) or `h9k project invite` (a new project member); the minting node's
-own daemon sweep matches the proof and vouches it in with no further prompt (idea 202383dc, T2).
+`--invite <secret>` (pass `-` to read it from stdin instead of argv, keeping it out of shell
+history; passing it directly still works but prints a one-line warning), proving possession of a
+single-use secret from `h9k node invite` (a new node of an already-enrolled owner) or `h9k project
+invite` (a new project member); the minting node's own daemon sweep matches the proof against a
+candidate node file it has confirmed is signed by that file's own key, vouches it in with no
+further prompt (idea 202383dc, T2), and tells any later claimant of the same, now-spent secret that
+it lost rather than leaving them to wonder.
 Both `add` and `join` (invite or not) read this install's GitHub identity fresh from `gh` right
 before they need it (also refreshed once at every daemon start), and `join` additionally refuses
 before any key is generated or any ledger byte is written when the resolved GitHub account has no
