@@ -981,25 +981,18 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// review, cycle 1; ruled by the window, 2026-09-13). <see cref="ComputeMembersAsync"/>'s own doc
     /// names the accepted consequence: a revoked node's earlier, legitimately signed writes stop
     /// being authorized the moment it is revoked, and a later re-vouch restores them again.
+    /// <para>
+    /// The rule itself now lives in <see cref="OwnerChainAuthorization.IsAuthorizedByOwnerAsync"/>
+    /// (idea 6be68ee2, trust-ledger finding 6) so a second caller outside this class —
+    /// <c>PromptAddendaSweepEngine.MaterializeAsync</c>, walking a different ledger ref with a
+    /// raw-commit-bytes signature check rather than this class' own sha-based one — applies the
+    /// identical test without duplicating it.
+    /// </para>
     /// </summary>
-    private async Task<bool> IsAuthorizedByOwnerChainAsync(
-        string repositoryPath, string commit, TrustedOwner owner, CancellationToken cancellationToken)
-    {
-        if (await IsSignedByAsync(repositoryPath, commit, owner.RootPublicKeyLine, cancellationToken))
-        {
-            return true;
-        }
-
-        foreach (TrustedNode node in owner.Nodes)
-        {
-            if (await IsSignedByAsync(repositoryPath, commit, node.PublicKeyLine, cancellationToken))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
+    private Task<bool> IsAuthorizedByOwnerChainAsync(
+        string repositoryPath, string commit, TrustedOwner owner, CancellationToken cancellationToken) =>
+        OwnerChainAuthorization.IsAuthorizedByOwnerAsync(
+            owner, (key, token) => IsSignedByAsync(repositoryPath, commit, key, token), cancellationToken);
 
     /// <summary>
     /// Genesis's own authorization check, never used for any later membership write: identical to
