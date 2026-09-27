@@ -108,15 +108,16 @@ public static class DaemonRestartHandoff
     /// step that fails, and returns that step's own exit code (never zero for a failure).
     /// <para>
     /// The point of no return is the stop signal the first child sends. A first step that never
-    /// launched is before it: the old daemon is still running on the previous binaries and this
-    /// method says so. Anything from there on is after it: the failure names the step, and lists
+    /// launched is before it: nothing has changed from whatever this node's state already was —
+    /// the old daemon still running on the previous binaries, or already stopped — and this method
+    /// says which. Anything from there on is after it: the failure names the step, and lists
     /// only the steps that were never started, so an operator finishing by hand is not told to
     /// re-run work that already succeeded.
     /// </para>
     /// </summary>
     public static async Task<int> RunAsync(
         string binary,
-        DaemonProcessDescriptor runningBefore,
+        DaemonProcessDescriptor? runningBefore,
         RestartChildRunner runChild,
         CancellationToken cancellationToken)
     {
@@ -145,11 +146,14 @@ public static class DaemonRestartHandoff
     }
 
     internal static string DescribeUnlaunchableHandoff(
-        string binary, DaemonProcessDescriptor runningBefore, string problem, IReadOnlyList<RestartStep> steps) =>
+        string binary, DaemonProcessDescriptor? runningBefore, string problem, IReadOnlyList<RestartStep> steps) =>
         $"Could not launch the newly installed h9k at {binary} to restart the daemon: {problem}"
         + Environment.NewLine
-        + $"Nothing has been stopped — h9kd (pid {runningBefore.ProcessId}) is still running on the previous "
-        + "binaries, and the new ones are in place for its next start."
+        + (runningBefore is { } running
+            ? $"Nothing has been stopped — h9kd (pid {running.ProcessId}) is still running on the previous "
+              + "binaries, and the new ones are in place for its next start."
+            : "The daemon was already stopped before this run — the new binaries are in place, but nothing "
+              + "has repaired the schema or started it on them.")
         + Environment.NewLine
         + $"Finish the restart by hand: {DescribeSteps(steps)}.";
 

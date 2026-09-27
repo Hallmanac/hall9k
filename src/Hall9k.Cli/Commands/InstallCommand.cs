@@ -50,7 +50,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         public string? FromRelease { get; init; }
 
         [CommandOption("--restart")]
-        [Description("Restart a running daemon onto the fresh binaries without asking — the newly installed h9k then runs h9k daemon stop, h9k doctor --yes --no-configure and h9k daemon start in that order, so an update carrying a schema change ends with the daemon up on a current schema; that doctor step will start a stopped hall9k-postgres container to get there, but --no-configure keeps it from recording a connection string on a machine where none resolves")]
+        [Description("Bring the daemon up onto the fresh binaries without asking, whether or not one was already running — the newly installed h9k then runs h9k daemon stop, h9k doctor --yes --no-configure and h9k daemon start in that order, so an update carrying a schema change ends with the daemon up on a current schema; that doctor step will start a stopped hall9k-postgres container to get there, but --no-configure keeps it from recording a connection string on a machine where none resolves")]
         public bool Restart { get; init; }
 
         [CommandOption("--no-restart")]
@@ -160,8 +160,11 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// Everything after staging is ready, shared by <c>h9k install --repo</c>,
     /// <c>h9k install --from-release</c>, and <see cref="UpdateCommand"/>: swap the
     /// staged binaries into place, write Hall9k's own Postgres definition, republish the
-    /// canonical skill set, put h9k on the PATH, report the version placed, and — if a
-    /// daemon was already running — offer the restart.
+    /// canonical skill set, put h9k on the PATH, report the version placed, and offer the restart —
+    /// whether or not a daemon was already running, since <c>--restart</c>'s own promise (the doctor
+    /// step and the daemon start) is what actually finishes a migration like the Postgres loopback
+    /// recreate, and a daemon a teammate happened to have stopped by hand is not a reason to leave
+    /// that undone (origin incident, notes/decisions-2026-09-27-hall9k-6b.md).
     /// <para>
     /// The restart straddles the swap deliberately, and the two halves are not interchangeable.
     /// The decision and the live-gate wait (<see cref="PrepareRestartAsync"/>) run BEFORE it, in
@@ -187,6 +190,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         bool noRestart,
         bool now = false,
         bool linkOntoPath = true,
+        string commandName = "install",
         bool writeDefaultConnectionStringIfUnconfigured = false,
         string? connectionStringStartDirectory = null,
         Func<CancellationToken, Task<bool>>? portListeningProbe = null,
@@ -379,13 +383,15 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // degrades to "could not check", which would mean every schema-changing update waits for
         // nothing and --now stops meaning anything. Before the swap the check works, against the
         // schema this binary was built for.
-        bool restartAfterSwap = false;
-        if (runningBefore is not null)
-        {
-            restartAfterSwap = await PrepareRestartAsync(
-                restart, noRestart, now, runningBefore,
-                liveGateFinder ?? LiveGateGuard.FindOnThisNodeAsync, cancellationToken);
-        }
+        // Not gated on runningBefore any more (origin incident, notes/decisions-2026-09-27-hall9k-6b.md:
+        // with the daemon stopped by hand, h9k update --restart used to skip this whole decision and
+        // exit having done nothing — the compose rewrite above landed but nothing ever recreated the
+        // container or brought the daemon up on it). --restart now runs the same hand-off whether or
+        // not a daemon was running to restart; PrepareRestartAsync itself is what tells those two
+        // states apart for its own prompt and its own live-gate wait.
+        bool restartAfterSwap = await PrepareRestartAsync(
+            restart, noRestart, now, runningBefore,
+            liveGateFinder ?? LiveGateGuard.FindOnThisNodeAsync, cancellationToken);
 
         // Deliberately last: h9k update runs from the very binaries this call is about to
         // replace, and the runtime resolves an assembly's first load lazily by absolute
@@ -439,16 +445,15 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         AnsiConsole.MarkupLine(OrchestratorPointer.ForNode());
 
-        if (runningBefore is null)
-        {
-            return ExitCodes.Ok;
-        }
-
         if (!restartAfterSwap)
         {
-            AnsiConsole.MarkupLine(
-                "[dim]Left running — it picks up the new binaries at its next start "
-                + "(h9k daemon stop && h9k doctor --yes && h9k daemon start, or re-run install with --restart).[/]");
+            // Printed regardless of runningBefore: the container hall9k-postgres publishes on can
+            // be stale on disk even with no daemon running to restart, so this is the one line
+            // standing between an operator finding out the migration is not actually finished and
+            // the command silently leaving it that way.
+            string state = runningBefore is null ? "Not running" : "Left running";
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]{state} — the schema and the container's binding stay whatever they already were until h9k daemon stop, h9k doctor --yes and h9k daemon start actually run (h9k {commandName} --restart does all three).[/]");
             return ExitCodes.Ok;
         }
 
@@ -2136,27 +2141,41 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// is — wait out any live verification gate. Returns whether the post-swap hand-off should
     /// run. Everything here is the last work this process does that reaches the store, for the
     /// reason spelled out at the call site.
+    /// <para>
+    /// <paramref name="runningBefore"/> is null on a node whose daemon was already stopped before
+    /// this run started — an explicit <c>--restart</c> still runs the full post-swap hand-off there
+    /// (the doctor step and the daemon start are what actually finish a Postgres migration, whether
+    /// or not there was a daemon to stop first), it is only the ambiguous no-flag prompt below that
+    /// needs a daemon actually running to make sense of asking "restart it".
+    /// </para>
     /// </summary>
     private static async Task<bool> PrepareRestartAsync(
         bool restartRequested,
         bool noRestartRequested,
         bool now,
-        DaemonProcessDescriptor runningBefore,
+        DaemonProcessDescriptor? runningBefore,
         Func<CancellationToken, Task<IReadOnlyList<LiveGate>?>> findLiveGates,
         CancellationToken cancellationToken)
     {
-        AnsiConsole.MarkupLineInterpolated(
-            $"[yellow]h9kd is running (pid {runningBefore.ProcessId}) on the binaries this install is about to replace.[/]");
+        if (runningBefore is { } running)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]h9kd is running (pid {running.ProcessId}) on the binaries this install is about to replace.[/]");
+        }
 
         // The question is asked here, ahead of the swap, because its answer decides whether the
         // gate wait below runs at all and the wait cannot happen after the swap. An operator who
         // walks away from this prompt leaves ~/.hall9k/bin exactly as it was rather than
         // half-updated — the swap has not run yet — and re-running the command is idempotent.
+        // With no daemon running and neither flag given, the ambiguous case defaults to false
+        // rather than prompting "restart it" about a daemon that was never running to begin with;
+        // --restart itself is unaffected by any of this and always wins the switch below.
         bool restart = (NoRestart: noRestartRequested, Restart: restartRequested) switch
         {
             { NoRestart: true } => false,
             { Restart: true } => true,
-            _ => AnsiConsole.Profile.Capabilities.Interactive
+            _ => runningBefore is not null
+                && AnsiConsole.Profile.Capabilities.Interactive
                 && AnsiConsole.Confirm("Restart it onto the new binaries once they are in place?"),
         };
         if (!restart)
@@ -2180,7 +2199,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// steps beyond launching them, because it is the wrong release to run any of them.
     /// </summary>
     private static async Task<int> RestartThroughNewBinaryAsync(
-        DaemonProcessDescriptor runningBefore, RestartChildRunner runChild, CancellationToken cancellationToken)
+        DaemonProcessDescriptor? runningBefore, RestartChildRunner runChild, CancellationToken cancellationToken)
     {
         int handoff = await DaemonRestartHandoff.RunAsync(
             DaemonRestartHandoff.InstalledCliPath, runningBefore, runChild, cancellationToken);
