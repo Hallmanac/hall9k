@@ -651,14 +651,19 @@ public sealed class PromptAddendaSweepEngine(
     /// the "newest commit touching path" under a path-filtered read, even though it is unmistakably
     /// the ref's own current tip (independent pre-PR review, cycle 3, both lenses, high). No commit
     /// at all counts as authorized when the ref does not exist yet — there is nothing at the tip to
-    /// override.
+    /// override. The predicate below always reports "stop" after the first (tip) entry rather than
+    /// reusing the real owner-search predicate: this caller only ever reads <c>commits[0]</c>, so an
+    /// unauthorized tip searching backward through history for some older authorized ancestor would
+    /// spawn a git process and a signature check per commit purely to answer a question that depends
+    /// only on the tip — precisely the WriteAsync/DeleteAsync reissue no-op check this method exists
+    /// for (independent pre-PR review, cycle 4, adversarial lens, medium).
     /// </summary>
     private async Task<bool> NewestCommitIsOwnerAuthorizedAsync(
         string repositoryPath, string refName, string path, TrustChain trustChain, CancellationToken cancellationToken)
     {
         IReadOnlyList<LedgerPathCommit> commits = await commitReader.ReadCommitsTouchingPathAsync(
             repositoryPath, refName, path,
-            (rawCommitBytes, token) => IsAuthorizedByAnyOwnerRoleMemberAsync(repositoryPath, rawCommitBytes, trustChain, token),
+            (_, _) => Task.FromResult(true),
             cancellationToken);
         if (commits.Count == 0)
         {
