@@ -34,7 +34,12 @@ public interface ILedgerCommitReader
     /// sha is identical regardless of which repository holds it). Lets a caller confirm a candidate
     /// bundle will actually verify before ever writing it — <c>h9k project join</c>'s own carry path
     /// uses this so it never commits a bundle doomed to fail the identical check
-    /// <c>GitLedgerChainReader</c> runs on every later read.
+    /// <c>GitLedgerChainReader</c> runs on every later read. Throws <see cref="InvalidOperationException"/>
+    /// when the injection step itself fails (disk, permissions, an unavailable git binary) — an
+    /// infrastructure failure, never a genuine "not signed" verdict, so a caller must not treat the
+    /// exception as false: <c>InviteSweepEngine</c> must not cache it against an unmoved ref tip, and
+    /// <c>ProjectJoinCommand</c>'s own carry path must not let it crash the join, only skip the
+    /// candidate under review (or fail the attempt when the candidate was named explicitly).
     /// </summary>
     Task<bool> IsSignedByAsync(
         string repositoryPath, string rawCommitBytes, string publicKeyLine, CancellationToken cancellationToken);
