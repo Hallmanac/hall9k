@@ -14,6 +14,16 @@ namespace Hall9k.Connectors.Ledger;
 public sealed record LedgerSignedCommit(string Content, string CommitSha, string RawCommitBytes);
 
 /// <summary>
+/// One commit reachable from a ledger ref's own tip that touched a given path, newest first — what
+/// <see cref="ILedgerCommitReader.ReadCommitsTouchingPathAsync"/> reports for a caller
+/// (<c>PromptAddendaSweepEngine.MaterializeAsync</c>) that needs to walk PAST the newest commit
+/// rather than trust it unconditionally, the way <see cref="LedgerSignedCommit"/> alone lets a
+/// caller do. <see cref="Content"/> is null exactly when this commit deleted the path — a real
+/// state to materialize (the owner's own removal), never an absence of data about the commit
+/// itself.</summary>
+public sealed record LedgerPathCommit(string? Content, string CommitSha, string RawCommitBytes);
+
+/// <summary>
 /// Reads a path's current content together with the raw bytes of the exact commit that produced it.
 /// The real implementation, <see cref="GitLedgerCommitReader"/>, is git plumbing over an
 /// already-local, already-cloned repository — the carrying node reads its own local copy of the
@@ -43,4 +53,16 @@ public interface ILedgerCommitReader
     /// </summary>
     Task<bool> IsSignedByAsync(
         string repositoryPath, string rawCommitBytes, string publicKeyLine, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Every commit reachable from <paramref name="refName"/>'s own tip that touched
+    /// <paramref name="path"/>, newest first, deletion commits included — an empty list when the ref
+    /// does not exist yet. <c>PromptAddendaSweepEngine.MaterializeAsync</c>'s own owner test (idea
+    /// 6be68ee2, trust-ledger finding 6) walks this newest to oldest looking for the first one an
+    /// Owner-role member's chain authorizes, skipping a member's overwrite, a member's delete, an
+    /// unsigned commit, or a revoked node's commit along the way, rather than trusting whichever
+    /// commit merely happens to be newest the way <see cref="ReadSignedCommitAsync"/> does.
+    /// </summary>
+    Task<IReadOnlyList<LedgerPathCommit>> ReadCommitsTouchingPathAsync(
+        string repositoryPath, string refName, string path, CancellationToken cancellationToken);
 }

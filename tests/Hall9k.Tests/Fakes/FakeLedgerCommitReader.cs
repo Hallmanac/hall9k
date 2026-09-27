@@ -14,6 +14,7 @@ namespace Hall9k.Tests.Fakes;
 internal sealed class FakeLedgerCommitReader : ILedgerCommitReader
 {
     private readonly IReadOnlyDictionary<string, LedgerSignedCommit> commitsByPath;
+    private readonly IReadOnlyDictionary<string, IReadOnlyList<LedgerPathCommit>>? commitHistoryByPath;
     private readonly Func<string, string, bool> isSignedBy;
 
     /// <param name="commitsByPath">Keyed by the ledger path (never repository or ref), since every
@@ -38,6 +39,20 @@ internal sealed class FakeLedgerCommitReader : ILedgerCommitReader
         this.isSignedBy = isSignedBy;
     }
 
+    /// <param name="commitHistoryByPath">Keyed by the ledger path, newest commit first — the full
+    /// history <see cref="ReadCommitsTouchingPathAsync"/> reports, for a scenario (a prompt-addenda
+    /// owner test) that needs more than the single newest commit <see cref="ReadSignedCommitAsync"/>
+    /// alone can express.</param>
+    /// <param name="isSignedBy">The identical per-(rawCommitBytes, publicKeyLine) seam the other
+    /// constructor takes.</param>
+    public FakeLedgerCommitReader(
+        IReadOnlyDictionary<string, IReadOnlyList<LedgerPathCommit>> commitHistoryByPath, Func<string, string, bool> isSignedBy)
+    {
+        this.commitHistoryByPath = commitHistoryByPath;
+        commitsByPath = new Dictionary<string, LedgerSignedCommit>();
+        this.isSignedBy = isSignedBy;
+    }
+
     public Task<LedgerSignedCommit?> ReadSignedCommitAsync(
         string repositoryPath, string refName, string path, CancellationToken cancellationToken) =>
         Task.FromResult(commitsByPath.TryGetValue(path, out LedgerSignedCommit? commit) ? commit : null);
@@ -45,4 +60,20 @@ internal sealed class FakeLedgerCommitReader : ILedgerCommitReader
     public Task<bool> IsSignedByAsync(
         string repositoryPath, string rawCommitBytes, string publicKeyLine, CancellationToken cancellationToken) =>
         Task.FromResult(isSignedBy(rawCommitBytes, publicKeyLine));
+
+    public Task<IReadOnlyList<LedgerPathCommit>> ReadCommitsTouchingPathAsync(
+        string repositoryPath, string refName, string path, CancellationToken cancellationToken)
+    {
+        if (commitHistoryByPath is not null)
+        {
+            return Task.FromResult(
+                commitHistoryByPath.TryGetValue(path, out IReadOnlyList<LedgerPathCommit>? history)
+                    ? history
+                    : (IReadOnlyList<LedgerPathCommit>)[]);
+        }
+
+        return Task.FromResult(commitsByPath.TryGetValue(path, out LedgerSignedCommit? commit)
+            ? (IReadOnlyList<LedgerPathCommit>)[new LedgerPathCommit(commit.Content, commit.CommitSha, commit.RawCommitBytes)]
+            : []);
+    }
 }
