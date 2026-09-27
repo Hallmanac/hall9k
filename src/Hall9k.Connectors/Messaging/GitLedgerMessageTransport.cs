@@ -292,7 +292,7 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
             repositoryPath, ["rev-parse", "--verify", "--quiet", $"{refName}^{{commit}}"], cancellationToken))?.Trim();
         if (tip.IsBlank())
         {
-            return TransportReadResult.Ok([], sinceSeq);
+            return TransportReadResult.Ok([], sinceSeq, senderFingerprint: senderFingerprint);
         }
 
         // A reader whose own cursor sits below whatever this outbox's own last squash left as its
