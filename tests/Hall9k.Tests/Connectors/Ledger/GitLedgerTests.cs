@@ -17,6 +17,7 @@ public sealed class GitLedgerTests : IDisposable
 {
     private readonly LedgerTestRepo _repo = new();
     private readonly GitLedger _ledger = new(NullLogger<GitLedger>.Instance);
+    private readonly GitLedgerCommitReader _commitReader = new();
     private readonly LedgerCommitter _committer = new("Ledger Test", "ledger-test@hall9k.local");
     private readonly string _signingKeyPath;
     private readonly LedgerSigningKey _signingKey;
@@ -449,6 +450,164 @@ public sealed class GitLedgerTests : IDisposable
         Func<Task> readAll = () => _ledger.ReadAllAsync(node, unregistered, "records/", CancellationToken.None);
 
         await readAll.Should().ThrowAsync<ArgumentException>();
+    }
+
+    /// <summary>
+    /// <see cref="GitLedgerCommitReader.ReadCommitsTouchingPathAsync"/>'s own owner-walk seam
+    /// starts here — folded into this class rather than kept in one of its own (independent pre-PR
+    /// review, cycle 5, conformance lens, low: <see cref="LedgerTestRepo"/> and the real
+    /// <c>ssh-keygen</c> fixture this seam needs are already this class' own, per Brian's
+    /// 2026-09-13 rule that no test outside <see cref="GitLedgerTests"/> and the message-transport
+    /// chain reader's own tests touches a real repository). <c>PromptAddendaSweepEngineTests</c>
+    /// (both the unit and the RequiresDocker integration tier) drive
+    /// <c>PromptAddendaSweepEngine</c>'s own owner test through a hand-built
+    /// <c>FakeLedgerCommitReader</c>, which can only ever return whatever history a test author
+    /// writes by hand — it cannot expose a real git behaviour nobody thought to fake.
+    /// <para>
+    /// This first case: a member writes X, then the owner re-asserts the identical bytes X with
+    /// their own signing key. The owner's own commit is TREESAME to its parent for this path (git
+    /// computes the exact same tree entry for byte-identical content), so `git log -- path` — what
+    /// this seam used before the cycle-3 fix — prunes it unconditionally, and a caller walking that
+    /// pruned history could never see the owner's own reissue at all. Reproduced directly against
+    /// real git here rather than only through a hand-built fake.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task ReadCommitsTouchingPathAsync_SeesAnOwnerReissueOfContentAMemberAlreadyWrote()
+    {
+        string refName = UniqueTestRef();
+        string hub = _repo.CreateHub();
+        string node = _repo.CloneNode(hub);
+        (string ownerKeyPath, string ownerPublicKey) = GenerateSshKeypair();
+        try
+        {
+            LedgerSigningKey ownerSigningKey = new(ownerKeyPath);
+
+            await _ledger.WriteAsync(
+                new LedgerWriteRequest(node, refName, "a.yaml", "shared content\n", null, "member write", _committer, ownerSigningKey),
+                CancellationToken.None);
+            LedgerFile memberTip = await _ledger.ReadAsync(node, refName, "a.yaml", CancellationToken.None);
+
+            LedgerWriteOutcome reissue = await _ledger.WriteAsync(
+                new LedgerWriteRequest(
+                    node, refName, "a.yaml", "shared content\n", memberTip.BlobId, "owner reissue", _committer, ownerSigningKey),
+                CancellationToken.None);
+            reissue.Verdict.Should().Be(LedgerWriteVerdict.Written, "identical content is still a distinct, real commit");
+
+            IReadOnlyList<LedgerPathCommit> commits = await _commitReader.ReadCommitsTouchingPathAsync(
+                node, refName, "a.yaml",
+                (rawCommitBytes, cancellationToken) => _commitReader.IsSignedByAsync(node, rawCommitBytes, ownerPublicKey, cancellationToken),
+                CancellationToken.None);
+
+            commits.Should().ContainSingle(
+                "the walk must stop at the reissue commit — the first one the predicate accepts — never reading "
+                + "the member's own older commit behind it")
+                .Which.CommitSha.Should().Be(reissue.CommitId);
+            commits[0].Content.Should().Be("shared content\n");
+        }
+        finally
+        {
+            File.Delete(ownerKeyPath);
+            File.Delete($"{ownerKeyPath}.pub");
+        }
+    }
+
+    /// <summary>The mirror with no predicate ever accepting: the whole real history comes back,
+    /// including the TREESAME reissue commit — proving the fix is dropping the pathspec, not merely
+    /// an early-stop side effect that happens to hide the defect.</summary>
+    [Fact]
+    public async Task ReadCommitsTouchingPathAsync_WithNothingEverAuthorized_ReturnsTheWholeHistoryIncludingATreesameCommit()
+    {
+        string refName = UniqueTestRef();
+        string hub = _repo.CreateHub();
+        string node = _repo.CloneNode(hub);
+        (string keyPath, _) = GenerateSshKeypair();
+        try
+        {
+            LedgerSigningKey signingKey = new(keyPath);
+
+            LedgerWriteOutcome first = await _ledger.WriteAsync(
+                new LedgerWriteRequest(node, refName, "a.yaml", "shared content\n", null, "first write", _committer, signingKey),
+                CancellationToken.None);
+            LedgerFile tip = await _ledger.ReadAsync(node, refName, "a.yaml", CancellationToken.None);
+            LedgerWriteOutcome reissue = await _ledger.WriteAsync(
+                new LedgerWriteRequest(
+                    node, refName, "a.yaml", "shared content\n", tip.BlobId, "reissue", _committer, signingKey),
+                CancellationToken.None);
+
+            IReadOnlyList<LedgerPathCommit> commits = await _commitReader.ReadCommitsTouchingPathAsync(
+                node, refName, "a.yaml", (_, _) => Task.FromResult(false), CancellationToken.None);
+
+            commits.Select(commit => commit.CommitSha).Should().Equal(reissue.CommitId, first.CommitId);
+        }
+        finally
+        {
+            File.Delete(keyPath);
+            File.Delete($"{keyPath}.pub");
+        }
+    }
+
+    /// <summary>
+    /// The laundering defect the cycle-3 fix above introduced (independent pre-PR review, cycle 5,
+    /// conformance and adversarial lenses, both high): dropping the pathspec entirely made every
+    /// commit's own tree for `path` matter, not just commits that actually wrote it, so an owner's
+    /// later, wholly unrelated write to a SECOND path — built, as every ledger write is, on top of
+    /// whatever the ref's tip already held for every other path — used to read as the owner
+    /// re-vouching for a member's own unauthorized overwrite of the FIRST path, purely because that
+    /// overwrite was still sitting in the second commit's own inherited tree. Reproduced end to end
+    /// against real git: an owner write, a member overwrite of the same path, then an unrelated
+    /// owner write to a second path — the walk for the first path must still land on the member's
+    /// own unauthorized commit (and, walking past it, the owner's real one), never on the second
+    /// path's commit.
+    /// </summary>
+    [Fact]
+    public async Task ReadCommitsTouchingPathAsync_AnOwnerWriteToADifferentPathNeverLaundersAMembersOverwriteOfThisOne()
+    {
+        string refName = UniqueTestRef();
+        string hub = _repo.CreateHub();
+        string node = _repo.CloneNode(hub);
+        (string ownerKeyPath, string ownerPublicKey) = GenerateSshKeypair();
+        (string memberKeyPath, _) = GenerateSshKeypair();
+        try
+        {
+            LedgerSigningKey ownerSigningKey = new(ownerKeyPath);
+            LedgerSigningKey memberSigningKey = new(memberKeyPath);
+
+            LedgerWriteOutcome ownerWrite = await _ledger.WriteAsync(
+                new LedgerWriteRequest(node, refName, "work.md", "owner content\n", null, "owner sets work", _committer, ownerSigningKey),
+                CancellationToken.None);
+            LedgerFile ownerTip = await _ledger.ReadAsync(node, refName, "work.md", CancellationToken.None);
+
+            LedgerWriteOutcome memberOverwrite = await _ledger.WriteAsync(
+                new LedgerWriteRequest(
+                    node, refName, "work.md", "member overwrite\n", ownerTip.BlobId, "member overwrites work",
+                    _committer, memberSigningKey),
+                CancellationToken.None);
+
+            await _ledger.WriteAsync(
+                new LedgerWriteRequest(
+                    node, refName, "review-lap.md", "owner content\n", null, "owner sets review-lap", _committer, ownerSigningKey),
+                CancellationToken.None);
+
+            IReadOnlyList<LedgerPathCommit> commits = await _commitReader.ReadCommitsTouchingPathAsync(
+                node, refName, "work.md",
+                (rawCommitBytes, cancellationToken) => _commitReader.IsSignedByAsync(node, rawCommitBytes, ownerPublicKey, cancellationToken),
+                CancellationToken.None);
+
+            commits.Select(commit => commit.CommitSha).Should().Equal(
+                [memberOverwrite.CommitId, ownerWrite.CommitId],
+                "the owner's later write to review-lap.md never touched work.md, so it must never appear here — "
+                + "laundering it in would let it vouch for the member's own unauthorized overwrite as though the "
+                + "owner had re-asserted it");
+            commits[0].Content.Should().Be("member overwrite\n");
+        }
+        finally
+        {
+            File.Delete(ownerKeyPath);
+            File.Delete($"{ownerKeyPath}.pub");
+            File.Delete(memberKeyPath);
+            File.Delete($"{memberKeyPath}.pub");
+        }
     }
 
     private static string UniqueTestRef() => LedgerRefRegistry.RegisterExact($"refs/hall9k/ledger/test-{Guid.NewGuid():N}").RefspecSource;

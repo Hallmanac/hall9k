@@ -1044,6 +1044,28 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         public Task<bool> IsSignedByAsync(
             string repositoryPath, string rawCommitBytes, string publicKeyLine, CancellationToken cancellationToken) =>
             Task.FromResult(true);
+
+        /// <summary>Never exercised by any scenario driving this fake: every test in this file
+        /// reads a candidate's current content through <see cref="ReadSignedCommitAsync"/> alone,
+        /// never <c>PromptAddendaSweepEngine</c>'s own owner-history walk. Reports the ledger's
+        /// current content for <paramref name="path"/> as the sole entry, trusting it unconditionally
+        /// the same way <see cref="IsSignedByAsync"/> already does.</summary>
+        public async Task<IReadOnlyList<LedgerPathCommit>> ReadCommitsTouchingPathAsync(
+            string repositoryPath, string refName, string path,
+            Func<string, CancellationToken, Task<bool>> isAuthorizedAsync, CancellationToken cancellationToken)
+        {
+            LedgerFile file = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
+            return file.Exists && file.Content is { } content
+                ? [new LedgerPathCommit(content, CommitSha: "fake-sha", RawCommitBytes: "fake-signed-commit")]
+                : [];
+        }
+
+        /// <summary>Never exercised by any scenario driving this fake, for the same reason
+        /// <see cref="ReadCommitsTouchingPathAsync"/> above is not: trusts unconditionally.</summary>
+        public Task<bool> IsRefTipAuthorizedAsync(
+            string repositoryPath, string refName,
+            Func<string, CancellationToken, Task<bool>> isAuthorizedAsync, CancellationToken cancellationToken) =>
+            Task.FromResult(true);
     }
 
     private async Task WipeAsync() => await _postgres.Store.Advanced.Clean.CompletelyRemoveAllAsync();

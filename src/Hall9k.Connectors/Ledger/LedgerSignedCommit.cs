@@ -55,29 +55,46 @@ public interface ILedgerCommitReader
         string repositoryPath, string rawCommitBytes, string publicKeyLine, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Walks <paramref name="refName"/>'s own tip backward, first-parent order, newest first —
-    /// the ref's WHOLE real history, never limited to commits that touched <paramref name="path"/>
-    /// specifically: a commit whose tree for that one path happens to be byte-identical to its
-    /// parent's is still real history a caller must be able to see, the exact shape a signed
-    /// reissue of already-current content produces (independent pre-PR review, cycle 3, both
-    /// lenses, high — no <c>git log</c> flag makes a path-filtered walk report a TREESAME commit,
-    /// so the only fix is dropping the pathspec entirely). An empty list when the ref does not
-    /// exist yet.
+    /// Walks <paramref name="refName"/>'s own tip backward, first-parent order, newest first,
+    /// over the ref's WHOLE real history — but reports only the commits that <see cref="GitLedger"/>
+    /// itself stamped as an actual write or delete of <paramref name="path"/>
+    /// (<c>LedgerCommitPathTrailer</c>), never merely a commit whose tree for that path happens to
+    /// carry forward unchanged from its parent. That distinction is what lets a signed reissue of
+    /// already-current content still count (its tree for <paramref name="path"/> is byte-identical
+    /// to its parent's — TREESAME — but its own trailer still names <paramref name="path"/>,
+    /// independent pre-PR review, cycle 3, both lenses, high) while an unrelated commit that wrote
+    /// some OTHER path entirely never does, even though it too is TREESAME for <paramref name="path"/>
+    /// (cycle 5, conformance and adversarial lenses, both high: no git tree diff can tell those two
+    /// cases apart, only the trailer can). An empty list when the ref does not exist yet.
     /// <para>
     /// Stops walking — and returns everything read up to and including that one commit, never
     /// anything older — the moment <paramref name="isAuthorizedAsync"/> accepts a commit's own raw
-    /// bytes: <c>PromptAddendaSweepEngine.MaterializeAsync</c>'s and
-    /// <c>NewestCommitIsOwnerAuthorizedAsync</c>'s own owner test (idea 6be68ee2, trust-ledger
-    /// finding 6) only ever wants the FIRST (newest) commit an Owner-role member's chain
-    /// authorizes, so a repository collaborator who pushes any number of unsigned commits ahead of
-    /// the last authorized one costs this walk only as many git processes as stand between the tip
-    /// and that authorized commit, never the ref's entire history (independent pre-PR review,
-    /// cycle 3, adversarial lens, medium). A caller with no meaningful way to answer early —
-    /// nothing in the returned list should ever short-circuit the walk — passes a predicate that
-    /// never returns true, and reads the ref's own entire history back exactly as before.
+    /// bytes: <c>PromptAddendaSweepEngine.MaterializeAsync</c>'s own owner test (idea 6be68ee2,
+    /// trust-ledger finding 6) only ever wants the FIRST (newest) commit an Owner-role member's
+    /// chain authorizes, so a repository collaborator who pushes any number of unsigned commits
+    /// ahead of the last authorized one costs this walk only as many git processes as stand
+    /// between the tip and that authorized commit, never the ref's entire history (independent
+    /// pre-PR review, cycle 3, adversarial lens, medium). A caller with no meaningful way to
+    /// answer early — nothing in the returned list should ever short-circuit the walk — passes a
+    /// predicate that never returns true, and reads every path-matching commit in the ref's own
+    /// entire history back.
     /// </para>
     /// </summary>
     Task<IReadOnlyList<LedgerPathCommit>> ReadCommitsTouchingPathAsync(
         string repositoryPath, string refName, string path,
+        Func<string, CancellationToken, Task<bool>> isAuthorizedAsync, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Whether <paramref name="refName"/>'s own literal tip commit — regardless of which path it
+    /// actually wrote — is accepted by <paramref name="isAuthorizedAsync"/>. Unlike
+    /// <see cref="ReadCommitsTouchingPathAsync"/>, this never filters by path at all:
+    /// <c>PromptAddendaSweepEngine</c>'s own write/delete no-op check
+    /// (<c>NewestCommitIsOwnerAuthorizedAsync</c>) needs to know whether the ref's own current
+    /// state, whatever it is, is safe to leave standing — never merely whether one path's own last
+    /// write was authorized. <c>true</c> when the ref does not exist yet: there is nothing at the
+    /// tip to override.
+    /// </summary>
+    Task<bool> IsRefTipAuthorizedAsync(
+        string repositoryPath, string refName,
         Func<string, CancellationToken, Task<bool>> isAuthorizedAsync, CancellationToken cancellationToken);
 }

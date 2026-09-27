@@ -894,6 +894,13 @@ public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixtur
             LedgerFile file = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
             return file.Exists ? [new LedgerPathCommit(file.Content, file.BlobId!, file.BlobId!)] : [];
         }
+
+        /// <summary>Trusts unconditionally, the same as <see cref="IsSignedByAsync"/> above: every
+        /// scenario driving this reader trusts whatever it just pushed.</summary>
+        public Task<bool> IsRefTipAuthorizedAsync(
+            string repositoryPath, string refName,
+            Func<string, CancellationToken, Task<bool>> isAuthorizedAsync, CancellationToken cancellationToken) =>
+            Task.FromResult(true);
     }
 
     /// <summary>A thin <see cref="ILedger"/> decorator whose <see cref="ListRefsAsync"/> call can be
