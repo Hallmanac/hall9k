@@ -219,6 +219,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         Table table = new Table().Border(TableBorder.None).HideHeaders();
         table.AddColumns("k", "v");
         table.AddRow("Orchestrator model", OrchestratorModelRow(project, operatingSettings));
+        table.AddRow("Orchestrator effort", OrchestratorEffortRow(project, operatingSettings));
         if (project.Effort.IsWellFormed)
         {
             table.AddRow("Effort", $"{project.Effort.Value} [dim](project override, wins over the node's; a task's own wins over it)[/]");
@@ -618,6 +619,24 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
                 : "the node's own resolution (h9k config show)";
         return $"{resolved.EscapeMarkup()} [dim]— {origin}. Override: h9k project set "
             + $"{project.Name.EscapeMarkup()} --orchestrator-model <tier>[/]";
+    }
+
+    /// <summary>
+    /// The effort an orchestrator window for this project actually resolves to right now
+    /// (<see cref="OrchestratorEffort.ForProject"/>'s own chain), and which override in that chain
+    /// is the one deciding it (task: the orchestrator window's effort becomes a rendered project
+    /// and node setting). Unlike <see cref="OrchestratorModelRow"/>, there is no "project's own
+    /// dispatch value" rung on this chain — see <see cref="OrchestratorEffort"/>'s own doc for why.
+    /// </summary>
+    internal static string OrchestratorEffortRow(ProjectDetails project, OperatingSettings operatingSettings)
+    {
+        AgentEffort resolved = OrchestratorEffort.ForProject(project.OrchestratorEffort, operatingSettings);
+        string origin = project.OrchestratorEffort.IsWellFormed
+            ? "this project's own override"
+            : "the node's own resolution (h9k config show)";
+        string resolvedDisplay = resolved.IsWellFormed ? resolved.Value : "(unset — the model's own default decides)";
+        return $"{resolvedDisplay.EscapeMarkup()} [dim]— {origin}. Override: h9k project set "
+            + $"{project.Name.EscapeMarkup()} --orchestrator-effort <level>[/]";
     }
 
     /// <summary>

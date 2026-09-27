@@ -297,6 +297,45 @@ public sealed class ConfigSetCommandTests
         operating.OrchestratorModel.Should().BeNull("a refused value must never reach the config file");
     }
 
+    [Fact]
+    public void Applying_the_orchestrator_effort_sets_only_that_field_and_leaves_the_node_wide_effort_alone()
+    {
+        ConfigSetCommand.Settings settings = new() { OrchestratorEffort = "high" };
+        OperatingSettings operating = new() { Effort = "medium" };
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.OrchestratorEffort.Should().Be("high");
+        operating.Effort.Should().Be("medium", "the orchestrator window's effort is independent of agent dispatch");
+    }
+
+    [Fact]
+    public void The_word_default_clears_an_existing_orchestrator_effort_override()
+    {
+        ConfigSetCommand.Settings settings = new() { OrchestratorEffort = "default" };
+        OperatingSettings operating = new() { OrchestratorEffort = "high" };
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.OrchestratorEffort.Should().BeNull();
+    }
+
+    [Fact]
+    public void An_unrecognized_orchestrator_effort_is_refused_naming_the_windows_own_chain()
+    {
+        ConfigSetCommand.Settings settings = new() { OrchestratorEffort = "max" };
+        OperatingSettings operating = new();
+
+        Action act = () => ConfigSetCommand.Apply(settings, operating, []);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("--orchestrator-effort must be one of low, medium, high, xhigh*")
+            .WithMessage("*orchestrator window's own effort chain*");
+        operating.OrchestratorEffort.Should().BeNull("a refused value must never reach the config file");
+    }
+
     [Theory]
     [InlineData("low", "low")]
     [InlineData("medium", "medium")]

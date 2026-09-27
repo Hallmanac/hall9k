@@ -2,6 +2,7 @@ using Hall9k.Cli.Orchestrator;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.ValueObjects;
 using Spectre.Console;
 
 namespace Hall9k.Cli.ProjectHomes;
@@ -88,6 +89,8 @@ public static class ProjectHomeRecipe
         ConfigFileReadResult operatingSettingsRead = await PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken);
         string resolvedOrchestratorModel = OrchestratorModel.ForProject(
             project.OrchestratorModel, project.Model, operatingSettingsRead.Settings);
+        AgentEffort resolvedOrchestratorEffort = OrchestratorEffort.ForProject(
+            project.OrchestratorEffort, operatingSettingsRead.Settings);
         if (operatingSettingsRead.Problem is { } settingsProblem)
         {
             steps.Add(ProjectHomeStep.Skipped(
@@ -98,7 +101,7 @@ public static class ProjectHomeRecipe
 
         steps.Add(LaunchAnchorDocument.WriteStep(ProjectHomePaths.LaunchAnchorFile(home)));
         steps.Add(RecipeSettingsDocument.WriteStep(
-            ProjectHomePaths.RecipeSettingsFile(home), resolvedOrchestratorModel));
+            ProjectHomePaths.RecipeSettingsFile(home), resolvedOrchestratorModel, resolvedOrchestratorEffort));
         steps.AddRange(RecipeSkillPublisher.Seed(home));
 
         return steps;

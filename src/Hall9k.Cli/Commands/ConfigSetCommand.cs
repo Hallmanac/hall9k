@@ -94,6 +94,17 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "the compiled platform fallback, decides again.")]
         public string? OrchestratorModel { get; init; }
 
+        [CommandOption("--orchestrator-effort <low|medium|high|xhigh>")]
+        [Description(
+            "This node's orchestrator-window effort override (task: the orchestrator window's effort "
+            + "becomes a rendered project and node setting) — the reasoning effort recipes/settings.json "
+            + "is rendered for, independent of --effort and every other dispatch effort (a task's own, "
+            + "a project's --effort, a per-role effort): none of those ever reach the window, the same "
+            + "independence --orchestrator-model already has from --default-model. Accepts low, medium, "
+            + "high or xhigh. 'default' clears the override; a project's own --orchestrator-effort still "
+            + "wins for that project's window regardless, and otherwise each model's own default decides.")]
+        public string? OrchestratorEffort { get; init; }
+
         [CommandOption("--model-build <MODEL>")]
         [Description("This node's model for the Build role — the session that writes the feature. 'default' clears it.")]
         public string? ModelBuild { get; init; }
@@ -412,17 +423,21 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         }
 
         // Otherwise recipes/settings.json (task: an operator starts a lean node or project
-        // orchestrator window) pins whatever model was resolved the last time h9k install, h9k
-        // update, or this branch ran, and nothing else ever refreshes it — an orchestrator window
-        // launched from the node's own recipe would keep reading a model this very command just
-        // changed (independent pre-PR review, cycle 1, adversarial lens). This re-renders only the
-        // node's own file; a registered project's own recipes/settings.json that defers to the
-        // node is caught up the next time h9k project init runs against it, or the next time that
-        // project's own --model/--orchestrator-model changes (h9k project set already re-renders
-        // its own file on either).
-        if ((settings.DefaultModel is not null || settings.OrchestratorModel is not null) && mutated is not null)
+        // orchestrator window) pins whatever model and effort were resolved the last time h9k
+        // install, h9k update, or this branch ran, and nothing else ever refreshes it — an
+        // orchestrator window launched from the node's own recipe would keep reading a model or
+        // effort this very command just changed (independent pre-PR review, cycle 1, adversarial
+        // lens; the same gap for --orchestrator-effort, task: the orchestrator window's effort
+        // becomes a rendered project and node setting). This re-renders only the node's own file; a
+        // registered project's own recipes/settings.json that defers to the node is caught up the
+        // next time h9k project init runs against it, or the next time that project's own
+        // --model/--orchestrator-model/--orchestrator-effort changes (h9k project set already
+        // re-renders its own file on any of those).
+        if ((settings.DefaultModel is not null || settings.OrchestratorModel is not null
+                || settings.OrchestratorEffort is not null) && mutated is not null)
         {
-            RecipeSettingsDocument.Write(RecipeLibraryPaths.SettingsFile, OrchestratorModel.ForNode(mutated));
+            RecipeSettingsDocument.Write(
+                RecipeLibraryPaths.SettingsFile, OrchestratorModel.ForNode(mutated), OrchestratorEffort.ForNode(mutated));
         }
 
         foreach (string line in changed)
@@ -443,7 +458,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
             && settings.Effort is null && settings.RoleEfforts.All(option => option.Input is null)
-            && settings.OrchestratorModel is null
+            && settings.OrchestratorModel is null && settings.OrchestratorEffort is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelReviewFinalPass is null
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
@@ -481,7 +496,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         if (settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
             && settings.Effort is null && settings.RoleEfforts.All(option => option.Input is null)
-            && settings.OrchestratorModel is null
+            && settings.OrchestratorModel is null && settings.OrchestratorEffort is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelReviewFinalPass is null
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
@@ -564,6 +579,11 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             {
                 EffortInput.Parse(option.Flag, roleEffort);
             }
+        }
+
+        if (settings.OrchestratorEffort is { } orchestratorEffort)
+        {
+            EffortInput.ParseOrchestrator("--orchestrator-effort", orchestratorEffort);
         }
 
         if (settings.SpendPeriod is { } spendPeriod
@@ -736,6 +756,9 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             ApplyEffort(option.Label, option.Flag, option.Input, value => option.Assign(operating.EffortByRole, value), changed);
         }
         ApplyModel("orchestrator-model", settings.OrchestratorModel, value => operating.OrchestratorModel = value, changed);
+        ApplyEffort(
+            "orchestrator-effort", "--orchestrator-effort", settings.OrchestratorEffort,
+            value => operating.OrchestratorEffort = value, changed, orchestrator: true);
         ApplyModel("model (build)", settings.ModelBuild, value => operating.ModelByRole.Build = value, changed);
         ApplyModel("model (review)", settings.ModelReview, value => operating.ModelByRole.Review = value, changed);
         ApplyModel(
@@ -874,14 +897,14 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
     /// through <see cref="Validate"/> or a direct <see cref="Apply"/>.
     /// </summary>
     private static void ApplyEffort(
-        string label, string flag, string? input, Action<string?> assign, List<string> changed)
+        string label, string flag, string? input, Action<string?> assign, List<string> changed, bool orchestrator = false)
     {
         if (input is null)
         {
             return;
         }
 
-        AgentEffort effort = EffortInput.Parse(flag, input);
+        AgentEffort effort = orchestrator ? EffortInput.ParseOrchestrator(flag, input) : EffortInput.Parse(flag, input);
         string? value = effort.IsWellFormed ? effort.Value : null;
         assign(value);
         changed.Add($"{label} = {value ?? "(cleared)"}");

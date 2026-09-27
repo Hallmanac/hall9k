@@ -187,6 +187,17 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "--orchestrator-model, else --default-model), decides again.")]
         public string? OrchestratorModel { get; init; }
 
+        [CommandOption("--orchestrator-effort <low|medium|high|xhigh>")]
+        [Description(
+            "This project's orchestrator-window effort override (task: the orchestrator window's effort "
+            + "becomes a rendered project and node setting) — the reasoning effort recipes/settings.json "
+            + "is rendered for, independent of --effort and every other dispatch effort: raising or "
+            + "lowering the effort dispatched agents run on never moves the operator's own window, and "
+            + "the reverse. Accepts low, medium, high or xhigh. 'default' clears the override so the "
+            + "node's own --orchestrator-effort, then the model's own default, decides again. Recorded "
+            + "on this node only: it never replicates to a teammate's, so each node sets its own.")]
+        public string? OrchestratorEffort { get; init; }
+
         [CommandOption("--rerequest-review <ON|OFF|DEFAULT>")]
         [Description(
             "Whether closeout asks this project's reviewers for another pass once a fix follow-up has "
@@ -664,6 +675,12 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             effort: settings.Effort is { } effort
                 ? Optional<AgentEffort>.Of(EffortInput.Parse("--effort", effort))
                 : Optional<AgentEffort>.None,
+            // ParseOrchestrator, not Parse: this refusal must name the window's own chain (the
+            // project's own override, then the node's, then the model's default), never the
+            // dispatch chain --effort's refusal names above.
+            orchestratorEffort: settings.OrchestratorEffort is { } orchestratorEffort
+                ? Optional<AgentEffort>.Of(EffortInput.ParseOrchestrator("--orchestrator-effort", orchestratorEffort))
+                : Optional<AgentEffort>.None,
             reviewRerequest: settings.RerequestReview is { } rerequestReview
                 ? Optional<ReviewRerequestPolicy>.Of(ReviewRerequestOption.Parse(rerequestReview))
                 : Optional<ReviewRerequestPolicy>.None,
@@ -1017,16 +1034,20 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             List<ProjectHomeStep> homeSteps = [ProjectAgentsDocument.Write(updated.HomeDirectory.Value, updated)];
 
             // recipes/settings.json (task: an operator starts a lean node or project orchestrator
-            // window) pins whatever model this project resolved to at the last h9k project init —
-            // re-rendered here too, or a --model/--orchestrator-model change just recorded above
-            // would leave the project's own orchestrator window reading a stale one until somebody
+            // window) pins whatever model and effort this project resolved to at the last h9k
+            // project init — re-rendered here too, or a
+            // --model/--orchestrator-model/--orchestrator-effort change just recorded above would
+            // leave the project's own orchestrator window reading a stale one until somebody
             // happened to re-run h9k project init (independent pre-PR review, cycle 1, adversarial
-            // lens).
-            if (settings.Model is not null || settings.OrchestratorModel is not null)
+            // lens; the same gap for --orchestrator-effort, task: the orchestrator window's effort
+            // becomes a rendered project and node setting).
+            if (settings.Model is not null || settings.OrchestratorModel is not null || settings.OrchestratorEffort is not null)
             {
                 ConfigFileReadResult operatingSettingsRead = await PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken);
                 string resolvedOrchestratorModel = OrchestratorModel.ForProject(
                     updated.OrchestratorModel, updated.Model, operatingSettingsRead.Settings);
+                AgentEffort resolvedOrchestratorEffort = OrchestratorEffort.ForProject(
+                    updated.OrchestratorEffort, operatingSettingsRead.Settings);
                 if (operatingSettingsRead.Problem is { } settingsProblem)
                 {
                     homeSteps.Add(ProjectHomeStep.Skipped(
@@ -1036,7 +1057,8 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 }
 
                 homeSteps.Add(RecipeSettingsDocument.WriteStep(
-                    ProjectHomePaths.RecipeSettingsFile(updated.HomeDirectory.Value), resolvedOrchestratorModel));
+                    ProjectHomePaths.RecipeSettingsFile(updated.HomeDirectory.Value), resolvedOrchestratorModel,
+                    resolvedOrchestratorEffort));
             }
 
             ProjectHomeRecipe.Report(homeSteps);
