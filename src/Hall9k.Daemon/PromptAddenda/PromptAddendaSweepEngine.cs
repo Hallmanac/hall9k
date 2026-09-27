@@ -138,6 +138,20 @@ public sealed class PromptAddendaSweepEngine(
             DateTimeOffset now = DateTimeOffset.UtcNow;
             if (IsBackingOffListRefs(project.Id, now))
             {
+                // Recorded on every backed-off tick, not merely the one that first hit the
+                // failure: before PushAsync's own owner-role gate needed a chain read at all, an
+                // unreachable remote surfaced here by failing WriteAsync/DeleteAsync directly, and
+                // that failure stayed recorded — and so kept showing up in `list`/`show`'s own
+                // "daemon has not been able to push" warning — for the whole outage. Skipping this
+                // tick via `continue`, with no call to RecordPushFailureAsync, silently dropped
+                // that warning the moment the very next tick's own backoff kicked in, even though
+                // the push itself was still just as blocked (independent pre-PR review, cycle 3,
+                // conformance lens, medium).
+                await RecordPushFailureAsync(
+                    project.Id,
+                    "Prompt-addenda push is skipped while this project's own ledger remote is backed off after "
+                    + "a recent failure.",
+                    cancellationToken);
                 continue;
             }
 
@@ -152,6 +166,7 @@ public sealed class PromptAddendaSweepEngine(
                 logger.LogWarning(
                     exception, "Prompt-addenda trust chain read failed for project {ProjectId}; push and "
                     + "materialize are both skipped this tick and retried next sweep", project.Id);
+                await RecordPushFailureAsync(project.Id, exception.Message, cancellationToken);
                 continue;
             }
 
@@ -509,30 +524,53 @@ public sealed class PromptAddendaSweepEngine(
         }
 
         int changed = 0;
+        bool loggedNoOwnerRoleMemberWarning = false;
         foreach (PromptBuilderKey builder in PromptBuilderKey.All)
         {
             string localPath = ProjectHomePaths.PromptAddendumFile(home, builder);
             string? content = null;
 
-            if (tip is not null)
+            if (tip is not null && ownerRoleKeySet.Length == 0)
+            {
+                // No Owner-role member exists for this project at all (no genesis, or this node
+                // never ran `h9k project join`) — every commit fails the owner test for the same
+                // reason, so naming the newest refused commit per builder below would just repeat
+                // an identical, uninformative line four times. Named once, with the actual cause
+                // and the actual fix, rather than leaving the operator to infer "no owner chain"
+                // from a commit sha that could just as easily mean an ordinary member overwrite
+                // (independent pre-PR review, cycle 3, adversarial lens, medium).
+                if (!loggedNoOwnerRoleMemberWarning)
+                {
+                    logger.LogWarning(
+                        "Prompt-addenda materialize found no Owner-role member for project {ProjectId} at all: "
+                        + "{Ref} cannot ever be authorized until this node runs 'h9k project join', so any "
+                        + "already-materialized addenda are being removed rather than trusted unauthenticated",
+                        project.Id, refName);
+                    loggedNoOwnerRoleMemberWarning = true;
+                }
+            }
+            else if (tip is not null)
             {
                 string path = LedgerRefRegistry.PromptAddendumPath(builder.Value);
-                IReadOnlyList<LedgerPathCommit> commits =
-                    await commitReader.ReadCommitsTouchingPathAsync(project.RepositoryPath, refName, path, cancellationToken);
+                IReadOnlyList<LedgerPathCommit> commits = await commitReader.ReadCommitsTouchingPathAsync(
+                    project.RepositoryPath, refName, path,
+                    (rawCommitBytes, token) =>
+                        IsAuthorizedByAnyOwnerRoleMemberAsync(project.RepositoryPath, rawCommitBytes, trustChain, token),
+                    cancellationToken);
 
                 // Stops at the first authorized commit rather than checking every remaining, older
                 // one in the path's whole history: SelectMaterializedContent only ever picks the
                 // FIRST authorized entry out of a newest-first list, so an older commit's own
                 // verdict — authorized or not — can never change the result once one is found, and
                 // each check costs a real signature verification in production
-                // (GitLedgerCommitReader.IsSignedByAsync).
+                // (GitLedgerCommitReader.IsSignedByAsync). ReadCommitsTouchingPathAsync's own early
+                // stop already applies the identical rule to how much of the ref's real history it
+                // ever reads off disk in the first place.
                 List<PromptAddendumCommitVerdict> verdicts = new(commits.Count);
                 foreach (LedgerPathCommit commit in commits)
                 {
-                    bool authorized = await OwnerChainAuthorization.IsAuthorizedByAnyOwnerRoleMemberAsync(
-                        trustChain,
-                        (key, token) => commitReader.IsSignedByAsync(project.RepositoryPath, commit.RawCommitBytes, key, token),
-                        cancellationToken);
+                    bool authorized = await IsAuthorizedByAnyOwnerRoleMemberAsync(
+                        project.RepositoryPath, commit.RawCommitBytes, trustChain, cancellationToken);
                     verdicts.Add(new PromptAddendumCommitVerdict(commit.CommitSha, commit.Content, authorized));
                     if (authorized)
                     {
@@ -600,29 +638,47 @@ public sealed class PromptAddendaSweepEngine(
     }
 
     /// <summary>
-    /// Whether the single newest commit touching <paramref name="path"/> at the ref's current tip
-    /// was itself signed by a root key or a currently vouched node key of an Owner-role member — the
-    /// same owner test <see cref="MaterializeAsync"/> walks the whole history for, but here only the
-    /// tip's own newest entry matters: <see cref="WriteAsync"/> and <see cref="DeleteAsync"/> call
-    /// this only to decide whether skipping an already-matching tip is safe, never to decide what
-    /// content to materialize. No commit ever touching the path at all counts as authorized — there
-    /// is nothing at the tip to override.
+    /// Whether the ref's own literal tip commit — <see cref="ILedgerCommitReader.ReadCommitsTouchingPathAsync"/>'s
+    /// own first, newest entry, since it now walks the ref's whole real history rather than only
+    /// commits that changed <paramref name="path"/> — was itself signed by a root key or a
+    /// currently vouched node key of an Owner-role member. The same owner test
+    /// <see cref="MaterializeAsync"/> walks the whole history for, but here only the tip's own
+    /// newest entry matters: <see cref="WriteAsync"/> and <see cref="DeleteAsync"/> call this only
+    /// to decide whether skipping an already-matching tip is safe, never to decide what content to
+    /// materialize. Checking only the literal tip — never "the newest commit that happens to touch
+    /// this path" — is what lets a signed reissue of already-current content actually count: that
+    /// reissue commit's own tree for `path` is byte-identical to its parent's, so it would never be
+    /// the "newest commit touching path" under a path-filtered read, even though it is unmistakably
+    /// the ref's own current tip (independent pre-PR review, cycle 3, both lenses, high). No commit
+    /// at all counts as authorized when the ref does not exist yet — there is nothing at the tip to
+    /// override.
     /// </summary>
     private async Task<bool> NewestCommitIsOwnerAuthorizedAsync(
         string repositoryPath, string refName, string path, TrustChain trustChain, CancellationToken cancellationToken)
     {
-        IReadOnlyList<LedgerPathCommit> commits =
-            await commitReader.ReadCommitsTouchingPathAsync(repositoryPath, refName, path, cancellationToken);
+        IReadOnlyList<LedgerPathCommit> commits = await commitReader.ReadCommitsTouchingPathAsync(
+            repositoryPath, refName, path,
+            (rawCommitBytes, token) => IsAuthorizedByAnyOwnerRoleMemberAsync(repositoryPath, rawCommitBytes, trustChain, token),
+            cancellationToken);
         if (commits.Count == 0)
         {
             return true;
         }
 
-        return await OwnerChainAuthorization.IsAuthorizedByAnyOwnerRoleMemberAsync(
-            trustChain,
-            (key, token) => commitReader.IsSignedByAsync(repositoryPath, commits[0].RawCommitBytes, key, token),
-            cancellationToken);
+        return await IsAuthorizedByAnyOwnerRoleMemberAsync(repositoryPath, commits[0].RawCommitBytes, trustChain, cancellationToken);
     }
+
+    /// <summary>The one owner-authorization check every call site above shares, closed over
+    /// <see cref="commitReader"/>'s own <see cref="ILedgerCommitReader.IsSignedByAsync"/> — pulled
+    /// out so <see cref="ILedgerCommitReader.ReadCommitsTouchingPathAsync"/>'s own early-stop
+    /// predicate and each caller's post-hoc verdict use the identical rule rather than two
+    /// hand-written copies of it drifting apart.</summary>
+    private Task<bool> IsAuthorizedByAnyOwnerRoleMemberAsync(
+        string repositoryPath, string rawCommitBytes, TrustChain trustChain, CancellationToken cancellationToken) =>
+        OwnerChainAuthorization.IsAuthorizedByAnyOwnerRoleMemberAsync(
+            trustChain,
+            (key, token) => commitReader.IsSignedByAsync(repositoryPath, rawCommitBytes, key, token),
+            cancellationToken);
 
     /// <summary>
     /// Pure reducer over one builder path's own commit history, newest first (the order

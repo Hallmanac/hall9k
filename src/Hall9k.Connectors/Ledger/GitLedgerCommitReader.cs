@@ -48,7 +48,8 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
     }
 
     public async Task<IReadOnlyList<LedgerPathCommit>> ReadCommitsTouchingPathAsync(
-        string repositoryPath, string refName, string path, CancellationToken cancellationToken)
+        string repositoryPath, string refName, string path,
+        Func<string, CancellationToken, Task<bool>> isAuthorizedAsync, CancellationToken cancellationToken)
     {
         await FetchRefAsync(repositoryPath, refName, cancellationToken);
 
@@ -58,8 +59,16 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
             return [];
         }
 
-        IReadOnlyList<string> commits = await CommitsTouchingPathAsync(repositoryPath, tip, path, cancellationToken);
-        List<LedgerPathCommit> results = new(commits.Count);
+        // The ref's own WHOLE first-parent history, never limited to commits whose tree for
+        // `path` differs from their parent's: a signed reissue of already-current content (the
+        // owner re-asserting exactly what a member's own unauthorized commit already left at the
+        // tip) produces a commit that is TREESAME for `path` to its own parent, and `git log --
+        // path` prunes a TREESAME commit unconditionally — no flag restores it, verified in a
+        // scratch repository — so a caller walking a path-filtered log can never see that commit
+        // at all, and the owner's own reissue is silently lost (independent pre-PR review, cycle
+        // 3, both lenses, high).
+        IReadOnlyList<string> commits = await CommitShasAsync(repositoryPath, tip, cancellationToken);
+        List<LedgerPathCommit> results = new();
         foreach (string sha in commits)
         {
             string? rawBytes = await RunGitCaptureAsync(repositoryPath, ["cat-file", "commit", sha], cancellationToken);
@@ -73,6 +82,19 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
 
             string? content = await ReadAtCommitAsync(repositoryPath, sha, path, cancellationToken);
             results.Add(new LedgerPathCommit(content, sha, rawBytes));
+
+            // Stops walking the ref's own history — never spawning another git process for an
+            // older commit — the moment isAuthorizedAsync accepts one: the caller's own owner test
+            // (PromptAddendaSweepEngine.MaterializeAsync, NewestCommitIsOwnerAuthorizedAsync) only
+            // ever wants the FIRST (newest) commit it authorizes, so a repository collaborator who
+            // pushes thousands of unsigned commits ahead of the last authorized one costs this
+            // walk only as many git processes as commits actually stand between the tip and that
+            // authorized commit, never the ref's entire history (independent pre-PR review, cycle
+            // 3, adversarial lens, medium).
+            if (await isAuthorizedAsync(rawBytes, cancellationToken))
+            {
+                break;
+            }
         }
 
         return results;
@@ -182,6 +204,12 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
                 $"git show {commit}:{path} failed in {repositoryPath} (exit {result.ExitCode}): {result.StandardError.Trim()}");
     }
 
+    /// <summary>Every commit reachable from <paramref name="tip"/> that touched <paramref name="path"/>
+    /// — used only by <see cref="ReadSignedCommitAsync"/>, which wants the specific commit that
+    /// actually produced the content it just read at <paramref name="path"/>'s current tip, never a
+    /// commit whose own tree for that path happens to be unchanged. <see cref="CommitShasAsync"/> is
+    /// the sibling <see cref="ReadCommitsTouchingPathAsync"/> uses instead, precisely because THAT
+    /// caller's own owner test needs a reissue commit this path-filtered walk would prune.</summary>
     private async Task<IReadOnlyList<string>> CommitsTouchingPathAsync(
         string repositoryPath, string tip, string path, CancellationToken cancellationToken)
     {
@@ -191,6 +219,25 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
         {
             throw new InvalidOperationException(
                 $"git log --first-parent {tip} -- {path} failed in {repositoryPath}: {result.StandardError.Trim()}");
+        }
+
+        return [.. result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.Trim())];
+    }
+
+    /// <summary>Every commit reachable from <paramref name="tip"/>, first-parent order, newest
+    /// first — the ref's own real history, with no pathspec at all, so a commit that is TREESAME
+    /// to its parent for any one path is still included: dropping the pathspec from the
+    /// <c>git log</c> call is what actually fixes the owner-reissue defect
+    /// <see cref="ReadCommitsTouchingPathAsync"/>'s own doc names, since no combination of flags
+    /// makes a path-filtered <c>git log</c> report a TREESAME commit.</summary>
+    private async Task<IReadOnlyList<string>> CommitShasAsync(string repositoryPath, string tip, CancellationToken cancellationToken)
+    {
+        ProcessResult result = await runner(
+            "git", ["log", "--format=%H", "--topo-order", "--first-parent", tip], repositoryPath, cancellationToken);
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git log --first-parent {tip} failed in {repositoryPath}: {result.StandardError.Trim()}");
         }
 
         return [.. result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.Trim())];
