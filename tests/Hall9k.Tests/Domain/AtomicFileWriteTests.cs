@@ -53,6 +53,33 @@ public sealed class AtomicFileWriteTests : IDisposable
     }
 
     /// <summary>
+    /// A target sitting at 0644 from before this clamp existed (secrets review finding 2 —
+    /// <c>config.json</c> and the Postgres compose file, both carrying credentials, were found at
+    /// 0644 on a real machine) is narrowed to owner-only on its very next rewrite, rather than
+    /// having its group/other bits copied forward onto the replacement forever.
+    /// </summary>
+    [Fact]
+    public async Task Overwriting_a_widely_readable_file_narrows_it_to_owner_only()
+    {
+        await File.WriteAllTextAsync(path, "original");
+
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        File.SetUnixFileMode(
+            path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+        await AtomicFileWrite.WriteAllTextAsync(path, "updated", CancellationToken.None);
+
+        File.GetUnixFileMode(path).Should().Be(
+            UnixFileMode.UserRead | UnixFileMode.UserWrite,
+            "a copied mode must only ever narrow, never carry a group or other bit forward onto the replacement");
+        (await File.ReadAllTextAsync(path)).Should().Be("updated");
+    }
+
+    /// <summary>
     /// A target locked down to <c>chmod 400</c> (the operator hardening scenario this type exists
     /// to preserve, and the shape <see cref="PlatformConfigFileTests"/> itself stages) has no
     /// owner-write bit at all. Origin: the cycle-2 pre-PR review found the target's mode applied

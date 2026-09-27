@@ -67,7 +67,17 @@ public static class AtomicFileWrite
             {
                 try
                 {
-                    File.SetUnixFileMode(tempPath, File.GetUnixFileMode(resolvedPath));
+                    // Narrowed, never widened: a target sitting at 0644 from before this file
+                    // clamped copied modes at all (secrets review finding 2 — config.json and the
+                    // Postgres compose file, both of which carry credentials, were found at 0644
+                    // on a real machine) is brought down to owner-only on its very next rewrite
+                    // rather than having its group/other bits copied forward forever. A target
+                    // already narrower than that (0600, or even 0400) is untouched: this can only
+                    // remove bits, never add the owner-write bit a stricter target might be missing
+                    // (that gap already fails the write outright, the documented behaviour above).
+                    File.SetUnixFileMode(
+                        tempPath, File.GetUnixFileMode(resolvedPath) & ~(UnixFileMode.GroupRead | UnixFileMode.GroupWrite
+                            | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute));
                 }
                 catch (FileNotFoundException)
                 {
