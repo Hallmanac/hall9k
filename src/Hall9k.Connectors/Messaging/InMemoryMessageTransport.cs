@@ -147,30 +147,36 @@ public sealed class InMemoryMessageTransport(ILedger ledger, ILedgerChainReader?
             return TransportReadResult.SenderNotVouched;
         }
 
+        // Resolved unconditionally, whether or not a chainReader was supplied: the fingerprint is
+        // read straight off the sender's own self-announced node file, the identical half
+        // GitLedgerMessageTransport always resolves before its own vouch check ever runs, and
+        // EventReplicationInbox needs it on every read to gate a project-settings-shaped event,
+        // not only on a read that also cares about chain-level sender verification.
+        string? publicKeyLine = GitLedgerChainReader.ExtractQuotedYamlValue(nodeFile.Content ?? string.Empty, "public_key");
+        string? senderFingerprint = null;
+        try
+        {
+            senderFingerprint = publicKeyLine is null ? null : NodeKeyStore.Fingerprint(publicKeyLine);
+        }
+        catch (DomainValidationException)
+        {
+            // Malformed key line — falls through to SenderNotVouched below, same as "no key at all".
+        }
+
+        if (senderFingerprint is null)
+        {
+            return TransportReadResult.SenderNotVouched;
+        }
+
         if (chainReader is not null)
         {
-            string? publicKeyLine = GitLedgerChainReader.ExtractQuotedYamlValue(nodeFile.Content ?? string.Empty, "public_key");
-            string? fingerprint = null;
-            try
-            {
-                fingerprint = publicKeyLine is null ? null : NodeKeyStore.Fingerprint(publicKeyLine);
-            }
-            catch (DomainValidationException)
-            {
-                // Malformed key line — falls through to SenderNotVouched below, same as "no key at all".
-            }
-
             TrustChain chain = trustChain ?? await chainReader.ComputeAsync(repositoryPath, cancellationToken);
-            if (fingerprint is null)
-            {
-                return TransportReadResult.SenderNotVouched;
-            }
 
             // Bound to senderNodeId, not merely "allowed somewhere" — the identical node-id check
             // GitLedgerMessageTransport now enforces (independent pre-PR review, cycle 1,
             // conformance and adversarial lenses, medium), so a test driving this fake against a
             // real FakeLedgerChainReader exercises the same rule production does.
-            if (!chain.IsAllowedSigner(fingerprint, senderNodeId))
+            if (!chain.IsAllowedSigner(senderFingerprint, senderNodeId))
             {
                 return TransportReadResult.NotVouched(
                     "this sender's own node file exists, but its key is not currently vouched into any "
@@ -195,7 +201,8 @@ public sealed class InMemoryMessageTransport(ILedger ledger, ILedgerChainReader?
 
         if (!outboxes.TryGetValue(key, out SortedList<long, string>? envelopes))
         {
-            return TransportReadResult.Ok([], effectiveSinceSeq, prunedBelowSeq: prunedBelowSeq);
+            return TransportReadResult.Ok(
+                [], effectiveSinceSeq, prunedBelowSeq: prunedBelowSeq, senderFingerprint: senderFingerprint);
         }
 
         List<TransportEnvelope> candidates = [.. envelopes
@@ -226,6 +233,8 @@ public sealed class InMemoryMessageTransport(ILedger ledger, ILedgerChainReader?
             highestSeqInspected = candidate.Seq;
         }
 
-        return TransportReadResult.Ok(result, highestSeqInspected, stalledAtSeq: stalledAtSeq, prunedBelowSeq: prunedBelowSeq);
+        return TransportReadResult.Ok(
+            result, highestSeqInspected, stalledAtSeq: stalledAtSeq, prunedBelowSeq: prunedBelowSeq,
+            senderFingerprint: senderFingerprint);
     }
 }

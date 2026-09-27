@@ -10,12 +10,14 @@ using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
+using JasperFx.Events;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -142,6 +144,37 @@ public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixtur
             RepositoryPath, LedgerRefRegistry.PromptAddenda.RefspecSource, LedgerRefRegistry.PromptAddendumPath("work"),
             cts.Token);
         stored.Content.Should().Be("newer text");
+    }
+
+    /// <summary>
+    /// Idea 6be68ee2, trust-ledger finding 6: a teammate's own addendum lands on this identical
+    /// stream through <c>EventReplicationInbox</c>, which stamps <see cref="ReplicationEventHeaders.ReceivedFromNodeId"/>
+    /// on the event it merges — never something the sender claims. This sweep must never push it to
+    /// the ledger: doing so would re-sign the teammate's own content under this node's own committer
+    /// and signing key, as if this install had authored it.
+    /// </summary>
+    [Fact]
+    public async Task A_replicated_addendum_is_never_pushed_by_the_receiver()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        (NodeContext node, Guid projectId, _) = await SeedAsync(cts.Token);
+        FakeLedger ledger = new();
+        PromptAddendaSweepEngine engine = new(
+            _postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<PromptAddendaSweepEngine>.Instance);
+        Guid ownerId = DomainId.New();
+        Guid teammateNodeId = DomainId.New();
+
+        await AppendReplicatedAsync(
+            projectId, new ProjectPromptAddendumSet(projectId, "work", "a teammate's own text", false, null, Now, ownerId),
+            teammateNodeId, cts.Token);
+
+        PromptAddendaSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
+        sweep.Pushed.Should().Be(0, "a replicated addendum is never re-signed under this node's own key");
+
+        LedgerFile stored = await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.PromptAddenda.RefspecSource, LedgerRefRegistry.PromptAddendumPath("work"),
+            cts.Token);
+        stored.Exists.Should().BeFalse("nothing was ever pushed to the ledger for a replicated addendum");
     }
 
     [Fact]
@@ -426,6 +459,18 @@ public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixtur
     {
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         session.Events.Append(projectId, @event);
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>Appends exactly the way <c>EventReplicationInbox.ApplyAsync</c> does for a
+    /// project-aggregate-stream event it merges: the same header, stamped from the verified sender,
+    /// never anything a wire record could claim on its own.</summary>
+    private async Task AppendReplicatedAsync(
+        Guid projectId, object @event, Guid receivedFromNodeId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        StreamAction action = session.Events.Append(projectId, @event);
+        action.Events[^1].SetHeader(ReplicationEventHeaders.ReceivedFromNodeId, receivedFromNodeId.ToString());
         await session.SaveChangesAsync(cancellationToken);
     }
 

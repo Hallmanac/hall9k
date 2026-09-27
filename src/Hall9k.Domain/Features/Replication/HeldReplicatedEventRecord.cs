@@ -35,6 +35,17 @@ public sealed class HeldReplicatedEventRecord
 
     public Guid SenderNodeId { get; set; }
 
+    /// <summary>
+    /// The verified key fingerprint this record's own sender read carried, resolved from the
+    /// sender's own node file rather than anything the wire record itself claims — the same fact
+    /// <see cref="Hall9k.Connectors.Messaging.TransportReadResult.SenderFingerprint"/> names for the
+    /// read that first tried to apply this record. Replayed against it, alongside the trust chain
+    /// current at the moment of replay, so a stream held before this piece shipped (and so carrying
+    /// null here) is read the same way a sender resolved to no key at all would be — never applied
+    /// to a gated stream — rather than skipping the gate outright for lack of a value to check.
+    /// </summary>
+    public string? SenderFingerprint { get; set; }
+
     public string? OriginProjectKey { get; set; }
 
     /// <summary>The wire-format record itself (<see cref="EventReplicationCodec.ReplicatedEventRecord"/>), JSON-encoded.</summary>

@@ -3,6 +3,7 @@ using Hall9k.Cli.Commands;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Replication;
+using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project;
@@ -130,7 +131,7 @@ public sealed class TaskHandoffIntegrationTests(PostgresFixture postgres) : ICla
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(3),
-                trustChain: null, cts.Token);
+                trustChain: TrustChain.Empty, cts.Token);
             read.SenderIgnored.Should().BeFalse();
             read.EventsApplied.Should().BeGreaterThan(0);
         }

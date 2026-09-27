@@ -88,7 +88,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         Guid myNodeId,
         string myOwnerFingerprint,
         DateTimeOffset now,
-        TrustChain? trustChain,
+        TrustChain trustChain,
         CancellationToken cancellationToken)
     {
         Guid cursorId = EventReplicationStreamId.ForInboxCursor(senderNodeId, projectId);
@@ -120,6 +120,14 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             await session.SaveChangesAsync(cancellationToken);
             return new EventReplicationReadResult(SenderIgnored: true, EventsApplied: 0);
         }
+
+        // The verified key this exact read resolved for senderNodeId — never the sender's own
+        // wire-level claim — is what ApplyAsync's own gate checks a gated event's sender against
+        // (idea 6be68ee2, trust-ledger findings 1 and 6). Read is vouched at this point, so the
+        // transport always resolved one; null is kept possible only for the type's own honesty
+        // toward a transport that somehow did not (ApplyAsync then treats it as no key at all,
+        // never as "skip the gate").
+        string? senderFingerprint = read.SenderFingerprint;
 
         int applied = 0;
         long highestSeqConsidered = sinceSeq;
@@ -305,7 +313,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 applied += await ApplyAsync(
                     session, record, senderNodeId, projectId, envelope.ProjectKey, streamsStartedThisRead,
                     streamsThatFailedToStartThisRead, originEventIdsAppliedThisRead, originProgressThisRead,
-                    originHighWaterByStream, streamsAwaitingHeldTailReplayThisRead, now, cancellationToken);
+                    originHighWaterByStream, streamsAwaitingHeldTailReplayThisRead, trustChain, senderFingerprint,
+                    now, cancellationToken);
             }
 
             // task 252bc5cf: tallied per envelope, after its own batch has applied, and only for an
@@ -330,7 +339,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             applied += await ApplyHeldTailAsync(
                 session, streamId, streamsStartedThisRead, streamsThatFailedToStartThisRead,
                 originEventIdsAppliedThisRead, originProgressThisRead, originHighWaterByStream,
-                streamsAwaitingHeldTailReplayThisRead, now, cancellationToken);
+                streamsAwaitingHeldTailReplayThisRead, trustChain, now, cancellationToken);
         }
 
         highestSeqConsidered = Math.Max(highestSeqConsidered, read.HighestSeqInspected);
@@ -580,8 +589,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         string? originProjectKey, HashSet<Guid> streamsStartedThisRead, HashSet<Guid> streamsThatFailedToStartThisRead,
         HashSet<Guid> originEventIdsAppliedThisRead, Dictionary<Guid, long> originProgressThisRead,
         Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream,
-        HashSet<Guid> streamsAwaitingHeldTailReplayThisRead, DateTimeOffset now,
-        CancellationToken cancellationToken)
+        HashSet<Guid> streamsAwaitingHeldTailReplayThisRead, TrustChain trustChain, string? senderFingerprint,
+        DateTimeOffset now, CancellationToken cancellationToken)
     {
         if (!originEventIdsAppliedThisRead.Add(record.OriginEventId))
         {
@@ -618,6 +627,45 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             logger?.LogWarning(
                 "Replicated event of type {EventType} (origin {OriginEventId}) is never eligible to travel — skipped",
                 record.EventTypeName, record.OriginEventId);
+            return 0;
+        }
+
+        // idea 6be68ee2, trust-ledger findings 1 and 6: a project-settings-shaped event — one of
+        // ProjectStreamReplicationRules.IsProjectAggregateStreamEvent's own six — changes team
+        // policy, records a run skill, or sets a prompt addendum, so it applies here only when the
+        // verified sender key this read resolved (senderFingerprint, never anything the wire record
+        // itself claims) belongs to some Owner-role project member's own chain FOR senderNodeId
+        // specifically. Checked before this record can ever be held for a missing genesis
+        // (streamsAwaitingHeldTailReplayThisRead below), so ApplyHeldTailAsync/ReplayHeldTailAsync
+        // never replay a gated record this same rule would have refused.
+        GatedEventVerdict gateVerdict =
+            EvaluateGatedEvent(trustChain, senderFingerprint, senderNodeId, record.OriginNodeId, eventType);
+        if (gateVerdict != GatedEventVerdict.Allowed)
+        {
+            logger?.LogWarning(
+                "Replicated event {OriginEventId} of type {EventType} from sender {SenderNodeId} (fingerprint "
+                + "{SenderFingerprint}) is gated to an owner-role project member's own chain, and this sender's "
+                + "key does not currently belong to one for this node id — dropped, never applied",
+                record.OriginEventId, record.EventTypeName, senderNodeId, senderFingerprint ?? "(none)");
+
+            // Burned (recorded so a retry can never apply it) only when this sender IS the record's
+            // own claimed origin — a member signing its own gated event directly. A record whose
+            // origin differs from this sender (a legitimate owner event merely forwarded here inside
+            // a catch-up answer served by a non-owner peer) is left unrecorded, so it can still apply
+            // the moment it arrives from a sender this gate actually allows.
+            if (gateVerdict == GatedEventVerdict.DroppedAndRefusedPermanently)
+            {
+                session.Store(new ReplicatedEventRecord
+                {
+                    Id = record.OriginEventId,
+                    StreamId = projectId,
+                    ProjectId = projectId,
+                    AppliedAt = now,
+                    Applied = false,
+                });
+                await session.SaveChangesAsync(cancellationToken);
+            }
+
             return 0;
         }
 
@@ -767,6 +815,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                     StreamId = effectiveStreamId,
                     ProjectId = projectId,
                     SenderNodeId = senderNodeId,
+                    SenderFingerprint = senderFingerprint,
                     OriginProjectKey = originProjectKey,
                     RecordJson = EventReplicationCodec.EncodeRecord(record),
                     OriginSequence = record.OriginSequence,
@@ -1006,6 +1055,69 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     }
 
     /// <summary>
+    /// <see cref="EvaluateGatedEvent"/>'s own three outcomes for a project-settings-shaped event.
+    /// <see cref="DroppedAndRefusedPermanently"/> and <see cref="DroppedWithoutRecording"/> are both
+    /// "dropped" from the caller's own point of view — neither ever applies the event — but only the
+    /// first also burns the origin event id so a retry can never apply it either; see
+    /// <see cref="EvaluateGatedEvent"/>'s own doc for which sender shape earns which.
+    /// </summary>
+    internal enum GatedEventVerdict
+    {
+        Allowed,
+        DroppedAndRefusedPermanently,
+        DroppedWithoutRecording,
+    }
+
+    /// <summary>
+    /// The pure verdict behind <see cref="ApplyAsync"/>'s own gate (idea 6be68ee2, trust-ledger
+    /// findings 1 and 6): whether <paramref name="eventType"/> is even gated at all
+    /// (<see cref="ProjectStreamReplicationRules.IsProjectAggregateStreamEvent"/> — a project
+    /// settings change, a member vouch or removal record, a prompt addendum, or a run skill), and if
+    /// so, whether <paramref name="senderFingerprint"/> is currently vouched, for
+    /// <paramref name="senderNodeId"/> specifically, into some Owner-role project member's own
+    /// chain — never a Member-role sender's, and never merely "vouched for some other node the same
+    /// owner happens to have". Sender resolution (a fingerprint the transport read already verified
+    /// against the sender's own node file) plus the event's own type is the whole of what decides
+    /// apply versus drop; nothing here reads a store, so no test of it needs Docker. A null
+    /// fingerprint (the transport somehow resolved none) is read as no key at all, refused rather
+    /// than treated as "nothing to check" — the honest reading of an absent fact for a gate whose
+    /// whole purpose is refusing anything it cannot positively vouch for.
+    /// <para>
+    /// A refused verdict burns the origin event id (<see cref="GatedEventVerdict.DroppedAndRefusedPermanently"/>)
+    /// only when <paramref name="originNodeId"/> equals <paramref name="senderNodeId"/> — a sender
+    /// claiming to be this event's own author, directly. When they differ, this sender is merely
+    /// forwarding somebody else's record (the ordinary shape a catch-up answer takes), and burning it
+    /// here would refuse the identical origin event id for good even though the true origin — an
+    /// owner this gate would allow — may still send or forward it through a different, allowed
+    /// sender; that shape returns <see cref="GatedEventVerdict.DroppedWithoutRecording"/> instead, so
+    /// this exact delivery is skipped without ever standing in the way of a later one.
+    /// </para>
+    /// </summary>
+    internal static GatedEventVerdict EvaluateGatedEvent(
+        TrustChain trustChain, string? senderFingerprint, Guid senderNodeId, Guid originNodeId, Type eventType)
+    {
+        if (!ProjectStreamReplicationRules.IsProjectAggregateStreamEvent(eventType))
+        {
+            return GatedEventVerdict.Allowed;
+        }
+
+        string senderNodeIdText = senderNodeId.ToString();
+        bool allowed = senderFingerprint is not null
+            && trustChain.Members
+                .Where(member => member.Role == MembershipRole.Owner)
+                .Any(member => trustChain.OwnerChains.TryGetValue(member.RootFingerprint, out TrustedOwner? owner)
+                    && owner.ContainsForNode(senderFingerprint, senderNodeIdText));
+        if (allowed)
+        {
+            return GatedEventVerdict.Allowed;
+        }
+
+        return originNodeId == senderNodeId
+            ? GatedEventVerdict.DroppedAndRefusedPermanently
+            : GatedEventVerdict.DroppedWithoutRecording;
+    }
+
+    /// <summary>
     /// Replays the held tail of a stream that already exists here, outside any read of a sender's
     /// own outbox — the one shape <see cref="ReadFromAsync"/>'s own deferred replay can miss. That
     /// replay is driven by an in-memory set of the streams a genesis started THIS read, so a read
@@ -1024,7 +1136,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     /// </summary>
     /// <returns>How many of the held records actually applied.</returns>
     public Task<int> ReplayHeldTailAsync(
-        IDocumentSession session, Guid streamId, DateTimeOffset now, CancellationToken cancellationToken)
+        IDocumentSession session, Guid streamId, DateTimeOffset now, TrustChain trustChain,
+        CancellationToken cancellationToken)
     {
         HashSet<Guid> streamsStartedThisRead = [];
         HashSet<Guid> streamsThatFailedToStartThisRead = [];
@@ -1035,7 +1148,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         return ApplyHeldTailAsync(
             session, streamId, streamsStartedThisRead, streamsThatFailedToStartThisRead,
             originEventIdsAppliedThisRead, originProgressThisRead, originHighWaterByStream,
-            streamsAwaitingHeldTailReplayThisRead, now, cancellationToken);
+            streamsAwaitingHeldTailReplayThisRead, trustChain, now, cancellationToken);
     }
 
     /// <summary>
@@ -1061,7 +1174,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         IDocumentSession session, Guid streamId, HashSet<Guid> streamsStartedThisRead,
         HashSet<Guid> streamsThatFailedToStartThisRead, HashSet<Guid> originEventIdsAppliedThisRead,
         Dictionary<Guid, long> originProgressThisRead, Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream,
-        HashSet<Guid> streamsAwaitingHeldTailReplayThisRead, DateTimeOffset now, CancellationToken cancellationToken)
+        HashSet<Guid> streamsAwaitingHeldTailReplayThisRead, TrustChain trustChain, DateTimeOffset now,
+        CancellationToken cancellationToken)
     {
         IReadOnlyList<HeldReplicatedEventRecord> held = await session.Query<HeldReplicatedEventRecord>()
             .Where(candidate => candidate.StreamId == streamId)
@@ -1083,8 +1197,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 applied += await ApplyAsync(
                     session, decoded, heldRecord.SenderNodeId, heldRecord.ProjectId, heldRecord.OriginProjectKey,
                     streamsStartedThisRead, streamsThatFailedToStartThisRead, originEventIdsAppliedThisRead,
-                    originProgressThisRead, originHighWaterByStream, streamsAwaitingHeldTailReplayThisRead, now,
-                    cancellationToken);
+                    originProgressThisRead, originHighWaterByStream, streamsAwaitingHeldTailReplayThisRead, trustChain,
+                    heldRecord.SenderFingerprint, now, cancellationToken);
             }
             else
             {

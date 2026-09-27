@@ -1,7 +1,9 @@
 using FluentAssertions;
+using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Replication;
+using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
@@ -352,8 +354,8 @@ public sealed class ProjectTeamHistoryCatchUpTests : IClassFixture<PostgresFixtu
 
             await using IDocumentSession receiver = StoreB.LightweightSession();
             EventReplicationReadResult read = await Inbox.ReadFromAsync(
-                receiver, RepositoryPath, NodeA, ProjectIdB, NodeB, OwnerBFingerprint, at.AddSeconds(1), trustChain: null,
-                cancellationToken);
+                receiver, RepositoryPath, NodeA, ProjectIdB, NodeB, OwnerBFingerprint, at.AddSeconds(1),
+                OwnerChainFor(NodeA), cancellationToken);
             read.EventsApplied.Should().Be(1, "the ordinary flush ships only what follows the switch-on point");
         }
 
@@ -379,12 +381,31 @@ public sealed class ProjectTeamHistoryCatchUpTests : IClassFixture<PostgresFixtu
 
             await using IDocumentSession receiver = StoreB.LightweightSession();
             EventReplicationReadResult read = await Inbox.ReadFromAsync(
-                receiver, RepositoryPath, NodeA, ProjectIdB, NodeB, OwnerBFingerprint, at.AddSeconds(3), trustChain: null,
-                cancellationToken);
+                receiver, RepositoryPath, NodeA, ProjectIdB, NodeB, OwnerBFingerprint, at.AddSeconds(3),
+                OwnerChainFor(NodeA), cancellationToken);
             return read.EventsApplied;
         }
 
         private EventReplicationInbox Inbox => new(Transport, Log);
+
+        /// <summary>
+        /// A one-owner chain naming <paramref name="nodeId"/> as an Owner-role project member, its
+        /// key resolved the identical way <see cref="SeedNodeFileAsync"/>'s own node file does — the
+        /// trust EventReplicationInbox's own gate now requires before it applies a project-settings-
+        /// shaped event (idea 6be68ee2, trust-ledger findings 1 and 6): every case here has node A
+        /// send both a <see cref="ProjectTeamSettingsChanged"/> and a <see cref="MemberVouched"/>.
+        /// </summary>
+        private static TrustChain OwnerChainFor(Guid nodeId)
+        {
+            const string root = "owner-root-fingerprint";
+            string publicKeyLine = $"ssh-ed25519 AAAAFAKE{nodeId:N} test";
+            TrustedOwner owner = new(
+                root, "ssh-ed25519 AAAAFAKEroot test",
+                [new TrustedNode(nodeId.ToString(), publicKeyLine, NodeKeyStore.Fingerprint(publicKeyLine), Now)]);
+            return new TrustChain(
+                new Dictionary<string, TrustedOwner> { [root] = owner },
+                [new ProjectMember(root, MembershipRole.Owner, Now)]);
+        }
 
         private EventCatchUpInbox CatchUpInbox => new(Transport, new EventCatchUpResponder(new ReplicationProjectResolver(), Ledger));
 
