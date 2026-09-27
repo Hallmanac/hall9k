@@ -16,7 +16,18 @@ public static class EffortInput
     /// 'default', which means "no opinion at this level, ask the next one down". Anything else is refused
     /// with the four accepted names quoted, so an unrecognized word never reaches a stored setting.
     /// </summary>
-    public static AgentEffort Parse(string flag, string input)
+    public static AgentEffort Parse(string flag, string input) => Parse(flag, input, DispatchChainDescription);
+
+    /// <summary>
+    /// The identical parse, but for <c>--orchestrator-effort</c> on <c>h9k config set</c> and
+    /// <c>h9k project set</c> (task: the orchestrator window's effort becomes a rendered project
+    /// and node setting): the refusal names the window's own chain rather than the dispatch chain
+    /// above, so an operator who mistypes one of these two flags is not told about task, project,
+    /// role, and node-wide efforts that never feed the window at all.
+    /// </summary>
+    public static AgentEffort ParseOrchestrator(string flag, string input) => Parse(flag, input, OrchestratorChainDescription);
+
+    private static AgentEffort Parse(string flag, string input, string chainDescription)
     {
         AgentEffort effort = AgentEffort.FromInput(input);
         if (effort.IsWellFormed || string.Equals(input.Trim(), AgentEffort.ClearingWord, StringComparison.OrdinalIgnoreCase))
@@ -26,8 +37,17 @@ public static class EffortInput
 
         throw new DomainValidationException(
             $"{flag} must be one of {AgentEffort.DescribeAccepted()}, or '{AgentEffort.ClearingWord}' "
-            + "to clear it so the next level of the effort chain decides again (task, then project, then the "
-            + "node's value for the session's role, then the node-wide --effort, then each model's own default). "
-            + "It is the reasoning effort level a dispatched session runs at.");
+            + $"to clear it so {chainDescription}");
     }
+
+    private const string DispatchChainDescription =
+        "the next level of the effort chain decides again (task, then project, then the "
+        + "node's value for the session's role, then the node-wide --effort, then each model's own default). "
+        + "It is the reasoning effort level a dispatched session runs at.";
+
+    private const string OrchestratorChainDescription =
+        "the next level of the orchestrator window's own effort chain decides again (the project's own "
+        + "--orchestrator-effort, then the node's --orchestrator-effort, then the model's own default). "
+        + "It is the reasoning effort level the orchestrator window itself runs at, never a dispatched "
+        + "session's — no task, project, role, or node-wide dispatch effort ever feeds it.";
 }
