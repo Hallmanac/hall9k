@@ -787,7 +787,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// <see cref="PostgresRuntime"/> directly: those all resolve against the live
     /// <see cref="PlatformPaths.Home"/>, which is exactly what a caller testing this against a
     /// throwaway directory must not touch. The names are kept in sync with those types by hand,
-    /// the same discipline <see cref="PostgresRuntime.ComposeFileContents"/> already uses to
+    /// the same discipline <see cref="PostgresRuntime.ComposeFileContentsFor"/> already uses to
     /// track the repository's own compose file.
     /// </para>
     /// </summary>

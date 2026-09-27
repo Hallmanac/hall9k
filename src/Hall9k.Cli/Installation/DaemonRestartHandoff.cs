@@ -104,7 +104,9 @@ public static class DaemonRestartHandoff
         // to read true in both states rather than contradicting the child's own "nothing to stop"
         // line.
         new RestartStep("stop any daemon still running on the previous binaries", ["daemon", "stop"]),
-        new RestartStep("bring the store schema current", ["doctor", "--yes", "--no-configure"]),
+        new RestartStep(
+            "bring the store schema current, and migrate the Postgres password off the shipped default if it is still set",
+            ["doctor", "--yes", "--no-configure"]),
         new RestartStep("start the daemon on the new binaries", ["daemon", "start"]),
     ];
 

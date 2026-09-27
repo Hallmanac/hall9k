@@ -16,8 +16,7 @@ namespace Hall9k.Tests.Cli;
 /// <see cref="Hall9k.Cli.DaemonControl.DaemonProcess.Probe"/>, the same seam
 /// <c>DatabaseDoctorAlreadyRunningContainerTests</c> already uses for the readiness poll — and,
 /// for a successful recreate, so does the readiness probe itself, so this never depends on a real
-/// Postgres answering at <see cref="Hall9kDatabase.DefaultConnectionString"/> within the real 30s
-/// timeout.
+/// Postgres answering at the compose file's own recorded password within the real 30s timeout.
 /// </summary>
 public sealed class DatabaseDoctorPortBindingTests : IDisposable
 {
@@ -46,7 +45,9 @@ public sealed class DatabaseDoctorPortBindingTests : IDisposable
             assumeYes: false, runner.Runner, NoDaemonRunning, CancellationToken.None);
 
         File.Exists(PostgresRuntime.ComposeFile).Should().BeTrue();
-        File.ReadAllText(PostgresRuntime.ComposeFile).Should().Be(PostgresRuntime.ComposeFileContents);
+        string password = PostgresRuntime.ReadPasswordFromComposeFile()!;
+        password.Should().MatchRegex("^[0-9a-f]{64}$");
+        File.ReadAllText(PostgresRuntime.ComposeFile).Should().Be(PostgresRuntime.ComposeFileContentsFor(password));
     }
 
     [Fact]

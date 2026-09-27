@@ -50,7 +50,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         public string? FromRelease { get; init; }
 
         [CommandOption("--restart")]
-        [Description("Bring the daemon up onto the fresh binaries without asking, whether or not one was already running — the newly installed h9k then runs h9k daemon stop, h9k doctor --yes --no-configure and h9k daemon start in that order, so an update carrying a schema change ends with the daemon up on a current schema; that doctor step will start a stopped hall9k-postgres container to get there, but --no-configure keeps it from recording a connection string on a machine where none resolves")]
+        [Description("Bring the daemon up onto the fresh binaries without asking, whether or not one was already running — the newly installed h9k then runs h9k daemon stop, h9k doctor --yes --no-configure and h9k daemon start in that order, so an update carrying a schema change ends with the daemon up on a current schema; that doctor step will start a stopped hall9k-postgres container to get there, and may also migrate the Postgres password off the shipped default onto a generated one, but --no-configure keeps it from recording a connection string on a machine where none resolves")]
         public bool Restart { get; init; }
 
         [CommandOption("--no-restart")]
@@ -234,7 +234,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // h9k daemon start's reachability probe and h9k doctor's start-offer never need a
         // repo checkout — an installed user has no dev worktree to run compose from. No
         // prompt and nothing started here: install stays boring (Decisions Log #58).
-        PostgresRuntime.WriteComposeFile();
+        await PostgresRuntime.WriteComposeFileAsync(cancellationToken);
         AnsiConsole.MarkupLine(
             $"[dim]Wrote Hall9k's own Postgres definition to {PostgresRuntime.ComposeFile.EscapeMarkup()} "
             + "(not started — h9k doctor or h9k daemon start will offer to when it's needed).[/]");
@@ -479,7 +479,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// <summary>
     /// The compose file just written above fully determines what a first-time
     /// <c>h9k doctor</c> or <c>h9k daemon start</c> would find at
-    /// <see cref="Hall9kDatabase.DefaultConnectionString"/>, so a machine with nothing
+    /// <see cref="Hall9kDatabase.ConnectionStringWithPassword"/>, so a machine with nothing
     /// configured yet gets that answer recorded up front rather than left to fail
     /// <c>h9k doctor</c>'s first question for no reason a fresh install couldn't already
     /// see (Windows install friction log item 1: config.json was left empty and doctor's
@@ -565,15 +565,17 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         {
             AnsiConsole.MarkupLine(
                 "[dim]Something is already listening on 127.0.0.1:5432 — left unconfigured rather than "
-                + $"guessing it is safe to write {Hall9kDatabase.DefaultConnectionString.EscapeMarkup()} there. "
-                + $"Run h9k doctor to diagnose what is listening, or set {Hall9kDatabase.EnvironmentVariableName} "
-                + "yourself if it is already your Postgres.[/]");
+                + $"guessing it is safe to write the credentials {PostgresRuntime.ComposeFile.EscapeMarkup()} "
+                + $"records there. Run h9k doctor to diagnose what is listening, or set "
+                + $"{Hall9kDatabase.EnvironmentVariableName} yourself if it is already your Postgres.[/]");
             return;
         }
 
         try
         {
-            await Hall9kDatabase.WriteConfiguredConnectionStringAsync(Hall9kDatabase.DefaultConnectionString, cancellationToken);
+            string password = await PostgresRuntime.WriteComposeFileAsync(cancellationToken);
+            await Hall9kDatabase.WriteConfiguredConnectionStringAsync(
+                Hall9kDatabase.ConnectionStringWithPassword(password), cancellationToken);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
