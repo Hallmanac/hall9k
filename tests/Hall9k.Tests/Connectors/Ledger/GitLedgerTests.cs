@@ -610,6 +610,73 @@ public sealed class GitLedgerTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// The regression the cycle-6 review caught in the cycle-5 fix (independent pre-PR review,
+    /// cycle 6, conformance lens, high): once membership is decided by
+    /// <see cref="LedgerCommitPathTrailer.PathsWrittenBy"/> alone, a commit written before
+    /// <see cref="GitLedger"/> started stamping that trailer — every ledger commit on record
+    /// before this fix shipped, this project's own live prompt-addenda ref included — carries no
+    /// trailer at all, so the strict membership test reads it as never having touched `path` and
+    /// silently drops it. Reproduced against real git: a raw commit object built the pre-trailer
+    /// way (no <c>Hall9k-Ledger-Path</c> line in its message, signed by the owner, made the ref's
+    /// tip directly) must still surface here, through the tree-diff fallback.
+    /// </summary>
+    [Fact]
+    public async Task ReadCommitsTouchingPathAsync_ALegacyCommitWithNoTrailerStillSurfacesThroughTheTreeDiffFallback()
+    {
+        string refName = UniqueTestRef();
+        string hub = _repo.CreateHub();
+        string node = _repo.CloneNode(hub);
+        (string ownerKeyPath, string ownerPublicKey) = GenerateSshKeypair();
+        try
+        {
+            LedgerSigningKey ownerSigningKey = new(ownerKeyPath);
+
+            // A normal, trailer-bearing write, only to obtain a tree that already holds
+            // "a.yaml" — reused below so the legacy commit does not have to build its own tree
+            // from scratch.
+            LedgerWriteOutcome templateWrite = await _ledger.WriteAsync(
+                new LedgerWriteRequest(node, refName, "a.yaml", "legacy content\n", null, "template", _committer, ownerSigningKey),
+                CancellationToken.None);
+
+            (int treeExit, string treeOutput, string treeError) =
+                LedgerTestRepo.RunGit(node, "rev-parse", $"{templateWrite.CommitId}^{{tree}}");
+            treeExit.Should().Be(0, treeError);
+            string treeId = treeOutput.Trim();
+
+            (int commitExit, string commitOutput, string commitError) = LedgerTestRepo.RunGit(
+                node,
+                "-c", "user.name=Ledger Test", "-c", "user.email=ledger-test@hall9k.local",
+                "-c", "gpg.format=ssh", "-c", $"user.signingkey={ownerKeyPath}",
+                "commit-tree", treeId, "-S", "-m", "legacy write, no Hall9k-Ledger-Path trailer");
+            commitExit.Should().Be(0, commitError);
+            string legacyCommitSha = commitOutput.Trim();
+
+            // Force-pushed directly as the ref's new tip: a real pre-trailer commit never has an
+            // ancestor relationship to the trailer-bearing template commit above, since the two
+            // are built by entirely different code paths (real history predates this fix; the
+            // template write above happens after it).
+            (int pushExit, _, string pushError) = LedgerTestRepo.RunGit(node, "push", "origin", $"+{legacyCommitSha}:{refName}");
+            pushExit.Should().Be(0, pushError);
+
+            IReadOnlyList<LedgerPathCommit> commits = await _commitReader.ReadCommitsTouchingPathAsync(
+                node, refName, "a.yaml",
+                (rawCommitBytes, cancellationToken) => _commitReader.IsSignedByAsync(node, rawCommitBytes, ownerPublicKey, cancellationToken),
+                CancellationToken.None);
+
+            commits.Should().ContainSingle(
+                "a commit with no Hall9k-Ledger-Path trailer at all is real pre-fix history, not a commit this "
+                + "walk should distrust, so the tree-diff fallback must still find it")
+                .Which.CommitSha.Should().Be(legacyCommitSha);
+            commits[0].Content.Should().Be("legacy content\n");
+        }
+        finally
+        {
+            File.Delete(ownerKeyPath);
+            File.Delete($"{ownerKeyPath}.pub");
+        }
+    }
+
     private static string UniqueTestRef() => LedgerRefRegistry.RegisterExact($"refs/hall9k/ledger/test-{Guid.NewGuid():N}").RefspecSource;
 
     private static (string PrivateKeyPath, string PublicKey) GenerateSshKeypair()
