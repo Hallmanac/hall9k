@@ -52,30 +52,24 @@ public sealed class PromptAddendaSweepEngineTests
             "Owner's own guidance.", "the member's own delete is skipped, restoring the owner's content rather than removing it");
     }
 
-    /// <summary>Covers both an unsigned commit (a repository collaborator with push access but no
-    /// ledger key at all) and a revoked node's own commit (one that verifies against a key no longer
-    /// a candidate the owner test tries): the reducer sees only the verdict, never why it was
-    /// refused, so a single <see cref="AuthorizedByOwner"/>-false case proves both — the distinction
+    /// <summary>Covers a single unsigned commit as well as multiple: the reducer sees only the
+    /// verdict, never why it was refused (an unsigned commit vs. a revoked node's own commit), so
+    /// one <see cref="AuthorizedByOwner"/>-false case proves the whole family — that distinction
     /// itself lives in <c>OwnerChainAuthorization</c> and is covered there and in the integration
-    /// tests (independent pre-PR review, cycle 1, conformance and adversarial lenses, low).</summary>
-    [Fact]
-    public void An_unsigned_or_revoked_nodes_commit_authorizes_nothing()
+    /// tests. A dedicated single-commit case used to sit beside this one proving the identical
+    /// thing through the identical seam (independent pre-PR review, cycle 3, both lenses, low) —
+    /// folded in here as the single-entry input rather than kept as its own fact.</summary>
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void Nothing_authorized_across_the_whole_history_gives_absent(int commitCount)
     {
-        PromptAddendumCommitVerdict[] commits = [new("sha-stranger", "A stranger's own text.", AuthorizedByOwner: false)];
-
-        string? materialized = PromptAddendaSweepEngine.SelectMaterializedContent(commits);
-
-        materialized.Should().BeNull();
-    }
-
-    [Fact]
-    public void Nothing_authorized_across_the_whole_history_gives_absent()
-    {
-        PromptAddendumCommitVerdict[] commits =
+        PromptAddendumCommitVerdict[] allCommits =
         [
             new("sha-member-2", "Second bad edit.", AuthorizedByOwner: false),
             new("sha-member-1", "First bad edit.", AuthorizedByOwner: false),
         ];
+        PromptAddendumCommitVerdict[] commits = allCommits[..commitCount];
 
         string? materialized = PromptAddendaSweepEngine.SelectMaterializedContent(commits);
 

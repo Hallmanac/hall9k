@@ -55,14 +55,29 @@ public interface ILedgerCommitReader
         string repositoryPath, string rawCommitBytes, string publicKeyLine, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Every commit reachable from <paramref name="refName"/>'s own tip that touched
-    /// <paramref name="path"/>, newest first, deletion commits included — an empty list when the ref
-    /// does not exist yet. <c>PromptAddendaSweepEngine.MaterializeAsync</c>'s own owner test (idea
-    /// 6be68ee2, trust-ledger finding 6) walks this newest to oldest looking for the first one an
-    /// Owner-role member's chain authorizes, skipping a member's overwrite, a member's delete, an
-    /// unsigned commit, or a revoked node's commit along the way, rather than trusting whichever
-    /// commit merely happens to be newest the way <see cref="ReadSignedCommitAsync"/> does.
+    /// Walks <paramref name="refName"/>'s own tip backward, first-parent order, newest first —
+    /// the ref's WHOLE real history, never limited to commits that touched <paramref name="path"/>
+    /// specifically: a commit whose tree for that one path happens to be byte-identical to its
+    /// parent's is still real history a caller must be able to see, the exact shape a signed
+    /// reissue of already-current content produces (independent pre-PR review, cycle 3, both
+    /// lenses, high — no <c>git log</c> flag makes a path-filtered walk report a TREESAME commit,
+    /// so the only fix is dropping the pathspec entirely). An empty list when the ref does not
+    /// exist yet.
+    /// <para>
+    /// Stops walking — and returns everything read up to and including that one commit, never
+    /// anything older — the moment <paramref name="isAuthorizedAsync"/> accepts a commit's own raw
+    /// bytes: <c>PromptAddendaSweepEngine.MaterializeAsync</c>'s and
+    /// <c>NewestCommitIsOwnerAuthorizedAsync</c>'s own owner test (idea 6be68ee2, trust-ledger
+    /// finding 6) only ever wants the FIRST (newest) commit an Owner-role member's chain
+    /// authorizes, so a repository collaborator who pushes any number of unsigned commits ahead of
+    /// the last authorized one costs this walk only as many git processes as stand between the tip
+    /// and that authorized commit, never the ref's entire history (independent pre-PR review,
+    /// cycle 3, adversarial lens, medium). A caller with no meaningful way to answer early —
+    /// nothing in the returned list should ever short-circuit the walk — passes a predicate that
+    /// never returns true, and reads the ref's own entire history back exactly as before.
+    /// </para>
     /// </summary>
     Task<IReadOnlyList<LedgerPathCommit>> ReadCommitsTouchingPathAsync(
-        string repositoryPath, string refName, string path, CancellationToken cancellationToken);
+        string repositoryPath, string refName, string path,
+        Func<string, CancellationToken, Task<bool>> isAuthorizedAsync, CancellationToken cancellationToken);
 }

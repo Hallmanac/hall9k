@@ -61,8 +61,15 @@ internal sealed class FakeLedgerCommitReader : ILedgerCommitReader
         string repositoryPath, string rawCommitBytes, string publicKeyLine, CancellationToken cancellationToken) =>
         Task.FromResult(isSignedBy(rawCommitBytes, publicKeyLine));
 
+    /// <summary>Ignores <paramref name="isAuthorizedAsync"/> entirely and always hands back the
+    /// scenario's own whole canned history: every scenario driving this fake is hand-authored and
+    /// short, so the early-stop <see cref="GitLedgerCommitReader"/>'s own real implementation earns
+    /// against real git's own unbounded history has nothing to earn here, and
+    /// <see cref="PromptAddendaSweepEngine"/>'s own caller-side loop already re-derives the
+    /// identical verdict per entry regardless of how much of the list this fake returns.</summary>
     public Task<IReadOnlyList<LedgerPathCommit>> ReadCommitsTouchingPathAsync(
-        string repositoryPath, string refName, string path, CancellationToken cancellationToken)
+        string repositoryPath, string refName, string path,
+        Func<string, CancellationToken, Task<bool>> isAuthorizedAsync, CancellationToken cancellationToken)
     {
         if (commitHistoryByPath is not null)
         {

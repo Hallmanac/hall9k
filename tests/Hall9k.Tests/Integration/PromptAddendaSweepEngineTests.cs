@@ -709,32 +709,6 @@ public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixtur
         File.ReadAllText(materializedFile).Should().Be("Owner's own guidance.");
     }
 
-    /// <summary>An unsigned commit — a repository collaborator with push access but no ledger key at
-    /// all — never authorizes, and nothing else in this path's own history does either: absent.</summary>
-    [Fact]
-    public async Task MaterializeAsync_skips_an_unsigned_commit_and_materializes_nothing()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        (NodeContext node, _, string projectHome) = await SeedAsync(cts.Token);
-        FakeLedger ledger = new();
-        await SeedPromptAddendaRefTipAsync(ledger, cts.Token);
-
-        FakeLedgerCommitReader commitReader = new(
-            new Dictionary<string, IReadOnlyList<LedgerPathCommit>>
-            {
-                [LedgerRefRegistry.PromptAddendumPath("work")] =
-                    [new LedgerPathCommit("A stranger's own text.", "sha-stranger", "raw-stranger-commit")],
-            },
-            (raw, key) => false);
-        PromptAddendaSweepEngine engine = new(
-            _postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<PromptAddendaSweepEngine>.Instance,
-            new FakeLedgerChainReader(DefaultTrustChain()), commitReader);
-
-        await engine.SweepOnceAsync(cts.Token);
-
-        File.Exists(ProjectHomePaths.PromptAddendumFile(projectHome, "work")).Should().BeFalse();
-    }
-
     /// <summary>A node that WAS vouched but is now revoked is simply absent from
     /// <see cref="TrustedOwner.Nodes"/> (the live chain's own shape) — its own commit, even though it
     /// verifies against that node's own key, authorizes nothing because that key is no longer a
@@ -914,7 +888,8 @@ public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixtur
             Task.FromResult(true);
 
         public async Task<IReadOnlyList<LedgerPathCommit>> ReadCommitsTouchingPathAsync(
-            string repositoryPath, string refName, string path, CancellationToken cancellationToken)
+            string repositoryPath, string refName, string path,
+            Func<string, CancellationToken, Task<bool>> isAuthorizedAsync, CancellationToken cancellationToken)
         {
             LedgerFile file = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
             return file.Exists ? [new LedgerPathCommit(file.Content, file.BlobId!, file.BlobId!)] : [];
