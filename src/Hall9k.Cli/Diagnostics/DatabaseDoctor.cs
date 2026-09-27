@@ -391,47 +391,54 @@ public static class DatabaseDoctor
     }
 
     /// <summary>Questions 2 and 3: is it reachable, and is the schema there.</summary>
-    private static async Task<string?> CheckReachabilityAndSchemaAsync(
+    private static Task<string?> CheckReachabilityAndSchemaAsync(
         string connectionString,
         ConnectionStringResolution resolution,
         bool offerFixes,
         bool assumeYes,
         ProcessRunner runner,
         CancellationToken cancellationToken,
+        bool staleSchemaRepairedByCaller) =>
+        CheckReachabilityAndSchemaAsync(
+            connectionString, resolution, offerFixes, assumeYes, runner,
+            token => DatabaseReachability.ProbeAsync(connectionString, token),
+            ReadinessTimeout, ReadinessPollInterval, TimeProvider.System, cancellationToken, staleSchemaRepairedByCaller);
+
+    /// <summary>
+    /// Same check, with the reachability probe and the post-refusal retry's timeout, poll
+    /// interval and clock all injectable — the seam a test needs to prove the
+    /// <see cref="ReachabilityStatus.RefusedConnection"/> case in
+    /// <see cref="DiagnoseRefusedConnectionAsync"/> is retried with a bounded wait rather than
+    /// failed on a single sample, without a real Postgres or a real wait: field reports
+    /// 2026-09-27 (Mac and Windows) show the guarded recreate's own readiness wait observing one
+    /// clean answer, immediately followed by this method's own first probe — a fresh connection,
+    /// moments later — catching Postgres transiently dropping it while it finishes starting.
+    /// </summary>
+    internal static async Task<string?> CheckReachabilityAndSchemaAsync(
+        string connectionString,
+        ConnectionStringResolution resolution,
+        bool offerFixes,
+        bool assumeYes,
+        ProcessRunner runner,
+        Func<CancellationToken, Task<ReachabilityReport>> reachabilityProbe,
+        TimeSpan readinessTimeout,
+        TimeSpan readinessPollInterval,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken,
         bool staleSchemaRepairedByCaller)
     {
-        ReachabilityReport reachability = await DatabaseReachability.ProbeAsync(connectionString, cancellationToken);
+        ReachabilityReport reachability = await reachabilityProbe(cancellationToken);
         switch (reachability.Status)
         {
             case ReachabilityStatus.Reachable:
                 break;
 
             case ReachabilityStatus.RefusedConnection:
-                AnsiConsole.MarkupLine(
-                    $"[yellow]Configured (from {resolution.Description.EscapeMarkup()}) to connect to "
-                    + $"{reachability.Host.EscapeMarkup()}:{reachability.Port}[/], but nothing is listening there. "
-                    + $"({reachability.Detail.EscapeMarkup()})");
-
-                bool looksLocal = reachability.Host is "localhost" or "127.0.0.1" && reachability.Port == 5432;
-                if (looksLocal)
-                {
-                    // Question 4's Docker awareness applies here too, not only to the
-                    // never-configured path: the boundary is Docker itself, wherever the
-                    // check finds an unreachable local Postgres (origin incident,
-                    // 2026-08-21 — a machine reboot leaves the connection string configured
-                    // but Docker Desktop, and so hall9k-postgres, not yet back up).
-                    (ContainerRuntimeStatus runtime, bool containerConfirmed, PostgresContainerStatus container) =
-                        await ReportContainerRuntimeStatusAsync(runner, connectionStringAlreadyConfigured: true, cancellationToken);
-                    if (offerFixes && runtime == ContainerRuntimeStatus.Running
-                        && await OfferAndStartAsync(connectionString, containerConfirmed, container, assumeYes, runner, cancellationToken))
-                    {
-                        reachability = await DatabaseReachability.ProbeAsync(connectionString, cancellationToken);
-                    }
-                }
-
+                reachability = await DiagnoseRefusedConnectionAsync(
+                    reachability, resolution, connectionString, offerFixes, assumeYes, runner, reachabilityProbe,
+                    readinessTimeout, readinessPollInterval, timeProvider, cancellationToken);
                 if (reachability.Status != ReachabilityStatus.Reachable)
                 {
-                    AnsiConsole.MarkupLine("[dim]Is Postgres running? Start it, then try again.[/]");
                     return null;
                 }
 
@@ -552,6 +559,80 @@ public static class DatabaseDoctor
         }
 
         return connectionString;
+    }
+
+    /// <summary>
+    /// Everything the <see cref="ReachabilityStatus.RefusedConnection"/> case does once the first
+    /// probe refuses: report what Docker knows via <see cref="ReportContainerRuntimeStatusAsync"/>,
+    /// offer to start what is actually stopped via <see cref="OfferAndStartAsync"/> — and, when the
+    /// container is already confirmed <see cref="PostgresContainerStatus.Running"/> (so
+    /// <see cref="OfferAndStartAsync"/> refuses to touch it outright: restarting an already-running
+    /// container is never the fix), retry the same probe with the bounded wait the guarded
+    /// recreate's own readiness poll already uses, rather than diagnosing "unreachable" from a
+    /// single sample. That single-sample diagnosis is the defect this method fixes: the guarded
+    /// recreate (<see cref="CheckContainerPortBindingAsync(bool,ProcessRunner,Func{bool},CancellationToken)"/>)
+    /// already waits for one clean answer before declaring the container recreated, but the very
+    /// next probe — a fresh connection, run moments later by this doctor's next question — could
+    /// still catch Postgres transiently dropping it while it finishes starting (field reports
+    /// 2026-09-27, Mac and Windows: both saw "Exception while reading from stream" immediately
+    /// after a printed "Recreated" success, and both left the daemon stopped because this check
+    /// used to give up after that one sample). Returns the final <see cref="ReachabilityReport"/>,
+    /// reachable or not, for the caller to act on.
+    /// </summary>
+    internal static async Task<ReachabilityReport> DiagnoseRefusedConnectionAsync(
+        ReachabilityReport reachability,
+        ConnectionStringResolution resolution,
+        string connectionString,
+        bool offerFixes,
+        bool assumeYes,
+        ProcessRunner runner,
+        Func<CancellationToken, Task<ReachabilityReport>> reachabilityProbe,
+        TimeSpan readinessTimeout,
+        TimeSpan readinessPollInterval,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        AnsiConsole.MarkupLine(
+            $"[yellow]Configured (from {resolution.Description.EscapeMarkup()}) to connect to "
+            + $"{reachability.Host.EscapeMarkup()}:{reachability.Port}[/], but nothing is listening there. "
+            + $"({reachability.Detail.EscapeMarkup()})");
+
+        bool waitedForStartup = false;
+        bool looksLocal = reachability.Host is "localhost" or "127.0.0.1" && reachability.Port == 5432;
+        if (looksLocal)
+        {
+            // Question 4's Docker awareness applies here too, not only to the
+            // never-configured path: the boundary is Docker itself, wherever the
+            // check finds an unreachable local Postgres (origin incident,
+            // 2026-08-21 — a machine reboot leaves the connection string configured
+            // but Docker Desktop, and so hall9k-postgres, not yet back up).
+            (ContainerRuntimeStatus runtime, bool containerConfirmed, PostgresContainerStatus container) =
+                await ReportContainerRuntimeStatusAsync(runner, connectionStringAlreadyConfigured: true, cancellationToken);
+            if (offerFixes && runtime == ContainerRuntimeStatus.Running
+                && await OfferAndStartAsync(connectionString, containerConfirmed, container, assumeYes, runner, cancellationToken))
+            {
+                reachability = await reachabilityProbe(cancellationToken);
+            }
+            else if (containerConfirmed && container == PostgresContainerStatus.Running)
+            {
+                AnsiConsole.Markup(
+                    $"[dim]Retrying for up to {readinessTimeout.TotalSeconds:0}s, in case it is still finishing startup…[/]");
+                reachability = await WaitForReachableAsync(
+                    reachabilityProbe, readinessTimeout, readinessPollInterval, timeProvider, cancellationToken);
+                AnsiConsole.WriteLine();
+                waitedForStartup = true;
+            }
+        }
+
+        if (reachability.Status != ReachabilityStatus.Reachable)
+        {
+            AnsiConsole.MarkupLine(waitedForStartup
+                ? $"[dim]Still not answering after waiting up to {readinessTimeout.TotalSeconds:0}s for it to finish "
+                    + $"starting. Check docker logs {PostgresRuntime.ContainerName}, then try again.[/]"
+                : "[dim]Is Postgres running? Start it, then try again.[/]");
+        }
+
+        return reachability;
     }
 
     /// <summary>
@@ -915,9 +996,26 @@ public static class DatabaseDoctor
     /// itself is read from <paramref name="timeProvider"/> (real wall-clock time in
     /// production) rather than <c>DateTimeOffset.UtcNow</c> directly, so a test can swap in
     /// a clock whose elapsed time is driven by call count instead of the runner's actual
-    /// speed.
+    /// speed. A thin wrapper over <see cref="WaitForReachableAsync"/> for the callers that
+    /// only need the yes/no answer, not the final report.
     /// </summary>
     internal static async Task<bool> WaitForReadinessAsync(
+        Func<CancellationToken, Task<ReachabilityReport>> probe,
+        TimeSpan timeout,
+        TimeSpan pollInterval,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken) =>
+        (await WaitForReachableAsync(probe, timeout, pollInterval, timeProvider, cancellationToken)).Status
+            == ReachabilityStatus.Reachable;
+
+    /// <summary>
+    /// Same bounded poll, returning the final <see cref="ReachabilityReport"/> rather than a bare
+    /// bool — the seam <see cref="DiagnoseRefusedConnectionAsync"/> needs to retry a refused
+    /// connection and still report whatever the last probe actually said (a different failure
+    /// kind, or the same one) once the bound expires, rather than collapsing every non-reachable
+    /// outcome into "false".
+    /// </summary>
+    internal static async Task<ReachabilityReport> WaitForReachableAsync(
         Func<CancellationToken, Task<ReachabilityReport>> probe,
         TimeSpan timeout,
         TimeSpan pollInterval,
@@ -925,17 +1023,14 @@ public static class DatabaseDoctor
         CancellationToken cancellationToken)
     {
         DateTimeOffset deadline = timeProvider.GetUtcNow() + timeout;
-        while (timeProvider.GetUtcNow() < deadline)
+        ReachabilityReport report = await probe(cancellationToken);
+        while (report.Status != ReachabilityStatus.Reachable && timeProvider.GetUtcNow() < deadline)
         {
-            if ((await probe(cancellationToken)).Status == ReachabilityStatus.Reachable)
-            {
-                return true;
-            }
-
             await Task.Delay(pollInterval, cancellationToken);
+            report = await probe(cancellationToken);
         }
 
-        return false;
+        return report;
     }
 
     /// <summary>
