@@ -83,4 +83,22 @@ internal sealed class FakeLedgerCommitReader : ILedgerCommitReader
             ? (IReadOnlyList<LedgerPathCommit>)[new LedgerPathCommit(commit.Content, commit.CommitSha, commit.RawCommitBytes)]
             : []);
     }
+
+    /// <summary>
+    /// <c>PromptAddendaSweepEngine</c>'s write/delete no-op check calls this on the ref's own literal
+    /// tip, never path-scoped — so with <see cref="commitHistoryByPath"/> populated (the owner-test
+    /// reissue scenarios, which each seed exactly one builder path), the tip is that path's own
+    /// newest entry, run through the identical <paramref name="isAuthorizedAsync"/> callback
+    /// <see cref="ReadCommitsTouchingPathAsync"/> already answers per-commit. A scenario built
+    /// through the single-newest-commit constructor instead (<see cref="commitHistoryByPath"/> null)
+    /// never drives this check, so it keeps the unconditional "trust whatever this fake was handed"
+    /// default <see cref="IsSignedByAsync"/> already applies there.
+    /// </summary>
+    public Task<bool> IsRefTipAuthorizedAsync(
+        string repositoryPath, string refName,
+        Func<string, CancellationToken, Task<bool>> isAuthorizedAsync, CancellationToken cancellationToken)
+    {
+        LedgerPathCommit? tip = commitHistoryByPath?.Values.SelectMany(history => history).FirstOrDefault();
+        return tip is null ? Task.FromResult(true) : isAuthorizedAsync(tip.RawCommitBytes, cancellationToken);
+    }
 }

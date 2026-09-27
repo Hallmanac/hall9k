@@ -59,14 +59,24 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
             return [];
         }
 
-        // The ref's own WHOLE first-parent history, never limited to commits whose tree for
-        // `path` differs from their parent's: a signed reissue of already-current content (the
-        // owner re-asserting exactly what a member's own unauthorized commit already left at the
-        // tip) produces a commit that is TREESAME for `path` to its own parent, and `git log --
-        // path` prunes a TREESAME commit unconditionally — no flag restores it, verified in a
-        // scratch repository — so a caller walking a path-filtered log can never see that commit
-        // at all, and the owner's own reissue is silently lost (independent pre-PR review, cycle
-        // 3, both lenses, high).
+        // The ref's own WHOLE first-parent history, never limited by a `git log -- path`
+        // pathspec: a signed reissue of already-current content (the owner re-asserting exactly
+        // what a member's own unauthorized commit already left at the tip) produces a commit that
+        // is TREESAME for `path` to its own parent, and `git log -- path` prunes a TREESAME commit
+        // unconditionally — no flag restores it, verified in a scratch repository — so a caller
+        // walking a path-filtered log can never see that commit at all, and the owner's own
+        // reissue is silently lost (independent pre-PR review, cycle 3, both lenses, high).
+        // Membership in this method's own result is decided below by
+        // LedgerCommitPathTrailer.PathsWrittenBy instead — GitLedger stamps every commit it
+        // builds with the exact path(s) it writes or deletes, inside the signed message itself,
+        // which is the only signal that can ever tell "this commit deliberately reissues `path`
+        // with unchanged bytes" apart from "this commit never touched `path` at all": a tree diff
+        // cannot, since both produce an identical tree for `path` relative to the commit's own
+        // parent. Reading every commit's raw trailer before deciding to keep it is what closes the
+        // laundering this walk opened by dropping the pathspec: an owner-authorized commit to some
+        // OTHER path built on top of a member's own unauthorized overwrite of `path` no longer
+        // vouches for whatever `path` happened to read as in that commit's own inherited tree
+        // (independent pre-PR review, cycle 5, conformance and adversarial lenses, both high).
         IReadOnlyList<string> commits = await CommitShasAsync(repositoryPath, tip, cancellationToken);
         List<LedgerPathCommit> results = new();
         foreach (string sha in commits)
@@ -78,6 +88,15 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
                 // reachable — genuinely exceptional, never a legitimate "this commit does not
                 // exist" the rest of this method's caller should read as absence.
                 throw new InvalidOperationException($"git cat-file commit {sha} failed in {repositoryPath}.");
+            }
+
+            if (!LedgerCommitPathTrailer.PathsWrittenBy(rawBytes).Contains(path, StringComparer.Ordinal))
+            {
+                // This commit is real ref history, but it was never this ledger's own write or
+                // delete of `path` — never counted as a candidate, and never handed to
+                // isAuthorizedAsync, which exists to answer "is THIS commit's own claim about
+                // `path` trustworthy," not "is this commit signed at all."
+                continue;
             }
 
             string? content = await ReadAtCommitAsync(repositoryPath, sha, path, cancellationToken);
@@ -98,6 +117,33 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
         }
 
         return results;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="refName"/>'s own literal tip commit — never "the newest commit
+    /// touching some path," which <see cref="ReadCommitsTouchingPathAsync"/> answers instead — is
+    /// itself accepted by <paramref name="isAuthorizedAsync"/>. <c>true</c> when the ref does not
+    /// exist yet: there is nothing at the tip to override.
+    /// </summary>
+    public async Task<bool> IsRefTipAuthorizedAsync(
+        string repositoryPath, string refName,
+        Func<string, CancellationToken, Task<bool>> isAuthorizedAsync, CancellationToken cancellationToken)
+    {
+        await FetchRefAsync(repositoryPath, refName, cancellationToken);
+
+        string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
+        if (tip is null)
+        {
+            return true;
+        }
+
+        string? rawBytes = await RunGitCaptureAsync(repositoryPath, ["cat-file", "commit", tip], cancellationToken);
+        if (rawBytes is null)
+        {
+            throw new InvalidOperationException($"git cat-file commit {tip} failed in {repositoryPath}.");
+        }
+
+        return await isAuthorizedAsync(rawBytes, cancellationToken);
     }
 
     public async Task<bool> IsSignedByAsync(

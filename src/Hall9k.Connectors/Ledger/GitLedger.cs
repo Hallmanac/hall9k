@@ -427,7 +427,7 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
         }
 
         arguments.Add("-m");
-        arguments.Add(request.CommitMessage);
+        arguments.Add(LedgerCommitPathTrailer.Compose(request.CommitMessage, request.Files.Select(file => file.Path)));
 
         (int exitCode, string output, string error) = await RunGitAsync(
             request.RepositoryPath, arguments, null, null, cancellationToken);
@@ -479,7 +479,7 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
         }
 
         arguments.Add("-m");
-        arguments.Add(request.CommitMessage);
+        arguments.Add(LedgerCommitPathTrailer.Compose(request.CommitMessage, [request.Path]));
 
         (int exitCode, string output, string error) = await RunGitAsync(
             request.RepositoryPath, arguments, null, null, cancellationToken);
@@ -604,7 +604,7 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
         }
 
         arguments.Add("-m");
-        arguments.Add(request.CommitMessage);
+        arguments.Add(LedgerCommitPathTrailer.Compose(request.CommitMessage, [request.Path]));
 
         (int exitCode, string output, string error) = await RunGitAsync(
             request.RepositoryPath, arguments, null, null, cancellationToken);

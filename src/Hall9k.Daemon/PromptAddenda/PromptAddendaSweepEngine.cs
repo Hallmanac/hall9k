@@ -393,7 +393,7 @@ public sealed class PromptAddendaSweepEngine(
             // documented lost-node-then-reinstate flow — could otherwise never take effect
             // (independent pre-PR review, cycle 1, conformance and adversarial lenses, medium).
             if (current.Content == content
-                && await NewestCommitIsOwnerAuthorizedAsync(repositoryPath, refName, path, trustChain, cancellationToken))
+                && await NewestCommitIsOwnerAuthorizedAsync(repositoryPath, refName, trustChain, cancellationToken))
             {
                 return;
             }
@@ -434,7 +434,7 @@ public sealed class PromptAddendaSweepEngine(
             // and the member's delete kept reaching every node's agents forever (independent pre-PR
             // review, cycle 1, conformance and adversarial lenses, medium).
             if (!current.Exists
-                && await NewestCommitIsOwnerAuthorizedAsync(repositoryPath, refName, path, trustChain, cancellationToken))
+                && await NewestCommitIsOwnerAuthorizedAsync(repositoryPath, refName, trustChain, cancellationToken))
             {
                 return;
             }
@@ -638,40 +638,26 @@ public sealed class PromptAddendaSweepEngine(
     }
 
     /// <summary>
-    /// Whether the ref's own literal tip commit — <see cref="ILedgerCommitReader.ReadCommitsTouchingPathAsync"/>'s
-    /// own first, newest entry, since it now walks the ref's whole real history rather than only
-    /// commits that changed <paramref name="path"/> — was itself signed by a root key or a
-    /// currently vouched node key of an Owner-role member. The same owner test
-    /// <see cref="MaterializeAsync"/> walks the whole history for, but here only the tip's own
-    /// newest entry matters: <see cref="WriteAsync"/> and <see cref="DeleteAsync"/> call this only
-    /// to decide whether skipping an already-matching tip is safe, never to decide what content to
-    /// materialize. Checking only the literal tip — never "the newest commit that happens to touch
-    /// this path" — is what lets a signed reissue of already-current content actually count: that
-    /// reissue commit's own tree for `path` is byte-identical to its parent's, so it would never be
-    /// the "newest commit touching path" under a path-filtered read, even though it is unmistakably
-    /// the ref's own current tip (independent pre-PR review, cycle 3, both lenses, high). No commit
-    /// at all counts as authorized when the ref does not exist yet — there is nothing at the tip to
-    /// override. The predicate below always reports "stop" after the first (tip) entry rather than
-    /// reusing the real owner-search predicate: this caller only ever reads <c>commits[0]</c>, so an
-    /// unauthorized tip searching backward through history for some older authorized ancestor would
-    /// spawn a git process and a signature check per commit purely to answer a question that depends
-    /// only on the tip — precisely the WriteAsync/DeleteAsync reissue no-op check this method exists
-    /// for (independent pre-PR review, cycle 4, adversarial lens, medium).
+    /// Whether the ref's own literal tip commit — <see cref="ILedgerCommitReader.IsRefTipAuthorizedAsync"/>,
+    /// never <see cref="ILedgerCommitReader.ReadCommitsTouchingPathAsync"/>'s own path-scoped walk
+    /// — was itself signed by a root key or a currently vouched node key of an Owner-role member.
+    /// <see cref="WriteAsync"/> and <see cref="DeleteAsync"/> call this only to decide whether
+    /// skipping an already-matching tip is safe, never to decide what content to materialize, and
+    /// that decision has to be about the ref's own current state as a whole, not about whichever
+    /// one builder path this particular write or delete happens to concern: a tip written for some
+    /// OTHER builder is not evidence either way about whether THIS builder's own last write was
+    /// authorized, so filtering the tip check by path here would answer a question this caller
+    /// never asked (independent pre-PR review, cycle 5, conformance and adversarial lenses, both
+    /// high, on the sibling defect this same conflation caused in <see cref="MaterializeAsync"/>'s
+    /// own walk). No commit at all counts as authorized when the ref does not exist yet — there is
+    /// nothing at the tip to override.
     /// </summary>
     private async Task<bool> NewestCommitIsOwnerAuthorizedAsync(
-        string repositoryPath, string refName, string path, TrustChain trustChain, CancellationToken cancellationToken)
-    {
-        IReadOnlyList<LedgerPathCommit> commits = await commitReader.ReadCommitsTouchingPathAsync(
-            repositoryPath, refName, path,
-            (_, _) => Task.FromResult(true),
+        string repositoryPath, string refName, TrustChain trustChain, CancellationToken cancellationToken) =>
+        await commitReader.IsRefTipAuthorizedAsync(
+            repositoryPath, refName,
+            (rawCommitBytes, token) => IsAuthorizedByAnyOwnerRoleMemberAsync(repositoryPath, rawCommitBytes, trustChain, token),
             cancellationToken);
-        if (commits.Count == 0)
-        {
-            return true;
-        }
-
-        return await IsAuthorizedByAnyOwnerRoleMemberAsync(repositoryPath, commits[0].RawCommitBytes, trustChain, cancellationToken);
-    }
 
     /// <summary>The one owner-authorization check every call site above shares, closed over
     /// <see cref="commitReader"/>'s own <see cref="ILedgerCommitReader.IsSignedByAsync"/> — pulled
