@@ -1390,9 +1390,9 @@ retrofitting project scoping into it later: every project-scoped event now rides
 every node, a node that finds a gap in a sender's sequence (or a squash) catches up instead of
 stalling, an explicit catch-up ask is served from below the answering node's own switch-on point,
 a brand-new node's first sync brings a project whole from genesis with its tasks, runs, and ideas,
-and ideas and tasks each carry a `private`, `fleet`, or `team` replication scope. A project-
-settings-shaped event — a team settings change, a member vouch or removal record, a prompt
-addendum, or a run skill — applies on a receiving node only when the verified sender key traces to
+and ideas and tasks each carry a `private`, `fleet`, or `team` replication scope. A
+project-settings-shaped event (a team settings change, a member vouch or removal record, a prompt
+addendum, or a run skill) applies on a receiving node only when the verified sender key traces to
 an Owner-role project member's own chain for that exact sender node id; anything else is dropped
 and logged, never silently merged, and the receiver never re-signs a foreign addendum or run skill
 under its own key (idea 6be68ee2). **Still not

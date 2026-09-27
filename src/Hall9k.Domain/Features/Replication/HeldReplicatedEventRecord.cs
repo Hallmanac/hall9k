@@ -38,11 +38,13 @@ public sealed class HeldReplicatedEventRecord
     /// <summary>
     /// The verified key fingerprint this record's own sender read carried, resolved from the
     /// sender's own node file rather than anything the wire record itself claims — the same fact
-    /// <see cref="Hall9k.Connectors.Messaging.TransportReadResult.SenderFingerprint"/> names for the
-    /// read that first tried to apply this record. Replayed against it, alongside the trust chain
-    /// current at the moment of replay, so a stream held before this piece shipped (and so carrying
-    /// null here) is read the same way a sender resolved to no key at all would be — never applied
-    /// to a gated stream — rather than skipping the gate outright for lack of a value to check.
+    /// the transport's own read result names for the read that first tried to apply this record.
+    /// Stored on every held record, but never actually consulted against the gate on replay: a
+    /// project-settings-shaped event (a project-settings change, a member vouch or removal record,
+    /// a prompt addendum, or a run skill) always merges onto this receiver's own local Project
+    /// stream, which already exists on any project the gate runs for, so it never reaches this
+    /// "genesis missing, hold it" table in the first place — every record actually held here is one
+    /// the gate never applies to.
     /// </summary>
     public string? SenderFingerprint { get; set; }
 
