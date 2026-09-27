@@ -6,6 +6,8 @@ using Hall9k.Connectors.Replication;
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -258,6 +260,122 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             // there, so nothing past it was ever inspected. Only a peer's own separate outbox (node
             // C's, above) can carry content past a permanent hole like this one.
             (await session.LoadAsync<TaskDetails>(task3Id, cts.Token)).Should().BeNull();
+        }
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, adversarial lens, medium: a gap-fill request's own
+    /// candidate can answer with a MIX of content — some of it ungated and applying cleanly, some of
+    /// it one of <c>ProjectStreamReplicationRules.IsProjectAggregateStreamEvent</c>'s own six,
+    /// forwarded rather than authored by that candidate, and dropped without recording because the
+    /// candidate itself is not vouched as an owner. Before this fix, <c>applied &gt; 0</c> from the
+    /// rest of that same answer closed the request outright, so the gated content that answer never
+    /// actually delivered was never asked for again — a member-role fleet reconcile or a gap-fill
+    /// answered by a non-owner peer could go without a team settings change, a run skill, or a
+    /// prompt addendum indefinitely. The fix leaves a request whose own concern (here,
+    /// <see cref="EventCatchUpRequest.ForOriginNodeId"/>) matches a gated drop's own true origin
+    /// standing, so the cascade or a later re-ask can still reach a sender the gate actually allows.
+    /// </summary>
+    [Fact]
+    public async Task A_gated_drop_forwarded_by_a_non_owner_answering_a_gap_fill_never_closes_the_request()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid trueOwnerOriginNode = DomainId.New();
+        Guid forwardingNode = DomainId.New();
+        Guid nodeB = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, forwardingNode, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        EventCatchUpCoordinator coordinator = new();
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("forwarder");
+
+        await using DocumentStore storeB = OpenStore("event_catchup_gated_drop_never_closes_node_b");
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                projectId,
+                new ProjectRegistered(projectId, ownerId, DomainId.New(), "Shared Project", "/repo-b", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid requestId;
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            bool started = await coordinator.RequestGapFillAsync(
+                session, projectId, forOriginNodeId: trueOwnerOriginNode, myNodeId: nodeB, myOwnerFingerprint: "owner-b-fingerprint",
+                candidates: [forwardingNode], TimeSpan.FromMinutes(5), Now, cts.Token);
+            started.Should().BeTrue();
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            requestId = await session.Query<EventCatchUpRequest>()
+                .Where(r => r.ProjectId == projectId && r.ForOriginNodeId == trueOwnerOriginNode)
+                .Select(r => r.Id).SingleAsync(cts.Token);
+        }
+
+        // The candidate's own answer: task1's genesis (ungated, applies cleanly) beside a
+        // project-settings change (gated) — both forwarded under the true owner's own origin, never
+        // the candidate's, exactly the catch-up shape a candidate that merely holds a copy takes.
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, "Ship the thing", ["it ships"], TaskType.Feature, null, null, null, Now, ownerId);
+        ProjectTeamSettingsChanged settingsChange = new(
+            projectId, Now.AddSeconds(1), ownerId, ClaimGate: Optional<ClaimGate>.Of(ClaimGate.TrackerAssignee));
+        List<EventReplicationCodec.ReplicatedEventRecord> answer =
+        [
+            ForeignRecord(taskId, added, trueOwnerOriginNode, originSequence: 1, projectId),
+            ForeignRecord(projectId, settingsChange, trueOwnerOriginNode, originSequence: 2, projectId),
+        ];
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, forwardingNode, projectId, "owner-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch(answer), Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, forwardingNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        // forwardingNode's own root is a project MEMBER here, never an owner — it merely holds a
+        // copy of the true owner's own records, the ordinary shape a catch-up candidate takes.
+        const string memberRoot = "member-root-fingerprint";
+        TrustChain memberOnlyChain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                [memberRoot] = new TrustedOwner(
+                    memberRoot, "ssh-ed25519 AAAAFAKEROOT root",
+                    [
+                        new TrustedNode(
+                            forwardingNode.ToString(), $"ssh-ed25519 AAAAFAKE{forwardingNode:N} test",
+                            SeededFingerprintOf(forwardingNode), Now),
+                    ]),
+            },
+            [new ProjectMember(memberRoot, MembershipRole.Member, Now)]);
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, forwardingNode, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: memberOnlyChain, cts.Token);
+            read.EventsApplied.Should().Be(
+                1, "the task applies; the gated settings change, forwarded by a non-owner, is dropped without recording");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            EventCatchUpRequest request = (await session.LoadAsync<EventCatchUpRequest>(requestId, cts.Token))!;
+            request.AnsweredAt.Should().BeNull(
+                "the gated content this gap-fill was really waiting on was dropped without recording, forwarded by "
+                + "a non-owner, so the request must stay outstanding for a sender the gate can actually allow "
+                + "rather than closing on the rest of the same answer");
+            request.IsOutstanding.Should().BeTrue();
         }
     }
 
