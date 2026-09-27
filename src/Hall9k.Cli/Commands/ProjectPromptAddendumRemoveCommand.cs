@@ -35,11 +35,11 @@ public sealed class ProjectPromptAddendumRemoveCommand : Hall9kAsyncCommand<Proj
     {
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
-        return await RunAsync(session, settings, cancellationToken);
+        return await RunAsync(session, settings, new GitLedgerChainReader(), cancellationToken);
     }
 
     internal static async Task<int> RunAsync(
-        IDocumentSession session, Settings settings, CancellationToken cancellationToken, ILedgerChainReader? chainReader = null)
+        IDocumentSession session, Settings settings, ILedgerChainReader chainReader, CancellationToken cancellationToken)
     {
         ProjectDetails project = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
         PromptBuilderKey builder = PromptBuilderKey.Parse(settings.Builder);
@@ -56,13 +56,15 @@ public sealed class ProjectPromptAddendumRemoveCommand : Hall9kAsyncCommand<Proj
         await session.SaveChangesAsync(cancellationToken);
 
         bool nodeOwnerIsProjectOwner = await PromptAddendumOwnerRoleGate.NodeOwnerIsProjectOwnerAsync(
-            session, project, context.OwnerId, chainReader ?? new GitLedgerChainReader(), cancellationToken);
+            session, project, context.OwnerId, chainReader, cancellationToken);
         if (!nodeOwnerIsProjectOwner)
         {
             AnsiConsole.MarkupLine(
                 $"[yellow]Recorded, but this node's own owner is not an Owner-role member of "
                 + $"'{project.Name.EscapeMarkup()}', so this removal will never reach the ledger from here — only "
-                + "the project's own owner materializes a prompt addendum.[/]");
+                + "an Owner-role member's own node pushes a prompt addendum change to the ledger. Every node "
+                + "still materializes whatever the ledger's own owner-authorized state is on its next sweep, "
+                + "which will restore this locally.[/]");
             return ExitCodes.Ok;
         }
 
