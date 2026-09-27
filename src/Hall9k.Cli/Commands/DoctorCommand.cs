@@ -29,9 +29,11 @@ public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
             + "the connection string that points at it, non-interactively — the shape a script or a "
             + "dispatched agent needs, since there is no terminal there to answer a prompt. Also "
             + "recreates hall9k-postgres when it is publishing port 5432 on anything but 127.0.0.1, "
-            + "but only when it mounts exactly the pinned hall9k-pgdata volume, was created from this "
-            + "install's own compose file, and no daemon is running — otherwise this prints the exact "
-            + "commands to recreate it by hand instead.")]
+            + "and migrates its password off the shipped default onto a generated one when config.json "
+            + "still names that default — both guarded the same way: only when the container mounts "
+            + "exactly the pinned hall9k-pgdata volume, was created from this install's own compose "
+            + "file, and no daemon is running, otherwise this prints the exact commands to fix it by "
+            + "hand instead.")]
         public bool Yes { get; init; }
 
         [CommandOption("--no-configure")]

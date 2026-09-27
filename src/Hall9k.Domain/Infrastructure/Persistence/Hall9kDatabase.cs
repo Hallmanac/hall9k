@@ -30,17 +30,17 @@ namespace Hall9k.Domain.Infrastructure.Persistence;
 public static class Hall9kDatabase
 {
     /// <summary>
-    /// What <c>h9k install</c>'s shipped Postgres definition (<see cref="PostgresRuntime"/>)
+    /// What every installed machine's own generated Postgres password (<see cref="PostgresRuntime.GeneratePassword"/>)
     /// stands up. Written to <see cref="ConfigFile"/> by <c>h9k doctor</c>'s start-offer once
     /// an operator accepts it, and — since Decisions Log #118 — by <c>h9k install</c> itself,
     /// non-interactively, but only when nothing in the precedence chain resolves yet and
     /// nothing is already listening on the default port: the compose file install just wrote
     /// fully determines this string, so that write is a record of what install already
-    /// provisioned rather than a guess. <see cref="Resolve"/> never reaches this constant on
-    /// its own — every write of it is one of those two explicit, recorded acts.
+    /// provisioned rather than a guess. <see cref="Resolve"/> never reaches a value built from
+    /// this on its own — every write of it is one of those two explicit, recorded acts.
     /// <para>
     /// Names <c>127.0.0.1</c> rather than <c>localhost</c>: the container publishes on that
-    /// literal address only (<see cref="PostgresRuntime.ComposeFileContents"/>), and on a node
+    /// literal address only (<see cref="PostgresRuntime.ComposeFileContentsFor"/>), and on a node
     /// where <c>localhost</c> resolves to <c>::1</c> first, connecting to it pays an IPv6-refused
     /// then-IPv4-retry cost on every attempt — small on a single connection, but large enough to
     /// blow a tight combined budget across several sequential ones (task 2f9bc330, field report
@@ -48,8 +48,42 @@ public static class Hall9kDatabase
     /// the ambiguity at the source instead of asking every caller to budget around it.
     /// </para>
     /// </summary>
-    public const string DefaultConnectionString =
-        "Host=127.0.0.1;Port=5432;Database=hall9k;Username=postgres;Password=hall9k";
+    public static string ConnectionStringWithPassword(string password) =>
+        $"Host=127.0.0.1;Port=5432;Database=hall9k;Username=postgres;Password={password}";
+
+    /// <summary>
+    /// What every install shipped before this task (security review idea 6be68ee2,
+    /// secrets-files-network findings 1 and 9), and the one value the password migration in
+    /// <see cref="Hall9k.Cli.Diagnostics.DatabaseDoctor"/> looks for in <see cref="ConfigFile"/>
+    /// before it touches anything: a config file whose own connection string is not exactly this
+    /// literal was either hand-set by an operator (a custom host, database, or credential — never
+    /// this migration's to overwrite) or already migrated, and either way the migration leaves it
+    /// alone. Deliberately not public and never used as a fallback default anywhere <see cref="Resolve"/>
+    /// can reach on its own — the one thing this constant is for is recognising the old value on
+    /// the way out, not handing it to anything new.
+    /// </summary>
+    internal const string LegacyDefaultConnectionString =
+        $"Host=127.0.0.1;Port=5432;Database=hall9k;Username=postgres;Password={LegacyPassword}";
+
+    /// <summary>
+    /// The password every install shipped before this task — already public (it has always been a
+    /// literal in this file, and in the repository's own shipped compose template), so naming it
+    /// plainly in a recovery message is not the exposure the generated password's own secrecy
+    /// guards against. The migration's recovery instructions (<see cref="Hall9k.Cli.Diagnostics.DatabaseDoctor"/>)
+    /// name it explicitly for exactly that reason: reverting to a known, already-public value from
+    /// a state where the database's real current password is uncertain is a safe recovery target
+    /// precisely because there is nothing left to keep secret about it.
+    /// </summary>
+    public const string LegacyPassword = "hall9k";
+
+    /// <summary>
+    /// Whether <paramref name="connectionString"/> is exactly <see cref="LegacyDefaultConnectionString"/> —
+    /// the migration's own eligibility test, exposed this way (rather than the literal itself) so
+    /// nothing outside <c>Hall9k.Domain</c> ever needs to carry the old password as a string of its
+    /// own.
+    /// </summary>
+    public static bool IsLegacyDefaultConnectionString(string? connectionString) =>
+        string.Equals(connectionString, LegacyDefaultConnectionString, StringComparison.Ordinal);
 
     public const string EnvironmentVariableName = "HALL9K_CONNECTION_STRING";
 

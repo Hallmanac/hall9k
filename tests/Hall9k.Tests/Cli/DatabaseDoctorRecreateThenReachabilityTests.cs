@@ -32,6 +32,8 @@ public sealed class DatabaseDoctorRecreateThenReachabilityTests : IDisposable
     private static readonly TimeSpan ShortTimeout = TimeSpan.FromMilliseconds(300);
     private static readonly TimeSpan ShortPollInterval = TimeSpan.FromMilliseconds(20);
 
+    private const string TestConnectionString = "Host=127.0.0.1;Port=5432;Database=hall9k;Username=postgres;Password=test-password";
+
     private readonly ScopedTestHome scopedHome = new();
 
     public void Dispose() => scopedHome.Dispose();
@@ -57,7 +59,7 @@ public sealed class DatabaseDoctorRecreateThenReachabilityTests : IDisposable
         string checkOutput = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
         {
             result = await DatabaseDoctor.DiagnoseRefusedConnectionAsync(
-                RefusedConnection(), resolution, Hall9kDatabase.DefaultConnectionString, offerFixes: true,
+                RefusedConnection(), resolution, TestConnectionString, offerFixes: true,
                 assumeYes: true, runner.Runner, Probe, ShortTimeout, ShortPollInterval, TimeProvider.System,
                 CancellationToken.None);
         });
@@ -90,7 +92,7 @@ public sealed class DatabaseDoctorRecreateThenReachabilityTests : IDisposable
         string checkOutput = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
         {
             result = await DatabaseDoctor.DiagnoseRefusedConnectionAsync(
-                RefusedConnection(), resolution, Hall9kDatabase.DefaultConnectionString, offerFixes: true,
+                RefusedConnection(), resolution, TestConnectionString, offerFixes: true,
                 assumeYes: true, runner.Runner, Probe, ShortTimeout, ShortPollInterval, clock, CancellationToken.None);
         });
 
@@ -129,5 +131,5 @@ public sealed class DatabaseDoctorRecreateThenReachabilityTests : IDisposable
         new(ReachabilityStatus.RefusedConnection, "Exception while reading from stream", "localhost", 5432, "hall9k");
 
     private static ConnectionStringResolution ConfiguredResolution() =>
-        new(Hall9kDatabase.DefaultConnectionString, ConnectionStringOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile);
+        new(TestConnectionString, ConnectionStringOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile);
 }

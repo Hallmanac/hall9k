@@ -322,7 +322,7 @@ public static class ContainerRuntimeProbe
 
         if (!File.Exists(PostgresRuntime.ComposeFile))
         {
-            PostgresRuntime.WriteComposeFile();
+            await PostgresRuntime.WriteComposeFileAsync(cancellationToken);
         }
         ProcessResult? result = await TryRunAsync(
             runner, "docker", ["compose", "-f", PostgresRuntime.ComposeFile, "up", "-d"],

@@ -509,17 +509,19 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
         recreated.Should().BeFalse();
     }
 
+    private const string TestPassword = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd";
+
     [Fact]
     public void The_compose_file_publishes_postgres_on_loopback_only()
     {
         // Bare "5432:5432" binds Docker to every interface, publishing the container's own
-        // superuser postgres and its public default password to the whole network (security
-        // review idea 6be68ee2, secrets-files-network finding 1).
-        PostgresRuntime.ComposeFileContents.Should().Contain("\"127.0.0.1:5432:5432\"");
+        // superuser postgres and its own password to the whole network (security review idea
+        // 6be68ee2, secrets-files-network finding 1).
+        PostgresRuntime.ComposeFileContentsFor(TestPassword).Should().Contain("\"127.0.0.1:5432:5432\"");
     }
 
     [Fact]
-    public void The_shipped_constant_and_the_repositorys_own_compose_file_cannot_drift()
+    public void The_shipped_template_and_the_repositorys_own_compose_file_cannot_drift()
     {
         // The two files' own leading comments already differ on purpose (one talks about h9k
         // install republishing it, the other about the Aspire dev loop's separate container) —
@@ -527,8 +529,12 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
         // pin the rest of the file, rather than either giving up on comparing them at all or
         // demanding identical comments too. This is what stops a change like the loopback-only
         // port binding above from landing in only one of the two, the way the volume name: pin
-        // once did (this uninstall feature's own pre-PR review).
-        string shipped = NormalizeComposeFileForComparison(PostgresRuntime.ComposeFileContents);
+        // once did (this uninstall feature's own pre-PR review). The password line is normalised
+        // to a placeholder on both sides too: the shipped template carries a per-machine
+        // generated password (double-quoted, 64 lowercase hex characters), while the repository's
+        // own file keeps the documented dev password hall9k (bare, unquoted) for a contributor's
+        // manual path — the two are deliberately different values, not drift.
+        string shipped = NormalizeComposeFileForComparison(PostgresRuntime.ComposeFileContentsFor(TestPassword));
         string repository = NormalizeComposeFileForComparison(File.ReadAllText(Path.Combine(FindRepositoryRoot(), "docker-compose.yml")));
 
         shipped.Should().Be(repository);
@@ -537,7 +543,12 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
     private static string NormalizeComposeFileForComparison(string composeFileContents)
     {
         string[] lines = composeFileContents.Replace("\r\n", "\n").Split('\n');
-        return string.Join('\n', lines.SkipWhile(line => line.StartsWith('#')));
+        return string.Join(
+            '\n',
+            lines.SkipWhile(line => line.StartsWith('#'))
+                .Select(line => line.TrimStart().StartsWith("POSTGRES_PASSWORD:", StringComparison.Ordinal)
+                    ? "      POSTGRES_PASSWORD: <normalised>"
+                    : line));
     }
 
     [Fact]
@@ -549,16 +560,16 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
         // PostgresRuntime.VolumeName this file names in its own docker volume rm. Origin
         // incident: this uninstall feature's own pre-PR review found purge silently failing to
         // remove the real volume for exactly this reason.
-        PostgresRuntime.ComposeFileContents.Should().Contain($"name: {PostgresRuntime.VolumeName}");
+        PostgresRuntime.ComposeFileContentsFor(TestPassword).Should().Contain($"name: {PostgresRuntime.VolumeName}");
     }
 
     [Fact]
     public void The_repositorys_own_compose_file_pins_the_volume_too()
     {
-        // PostgresRuntime.ComposeFileContents's own docstring says it mirrors this file, kept
-        // in sync by hand — this branch's name: pin landed in the shipped constant without
-        // landing here too, so a contributor running docker compose up -d from a checkout
-        // (AGENTS.md's documented manual path) got an unpinned, Compose-project-prefixed
+        // PostgresRuntime.ComposeFileContentsFor's own docstring says it mirrors this file's
+        // structure, kept in sync by hand — this branch's name: pin landed in the shipped
+        // template without landing here too, so a contributor running docker compose up -d from
+        // a checkout (AGENTS.md's documented manual path) got an unpinned, Compose-project-prefixed
         // volume name that h9k uninstall --purge-data could never find by the bare literal.
         string contents = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "docker-compose.yml"));
 

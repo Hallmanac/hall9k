@@ -4,6 +4,7 @@ using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using JasperFx;
 using Marten;
+using Npgsql;
 using Spectre.Console;
 using Weasel.Core;
 
@@ -59,8 +60,22 @@ public static class DatabaseDoctor
             offerFixes, assumeYes, ExternalProcess.Runner, cancellationToken, staleSchemaRepairedByCaller,
             recordConnectionStringIfUnconfigured);
 
-    internal static async Task<string?> RunAsync(
+    internal static Task<string?> RunAsync(
         bool offerFixes, bool assumeYes, ProcessRunner runner, CancellationToken cancellationToken,
+        bool staleSchemaRepairedByCaller = false, bool recordConnectionStringIfUnconfigured = true) =>
+        RunAsync(
+            offerFixes, assumeYes, runner, () => DaemonProcess.ProbeBootStatus().State != DaemonBootState.NotRunning,
+            cancellationToken, staleSchemaRepairedByCaller, recordConnectionStringIfUnconfigured);
+
+    /// <summary>
+    /// Same check, with the "is a daemon running right now" fact injectable — the password
+    /// migration's own guard (<see cref="CheckReachabilityAndSchemaAsync(string,ConnectionStringResolution,bool,bool,ProcessRunner,Func{bool},Func{CancellationToken,Task{ReachabilityReport}},TimeSpan,TimeSpan,TimeProvider,CancellationToken,bool)"/>)
+    /// needs the identical seam <see cref="CheckContainerPortBindingAsync(bool,ProcessRunner,Func{bool},CancellationToken)"/>
+    /// already uses, for the same reason: a test asserting the migration's own guard cannot depend
+    /// on a real pid file or a real daemon process.
+    /// </summary>
+    internal static async Task<string?> RunAsync(
+        bool offerFixes, bool assumeYes, ProcessRunner runner, Func<bool> daemonRunning, CancellationToken cancellationToken,
         bool staleSchemaRepairedByCaller = false, bool recordConnectionStringIfUnconfigured = true)
     {
         ConnectionStringResolution resolution = Hall9kDatabase.Resolve();
@@ -88,23 +103,21 @@ public static class DatabaseDoctor
         if (!resolution.IsConfigured)
         {
             resolution = await DiagnoseNotConfiguredAsync(
-                offerFixes, assumeYes, runner, ProbeDefaultConnectionStringAsync, cancellationToken,
-                recordConnectionStringIfUnconfigured);
+                offerFixes, assumeYes, runner, cancellationToken, recordConnectionStringIfUnconfigured);
             if (resolution.Value is not { } configured)
             {
                 return null;
             }
 
             return await CheckReachabilityAndSchemaAsync(
-                configured, resolution, offerFixes, assumeYes, runner, cancellationToken, staleSchemaRepairedByCaller);
+                configured, resolution, offerFixes, assumeYes, runner, daemonRunning, cancellationToken,
+                staleSchemaRepairedByCaller);
         }
 
         return await CheckReachabilityAndSchemaAsync(
-            resolution.Value, resolution, offerFixes, assumeYes, runner, cancellationToken, staleSchemaRepairedByCaller);
+            resolution.Value, resolution, offerFixes, assumeYes, runner, daemonRunning, cancellationToken,
+            staleSchemaRepairedByCaller);
     }
-
-    private static Task<ReachabilityReport> ProbeDefaultConnectionStringAsync(CancellationToken cancellationToken) =>
-        DatabaseReachability.ProbeAsync(Hall9kDatabase.DefaultConnectionString, cancellationToken);
 
     /// <summary>
     /// The one doctor question that runs whether or not the four questions above find anything
@@ -153,7 +166,16 @@ public static class DatabaseDoctor
     internal static Task CheckContainerPortBindingAsync(
         bool assumeYes, ProcessRunner runner, Func<bool> daemonRunning, CancellationToken cancellationToken) =>
         CheckContainerPortBindingAsync(
-            assumeYes, runner, daemonRunning, ProbeDefaultConnectionStringAsync,
+            assumeYes, runner, daemonRunning,
+            // The compose file this method itself rewrites just above is already this password's
+            // durable record by the time this probe is actually invoked (only after a recreate),
+            // so this reads it back rather than generating a second, different one — the fallback
+            // generation is defensive only, for a file that somehow vanished between that write and
+            // this read.
+            token => DatabaseReachability.ProbeAsync(
+                Hall9kDatabase.ConnectionStringWithPassword(
+                    PostgresRuntime.ReadPasswordFromComposeFile() ?? PostgresRuntime.GeneratePassword()),
+                token),
             ReadinessTimeout, ReadinessPollInterval, TimeProvider.System, cancellationToken);
 
     /// <summary>
@@ -161,8 +183,8 @@ public static class DatabaseDoctor
     /// injectable — the same seam <see cref="OfferAndStartAsync"/>'s own readiness poll already
     /// exposes through <see cref="WaitForReadinessAsync(Func{CancellationToken,Task{ReachabilityReport}},TimeSpan,TimeSpan,TimeProvider,CancellationToken)"/>,
     /// needed here for the identical reason: a test asserting the recreate branch cannot depend on
-    /// a real Postgres answering at <see cref="Hall9kDatabase.DefaultConnectionString"/> within the
-    /// real 30s timeout.
+    /// a real Postgres answering at the compose file's own recorded password within the real 30s
+    /// timeout.
     /// </summary>
     internal static async Task CheckContainerPortBindingAsync(
         bool assumeYes, ProcessRunner runner, Func<bool> daemonRunning,
@@ -170,7 +192,7 @@ public static class DatabaseDoctor
         TimeSpan readinessTimeout, TimeSpan readinessPollInterval, TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-        PostgresRuntime.WriteComposeFile();
+        await PostgresRuntime.WriteComposeFileAsync(cancellationToken);
 
         if (await ContainerRuntimeProbe.RuntimeStatusAsync(runner, cancellationToken) != ContainerRuntimeStatus.Running)
         {
@@ -310,15 +332,18 @@ public static class DatabaseDoctor
 
     /// <summary>
     /// Question 1 failed, so question 4 is what is left to say: what is available to point at.
-    /// Takes <paramref name="alreadyRunningContainerProbe"/> rather than probing
-    /// <see cref="Hall9kDatabase.DefaultConnectionString"/> directly so a test can exercise this
+    /// Takes <paramref name="alreadyRunningContainerProbe"/> rather than probing the freshly
+    /// generated-or-recovered default connection string directly so a test can exercise this
     /// routing decision — and confirm it actually records the connection string, not merely that
     /// it avoids a docker mutation — with a fake answer instead of a real Postgres bound to the
-    /// exact host and port that constant names.
+    /// exact host and port that string names; <see langword="null"/> (every production caller)
+    /// probes for real.
     /// <para>
-    /// Both fixes on this path end in the same write — <see cref="Hall9kDatabase.DefaultConnectionString"/>
-    /// recorded in the platform config file — and <paramref name="recordConnectionString"/> is how a
-    /// caller withholds it (<c>h9k doctor --no-configure</c>). The restart hand-off
+    /// Both fixes on this path end in the same write — the connection string built from
+    /// <see cref="PostgresRuntime.GeneratePassword"/> (or whatever <see cref="PostgresRuntime.WriteComposeFileAsync(CancellationToken)"/>
+    /// finds already in effect) recorded in the platform config file — and
+    /// <paramref name="recordConnectionString"/> is how a caller withholds it
+    /// (<c>h9k doctor --no-configure</c>). The restart hand-off
     /// (<see cref="Hall9k.Cli.Installation.DaemonRestartHandoff"/>) does exactly that, for the reason
     /// Decisions Log #118 gives for <c>h9k update</c> never making this write itself: nothing
     /// resolving <em>here</em> does not mean nothing is configured, only that this shell cannot see
@@ -331,9 +356,9 @@ public static class DatabaseDoctor
     /// </summary>
     internal static async Task<ConnectionStringResolution> DiagnoseNotConfiguredAsync(
         bool offerFixes, bool assumeYes, ProcessRunner runner,
-        Func<CancellationToken, Task<ReachabilityReport>> alreadyRunningContainerProbe,
         CancellationToken cancellationToken,
-        bool recordConnectionString = true)
+        bool recordConnectionString = true,
+        Func<CancellationToken, Task<ReachabilityReport>>? alreadyRunningContainerProbe = null)
     {
         AnsiConsole.MarkupLine(
             "[yellow]No connection string is configured.[/] That is the whole problem — nothing else has been checked yet.");
@@ -370,17 +395,25 @@ public static class DatabaseDoctor
 
         if (offerToRecord && containerConfirmed && container == PostgresContainerStatus.Running)
         {
-            if (await OfferAndRecordAlreadyRunningContainerAsync(assumeYes, alreadyRunningContainerProbe, cancellationToken) is { } recorded)
+            string defaultConnectionString = Hall9kDatabase.ConnectionStringWithPassword(
+                await PostgresRuntime.WriteComposeFileAsync(cancellationToken));
+            Func<CancellationToken, Task<ReachabilityReport>> probe = alreadyRunningContainerProbe
+                ?? (token => DatabaseReachability.ProbeAsync(defaultConnectionString, token));
+            if (await OfferAndRecordAlreadyRunningContainerAsync(defaultConnectionString, assumeYes, probe, cancellationToken) is { } recorded)
             {
                 return recorded;
             }
         }
-        else if (runtime == ContainerRuntimeStatus.Running && offerToRecord
-            && await OfferAndStartAsync(Hall9kDatabase.DefaultConnectionString, containerConfirmed, container, assumeYes, runner, cancellationToken))
+        else if (runtime == ContainerRuntimeStatus.Running && offerToRecord)
         {
-            await Hall9kDatabase.WriteConfiguredConnectionStringAsync(Hall9kDatabase.DefaultConnectionString, cancellationToken);
-            AnsiConsole.MarkupLine($"[green]Configured[/]: wrote the connection string to {Hall9kDatabase.ConfigFile.EscapeMarkup()}.");
-            return Hall9kDatabase.Resolve();
+            (bool started, string usedConnectionString) = await OfferAndStartAsync(
+                connectionStringToPoll: null, containerConfirmed, container, assumeYes, runner, cancellationToken);
+            if (started)
+            {
+                await Hall9kDatabase.WriteConfiguredConnectionStringAsync(usedConnectionString, cancellationToken);
+                AnsiConsole.MarkupLine($"[green]Configured[/]: wrote the connection string to {Hall9kDatabase.ConfigFile.EscapeMarkup()}.");
+                return Hall9kDatabase.Resolve();
+            }
         }
 
         AnsiConsole.MarkupLine(
@@ -397,10 +430,11 @@ public static class DatabaseDoctor
         bool offerFixes,
         bool assumeYes,
         ProcessRunner runner,
+        Func<bool> daemonRunning,
         CancellationToken cancellationToken,
         bool staleSchemaRepairedByCaller) =>
         CheckReachabilityAndSchemaAsync(
-            connectionString, resolution, offerFixes, assumeYes, runner,
+            connectionString, resolution, offerFixes, assumeYes, runner, daemonRunning,
             token => DatabaseReachability.ProbeAsync(connectionString, token),
             ReadinessTimeout, ReadinessPollInterval, TimeProvider.System, cancellationToken, staleSchemaRepairedByCaller);
 
@@ -420,6 +454,7 @@ public static class DatabaseDoctor
         bool offerFixes,
         bool assumeYes,
         ProcessRunner runner,
+        Func<bool> daemonRunning,
         Func<CancellationToken, Task<ReachabilityReport>> reachabilityProbe,
         TimeSpan readinessTimeout,
         TimeSpan readinessPollInterval,
@@ -461,6 +496,19 @@ public static class DatabaseDoctor
                 }
 
                 break;
+        }
+
+        if (offerFixes)
+        {
+            (string migratedConnectionString, ConnectionStringResolution migratedResolution, bool abort) =
+                await MaybeMigrateLegacyPasswordAsync(connectionString, resolution, assumeYes, runner, daemonRunning, cancellationToken);
+            if (abort)
+            {
+                return null;
+            }
+
+            connectionString = migratedConnectionString;
+            resolution = migratedResolution;
         }
 
         bool schemaPresent = await DatabaseReachability.SchemaPresentAsync(connectionString, cancellationToken);
@@ -555,6 +603,217 @@ public static class DatabaseDoctor
         }
 
         return connectionString;
+    }
+
+    /// <summary>
+    /// The password migration (security review idea 6be68ee2, secrets-files-network findings 1, 2,
+    /// 9, superseding Decisions Log #118): an existing install whose <c>config.json</c> still names
+    /// the shipped default gets moved onto a generated one, over this doctor's own already-reachable
+    /// connection, in one transaction — <c>ALTER ROLE</c> with a precomputed SCRAM-SHA-256 verifier
+    /// (never a cleartext literal: the live server logs a failed statement's own text at
+    /// <c>log_min_error_statement=error</c>), then <c>config.json</c> written atomically, then
+    /// <c>COMMIT</c>. Runs only from <see cref="CheckReachabilityAndSchemaAsync(string,ConnectionStringResolution,bool,bool,ProcessRunner,Func{bool},Func{CancellationToken,Task{ReachabilityReport}},TimeSpan,TimeSpan,TimeProvider,CancellationToken,bool)"/>'s
+    /// own Reachable path, and only when every one of these holds: <c>config.json</c>'s own
+    /// connection string is exactly the old default (a hand-set string, or one already migrated, is
+    /// never touched — <see cref="Hall9kDatabase.IsLegacyDefaultConnectionString"/>);
+    /// <see cref="Hall9kDatabase.EnvironmentVariableName"/> is not set (it would silently outrank the
+    /// write this is about to make); no daemon is running (a live connection would be caught
+    /// mid-rotation); and the container passes the same ownership guard task 359e0d7a's guarded
+    /// recreate already uses (mounts exactly <see cref="PostgresRuntime.VolumeName"/>, and its own
+    /// compose <c>config_files</c> label names the installed compose file) — the same reasons that
+    /// guard exists apply here unchanged. Never runs unless <paramref name="assumeYes"/>
+    /// (<c>h9k doctor --yes</c>): this mutates a real credential, the same bar the guarded recreate
+    /// already sets for a comparable action. <c>h9k doctor --no-configure</c> does not withhold
+    /// this: that flag only ever meant "do not guess a connection string when nothing resolves",
+    /// which has nothing to say about a connection string that already resolves to the value this
+    /// migration exists to move off of.
+    /// <para>
+    /// The three-way failure story: a failed <c>ALTER ROLE</c> or a failed <c>config.json</c> write
+    /// rolls the transaction back and reports nothing changed — the migration is simply retried on
+    /// the next <c>h9k doctor --yes</c>. A failed <c>COMMIT</c> is genuinely ambiguous (the server may
+    /// have applied it despite the client never seeing the acknowledgement), so the recovery restores
+    /// <c>config.json</c>'s own previous bytes, held in memory since before the write, back to what
+    /// they were; only when that restore itself also fails does this print a recovery command, and it
+    /// forces the role back to the already-public old password (<see cref="Hall9kDatabase.LegacyPassword"/>),
+    /// never the new one — a known, boring target reachable over the container's own trusted local
+    /// socket regardless of whether the ambiguous commit actually landed, rather than a guess at
+    /// whatever the new password might now be.
+    /// </para>
+    /// <para>Returns the connection string and resolution the rest of this check should use —
+    /// migrated, or unchanged when nothing here applied or nothing here could safely proceed — and
+    /// <c>Abort</c>, set only in the one case above where continuing with either connection string
+    /// would be acting on a guess rather than an observed fact.</para>
+    /// </summary>
+    internal static async Task<(string ConnectionString, ConnectionStringResolution Resolution, bool Abort)> MaybeMigrateLegacyPasswordAsync(
+        string connectionString,
+        ConnectionStringResolution resolution,
+        bool assumeYes,
+        ProcessRunner runner,
+        Func<bool> daemonRunning,
+        CancellationToken cancellationToken)
+    {
+        (ConfigFileConnectionStringState state, string? configuredValue) = Hall9kDatabase.ConnectionStringStateAndValueInConfigFile();
+        if (state != ConfigFileConnectionStringState.Supplied || !Hall9kDatabase.IsLegacyDefaultConnectionString(configuredValue))
+        {
+            // Not this migration's business: a hand-set connection string, one already migrated, or
+            // a config file this doctor already reported broken elsewhere. Silent — reporting a
+            // rotation opportunity on every healthy, already-configured machine would be noise.
+            return (connectionString, resolution, false);
+        }
+
+        if (Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName) is { Length: > 0 })
+        {
+            // The environment variable is what this process actually resolved against (it outranks
+            // the config file), so a config file still naming the old default while the environment
+            // variable points elsewhere means this migration would rotate a credential nothing here
+            // is even using — silent, the same reasoning as the branch above.
+            return (connectionString, resolution, false);
+        }
+
+        List<string> blockedBy = [];
+        if (!assumeYes)
+        {
+            blockedBy.Add("--yes was not given");
+        }
+
+        if (daemonRunning())
+        {
+            blockedBy.Add("a daemon is running, and a live connection would be caught mid-rotation");
+        }
+
+        (bool inspected, string? _, string? configFilesLabel, IReadOnlyList<string> mountedVolumes) =
+            await ContainerRuntimeProbe.InspectPortBindingAsync(runner, cancellationToken);
+        if (!inspected)
+        {
+            blockedBy.Add($"{PostgresRuntime.ContainerName} could not be inspected to confirm rotating it is safe");
+        }
+        else if (mountedVolumes.Count != 1 || !string.Equals(mountedVolumes[0], PostgresRuntime.VolumeName, StringComparison.Ordinal))
+        {
+            blockedBy.Add($"{PostgresRuntime.ContainerName} does not mount exactly the pinned {PostgresRuntime.VolumeName} volume");
+        }
+        else if (configFilesLabel is null || !ComposeConfigFileMatches(configFilesLabel))
+        {
+            blockedBy.Add($"{PostgresRuntime.ContainerName} was not created from {PostgresRuntime.ComposeFile}");
+        }
+
+        if (blockedBy.Count > 0)
+        {
+            AnsiConsole.MarkupLine(
+                $"[dim]{PostgresRuntime.ContainerName} is still using the shipped default password — not rotating "
+                + $"it automatically because {string.Join(" and ", blockedBy)}. Migrate it by hand once that is "
+                + "dealt with:[/]\n"
+                + "  h9k daemon stop\n"
+                + "  h9k doctor --yes\n"
+                + "  h9k daemon start");
+            return (connectionString, resolution, false);
+        }
+
+        string newPassword = PostgresRuntime.GeneratePassword();
+        // Built from connectionString's own host, port, database and username — never
+        // Hall9kDatabase.ConnectionStringWithPassword's hardcoded 127.0.0.1:5432 — because the
+        // eligibility check above only guarantees config.json's value equals the legacy default
+        // string, not that connectionString (a separate parameter) was resolved from that exact
+        // string rather than, say, a test or a future caller pointing this at a differently
+        // addressed Postgres. Swapping just the password preserves everything else this doctor
+        // already proved reachable.
+        string newConnectionString = new NpgsqlConnectionStringBuilder(connectionString) { Password = newPassword }.ConnectionString;
+        string verifier = ScramSha256PasswordVerifier.Build(newPassword);
+        string previousConfigBytes = File.Exists(Hall9kDatabase.ConfigFile)
+            ? await File.ReadAllTextAsync(Hall9kDatabase.ConfigFile, cancellationToken)
+            : string.Empty;
+
+        NpgsqlConnectionStringBuilder connectingBuilder = new(connectionString) { Pooling = false };
+        await using NpgsqlConnection connection = new(connectingBuilder.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        try
+        {
+            // The verifier, never the plaintext password: Postgres recognises a value already
+            // shaped like SCRAM-SHA-256$… and stores it as-is instead of re-encrypting it, which is
+            // what keeps the generated password itself off the wire and out of the server's own
+            // statement log for this command (security review idea 6be68ee2, secrets-files-network
+            // finding 1). A single quote can never occur in this shape, but the doubled-quote escape
+            // costs nothing and removes the question.
+            await using NpgsqlCommand alter = new(
+                $"ALTER ROLE postgres WITH PASSWORD '{verifier.Replace("'", "''", StringComparison.Ordinal)}'",
+                connection, transaction);
+            await alter.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (NpgsqlException exception)
+        {
+            await TryRollbackAsync(transaction, cancellationToken);
+            AnsiConsole.MarkupLine(
+                $"[red]Could not rotate {PostgresRuntime.ContainerName}'s password[/]: the ALTER ROLE itself "
+                + $"failed ({exception.Message.EscapeMarkup()}) — nothing changed. Re-run h9k doctor --yes once "
+                + "that is fixed.");
+            return (connectionString, resolution, false);
+        }
+
+        try
+        {
+            await Hall9kDatabase.WriteConfiguredConnectionStringAsync(newConnectionString, cancellationToken);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            await TryRollbackAsync(transaction, cancellationToken);
+            AnsiConsole.MarkupLine(
+                $"[red]Could not rotate {PostgresRuntime.ContainerName}'s password[/]: writing "
+                + $"{Hall9kDatabase.ConfigFile.EscapeMarkup()} failed ({exception.Message.EscapeMarkup()}) — the "
+                + "database change was rolled back, so nothing changed. Re-run h9k doctor --yes once that is "
+                + "fixed.");
+            return (connectionString, resolution, false);
+        }
+
+        try
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (NpgsqlException exception)
+        {
+            try
+            {
+                await AtomicFileWrite.WriteAllTextAsync(Hall9kDatabase.ConfigFile, previousConfigBytes, cancellationToken);
+                AnsiConsole.MarkupLine(
+                    $"[red]Could not rotate {PostgresRuntime.ContainerName}'s password[/]: committing the change "
+                    + $"failed ({exception.Message.EscapeMarkup()}) — {Hall9kDatabase.ConfigFile.EscapeMarkup()} has "
+                    + "been restored to its previous contents, so nothing changed. Re-run h9k doctor --yes once "
+                    + "that is fixed.");
+                return (connectionString, resolution, false);
+            }
+            catch (Exception restoreException) when (restoreException is IOException or UnauthorizedAccessException)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[red]Could not rotate {PostgresRuntime.ContainerName}'s password, and could not restore "
+                    + $"{Hall9kDatabase.ConfigFile.EscapeMarkup()} either[/] ({restoreException.Message.EscapeMarkup()}) "
+                    + "— whether the database actually kept the new password is now uncertain, and this config "
+                    + "file no longer necessarily matches it. Recover by hand: force the role back to the known, "
+                    + $"already-public old password over the container's own trusted local socket — docker exec -i "
+                    + $"{PostgresRuntime.ContainerName} psql -U postgres -c \"ALTER ROLE postgres WITH PASSWORD "
+                    + $"'{Hall9kDatabase.LegacyPassword}'\" — then fix {Hall9kDatabase.ConfigFile.EscapeMarkup()} by "
+                    + "hand to match.");
+                return (connectionString, resolution, true);
+            }
+        }
+
+        await PostgresRuntime.WriteComposeFileAsync(newPassword, cancellationToken);
+        AnsiConsole.MarkupLine(
+            $"[green]Rotated[/]: {PostgresRuntime.ContainerName}'s password is no longer the shipped default.");
+        return (newConnectionString, Hall9kDatabase.Resolve(), false);
+    }
+
+    private static async Task TryRollbackAsync(NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await transaction.RollbackAsync(cancellationToken);
+        }
+        catch (NpgsqlException)
+        {
+            // The connection may already be dead (which is often why the preceding command threw
+            // in the first place) — Postgres itself never commits an unfinished transaction on a
+            // dropped connection, so there is nothing left here for a rollback to actually undo.
+        }
     }
 
     /// <summary>
@@ -653,7 +912,7 @@ public static class DatabaseDoctor
                 await ReportContainerRuntimeStatusAsync(runner, connectionStringAlreadyConfigured: true, offerFixes, cancellationToken);
 
             bool justStarted = offerFixes && runtime == ContainerRuntimeStatus.Running
-                && await OfferAndStartAsync(connectionString, containerConfirmed, container, assumeYes, runner, cancellationToken);
+                && (await OfferAndStartAsync(connectionString, containerConfirmed, container, assumeYes, runner, cancellationToken)).Started;
 
             if (justStarted || (offerFixes && containerConfirmed && container == PostgresContainerStatus.Running))
             {
@@ -705,7 +964,7 @@ public static class DatabaseDoctor
     /// since only then does "still starting up" actually explain the error. Internal, the same
     /// visibility <see cref="DiagnoseRefusedConnectionAsync"/> already uses, so a test can drive it
     /// directly with a fake probe and a fake process runner rather than going through
-    /// <see cref="CheckReachabilityAndSchemaAsync(string,ConnectionStringResolution,bool,bool,ProcessRunner,Func{CancellationToken,Task{ReachabilityReport}},TimeSpan,TimeSpan,TimeProvider,CancellationToken,bool)"/>,
+    /// <see cref="CheckReachabilityAndSchemaAsync(string,ConnectionStringResolution,bool,bool,ProcessRunner,Func{bool},Func{CancellationToken,Task{ReachabilityReport}},TimeSpan,TimeSpan,TimeProvider,CancellationToken,bool)"/>,
     /// which would reach a real schema check the moment reachability turns Reachable.
     /// </summary>
     internal static async Task<ReachabilityReport> DiagnoseOtherErrorAsync(
@@ -863,30 +1122,31 @@ public static class DatabaseDoctor
     /// itself refuses that case outright (restarting an already-running container is never the
     /// fix for whatever else is wrong) — which used to leave a machine with a live, confirmed
     /// <c>hall9k-postgres</c> dead-ending on "Set one: export …" advice instead (the finding
-    /// this method fixes). Probes <see cref="Hall9kDatabase.DefaultConnectionString"/> directly
-    /// — the container is confirmed by name, not by the connection string a caller happens to
-    /// have configured, since nothing is configured yet on this path — and, if it answers,
-    /// records it exactly the way <see cref="OfferAndStartAsync"/>'s own caller already does.
+    /// this method fixes). Probes <paramref name="connectionString"/> directly — the container
+    /// is confirmed by name, not by the connection string a caller happens to have configured,
+    /// since nothing is configured yet on this path — and, if it answers, records that same
+    /// string exactly the way <see cref="OfferAndStartAsync"/>'s own caller already does.
     /// Offer-never-force still applies: it asks before writing (or is told
     /// <paramref name="assumeYes"/> in its place), because writing the platform config file is
     /// the same kind of fix as starting a container, even though nothing here starts anything.
     /// Takes <paramref name="probe"/> rather than calling <see cref="DatabaseReachability.ProbeAsync"/>
     /// directly so a test can substitute a fake answer instead of depending on a real Postgres
-    /// bound to the exact host and port <see cref="Hall9kDatabase.DefaultConnectionString"/>
-    /// names.
+    /// bound to the exact host and port <paramref name="connectionString"/> names.
     /// </summary>
     internal static Task<ConnectionStringResolution?> OfferAndRecordAlreadyRunningContainerAsync(
-        bool assumeYes, Func<CancellationToken, Task<ReachabilityReport>> probe, CancellationToken cancellationToken) =>
+        string connectionString, bool assumeYes, Func<CancellationToken, Task<ReachabilityReport>> probe,
+        CancellationToken cancellationToken) =>
         OfferAndRecordAlreadyRunningContainerAsync(
-            assumeYes, probe, ReadinessTimeout, ReadinessPollInterval, TimeProvider.System, cancellationToken);
+            connectionString, assumeYes, probe, ReadinessTimeout, ReadinessPollInterval, TimeProvider.System, cancellationToken);
 
     /// <summary>
-    /// Same offer as the 3-argument overload above, with the poll's timeout, interval and clock
+    /// Same offer as the 4-argument overload above, with the poll's timeout, interval and clock
     /// injectable so a test can exercise the not-ready-yet case without the real 30s wait — the
     /// same seam <see cref="WaitForReadinessAsync(Func{CancellationToken,Task{ReachabilityReport}},TimeSpan,TimeSpan,TimeProvider,CancellationToken)"/>
     /// already uses for the sibling start-offer's own readiness poll.
     /// </summary>
     internal static async Task<ConnectionStringResolution?> OfferAndRecordAlreadyRunningContainerAsync(
+        string connectionString,
         bool assumeYes,
         Func<CancellationToken, Task<ReachabilityReport>> probe,
         TimeSpan timeout,
@@ -924,9 +1184,10 @@ public static class DatabaseDoctor
                 // left to say once this path's own probe has already found something to report.
                 AnsiConsole.MarkupLine(
                     $"[yellow]{PostgresRuntime.ContainerName} is confirmed running, and something at "
-                    + $"{report.Host.EscapeMarkup()}:{report.Port} answered[/], but it rejected hall9k's default "
-                    + $"credentials: {report.Detail.EscapeMarkup()}. If that isn't the container's own Postgres, "
-                    + $"point {Hall9kDatabase.EnvironmentVariableName} at the right one directly instead.");
+                    + $"{report.Host.EscapeMarkup()}:{report.Port} answered[/], but it rejected the credentials "
+                    + $"recorded in {PostgresRuntime.ComposeFile.EscapeMarkup()}: {report.Detail.EscapeMarkup()}. "
+                    + $"If that isn't the container's own Postgres, point {Hall9kDatabase.EnvironmentVariableName} "
+                    + "at the right one directly instead.");
                 return null;
 
             case ReachabilityStatus.DatabaseMissing:
@@ -973,7 +1234,7 @@ public static class DatabaseDoctor
             return null;
         }
 
-        await Hall9kDatabase.WriteConfiguredConnectionStringAsync(Hall9kDatabase.DefaultConnectionString, cancellationToken);
+        await Hall9kDatabase.WriteConfiguredConnectionStringAsync(connectionString, cancellationToken);
         AnsiConsole.MarkupLine($"[green]Configured[/]: wrote the connection string to {Hall9kDatabase.ConfigFile.EscapeMarkup()}.");
         return Hall9kDatabase.Resolve();
     }
@@ -995,9 +1256,16 @@ public static class DatabaseDoctor
     /// takes the place of the interactive confirm — the offer still runs, it just is not asked —
     /// and a non-interactive session carrying neither an answer nor that flag is told exactly
     /// that, rather than skipped without a word.
+    /// <paramref name="connectionStringToPoll"/> is <see langword="null"/> when the caller has no
+    /// connection string of its own yet (the not-configured path): once the confirm gate passes,
+    /// this derives one from whatever password <see cref="PostgresRuntime.WriteComposeFileAsync(CancellationToken)"/>
+    /// finds already in effect (or generates), so the same password backs both the readiness poll
+    /// below and whatever the caller goes on to record. A caller that already has a connection
+    /// string configured (<see cref="DiagnoseRefusedConnectionAsync"/>) passes it directly instead,
+    /// since that is what a start here is meant to bring up to answer.
     /// </summary>
-    private static async Task<bool> OfferAndStartAsync(
-        string connectionStringToPoll,
+    private static async Task<(bool Started, string ConnectionString)> OfferAndStartAsync(
+        string? connectionStringToPoll,
         bool containerConfirmed,
         PostgresContainerStatus container,
         bool assumeYes,
@@ -1006,13 +1274,13 @@ public static class DatabaseDoctor
     {
         if (!containerConfirmed)
         {
-            return false;
+            return (false, connectionStringToPoll ?? string.Empty);
         }
 
         if (container == PostgresContainerStatus.Running)
         {
             // Already running, so whatever is actually wrong, starting it again is not the fix.
-            return false;
+            return (false, connectionStringToPoll ?? string.Empty);
         }
 
         if (container == PostgresContainerStatus.Stopped)
@@ -1033,7 +1301,7 @@ public static class DatabaseDoctor
                     + "binding — Docker only reads the compose file's port mapping again when the container is "
                     + "recreated. Run h9k doctor --yes to recreate it safely, or see docs/operations.md's "
                     + "Network exposure section for the hand commands.");
-                return false;
+                return (false, connectionStringToPoll ?? string.Empty);
             }
         }
 
@@ -1046,7 +1314,7 @@ public static class DatabaseDoctor
             AnsiConsole.MarkupLine(
                 "[dim]Skipping the start offer — stdin is not a terminal, so there is nobody to confirm this. "
                 + "Re-run with h9k doctor --yes to start it automatically.[/]");
-            return false;
+            return (false, connectionStringToPoll ?? string.Empty);
         }
 
         if (!assumeYes)
@@ -1056,9 +1324,12 @@ public static class DatabaseDoctor
                 : "Postgres isn't running. Start it now via Docker?";
             if (!AnsiConsole.Confirm(prompt, defaultValue: true))
             {
-                return false;
+                return (false, connectionStringToPoll ?? string.Empty);
             }
         }
+
+        string connectionString = connectionStringToPoll
+            ?? Hall9kDatabase.ConnectionStringWithPassword(await PostgresRuntime.WriteComposeFileAsync(cancellationToken));
 
         if (container == PostgresContainerStatus.Stopped)
         {
@@ -1067,7 +1338,7 @@ public static class DatabaseDoctor
                 AnsiConsole.MarkupLine(
                     $"[red]Docker could not start it[/] — check docker logs {PostgresRuntime.ContainerName}, "
                     + "or run the command by hand.");
-                return false;
+                return (false, connectionString);
             }
         }
         else
@@ -1086,7 +1357,7 @@ public static class DatabaseDoctor
                         + $"empty {PostgresRuntime.VolumeName} volume alongside it rather than reconnect to your "
                         + "data. See docs/operations.md's Provisioning section to migrate it forward by hand, "
                         + "then run h9k doctor again.");
-                    return false;
+                    return (false, connectionString);
                 case ComposeUpResult.LegacyVolumeCheckFailed:
                     AnsiConsole.MarkupLine(
                         $"[red]Not starting[/] — whether a volume from before this install's compose name: pin "
@@ -1094,17 +1365,17 @@ public static class DatabaseDoctor
                         + $"fresh container now could create a new, empty {PostgresRuntime.VolumeName} volume "
                         + "beside real data this could not see to warn about. Retry once Docker is answering "
                         + "reliably.");
-                    return false;
+                    return (false, connectionString);
                 case ComposeUpResult.Failed:
                     AnsiConsole.MarkupLine(
                         $"[red]Docker could not start it[/] — check docker logs {PostgresRuntime.ContainerName}, "
                         + "or run the command by hand.");
-                    return false;
+                    return (false, connectionString);
             }
         }
 
         AnsiConsole.Markup("[dim]Waiting for it to come up…[/]");
-        bool ready = await WaitForReadinessAsync(connectionStringToPoll, cancellationToken);
+        bool ready = await WaitForReadinessAsync(connectionString, cancellationToken);
         AnsiConsole.WriteLine();
         if (!ready)
         {
@@ -1113,7 +1384,7 @@ public static class DatabaseDoctor
                 + $"Check docker logs {PostgresRuntime.ContainerName}, then try again.");
         }
 
-        return ready;
+        return (ready, connectionString);
     }
 
     private static Task<bool> WaitForReadinessAsync(string connectionString, CancellationToken cancellationToken) =>

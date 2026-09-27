@@ -32,7 +32,7 @@ namespace Hall9k.Cli.Diagnostics;
 /// one shared 3-second budget, which on a node where <c>localhost</c> resolves to <c>::1</c> before
 /// <c>127.0.0.1</c> was tight enough that three sequential IPv6-refused-then-IPv4-retry connections
 /// could exhaust it even though a single one, unbounded like every other reader, never came close
-/// (task 2f9bc330, field report 4fa918ac); <see cref="Hall9k.Domain.Infrastructure.Persistence.Hall9kDatabase.DefaultConnectionString"/>
+/// (task 2f9bc330, field report 4fa918ac); <see cref="Hall9k.Domain.Infrastructure.Persistence.Hall9kDatabase.ConnectionStringWithPassword"/>
 /// naming <c>127.0.0.1</c> directly closes the same gap at its source. It never creates schema
 /// itself either (it opens through <see cref="CliStore.Open(string, JasperFx.AutoCreate)"/> with
 /// <see cref="AutoCreate.None"/>, and only after confirming the schema is already there): the

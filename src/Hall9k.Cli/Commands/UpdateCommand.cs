@@ -28,7 +28,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
         public string? Repository { get; init; }
 
         [CommandOption("--restart")]
-        [Description("Bring the daemon up onto the fresh binaries without asking, whether or not one was already running — the newly installed h9k then runs h9k daemon stop, h9k doctor --yes --no-configure and h9k daemon start in that order, so an update carrying a schema change ends with the daemon up on a current schema; that doctor step will start a stopped hall9k-postgres container to get there, and recreates it first if it is publishing port 5432 on anything but 127.0.0.1 (including a stopped one, never just docker-started with its old binding), but --no-configure keeps it from recording a connection string on a machine where none resolves")]
+        [Description("Bring the daemon up onto the fresh binaries without asking, whether or not one was already running — the newly installed h9k then runs h9k daemon stop, h9k doctor --yes --no-configure and h9k daemon start in that order, so an update carrying a schema change ends with the daemon up on a current schema; that doctor step will start a stopped hall9k-postgres container to get there, recreates it first if it is publishing port 5432 on anything but 127.0.0.1 (including a stopped one, never just docker-started with its old binding), and may also migrate the Postgres password off the shipped default onto a generated one, but --no-configure keeps it from recording a connection string on a machine where none resolves")]
         public bool Restart { get; init; }
 
         [CommandOption("--no-restart")]

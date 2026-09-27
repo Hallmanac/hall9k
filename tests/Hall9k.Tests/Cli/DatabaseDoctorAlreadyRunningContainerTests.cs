@@ -15,8 +15,8 @@ namespace Hall9k.Tests.Cli;
 /// this class exercises the fix for, originally at <c>DatabaseDoctor.OfferAndStartAsync</c>). A
 /// fake probe stands in for
 /// <see cref="DatabaseReachability.ProbeAsync"/> so this exercises the reachable and unreachable
-/// cases without depending on a real Postgres bound to the exact host and port
-/// <see cref="Hall9kDatabase.DefaultConnectionString"/> names — the same seam
+/// cases without depending on a real Postgres — <see cref="TestConnectionString"/> stands in for
+/// whatever the compose file's own generated password would otherwise produce — the same seam
 /// <c>DatabaseDoctorReadinessTests</c> already uses for the readiness poll.
 /// </summary>
 // This class still clears HALL9K_CONNECTION_STRING directly rather than through
@@ -32,6 +32,7 @@ public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
 {
     private static readonly TimeSpan ShortTimeout = TimeSpan.FromMilliseconds(200);
     private static readonly TimeSpan ShortPollInterval = TimeSpan.FromMilliseconds(20);
+    private const string TestConnectionString = "Host=127.0.0.1;Port=5432;Database=hall9k;Username=postgres;Password=test-password";
 
     private readonly ScopedTestHome scopedHome = new();
 
@@ -51,7 +52,7 @@ public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
     public async Task An_unreachable_default_connection_string_records_nothing()
     {
         ConnectionStringResolution? resolution = await DatabaseDoctor.OfferAndRecordAlreadyRunningContainerAsync(
-            assumeYes: true, _ => Task.FromResult(RefusedConnection()), ShortTimeout, ShortPollInterval, TimeProvider.System, CancellationToken.None);
+            TestConnectionString, assumeYes: true, _ => Task.FromResult(RefusedConnection()), ShortTimeout, ShortPollInterval, TimeProvider.System, CancellationToken.None);
 
         resolution.Should().BeNull("the container is confirmed Running but nothing actually answered at the default address");
         File.Exists(Hall9kDatabase.ConfigFile).Should().BeFalse("nothing reachable means nothing to record");
@@ -79,7 +80,7 @@ public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
         SteppingClock clock = new(ShortPollInterval);
 
         ConnectionStringResolution? resolution = await DatabaseDoctor.OfferAndRecordAlreadyRunningContainerAsync(
-            assumeYes: true, Probe, ShortTimeout, ShortPollInterval, clock, CancellationToken.None);
+            TestConnectionString, assumeYes: true, Probe, ShortTimeout, ShortPollInterval, clock, CancellationToken.None);
 
         resolution.Should().NotBeNull("readiness that arrives on the third probe is still well inside the timeout");
         calls.Should().Be(3, "the loop must keep polling — a slow start is not the same as a dead one");
@@ -89,13 +90,13 @@ public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
     public async Task Assume_yes_records_the_default_connection_string_once_it_answers()
     {
         ConnectionStringResolution? resolution = await DatabaseDoctor.OfferAndRecordAlreadyRunningContainerAsync(
-            assumeYes: true, _ => Task.FromResult(Reachable()), CancellationToken.None);
+            TestConnectionString, assumeYes: true, _ => Task.FromResult(Reachable()), CancellationToken.None);
 
         resolution.Should().NotBeNull(
             "a confirmed Running container that actually answers is exactly the case OfferAndStartAsync refuses to touch — "
             + "this is the other half that has to record it instead");
-        resolution!.Value.Should().Be(Hall9kDatabase.DefaultConnectionString);
-        Hall9kDatabase.ConnectionStringStateAndValueInConfigFile().Value.Should().Be(Hall9kDatabase.DefaultConnectionString);
+        resolution!.Value.Should().Be(TestConnectionString);
+        Hall9kDatabase.ConnectionStringStateAndValueInConfigFile().Value.Should().Be(TestConnectionString);
     }
 
     [Fact]
@@ -108,7 +109,7 @@ public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
         string output = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
         {
             resolution = await DatabaseDoctor.OfferAndRecordAlreadyRunningContainerAsync(
-                assumeYes: false, _ => Task.FromResult(Reachable()), CancellationToken.None);
+                TestConnectionString, assumeYes: false, _ => Task.FromResult(Reachable()), CancellationToken.None);
         });
 
         resolution.Should().BeNull("nobody was there to confirm it, and assumeYes was not set");
@@ -125,23 +126,23 @@ public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
         // DiagnoseNotConfiguredAsync's own routing decision — not RunAsync's full path, which
         // would also reach CheckReachabilityAndSchemaAsync's own unfaked probe of whatever
         // connection string got recorded — with the same faked already-running-container probe
-        // the three tests above already use, so this never depends on a real Postgres bound to
-        // the exact host and port DefaultConnectionString names.
+        // the three tests above already use, so this never depends on a real Postgres.
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("running\n");
 
         ConnectionStringResolution resolution = await DatabaseDoctor.DiagnoseNotConfiguredAsync(
-            offerFixes: true, assumeYes: true, runner.Runner, _ => Task.FromResult(Reachable()), CancellationToken.None);
+            offerFixes: true, assumeYes: true, runner.Runner, CancellationToken.None,
+            alreadyRunningContainerProbe: _ => Task.FromResult(Reachable()));
 
         runner.Calls.Should().NotContain(
             call => call.Arguments.Count > 0
                 && (call.Arguments[0] == "start" || call.Arguments[0] == "volume" || call.Arguments[0] == "compose"),
             "a container already confirmed Running is never the one to restart or bring up — the fix here is "
             + "probing and recording the connection string directly, never another docker mutation");
-        resolution.Value.Should().Be(Hall9kDatabase.DefaultConnectionString,
+        resolution.Value.Should().NotBeNullOrEmpty(
             "the routing has to actually reach OfferAndRecordAlreadyRunningContainerAsync and record the "
             + "connection string, not merely avoid a docker mutation — reverting the routing fix would leave "
             + "this unconfigured instead");
-        Hall9kDatabase.ConnectionStringStateAndValueInConfigFile().Value.Should().Be(Hall9kDatabase.DefaultConnectionString);
+        Hall9kDatabase.ConnectionStringStateAndValueInConfigFile().Value.Should().Be(resolution.Value);
     }
 
     [Fact]
@@ -158,8 +159,8 @@ public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
         string output = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
         {
             resolution = await DatabaseDoctor.DiagnoseNotConfiguredAsync(
-                offerFixes: true, assumeYes: true, runner.Runner, _ => Task.FromResult(Reachable()),
-                CancellationToken.None, recordConnectionString: false);
+                offerFixes: true, assumeYes: true, runner.Runner, CancellationToken.None,
+                recordConnectionString: false, alreadyRunningContainerProbe: _ => Task.FromResult(Reachable()));
         });
 
         resolution.IsConfigured.Should().BeFalse("the write is exactly what this run was told to withhold");

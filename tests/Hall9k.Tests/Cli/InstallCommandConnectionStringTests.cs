@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
 using Xunit;
@@ -9,8 +10,8 @@ namespace Hall9k.Tests.Cli;
 
 /// <summary>
 /// Windows install friction log item 1: the installer already writes a compose file whose
-/// POSTGRES_DB/POSTGRES_USER/POSTGRES_PASSWORD fully determine
-/// <see cref="Hall9kDatabase.DefaultConnectionString"/>, yet config.json was left empty and
+/// POSTGRES_DB/POSTGRES_USER/POSTGRES_PASSWORD fully determine the connection string
+/// <see cref="Hall9kDatabase.ConnectionStringWithPassword"/> would build, yet config.json was left empty and
 /// <c>h9k doctor</c>'s first run failed with "No connection string is configured" for no
 /// reason a fresh install couldn't already see. <see cref="InstallCommand.FinishAsync"/> now
 /// writes that answer down for a genuinely unconfigured machine, and — just as important —
@@ -56,7 +57,9 @@ public sealed class InstallCommandConnectionStringTests : IDisposable
 
         exitCode.Should().Be(0);
         File.Exists(Hall9kDatabase.ConfigFile).Should().BeTrue();
-        Hall9kDatabase.Resolve().Value.Should().Be(Hall9kDatabase.DefaultConnectionString);
+        string password = PostgresRuntime.ReadPasswordFromComposeFile()!;
+        password.Should().MatchRegex("^[0-9a-f]{64}$", "the compose file's own generated password, not the retired public default");
+        Hall9kDatabase.Resolve().Value.Should().Be(Hall9kDatabase.ConnectionStringWithPassword(password));
     }
 
     [Fact]
