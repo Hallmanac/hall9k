@@ -78,6 +78,17 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
         // vouches for whatever `path` happened to read as in that commit's own inherited tree
         // (independent pre-PR review, cycle 5, conformance and adversarial lenses, both high).
         IReadOnlyList<string> commits = await CommitShasAsync(repositoryPath, tip, cancellationToken);
+
+        // Lazily populated, and only once per call, the moment the first trailer-less commit is
+        // seen below: every commit GitLedger builds today stamps at least one Hall9k-Ledger-Path
+        // line, so a commit with none at all is real history from before this trailer existed,
+        // never a same-shape commit this fix needs to distrust. Falling back to the old
+        // tree-diff membership test for exactly those commits — never for a trailer-bearing one,
+        // which always answers from the trailer alone — is what keeps a ledger path written
+        // entirely before this fix shipped (this project's own live prompt-addenda ref included)
+        // materializing exactly as it did before, rather than reading as untouched and vanishing
+        // the moment this walk can no longer find a trailer that was never stamped on it.
+        IReadOnlyList<string>? legacyCommitsTouchingPath = null;
         List<LedgerPathCommit> results = new();
         foreach (string sha in commits)
         {
@@ -90,12 +101,19 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
                 throw new InvalidOperationException($"git cat-file commit {sha} failed in {repositoryPath}.");
             }
 
-            if (!LedgerCommitPathTrailer.PathsWrittenBy(rawBytes).Contains(path, StringComparer.Ordinal))
+            IReadOnlyList<string> pathsWritten = LedgerCommitPathTrailer.PathsWrittenBy(rawBytes);
+            bool touchesPath = pathsWritten.Count > 0
+                ? pathsWritten.Contains(path, StringComparer.Ordinal)
+                : (legacyCommitsTouchingPath ??=
+                    await CommitsTouchingPathAsync(repositoryPath, tip, path, cancellationToken))
+                    .Contains(sha, StringComparer.Ordinal);
+            if (!touchesPath)
             {
-                // This commit is real ref history, but it was never this ledger's own write or
-                // delete of `path` — never counted as a candidate, and never handed to
-                // isAuthorizedAsync, which exists to answer "is THIS commit's own claim about
-                // `path` trustworthy," not "is this commit signed at all."
+                // Either a trailer-bearing commit that never claimed `path` — never counted as a
+                // candidate, and never handed to isAuthorizedAsync, which exists to answer "is
+                // THIS commit's own claim about `path` trustworthy," not "is this commit signed at
+                // all" — or a pre-trailer commit whose own tree diff says it never touched `path`
+                // either.
                 continue;
             }
 

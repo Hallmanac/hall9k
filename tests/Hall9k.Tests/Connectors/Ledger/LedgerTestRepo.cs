@@ -63,6 +63,12 @@ internal sealed class LedgerTestRepo : IDisposable
             "-c", $"gpg.ssh.allowedSignersFile={allowedSignersFile}",
             "verify-commit", commitId);
 
+    /// <summary>The escape hatch a test uses to build a raw commit object bypassing
+    /// <c>GitLedger</c> entirely — e.g. to simulate a commit written before this project
+    /// stamped every ledger commit with its own <c>Hall9k-Ledger-Path</c> trailer.</summary>
+    public static (int ExitCode, string StandardOutput, string StandardError) RunGit(
+        string repositoryPath, params string[] arguments) => Git(repositoryPath, arguments);
+
     private static (int ExitCode, string StandardOutput, string StandardError) Git(
         string workingDirectory, params string[] arguments)
     {

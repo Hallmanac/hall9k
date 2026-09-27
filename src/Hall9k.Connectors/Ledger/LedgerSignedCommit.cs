@@ -65,7 +65,11 @@ public interface ILedgerCommitReader
     /// independent pre-PR review, cycle 3, both lenses, high) while an unrelated commit that wrote
     /// some OTHER path entirely never does, even though it too is TREESAME for <paramref name="path"/>
     /// (cycle 5, conformance and adversarial lenses, both high: no git tree diff can tell those two
-    /// cases apart, only the trailer can). An empty list when the ref does not exist yet.
+    /// cases apart, only the trailer can). A commit with no trailer at all — real ledger history
+    /// from before <see cref="GitLedger"/> started stamping one — falls back to the old tree-diff
+    /// membership test instead of reading as untouched (cycle 6, conformance lens, high: the
+    /// trailer alone cannot vouch for history written before it existed). An empty list when the
+    /// ref does not exist yet.
     /// <para>
     /// Stops walking — and returns everything read up to and including that one commit, never
     /// anything older — the moment <paramref name="isAuthorizedAsync"/> accepts a commit's own raw
