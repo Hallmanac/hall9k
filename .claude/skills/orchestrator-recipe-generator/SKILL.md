@@ -572,8 +572,8 @@ command that reads the clock.
 **Standing rules.** Live in this window's memory directory, loaded from there, and never restated
 here — a rule copied into two places drifts the moment one of them changes. See *Never invent a
 standing rule* above for what this recipe may not do instead, and for the one narrow carve-out: a
-dated `Standing grant`, `Opt-out`, or `Tier override` line in *Model and effort* is the operator's
-own ruling kept where the table it corrects lives, and a regeneration carries it forward verbatim
+dated `Standing grant`, `Opt-out`, or `Tier override` line is the operator's own ruling, may be
+placed anywhere in the recipe, and a regeneration carries it forward verbatim wherever it appears
 rather than treating it as this generator's invention.
 
 **Ideas and drift.** When the operator says "log this idea," run `h9k idea add` immediately and
