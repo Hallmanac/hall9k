@@ -1315,8 +1315,28 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             // pre-PR review, adversarial lens, medium). Skipped rather than failed outright: another
             // candidate project, or a source whose own root.yaml really is root-signed, may still
             // carry cleanly.
-            if (!await commitReader.IsSignedByAsync(
-                source.RepositoryPath, rootSigned.RawCommitBytes, sourceOwner.RootPublicKeyLine, cancellationToken))
+            bool rootSignedByRoot;
+            try
+            {
+                rootSignedByRoot = await commitReader.IsSignedByAsync(
+                    source.RepositoryPath, rootSigned.RawCommitBytes, sourceOwner.RootPublicKeyLine, cancellationToken);
+            }
+            catch (InvalidOperationException exception)
+            {
+                // A transient infrastructure failure (disk, permissions, an unavailable git binary),
+                // never a genuine "not signed" verdict — the identical degrade ComputeAsync's own
+                // catch above applies for an analogous failure (independent pre-PR review, cycle 2,
+                // adversarial lens, medium).
+                if (fromProjectName.IsNotBlank())
+                {
+                    return new CarryAttemptOutcome(
+                        false, null, $"Could not verify '{source.Name}'s own root signature to carry a vouch from it: {exception.Message}");
+                }
+
+                continue;
+            }
+
+            if (!rootSignedByRoot)
             {
                 sourceRootNotRootSignedFound = true;
                 continue;
@@ -1333,8 +1353,25 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             // adversarial lens, high). Skipped rather than failed outright: another candidate
             // project, or a source root the target project's own root holder directly enrolled this
             // node under, may still carry cleanly.
-            if (!await commitReader.IsSignedByAsync(
-                source.RepositoryPath, vouchSigned.RawCommitBytes, sourceOwner.RootPublicKeyLine, cancellationToken))
+            bool vouchSignedByRoot;
+            try
+            {
+                vouchSignedByRoot = await commitReader.IsSignedByAsync(
+                    source.RepositoryPath, vouchSigned.RawCommitBytes, sourceOwner.RootPublicKeyLine, cancellationToken);
+            }
+            catch (InvalidOperationException exception)
+            {
+                // Same transient-infrastructure degrade as the root-signature check just above.
+                if (fromProjectName.IsNotBlank())
+                {
+                    return new CarryAttemptOutcome(
+                        false, null, $"Could not verify '{source.Name}'s own vouch signature to carry a vouch from it: {exception.Message}");
+                }
+
+                continue;
+            }
+
+            if (!vouchSignedByRoot)
             {
                 delegateSignedVouchFound = true;
                 continue;

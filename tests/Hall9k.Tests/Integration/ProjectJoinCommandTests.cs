@@ -1158,6 +1158,99 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
     }
 
     /// <summary>
+    /// Adversarial pre-PR review, cycle 2, medium: <c>GitLedgerCommitReader.IsSignedByAsync</c> now
+    /// throws <see cref="InvalidOperationException"/> when its own <c>git hash-object</c> injection
+    /// step fails for an infrastructure reason (disk, permissions, an unavailable git binary), never
+    /// a genuine "not signed" verdict. Named with <c>--from-project</c>, this pre-check must report
+    /// that failure back through <see cref="ProjectJoinCommand.CarryAttemptOutcome.RefusalMessage"/>
+    /// exactly as <see cref="GitLedgerChainReader.ComputeAsync"/>'s own failure a few lines above it
+    /// in the same loop already does, never let the exception escape and crash the whole join.
+    /// </summary>
+    [Fact]
+    public async Task A_transient_failure_verifying_a_source_root_signature_is_reported_rather_than_crashing_the_join()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        Guid connectionId = await NodeBootstrapSeed.SeedGitHubConnectionAsync(_postgres.Store, cts.Token);
+
+        await using IDocumentSession bootstrapSession = _postgres.Store.LightweightSession();
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(bootstrapSession, cts.Token);
+        await bootstrapSession.SaveChangesAsync(cts.Token);
+
+        NodeKeyStore keyStore = new();
+        NodeSigningKey key = await keyStore.EnsureAsync(context.NodeId, cts.Token);
+        string root = new string('f', 64);
+
+        await using (IDocumentSession claimSession = _postgres.Store.LightweightSession())
+        {
+            OwnerAggregate ownerAggregate = await claimSession.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: cts.Token)
+                ?? throw new InvalidOperationException($"No owner {context.OwnerId}.");
+            claimSession.Events.Append(context.OwnerId, OwnerDecider.ClaimRoot(ownerAggregate, root, verified: false, Now));
+            await claimSession.SaveChangesAsync(cts.Token);
+        }
+
+        Guid sourceId = DomainId.New();
+        await using (IDocumentSession seed = _postgres.Store.LightweightSession())
+        {
+            seed.Events.StartStream<ProjectAggregate>(
+                sourceId,
+                ProjectDecider.Register(
+                    sourceId, context.OwnerId, connectionId, "carry-source-transient-failure",
+                    "/does/not/matter/on/a/fake/ledger/source", null, null, Now));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        Guid targetId = DomainId.New();
+        await using (IDocumentSession seed = _postgres.Store.LightweightSession())
+        {
+            seed.Events.StartStream<ProjectAggregate>(
+                targetId,
+                ProjectDecider.Register(
+                    targetId, context.OwnerId, connectionId, "carry-target-transient-failure",
+                    "/does/not/matter/on/a/fake/ledger/target", null, null, Now));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await using IDocumentSession loadSession = _postgres.Store.LightweightSession();
+        ProjectDetails source = (await loadSession.LoadAsync<ProjectDetails>(sourceId, cts.Token))!;
+        ProjectDetails target = (await loadSession.LoadAsync<ProjectDetails>(targetId, cts.Token))!;
+
+        TrustedOwner sourceOwner = new(
+            root, "ssh-ed25519 AAAAsourceRootKey root@test",
+            [new TrustedNode(context.NodeId.ToString(), key.PublicKeyLine, key.Fingerprint, Now)]);
+        FakeLedgerChainReader chainReader = new(new Dictionary<string, TrustChain>
+        {
+            [source.RepositoryPath] = new TrustChain(
+                new Dictionary<string, TrustedOwner> { [root] = sourceOwner }, []),
+        });
+
+        string ownersRefName = $"refs/hall9k/ledger/owners/{root}";
+        FakeLedgerCommitReader commitReader = new(
+            new Dictionary<string, LedgerSignedCommit>
+            {
+                [$"owners/{root}/root.yaml"] = new LedgerSignedCommit(
+                    "public_key: \"ssh-ed25519 AAAAsourceRootKey root@test\"\n", "root-sha", "tree deadbeef\n\nEstablish root"),
+                [$"owners/{root}/nodes/{context.NodeId}.yaml"] = new LedgerSignedCommit(
+                    $"node_id: \"{context.NodeId}\"\npublic_key: \"{key.PublicKeyLine}\"\n", "vouch-sha",
+                    $"tree cafebabe\n\nVouch node {context.NodeId} key {key.Fingerprint}"),
+            },
+            isSignedBy: (_, _) => throw new InvalidOperationException(
+                "git hash-object -w -t commit failed (exit 128): fatal: unable to write file"));
+
+        FakeLedger ledger = new();
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        using ScopedAnsiConsoleCapture capture = ScopedAnsiConsoleCapture.Begin();
+        await ProjectJoinCommand.RunAsync(
+            session, target, claimedOwnerOverride: null, invite: null, source.Name, ledger, keyStore,
+            GitHubAccessFakes.GrantingPush(), chainReader, commitReader, promptForInviteToken: null, cts.Token);
+
+        capture.Text.Should().Contain(
+            "Could not verify", "a transient infrastructure failure names itself in the refusal rather than crashing the join");
+        ledger.ManyWrites.Should().BeEmpty("a source whose root signature could not even be checked must never be carried in");
+        ledger.Writes.Should().NotContain(w => w.RefName == ownersRefName);
+    }
+
+    /// <summary>
     /// Adversarial pre-PR review, medium: a carry whose own <c>owners/&lt;root&gt;/root.yaml</c> and
     /// <c>owners/&lt;root&gt;/carried/&lt;node-id&gt;.yaml</c> push landed, but whose own
     /// <see cref="ProjectJoinCommand.EnsureGenesisMemberFileAsync"/> call never got the chance to run
