@@ -31,7 +31,15 @@ public static class DatabaseReachability
         int port = builder.Port is 0 ? 5432 : builder.Port;
         string database = builder.Database ?? string.Empty;
 
-        await using NpgsqlConnection connection = new(connectionString);
+        // Pooling off, deliberately: a pooled idle connector survives the server side dying
+        // underneath it (a container recreate, a restart) and Npgsql's own idle check never
+        // notices, since PoolingDataSource.CheckIdleConnector only looks at IsBroken and
+        // connection lifetime, never socket liveness — so a probe meant to prove a freshly
+        // (re)started Postgres is actually answering would otherwise hand back a stale
+        // connector that opens with no I/O at all and reads as Reachable (lesson ad0727c5;
+        // field reports 2026-09-27, Mac and Windows).
+        builder.Pooling = false;
+        await using NpgsqlConnection connection = new(builder.ConnectionString);
         using CancellationTokenSource timeout = new(ProbeTimeout);
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         try
@@ -71,7 +79,13 @@ public static class DatabaseReachability
     /// </summary>
     public static async Task<bool> SchemaPresentAsync(string connectionString, CancellationToken cancellationToken)
     {
-        await using NpgsqlConnection connection = new(connectionString);
+        // Pooling off here too, the same reason ProbeAsync just disabled it: an idle pooled
+        // connector left by an earlier call in this same process (this doctor's own
+        // ToolDoctor.GitHubCliRequirementAsync check, for one) can survive the server side
+        // dying underneath it and read as open with no I/O, so this query would otherwise run
+        // against a dead socket rather than the freshly (re)started Postgres it means to check.
+        NpgsqlConnectionStringBuilder builder = new(connectionString) { Pooling = false };
+        await using NpgsqlConnection connection = new(builder.ConnectionString);
         await connection.OpenAsync(cancellationToken);
         // Cast to text: Npgsql has no default read mapping for the regclass type itself,
         // and all this needs is whether the cast produced a name or a null.
