@@ -1240,8 +1240,10 @@ push lands, nothing above has actually reached a prompt yet.
 The ledger holds exactly one file per builder for the whole project, with no per-member segment, so
 only a node whose own owner is currently this project's Owner-role member actually pushes it —
 `set`/`remove` on any other node's own machine still appends the local event (the audit trail still
-shows it) but says so in one plain line and goes no further, since that push would be refused
-everywhere it is read back anyway. Every node's own materialize sweep, in turn, only ever honors the
+shows it) but says so in one plain line and does not push it yet, since that push would be refused
+everywhere it is read back anyway. The event's own sync position is left untouched rather than
+skipped past, so it is picked up and pushed on its own once this node's own owner becomes an
+Owner-role member — never lost, only deferred. Every node's own materialize sweep, in turn, only ever honors the
 newest ledger commit an Owner-role member's own chain (root key or a currently vouched node key)
 signed: a member's overwrite, a member's delete, an unsigned commit from a repository collaborator
 with push access but no ledger key, and a revoked node's commit are all skipped over, restoring the
