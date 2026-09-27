@@ -327,6 +327,19 @@ public sealed class OperatingSettings
     [JsonConverter(typeof(LenientModelStringJsonConverter))]
     public string? OrchestratorModel { get; set; }
 
+    /// <summary>
+    /// The reasoning effort an orchestrator window's <c>recipes/settings.json</c> is rendered for
+    /// (task: the orchestrator window's effort becomes a rendered project and node setting) —
+    /// deliberately independent of <see cref="Effort"/> and every other dispatch effort (a task's
+    /// own, a project's, a per-role value): none of those ever reach the window, the same
+    /// independence <see cref="OrchestratorModel"/> already has from <see cref="DefaultModel"/>.
+    /// Null leaves the level out of the generated settings file, so a project's own override, then
+    /// the model's own default, decides. Read from the config file alone, with no <c>Hall9k__</c>
+    /// environment variable, exactly like <see cref="OrchestratorModel"/> — the window is an
+    /// operator's own pasted launch line, never something a running daemon binds at startup.
+    /// </summary>
+    public string? OrchestratorEffort { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
 }

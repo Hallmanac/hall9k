@@ -68,6 +68,13 @@ public sealed class ProjectAggregate
     /// </summary>
     public AgentModel OrchestratorModel { get; private set; } = AgentModel.Unknown;
     /// <summary>
+    /// This project's orchestrator-window effort override (task: the orchestrator window's effort
+    /// becomes a rendered project and node setting) — outranks <see cref="Effort"/> for the
+    /// project's <c>recipes/settings.json</c> alone. Unknown defers to the node's own
+    /// <c>--orchestrator-effort</c>, then the model's own default.
+    /// </summary>
+    public AgentEffort OrchestratorEffort { get; private set; } = AgentEffort.Unknown;
+    /// <summary>
     /// Whether closeout asks this project's reviewers for another pass after a fix follow-up
     /// pushed (Decisions Log #62). Outranks the owner's preference; Unknown defers to it.
     /// </summary>
@@ -289,6 +296,11 @@ public sealed class ProjectAggregate
         if (@event.OrchestratorModel.HasValue)
         {
             OrchestratorModel = @event.OrchestratorModel.Value ?? AgentModel.Unknown;
+        }
+
+        if (@event.OrchestratorEffort.HasValue)
+        {
+            OrchestratorEffort = @event.OrchestratorEffort.Value ?? AgentEffort.Unknown;
         }
 
         if (@event.ReviewRerequest.HasValue)

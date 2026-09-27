@@ -53,6 +53,14 @@ public sealed class ProjectDetails
     /// </summary>
     public AgentModel OrchestratorModel { get; set; } = AgentModel.Unknown;
     /// <summary>
+    /// This project's orchestrator-window effort override (task: the orchestrator window's effort
+    /// becomes a rendered project and node setting) — outranks the node's for the project's
+    /// <c>recipes/settings.json</c> alone, so raising or lowering the effort dispatched agents run
+    /// on never moves the operator's own window, and the reverse. Unknown defers to the node's
+    /// own <c>--orchestrator-effort</c>, then the model's own default.
+    /// </summary>
+    public AgentEffort OrchestratorEffort { get; set; } = AgentEffort.Unknown;
+    /// <summary>
     /// Whether closeout asks this project's reviewers for another pass after a fix follow-up
     /// pushed (Decisions Log #62). Outranks the owner's preference; Unknown defers to it.
     /// </summary>
@@ -329,6 +337,11 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
         if (@event.Data.OrchestratorModel.HasValue)
         {
             view.OrchestratorModel = @event.Data.OrchestratorModel.Value ?? AgentModel.Unknown;
+        }
+
+        if (@event.Data.OrchestratorEffort.HasValue)
+        {
+            view.OrchestratorEffort = @event.Data.OrchestratorEffort.Value ?? AgentEffort.Unknown;
         }
 
         if (@event.Data.ReviewRerequest.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.ReviewRerequest), @event.Data.ChangedAt))

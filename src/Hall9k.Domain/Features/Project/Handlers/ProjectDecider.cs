@@ -90,7 +90,8 @@ public static class ProjectDecider
         Optional<bool> designReviewDrive = default,
         Optional<bool> qaReviewDrive = default,
         Optional<IReadOnlyList<string>> nonExecutablePaths = default,
-        Optional<AgentEffort> effort = default)
+        Optional<AgentEffort> effort = default,
+        Optional<AgentEffort> orchestratorEffort = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -478,7 +479,8 @@ public static class ProjectDecider
             DesignReviewDrive: designReviewDrive,
             QaReviewDrive: qaReviewDrive,
             NonExecutablePaths: normalizedNonExecutablePaths,
-            Effort: effort);
+            Effort: effort,
+            OrchestratorEffort: orchestratorEffort);
     }
 
     /// <summary>
