@@ -49,7 +49,9 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             + "further prompt needed. A node-of-owner invite claims that invite's own owner (like --owner, but "
             + "read from the secret — combining the two is refused) and creates no root; a member-of-project "
             + "invite creates this node's own root when it has none yet, same as an ordinary --owner-less join. "
-            + "Refused if the invite is not found in this project's own ledger, already spent, or expired.")]
+            + "Refused if the invite is not found in this project's own ledger, already spent, or expired. Pass "
+            + "'-' to read the secret from stdin instead of argv (keeps it out of shell history); passing it "
+            + "directly still works but prints a one-line warning.")]
         public string? Invite { get; init; }
 
         [CommandOption("--from-project <NAME>")]
@@ -98,10 +100,12 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         await NodeBootstrap.RefreshGitHubIdentityAsync(session, refreshContext.ConnectionId, cancellationToken, ghIdentityReader);
         await session.SaveChangesAsync(cancellationToken);
 
+        string? invite = await InviteTokenInput.ResolveAsync(settings.Invite, cancellationToken);
+
         JoinOutcome outcome;
         try
         {
-            outcome = await RunAsync(session, project, settings.Owner, settings.Invite, settings.FromProject, cancellationToken);
+            outcome = await RunAsync(session, project, settings.Owner, invite, settings.FromProject, cancellationToken);
         }
         // A1's own git plumbing throws these as plain, undecorated exceptions rather than a
         // Domain*Exception — fine for h9k project add's own TryJoinAsync, which already wraps
@@ -194,7 +198,7 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
     /// can wire the identical prompt through its own call, rather than a second, private copy.</summary>
     internal static string PromptForInviteTokenFromConsole() =>
         AnsiConsole.Prompt(new TextPrompt<string>(
-            "[bold]Invite token[/] [dim](paste it, or press enter to skip for now)[/]:").AllowEmpty());
+            "[bold]Invite token[/] [dim](paste it, or press enter to skip for now)[/]:").AllowEmpty().Secret());
 
     internal static Task<JoinOutcome> RunAsync(
         IDocumentSession session,
