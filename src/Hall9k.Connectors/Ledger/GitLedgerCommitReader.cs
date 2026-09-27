@@ -88,10 +88,23 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
         // entirely before this fix shipped (this project's own live prompt-addenda ref included)
         // materializing exactly as it did before, rather than reading as untouched and vanishing
         // the moment this walk can no longer find a trailer that was never stamped on it.
+        //
+        // That tree-diff fallback still prunes a legacy commit that is TREESAME to its own parent
+        // for `path` alone (independent pre-PR review, cycle 7, conformance lens, high) — the
+        // identical cycle-3 defect, scoped to pre-trailer history, where a legacy owner reissue of
+        // already-current content for `path` is indistinguishable, by `path`'s own tree entry
+        // alone, from a legacy commit that never touched `path` at all. A legacy commit whose
+        // WHOLE tree is byte-identical to its parent's closes that gap without reopening cycle 5's
+        // laundering hole: such a commit changed nothing anywhere, for any path, so unlike an
+        // ordinary owner write to some OTHER real path (cycle 5's own scenario), there is no actual
+        // content change anywhere in it to launder `path` through — every path, `path` included, is
+        // provably left exactly as the parent already had it, which is precisely what a genuine
+        // "bless the current state" reissue looks like at the object level.
         IReadOnlyList<string>? legacyCommitsTouchingPath = null;
         List<LedgerPathCommit> results = new();
-        foreach (string sha in commits)
+        for (int index = 0; index < commits.Count; index++)
         {
+            string sha = commits[index];
             string? rawBytes = await RunGitCaptureAsync(repositoryPath, ["cat-file", "commit", sha], cancellationToken);
             if (rawBytes is null)
             {
@@ -102,18 +115,30 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
             }
 
             IReadOnlyList<string> pathsWritten = LedgerCommitPathTrailer.PathsWrittenBy(rawBytes);
-            bool touchesPath = pathsWritten.Count > 0
-                ? pathsWritten.Contains(path, StringComparer.Ordinal)
-                : (legacyCommitsTouchingPath ??=
+            bool touchesPath;
+            if (pathsWritten.Count > 0)
+            {
+                touchesPath = pathsWritten.Contains(path, StringComparer.Ordinal);
+            }
+            else
+            {
+                touchesPath = (legacyCommitsTouchingPath ??=
                     await CommitsTouchingPathAsync(repositoryPath, tip, path, cancellationToken))
                     .Contains(sha, StringComparer.Ordinal);
+                if (!touchesPath && index + 1 < commits.Count
+                    && await HasIdenticalTreeToParentAsync(repositoryPath, sha, commits[index + 1], cancellationToken))
+                {
+                    touchesPath = true;
+                }
+            }
+
             if (!touchesPath)
             {
                 // Either a trailer-bearing commit that never claimed `path` — never counted as a
                 // candidate, and never handed to isAuthorizedAsync, which exists to answer "is
                 // THIS commit's own claim about `path` trustworthy," not "is this commit signed at
                 // all" — or a pre-trailer commit whose own tree diff says it never touched `path`
-                // either.
+                // either, and which did not, on its own, reassert every path unchanged.
                 continue;
             }
 
@@ -269,11 +294,16 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
     }
 
     /// <summary>Every commit reachable from <paramref name="tip"/> that touched <paramref name="path"/>
-    /// — used only by <see cref="ReadSignedCommitAsync"/>, which wants the specific commit that
-    /// actually produced the content it just read at <paramref name="path"/>'s current tip, never a
-    /// commit whose own tree for that path happens to be unchanged. <see cref="CommitShasAsync"/> is
-    /// the sibling <see cref="ReadCommitsTouchingPathAsync"/> uses instead, precisely because THAT
-    /// caller's own owner test needs a reissue commit this path-filtered walk would prune.</summary>
+    /// — a real, ordinary content change relative to that commit's own parent, since `git log --
+    /// path` prunes any commit that is TREESAME for `path` unconditionally, with no flag to restore
+    /// it. <see cref="ReadSignedCommitAsync"/> uses this directly, wanting the specific commit that
+    /// actually produced the content it just read at <paramref name="path"/>'s current tip.
+    /// <see cref="ReadCommitsTouchingPathAsync"/> uses <see cref="CommitShasAsync"/> for its own main
+    /// walk instead, precisely because THAT caller's own owner test needs a reissue commit this
+    /// path-filtered walk would prune — but still calls this method as one signal (never the only
+    /// one) when deciding whether a trailer-less commit touches `path`, since a real content change
+    /// this method reports is always trustworthy; only the TREESAME case it prunes needs the
+    /// additional whole-tree check <see cref="HasIdenticalTreeToParentAsync"/> supplies.</summary>
     private async Task<IReadOnlyList<string>> CommitsTouchingPathAsync(
         string repositoryPath, string tip, string path, CancellationToken cancellationToken)
     {
@@ -286,6 +316,22 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
         }
 
         return [.. result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.Trim())];
+    }
+
+    /// <summary>Whether <paramref name="sha"/>'s own whole tree — every path, not just one — is
+    /// byte-identical to <paramref name="parentSha"/>'s: a true no-op commit. Used only for a
+    /// trailer-less commit that <see cref="CommitsTouchingPathAsync"/> already reports as TREESAME
+    /// for one specific `path`, to tell apart the two things that can produce that same TREESAME
+    /// reading — a legacy commit that never touched `path` at all (leaves this false, since whatever
+    /// else it changed makes the whole tree differ from its parent) from a legacy commit that
+    /// deliberately reasserts every path exactly as its parent already had it, `path` included
+    /// (independent pre-PR review, cycle 7, conformance lens, high).</summary>
+    private async Task<bool> HasIdenticalTreeToParentAsync(
+        string repositoryPath, string sha, string parentSha, CancellationToken cancellationToken)
+    {
+        string? tree = (await RunGitCaptureAsync(repositoryPath, ["rev-parse", $"{sha}^{{tree}}"], cancellationToken))?.Trim();
+        string? parentTree = (await RunGitCaptureAsync(repositoryPath, ["rev-parse", $"{parentSha}^{{tree}}"], cancellationToken))?.Trim();
+        return tree is not null && parentTree is not null && string.Equals(tree, parentTree, StringComparison.Ordinal);
     }
 
     /// <summary>Every commit reachable from <paramref name="tip"/>, first-parent order, newest

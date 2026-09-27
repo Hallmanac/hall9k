@@ -677,6 +677,82 @@ public sealed class GitLedgerTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// The regression the cycle-7 review caught in the cycle-6 fix (independent pre-PR review,
+    /// cycle 7, conformance lens, high): the tree-diff fallback above still decides "touches path"
+    /// for a trailer-less commit via a pathspec-filtered `git log -- path`, which prunes a commit
+    /// that is TREESAME to its own parent for that one path — exactly the cycle-3 defect, now
+    /// reintroduced for any commit written before the trailer existed. Reproduced against real git:
+    /// a member's own unauthorized legacy commit (no trailer) writes content, then the owner's own
+    /// legacy commit (no trailer either, built directly on top of the member's) re-asserts the
+    /// identical bytes — TREESAME for the path relative to its own parent, and also TREESAME for
+    /// the commit's whole tree, since nothing else in it changed either. The walk must still land on
+    /// the owner's own reissue, never skip past it to the member's own unauthorized commit behind
+    /// it.
+    /// </summary>
+    [Fact]
+    public async Task ReadCommitsTouchingPathAsync_ALegacyOwnerReissueOfAMembersLegacyOverwriteStillSurfaces()
+    {
+        string refName = UniqueTestRef();
+        string hub = _repo.CreateHub();
+        string node = _repo.CloneNode(hub);
+        (string ownerKeyPath, string ownerPublicKey) = GenerateSshKeypair();
+        (string memberKeyPath, _) = GenerateSshKeypair();
+        try
+        {
+            // A normal, trailer-bearing write, only to obtain a tree that already holds "a.yaml" —
+            // reused below so neither legacy commit has to build its own tree from scratch.
+            LedgerWriteOutcome templateWrite = await _ledger.WriteAsync(
+                new LedgerWriteRequest(node, refName, "a.yaml", "legacy content\n", null, "template", _committer, _signingKey),
+                CancellationToken.None);
+
+            (int treeExit, string treeOutput, string treeError) =
+                LedgerTestRepo.RunGit(node, "rev-parse", $"{templateWrite.CommitId}^{{tree}}");
+            treeExit.Should().Be(0, treeError);
+            string treeId = treeOutput.Trim();
+
+            // C1: a member's own legacy root commit, no trailer, unauthorized.
+            (int memberExit, string memberOutput, string memberError) = LedgerTestRepo.RunGit(
+                node,
+                "-c", "user.name=Ledger Test", "-c", "user.email=ledger-test@hall9k.local",
+                "-c", "gpg.format=ssh", "-c", $"user.signingkey={memberKeyPath}",
+                "commit-tree", treeId, "-S", "-m", "legacy member write, no trailer");
+            memberExit.Should().Be(0, memberError);
+            string memberCommitSha = memberOutput.Trim();
+
+            // C2: the owner's own legacy reissue, no trailer either, built directly on top of C1
+            // with the identical tree — TREESAME for "a.yaml", and TREESAME for the whole commit.
+            (int ownerExit, string ownerOutput, string ownerError) = LedgerTestRepo.RunGit(
+                node,
+                "-c", "user.name=Ledger Test", "-c", "user.email=ledger-test@hall9k.local",
+                "-c", "gpg.format=ssh", "-c", $"user.signingkey={ownerKeyPath}",
+                "commit-tree", treeId, "-p", memberCommitSha, "-S", "-m", "legacy owner reissue, no trailer");
+            ownerExit.Should().Be(0, ownerError);
+            string ownerReissueSha = ownerOutput.Trim();
+
+            (int pushExit, _, string pushError) = LedgerTestRepo.RunGit(node, "push", "origin", $"+{ownerReissueSha}:{refName}");
+            pushExit.Should().Be(0, pushError);
+
+            IReadOnlyList<LedgerPathCommit> commits = await _commitReader.ReadCommitsTouchingPathAsync(
+                node, refName, "a.yaml",
+                (rawCommitBytes, cancellationToken) => _commitReader.IsSignedByAsync(node, rawCommitBytes, ownerPublicKey, cancellationToken),
+                CancellationToken.None);
+
+            commits.Should().ContainSingle(
+                "the owner's own legacy reissue must still be found even though it is TREESAME to its parent for "
+                + "this path, never silently skipped in favor of the member's own unauthorized commit behind it")
+                .Which.CommitSha.Should().Be(ownerReissueSha);
+            commits[0].Content.Should().Be("legacy content\n");
+        }
+        finally
+        {
+            File.Delete(ownerKeyPath);
+            File.Delete($"{ownerKeyPath}.pub");
+            File.Delete(memberKeyPath);
+            File.Delete($"{memberKeyPath}.pub");
+        }
+    }
+
     private static string UniqueTestRef() => LedgerRefRegistry.RegisterExact($"refs/hall9k/ledger/test-{Guid.NewGuid():N}").RefspecSource;
 
     private static (string PrivateKeyPath, string PublicKey) GenerateSshKeypair()
