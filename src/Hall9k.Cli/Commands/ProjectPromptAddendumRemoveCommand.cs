@@ -55,16 +55,25 @@ public sealed class ProjectPromptAddendumRemoveCommand : Hall9kAsyncCommand<Proj
         session.Events.Append(project.Id, removed);
         await session.SaveChangesAsync(cancellationToken);
 
-        bool nodeOwnerIsProjectOwner = await PromptAddendumOwnerRoleGate.NodeOwnerIsProjectOwnerAsync(
+        OwnerRoleGateVerdict ownerRoleVerdict = await PromptAddendumOwnerRoleGate.ResolveAsync(
             session, project, context.OwnerId, chainReader, cancellationToken);
-        if (!nodeOwnerIsProjectOwner)
+        if (ownerRoleVerdict != OwnerRoleGateVerdict.OwnerRole)
         {
+            // Never "will never reach the ledger from here": PushAsync leaves this event's own
+            // sync position untouched on skip rather than advancing past it, so a later promotion
+            // of this node's own owner to Owner-role picks this exact removal back up and pushes
+            // it then — telling the operator "never" was simply false (independent pre-PR review,
+            // cycle 3, adversarial lens, medium).
+            string reason = ownerRoleVerdict == OwnerRoleGateVerdict.NeverJoined
+                ? $"this node has never joined '{project.Name.EscapeMarkup()}' (no claimed owner root yet) — "
+                    + $"run h9k project join {project.Name.EscapeMarkup()} first"
+                : $"this node's own owner is not currently an Owner-role member of '{project.Name.EscapeMarkup()}'";
             AnsiConsole.MarkupLine(
-                $"[yellow]Recorded, but this node's own owner is not an Owner-role member of "
-                + $"'{project.Name.EscapeMarkup()}', so this removal will never reach the ledger from here — only "
-                + "an Owner-role member's own node pushes a prompt addendum change to the ledger. Every node "
-                + "still materializes whatever the ledger's own owner-authorized state is on its next sweep, "
-                + "which will restore this locally.[/]");
+                $"[yellow]Recorded, but {reason}, so this removal is not pushed to the ledger from here yet — "
+                + "only an Owner-role member's own node pushes a prompt addendum change to the ledger, and this "
+                + "one will be pushed the moment that changes. Until then, every node keeps materializing "
+                + "whatever the ledger's own owner-authorized state already is, which will restore this "
+                + "locally.[/]");
             return ExitCodes.Ok;
         }
 
