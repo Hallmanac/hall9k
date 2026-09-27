@@ -88,6 +88,26 @@ public sealed class PromptAddendaSweepEngine(
     private static readonly TimeSpan ListRefsBackoffFloor = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ListRefsBackoffCeiling = TimeSpan.FromMinutes(30);
 
+    /// <summary>Shared by every call site that pays for a network round trip against this
+    /// project's own remote (the trust-chain read in <see cref="SweepOnceAsync"/> and the
+    /// <see cref="ILedger.ListRefsAsync"/> call in <see cref="MaterializeAsync"/> alike): both are a
+    /// bare <c>git ls-remote</c> against the identical remote, so a failure on either one is one
+    /// remote being unreachable, not two independent facts, and both back off together.</summary>
+    private bool IsBackingOffListRefs(Guid projectId, DateTimeOffset now) =>
+        _listRefsBackoff.TryGetValue(projectId, out (DateTimeOffset RetryAfter, TimeSpan Interval) backoff)
+        && now < backoff.RetryAfter;
+
+    private void RecordListRefsFailure(Guid projectId, DateTimeOffset now)
+    {
+        _listRefsBackoff.TryGetValue(projectId, out (DateTimeOffset RetryAfter, TimeSpan Interval) backoff);
+        TimeSpan nextInterval = backoff.Interval == default
+            ? ListRefsBackoffFloor
+            : TimeSpan.FromTicks(Math.Min(backoff.Interval.Ticks * 2, ListRefsBackoffCeiling.Ticks));
+        _listRefsBackoff[projectId] = (now + nextInterval, nextInterval);
+    }
+
+    private void ClearListRefsBackoff(Guid projectId) => _listRefsBackoff.Remove(projectId);
+
     public async Task<PromptAddendaSweepResult> SweepOnceAsync(CancellationToken cancellationToken)
     {
         IReadOnlyList<ProjectDetails> projects;
@@ -108,6 +128,19 @@ public sealed class PromptAddendaSweepEngine(
             // notion of who is Owner-role, and never materialize over the last good files
             // (MessageSweepEngine.SweepOnceAsync's own per-project "skip this tick, retry next
             // sweep" pattern, idea 6be68ee2, trust-ledger finding 6).
+            // Gated behind the identical per-project backoff MaterializeAsync's own ListRefsAsync
+            // call already earns on failure (both are a bare `git ls-remote origin <prefix>*`
+            // against the same remote), not merely skipped once and retried next tick: without
+            // this, a project whose remote is unreachable paid for this chain read's own network
+            // round trip and warning every 30-second tick forever, exactly the cost the backoff
+            // field was introduced to remove from ListRefsAsync (independent pre-PR review, cycle
+            // 1, conformance lens, medium).
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            if (IsBackingOffListRefs(project.Id, now))
+            {
+                continue;
+            }
+
             TrustChain trustChain;
             try
             {
@@ -115,11 +148,14 @@ public sealed class PromptAddendaSweepEngine(
             }
             catch (Exception exception)
             {
+                RecordListRefsFailure(project.Id, now);
                 logger.LogWarning(
                     exception, "Prompt-addenda trust chain read failed for project {ProjectId}; push and "
                     + "materialize are both skipped this tick and retried next sweep", project.Id);
                 continue;
             }
+
+            ClearListRefsBackoff(project.Id);
 
             try
             {
@@ -275,12 +311,12 @@ public sealed class PromptAddendaSweepEngine(
                     break;
                 case ProjectPromptAddendumSet set:
                     (committer, signingKey) = await EnsureIdentityAsync(session, project, committer, signingKey, cancellationToken);
-                    await WriteAsync(project.RepositoryPath, set, committer, signingKey, cancellationToken);
+                    await WriteAsync(project.RepositoryPath, set, committer, signingKey, trustChain, cancellationToken);
                     pushed++;
                     break;
                 case ProjectPromptAddendumRemoved removed:
                     (committer, signingKey) = await EnsureIdentityAsync(session, project, committer, signingKey, cancellationToken);
-                    await DeleteAsync(project.RepositoryPath, removed, committer, signingKey, cancellationToken);
+                    await DeleteAsync(project.RepositoryPath, removed, committer, signingKey, trustChain, cancellationToken);
                     pushed++;
                     break;
             }
@@ -322,7 +358,7 @@ public sealed class PromptAddendaSweepEngine(
 
     private async Task WriteAsync(
         string repositoryPath, ProjectPromptAddendumSet set, LedgerCommitter committer, LedgerSigningKey signingKey,
-        CancellationToken cancellationToken)
+        TrustChain trustChain, CancellationToken cancellationToken)
     {
         string refName = LedgerRefRegistry.PromptAddenda.RefspecSource;
         string path = LedgerRefRegistry.PromptAddendumPath(set.BuilderKey);
@@ -331,7 +367,18 @@ public sealed class PromptAddendaSweepEngine(
         for (int attempt = 1; attempt <= MaxConflictRetries; attempt++)
         {
             LedgerFile current = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
-            if (current.Content == content)
+
+            // Content-equal to the tip is only a real no-op when the tip's own newest commit is
+            // itself owner-authorized: PushAsync only ever reaches here once this node's own owner
+            // is confirmed Owner-role, so a tip whose newest commit for this path is NOT authorized
+            // is a member's or an unsigned collaborator's overwrite sitting ahead of the owner's own
+            // state, and MaterializeAsync already walks past it on every node. Skipping the write
+            // here because the bytes happen to match would leave that unauthorized commit as the
+            // permanent tip, so the owner's own re-assertion of the identical content — the
+            // documented lost-node-then-reinstate flow — could otherwise never take effect
+            // (independent pre-PR review, cycle 1, conformance and adversarial lenses, medium).
+            if (current.Content == content
+                && await NewestCommitIsOwnerAuthorizedAsync(repositoryPath, refName, path, trustChain, cancellationToken))
             {
                 return;
             }
@@ -354,7 +401,7 @@ public sealed class PromptAddendaSweepEngine(
 
     private async Task DeleteAsync(
         string repositoryPath, ProjectPromptAddendumRemoved removed, LedgerCommitter committer,
-        LedgerSigningKey signingKey, CancellationToken cancellationToken)
+        LedgerSigningKey signingKey, TrustChain trustChain, CancellationToken cancellationToken)
     {
         string refName = LedgerRefRegistry.PromptAddenda.RefspecSource;
         string path = LedgerRefRegistry.PromptAddendumPath(removed.BuilderKey);
@@ -362,7 +409,17 @@ public sealed class PromptAddendaSweepEngine(
         for (int attempt = 1; attempt <= MaxConflictRetries; attempt++)
         {
             LedgerFile current = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
-            if (!current.Exists)
+
+            // The mirror of WriteAsync's own check: an absent file at the tip is only a real no-op
+            // when the newest commit that touched this path was itself owner-authorized. A member's
+            // or an unsigned collaborator's own delete sitting at the tip is unauthorized, so
+            // MaterializeAsync already walks past it and restores the owner's own last content —
+            // but returning here without ever writing left the owner's own removal silently
+            // swallowed: the sync position still advanced past the event, so it was never retried,
+            // and the member's delete kept reaching every node's agents forever (independent pre-PR
+            // review, cycle 1, conformance and adversarial lenses, medium).
+            if (!current.Exists
+                && await NewestCommitIsOwnerAuthorizedAsync(repositoryPath, refName, path, trustChain, cancellationToken))
             {
                 return;
             }
@@ -425,8 +482,7 @@ public sealed class PromptAddendaSweepEngine(
         (string RepositoryPath, string Home) tipKey = (project.RepositoryPath, home);
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
-        if (_listRefsBackoff.TryGetValue(project.Id, out (DateTimeOffset RetryAfter, TimeSpan Interval) backoff)
-            && now < backoff.RetryAfter)
+        if (IsBackingOffListRefs(project.Id, now))
         {
             return 0;
         }
@@ -438,14 +494,11 @@ public sealed class PromptAddendaSweepEngine(
         }
         catch
         {
-            TimeSpan nextInterval = backoff.Interval == default
-                ? ListRefsBackoffFloor
-                : TimeSpan.FromTicks(Math.Min(backoff.Interval.Ticks * 2, ListRefsBackoffCeiling.Ticks));
-            _listRefsBackoff[project.Id] = (now + nextInterval, nextInterval);
+            RecordListRefsFailure(project.Id, now);
             throw;
         }
 
-        _listRefsBackoff.Remove(project.Id);
+        ClearListRefsBackoff(project.Id);
         string? tip = refs.FirstOrDefault(reference => reference.RefName == refName)?.Sha;
         string ownerRoleKeySet = ComputeOwnerRoleKeySetSignature(trustChain);
 
@@ -544,6 +597,31 @@ public sealed class PromptAddendaSweepEngine(
             .SelectMany(pair => new[] { pair.Value.RootPublicKeyLine }.Concat(pair.Value.Nodes.Select(node => node.PublicKeyLine)))
             .OrderBy(key => key, StringComparer.Ordinal);
         return string.Join('\n', keys);
+    }
+
+    /// <summary>
+    /// Whether the single newest commit touching <paramref name="path"/> at the ref's current tip
+    /// was itself signed by a root key or a currently vouched node key of an Owner-role member — the
+    /// same owner test <see cref="MaterializeAsync"/> walks the whole history for, but here only the
+    /// tip's own newest entry matters: <see cref="WriteAsync"/> and <see cref="DeleteAsync"/> call
+    /// this only to decide whether skipping an already-matching tip is safe, never to decide what
+    /// content to materialize. No commit ever touching the path at all counts as authorized — there
+    /// is nothing at the tip to override.
+    /// </summary>
+    private async Task<bool> NewestCommitIsOwnerAuthorizedAsync(
+        string repositoryPath, string refName, string path, TrustChain trustChain, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<LedgerPathCommit> commits =
+            await commitReader.ReadCommitsTouchingPathAsync(repositoryPath, refName, path, cancellationToken);
+        if (commits.Count == 0)
+        {
+            return true;
+        }
+
+        return await OwnerChainAuthorization.IsAuthorizedByAnyOwnerRoleMemberAsync(
+            trustChain,
+            (key, token) => commitReader.IsSignedByAsync(repositoryPath, commits[0].RawCommitBytes, key, token),
+            cancellationToken);
     }
 
     /// <summary>

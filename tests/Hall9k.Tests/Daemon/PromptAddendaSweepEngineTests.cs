@@ -52,20 +52,16 @@ public sealed class PromptAddendaSweepEngineTests
             "Owner's own guidance.", "the member's own delete is skipped, restoring the owner's content rather than removing it");
     }
 
+    /// <summary>Covers both an unsigned commit (a repository collaborator with push access but no
+    /// ledger key at all) and a revoked node's own commit (one that verifies against a key no longer
+    /// a candidate the owner test tries): the reducer sees only the verdict, never why it was
+    /// refused, so a single <see cref="AuthorizedByOwner"/>-false case proves both — the distinction
+    /// itself lives in <c>OwnerChainAuthorization</c> and is covered there and in the integration
+    /// tests (independent pre-PR review, cycle 1, conformance and adversarial lenses, low).</summary>
     [Fact]
-    public void An_unsigned_commit_authorizes_nothing()
+    public void An_unsigned_or_revoked_nodes_commit_authorizes_nothing()
     {
         PromptAddendumCommitVerdict[] commits = [new("sha-stranger", "A stranger's own text.", AuthorizedByOwner: false)];
-
-        string? materialized = PromptAddendaSweepEngine.SelectMaterializedContent(commits);
-
-        materialized.Should().BeNull();
-    }
-
-    [Fact]
-    public void A_revoked_nodes_commit_authorizes_nothing()
-    {
-        PromptAddendumCommitVerdict[] commits = [new("sha-revoked", "A revoked node's own text.", AuthorizedByOwner: false)];
 
         string? materialized = PromptAddendaSweepEngine.SelectMaterializedContent(commits);
 

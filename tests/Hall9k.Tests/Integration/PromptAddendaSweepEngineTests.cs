@@ -123,7 +123,7 @@ public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixtur
         {
             int exitCode = await ProjectPromptAddendumRemoveCommand.RunAsync(
                 session, new ProjectPromptAddendumRemoveCommand.Settings { Project = ProjectName, Builder = "work" },
-                cts.Token, new FakeLedgerChainReader(DefaultTrustChain()));
+                new FakeLedgerChainReader(DefaultTrustChain()), cts.Token);
             exitCode.Should().Be(ExitCodes.Ok);
         }
 
@@ -162,6 +162,103 @@ public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixtur
             RepositoryPath, LedgerRefRegistry.PromptAddenda.RefspecSource, LedgerRefRegistry.PromptAddendumPath("work"),
             cts.Token);
         stored.Content.Should().Be("newer text");
+    }
+
+    /// <summary>
+    /// Idea 6be68ee2, trust-ledger finding 6: <c>WriteAsync</c>'s own no-op shortcut used to compare
+    /// only against the ledger tip's raw content, so an owner re-asserting byte-identical text after
+    /// the node that had authorized the tip was revoked (idea 6be68ee2's own lost-node-then-reinstate
+    /// flow) saw its push silently swallowed — the unauthorized tip stayed the permanent tip forever,
+    /// even on this same node's own next materialize. The fix is content-equal only counts as a
+    /// no-op when the tip's own newest commit is itself owner-authorized (independent pre-PR review,
+    /// cycle 1, conformance and adversarial lenses, medium).
+    /// </summary>
+    [Fact]
+    public async Task WriteAsync_reissues_an_owner_commit_when_the_tip_content_matches_but_was_never_owner_authorized()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        (NodeContext node, _, _) = await SeedAsync(cts.Token);
+        FakeLedger ledger = new();
+        string path = LedgerRefRegistry.PromptAddendumPath("work");
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                RepositoryPath, LedgerRefRegistry.PromptAddenda.RefspecSource, path, "Identical text.", null,
+                "a member's own overwrite", new LedgerCommitter("member", "member@hall9k.local"),
+                new LedgerSigningKey("/dev/null/member")),
+            cts.Token);
+        int writesBefore = ledger.Writes.Count;
+
+        FakeLedgerCommitReader commitReader = new(
+            new Dictionary<string, IReadOnlyList<LedgerPathCommit>>
+            {
+                [path] = [new LedgerPathCommit("Identical text.", "sha-member", "raw-member-overwrite")],
+            },
+            (raw, key) => false);
+        PromptAddendaSweepEngine engine = new(
+            _postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<PromptAddendaSweepEngine>.Instance,
+            new FakeLedgerChainReader(DefaultTrustChain()), commitReader);
+
+        await SetAsync("work", "Identical text.", overCapReason: null, cts.Token);
+        await engine.SweepOnceAsync(cts.Token);
+
+        ledger.Writes.Count.Should().Be(
+            writesBefore + 1,
+            "the tip's own newest commit was never owner-authorized, so a content match alone must never skip the write");
+    }
+
+    /// <summary>
+    /// The mirror of the write-side case above: <c>DeleteAsync</c>'s own no-op shortcut used to
+    /// compare only against whether the path exists at the tip at all, so a member's own delete
+    /// sitting at the tip made the owner's own subsequent removal a pure no-op — the sync position
+    /// still advanced past the event, so it was never retried, and the member's earlier content kept
+    /// materializing on every node forever, restored by <c>MaterializeAsync</c>'s own owner test
+    /// (independent pre-PR review, cycle 1, conformance and adversarial lenses, medium).
+    /// </summary>
+    [Fact]
+    public async Task DeleteAsync_reissues_an_owner_commit_when_the_path_is_already_absent_but_was_never_owner_authorized()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        (NodeContext node, _, _) = await SeedAsync(cts.Token);
+        FakeLedger ledger = new();
+        PromptAddendaSweepEngine setupEngine = CreateEngine(ledger, node);
+        await SetAsync("work", "Owner's original text.", overCapReason: null, cts.Token);
+        await setupEngine.SweepOnceAsync(cts.Token);
+
+        string path = LedgerRefRegistry.PromptAddendumPath("work");
+        LedgerFile ownersTip = await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.PromptAddenda.RefspecSource, path, cts.Token);
+        await ledger.DeleteAsync(
+            new LedgerDeleteRequest(
+                RepositoryPath, LedgerRefRegistry.PromptAddenda.RefspecSource, path, ownersTip.BlobId,
+                "a member's own delete", new LedgerCommitter("member", "member@hall9k.local"),
+                new LedgerSigningKey("/dev/null/member")),
+            cts.Token);
+        int deletesBefore = ledger.Deletes.Count;
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            int exitCode = await ProjectPromptAddendumRemoveCommand.RunAsync(
+                session, new ProjectPromptAddendumRemoveCommand.Settings { Project = ProjectName, Builder = "work" },
+                new FakeLedgerChainReader(DefaultTrustChain()), cts.Token);
+            exitCode.Should().Be(ExitCodes.Ok);
+        }
+
+        FakeLedgerCommitReader commitReader = new(
+            new Dictionary<string, IReadOnlyList<LedgerPathCommit>>
+            {
+                [path] = [new LedgerPathCommit(null, "sha-member-delete", "raw-member-delete")],
+            },
+            (raw, key) => false);
+        PromptAddendaSweepEngine engine = new(
+            _postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<PromptAddendaSweepEngine>.Instance,
+            new FakeLedgerChainReader(DefaultTrustChain()), commitReader);
+
+        await engine.SweepOnceAsync(cts.Token);
+
+        ledger.Deletes.Count.Should().Be(
+            deletesBefore + 1,
+            "the tip's own newest commit for this path was a member's unauthorized delete, so the path already "
+            + "reading absent must never skip the owner's own removal");
     }
 
     /// <summary>
@@ -393,6 +490,127 @@ public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixtur
         PromptAddendaSweepResult secondSweep = await engine.SweepOnceAsync(cts.Token);
         secondSweep.Materialized.Should().Be(0);
         ledger.ListRefsCalls.Should().Be(1, "the backoff window from the first failure has not elapsed, so this tick must skip the network call rather than retry it immediately");
+    }
+
+    /// <summary>Idea 6be68ee2, trust-ledger finding 6: <c>PushAsync</c> checks this node's own owner
+    /// against the live chain before ever touching its sync position, so a node whose owner has been
+    /// demoted to Member (or was never Owner-role at all) never pushes what it recorded locally — the
+    /// ledger holds one file per builder for the whole project, so a member's own push would be
+    /// refused everywhere it is read back.</summary>
+    [Fact]
+    public async Task PushAsync_skips_when_this_nodes_owner_is_not_owner_role()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        (NodeContext node, _, _) = await SeedAsync(cts.Token);
+        await SetAsync("work", "Guidance a member's own node cannot push.", overCapReason: null, cts.Token);
+
+        FakeLedger ledger = new();
+        TrustChain memberOnlyChain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                [OwnerRootFingerprint] = new TrustedOwner(OwnerRootFingerprint, OwnerRootPublicKeyLine, Nodes: []),
+            },
+            [new ProjectMember(OwnerRootFingerprint, MembershipRole.Member, Now)]);
+        PromptAddendaSweepEngine engine = new(
+            _postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<PromptAddendaSweepEngine>.Instance,
+            new FakeLedgerChainReader(memberOnlyChain), new LedgerBackedCommitReader(ledger));
+
+        PromptAddendaSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
+
+        sweep.Pushed.Should().Be(0, "this node's own owner is not an Owner-role member of the project");
+        LedgerFile stored = await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.PromptAddenda.RefspecSource, LedgerRefRegistry.PromptAddendumPath("work"),
+            cts.Token);
+        stored.Exists.Should().BeFalse("the push gate skips before ever touching the ledger");
+    }
+
+    /// <summary>The tip-gated cache (<c>_lastKnownPromptAddendaTips</c>) is keyed on the owner-role
+    /// key set as well as the tip, precisely so a node revoked between two ticks forces a
+    /// re-materialize even though nothing pushed to the prompt-addenda ref itself moved (idea
+    /// 6be68ee2, trust-ledger finding 6). A regression that dropped the key set from that cache
+    /// tuple would keep serving this stale content forever, since the tip alone never changes here.</summary>
+    [Fact]
+    public async Task MaterializeAsync_rematerializes_when_only_the_owner_role_key_set_changes_and_the_tip_stays_put()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        (NodeContext node, _, string projectHome) = await SeedAsync(cts.Token);
+        FakeLedger ledger = new();
+        await SeedPromptAddendaRefTipAsync(ledger, cts.Token);
+        const string vouchedNodePublicKeyLine = "ssh-ed25519 AAAAFAKEvouchednode test";
+
+        FakeLedgerCommitReader commitReader = new(
+            new Dictionary<string, IReadOnlyList<LedgerPathCommit>>
+            {
+                [LedgerRefRegistry.PromptAddendumPath("work")] =
+                    [new LedgerPathCommit("A vouched node's own guidance.", "sha-vouched", "raw-vouched-commit")],
+            },
+            (raw, key) => raw == "raw-vouched-commit" && key == vouchedNodePublicKeyLine);
+        TrustedNode vouchedNode = new("vouched-node-id", vouchedNodePublicKeyLine, "vouched-fingerprint", Now);
+        MutableChainReader chainReader = new(
+            new TrustChain(
+                new Dictionary<string, TrustedOwner>
+                {
+                    [OwnerRootFingerprint] = new TrustedOwner(OwnerRootFingerprint, OwnerRootPublicKeyLine, Nodes: [vouchedNode]),
+                },
+                [new ProjectMember(OwnerRootFingerprint, MembershipRole.Owner, Now)]));
+        PromptAddendaSweepEngine engine = new(
+            _postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<PromptAddendaSweepEngine>.Instance,
+            chainReader, commitReader);
+
+        await engine.SweepOnceAsync(cts.Token);
+        string materializedFile = ProjectHomePaths.PromptAddendumFile(projectHome, "work");
+        File.ReadAllText(materializedFile).Should().Be("A vouched node's own guidance.");
+
+        // The vouched node is revoked (absent from Nodes) between ticks. Neither the ledger nor the
+        // commit reader changes at all, so the tip this sweep sees is identical to the last one —
+        // only ComputeOwnerRoleKeySetSignature's own change can be what forces the next sweep to
+        // re-walk this path's history.
+        chainReader.Chain = new TrustChain(
+            new Dictionary<string, TrustedOwner>
+            {
+                [OwnerRootFingerprint] = new TrustedOwner(OwnerRootFingerprint, OwnerRootPublicKeyLine, Nodes: []),
+            },
+            [new ProjectMember(OwnerRootFingerprint, MembershipRole.Owner, Now)]);
+
+        await engine.SweepOnceAsync(cts.Token);
+
+        File.Exists(materializedFile).Should().BeFalse(
+            "the revoked node's own commit no longer authorizes anything, and a cache keyed on the tip alone would have kept serving its stale content");
+    }
+
+    /// <summary>A failed trust-chain read is caught per project in <c>SweepOnceAsync</c> and retried
+    /// next sweep — never allowed to wipe or overwrite what the last successful sweep already
+    /// materialized, the identical fail-closed pattern the ledger-tip cache's own doc comment
+    /// describes for a throw partway through <c>MaterializeAsync</c> itself.</summary>
+    [Fact]
+    public async Task A_failed_chain_read_leaves_the_last_good_materialized_files_standing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        (NodeContext node, _, string projectHome) = await SeedAsync(cts.Token);
+        FakeLedger ledger = new();
+        await SeedPromptAddendaRefTipAsync(ledger, cts.Token);
+
+        FakeLedgerCommitReader commitReader = new(
+            new Dictionary<string, IReadOnlyList<LedgerPathCommit>>
+            {
+                [LedgerRefRegistry.PromptAddendumPath("work")] =
+                    [new LedgerPathCommit("Owner's own guidance.", "sha-owner", "raw-owner-commit")],
+            },
+            (raw, key) => raw == "raw-owner-commit" && key == OwnerRootPublicKeyLine);
+        FlakyChainReader chainReader = new(new FakeLedgerChainReader(DefaultTrustChain()));
+        PromptAddendaSweepEngine engine = new(
+            _postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<PromptAddendaSweepEngine>.Instance,
+            chainReader, commitReader);
+
+        await engine.SweepOnceAsync(cts.Token);
+        string materializedFile = ProjectHomePaths.PromptAddendumFile(projectHome, "work");
+        File.ReadAllText(materializedFile).Should().Be("Owner's own guidance.");
+
+        chainReader.FailCompute = true;
+        await engine.SweepOnceAsync(cts.Token);
+
+        File.Exists(materializedFile).Should().BeTrue("a failed trust-chain read must never wipe the last good materialize");
+        File.ReadAllText(materializedFile).Should().Be("Owner's own guidance.");
     }
 
     /// <summary>Idea 6be68ee2, trust-ledger finding 6: the newest commit, signed by the owner's own
@@ -652,6 +870,31 @@ public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixtur
                 new LedgerSigningKey("/dev/null/seed")),
             cancellationToken);
 
+    /// <summary>An <see cref="ILedgerChainReader"/> whose own <see cref="Chain"/> a test can swap
+    /// between two <c>SweepOnceAsync</c> calls on the same engine instance — <see cref="FakeLedgerChainReader"/>
+    /// itself has no settable chain, only a fixed one baked in at construction, which cannot express
+    /// a chain that changes between two ticks against the identical engine and its own cache.</summary>
+    private sealed class MutableChainReader(TrustChain chain) : ILedgerChainReader
+    {
+        public TrustChain Chain { get; set; } = chain;
+
+        public Task<TrustChain> ComputeAsync(string repositoryPath, CancellationToken cancellationToken) =>
+            Task.FromResult(Chain);
+    }
+
+    /// <summary>A thin <see cref="ILedgerChainReader"/> decorator whose <see cref="ComputeAsync"/>
+    /// call can be switched to always throw on demand — the real failure mode an unreachable trust
+    /// chain remote raises, while passing straight through to <paramref name="inner"/> otherwise.</summary>
+    private sealed class FlakyChainReader(ILedgerChainReader inner) : ILedgerChainReader
+    {
+        public bool FailCompute { get; set; }
+
+        public Task<TrustChain> ComputeAsync(string repositoryPath, CancellationToken cancellationToken) =>
+            FailCompute
+                ? throw new InvalidOperationException("simulated unreachable trust-chain read")
+                : inner.ComputeAsync(repositoryPath, cancellationToken);
+    }
+
     /// <summary>An <see cref="ILedgerCommitReader"/> over a <see cref="FakeLedger"/>'s own current
     /// content: since that fake tracks no per-path commit history at all, every path reads as either
     /// no history (the path was never written) or a single "commit" at its current content — enough
@@ -783,8 +1026,8 @@ public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixtur
                 {
                     Project = ProjectName, Builder = builder, File = file, OverCapReason = overCapReason,
                 },
-                cancellationToken,
-                new FakeLedgerChainReader(DefaultTrustChain()));
+                new FakeLedgerChainReader(DefaultTrustChain()),
+                cancellationToken);
             exitCode.Should().Be(ExitCodes.Ok);
         }
         finally
