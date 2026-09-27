@@ -18,7 +18,3 @@ origin-branch: task/2f9bc330-every-hall9k-path-that-reads-p
 published: 2026-09-27 18:17:28Z
 context: |-
   Field report from Windows, 2026-09-27 14:14 EDT (transport note 4fa918ac), after v0.10.57 (#601, task 359e0d7a): on Windows localhost resolves to ::1 first and the container publishes only on IPv4 127.0.0.1, so ::1:5432 refuses. The daemon and h9k project list work (Npgsql falls through to 127.0.0.1), but h9k doctor's gh check says 'the registered projects could not be read' on every run while its Postgres section says healthy. macOS may resolve localhost the same way; check the Mac after its own move.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-09-27 19:53:21Z
