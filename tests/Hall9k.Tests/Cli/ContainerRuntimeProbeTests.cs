@@ -404,6 +404,151 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
     }
 
     [Fact]
+    public async Task Inspect_port_binding_reads_host_ip_label_and_mounted_volumes_together()
+    {
+        RecordingProcessRunner runner = RecordingProcessRunner.Succeeding(
+            "0.0.0.0|/Users/brian/.hall9k/postgres/docker-compose.yml|hall9k-pgdata \n");
+
+        (bool confirmed, string? hostIp, string? label, IReadOnlyList<string> volumes) =
+            await ContainerRuntimeProbe.InspectPortBindingAsync(runner.Runner, CancellationToken.None);
+
+        confirmed.Should().BeTrue();
+        hostIp.Should().Be("0.0.0.0", "a bare \"5432:5432\" line publishes on every interface, reported literally rather than as empty");
+        label.Should().Be("/Users/brian/.hall9k/postgres/docker-compose.yml");
+        volumes.Should().Equal("hall9k-pgdata");
+        runner.Calls.Should().ContainSingle(call =>
+            call.Arguments.Count >= 2 && call.Arguments[0] == "inspect" && call.Arguments[1] == "hall9k-postgres");
+    }
+
+    [Fact]
+    public async Task Inspect_port_binding_maps_dockers_own_blank_host_ip_to_the_literal_every_interface_address()
+    {
+        // Confirmed live against a real container created by a bare "5432:5432" compose line
+        // (this task's own self-review, docker inspect --format '{{json .HostConfig.PortBindings}}'
+        // on a genuinely drifted hall9k-postgres): Docker's own HostConfig.PortBindings reports
+        // HostIp as a literal empty string for that case, not "0.0.0.0" — docker port only shows
+        // "0.0.0.0" and "[::]" as its own interpretation of that blank value. A template that
+        // just prints {{.HostIp}} would render nothing at all here, indistinguishable from the
+        // range producing no iterations (no port 5432 published), which used to make this check
+        // report no drift for exactly the container it exists to catch. The --format argument
+        // itself is pinned here — not just the parsing of a fake response — because the bug was
+        // in the template, and a test that only fakes docker's stdout would never have caught it.
+        RecordingProcessRunner runner = RecordingProcessRunner.Succeeding(string.Empty);
+
+        await ContainerRuntimeProbe.InspectPortBindingAsync(runner.Runner, CancellationToken.None);
+
+        runner.Calls.Should().ContainSingle(call =>
+            call.Arguments.Count >= 4 && call.Arguments[0] == "inspect"
+                && call.Arguments[2] == "--format"
+                && call.Arguments[3].Contains("{{if .HostIp}}{{.HostIp}}{{else}}0.0.0.0{{end}}"));
+    }
+
+    [Fact]
+    public async Task Inspect_port_binding_reports_a_loopback_only_binding_too()
+    {
+        RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("127.0.0.1||hall9k-pgdata \n");
+
+        (bool confirmed, string? hostIp, string? label, IReadOnlyList<string> volumes) =
+            await ContainerRuntimeProbe.InspectPortBindingAsync(runner.Runner, CancellationToken.None);
+
+        confirmed.Should().BeTrue();
+        hostIp.Should().Be("127.0.0.1");
+        label.Should().BeNull("the container carries no compose label — a hand-created container, say");
+        volumes.Should().Equal("hall9k-pgdata");
+    }
+
+    [Fact]
+    public async Task Inspect_port_binding_is_null_host_ip_when_the_container_publishes_no_such_port()
+    {
+        // An empty range produces an empty first field — distinct from Docker's own literal
+        // "0.0.0.0" for a bound-to-every-interface port, and nothing to report drift about.
+        RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("||\n");
+
+        (bool confirmed, string? hostIp, string? label, IReadOnlyList<string> volumes) =
+            await ContainerRuntimeProbe.InspectPortBindingAsync(runner.Runner, CancellationToken.None);
+
+        confirmed.Should().BeTrue();
+        hostIp.Should().BeNull();
+        label.Should().BeNull();
+        volumes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Inspect_port_binding_is_unconfirmed_rather_than_a_claimed_answer_when_docker_inspect_fails()
+    {
+        RecordingProcessRunner runner = RecordingProcessRunner.Failing("Error: No such object: hall9k-postgres");
+
+        (bool confirmed, string? hostIp, string? label, IReadOnlyList<string> volumes) =
+            await ContainerRuntimeProbe.InspectPortBindingAsync(runner.Runner, CancellationToken.None);
+
+        confirmed.Should().BeFalse("docker inspect itself failed — this is not a confirmed loopback binding");
+        hostIp.Should().BeNull();
+        label.Should().BeNull();
+        volumes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Recreate_from_compose_is_a_plain_exit_code_check_against_the_pinned_compose_file()
+    {
+        RecordingProcessRunner runner = RecordingProcessRunner.Succeeding(string.Empty);
+
+        bool recreated = await ContainerRuntimeProbe.RecreateFromComposeAsync(runner.Runner, CancellationToken.None);
+
+        recreated.Should().BeTrue();
+        runner.Calls.Should().ContainSingle(call =>
+            call.Arguments.SequenceEqual(new[] { "compose", "-f", PostgresRuntime.ComposeFile, "up", "-d" }));
+    }
+
+    [Fact]
+    public async Task Recreate_from_compose_is_false_rather_than_throwing_when_docker_hangs()
+    {
+        RecordingProcessRunner runner = RecordingProcessRunner.NeverAnswering();
+
+        bool recreated = await ContainerRuntimeProbe.RecreateFromComposeAsync(runner.Runner, CancellationToken.None);
+
+        recreated.Should().BeFalse();
+    }
+
+    [Fact]
+    public void The_compose_file_publishes_postgres_on_loopback_only()
+    {
+        // Bare "5432:5432" binds Docker to every interface, publishing the container's own
+        // superuser postgres and its public default password to the whole network (security
+        // review idea 6be68ee2, secrets-files-network finding 1).
+        PostgresRuntime.ComposeFileContents.Should().Contain("\"127.0.0.1:5432:5432\"");
+    }
+
+    [Fact]
+    public void The_repositorys_own_compose_file_publishes_postgres_on_loopback_only()
+    {
+        string contents = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "docker-compose.yml"));
+
+        contents.Should().Contain("\"127.0.0.1:5432:5432\"");
+    }
+
+    [Fact]
+    public void The_shipped_constant_and_the_repositorys_own_compose_file_cannot_drift()
+    {
+        // The two files' own leading comments already differ on purpose (one talks about h9k
+        // install republishing it, the other about the Aspire dev loop's separate container) —
+        // stripping each file's own leading comment lines before comparing is what lets this
+        // pin the rest of the file, rather than either giving up on comparing them at all or
+        // demanding identical comments too. This is what stops a change like the loopback-only
+        // port binding above from landing in only one of the two, the way the volume name: pin
+        // once did (this uninstall feature's own pre-PR review).
+        string shipped = NormalizeComposeFileForComparison(PostgresRuntime.ComposeFileContents);
+        string repository = NormalizeComposeFileForComparison(File.ReadAllText(Path.Combine(FindRepositoryRoot(), "docker-compose.yml")));
+
+        shipped.Should().Be(repository);
+    }
+
+    private static string NormalizeComposeFileForComparison(string composeFileContents)
+    {
+        string[] lines = composeFileContents.Replace("\r\n", "\n").Split('\n');
+        return string.Join('\n', lines.SkipWhile(line => line.StartsWith('#')));
+    }
+
+    [Fact]
     public void The_compose_file_pins_the_volume_to_its_literal_name()
     {
         // Without an explicit name:, Compose prefixes an unnamed volume with its own notion of

@@ -72,7 +72,7 @@ public static class PostgresRuntime
               POSTGRES_USER: postgres
               POSTGRES_PASSWORD: hall9k
             ports:
-              - "5432:5432"
+              - "127.0.0.1:5432:5432"
             volumes:
               - {VolumeName}:/var/lib/postgresql
 
