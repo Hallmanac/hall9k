@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
+using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Replication;
@@ -131,7 +132,7 @@ public sealed class TaskHandoffIntegrationTests(PostgresFixture postgres) : ICla
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(3),
-                trustChain: TrustChain.Empty, cts.Token);
+                trustChain: OwnerChainFor(nodeA), cts.Token);
             read.SenderIgnored.Should().BeFalse();
             read.EventsApplied.Should().BeGreaterThan(0);
         }
@@ -219,5 +220,20 @@ public sealed class TaskHandoffIntegrationTests(PostgresFixture postgres) : ICla
                 RepositoryPath, $"refs/hall9k/ledger/nodes/{nodeId}", $"nodes/{nodeId}/node.yaml", content,
                 ExpectedBlobId: null, "seed node file", Committer, SigningKey),
             cancellationToken);
+    }
+
+    /// <summary>A project with one owner root naming <paramref name="ownerNodeId"/> — idea
+    /// 6be68ee2, trust-ledger finding 5's own Task/Run act gate needs a resolvable sender to apply
+    /// a conditional act (TaskHandoffNoted here) past a plain MemberSafe one.</summary>
+    private static TrustChain OwnerChainFor(Guid ownerNodeId)
+    {
+        const string root = "owner-root-fingerprint";
+        string publicKeyLine = $"ssh-ed25519 AAAAFAKE{ownerNodeId:N} test";
+        TrustedOwner owner = new(
+            root, "ssh-ed25519 AAAAFAKEroot test",
+            [new TrustedNode(ownerNodeId.ToString(), publicKeyLine, NodeKeyStore.Fingerprint(publicKeyLine), Now)]);
+        return new TrustChain(
+            new Dictionary<string, TrustedOwner> { [root] = owner },
+            [new ProjectMember(root, MembershipRole.Owner, Now)]);
     }
 }
