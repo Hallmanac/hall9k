@@ -7,6 +7,7 @@ using Hall9k.Connectors.Trust;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Invites;
 using Hall9k.Domain.Features.Invite;
+using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -132,7 +133,9 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         // Node 2's own daemon sweep — same local identity as the minter phase above, so
         // NodeContext resolves back to the identical owner/node this invite was minted under.
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
-        InviteSweepEngine engine = new(_postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+        InviteSweepEngine engine = new(
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
         sweep.InvitesSpent.Should().Be(1, "the joiner's own proof matches the one outstanding invite");
@@ -171,7 +174,9 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
-        InviteSweepEngine engine = new(_postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+        InviteSweepEngine engine = new(
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
 
@@ -206,7 +211,9 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         // in this file, which builds a fresh engine (and so a fresh, empty candidate-tip cache)
         // per sweep.
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
-        InviteSweepEngine engine = new(_postgres.Store, node, flakyLedger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+        InviteSweepEngine engine = new(
+                _postgres.Store, node, flakyLedger, new AlwaysSignedLedgerCommitReader(flakyLedger), new NodeKeyStore(),
+                NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult firstTick = await engine.SweepOnceAsync(cts.Token);
         firstTick.InvitesSpent.Should().Be(0, "the vouch write failed partway through, so this tick could not spend the invite");
@@ -250,7 +257,9 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         await WriteSelfAnnouncedNodeFileAsync(ledger, victimNodeId, attackerKey, ownerFingerprint: root, inviteProof: proof, cts.Token);
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
-        InviteSweepEngine engine = new(_postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+        InviteSweepEngine engine = new(
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
         sweep.InvitesSpent.Should().Be(0, "the sweep refuses to overwrite an already-enrolled node's own file");
@@ -284,7 +293,9 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         FailFirstWriteLedger ledger = new(innerLedger, invitePath);
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
-        InviteSweepEngine engine = new(_postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+        InviteSweepEngine engine = new(
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult firstTick = await engine.SweepOnceAsync(cts.Token);
         firstTick.InvitesSpent.Should().Be(0, "marking the invite spent in the ledger failed, so this tick could not finish");
@@ -360,7 +371,9 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
             cts.Token);
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
-        InviteSweepEngine engine = new(_postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+        InviteSweepEngine engine = new(
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
         sweep.InvitesSpent.Should().Be(
@@ -391,7 +404,9 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         AlwaysFailWriteLedger brokenLedger = new(ledger, vouchPath);
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
-        InviteSweepEngine engine = new(_postgres.Store, node, brokenLedger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+        InviteSweepEngine engine = new(
+                _postgres.Store, node, brokenLedger, new AlwaysSignedLedgerCommitReader(brokenLedger), new NodeKeyStore(),
+                NullLogger<InviteSweepEngine>.Instance);
 
         (await engine.SweepOnceAsync(cts.Token)).InvitesSpent.Should().Be(
             0, "the vouch write itself never lands, however many times it is retried");
@@ -424,7 +439,9 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
         {
             NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
-            InviteSweepEngine engine = new(_postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+            InviteSweepEngine engine = new(
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                NullLogger<InviteSweepEngine>.Instance);
             (await engine.SweepOnceAsync(cts.Token)).InvitesSpent.Should().Be(1);
         }
 
@@ -439,8 +456,10 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
             (await act.Should().ThrowAsync<DomainValidationException>()).WithMessage("*spent*");
         }
 
-        // Ignored at the next sweep: a second candidate with a genuinely matching proof appears,
-        // but the invite is already spent locally, so it is never even considered.
+        // The two-node race (idea 6be68ee2): a second candidate with a genuinely matching proof
+        // appears after the invite is already spent locally — never re-vouched (one winner only),
+        // but no longer silently dropped either. The next sweep still scans this spent-but-unexpired
+        // invite for other matches and tells the loser it lost.
         Guid secondJoinerId = DomainId.New();
         NodeSigningKey secondJoinerKey = await new NodeKeyStore().EnsureAsync(secondJoinerId, cts.Token);
         string secondProof = InviteSecret.ComputeProof(secret, secondJoinerKey.Fingerprint);
@@ -448,11 +467,22 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
         {
             NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
-            InviteSweepEngine engine = new(_postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
-            (await engine.SweepOnceAsync(cts.Token)).InvitesSpent.Should().Be(0, "an already-spent invite is filtered out before any candidate is even read");
+            InviteSweepEngine engine = new(
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                NullLogger<InviteSweepEngine>.Instance);
+            (await engine.SweepOnceAsync(cts.Token)).InvitesSpent.Should().Be(
+                0, "the invite already has its one winner — a second, later-matching candidate is never vouched too");
         }
 
-        ledger.Writes.Should().NotContain(w => w.Path == $"owners/{root}/nodes/{secondJoinerId}.yaml");
+        ledger.Writes.Should().NotContain(w => w.Path == $"owners/{root}/nodes/{secondJoinerId}.yaml", "one vouch only");
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            MessageDetails? lossNotice = await session.Query<MessageDetails>()
+                .Where(message => message.To == MessageAudience.Node(secondJoinerId).Value && message.Kind == MessageKind.Note.Value)
+                .FirstOrDefaultAsync(cts.Token);
+            lossNotice.Should().NotBeNull("the losing node is told, once, that this invite was already spent by another node");
+        }
     }
 
     [Fact]
@@ -504,7 +534,9 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         }
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
-        InviteSweepEngine engine = new(_postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+        InviteSweepEngine engine = new(
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                NullLogger<InviteSweepEngine>.Instance);
         (await engine.SweepOnceAsync(cts.Token)).InvitesSpent.Should().Be(0, "an expired invite is filtered out of the outstanding query before any candidate is read");
     }
 
@@ -605,7 +637,9 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
             "the invited join must leave the members folder exactly as empty as it found it");
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
-        InviteSweepEngine engine = new(_postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+        InviteSweepEngine engine = new(
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
         sweep.InvitesSpent.Should().Be(1, "the joiner's own proof, written by the join above, matches the one outstanding invite");
@@ -704,7 +738,9 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
         // The minting node's own daemon sweep — same local identity as the mint phase above.
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
-        InviteSweepEngine engine = new(_postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+        InviteSweepEngine engine = new(
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
         sweep.InvitesSpent.Should().Be(1, "the joiner's own proof matches the one outstanding member-of-project invite");
@@ -766,7 +802,9 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         FailFirstWriteLedger flakyLedger = new(ledger, spendPath);
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
-        InviteSweepEngine engine = new(_postgres.Store, node, flakyLedger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+        InviteSweepEngine engine = new(
+                _postgres.Store, node, flakyLedger, new AlwaysSignedLedgerCommitReader(flakyLedger), new NodeKeyStore(),
+                NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult firstTick = await engine.SweepOnceAsync(cts.Token);
         firstTick.InvitesSpent.Should().Be(0, "the spend-record write failed after the member vouch had already landed");
@@ -842,7 +880,9 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         AlwaysFailWriteLedger brokenLedger = new(innerLedger, memberPath);
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
-        InviteSweepEngine engine = new(_postgres.Store, node, brokenLedger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+        InviteSweepEngine engine = new(
+                _postgres.Store, node, brokenLedger, new AlwaysSignedLedgerCommitReader(brokenLedger), new NodeKeyStore(),
+                NullLogger<InviteSweepEngine>.Instance);
 
         (await engine.SweepOnceAsync(cts.Token)).InvitesSpent.Should().Be(0, "the member write itself never lands, however many times it is retried");
 
@@ -900,7 +940,9 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         await WriteSelfAnnouncedNodeFileAsync(ledger, joinerNodeId, joinerKey, ownerFingerprint: victimRoot, inviteProof: proof, cts.Token);
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
-        InviteSweepEngine engine = new(_postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+        InviteSweepEngine engine = new(
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
         sweep.InvitesSpent.Should().Be(0, "the sweep refuses to overwrite an existing member's own role file");
@@ -977,6 +1019,31 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
                 RepositoryPath, refName, path, content, ExpectedBlobId: null, "seed self-announced node file",
                 new LedgerCommitter("Test Node", "node@test.local"), new LedgerSigningKey("/does/not/matter/key")),
             cancellationToken);
+    }
+
+    /// <summary>
+    /// An <see cref="ILedgerCommitReader"/> that reads a candidate's current content straight out of
+    /// a <see cref="FakeLedger"/> (or another <see cref="ILedger"/> wrapping one) and always answers
+    /// <see cref="IsSignedByAsync"/> true — the real signature check is <c>GitLedgerCommitReader</c>'s
+    /// own git plumbing, exercised only in the tests that already touch a real repository, per
+    /// Brian's 2026-09-13 testing rule; every test in this file that is not itself testing the
+    /// signature gate (<see cref="InviteSweepEngine"/>'s own class doc, 2026-09-26/27 security
+    /// review) uses this so every self-announced node file it seeds still counts as a candidate.
+    /// </summary>
+    private sealed class AlwaysSignedLedgerCommitReader(ILedger ledger) : ILedgerCommitReader
+    {
+        public async Task<LedgerSignedCommit?> ReadSignedCommitAsync(
+            string repositoryPath, string refName, string path, CancellationToken cancellationToken)
+        {
+            LedgerFile file = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
+            return file.Exists && file.Content is { } content
+                ? new LedgerSignedCommit(content, CommitSha: "fake-sha", RawCommitBytes: "fake-signed-commit")
+                : null;
+        }
+
+        public Task<bool> IsSignedByAsync(
+            string repositoryPath, string rawCommitBytes, string publicKeyLine, CancellationToken cancellationToken) =>
+            Task.FromResult(true);
     }
 
     private async Task WipeAsync() => await _postgres.Store.Advanced.Clean.CompletelyRemoveAllAsync();

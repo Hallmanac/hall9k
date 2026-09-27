@@ -99,4 +99,24 @@ public static class InviteDecider
 
         return new InviteProjectVouched(invite.Id, projectId, vouchedAt, candidateNodeId, candidateKeyFingerprint, candidateOwnerFingerprint);
     }
+
+    public static InviteLossNotified NotifyLoss(InviteAggregate invite, Guid losingNodeId, DateTimeOffset notifiedAt)
+    {
+        if (!invite.Spent)
+        {
+            throw new DomainValidationException($"Invite {invite.Id} is not spent yet — nothing to notify a loser about.");
+        }
+
+        if (losingNodeId == invite.ClaimedByNodeId)
+        {
+            throw new DomainValidationException($"Invite {invite.Id}'s own winner cannot be notified as a loser.");
+        }
+
+        if (invite.NotifiedLosers.Contains(losingNodeId))
+        {
+            throw new DomainValidationException($"Node {losingNodeId} was already notified that invite {invite.Id} was spent.");
+        }
+
+        return new InviteLossNotified(invite.Id, losingNodeId, notifiedAt);
+    }
 }

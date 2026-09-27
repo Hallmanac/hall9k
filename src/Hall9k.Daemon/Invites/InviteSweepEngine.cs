@@ -1,9 +1,12 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
+using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Invite;
+using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
@@ -18,19 +21,34 @@ namespace Hall9k.Daemon.Invites;
 public sealed record InviteSweepResult(int InvitesSpent);
 
 /// <summary>
-/// The minting node's own invite sweep (idea 202383dc, T2): for every invite this node minted and
-/// has not yet marked spent, scans the candidate project(s) it applies to for a node file carrying
-/// a proof, and vouches the first one whose proof actually matches — HMAC(secret, that node's own
-/// key fingerprint) equal to what it wrote into its own <c>invite_proof</c> field. A wrong proof
-/// never matches (there is nothing to recover from being wrong — it simply never equals the real
-/// HMAC), so nothing is vouched for it; a spent or expired invite is filtered out of the
-/// "outstanding" query before any candidate is even read, so neither is ever re-processed. Needs no
-/// <see cref="ILedgerChainReader"/> at all: HMAC possession of the secret is the whole proof, prior
-/// to and independent of any chain trust — the vouch this sweep writes is what BEGINS that trust,
-/// not something checked against it first.
+/// The minting node's own invite sweep (idea 202383dc, T2; re-verified per the 2026-09-26/27
+/// security review, idea 6be68ee2): for every invite this node minted and has not yet expired, scans
+/// the candidate project(s) it applies to for a node file carrying a proof, and vouches the first one
+/// whose proof actually matches — HMAC(secret, that node's own key fingerprint) equal to what it
+/// wrote into its own <c>invite_proof</c> field. A wrong proof never matches (there is nothing to
+/// recover from being wrong — it simply never equals the real HMAC), so nothing is vouched for it,
+/// and the comparison itself runs in constant time (<see cref="CryptographicOperations.FixedTimeEquals"/>)
+/// rather than the ordinary short-circuiting <c>string.Equals</c>. A <c>nodes/&lt;id&gt;</c> ref only
+/// ever counts as a candidate once its own <c>node.yaml</c> is confirmed signed by the
+/// <c>public_key</c> that same file carries — the commit that currently produces it
+/// (<c>ILedgerCommitReader.ReadSignedCommitAsync</c>'s own "commits[0] touching the path" rule, the
+/// identical convention <c>GitLedgerChainReader</c> applies for a declared login) checked with
+/// <c>IsSignedByAsync</c> — never the unsigned, unauthenticated content an ordinary
+/// <see cref="ILedger.ReadAsync"/> would hand back: a repository collaborator with no membership of
+/// their own could otherwise copy a real invitee's own proof into a node file of their own, naming
+/// their own root, and be vouched in on the strength of someone else's possession. An unsigned or
+/// foreign-signed candidate is skipped and logged, never treated as absent — the same "skip, never
+/// abort the scan" posture a malformed field already gets. Once spent, an invite is not dropped from
+/// this sweep's own outstanding set until it expires: it keeps being scanned for any OTHER candidate
+/// whose proof also matches (a second holder of the identical leaked secret, racing the first inside
+/// one sweep interval), and every such loser is told, once, via a node-addressed note — see
+/// <see cref="NotifySpentInviteLosersAsync"/>. Needs no <see cref="ILedgerChainReader"/> at all: HMAC
+/// possession of the secret is the whole proof, prior to and independent of any chain trust — the
+/// vouch this sweep writes is what BEGINS that trust, not something checked against it first.
 /// </summary>
 public sealed class InviteSweepEngine(
-    IDocumentStore store, NodeContext node, ILedger ledger, NodeKeyStore keyStore, ILogger<InviteSweepEngine> logger)
+    IDocumentStore store, NodeContext node, ILedger ledger, ILedgerCommitReader commitReader, NodeKeyStore keyStore,
+    ILogger<InviteSweepEngine> logger)
 {
     private const string NodesRefPrefix = "refs/hall9k/ledger/nodes/";
     private const string MembersRefName = "refs/hall9k/ledger/members";
@@ -50,17 +68,23 @@ public sealed class InviteSweepEngine(
     /// read that fully succeeded rather than one that did not.</summary>
     private readonly Dictionary<(string RepositoryPath, string RefName), (string Sha, CandidateNode? Candidate)> _lastKnownRefs = [];
 
-    private sealed record CandidateNode(Guid NodeId, string KeyFingerprint, string OwnerFingerprint, string PublicKeyLine, string Proof);
+    internal sealed record CandidateNode(Guid NodeId, string KeyFingerprint, string OwnerFingerprint, string PublicKeyLine, string Proof);
 
     public async Task<InviteSweepResult> SweepOnceAsync(CancellationToken cancellationToken)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
+        // No longer filters out Spent: a spent-but-unexpired invite is still scanned every tick, so
+        // a second node whose own genuinely matching proof only appears after the first candidate
+        // already won this invite's one use is told so, rather than seeing nothing and never
+        // learning why (idea 6be68ee2: "a second node that proves a spent secret is told so"). It
+        // drops out on its own once ExpiresAt <= now, the same stopping point every other invite
+        // already has.
         IReadOnlyList<InviteDetails> outstanding;
         await using (IDocumentSession querySession = store.LightweightSession())
         {
             outstanding = await querySession.Query<InviteDetails>()
-                .Where(invite => invite.MinterNodeId == node.NodeId && !invite.Spent && invite.ExpiresAt > now)
+                .Where(invite => invite.MinterNodeId == node.NodeId && invite.ExpiresAt > now)
                 .ToListAsync(cancellationToken);
         }
 
@@ -83,6 +107,12 @@ public sealed class InviteSweepEngine(
         {
             try
             {
+                if (invite.Spent)
+                {
+                    await NotifySpentInviteLosersAsync(invite, projectCandidates, now, cancellationToken);
+                    continue;
+                }
+
                 if (await TryClaimAsync(invite, signingKey, projectCandidates, now, cancellationToken))
                 {
                     spent++;
@@ -95,6 +125,73 @@ public sealed class InviteSweepEngine(
         }
 
         return new InviteSweepResult(spent);
+    }
+
+    /// <summary>
+    /// Rescans a spent-but-unexpired invite's own candidate project(s) for any node OTHER than the
+    /// one that already won it whose proof still genuinely matches (idea 6be68ee2's own race: two
+    /// nodes both write a valid proof inside one sweep interval, one gets vouched, the other must not
+    /// be left silently unanswered) and sends each one a single node-addressed note the first time it
+    /// is seen — deduplicated by this invite's own local, never-replicated
+    /// <see cref="InviteLossNotified"/> record, so a still-outstanding invite never re-notifies the
+    /// same loser on a later tick. Logs one warning per loser at the point the note is queued, for
+    /// the minting node's own operator to see in its log.
+    /// </summary>
+    private async Task NotifySpentInviteLosersAsync(
+        InviteDetails invite, Dictionary<string, IReadOnlyList<CandidateNode>> projectCandidates, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+
+        InviteAggregate? aggregate = await session.Events.AggregateStreamAsync<InviteAggregate>(invite.Id, token: cancellationToken);
+        if (aggregate is null || !aggregate.Spent)
+        {
+            return;
+        }
+
+        IReadOnlyList<ProjectDetails> projects = await TargetProjectsAsync(session, aggregate, cancellationToken);
+        HashSet<Guid> notifiedThisTick = [];
+        foreach (ProjectDetails project in projects)
+        {
+            IReadOnlyList<CandidateNode> candidates = await GetProjectCandidatesAsync(project.RepositoryPath, projectCandidates, cancellationToken);
+            foreach (CandidateNode candidate in candidates)
+            {
+                if (candidate.NodeId == aggregate.ClaimedByNodeId || aggregate.NotifiedLosers.Contains(candidate.NodeId)
+                    || notifiedThisTick.Contains(candidate.NodeId) || !ProofMatches(candidate, aggregate.Secret))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    await MessageOutbox.QueueAsync(
+                        session, node.NodeId, project.Id, aggregate.MinterOwnerFingerprint, MessageAudience.Node(candidate.NodeId),
+                        about: null, MessageKind.Note,
+                        $"Invite {aggregate.Id} was already claimed by another node before your own proof was seen — it is spent.",
+                        now, cancellationToken);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    // Best-effort, the same posture ProjectJoinCommand's own invite nudge takes:
+                    // MessageOutbox.QueueAsync's own SaveChangesAsync can fail in ways this call site
+                    // cannot enumerate, and a failure here simply leaves this loser un-notified for
+                    // this tick, retried on the next one since InviteLossNotified below is only ever
+                    // appended once the queue actually landed.
+                    logger.LogWarning(
+                        exception, "Could not queue the spent-invite notice for node {NodeId} on invite {InviteId}; will retry next sweep",
+                        candidate.NodeId, aggregate.Id);
+                    continue;
+                }
+
+                session.Events.Append(aggregate.Id, InviteDecider.NotifyLoss(aggregate, candidate.NodeId, now));
+                await session.SaveChangesAsync(cancellationToken);
+                notifiedThisTick.Add(candidate.NodeId);
+
+                logger.LogWarning(
+                    "Invite {InviteId} was matched by node {NodeId} in project {ProjectId} after it was already spent by node {WinnerNodeId}.",
+                    aggregate.Id, candidate.NodeId, project.Id, aggregate.ClaimedByNodeId);
+            }
+        }
     }
 
     /// <summary>
@@ -368,18 +465,22 @@ public sealed class InviteSweepEngine(
     }
 
     /// <summary>
-    /// Every node ref in <paramref name="repositoryPath"/> that actually carries a usable candidate
-    /// — a well-formed <c>invite_proof</c>, <c>public_key</c>, and <c>owner_fingerprint</c> — scanned
-    /// at most once per sweep tick regardless of how many outstanding invites target this project
-    /// (the cache in <see cref="SweepOnceAsync"/>), and skipping the file fetch for any node ref
-    /// whose tip <see cref="_lastKnownRefs"/> already saw unchanged, reusing that ref's own
-    /// previously-resolved candidate (or lack of one) instead: that ref's content, and so whatever
-    /// proof it does or does not carry, cannot have changed either (independent pre-PR review,
-    /// cycle 1, conformance and adversarial lenses, both medium). Reusing the cached candidate
-    /// rather than treating an unmoved tip as "nothing here" is what keeps a candidate whose earlier
-    /// vouch/spend write failed partway through still offered to every later tick — its node ref's
-    /// tip never moves again after the join, so a naive skip would otherwise drop it forever
-    /// (independent pre-PR review, cycle 2, adversarial lens, high).
+    /// Every node ref in <paramref name="repositoryPath"/> that actually carries a usable, SIGNED
+    /// candidate — a well-formed <c>invite_proof</c>, <c>public_key</c>, and <c>owner_fingerprint</c>,
+    /// AND the commit that currently produces that <c>node.yaml</c> signed by the <c>public_key</c>
+    /// that same file carries (<see cref="TryResolveCandidateAsync"/>) — scanned at most once per
+    /// sweep tick regardless of how many outstanding invites target this project (the cache in
+    /// <see cref="SweepOnceAsync"/>), and skipping the file fetch for any node ref whose tip
+    /// <see cref="_lastKnownRefs"/> already saw unchanged, reusing that ref's own previously-resolved
+    /// candidate (or lack of one) instead: that ref's content, and so whatever proof it does or does
+    /// not carry, cannot have changed either (independent pre-PR review, cycle 1, conformance and
+    /// adversarial lenses, both medium). Reusing the cached candidate rather than treating an unmoved
+    /// tip as "nothing here" is what keeps a candidate whose earlier vouch/spend write failed partway
+    /// through still offered to every later tick — its node ref's tip never moves again after the
+    /// join, so a naive skip would otherwise drop it forever (independent pre-PR review, cycle 2,
+    /// adversarial lens, high). An unsigned or foreign-signed candidate caches exactly like a
+    /// malformed field does — <c>null</c>, keyed by the unmoved tip — so it is never re-verified on
+    /// every later tick for as long as that ref's own content stays exactly what it was.
     /// </summary>
     private async Task<IReadOnlyList<CandidateNode>> GetProjectCandidatesAsync(
         string repositoryPath, Dictionary<string, IReadOnlyList<CandidateNode>> cache, CancellationToken cancellationToken)
@@ -410,48 +511,83 @@ public sealed class InviteSweepEngine(
             }
 
             string path = $"nodes/{candidateNodeId}/node.yaml";
-            LedgerFile file = await ledger.ReadAsync(repositoryPath, nodeRef.RefName, path, cancellationToken);
-            if (!file.Exists || file.Content is not { } content)
-            {
-                _lastKnownRefs[tipKey] = (nodeRef.Sha, null);
-                continue;
-            }
-
-            string? proof = ExtractQuotedYamlValue(content, "invite_proof");
-            string? publicKeyLine = ExtractQuotedYamlValue(content, "public_key");
-            string? ownerFingerprint = ExtractQuotedYamlValue(content, "owner_fingerprint");
-            if (proof.IsBlank() || publicKeyLine.IsBlank() || ownerFingerprint.IsBlank())
-            {
-                _lastKnownRefs[tipKey] = (nodeRef.Sha, null);
-                continue;
-            }
-
-            // Both guards turn an untrusted, ledger-sourced field into "not a candidate" rather
-            // than a thrown exception or a blindly-trusted value: a malformed public key line must
-            // never abort the scan for every other node ref behind it (independent pre-PR review,
-            // cycle 1, conformance lens, medium — anyone with push on the repository can otherwise
-            // poison every sweep of this invite until it expires), and a malformed owner fingerprint
-            // must never be handed to a ledger path unvalidated (adversarial lens, high).
-            if (!TryFingerprint(publicKeyLine, out string candidateFingerprint) || !NodeKeyStore.IsFingerprint(ownerFingerprint))
-            {
-                _lastKnownRefs[tipKey] = (nodeRef.Sha, null);
-                continue;
-            }
-
-            CandidateNode candidate = new(candidateNodeId, candidateFingerprint, ownerFingerprint, publicKeyLine, proof);
+            CandidateNode? candidate = await TryResolveCandidateAsync(
+                commitReader, repositoryPath, nodeRef.RefName, path, candidateNodeId, logger, cancellationToken);
             _lastKnownRefs[tipKey] = (nodeRef.Sha, candidate);
-            candidates.Add(candidate);
+            if (candidate is not null)
+            {
+                candidates.Add(candidate);
+            }
         }
 
         cache[repositoryPath] = candidates;
         return candidates;
     }
 
+    /// <summary>
+    /// One node ref's own candidate resolution, pulled out of <see cref="GetProjectCandidatesAsync"/>
+    /// as a self-contained, <see cref="IDocumentStore"/>-free static so a pure unit test can drive it
+    /// directly against a <c>FakeLedgerCommitReader</c> (Brian's 2026-09-13 testing rule) — the
+    /// adversarial shape this exists to catch: a repository collaborator with no membership of their
+    /// own copies a real invitee's own proof into a node file naming their own <c>public_key</c>
+    /// (never the victim's, which only the victim's own private key can sign a commit for) and their
+    /// own root, hoping the sweep vouches it purely on the strength of the copied HMAC. <c>null</c>
+    /// for a path that does not exist, a field that does not parse, or — the gate this task adds — a
+    /// commit that is not signed by the exact <c>public_key</c> the file itself carries; every case
+    /// logs a warning except plain absence, which is the everyday steady state for a node ref that
+    /// simply has not announced itself yet.
+    /// </summary>
+    internal static async Task<CandidateNode?> TryResolveCandidateAsync(
+        ILedgerCommitReader commitReader, string repositoryPath, string refName, string path, Guid candidateNodeId,
+        ILogger logger, CancellationToken cancellationToken)
+    {
+        LedgerSignedCommit? signedCommit = await commitReader.ReadSignedCommitAsync(repositoryPath, refName, path, cancellationToken);
+        if (signedCommit is null)
+        {
+            return null;
+        }
+
+        string content = signedCommit.Content;
+        string? proof = ExtractQuotedYamlValue(content, "invite_proof");
+        string? publicKeyLine = ExtractQuotedYamlValue(content, "public_key");
+        string? ownerFingerprint = ExtractQuotedYamlValue(content, "owner_fingerprint");
+        if (proof.IsBlank() || publicKeyLine.IsBlank() || ownerFingerprint.IsBlank())
+        {
+            return null;
+        }
+
+        // Both guards turn an untrusted, ledger-sourced field into "not a candidate" rather
+        // than a thrown exception or a blindly-trusted value: a malformed public key line must
+        // never abort the scan for every other node ref behind it (independent pre-PR review,
+        // cycle 1, conformance lens, medium — anyone with push on the repository can otherwise
+        // poison every sweep of this invite until it expires), and a malformed owner fingerprint
+        // must never be handed to a ledger path unvalidated (adversarial lens, high).
+        if (!TryFingerprint(publicKeyLine, out string candidateFingerprint) || !NodeKeyStore.IsFingerprint(ownerFingerprint))
+        {
+            return null;
+        }
+
+        // The signature gate itself (2026-09-26/27 security review, idea 6be68ee2, finding 3): the
+        // commit that currently produces this exact node.yaml must be signed by the public_key that
+        // same file carries — never merely by whoever pushed it. A candidate whose own public_key is
+        // the victim's (to make the copied proof match) but whose commit is signed by the attacker's
+        // own key fails this, since only the victim's own private key could ever sign a commit
+        // allowed-signers-checked against the victim's own public_key line.
+        if (!await commitReader.IsSignedByAsync(repositoryPath, signedCommit.RawCommitBytes, publicKeyLine, cancellationToken))
+        {
+            logger.LogWarning(
+                "Invite sweep candidate {RefName} skipped: {Path} is not signed by its own public_key.", refName, path);
+            return null;
+        }
+
+        return new CandidateNode(candidateNodeId, candidateFingerprint, ownerFingerprint, publicKeyLine, proof);
+    }
+
     private static CandidateNode? FindMatch(IReadOnlyList<CandidateNode> candidates, string secret)
     {
         foreach (CandidateNode candidate in candidates)
         {
-            if (string.Equals(candidate.Proof, InviteSecret.ComputeProof(secret, candidate.KeyFingerprint), StringComparison.Ordinal))
+            if (ProofMatches(candidate, secret))
             {
                 return candidate;
             }
@@ -459,6 +595,15 @@ public sealed class InviteSweepEngine(
 
         return null;
     }
+
+    /// <summary>Whether <paramref name="candidate"/>'s own <c>invite_proof</c> field is the real
+    /// HMAC for <paramref name="secret"/> and this candidate's own key fingerprint — compared in
+    /// constant time (<see cref="CryptographicOperations.FixedTimeEquals"/>) rather than the ordinary
+    /// short-circuiting <c>string.Equals</c>, since <see cref="CandidateNode.Proof"/> is untrusted,
+    /// ledger-sourced content an adversary controls byte-for-byte.</summary>
+    internal static bool ProofMatches(CandidateNode candidate, string secret) =>
+        CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(candidate.Proof), Encoding.UTF8.GetBytes(InviteSecret.ComputeProof(secret, candidate.KeyFingerprint)));
 
     /// <summary>
     /// Decides whether this invite may claim

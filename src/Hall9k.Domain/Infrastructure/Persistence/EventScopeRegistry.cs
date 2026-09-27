@@ -381,6 +381,11 @@ public static class EventScopeRegistry
         // lens, high), never replicated for the same reason as the other two.
         [typeof(InviteProjectVouched)] = EventScope.NodeScoped,
 
+        // The sweep's own record of which losing nodes it already sent a spent-invite notice to
+        // (idea 6be68ee2) — this node's sole dedup signal, never replicated for the same reason as
+        // the rest of this stream.
+        [typeof(InviteLossNotified)] = EventScope.NodeScoped,
+
         // Hall9k.Domain.Features.Connection — a node's own registered credential; never
         // replicated (Guid tokens and gh CLI logins are inherently local to the machine).
         [typeof(ConnectionRegistered)] = EventScope.NodeScoped,
