@@ -868,10 +868,10 @@ The same config file also carries `interactiveClaimStaleAfterDays` (backlog 59, 
 `h9k status` nudges about it, three days by default. It has no environment-variable tier and no
 daemon-startup binding — there is no daemon-side reclaim to configure, ever, so `h9k status`
 resolves it fresh from the config file on every render rather than off a process that started
-once. Four more keys are file-only in the same way: `inviteExpiryHours` and the two
+once. Five more keys are file-only in the same way: `inviteExpiryHours` and the two
 `lessonPromptMax...` caps, which the CLI reads fresh when it mints an invite or composes a prompt,
-and `orchestratorModel`, which the CLI reads when it renders the orchestrator recipe. The
-[table of keys](#every-key-in-the-hall9k-section) below says which is which.
+and `orchestratorModel` and `orchestratorEffort`, which the CLI reads when it renders the
+orchestrator recipe. The [table of keys](#every-key-in-the-hall9k-section) below says which is which.
 
 ```bash
 h9k config show                                             # every setting, and where it came from
@@ -880,6 +880,7 @@ h9k config set --session-cap-per-run 1                      # the per-run sessio
 h9k task set-session-cap 28b19893 1                         # override the cap for one task, even mid-run
 h9k config set --default-model "claude-opus-5[1m]"          # the bottom of the agent-model chain; 'default' clears it
 h9k config set --orchestrator-model sonnet                  # the model the orchestrator window runs on; 'default' clears it
+h9k config set --orchestrator-effort high                   # the effort the orchestrator window runs at; 'default' clears it
 h9k config set --effort high                                # the node-wide effort level dispatched sessions run at; 'default' clears it
 h9k config set --effort-build xhigh --effort-review high    # per-role effort, above the node-wide level; 'default' clears one
 h9k config set --effort-review-verify medium                # Verify-shape passes only; defaults to --effort-review
@@ -994,6 +995,7 @@ the file alone.
 | `sessionCapPerRun` | `--session-cap-per-run` | `Hall9k__SessionCapPerRun` | 3 |
 | `defaultModel` | `--default-model` | `Hall9k__DefaultModel` | `claude-opus-5[1m]` |
 | `orchestratorModel` | `--orchestrator-model` | none | falls back to `defaultModel`, then `claude-opus-5[1m]` |
+| `orchestratorEffort` | `--orchestrator-effort` (`default` clears it) | none | unset, so the model's own default decides (no fallback to `effort` or any dispatch effort) |
 | `effort` | `--effort` (`default` clears it) | `Hall9k__Effort` | unset, so each model's own default decides |
 | `effortByRole.build`, `.review`, `.fix`, `.synthesis`, `.refinement`, `.publication`, `.courier` | `--effort-build`, `--effort-review`, `--effort-fix`, `--effort-synthesis`, `--effort-refinement`, `--effort-publication`, `--effort-courier` (`default` clears one) | `Hall9k__EffortByRole__Build`, `__Review`, `__Fix`, `__Synthesis`, `__Refinement`, `__Publication`, `__Courier` | blank |
 | `effortByRole.reviewVerify`, `.reviewFinalFullPass` | `--effort-review-verify`, `--effort-review-finalpass` | `Hall9k__EffortByRole__ReviewVerify`, `__ReviewFinalFullPass` | blank, falling through to `effortByRole.review` |
@@ -1077,14 +1079,30 @@ window. And a project's `--model` outranks the node's `--orchestrator-model` for
 window, so give a project its own `--orchestrator-model` when you want its window pinned. `default`
 clears either override.
 
-`h9k config show` prints the node's resolved orchestrator model and where it came from, and
-`h9k project show` prints a project's, naming whether the project's own override, the project's
-`--model`, or the node's resolution decided. The file is re-rendered whenever the answer could have
-changed: by `h9k install` and `h9k update` for the node's own `recipes/settings.json`; by
-`h9k config set` when it is given `--default-model` or `--orchestrator-model`; by `h9k project add`
-and `h9k project init` for a project's; and by `h9k project set` when it is given `--model` or
-`--orchestrator-model`. A project window that follows the node is caught up at its next
-`h9k project init`, since `h9k config set` re-renders the node's file alone.
+**The window's reasoning effort is the identical idea, one lever shorter.** It resolves as the
+project's `--orchestrator-effort` (`h9k project set <name> --orchestrator-effort <level>`), then the
+node's `--orchestrator-effort` (`h9k config set --orchestrator-effort <level>`), then the model's own
+default — nothing else. There is no "project's `--effort`" rung and no `--effort`/per-role fallback
+the way the model chain has a `--model` one: every dispatch effort (a task's own, a project's
+`--effort`, the node's per-role values, and the node-wide `--effort`) is deliberately absent from
+this chain, so a node running a high `--effort` for its dispatched sessions never finds its own
+window silently raised the first time this file re-renders. The model chain's own project `--model`
+rung exists only because every window ran on the agent-dispatch model before `--orchestrator-model`
+existed; this effort setting carries no such history to preserve, so it has no equivalent step.
+Unset at every level, `recipes/settings.json` carries no `effortLevel` key at all, exactly as it
+always has. `default` clears an override at whichever level it was set.
+
+`h9k config show` prints the node's resolved orchestrator model and effort and where each came
+from, and `h9k project show` prints a project's, naming whether the project's own override, the
+project's `--model` (for the model only — effort has no such rung), or the node's resolution
+decided. The file is re-rendered whenever the answer could have changed: by `h9k install` and
+`h9k update` for the node's own `recipes/settings.json`; by `h9k config set` when it is given
+`--default-model`, `--orchestrator-model`, or `--orchestrator-effort`; by `h9k project add` and
+`h9k project init` for a project's; and by `h9k project set` when it is given `--model`,
+`--orchestrator-model`, or `--orchestrator-effort`. A project window that follows the node is
+caught up at its next `h9k project init`, since `h9k config set` re-renders the node's file alone.
+A scoped session launched with `--settings recipes/settings.json` inherits this effort unless its
+own launch line passes `--effort`.
 
 ### Per project and per owner
 
@@ -1101,6 +1119,7 @@ h9k project set myproject --verify "build=dotnet build" --verify "test=dotnet te
 h9k project set myproject --verify-gate-filter "test=Category=RequiresDocker"
 h9k project set myproject --model claude-opus-5
 h9k project set myproject --orchestrator-model sonnet       # the model this project's orchestrator window runs on; 'default' clears it
+h9k project set myproject --orchestrator-effort high        # the effort this project's orchestrator window runs at; 'default' clears it
 h9k project set myproject --commit-style narrative
 h9k project set myproject --max-parallel-tasks 2
 h9k project set myproject --priority high
