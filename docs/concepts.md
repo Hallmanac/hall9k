@@ -1403,11 +1403,15 @@ to. `h9k project invite <project> [--role owner|member]` is for another person: 
 project, refused unless your root is an owner there, and the new member's role is `member` unless
 you say otherwise. Both expire after 72 hours by default (`h9k config set --invite-expiry-hours`)
 and both are single use. The person on the other end runs `h9k project join <project> --invite
-<secret>`, which writes an HMAC of the secret and their own key fingerprint into their own node file
-as proof that they hold the secret, and then nobody has to do anything else: the daemon on the node
-that minted the invite notices the proof on its next invite sweep (every twenty seconds by default),
-vouches the node in or adds the member, and marks the invite spent. A newcomer who registers a
-project somebody else already owns does not need to know any of this up front. `h9k project add`
+<secret>` (or `--invite -` to read the secret from stdin instead of passing it on the command
+line, keeping it out of shell history), which writes an HMAC of the secret and their own key
+fingerprint into their own node file as proof that they hold the secret, and then nobody has to do
+anything else: the daemon on the node that minted the invite notices the proof on its next invite
+sweep (every twenty seconds by default), checks that the node file's own commit is signed by the
+very key it carries, vouches the node in or adds the member, and marks the invite spent. A second
+node that later proves the same, now-spent secret is told it is spent rather than left silent. A
+newcomer who registers a project somebody else already owns does not need to know any of this up
+front. `h9k project add`
 registers it locally, writes nothing to the remote, names the owner, and asks for an invite,
 straight away in a terminal or by printing the exact command to run once you have one.
 
