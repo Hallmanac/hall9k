@@ -6,6 +6,10 @@ using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Replication;
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
@@ -237,6 +241,12 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // (ProjectStreamReplicationRules.IsProjectAggregateStreamEvent's own doc: each merges onto
         // it), so this only ever holds projectId.
         HashSet<Guid> gatedDropStreamIdsThisRead = [];
+        // Every task id a Task/Run act's own conditional gate held for this read, waiting on a
+        // fact (its own assignment or holder, or, for a Run act, its task at all) that has not
+        // replicated here yet (idea 6be68ee2, trust-ledger finding 5) — asked for below, after this
+        // read's own save, the identical deferred-ask shape TaskDependencyCatchUp's own doc already
+        // uses for a missing dependency stream.
+        HashSet<Guid> taskActCatchUpAskTaskIdsThisRead = [];
         foreach (TransportEnvelope raw in read.Envelopes.OrderBy(envelope => envelope.Seq))
         {
             highestSeqConsidered = raw.Seq;
@@ -385,7 +395,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                     session, record, senderNodeId, projectId, envelope.ProjectKey, streamsStartedThisRead,
                     streamsThatFailedToStartThisRead, originEventIdsAppliedThisRead, originProgressThisRead,
                     originHighWaterByStream, streamsAwaitingHeldTailReplayThisRead, gatedDropOriginNodeIdsThisRead,
-                    gatedDropStreamIdsThisRead, trustChain, senderFingerprint, now, cancellationToken);
+                    gatedDropStreamIdsThisRead, taskActCatchUpAskTaskIdsThisRead, trustChain, senderFingerprint, now,
+                    cancellationToken);
             }
 
             // task 252bc5cf: tallied per envelope, after its own batch has applied, and only for an
@@ -411,7 +422,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 session, streamId, streamsStartedThisRead, streamsThatFailedToStartThisRead,
                 originEventIdsAppliedThisRead, originProgressThisRead, originHighWaterByStream,
                 streamsAwaitingHeldTailReplayThisRead, gatedDropOriginNodeIdsThisRead, gatedDropStreamIdsThisRead,
-                trustChain, now, cancellationToken);
+                taskActCatchUpAskTaskIdsThisRead, trustChain, now, cancellationToken);
         }
 
         highestSeqConsidered = Math.Max(highestSeqConsidered, read.HighestSeqInspected);
@@ -567,10 +578,38 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                     "Task {TaskId} landed naming dependency {DependencyStreamId}, whose stream is not held here — "
                     + "an events-request for it is queued", ask.NamedByTaskId, ask.StreamId);
             }
+
+            // idea 6be68ee2, trust-ledger finding 5: a held Task/Run act's own missing fact may have
+            // just landed above, whoever sent it — re-checked after every read that applies anything
+            // for this project, never only after the read whose own sender's act first held it.
+            applied += await ReCheckHeldTaskActsAsync(session, projectId, trustChain, now, cancellationToken);
+        }
+
+        // Every task a Task/Run act's own gate held for the first time this read gets one broadcast
+        // stream ask for its own task stream, the identical deferred-ask shape
+        // TaskDependencyCatchUp's own doc already uses, and for the identical reason run here rather
+        // than inside ApplyAsync: an ask queued mid-read would commit alongside a write that has
+        // nothing to do with it.
+        if (taskActCatchUpAskTaskIdsThisRead.Count > 0)
+        {
+            EventCatchUpCoordinator coordinator = new();
+            foreach (Guid taskId in taskActCatchUpAskTaskIdsThisRead)
+            {
+                await coordinator.RequestStreamBroadcastAsync(
+                    session, projectId, taskId, myNodeId, myOwnerFingerprint, now, cancellationToken,
+                    again: false, reMintCooldown: TaskActHoldCatchUpCooldown);
+            }
         }
 
         return new EventReplicationReadResult(SenderIgnored: senderIgnored, applied, read.StalledAtSeq ?? read.PrunedBelowSeq);
     }
+
+    /// <summary>How long a Task/Run act's own held-stream ask holds off a fresh one for the
+    /// identical task — the same re-mint shape <see cref="TaskDependencyCatchUp.ReMintCooldown"/>
+    /// exists for, scaled down: a hold expires after 24 hours (<see cref="MaxTaskActHoldAge"/>), so
+    /// an ask that only re-mints every 6 hours would have asked at most three times before the
+    /// whole queue is dropped.</summary>
+    private static readonly TimeSpan TaskActHoldCatchUpCooldown = TimeSpan.FromHours(1);
 
     /// <summary>
     /// Folds this read's own answering envelopes into the reconcile records they belong to (task
@@ -681,8 +720,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         HashSet<Guid> originEventIdsAppliedThisRead, Dictionary<Guid, long> originProgressThisRead,
         Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream,
         HashSet<Guid> streamsAwaitingHeldTailReplayThisRead, HashSet<Guid> gatedDropOriginNodeIdsThisRead,
-        HashSet<Guid> gatedDropStreamIdsThisRead, TrustChain trustChain, string? senderFingerprint,
-        DateTimeOffset now, CancellationToken cancellationToken)
+        HashSet<Guid> gatedDropStreamIdsThisRead, HashSet<Guid> taskActCatchUpAskTaskIdsThisRead,
+        TrustChain trustChain, string? senderFingerprint, DateTimeOffset now, CancellationToken cancellationToken)
     {
         if (!originEventIdsAppliedThisRead.Add(record.OriginEventId))
         {
@@ -835,6 +874,76 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
 
         bool streamExists = streamsStartedThisRead.Contains(effectiveStreamId)
             || await session.Events.FetchStreamStateAsync(effectiveStreamId, cancellationToken) is not null;
+
+        // idea 6be68ee2, trust-ledger finding 5: a Task or Run "act" — one of
+        // TaskActClassificationRegistry's own entries — applies from a non-owner sender only when
+        // the task it targets is currently that sender's own to act on. Runs only once this
+        // record's own effective stream already exists: when it does not, the task's (or the run's
+        // own task's) genesis has simply never arrived, and the missing-genesis hold just below
+        // already defers everything, sender fingerprint included, until the genesis lands and this
+        // gate runs fresh at replay (never reached, or judged, while the stream is still missing).
+        if (streamExists && TaskActClassificationRegistry.TryClassificationOf(eventType) is { } classification)
+        {
+            // Every later record from this exact origin targeting this exact stream is held behind
+            // an earlier one this origin already has waiting here, whatever its OWN classification
+            // says — appending it first would let its own append set this stream's per-origin
+            // high-water mark past the held record's own sequence, and the guard below would then
+            // refuse the held record as out of order the moment it finally clears
+            // (OriginHighWaterAsync's own doc).
+            HeldTaskActRecord? earlierHeldForThisOrigin = await session.Query<HeldTaskActRecord>()
+                .Where(held => held.ProjectId == projectId && held.StreamId == effectiveStreamId
+                    && held.OriginNodeId == record.OriginNodeId && held.OriginSequence < record.OriginSequence)
+                .OrderBy(held => held.OriginSequence)
+                .FirstOrDefaultAsync(cancellationToken);
+            if (earlierHeldForThisOrigin is not null)
+            {
+                await HoldTaskActAsync(
+                    session, record, effectiveStreamId, earlierHeldForThisOrigin.TaskId, senderNodeId, senderFingerprint,
+                    originProjectKey, now, taskActCatchUpAskTaskIdsThisRead: null, cancellationToken);
+                return 0;
+            }
+
+            TaskActTargetResolution target =
+                await ResolveTaskActTargetAsync(session, eventType, effectiveStreamId, cancellationToken);
+            TaskActVerdict verdict = EvaluateTaskActVerdict(
+                classification, eventType, data, target.Task, ResolveSender(trustChain, senderFingerprint, senderNodeId),
+                record.OriginNodeId, senderNodeId);
+
+            switch (verdict)
+            {
+                case TaskActVerdict.Allowed:
+                    break;
+
+                case TaskActVerdict.Held:
+                    logger?.LogWarning(
+                        "Replicated task/run act {EventType} (origin {OriginEventId}) from sender {SenderNodeId} "
+                        + "(fingerprint {SenderFingerprint}) targets task {TaskId}, whose current assignment or "
+                        + "holder is not yet known here — held until it clears or 24 hours pass",
+                        record.EventTypeName, record.OriginEventId, senderNodeId, senderFingerprint ?? "(none)",
+                        target.TaskId);
+                    await HoldTaskActAsync(
+                        session, record, effectiveStreamId, target.TaskId, senderNodeId, senderFingerprint,
+                        originProjectKey, now, taskActCatchUpAskTaskIdsThisRead, cancellationToken);
+                    return 0;
+
+                case TaskActVerdict.DroppedAndRefusedPermanently:
+                    LogTaskActDropped(record, senderNodeId, senderFingerprint, target.TaskId, permanent: true);
+                    session.Store(new ReplicatedEventRecord
+                    {
+                        Id = record.OriginEventId,
+                        StreamId = effectiveStreamId,
+                        ProjectId = projectId,
+                        AppliedAt = now,
+                        Applied = false,
+                    });
+                    await session.SaveChangesAsync(cancellationToken);
+                    return 0;
+
+                case TaskActVerdict.DroppedWithoutRecording:
+                    LogTaskActDropped(record, senderNodeId, senderFingerprint, target.TaskId, permanent: false);
+                    return 0;
+            }
+        }
 
         // A record for a stream this read already tried, and failed, to START
         // (streamsThatFailedToStartThisRead's own doc), or one a PAST read already tried and
@@ -1210,13 +1319,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             return GatedEventVerdict.Allowed;
         }
 
-        string senderNodeIdText = senderNodeId.ToString();
-        bool allowed = senderFingerprint is not null
-            && trustChain.Members
-                .Where(member => member.Role == MembershipRole.Owner)
-                .Any(member => trustChain.OwnerChains.TryGetValue(member.RootFingerprint, out TrustedOwner? owner)
-                    && owner.ContainsForNode(senderFingerprint, senderNodeIdText));
-        if (allowed)
+        SenderResolution? sender = ResolveSender(trustChain, senderFingerprint, senderNodeId);
+        if (sender is { Role: MembershipRole.Owner })
         {
             return GatedEventVerdict.Allowed;
         }
@@ -1332,6 +1436,512 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     }
 
     /// <summary>
+    /// A verified sender fingerprint (idea 6be68ee2, trust-ledger findings 1, 5, and 6), resolved
+    /// once against the whole project trust chain — <see cref="RootFingerprint"/> and
+    /// <see cref="Role"/> are the sender's own root's; <see cref="FleetNodeIds"/> is that root's
+    /// whole fleet, needed to judge a task's own advisory node placement
+    /// (<see cref="EvaluateTaskActVerdict"/>'s own <see cref="TaskAssigned"/> case).
+    /// </summary>
+    internal sealed record SenderResolution(string RootFingerprint, MembershipRole Role, IReadOnlySet<Guid> FleetNodeIds);
+
+    /// <summary>
+    /// The one place a sender's verified key fingerprint is resolved against
+    /// <paramref name="trustChain"/>'s own current project membership (idea 6be68ee2, trust-ledger
+    /// finding 5 — extending finding 1's own owner-only resolver to name ANY current member's role,
+    /// not only an owner's): the first project member whose own chain currently vouches
+    /// <paramref name="senderFingerprint"/> specifically for <paramref name="senderNodeId"/>
+    /// (<see cref="TrustedOwner.ContainsForNode"/> — never merely some other node the same root
+    /// happens to have vouched). Null when no current project member's chain does, which reads as
+    /// "not a project member at all" everywhere this is consulted — never as "nothing to check".
+    /// </summary>
+    internal static SenderResolution? ResolveSender(TrustChain trustChain, string? senderFingerprint, Guid senderNodeId)
+    {
+        if (senderFingerprint is null)
+        {
+            return null;
+        }
+
+        string senderNodeIdText = senderNodeId.ToString();
+        foreach (ProjectMember member in trustChain.Members)
+        {
+            if (trustChain.OwnerChains.TryGetValue(member.RootFingerprint, out TrustedOwner? owner)
+                && owner.ContainsForNode(senderFingerprint, senderNodeIdText))
+            {
+                return new SenderResolution(member.RootFingerprint, member.Role, new HashSet<Guid>(owner.FleetNodeIds()));
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// <see cref="EvaluateTaskActVerdict"/>'s own four outcomes for a Task or Run act (idea
+    /// 6be68ee2, trust-ledger finding 5). <see cref="Held"/> is unique to this gate — the sibling
+    /// project-settings gate (<see cref="GatedEventVerdict"/>) never has a fact to wait on, since
+    /// its six event types always merge onto a stream that already exists — but a task's own
+    /// assignment or holder, or a run's own task, genuinely may not have replicated here yet.
+    /// </summary>
+    internal enum TaskActVerdict
+    {
+        Allowed,
+        Held,
+        DroppedAndRefusedPermanently,
+        DroppedWithoutRecording,
+    }
+
+    /// <summary>
+    /// The <see cref="TaskActClassification.Conditional"/> members that fire at least as readily
+    /// on a task with no recorded assignment or holder at all as on one that already has both —
+    /// see <see cref="EvaluateTaskActVerdict"/>'s own <c>PreAssignmentCapableConditionalTypes</c>
+    /// case for why a null pair means something different for these than it does for the general
+    /// conditional case (<see cref="TaskUnassigned"/> and its siblings) or for
+    /// <see cref="TaskClaimed"/>/<see cref="TaskHolderReleased"/>'s own special cases.
+    /// </summary>
+    private static readonly IReadOnlySet<Type> PreAssignmentCapableConditionalTypes = new HashSet<Type>
+    {
+        typeof(TaskPublished),
+        typeof(TaskReturnedToDraft),
+        typeof(TaskPreApprovedSet),
+        typeof(TaskScopeSet),
+        typeof(TaskPrivacySet),
+        typeof(TaskRevised),
+    };
+
+    /// <summary>
+    /// The pure verdict behind the Task/Run act gate (idea 6be68ee2, trust-ledger finding 5): a
+    /// plain <see cref="TaskActClassification.MemberSafe"/> act (every one but
+    /// <see cref="TaskAssigned"/>'s own special rule) always applies, exactly as it did before this
+    /// gate existed — it needs no sender resolution at all, so a chain this read cannot currently
+    /// resolve the sender against never stops it. Every other classification needs a resolved
+    /// sender: an owner-role sender's act always applies; a non-owner (member-role) sender's is
+    /// judged by <paramref name="classification"/> against <paramref name="task"/>'s own CURRENT
+    /// state —
+    /// <see cref="TaskAggregate.AssignedOwnerFingerprint"/> and
+    /// <see cref="TaskAggregate.HolderOwnerRootFingerprint"/>, resolved by the caller from the task's
+    /// own aggregate stream at apply time, never a projection. <paramref name="task"/> is null only
+    /// when the caller could not resolve the task at all (a Run act whose own referenced task has
+    /// never replicated here) — read as <see cref="TaskActVerdict.Held"/>, the identical answer a
+    /// null <see cref="TaskAggregate.AssignedOwnerFingerprint"/>/<c>HolderOwnerRootFingerprint"</c>
+    /// pair already gets for a task this node HAS seen: neither state is distinguishable, from this
+    /// node's own knowledge alone, from the authorizing fact simply not having arrived yet
+    /// (<c>OwnerRootFingerprintResolver</c> returning null for an owner with no local
+    /// <c>OwnerDetails</c> row is the identical "treated as unassigned" reading, never a fallback to
+    /// comparing raw owner Guids across nodes — idea 20723ef8's own closed hole).
+    /// <para>
+    /// A definite mismatch — the task IS known to be assigned to, or held by, some OTHER root —
+    /// drops rather than holds: nothing further can arrive to change a fact this node already has.
+    /// <see cref="TaskAssigned"/> carries its own rule even though its coarse bucket is
+    /// <see cref="TaskActClassification.MemberSafe"/> (idea f72138e1: a member may self-assign an
+    /// owner's published, unassigned task, exactly as <c>h9k task start</c> does locally, but never
+    /// reassign a task already assigned or held elsewhere) — every one of its own failure branches
+    /// is a definite mismatch the sender's own event data or this node's own trust chain already
+    /// answers, so it is the one <see cref="TaskActClassification.MemberSafe"/> shape that can also
+    /// drop, and it never holds. <see cref="TaskClaimed"/> checks assignment alone (the fact it is
+    /// itself about to set is the holder, which does not exist yet); <see cref="TaskHolderReleased"/>
+    /// checks the current holder alone, per its own doc ("only from the current holder").
+    /// </para>
+    /// </summary>
+    internal static TaskActVerdict EvaluateTaskActVerdict(
+        TaskActClassification classification, Type eventType, object eventData, TaskAggregate? task,
+        SenderResolution? sender, Guid originNodeId, Guid senderNodeId)
+    {
+        // Plain MemberSafe — every entry in that bucket except TaskAssigned's own special rule —
+        // was never gated at all before this PR, and stays that way: nothing about the sender's
+        // own work (adding, completing, or reporting on a task or run this same node is running)
+        // or a plain observation changes because a trust chain this read happened to compute does
+        // or does not currently resolve the sender to a known project member. Checked before
+        // sender resolution even matters, so a chain this node cannot currently fully resolve (or
+        // TrustChain.Empty, the degenerate case with no chain data at all) never halts the
+        // ordinary run of task and run lifecycle events every install already relied on.
+        if (classification == TaskActClassification.MemberSafe && eventType != typeof(TaskAssigned))
+        {
+            return TaskActVerdict.Allowed;
+        }
+
+        // A pre-assignment-capable conditional act (TaskPublished and its siblings —
+        // PreAssignmentCapableConditionalTypes' own doc) on a task genuinely unassigned and unheld
+        // has no root to protect yet, so it is allowed the identical way a plain MemberSafe act is
+        // just above — whether or not this read's own trust chain currently resolves the sender at
+        // all. Checked before sender resolution for the identical reason: a member publishing,
+        // scoping, or draft-revising their own never-assigned work must not stall on a chain this
+        // node cannot currently fully resolve.
+        if (classification == TaskActClassification.Conditional
+            && PreAssignmentCapableConditionalTypes.Contains(eventType)
+            && task is { AssignedOwnerFingerprint: null, HolderOwnerRootFingerprint: null })
+        {
+            return TaskActVerdict.Allowed;
+        }
+
+        if (sender is null)
+        {
+            return Refuse(originNodeId, senderNodeId);
+        }
+
+        if (sender.Role == MembershipRole.Owner)
+        {
+            return TaskActVerdict.Allowed;
+        }
+
+        switch (classification)
+        {
+            case TaskActClassification.OwnerOnly:
+                return Refuse(originNodeId, senderNodeId);
+
+            case TaskActClassification.MemberSafe when eventType == typeof(TaskAssigned):
+            {
+                if (task is null)
+                {
+                    return TaskActVerdict.Held;
+                }
+
+                TaskAssigned assigned = (TaskAssigned)eventData;
+                bool unassignedOrOwnRoot = task.AssignedOwnerFingerprint is null
+                    || task.AssignedOwnerFingerprint == sender.RootFingerprint;
+                bool targetsOwnRoot = assigned.AssignedOwnerRootFingerprint == sender.RootFingerprint;
+                bool placementInFleet = assigned.PlacedOnNodeId is not { HasValue: true, Value: { } placedNodeId }
+                    || sender.FleetNodeIds.Contains(placedNodeId);
+
+                return unassignedOrOwnRoot && targetsOwnRoot && placementInFleet
+                    ? TaskActVerdict.Allowed
+                    : Refuse(originNodeId, senderNodeId);
+            }
+
+            case TaskActClassification.MemberSafe:
+                return TaskActVerdict.Allowed;
+
+            case TaskActClassification.Conditional when eventType == typeof(TaskClaimed):
+            {
+                if (task is null)
+                {
+                    return TaskActVerdict.Held;
+                }
+
+                if (task.AssignedOwnerFingerprint == sender.RootFingerprint)
+                {
+                    return TaskActVerdict.Allowed;
+                }
+
+                return task.AssignedOwnerFingerprint is null
+                    ? TaskActVerdict.Held
+                    : Refuse(originNodeId, senderNodeId);
+            }
+
+            case TaskActClassification.Conditional when eventType == typeof(TaskHolderReleased):
+            {
+                if (task is null)
+                {
+                    return TaskActVerdict.Held;
+                }
+
+                if (task.HolderOwnerRootFingerprint == sender.RootFingerprint)
+                {
+                    return TaskActVerdict.Allowed;
+                }
+
+                return task.HolderOwnerRootFingerprint is null
+                    ? TaskActVerdict.Held
+                    : Refuse(originNodeId, senderNodeId);
+            }
+
+            case TaskActClassification.Conditional when PreAssignmentCapableConditionalTypes.Contains(eventType):
+                // The "genuinely unassigned and unheld" case already returned Allowed above,
+                // before sender resolution even mattered — TaskPublished and TaskReturnedToDraft
+                // only ever fire on an unassigned task by construction (Draft and Published are
+                // both pre-assignment states); TaskPreApprovedSet, TaskScopeSet, and
+                // TaskPrivacySet are explicitly settable "on any live non-terminal task, a draft
+                // included" (their own docs); TaskRevised is Draft-only except for the
+                // queue-priority carve-out (AutoPrReviewEngine's own queue-first revise), the one
+                // shape that reaches this case with a real assignment already recorded. What is
+                // left here is only the case a null pair genuinely CANNOT mean for these types: the
+                // task IS known to be someone else's — treated exactly as the general conditional
+                // case below treats it. task is null only defensively (every one of these targets
+                // its own Task stream directly, which this gate already required to exist).
+                return task switch
+                {
+                    null => TaskActVerdict.Held,
+                    _ when task.AssignedOwnerFingerprint == sender.RootFingerprint
+                        || task.HolderOwnerRootFingerprint == sender.RootFingerprint => TaskActVerdict.Allowed,
+                    _ => Refuse(originNodeId, senderNodeId),
+                };
+
+            case TaskActClassification.Conditional:
+            {
+                if (task is null)
+                {
+                    return TaskActVerdict.Held;
+                }
+
+                if (task.AssignedOwnerFingerprint == sender.RootFingerprint
+                    || task.HolderOwnerRootFingerprint == sender.RootFingerprint)
+                {
+                    return TaskActVerdict.Allowed;
+                }
+
+                return task.AssignedOwnerFingerprint is null && task.HolderOwnerRootFingerprint is null
+                    ? TaskActVerdict.Held
+                    : Refuse(originNodeId, senderNodeId);
+            }
+
+            default:
+                throw new InvalidOperationException($"Unhandled task act classification {classification}.");
+        }
+
+        static TaskActVerdict Refuse(Guid originNodeId, Guid senderNodeId) =>
+            originNodeId == senderNodeId
+                ? TaskActVerdict.DroppedAndRefusedPermanently
+                : TaskActVerdict.DroppedWithoutRecording;
+    }
+
+    /// <summary>The task a Task or Run act's own conditional verdict is judged against, and its id
+    /// either way — <see cref="TaskAggregate"/> is null only when this node cannot resolve it at
+    /// all (a Run act whose referenced task has never replicated here), never when the task simply
+    /// has no opinion yet (an unassigned, unheld task is a real, non-null aggregate).</summary>
+    private readonly record struct TaskActTargetResolution(Guid TaskId, TaskAggregate? Task);
+
+    /// <summary>
+    /// Resolves <paramref name="effectiveStreamId"/>'s own task, at apply time, directly from its
+    /// event stream (never <c>TaskListItem</c>, which each record saves on its own and so may lag
+    /// behind the stream this gate must judge against — see this class's own doc on why every
+    /// record here is saved on its own). A Task-namespaced act's effective stream IS the task; a
+    /// Run-namespaced act's is the run, whose own <see cref="RunAggregate.TaskId"/> names the task
+    /// this gate actually judges it by (idea 6be68ee2, trust-ledger finding 5: "a run act is judged
+    /// by its task's assignment").
+    /// </summary>
+    private static async Task<TaskActTargetResolution> ResolveTaskActTargetAsync(
+        IQuerySession session, Type eventType, Guid effectiveStreamId, CancellationToken cancellationToken)
+    {
+        bool isRunAct = eventType.Namespace is not null
+            && eventType.Namespace.StartsWith("Hall9k.Domain.Features.Run.Events", StringComparison.Ordinal);
+        if (!isRunAct)
+        {
+            TaskAggregate? task =
+                await session.Events.AggregateStreamAsync<TaskAggregate>(effectiveStreamId, token: cancellationToken);
+            return new TaskActTargetResolution(effectiveStreamId, task);
+        }
+
+        // The record's own effective stream already exists (this gate only ever runs once
+        // streamExists is true), and a Run's own genesis (RunDispatched) always carries TaskId, so
+        // the run itself is never null here.
+        RunAggregate run =
+            (await session.Events.AggregateStreamAsync<RunAggregate>(effectiveStreamId, token: cancellationToken))!;
+        TaskAggregate? referencedTask =
+            await session.Events.AggregateStreamAsync<TaskAggregate>(run.TaskId, token: cancellationToken);
+        return new TaskActTargetResolution(run.TaskId, referencedTask);
+    }
+
+    /// <summary>
+    /// Queues <paramref name="record"/> in <see cref="HeldTaskActRecord"/>, upsert-avoiding exactly
+    /// as <see cref="HeldReplicatedEventRecord"/>'s own doc describes: a row already there for this
+    /// exact origin event id is left untouched (its original <see cref="HeldTaskActRecord.HeldAt"/>
+    /// is what the 24-hour expiry measures from) rather than stored over, whether this call arrives
+    /// because a peer redelivered the identical record or because <see cref="ReCheckHeldTaskActsAsync"/>
+    /// re-evaluated it and found it still held. <paramref name="taskActCatchUpAskTaskIdsThisRead"/> is
+    /// null for a record queued only because an EARLIER same-origin record already holds this stream
+    /// (nothing new to ask about — the earlier one's own hold already asked); non-null, and added to
+    /// on first creation only, for the record whose own verdict is what created the hold.
+    /// </summary>
+    private static async Task HoldTaskActAsync(
+        IDocumentSession session, EventReplicationCodec.ReplicatedEventRecord record, Guid streamId, Guid taskId,
+        Guid senderNodeId, string? senderFingerprint, string? originProjectKey, DateTimeOffset now,
+        HashSet<Guid>? taskActCatchUpAskTaskIdsThisRead, CancellationToken cancellationToken)
+    {
+        if (await session.LoadAsync<HeldTaskActRecord>(record.OriginEventId, cancellationToken) is not null)
+        {
+            return;
+        }
+
+        session.Store(new HeldTaskActRecord
+        {
+            Id = record.OriginEventId,
+            StreamId = streamId,
+            TaskId = taskId,
+            ProjectId = record.OriginProjectId,
+            SenderNodeId = senderNodeId,
+            SenderFingerprint = senderFingerprint,
+            OriginProjectKey = originProjectKey,
+            RecordJson = EventReplicationCodec.EncodeRecord(record),
+            OriginSequence = record.OriginSequence,
+            OriginNodeId = record.OriginNodeId,
+            HeldAt = now,
+        });
+        await session.SaveChangesAsync(cancellationToken);
+        taskActCatchUpAskTaskIdsThisRead?.Add(taskId);
+    }
+
+    private void LogTaskActDropped(
+        EventReplicationCodec.ReplicatedEventRecord record, Guid senderNodeId, string? senderFingerprint, Guid taskId,
+        bool permanent) =>
+        logger?.LogWarning(
+            "Replicated task/run act {EventType} (origin {OriginEventId}) from sender {SenderNodeId} (fingerprint "
+            + "{SenderFingerprint}) targets task {TaskId}, which is not this sender's to act on — dropped{Permanent}",
+            record.EventTypeName, record.OriginEventId, senderNodeId, senderFingerprint ?? "(none)", taskId,
+            permanent ? " and refused permanently" : "");
+
+    /// <summary>
+    /// Re-checks every <see cref="HeldTaskActRecord"/> for <paramref name="projectId"/> after a read
+    /// that applied anything for it, whichever sender's read it was (idea 6be68ee2, trust-ledger
+    /// finding 5): the fact a hold is waiting on may have just replicated from a completely
+    /// different sender than the one whose act is held. Grouped by (stream, origin) — one hold
+    /// queue per pair — and only ever the EARLIEST-sequence record in a queue is re-judged; the rest
+    /// stay put until it clears, in origin-sequence order, exactly as <see cref="ApplyAsync"/>'s own
+    /// gate defers them in the first place. A queue whose earliest record has sat held for over 24
+    /// hours is dropped whole, with one log line naming the act — an owner's assignment delayed past
+    /// that costs the member that claim and its own tail, acceptable only because
+    /// <see cref="HoldTaskActAsync"/>'s own caller already asked a peer for the missing fact.
+    /// </summary>
+    private async Task<int> ReCheckHeldTaskActsAsync(
+        IDocumentSession session, Guid projectId, TrustChain trustChain, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<HeldTaskActRecord> allHeld = await session.Query<HeldTaskActRecord>()
+            .Where(held => held.ProjectId == projectId)
+            .ToListAsync(cancellationToken);
+        if (allHeld.Count == 0)
+        {
+            return 0;
+        }
+
+        int applied = 0;
+        foreach (IGrouping<(Guid StreamId, Guid OriginNodeId), HeldTaskActRecord> group in allHeld
+            .GroupBy(held => (held.StreamId, held.OriginNodeId)))
+        {
+            HeldTaskActRecord head = group.OrderBy(held => held.OriginSequence).First();
+            if (now - head.HeldAt > MaxTaskActHoldAge)
+            {
+                EventReplicationCodec.ReplicatedEventRecord? decodedHead = EventReplicationCodec.DecodeRecord(head.RecordJson);
+                int queuedCount = group.Count();
+                foreach (HeldTaskActRecord expired in group)
+                {
+                    session.Delete<HeldTaskActRecord>(expired.Id);
+                }
+
+                logger?.LogWarning(
+                    "Held task/run act {EventType} (origin {OriginEventId}) targeting task {TaskId} on stream "
+                    + "{StreamId} from origin {OriginNodeId} sat unresolved for over 24 hours — dropped, taking "
+                    + "{QueuedCount} record(s) queued behind it with it",
+                    decodedHead?.EventTypeName ?? "(undecodable)", head.Id, head.TaskId, head.StreamId,
+                    head.OriginNodeId, queuedCount);
+                await session.SaveChangesAsync(cancellationToken);
+                continue;
+            }
+
+            while (true)
+            {
+                HeldTaskActRecord? current = await session.Query<HeldTaskActRecord>()
+                    .Where(held => held.ProjectId == projectId && held.StreamId == group.Key.StreamId
+                        && held.OriginNodeId == group.Key.OriginNodeId)
+                    .OrderBy(held => held.OriginSequence)
+                    .FirstOrDefaultAsync(cancellationToken);
+                if (current is null)
+                {
+                    break;
+                }
+
+                EventReplicationCodec.ReplicatedEventRecord? decoded = EventReplicationCodec.DecodeRecord(current.RecordJson);
+                Type? eventType = decoded is null ? null : ReplicationEventTypeCatalog.Resolve(decoded.EventTypeName);
+                TaskActClassification? classification = eventType is null ? null : TaskActClassificationRegistry.TryClassificationOf(eventType);
+                object? data = decoded is null || eventType is null
+                    ? null
+                    : DecodeTaskActEventData(decoded, eventType, current.ProjectId);
+                if (decoded is null || eventType is null || classification is null || data is null)
+                {
+                    logger?.LogError(
+                        "Held task/run act {Id} for stream {StreamId} would not decode or resolve to a known, "
+                        + "still-classified type — dropped rather than retried forever", current.Id, current.StreamId);
+                    session.Delete<HeldTaskActRecord>(current.Id);
+                    await session.SaveChangesAsync(cancellationToken);
+                    continue;
+                }
+
+                // Judged fresh, not inferred from ApplyAsync's own side effects: this call's own
+                // verdict decides what happens next, so it must be known BEFORE anything is deleted
+                // or applied, never guessed at afterward from whether a row happens to remain.
+                TaskActTargetResolution target =
+                    await ResolveTaskActTargetAsync(session, eventType, current.StreamId, cancellationToken);
+                SenderResolution? sender = ResolveSender(trustChain, current.SenderFingerprint, current.SenderNodeId);
+                TaskActVerdict verdict = EvaluateTaskActVerdict(
+                    classification.Value, eventType, data, target.Task, sender, current.OriginNodeId, current.SenderNodeId);
+
+                if (verdict == TaskActVerdict.Held)
+                {
+                    // Still held — this exact record's own verdict has not changed — so the rest of
+                    // this queue stays put behind it, in order, untouched.
+                    break;
+                }
+
+                session.Delete<HeldTaskActRecord>(current.Id);
+                if (verdict == TaskActVerdict.DroppedAndRefusedPermanently)
+                {
+                    LogTaskActDropped(decoded, current.SenderNodeId, current.SenderFingerprint, target.TaskId, permanent: true);
+                    session.Store(new ReplicatedEventRecord
+                    {
+                        Id = decoded.OriginEventId,
+                        StreamId = current.StreamId,
+                        ProjectId = current.ProjectId,
+                        AppliedAt = now,
+                        Applied = false,
+                    });
+                    await session.SaveChangesAsync(cancellationToken);
+                    continue;
+                }
+
+                if (verdict == TaskActVerdict.DroppedWithoutRecording)
+                {
+                    LogTaskActDropped(decoded, current.SenderNodeId, current.SenderFingerprint, target.TaskId, permanent: false);
+                    await session.SaveChangesAsync(cancellationToken);
+                    continue;
+                }
+
+                // Allowed: the delete above already cleared this record's own hold row, so
+                // ApplyAsync's identical "earlier held for this origin" check — re-run inside it,
+                // redundantly but harmlessly, since it re-derives the same verdict from the same
+                // session state — finds nothing smaller than this, the queue's own earliest, and
+                // proceeds to append it for real.
+                await session.SaveChangesAsync(cancellationToken);
+                applied += await ApplyAsync(
+                    session, decoded, current.SenderNodeId, current.ProjectId, current.OriginProjectKey,
+                    [], [], [], [], [], [], [], [], [], trustChain, current.SenderFingerprint, now, cancellationToken);
+            }
+        }
+
+        return applied;
+    }
+
+    /// <summary>The identical decode-rewrite-deserialize path <see cref="ApplyAsync"/> applies
+    /// inline, factored out for <see cref="ReCheckHeldTaskActsAsync"/>'s own re-judging of an
+    /// already-held record, which needs the deserialized event itself (<see cref="TaskAssigned"/>'s
+    /// own fields) before it knows whether to delete or replay the held row.</summary>
+    private static object? DecodeTaskActEventData(
+        EventReplicationCodec.ReplicatedEventRecord record, Type eventType, Guid projectId)
+    {
+        JsonNode? dataNode;
+        try
+        {
+            dataNode = JsonNode.Parse(record.EventDataJson);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        if (dataNode is JsonObject dataObject)
+        {
+            RewriteProjectIdField(dataObject, projectId);
+        }
+
+        try
+        {
+            return dataNode?.Deserialize(eventType, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static readonly TimeSpan MaxTaskActHoldAge = TimeSpan.FromHours(24);
+
+    /// <summary>
     /// Replays the held tail of a stream that already exists here, outside any read of a sender's
     /// own outbox — the one shape <see cref="ReadFromAsync"/>'s own deferred replay can miss. That
     /// replay is driven by an in-memory set of the streams a genesis started THIS read, so a read
@@ -1347,11 +1957,19 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     /// which a standalone call simply has none of: the stream exists in committed form, so an
     /// empty started-this-read set reads the identical answer from the store.
     /// </para>
+    /// <para>
+    /// <paramref name="projectId"/>, <paramref name="myNodeId"/>, and
+    /// <paramref name="myOwnerFingerprint"/> exist for the identical reason <see cref="ReadFromAsync"/>
+    /// takes them: a Task/Run act this replay itself holds (idea 6be68ee2, trust-ledger finding 5 —
+    /// the tail this method drains can carry one exactly as readily as an ordinary read can) still
+    /// needs a broadcast stream ask for its own task, or it would sit waiting the full 24 hours with
+    /// no ask ever sent, unlike every other path into this gate.
+    /// </para>
     /// </summary>
     /// <returns>How many of the held records actually applied.</returns>
-    public Task<int> ReplayHeldTailAsync(
-        IDocumentSession session, Guid streamId, DateTimeOffset now, TrustChain trustChain,
-        CancellationToken cancellationToken)
+    public async Task<int> ReplayHeldTailAsync(
+        IDocumentSession session, Guid projectId, Guid streamId, Guid myNodeId, string myOwnerFingerprint,
+        DateTimeOffset now, TrustChain trustChain, CancellationToken cancellationToken)
     {
         HashSet<Guid> streamsStartedThisRead = [];
         HashSet<Guid> streamsThatFailedToStartThisRead = [];
@@ -1361,11 +1979,25 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         HashSet<Guid> streamsAwaitingHeldTailReplayThisRead = [];
         HashSet<Guid> gatedDropOriginNodeIdsThisRead = [];
         HashSet<Guid> gatedDropStreamIdsThisRead = [];
-        return ApplyHeldTailAsync(
+        HashSet<Guid> taskActCatchUpAskTaskIdsThisRead = [];
+        int applied = await ApplyHeldTailAsync(
             session, streamId, streamsStartedThisRead, streamsThatFailedToStartThisRead,
             originEventIdsAppliedThisRead, originProgressThisRead, originHighWaterByStream,
             streamsAwaitingHeldTailReplayThisRead, gatedDropOriginNodeIdsThisRead, gatedDropStreamIdsThisRead,
-            trustChain, now, cancellationToken);
+            taskActCatchUpAskTaskIdsThisRead, trustChain, now, cancellationToken);
+
+        if (taskActCatchUpAskTaskIdsThisRead.Count > 0)
+        {
+            EventCatchUpCoordinator coordinator = new();
+            foreach (Guid taskId in taskActCatchUpAskTaskIdsThisRead)
+            {
+                await coordinator.RequestStreamBroadcastAsync(
+                    session, projectId, taskId, myNodeId, myOwnerFingerprint, now, cancellationToken,
+                    again: false, reMintCooldown: TaskActHoldCatchUpCooldown);
+            }
+        }
+
+        return applied;
     }
 
     /// <summary>
@@ -1392,8 +2024,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         HashSet<Guid> streamsThatFailedToStartThisRead, HashSet<Guid> originEventIdsAppliedThisRead,
         Dictionary<Guid, long> originProgressThisRead, Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream,
         HashSet<Guid> streamsAwaitingHeldTailReplayThisRead, HashSet<Guid> gatedDropOriginNodeIdsThisRead,
-        HashSet<Guid> gatedDropStreamIdsThisRead, TrustChain trustChain, DateTimeOffset now,
-        CancellationToken cancellationToken)
+        HashSet<Guid> gatedDropStreamIdsThisRead, HashSet<Guid> taskActCatchUpAskTaskIdsThisRead,
+        TrustChain trustChain, DateTimeOffset now, CancellationToken cancellationToken)
     {
         IReadOnlyList<HeldReplicatedEventRecord> held = await session.Query<HeldReplicatedEventRecord>()
             .Where(candidate => candidate.StreamId == streamId)
@@ -1416,8 +2048,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                     session, decoded, heldRecord.SenderNodeId, heldRecord.ProjectId, heldRecord.OriginProjectKey,
                     streamsStartedThisRead, streamsThatFailedToStartThisRead, originEventIdsAppliedThisRead,
                     originProgressThisRead, originHighWaterByStream, streamsAwaitingHeldTailReplayThisRead,
-                    gatedDropOriginNodeIdsThisRead, gatedDropStreamIdsThisRead, trustChain,
-                    heldRecord.SenderFingerprint, now, cancellationToken);
+                    gatedDropOriginNodeIdsThisRead, gatedDropStreamIdsThisRead, taskActCatchUpAskTaskIdsThisRead,
+                    trustChain, heldRecord.SenderFingerprint, now, cancellationToken);
             }
             else
             {

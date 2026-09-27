@@ -456,7 +456,8 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeC.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectIdA, nodeC, "owner-c-fingerprint", Now.AddSeconds(3), trustChain: TrustChain.Empty, cts.Token);
+                session, RepositoryPath, nodeA, projectIdA, nodeC, "owner-c-fingerprint", Now.AddSeconds(3),
+                trustChain: OwnerChainFor(nodeA), cts.Token);
             read.EventsApplied.Should().BeGreaterThan(0);
         }
 
@@ -496,7 +497,8 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult bootstrapRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeC, projectIdB, nodeB, "owner-b-fingerprint", Now.AddSeconds(7), trustChain: TrustChain.Empty, cts.Token);
+                session, RepositoryPath, nodeC, projectIdB, nodeB, "owner-b-fingerprint", Now.AddSeconds(7),
+                trustChain: OwnerChainFor(nodeA, nodeC), cts.Token);
             bootstrapRead.EventsApplied.Should().BeGreaterThan(0, "node C's answer bootstraps node B's own, empty store");
         }
 
@@ -1757,7 +1759,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventReplicationReadResult bootstrapRead = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectIdB, nodeB, "owner-b-fingerprint", Now.AddSeconds(6),
-                trustChain: TrustChain.Empty, cts.Token);
+                trustChain: OwnerChainFor(nodeA), cts.Token);
             bootstrapRead.EventsApplied.Should().Be(
                 7, "every event of both streams applies — four on the task, two on the run, and the completion "
                 + "that closed the task behind them");
@@ -1871,7 +1873,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventReplicationReadResult bootstrapRead = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectIdB, nodeB, "owner-b-fingerprint", Now.AddSeconds(6),
-                trustChain: TrustChain.Empty, cts.Token);
+                trustChain: OwnerChainFor(nodeA), cts.Token);
             bootstrapRead.EventsApplied.Should().Be(3, "the whole task arrives, and the headless run stream does not");
         }
 
@@ -1970,7 +1972,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectIdB, nodeB, "owner-b-fingerprint", Now.AddSeconds(4),
-                trustChain: TrustChain.Empty, cts.Token);
+                trustChain: OwnerChainFor(nodeA), cts.Token);
             read.EventsApplied.Should().Be(
                 5, "the task's own three, the run's genesis, and the tail that was held until it landed");
         }
@@ -2060,7 +2062,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectIdB, nodeB, "owner-b-fingerprint", Now.AddSeconds(4),
-                trustChain: TrustChain.Empty, cts.Token);
+                trustChain: OwnerChainFor(nodeA), cts.Token);
             read.EventsApplied.Should().Be(
                 5, "the task's own three, the run's reconstructed genesis, and the tail held until it landed");
         }
@@ -2824,7 +2826,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventReplicationReadResult liveRead = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(5),
-                trustChain: TrustChain.Empty, cts.Token);
+                trustChain: OwnerChainFor(nodeA), cts.Token);
             liveRead.EventsApplied.Should().Be(
                 0, "the post-switch-on event never carries TaskAdded, so it is held rather than starting a "
                 + "headless document");
@@ -2871,7 +2873,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             EventReplicationReadResult pullRead = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(9),
-                trustChain: TrustChain.Empty, cts.Token);
+                trustChain: OwnerChainFor(nodeA), cts.Token);
             pullRead.EventsApplied.Should().Be(
                 7, "the partial stream's own genesis, middle, and tail all apply from this one answer, in order "
                 + "(4) — the tail's own already-held copy is a no-op once its deferred replay runs behind it — "
@@ -3302,6 +3304,28 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
     /// resolves for a node <see cref="SeedNodeFileAsync"/> seeded — the same public key line, run
     /// through the identical <c>NodeKeyStore.Fingerprint</c> call that resolver itself makes.</summary>
     private static string SeededFingerprintOf(Guid nodeId) => NodeKeyStore.Fingerprint($"ssh-ed25519 AAAAFAKE{nodeId:N} test");
+
+    /// <summary>
+    /// A project with one owner root whose fleet vouches every one of <paramref name="nodeIds"/> —
+    /// idea 6be68ee2, trust-ledger finding 5's own Task/Run act gate needs a resolvable sender to
+    /// apply anything past a plain MemberSafe act, which every one of these catch-up/bootstrap tests
+    /// is really about, not the gate itself (that gate's own tests live in
+    /// EventReplicationInboxTaskActGateTests). Every node here shares one owner root, matching
+    /// SeedNodeFileAsync's own key derivation, so any of them resolves as this project's Owner.
+    /// </summary>
+    private static TrustChain OwnerChainFor(params Guid[] nodeIds)
+    {
+        const string root = "owner-root-fingerprint";
+        List<TrustedNode> nodes = [.. nodeIds.Select(nodeId =>
+        {
+            string keyLine = $"ssh-ed25519 AAAAFAKE{nodeId:N} test";
+            return new TrustedNode(nodeId.ToString(), keyLine, NodeKeyStore.Fingerprint(keyLine), Now);
+        })];
+        TrustedOwner owner = new(root, "ssh-ed25519 AAAAFAKEroot test", nodes);
+        return new TrustChain(
+            new Dictionary<string, TrustedOwner> { [root] = owner },
+            [new ProjectMember(root, MembershipRole.Owner, Now)]);
+    }
 
     private static async Task SeedNodeFileAsync(FakeLedger ledger, Guid nodeId, CancellationToken cancellationToken)
     {

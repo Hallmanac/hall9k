@@ -321,12 +321,18 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
             await session.SaveChangesAsync(cts.Token);
         }
 
+        // idea 6be68ee2, trust-ledger finding 5: the Task/Run act gate needs a sender fingerprint
+        // that actually resolves against this node's own node file — the same key
+        // SeedNodeFileAsync (ReplicatedFleet's own doc) wrote, never an arbitrary placeholder
+        // string, or every one of fleet.B's task events (TaskAssigned included) is dropped rather
+        // than applied.
+        string nodeBKeyLine = $"ssh-ed25519 AAAAFAKE{fleet.B.Node.NodeId:N} test";
         TrustChain trustChain = new(
             new Dictionary<string, TrustedOwner>
             {
                 ["owner-b-root"] = new TrustedOwner(
                     "owner-b-root", "ssh-ed25519 AAAAFAKE owner-b-root",
-                    [new TrustedNode(fleet.B.Node.NodeId.ToString(), "ssh-ed25519 AAAAFAKEnodeb test", "node-b-fingerprint", Now)]),
+                    [new TrustedNode(fleet.B.Node.NodeId.ToString(), nodeBKeyLine, NodeKeyStore.Fingerprint(nodeBKeyLine), Now)]),
             },
             [new ProjectMember("owner-b-root", MembershipRole.Owner, Now)],
             ProjectKey: "shared-project-key");

@@ -113,7 +113,8 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3), trustChain: TrustChain.Empty, cts.Token);
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: OwnerChainFor(nodeA), cts.Token);
             read.SenderIgnored.Should().BeFalse();
             read.EventsApplied.Should().BeGreaterThan(0);
         }
@@ -264,7 +265,8 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectIdB, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3), trustChain: TrustChain.Empty, cts.Token);
+                session, RepositoryPath, nodeA, projectIdB, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: OwnerChainFor(nodeA), cts.Token);
             read.SenderIgnored.Should().BeFalse();
             read.EventsApplied.Should().BeGreaterThan(0);
         }
@@ -1988,7 +1990,8 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4), trustChain: TrustChain.Empty, cts.Token);
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4),
+                trustChain: OwnerChainFor(nodeA), cts.Token);
             read.SenderIgnored.Should().BeFalse();
             read.EventsApplied.Should().Be(
                 eventsInOneOriginalBatch, "each origin event id must apply exactly once, however many copies land in one read");
@@ -2050,7 +2053,8 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4), trustChain: TrustChain.Empty, cts.Token);
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4),
+                trustChain: OwnerChainFor(nodeA), cts.Token);
         }
 
         // Node B's own dispatch-style read of Queued candidates never sees this task once the
@@ -3925,8 +3929,9 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
 
         await using (IDocumentSession session = storeB.LightweightSession())
         {
-            (await replicationInbox.ReplayHeldTailAsync(session, taskId, Now.AddSeconds(8), TrustChain.Empty, cts.Token))
-                .Should().Be(1, "the tail was waiting on a replay, not on the fleet");
+            (await replicationInbox.ReplayHeldTailAsync(
+                session, projectId, taskId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(8), TrustChain.Empty,
+                cts.Token)).Should().Be(1, "the tail was waiting on a replay, not on the fleet");
         }
 
         await using (IQuerySession session = storeB.QuerySession())
@@ -3937,6 +3942,277 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
             (await session.Query<HeldReplicatedEventRecord>().ToListAsync(cts.Token)).Should().BeEmpty(
                 "a replayed record is deleted, so it never spends a slot of the next sweep's own cap again");
         }
+    }
+
+    /// <summary>
+    /// Idea 6be68ee2, trust-ledger finding 5: the Task/Run act gate's own held-and-replayed shape,
+    /// the sibling of the project-settings gate's tests above. A member's own claim arrives before
+    /// this receiver has ever heard the owner's own assignment, so it is held rather than dropped —
+    /// and a later record from the identical origin is held right behind it, never applied ahead of
+    /// it. Both clear, in order, the moment the owner's assignment lands from a wholly different
+    /// read.
+    /// </summary>
+    [Fact]
+    public async Task A_held_claim_and_a_later_event_from_the_same_origin_both_apply_in_order_once_the_assignment_lands()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid ownerNode = DomainId.New();
+        Guid memberNode = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid memberOwnerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, ownerNode, cts.Token);
+        await SeedNodeFileAsync(ledger, memberNode, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("relay");
+
+        TrustChain chain = TwoRootChain(ownerNode, memberNode, "owner-root-a", "member-root-a");
+        const string memberRoot = "member-root-a";
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        // The task's own genesis already exists here — published, still unassigned — the shape a
+        // conditional act's own gate needs streamExists true for (never the missing-genesis path).
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Ship the thing", ["it ships"], TaskType.Feature, null, null, null, Now, ownerId);
+            session.Events.StartStream<TaskAggregate>(taskId, added);
+            session.Events.Append(taskId, new TaskPublished(taskId, Now, ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+
+        // The member's own claim arrives first — this receiver has no idea yet that the owner ever
+        // assigned the task to this member's root, so the claim is held rather than dropped.
+        TaskClaimed claimed = new(
+            taskId, memberNode, memberOwnerId, LeaseGeneration: 1, runId, Now.AddSeconds(1),
+            OwnerRootFingerprint: memberRoot);
+        EventReplicationCodec.ReplicatedEventRecord claimRecord = new(
+            taskId, typeof(TaskClaimed).FullName!, JsonSerializer.Serialize(claimed, jsonOptions),
+            DomainId.New(), OriginSequence: 1, memberNode, memberRoot, Now.AddSeconds(1), projectId);
+
+        // A later fact from the identical origin, queued behind the still-unresolved claim above —
+        // never applied ahead of it, or the per-origin ordering guard would refuse the claim as out
+        // of order the moment it finally clears.
+        TaskCompleted completed = new(taskId, runId, PullRequestUrl: null, Now.AddSeconds(2));
+        EventReplicationCodec.ReplicatedEventRecord completedRecord = new(
+            taskId, typeof(TaskCompleted).FullName!, JsonSerializer.Serialize(completed, jsonOptions),
+            DomainId.New(), OriginSequence: 2, memberNode, memberRoot, Now.AddSeconds(2), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, memberNode, projectId, memberRoot, MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([claimRecord, completedRecord]), Now.AddSeconds(3),
+                cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, memberNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(3), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, memberNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4),
+                trustChain: chain, cts.Token);
+            read.EventsApplied.Should().Be(
+                0, "the task is still unassigned here, so the member's own claim (and everything queued behind "
+                    + "it) is held");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.Query<HeldTaskActRecord>().Where(record => record.TaskId == taskId).ToListAsync(cts.Token))
+                .Should().HaveCount(2, "both the claim and the record queued behind it are held");
+        }
+
+        // The owner's own assignment lands separately, from a different origin — an owner-role
+        // sender's act always applies, whatever the task's own current state is.
+        TaskAssigned assigned = new(
+            taskId, memberOwnerId, UnmetDependencies: [], Now.AddSeconds(5), ownerId,
+            AssignedOwnerRootFingerprint: memberRoot);
+        EventReplicationCodec.ReplicatedEventRecord assignedRecord = new(
+            taskId, typeof(TaskAssigned).FullName!, JsonSerializer.Serialize(assigned, jsonOptions),
+            DomainId.New(), OriginSequence: 1, ownerNode, "owner-root-a", Now.AddSeconds(5), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, ownerNode, projectId, "owner-root-a", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([assignedRecord]), Now.AddSeconds(6), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, ownerNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(6), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, ownerNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(7),
+                trustChain: chain, cts.Token);
+            read.EventsApplied.Should().Be(
+                3, "the assignment itself, plus the held claim and the record queued behind it, all apply once "
+                    + "the assignment lands");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.Query<HeldTaskActRecord>().Where(record => record.TaskId == taskId).ToListAsync(cts.Token))
+                .Should().BeEmpty("every held record cleared once the assignment landed");
+
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            task.State.Should().Be(TaskState.Done, "the claim and the completion both applied, in order");
+            task.HolderNodeId.Should().Be(memberNode);
+        }
+    }
+
+    /// <summary>
+    /// Idea 6be68ee2, trust-ledger finding 5: a hold nothing in the fleet ever answers does not sit
+    /// forever — it expires after 24 hours, dropping the queue behind it with one log line naming
+    /// the act, rather than blocking that stream's own per-origin order forever.
+    /// </summary>
+    [Fact]
+    public async Task An_expired_held_task_act_is_dropped_with_one_log_line_naming_the_act()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid ownerNode = DomainId.New();
+        Guid memberNode = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid memberOwnerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, ownerNode, cts.Token);
+        await SeedNodeFileAsync(ledger, memberNode, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        ListLogger<EventReplicationInbox> log = new();
+        EventReplicationInbox replicationInbox = new(transport, log);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("relay");
+
+        TrustChain chain = TwoRootChain(ownerNode, memberNode, "owner-root-b", "member-root-b");
+        const string memberRoot = "member-root-b";
+        const string ownerRoot = "owner-root-b";
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Ship the thing", ["it ships"], TaskType.Feature, null, null, null, Now, ownerId);
+            session.Events.StartStream<TaskAggregate>(taskId, added);
+            session.Events.Append(taskId, new TaskPublished(taskId, Now, ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+        TaskClaimed claimed = new(
+            taskId, memberNode, memberOwnerId, LeaseGeneration: 1, runId, Now.AddSeconds(1),
+            OwnerRootFingerprint: memberRoot);
+        EventReplicationCodec.ReplicatedEventRecord claimRecord = new(
+            taskId, typeof(TaskClaimed).FullName!, JsonSerializer.Serialize(claimed, jsonOptions),
+            DomainId.New(), OriginSequence: 1, memberNode, memberRoot, Now.AddSeconds(1), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, memberNode, projectId, memberRoot, MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([claimRecord]), Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, memberNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, memberNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: chain, cts.Token);
+            read.EventsApplied.Should().Be(0, "the claim is held until the task's own assignment arrives");
+        }
+
+        // Manually age the hold well past the 24-hour expiry — the real passage of time this test
+        // never waits out.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            HeldTaskActRecord held = (await session.Query<HeldTaskActRecord>()
+                .Where(record => record.TaskId == taskId).FirstOrDefaultAsync(cts.Token))!;
+            held.HeldAt = Now.AddHours(-25);
+            session.Store(held);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // A second, unrelated task lands from the owner so this read applies something for the
+        // project — the trigger the expired hold is re-checked against, whoever it came from.
+        Guid secondTaskId = DomainId.New();
+        TaskAdded secondAdded = TaskDecider.Add(
+            secondTaskId, projectId, "A second task", ["done"], TaskType.Feature, null, null, null, Now.AddSeconds(4),
+            ownerId);
+        EventReplicationCodec.ReplicatedEventRecord secondAddedRecord = new(
+            secondTaskId, typeof(TaskAdded).FullName!, JsonSerializer.Serialize(secondAdded, jsonOptions),
+            DomainId.New(), OriginSequence: 1, ownerNode, ownerRoot, Now.AddSeconds(4), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, ownerNode, projectId, ownerRoot, MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([secondAddedRecord]), Now.AddSeconds(5), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, ownerNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(5), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, ownerNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(6),
+                trustChain: chain, cts.Token);
+            read.EventsApplied.Should().Be(1, "only the second task's own genesis applies from this read directly");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.Query<HeldTaskActRecord>().Where(record => record.TaskId == taskId).ToListAsync(cts.Token))
+                .Should().BeEmpty("the expired hold is dropped rather than kept waiting forever");
+        }
+
+        log.Lines.Should().Contain(
+            line => line.Contains("24 hours", StringComparison.Ordinal)
+                && line.Contains(nameof(TaskClaimed), StringComparison.Ordinal),
+            "the drop is logged with one line naming the act");
+    }
+
+    /// <summary>A project with one owner root (naming <paramref name="ownerNodeId"/>) and one member
+    /// root (naming <paramref name="memberNodeId"/>) — the Task/Run act gate's own tests need both
+    /// roles present at once, unlike the project-settings gate's own single-root fixtures above.</summary>
+    private static TrustChain TwoRootChain(Guid ownerNodeId, Guid memberNodeId, string ownerRoot, string memberRoot)
+    {
+        string ownerKeyLine = $"ssh-ed25519 AAAAFAKE{ownerNodeId:N} test";
+        string memberKeyLine = $"ssh-ed25519 AAAAFAKE{memberNodeId:N} test";
+        return new TrustChain(
+            new Dictionary<string, TrustedOwner>
+            {
+                [ownerRoot] = new TrustedOwner(
+                    ownerRoot, $"ssh-ed25519 AAAAFAKE{ownerRoot} test",
+                    [new TrustedNode(ownerNodeId.ToString(), ownerKeyLine, NodeKeyStore.Fingerprint(ownerKeyLine), Now)]),
+                [memberRoot] = new TrustedOwner(
+                    memberRoot, $"ssh-ed25519 AAAAFAKE{memberRoot} test",
+                    [new TrustedNode(memberNodeId.ToString(), memberKeyLine, NodeKeyStore.Fingerprint(memberKeyLine), Now)]),
+            },
+            [
+                new ProjectMember(ownerRoot, MembershipRole.Owner, Now),
+                new ProjectMember(memberRoot, MembershipRole.Member, Now),
+            ]);
     }
 
     private static async Task<Guid> SeedQueuedTaskAsync(
