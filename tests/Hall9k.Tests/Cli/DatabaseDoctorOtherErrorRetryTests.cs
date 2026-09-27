@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Cli.Diagnostics;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -62,6 +63,35 @@ public sealed class DatabaseDoctorOtherErrorRetryTests
     }
 
     [Fact]
+    public async Task An_other_error_that_flips_to_refused_connection_mid_retry_is_reported_not_silently()
+    {
+        // The status can flip across polls (Postgres briefly closing its listening socket
+        // mid-restart) — WaitForReachableAsync retries both OtherError and RefusedConnection
+        // alike, so the bound can expire on a RefusedConnection sample even though this method
+        // started from OtherError. The caller's ReportUnreachable stays silent for
+        // RefusedConnection, trusting whichever path reached it to have already explained it —
+        // so this method has to be the one that explains it here, or the operator sees nothing
+        // at all once the bound expires (cycle-4 pre-PR review, conformance lens).
+        Task<ReachabilityReport> Probe(CancellationToken token) => Task.FromResult(RefusedConnection());
+
+        RecordingProcessRunner runner = ConfirmedRunningContainerRunner();
+        SteppingClock clock = new(ShortPollInterval);
+
+        ReachabilityReport result = null!;
+        string output = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
+        {
+            result = await DatabaseDoctor.DiagnoseOtherErrorAsync(
+                StartingUp(), offerFixes: true, runner.Runner, Probe, ShortTimeout, ShortPollInterval, clock,
+                CancellationToken.None);
+        });
+
+        result.Status.Should().Be(ReachabilityStatus.RefusedConnection,
+            "the final sample the bound expired on is what the caller has to act on, unchanged");
+        output.Should().Contain($"waiting up to {ShortTimeout.TotalSeconds:0}s",
+            "the caller's own ReportUnreachable prints nothing for RefusedConnection, so this method has to name the wait itself");
+    }
+
+    [Fact]
     public async Task A_passive_diagnosis_that_is_not_offering_fixes_never_retries_or_touches_docker()
     {
         // Program.cs's own passive diagnosis after an ordinary command's NpgsqlException calls
@@ -99,4 +129,7 @@ public sealed class DatabaseDoctorOtherErrorRetryTests
 
     private static ReachabilityReport StartingUp() =>
         new(ReachabilityStatus.OtherError, "the database system is starting up", "localhost", 5432, "hall9k");
+
+    private static ReachabilityReport RefusedConnection() =>
+        new(ReachabilityStatus.RefusedConnection, "Exception while reading from stream", "localhost", 5432, "hall9k");
 }

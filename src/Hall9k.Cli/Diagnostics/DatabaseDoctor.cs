@@ -568,8 +568,10 @@ public static class DatabaseDoctor
     /// "not answering" wording that fits neither (cycle-3 pre-PR review, both lenses).
     /// <see cref="ReachabilityStatus.RefusedConnection"/> prints nothing here: whichever caller
     /// reached a still-refused result already explained it — <see cref="DiagnoseRefusedConnectionAsync"/>
-    /// prints its own "is it running / still not answering" line, and the immediate-probe case
-    /// never reaches this method at all (it retries first).
+    /// prints its own "is it running / still not answering" line, <see cref="DiagnoseOtherErrorAsync"/>
+    /// prints the same "still not answering" line when its own retry ends up refused instead of
+    /// persisting as <see cref="ReachabilityStatus.OtherError"/> (cycle-4 pre-PR review, conformance
+    /// lens), and the immediate-probe case never reaches this method at all (it retries first).
     /// </summary>
     private static void ReportUnreachable(ReachabilityReport reachability, ConnectionStringResolution resolution)
     {
@@ -736,6 +738,20 @@ public static class DatabaseDoctor
         ReachabilityReport retried = await WaitForReachableAsync(
             reachabilityProbe, readinessTimeout, readinessPollInterval, timeProvider, cancellationToken);
         AnsiConsole.WriteLine();
+
+        // The status can flip to RefusedConnection across polls (Postgres briefly closing its
+        // listening socket mid-restart) — and ReportUnreachable stays silent for that status,
+        // trusting DiagnoseRefusedConnectionAsync's own callers to have already explained it.
+        // This method's own callers never go through there, so a still-refused result here would
+        // otherwise reach the caller's ReportUnreachable call and print nothing at all (cycle-4
+        // pre-PR review, conformance lens).
+        if (retried.Status == ReachabilityStatus.RefusedConnection)
+        {
+            AnsiConsole.MarkupLine(
+                $"[dim]Still not answering after waiting up to {readinessTimeout.TotalSeconds:0}s for it to finish "
+                + $"starting. Check docker logs {PostgresRuntime.ContainerName}, then try again.[/]");
+        }
+
         return retried;
     }
 
