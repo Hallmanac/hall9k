@@ -30,3 +30,7 @@ context: |-
   For the build: run `h9k orchestrator measure` once with the key set and confirm the probe (OrchestratorMeasureProbe.cs 54 to 61, which runs on Haiku with the same settings file) still answers, or say in the pull request that it could not be run.
 
   For the orchestrator, not the build: whether a spawn's --effort flag outranks the settings file's effortLevel is Claude Code behavior; the first scoped spawn after the key is set settles it from its transcript's effort field, recorded in notes/prototype-feedback.md.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-09-27 16:29:14Z
