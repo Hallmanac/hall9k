@@ -47,6 +47,37 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
         return rawBytes is null ? null : new LedgerSignedCommit(content, sha, rawBytes);
     }
 
+    public async Task<IReadOnlyList<LedgerPathCommit>> ReadCommitsTouchingPathAsync(
+        string repositoryPath, string refName, string path, CancellationToken cancellationToken)
+    {
+        await FetchRefAsync(repositoryPath, refName, cancellationToken);
+
+        string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
+        if (tip is null)
+        {
+            return [];
+        }
+
+        IReadOnlyList<string> commits = await CommitsTouchingPathAsync(repositoryPath, tip, path, cancellationToken);
+        List<LedgerPathCommit> results = new(commits.Count);
+        foreach (string sha in commits)
+        {
+            string? rawBytes = await RunGitCaptureAsync(repositoryPath, ["cat-file", "commit", sha], cancellationToken);
+            if (rawBytes is null)
+            {
+                // A corrupt or missing local object for a commit this same walk just named as
+                // reachable — genuinely exceptional, never a legitimate "this commit does not
+                // exist" the rest of this method's caller should read as absence.
+                throw new InvalidOperationException($"git cat-file commit {sha} failed in {repositoryPath}.");
+            }
+
+            string? content = await ReadAtCommitAsync(repositoryPath, sha, path, cancellationToken);
+            results.Add(new LedgerPathCommit(content, sha, rawBytes));
+        }
+
+        return results;
+    }
+
     public async Task<bool> IsSignedByAsync(
         string repositoryPath, string rawCommitBytes, string publicKeyLine, CancellationToken cancellationToken)
     {
