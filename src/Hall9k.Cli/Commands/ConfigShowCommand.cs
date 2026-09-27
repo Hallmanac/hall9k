@@ -2,6 +2,7 @@ using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -84,6 +85,19 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
             ? "config file"
             : "default — falls back to default-model, then the platform fallback";
         table.AddRow("orchestrator-model", $"{orchestratorModel} ({orchestratorModelOrigin})".EscapeMarkup());
+
+        // The identical "not part of the report above" reasoning as orchestrator-model just above
+        // (task: the orchestrator window's effort becomes a rendered project and node setting):
+        // nothing binds this through DaemonOptions, since the window never dispatches an agent, so
+        // it carries no environment-variable tier.
+        AgentEffort orchestratorEffort = OrchestratorEffort.ForNode(configured);
+        string orchestratorEffortDisplay = orchestratorEffort.IsWellFormed
+            ? orchestratorEffort.Value
+            : "(unset)";
+        string orchestratorEffortOrigin = configured.OrchestratorEffort is { Length: > 0 }
+            ? "config file"
+            : "default — unset at this level, so a project's own override or the model's own default decides";
+        table.AddRow("orchestrator-effort", $"{orchestratorEffortDisplay} ({orchestratorEffortOrigin})".EscapeMarkup());
 
         // Not part of the report above either: these four bind through the same generic
         // ConfigurationBinder path as the four review-cycle caps (so an environment variable can
