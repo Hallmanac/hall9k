@@ -262,8 +262,8 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         string realOwnerFingerprint = new string('d', 64);
         await SeedGenesisOwnerMemberAsync(ledger, project.RepositoryPath, realOwnerFingerprint, cts.Token);
 
-        Guid inviteId = DomainId.New();
-        string secret = InviteSecret.Generate(realOwnerFingerprint, inviteId);
+        string secret = InviteSecret.Generate();
+        Guid inviteId = InviteSecret.DeriveId(secret);
         string secretHash = InviteSecret.Hash(secret);
         InviteLedgerRecord record = new(
             secretHash, InviteClaimKind.MemberOfProject, ProjectMemberRole.Member, DateTimeOffset.UtcNow.AddHours(72), Spent: false);
@@ -377,8 +377,8 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
             string realOwnerFingerprint = new string('d', 64);
             await SeedGenesisOwnerMemberAsync(ledger, tempRepository.FullName, realOwnerFingerprint, cts.Token);
 
-            Guid inviteId = DomainId.New();
-            string secret = InviteSecret.Generate(realOwnerFingerprint, inviteId);
+            string secret = InviteSecret.Generate();
+            Guid inviteId = InviteSecret.DeriveId(secret);
             string secretHash = InviteSecret.Hash(secret);
             InviteLedgerRecord record = new(
                 secretHash, InviteClaimKind.MemberOfProject, ProjectMemberRole.Member, DateTimeOffset.UtcNow.AddHours(72), Spent: false);
@@ -440,8 +440,8 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
             string realOwnerFingerprint = new string('f', 64);
             await SeedGenesisOwnerMemberAsync(ledger, tempRepository.FullName, realOwnerFingerprint, cts.Token);
 
-            Guid inviteId = DomainId.New();
-            string secret = InviteSecret.Generate(realOwnerFingerprint, inviteId);
+            string secret = InviteSecret.Generate();
+            Guid inviteId = InviteSecret.DeriveId(secret);
             string secretHash = InviteSecret.Hash(secret);
             InviteLedgerRecord record = new(
                 secretHash, InviteClaimKind.MemberOfProject, ProjectMemberRole.Member, DateTimeOffset.UtcNow.AddHours(72), Spent: false);
@@ -514,8 +514,8 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
             FakeLedger ledger = new();
             string realOwnerFingerprint = new string('a', 64);
-            Guid inviteId = DomainId.New();
-            string secret = InviteSecret.Generate(realOwnerFingerprint, inviteId);
+            string secret = InviteSecret.Generate();
+            Guid inviteId = InviteSecret.DeriveId(secret);
             string secretHash = InviteSecret.Hash(secret);
             InviteLedgerRecord record = new(
                 secretHash, InviteClaimKind.NodeOfOwner, ProjectMemberRole.Member, DateTimeOffset.UtcNow.AddHours(72), Spent: false);
