@@ -1395,7 +1395,14 @@ project-settings-shaped event (a team settings change, a member vouch or removal
 addendum, or a run skill) applies on a receiving node only when the verified sender key traces to
 an Owner-role project member's own chain for that exact sender node id; anything else is dropped
 and logged, never silently merged, and the receiver never re-signs a foreign addendum or run skill
-under its own key (idea 6be68ee2). **Still not
+under its own key (idea 6be68ee2). The prompt-addenda ledger ref itself carries the identical rule,
+not only its replicated echo: a node only ever pushes a project's own addenda to the ledger from a
+node whose own owner is currently that project's Owner-role member, and every node's own materialize
+sweep, per builder, walks that path's own ledger history newest first for the first commit an
+Owner-role member's own chain (root key or a currently vouched node key) authorized — a member's
+overwrite, a member's delete, an unsigned commit from a repository collaborator with push access but
+no ledger key, and a revoked node's commit are all skipped over, restoring the owner's own last
+authorized content rather than losing it. **Still not
 built**: no node discovery and no gossip, which is the reachability half of
 [HALL9K-P2P-DESIGN.md](../HALL9K-P2P-DESIGN.md) rather than the trust half above.
 
