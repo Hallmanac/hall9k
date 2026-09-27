@@ -222,6 +222,21 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // than run inline the moment the genesis lands). Drained once, below, only after this whole
         // read's own batches have all landed in their own order.
         HashSet<Guid> streamsAwaitingHeldTailReplayThisRead = [];
+        // Every origin node id whose gated project-settings-shaped event
+        // (ProjectStreamReplicationRules.IsProjectAggregateStreamEvent) this read dropped without
+        // recording (GatedEventVerdict.DroppedWithoutRecording) — forwarded here by a sender this
+        // gate does not currently vouch for as an owner. The true origin, or some other sender the
+        // gate DOES allow, may still deliver it later (ApplyAsync's own doc on that verdict), but
+        // only if whatever outstanding request actually covers it is left standing rather than
+        // closed by the REST of this same answer applying (independent pre-PR review, cycle 1,
+        // adversarial lens, medium: a request closed on partial content never asks for the missing
+        // gated event again).
+        HashSet<Guid> gatedDropOriginNodeIdsThisRead = [];
+        // The matching stream ids for the same drops — always this receiver's own local Project
+        // stream for every one of the six gated event types
+        // (ProjectStreamReplicationRules.IsProjectAggregateStreamEvent's own doc: each merges onto
+        // it), so this only ever holds projectId.
+        HashSet<Guid> gatedDropStreamIdsThisRead = [];
         foreach (TransportEnvelope raw in read.Envelopes.OrderBy(envelope => envelope.Seq))
         {
             highestSeqConsidered = raw.Seq;
@@ -313,8 +328,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 applied += await ApplyAsync(
                     session, record, senderNodeId, projectId, envelope.ProjectKey, streamsStartedThisRead,
                     streamsThatFailedToStartThisRead, originEventIdsAppliedThisRead, originProgressThisRead,
-                    originHighWaterByStream, streamsAwaitingHeldTailReplayThisRead, trustChain, senderFingerprint,
-                    now, cancellationToken);
+                    originHighWaterByStream, streamsAwaitingHeldTailReplayThisRead, gatedDropOriginNodeIdsThisRead,
+                    gatedDropStreamIdsThisRead, trustChain, senderFingerprint, now, cancellationToken);
             }
 
             // task 252bc5cf: tallied per envelope, after its own batch has applied, and only for an
@@ -339,7 +354,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             applied += await ApplyHeldTailAsync(
                 session, streamId, streamsStartedThisRead, streamsThatFailedToStartThisRead,
                 originEventIdsAppliedThisRead, originProgressThisRead, originHighWaterByStream,
-                streamsAwaitingHeldTailReplayThisRead, trustChain, now, cancellationToken);
+                streamsAwaitingHeldTailReplayThisRead, gatedDropOriginNodeIdsThisRead, gatedDropStreamIdsThisRead,
+                trustChain, now, cancellationToken);
         }
 
         highestSeqConsidered = Math.Max(highestSeqConsidered, read.HighestSeqInspected);
@@ -404,6 +420,25 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 .ToListAsync(cancellationToken);
             foreach (EventCatchUpRequest request in outstanding)
             {
+                // A request whose own concern is exactly an origin, a stream, or "everything" that
+                // this same read dropped a gated event for without recording
+                // (GatedEventVerdict.DroppedWithoutRecording) is left standing here rather than
+                // closed on the rest of this answer's content: the true origin, or some other sender
+                // this gate DOES allow, may still deliver it, and closing the request on this
+                // partial answer would stop the cascade or broadcast from ever reaching one
+                // (independent pre-PR review, cycle 1, adversarial lens, medium).
+                bool concernIncludesGatedDrop =
+                    (request.ForOriginNodeId is { } forOriginNodeIdConcern
+                        && gatedDropOriginNodeIdsThisRead.Contains(forOriginNodeIdConcern))
+                    || (request.ForStreamId is { } forStreamIdConcern
+                        && gatedDropStreamIdsThisRead.Contains(forStreamIdConcern))
+                    || (request is { ForOriginNodeId: null, ForStreamId: null }
+                        && gatedDropOriginNodeIdsThisRead.Count > 0);
+                if (concernIncludesGatedDrop)
+                {
+                    continue;
+                }
+
                 if (request.CurrentCandidateNodeId == senderNodeId && applied > 0)
                 {
                     request.AnsweredAt = now;
@@ -589,7 +624,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         string? originProjectKey, HashSet<Guid> streamsStartedThisRead, HashSet<Guid> streamsThatFailedToStartThisRead,
         HashSet<Guid> originEventIdsAppliedThisRead, Dictionary<Guid, long> originProgressThisRead,
         Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream,
-        HashSet<Guid> streamsAwaitingHeldTailReplayThisRead, TrustChain trustChain, string? senderFingerprint,
+        HashSet<Guid> streamsAwaitingHeldTailReplayThisRead, HashSet<Guid> gatedDropOriginNodeIdsThisRead,
+        HashSet<Guid> gatedDropStreamIdsThisRead, TrustChain trustChain, string? senderFingerprint,
         DateTimeOffset now, CancellationToken cancellationToken)
     {
         if (!originEventIdsAppliedThisRead.Add(record.OriginEventId))
@@ -635,9 +671,15 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // policy, records a run skill, or sets a prompt addendum, so it applies here only when the
         // verified sender key this read resolved (senderFingerprint, never anything the wire record
         // itself claims) belongs to some Owner-role project member's own chain FOR senderNodeId
-        // specifically. Checked before this record can ever be held for a missing genesis
-        // (streamsAwaitingHeldTailReplayThisRead below), so ApplyHeldTailAsync/ReplayHeldTailAsync
-        // never replay a gated record this same rule would have refused.
+        // specifically. Checked here, well before the "genesis missing, hold it" branch further
+        // down: not merely an ordering guard, since none of the six ever reaches that branch at
+        // all — IsProjectAggregateStreamEvent is exactly what forces mergesOntoLocalProjectStream
+        // true below, which makes genesisRequired false, and the effective stream id these six
+        // always merge onto (this receiver's own local Project stream) already exists on any
+        // project this gate runs for. So ApplyHeldTailAsync/ReplayHeldTailAsync never replay one of
+        // these six at all, gated or not (independent pre-PR review, cycle 1, adversarial lens,
+        // low: an earlier version of this comment read as though a held gated record were a real,
+        // merely-refused shape rather than a structurally unreachable one).
         GatedEventVerdict gateVerdict =
             EvaluateGatedEvent(trustChain, senderFingerprint, senderNodeId, record.OriginNodeId, eventType);
         if (gateVerdict != GatedEventVerdict.Allowed)
@@ -664,6 +706,17 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                     Applied = false,
                 });
                 await session.SaveChangesAsync(cancellationToken);
+            }
+            else
+            {
+                // Recoverable: this sender merely forwarded somebody else's record, so the true
+                // origin — an owner this gate would allow — may still send or forward it later.
+                // Recorded here so the outstanding-request closing logic below (ReadFromAsync) never
+                // treats a request for this exact origin, stream, or "everything" as satisfied by the
+                // rest of this same answer (independent pre-PR review, cycle 1, adversarial lens,
+                // medium).
+                gatedDropOriginNodeIdsThisRead.Add(record.OriginNodeId);
+                gatedDropStreamIdsThisRead.Add(projectId);
             }
 
             return 0;
@@ -1145,10 +1198,13 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         Dictionary<Guid, long> originProgressThisRead = [];
         Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream = [];
         HashSet<Guid> streamsAwaitingHeldTailReplayThisRead = [];
+        HashSet<Guid> gatedDropOriginNodeIdsThisRead = [];
+        HashSet<Guid> gatedDropStreamIdsThisRead = [];
         return ApplyHeldTailAsync(
             session, streamId, streamsStartedThisRead, streamsThatFailedToStartThisRead,
             originEventIdsAppliedThisRead, originProgressThisRead, originHighWaterByStream,
-            streamsAwaitingHeldTailReplayThisRead, trustChain, now, cancellationToken);
+            streamsAwaitingHeldTailReplayThisRead, gatedDropOriginNodeIdsThisRead, gatedDropStreamIdsThisRead,
+            trustChain, now, cancellationToken);
     }
 
     /// <summary>
@@ -1174,7 +1230,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         IDocumentSession session, Guid streamId, HashSet<Guid> streamsStartedThisRead,
         HashSet<Guid> streamsThatFailedToStartThisRead, HashSet<Guid> originEventIdsAppliedThisRead,
         Dictionary<Guid, long> originProgressThisRead, Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream,
-        HashSet<Guid> streamsAwaitingHeldTailReplayThisRead, TrustChain trustChain, DateTimeOffset now,
+        HashSet<Guid> streamsAwaitingHeldTailReplayThisRead, HashSet<Guid> gatedDropOriginNodeIdsThisRead,
+        HashSet<Guid> gatedDropStreamIdsThisRead, TrustChain trustChain, DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         IReadOnlyList<HeldReplicatedEventRecord> held = await session.Query<HeldReplicatedEventRecord>()
@@ -1197,7 +1254,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 applied += await ApplyAsync(
                     session, decoded, heldRecord.SenderNodeId, heldRecord.ProjectId, heldRecord.OriginProjectKey,
                     streamsStartedThisRead, streamsThatFailedToStartThisRead, originEventIdsAppliedThisRead,
-                    originProgressThisRead, originHighWaterByStream, streamsAwaitingHeldTailReplayThisRead, trustChain,
+                    originProgressThisRead, originHighWaterByStream, streamsAwaitingHeldTailReplayThisRead,
+                    gatedDropOriginNodeIdsThisRead, gatedDropStreamIdsThisRead, trustChain,
                     heldRecord.SenderFingerprint, now, cancellationToken);
             }
             else
