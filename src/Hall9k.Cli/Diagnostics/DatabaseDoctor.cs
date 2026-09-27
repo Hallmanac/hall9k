@@ -344,7 +344,7 @@ public static class DatabaseDoctor
             + $"{Directory.GetCurrentDirectory().EscapeMarkup()}.[/]");
 
         (ContainerRuntimeStatus runtime, bool containerConfirmed, PostgresContainerStatus container) =
-            await ReportContainerRuntimeStatusAsync(runner, connectionStringAlreadyConfigured: false, cancellationToken);
+            await ReportContainerRuntimeStatusAsync(runner, connectionStringAlreadyConfigured: false, offerFixes, cancellationToken);
 
         if (await ContainerRuntimeProbe.PortListeningAsync("127.0.0.1", 5432, cancellationToken))
         {
@@ -439,25 +439,15 @@ public static class DatabaseDoctor
                     readinessTimeout, readinessPollInterval, timeProvider, cancellationToken);
                 if (reachability.Status != ReachabilityStatus.Reachable)
                 {
+                    ReportUnreachable(reachability, resolution);
                     return null;
                 }
 
                 break;
 
             case ReachabilityStatus.AuthenticationFailed:
-                AnsiConsole.MarkupLine(
-                    $"[red]Reached Postgres at {reachability.Host.EscapeMarkup()}:{reachability.Port}[/], but it "
-                    + $"rejected the credentials in {resolution.Description.EscapeMarkup()}: {reachability.Detail.EscapeMarkup()}");
-                AnsiConsole.MarkupLine(
-                    "[dim]Check the username and password in the connection string, or rotate the credential "
-                    + "and reconfigure it there.[/]");
-                return null;
-
             case ReachabilityStatus.DatabaseMissing:
-                AnsiConsole.MarkupLine(
-                    $"[red]Reached Postgres at {reachability.Host.EscapeMarkup()}:{reachability.Port}[/], but the "
-                    + $"database '{reachability.Database.EscapeMarkup()}' does not exist there yet. Create it, or "
-                    + "point the connection string at one that does.");
+                ReportUnreachable(reachability, resolution);
                 return null;
 
             default:
@@ -466,9 +456,7 @@ public static class DatabaseDoctor
                     timeProvider, cancellationToken);
                 if (reachability.Status != ReachabilityStatus.Reachable)
                 {
-                    AnsiConsole.MarkupLine(
-                        $"[red]Reached Postgres at {reachability.Host.EscapeMarkup()}:{reachability.Port}[/], but it "
-                        + $"reported: {reachability.Detail.EscapeMarkup()}");
+                    ReportUnreachable(reachability, resolution);
                     return null;
                 }
 
@@ -570,6 +558,51 @@ public static class DatabaseDoctor
     }
 
     /// <summary>
+    /// The terminal diagnosis for a <see cref="ReachabilityReport"/> that never turned
+    /// <see cref="ReachabilityStatus.Reachable"/> — shared by the immediate-probe cases above and
+    /// by the two retried cases (<see cref="DiagnoseRefusedConnectionAsync"/>,
+    /// <see cref="DiagnoseOtherErrorAsync"/>), so a status that only emerges partway through a
+    /// bounded retry — Postgres answering "wrong password" or "no such database" after a few
+    /// seconds of "still starting up" — gets the same specific message a first-probe answer of
+    /// that same status already gets, rather than the generic detail dump or the retry's own
+    /// "not answering" wording that fits neither (cycle-3 pre-PR review, both lenses).
+    /// <see cref="ReachabilityStatus.RefusedConnection"/> prints nothing here: whichever caller
+    /// reached a still-refused result already explained it — <see cref="DiagnoseRefusedConnectionAsync"/>
+    /// prints its own "is it running / still not answering" line, and the immediate-probe case
+    /// never reaches this method at all (it retries first).
+    /// </summary>
+    private static void ReportUnreachable(ReachabilityReport reachability, ConnectionStringResolution resolution)
+    {
+        switch (reachability.Status)
+        {
+            case ReachabilityStatus.RefusedConnection:
+                break;
+
+            case ReachabilityStatus.AuthenticationFailed:
+                AnsiConsole.MarkupLine(
+                    $"[red]Reached Postgres at {reachability.Host.EscapeMarkup()}:{reachability.Port}[/], but it "
+                    + $"rejected the credentials in {resolution.Description.EscapeMarkup()}: {reachability.Detail.EscapeMarkup()}");
+                AnsiConsole.MarkupLine(
+                    "[dim]Check the username and password in the connection string, or rotate the credential "
+                    + "and reconfigure it there.[/]");
+                break;
+
+            case ReachabilityStatus.DatabaseMissing:
+                AnsiConsole.MarkupLine(
+                    $"[red]Reached Postgres at {reachability.Host.EscapeMarkup()}:{reachability.Port}[/], but the "
+                    + $"database '{reachability.Database.EscapeMarkup()}' does not exist there yet. Create it, or "
+                    + "point the connection string at one that does.");
+                break;
+
+            default:
+                AnsiConsole.MarkupLine(
+                    $"[red]Reached Postgres at {reachability.Host.EscapeMarkup()}:{reachability.Port}[/], but it "
+                    + $"reported: {reachability.Detail.EscapeMarkup()}");
+                break;
+        }
+    }
+
+    /// <summary>
     /// Everything the <see cref="ReachabilityStatus.RefusedConnection"/> case does once the first
     /// probe refuses: report what Docker knows via <see cref="ReportContainerRuntimeStatusAsync"/>,
     /// offer to start what is actually stopped via <see cref="OfferAndStartAsync"/> — and, when the
@@ -615,7 +648,7 @@ public static class DatabaseDoctor
             // 2026-08-21 — a machine reboot leaves the connection string configured
             // but Docker Desktop, and so hall9k-postgres, not yet back up).
             (ContainerRuntimeStatus runtime, bool containerConfirmed, PostgresContainerStatus container) =
-                await ReportContainerRuntimeStatusAsync(runner, connectionStringAlreadyConfigured: true, cancellationToken);
+                await ReportContainerRuntimeStatusAsync(runner, connectionStringAlreadyConfigured: true, offerFixes, cancellationToken);
 
             bool justStarted = offerFixes && runtime == ContainerRuntimeStatus.Running
                 && await OfferAndStartAsync(connectionString, containerConfirmed, container, assumeYes, runner, cancellationToken);
@@ -640,7 +673,13 @@ public static class DatabaseDoctor
             }
         }
 
-        if (reachability.Status != ReachabilityStatus.Reachable)
+        // Only for a still-refused result: a status the wait turned into something else —
+        // AuthenticationFailed, DatabaseMissing, a persisting OtherError — already got its own
+        // real answer from Postgres, and saying "not answering" (or "is it running?") about a
+        // server that just answered would report the opposite of what actually happened. The
+        // caller's own switch (CheckReachabilityAndSchemaAsync) prints the diagnosis that fits
+        // whatever this method actually returns (cycle-3 pre-PR review, both lenses).
+        if (reachability.Status == ReachabilityStatus.RefusedConnection)
         {
             AnsiConsole.MarkupLine(waitedForStartup
                 ? $"[dim]Still not answering after waiting up to {readinessTimeout.TotalSeconds:0}s for it to finish "
@@ -718,10 +757,14 @@ public static class DatabaseDoctor
     /// its connection string at this exact address and already tried it a moment ago, and
     /// <c>--yes</c> cannot reach the not-configured path's own offer from there either, so both
     /// halves of that advice would be false on that caller (cycle-1 adversarial review finding,
-    /// on this method).
+    /// on this method). <paramref name="offerFixes"/> distinguishes the same caller's own two
+    /// modes: whether to name "retry in a moment" as the operator's own next step, or leave it
+    /// unsaid because the caller is about to retry that exact wait automatically the moment
+    /// this returns — dropping it unconditionally left a passive, non-retrying diagnosis with no
+    /// next step at all (cycle-3 pre-PR review, adversarial lens).
     /// </summary>
     private static async Task<(ContainerRuntimeStatus Runtime, bool ContainerConfirmed, PostgresContainerStatus Container)> ReportContainerRuntimeStatusAsync(
-        ProcessRunner runner, bool connectionStringAlreadyConfigured, CancellationToken cancellationToken)
+        ProcessRunner runner, bool connectionStringAlreadyConfigured, bool offerFixes, CancellationToken cancellationToken)
     {
         ContainerRuntimeStatus runtime = await ContainerRuntimeProbe.RuntimeStatusAsync(runner, cancellationToken);
         bool containerConfirmed = true;
@@ -749,15 +792,23 @@ public static class DatabaseDoctor
                 }
                 else if (container == PostgresContainerStatus.Running && connectionStringAlreadyConfigured)
                 {
-                    // Never "retry in a moment" here: the only caller that reaches this branch
-                    // (DiagnoseRefusedConnectionAsync) is about to retry automatically, on its own,
-                    // right after this prints, whenever it is offering fixes at all — telling the
-                    // operator to retry by hand for something the doctor already retries itself was
-                    // the contradiction cycle-1's conformance lens flagged on this message.
-                    AnsiConsole.MarkupLine(
-                        $"[dim]Found {PostgresRuntime.ContainerName} confirmed running[/] — but nothing answered "
-                        + "when the already-configured connection string just tried it, so Postgres inside it may "
-                        + "still be finishing initialisation, or something else is bound to that address.");
+                    // "Retry in a moment" only doesn't apply when offerFixes is set: the only
+                    // caller that reaches this branch (DiagnoseRefusedConnectionAsync) is about to
+                    // retry automatically, on its own, right after this prints — but only while it
+                    // is offering fixes at all. A passive diagnosis (offerFixes: false — an ordinary
+                    // command's own NpgsqlException, via Program.cs) never retries anything, so
+                    // dropping that advice unconditionally left a passive caller with a "confirmed
+                    // running" message and no next step, immediately followed by the contradicting
+                    // "Is Postgres running?" from this same method's caller (cycle-3 pre-PR review,
+                    // adversarial lens).
+                    AnsiConsole.MarkupLine(offerFixes
+                        ? $"[dim]Found {PostgresRuntime.ContainerName} confirmed running[/] — but nothing answered "
+                            + "when the already-configured connection string just tried it, so Postgres inside it "
+                            + "may still be finishing initialisation, or something else is bound to that address."
+                        : $"[dim]Found {PostgresRuntime.ContainerName} confirmed running[/] — but nothing answered "
+                            + "when the already-configured connection string just tried it, so Postgres inside it "
+                            + "may still be finishing initialisation, or something else is bound to that address. "
+                            + "Retry in a moment, or check the container's own logs.");
                 }
                 else if (container == PostgresContainerStatus.Running)
                 {
@@ -1082,7 +1133,14 @@ public static class DatabaseDoctor
     /// bool — the seam <see cref="DiagnoseRefusedConnectionAsync"/> needs to retry a refused
     /// connection and still report whatever the last probe actually said (a different failure
     /// kind, or the same one) once the bound expires, rather than collapsing every non-reachable
-    /// outcome into "false".
+    /// outcome into "false". Stops the moment the probe answers with a status waiting cannot
+    /// change — <see cref="ReachabilityStatus.AuthenticationFailed"/> or
+    /// <see cref="ReachabilityStatus.DatabaseMissing"/> mean Postgres itself already answered
+    /// definitively, so polling out the rest of <paramref name="timeout"/> would only delay
+    /// reporting a wrong-credentials or missing-database diagnosis that waiting longer never
+    /// fixes (cycle-3 pre-PR review, adversarial lens) — only
+    /// <see cref="ReachabilityStatus.RefusedConnection"/> and <see cref="ReachabilityStatus.OtherError"/>
+    /// plausibly mean "still starting up" and are worth retrying.
     /// </summary>
     internal static async Task<ReachabilityReport> WaitForReachableAsync(
         Func<CancellationToken, Task<ReachabilityReport>> probe,
@@ -1093,14 +1151,17 @@ public static class DatabaseDoctor
     {
         DateTimeOffset deadline = timeProvider.GetUtcNow() + timeout;
         ReachabilityReport report = await probe(cancellationToken);
-        while (report.Status != ReachabilityStatus.Reachable && timeProvider.GetUtcNow() < deadline)
+        while (IsWorthRetrying(report.Status) && timeProvider.GetUtcNow() < deadline)
         {
-            await Task.Delay(pollInterval, cancellationToken);
+            await Task.Delay(pollInterval, timeProvider, cancellationToken);
             report = await probe(cancellationToken);
         }
 
         return report;
     }
+
+    private static bool IsWorthRetrying(ReachabilityStatus status) =>
+        status is ReachabilityStatus.RefusedConnection or ReachabilityStatus.OtherError;
 
     /// <summary>
     /// Whether the schema already there is one <c>AutoCreate.CreateOnly</c> — every ordinary
