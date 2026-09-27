@@ -18,7 +18,3 @@ origin-branch: task/608be11f-the-doctor-s-guarded-postgres
 published: 2026-09-27 18:17:24Z
 context: |-
   Field report from Windows, 2026-09-27 14:14 EDT (transport note 4fa918ac), installing v0.10.57 (#601, task 359e0d7a): the restart failed at step 2. The doctor's guarded recreate rebuilt hall9k-postgres on 127.0.0.1:5432 against the existing hall9k-pgdata volume (58 tables intact), then probed before Postgres finished starting, exited 1, and left the daemon stopped. A second h9k doctor --yes --no-configure plus h9k daemon start by hand brought it up. 2ba2ac07 (generated Postgres password) runs its migration on the same doctor path right after this recreate, so it is blocked by this task.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-09-27 18:40:07Z
