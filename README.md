@@ -524,7 +524,7 @@ dotnet test                   # unit and integration tiers; integration needs Do
 
 Nothing is *started* at install time (no prompt, no provisioning, Decisions Log #58), though
 install does write the matching connection string to `config.json` when nothing else resolved
-and nothing is already listening on `localhost:5432` (a port in use might be a Postgres of your
+and nothing is already listening on `127.0.0.1:5432` (a port in use might be a Postgres of your
 own, and install will not write its own credentials over a server it cannot identify; Decisions
 Log #118). If a command needs a database and cannot reach one, it runs `h9k doctor` for you
 instead of failing raw; run it yourself any time to see the same diagnosis.

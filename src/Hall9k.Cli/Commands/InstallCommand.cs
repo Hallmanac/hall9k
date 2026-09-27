@@ -540,11 +540,11 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // failure against a credential install itself invented (cycle-1 review; AGENTS.md:
         // never guess at unobserved facts). Leave it to h9k doctor's own diagnosis instead.
         Func<CancellationToken, Task<bool>> probe = portListeningProbe
-            ?? (token => ContainerRuntimeProbe.PortListeningAsync("localhost", 5432, token));
+            ?? (token => ContainerRuntimeProbe.PortListeningAsync("127.0.0.1", 5432, token));
         if (await probe(cancellationToken))
         {
             AnsiConsole.MarkupLine(
-                "[dim]Something is already listening on localhost:5432 — left unconfigured rather than "
+                "[dim]Something is already listening on 127.0.0.1:5432 — left unconfigured rather than "
                 + $"guessing it is safe to write {Hall9kDatabase.DefaultConnectionString.EscapeMarkup()} there. "
                 + $"Run h9k doctor to diagnose what is listening, or set {Hall9kDatabase.EnvironmentVariableName} "
                 + "yourself if it is already your Postgres.[/]");

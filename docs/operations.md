@@ -253,7 +253,7 @@ Hall9k requires a Postgres connection string and takes no position on where Post
 when nothing resolves yet anywhere in the precedence chain below: the compose file it just wrote
 fully determines what that string has to be, so recording it is not a guess, and it is never
 written over a value that already resolves (Decisions Log #118). It also skips the write when
-something is already listening on `localhost:5432`, because a native Postgres of your own is a
+something is already listening on `127.0.0.1:5432`, because a native Postgres of your own is a
 supported deployment, and writing install's compose credentials against it would turn doctor's
 honest "something is already listening" diagnosis into a manufactured authentication failure. You
 get a line saying the machine was left unconfigured for that reason; run `h9k doctor` to see what
@@ -383,8 +383,9 @@ docker inspect hall9k-postgres --format '{{range .Mounts}}{{.Name}}{{"\n"}}{{end
 Then confirm nothing is listening on every interface: `lsof -nP -iTCP:5432 -sTCP:LISTEN` on macOS,
 `Get-NetTCPConnection -LocalPort 5432 -State Listen` on Windows (neither should show a `0.0.0.0`,
 `*`, or `::` entry, only `127.0.0.1`). The daemon needs no reconfiguration either way: its
-connection string already names `localhost`, which resolves to the loopback address the recreated
-container still answers on.
+connection string names `127.0.0.1` directly (task 2f9bc330), the exact address the recreated
+container still answers on — never `localhost`, which on a node where that name resolves to `::1`
+first would refuse before falling back, since the container never publishes on `::1` at all.
 
 ### Upgrading the event store (Marten 9, task 29b0ca1a)
 
@@ -1017,7 +1018,7 @@ current state while the daemon keeps running on whatever it read when it started
 
 `h9k update` never touches the config file. `h9k install` touches it in exactly one case — merging
 in `connectionString` when nothing resolves yet anywhere in the [precedence chain](#postgres)
-above and nothing is already listening on `localhost:5432` (Decisions Log #118) — and otherwise
+above and nothing is already listening on `127.0.0.1:5432` (Decisions Log #118) — and otherwise
 leaves it alone the same as update does; a missing file is created (with defaults, and only the
 settings you asked to change) the first time `h9k config set` needs it, and it says so.
 
@@ -1028,7 +1029,7 @@ know about untouched when it writes, so a hand-edited setting survives:
 
 ```json
 {
-  "connectionString": "Host=localhost;Port=5432;…",
+  "connectionString": "Host=127.0.0.1;Port=5432;…",
   "hall9k": {
     "maxConcurrentTaskRuns": 2,
     "defaultModel": "claude-opus-5[1m]",

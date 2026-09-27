@@ -58,7 +58,7 @@ Both scripts do the same five things, in order:
    downloaded archive instead of a local `dotnet publish`. This is what places the binaries,
    writes Hall9k's own Postgres definition (not started), writes the matching connection
    string to `config.json` when nothing else resolved and nothing is already listening on
-   `localhost:5432`, publishes the skill set, and puts `h9k` on your `PATH`. Under a redirected `HALL9K_HOME`
+   `127.0.0.1:5432`, publishes the skill set, and puts `h9k` on your `PATH`. Under a redirected `HALL9K_HOME`
    (a scratch install) it skips that last step and prints a line saying so; run
    `$HALL9K_HOME/bin/h9k` directly, or add that directory to your `PATH` by hand.
 5. Run **`h9k doctor`** — so the bootstrap ends by telling you exactly what still needs
@@ -87,9 +87,9 @@ Nothing, mechanically — the bootstrap script is the same either way. The two d
   with `iwr | iex` — use the scriptblock form shown above instead.
 - **Read what `h9k doctor` says at the end, and act on it or report it.** Install now writes
   the matching connection string to `config.json` when nothing else resolved and nothing is
-  listening on `localhost:5432`, so a fresh machine's bootstrap ends with `h9k doctor`
+  listening on `127.0.0.1:5432`, so a fresh machine's bootstrap ends with `h9k doctor`
   reporting a configured-but-unreachable database ("Configured (from the platform config file
-  …) to connect to localhost:5432, but nothing is listening there") rather than "no connection
+  …) to connect to 127.0.0.1:5432, but nothing is listening there") rather than "no connection
   string configured" — that is still expected, not a failure of install. Follow it with
   `h9k doctor --yes` to remediate non-interactively (starts Hall9k's own Postgres via the
   generated compose file and creates the schema, when Docker is running) instead of the
@@ -176,7 +176,7 @@ up against a guessed default instead. The restart fails at that step and says so
 is guessed (Decisions Log #57, #58, #118). If nothing resolved before you ran the installer,
 install already wrote the one connection string that matches the compose file it just wrote,
 so there is usually nothing left to configure by hand. The one case it deliberately leaves
-alone is a machine with something already listening on `localhost:5432`, your own native
+alone is a machine with something already listening on `127.0.0.1:5432`, your own native
 Postgres, say, which is a supported way to run this (Decisions Log #57 takes no position on
 where Postgres runs). Install cannot tell whose server that is, so rather than write its own
 compose credentials against it and turn doctor's "something is already listening" into a
@@ -248,7 +248,7 @@ the default connection string, so `~/.hall9k` survives, empty of everything else
 The whole home is removed only when no `config.json` ever existed there at all: a machine where
 something already resolved before install ran (the environment variable or a per-project
 override file, not the platform config file itself), or where Postgres was already listening on
-`localhost:5432`, so install's own write never ran. A registered project's home
+`127.0.0.1:5432`, so install's own write never ran. A registered project's home
 (`~/.hall9k/projects/<name>`, real git clones and worktrees), your credentials, and anything else
 you or another tool (`h9k install` included) put there are left alone too — none of that is the
 uninstall's to remove, and this command never guesses otherwise.
