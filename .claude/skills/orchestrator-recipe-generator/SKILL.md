@@ -103,6 +103,10 @@ on it. In project mode, this is what the project recipe's node-seam section poin
 duplicates — the node's own facts belong in the node recipe, generated separately, and a project
 recipe never restates them.
 
+The *Model and effort* canonical block below (see *The canonical blocks*) reads none of this: it is
+a fixed per-spawn tier table this skill defines directly, kept separate from `h9k config show`'s
+model policy, `--orchestrator-model`, and any daemon-dispatched model configuration.
+
 ## Never invent a standing rule
 
 Do not turn anything you observe in the repository, its `AGENTS.md`/`CLAUDE.md`, or its git
@@ -116,6 +120,22 @@ above (this machine, this project); it never states "always do X" for anything a
 actually ruled on. Where the discovery above turns up an observed pattern worth a human's
 attention (the pre-approval pattern, an unfamiliar log timezone), report it as an observation in
 your own summary to the human, not as a rule baked into the recipe.
+
+**One narrow carve-out.** A line the operator has placed in a recipe's *Model and effort* section,
+in exactly one of three forms, is not a rule this generator invented and is never treated as one:
+
+- `Standing grant (<who>, <YYYY-MM-DD>):` grants the window authority to act without asking, for
+  whatever scope the line states (today, only the hardest-reasoning tier's propose-and-confirm
+  default; see *The canonical blocks* below).
+- `Opt-out (<who>, <YYYY-MM-DD>):` turns off a default the block states, for this project (today,
+  only the dispute-park reading-depth split).
+- `Tier override (<who>, <YYYY-MM-DD>):` replaces one tier's agent CLI, model id, and effort
+  triple, or one named kind of spawn's triple, for this project.
+
+Regenerating an existing recipe carries every line of these three forms into the `.new` file
+verbatim, in place, and lists each one in the generator's own summary; the generator never writes a
+new one of its own. Anything else observed in a hand-edited recipe still falls under the rule
+above and is never carried forward by inference: only these three exact forms are.
 
 ## Leanness is a ceiling, not just a floor
 
@@ -133,13 +153,16 @@ pointing, not a sign the project got more complex. Say the before/after word cou
 either way, so a human reviewing the `.new` file can see the delta before deciding whether to
 adopt it.
 
-## The two canonical blocks
+## The canonical blocks
 
-These two blocks are defined exactly once, here. Copy them verbatim, unedited, into every recipe
-you write (the orchestrator recipe, `idea-discovery.md`, `task-refinement.md`, and the node
-recipe) — this is what "rendered from one place" means: the wording lives in this skill, not
-independently re-typed into each recipe, so the four copies cannot drift apart from each other or
-from what this skill says next time it runs.
+These blocks are defined exactly once, here. *Writing conventions* and *Talking to the operator*
+are universal: copy them verbatim, unedited, into every recipe you write (the orchestrator recipe,
+`idea-discovery.md`, `task-refinement.md`, and the node recipe). *Model and effort* is narrower:
+copy it verbatim into a project's `recipes/orchestrator.md` only, never into the node recipe (a
+node window spawns nothing of its own) and never into the scoped recipes (they spawn no further
+sessions of their own either). This is what "rendered from one place" means: the wording lives in
+this skill, not independently re-typed into each recipe, so the copies cannot drift apart from each
+other or from what this skill says next time it runs.
 
 ### Writing conventions (copy verbatim)
 
@@ -194,6 +217,47 @@ from what this skill says next time it runs.
 > as `<this file>.new` beside the current one, for the anchor's own start-up step to compare and
 > reconcile, exactly like any other change this skill makes to an existing recipe. Nothing about
 > that flow ever touches `launch-anchor.md`.
+
+### Model and effort (copy verbatim, project orchestrator recipe only)
+
+> This window does routine orchestration only: reading the board, relaying, merges and calls under
+> standing grants, cutting a task from a clear gap report, and rulings that need a line or two.
+> Work that needs cross-file reading, a test run, a design weighing, or a walk is offered once as a
+> spawned headless session instead of being done here; the operator's answer stands, including a
+> choice to keep it inline. The operator can override any model or effort choice below, at any
+> time. This block never names this window's own model or effort: the model comes from
+> `--orchestrator-model`, set outside this recipe, and the effort is whatever the operator chose at
+> launch; neither is written here.
+>
+> Choose each spawn's model and effort by the shape of the work, from this table, and name both
+> explicitly on its launch line; a spawn never inherits either from `recipes/settings.json`:
+>
+> | Tier | Agent CLI | Model | Effort |
+> | --- | --- | --- | --- |
+> | Mechanical: probes, scripted checks, sweep grooming, lookups | claude-code | `claude-sonnet-5` | high |
+> | Deep-reading: idea discovery, refinement, design walks, challenges, deep-reading dispute preparation | claude-code | `claude-opus-5-5[1m]` | high |
+> | Hardest-reasoning: cross-product architecture, a second opinion on a doubted answer | claude-code | `claude-fable-5-1[1m]` | high (Fable's own default) |
+>
+> A rendered launch line always carries these exact model ids, never a tier name used as an alias.
+> A dated `Tier override` line placed in this section replaces one tier's triple, or one named kind
+> of spawn's triple, for this project, and survives a later regeneration of this recipe.
+>
+> The hardest-reasoning tier is propose-and-confirm by default: name it to the operator in one line
+> with the reason, and launch only on their yes. A dated `Standing grant` line placed in this
+> section lets this window launch that tier unasked, for the scope the line states; every launch
+> under a standing grant is still reported to the operator at once, as a call made under that
+> grant, and recorded in the registry.
+>
+> A dispute park is prepared by reading depth, by default: a claim checkable in a line or two is
+> checked and ruled on here; a claim needing cross-file reading, a test run, or a design weighing
+> goes to a deep-reading-tier spawn that writes a recommended ruling. Who applies that ruling
+> follows whatever delegation the operator has granted this project; with none granted, every
+> ruling goes to the operator with the spawn's prepared evidence. A dated `Opt-out` line placed in
+> this section turns this split off for this project: every dispute park then goes to the operator
+> directly, prepared or not.
+>
+> Daemon-dispatched runs, including any future daemon refinement role, keep the node's own
+> per-stage model configuration; nothing here changes it.
 
 ## The provenance header every recipe you write carries
 
@@ -359,25 +423,30 @@ over a class of decision. Do not create that section pre-emptively in a fresh se
 it is actually needed.
 
 **The registry (`sessions.md`, at the project home's own root).** One row per session this window
-has spawned outside the task lifecycle (design walks, idea discovery, task refinement): when it
-started, its kind, its subject, its status, and the exact one-line command that opens a fresh
-session on the same subject. Liveness comes from `ListAgents`, never from this file; the registry
-holds intent and the fresh-start command, nothing else. It never holds the daemon's own dispatched
-runs — `h9k task show` already does that.
+has spawned outside the task lifecycle (design walks, idea discovery, task refinement, challenges):
+when it started, its kind, its subject, its status, the model and effort it ran at, its session id,
+the step-in line that resumes it, and the fresh-start fallback line that opens a fresh session on
+the same subject instead. Liveness comes from `ListAgents`, never from this file. It never holds
+the daemon's own dispatched runs, which `h9k task show` already does.
 
 **Spawning a scoped session.** When work belongs in its own context (an idea walk, refining a
-draft's criteria), spawn a lean session instead of doing it here:
+draft's criteria, a mechanical probe, a deep-reading dispute preparation), spawn a lean session
+instead of doing it here:
 
 1. Write the hand-off first: the subject's own `journal.md` (in the idea's workspace, or the
    task's directory) with what has been said so far and what the session should do. This is the
    safety net — if the operator disappears mid-sentence, the context is already on disk.
-2. Pick the recipe (`recipes/idea-discovery.md` or `recipes/task-refinement.md`) and launch it
-   headless, in the background, so this window is notified when it ends. Never `--resume`; a fresh
-   session reads the hand-off journal, which is the whole point. Write the exact command in this
-   section of the recipe, built the same way the platform builds any launch line, but pointed at
-   the scoped recipe instead of the anchor:
+2. Pick the recipe (`recipes/idea-discovery.md` or `recipes/task-refinement.md`), and the tier,
+   agent CLI, model, and effort from *Model and effort* above, and a short display name. Generate a
+   fresh session id in this window's own tool shell (`uuidgen | tr 'A-Z' 'a-z'`, or whatever the
+   node's own shell offers for the same thing). Launch it as this window's own backgrounded call,
+   so this window is notified when the session ends; this is not `claude --bg`, which returns at
+   once with a short id and gives no end notification. Write the exact command in this section of
+   the recipe, built the same way the platform builds any launch line, but pointed at the scoped
+   recipe instead of the anchor, naming the model and effort explicitly so neither is ever left to
+   inherit from `recipes/settings.json`:
 
-       cd "<this project's working directory>" && claude --strict-mcp-config --setting-sources project --settings recipes/settings.json --dangerously-skip-permissions -p --append-system-prompt-file recipes/<idea-discovery.md|task-refinement.md> "<opening message naming the subject and its hand-off journal path>"
+       cd "<this project's working directory>" && claude --strict-mcp-config --setting-sources project --settings recipes/settings.json --dangerously-skip-permissions --model '<exact model id>' --effort <level> -n '<name>' --session-id <uuid> -p --append-system-prompt-file recipes/<idea-discovery.md|task-refinement.md> "<opening message naming the subject and its hand-off journal path>"
 
    This is a **stated exception** to *never write a launch line into a recipe* above, not a second
    rule: the orchestrator window's own launch line is a platform setting because the platform
@@ -388,19 +457,46 @@ draft's criteria), spawn a lean session instead of doing it here:
    `workspace/prototype-feedback.md`, not the seeded `notes/prototype-feedback.md` this skill
    writes into a project or node home; PLAN.md §16 #155 records the same ruling). Retire
    this exception the day the platform stores scoped-session launch text of its own; until then,
-   write the real command, not a description of one. The working directory and the opening
-   message both sit inside double-quoted shell segments, exactly like the platform's own launch
-   line, and carry the identical hazard: an opening message that names an operator-supplied
-   subject can itself contain a `"`, `` ` ``, or `$` that would otherwise close the quoted segment
-   early or trigger command substitution the moment this line is pasted or run. Escape both values
-   the same way `LaunchTextDefaults.EscapeForDoubleQuotes` escapes the platform's own launch
-   line before substituting them in: on POSIX, backslash-escape `\`, `"`, `$`, and `` ` ``; in
-   PowerShell (Windows), backtick-escape `` ` ``, `$`, and `"`. Never paste operator-supplied text
-   into either quoted segment unescaped.
-3. Add the row to `sessions.md` before the launch returns, including the interactive form
-   of the same command (drop `-p`) so the operator can open a fresh one themselves.
+   write the real command, not a description of one.
+
+   Single-quote the model id: an unquoted bracketed id such as `claude-opus-5-5[1m]` is a glob to a
+   POSIX shell and breaks PowerShell's own parsing. Where the operator's shell is PowerShell, use
+   `;` rather than `&&` between the `cd` and the launch, exactly as `LaunchTextDefaults` does for
+   the platform's own line. Keep the `-n` name to lowercase letters, digits, and hyphens only, so it
+   never needs its own escaping. The working directory and the opening message both sit inside
+   double-quoted shell segments, exactly like the platform's own launch line, and carry the
+   identical hazard: an opening message that names an operator-supplied subject can itself contain
+   a `"`, `` ` ``, or `$` that would otherwise close the quoted segment early or trigger command
+   substitution the moment this line is pasted or run. Escape both values the same way
+   `LaunchTextDefaults.EscapeForDoubleQuotes` escapes the platform's own launch line before
+   substituting them in: on POSIX, backslash-escape `\`, `"`, `$`, and `` ` ``; in PowerShell
+   (Windows), backtick-escape `` ` ``, `$`, and `"`. Never paste operator-supplied text into either
+   quoted segment unescaped.
+3. Add the row to `sessions.md` before the launch returns: the model, the effort, the session id,
+   and the fresh-start fallback line, the same command with `--model` and `--effort` kept exactly as
+   launched, but with `-p`, `-n`, and `--session-id` dropped, so the operator can open a fresh
+   interactive session on the same subject if this one's history is ever lost.
 4. When it ends, read what it wrote into the workspace, report the result to the operator in plain
-   language, and mark the row.
+   language, and mark the row. Give the operator a step-in line carrying exactly the working
+   directory, `--strict-mcp-config`, `--setting-sources project`, `--settings`,
+   `--dangerously-skip-permissions`, `--model`, `--effort`, `--append-system-prompt-file`, and
+   `--resume <id>`, and never `-p`, `-n`, `--session-id`, or an opening message: those either
+   restart the turn from scratch or collide with the very session `--resume` is reopening. Record
+   the step-in line in the registry beside the fresh-start fallback from step 3. This window never
+   resumes a spawned session itself: a follow-up job is a fresh launch from an updated hand-off
+   journal, and the step-in line is the operator's alone to use.
+
+The launch line in step 2, the fresh-start fallback in step 3, and the step-in line in step 4 all
+follow the same rules: `--model` and `--effort` are always explicit, the model id is always
+single-quoted, and `;` replaces `&&` between the `cd` and the launch wherever the operator's shell
+is PowerShell. None of the three is ever composed differently or left to inherit either flag from
+`recipes/settings.json` or from this window's own setting.
+
+`claude --help` does not state how `--model`, `--effort`, and `--settings` behave on `--resume`.
+The first time a step-in line is actually used after this recipe is adopted, check the resumed
+session's own transcript for its model and effort fields against what the step-in line asked for,
+and write the result as a dated entry in `notes/prototype-feedback.md`; do not assert the answer
+here ahead of that check.
 
 **Presence: closing and restarting.** The platform tracks whether an orchestrator window is live
 for this project on this node, and consumers act on that answer: `h9k status` and
@@ -474,7 +570,10 @@ command that reads the clock.
 
 **Standing rules.** Live in this window's memory directory, loaded from there, and never restated
 here — a rule copied into two places drifts the moment one of them changes. See *Never invent a
-standing rule* above for what this recipe may not do instead.
+standing rule* above for what this recipe may not do instead, and for the one narrow carve-out: a
+dated `Standing grant`, `Opt-out`, or `Tier override` line in *Model and effort* is the operator's
+own ruling kept where the table it corrects lives, and a regeneration carries it forward verbatim
+rather than treating it as this generator's invention.
 
 **Ideas and drift.** When the operator says "log this idea," run `h9k idea add` immediately and
 write what is said into the idea's own `workspace/journal.md` as the conversation continues — no
@@ -490,8 +589,8 @@ it without asking the operator to repeat themselves. This is the only record a l
 of this recipe has of what earlier windows learned; an observation never written here cannot be
 carried forward.
 
-**The two canonical blocks.** Copy the *Writing conventions* and *Talking to the operator* blocks
-above, verbatim, as their own sections.
+**The canonical blocks.** Copy the *Writing conventions*, *Talking to the operator*, and *Model and
+effort* blocks above, verbatim, as their own sections.
 
 ## The node orchestrator recipe's contract
 
@@ -531,11 +630,14 @@ Same shape as the project recipe above, with these differences:
   operator has actually ruled on either for this specific node, it already lives in this window's
   memory directory, exactly like any other standing rule, and needs no restating here.
 - No idea-discovery or task-refinement recipes; no spawn procedure of its own beyond reaching a
-  project orchestrator with `ListAgents`/`SendMessage`.
+  project orchestrator with `ListAgents`/`SendMessage`, and so no *Model and effort* section either:
+  that block exists to pick a tier for a project window's own spawns, and a node window spawns none.
 - Journal and registry contracts are identical in shape (state document, token budget,
   snapshot-to-notes, re-orientation log; one row per spawned session with its fresh-start command),
   scoped to node-level activity instead of one project's board.
-- The two canonical blocks, copied verbatim, exactly as in the project recipe.
+- The two universal canonical blocks (*Writing conventions*, *Talking to the operator*), copied
+  verbatim, exactly as in the project recipe; *Model and effort* is left out entirely, per the point
+  above.
 
 ## The scoped session recipes' contract
 
@@ -592,9 +694,11 @@ their own. Both:
   what the next session should do first.
 - If the operator is in the terminal, open with a plain-language recap and one acted-out scenario
   before any criterion-by-criterion breakdown (the *Talking to the operator* block already says
-  this; do not restate it a second way here). If headless, do the work the opening message names,
-  write the result into the workspace, rewrite the journal, and end with a short summary and the
-  open questions the operator still has to settle.
+  this; do not restate it a second way here). If headless, do the work the opening message names;
+  when it reaches something only the operator can settle, write the question into this session's
+  own `journal.md` and end the turn there, since a headless session cannot wait on an answer that
+  cannot arrive mid-flight. Otherwise write the result into the workspace, rewrite the journal, and
+  end with a short summary and the open questions the operator still has to settle.
 - Carry both canonical blocks, verbatim.
 
 ## Launch text
@@ -604,6 +708,12 @@ scoped session* above, the scoped-session command itself, which you do write, in
 `recipes/orchestrator.md` — and you never edit `launch-anchor.md` or
 `settings.json` — both are platform-owned, always overwritten, and carry no fact a recipe would
 ever need to restate. Instead, for each agent CLI discovery found installed:
+
+If a project's `Model and effort` block, whether the shipped default table or a `Tier override`
+line replacing part of it, names an agent CLI with no computed launch shape (anything other than
+`claude-code` today, per *What you discover* above), do not render a launch line for that tier in
+*Spawning a scoped session*: name the gap in this run's own summary instead, the same way a CLI
+with no computed default is handled below for the orchestrator's own launch line.
 
 - Read what the platform already has: `h9k orchestrator launch-text show --cli <name>` in node
   mode, or `... --cli <name> --project <name>` in project mode. Before anything has ever been set,
