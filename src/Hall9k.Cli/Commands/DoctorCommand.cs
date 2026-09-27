@@ -6,12 +6,17 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// The tool check (<see cref="ToolDoctor"/>) and the database doctor check (Decisions Log #58,
-/// #73), in that order. The tool check runs first — and needs no daemon and no reachable
-/// database itself — so it still runs on the database section's own early-return path below,
-/// exactly the moment the generated project <c>AGENTS.md</c> promises it will. The database
-/// check is the same four questions any other command runs automatically when it hits an
-/// unreachable database, on demand, whether or not anything is actually broken right now.
+/// The tool check (<see cref="ToolDoctor"/>), the container port-binding check
+/// (<see cref="DatabaseDoctor.CheckContainerPortBindingAsync(bool,System.Threading.CancellationToken)"/>,
+/// security review idea 6be68ee2), and the database doctor check (Decisions Log #58, #73), in that
+/// order. The tool check runs first — and needs no daemon and no reachable database itself — so
+/// it still runs on the database section's own early-return path below, exactly the moment the
+/// generated project <c>AGENTS.md</c> promises it will. The port-binding check runs unconditionally
+/// too, on every invocation of this command, whether or not the four database questions that
+/// follow it find anything wrong: it is a question about the container Docker actually created,
+/// not about the connection string. The database check itself is the same four questions any other
+/// command runs automatically when it hits an unreachable database, on demand, whether or not
+/// anything is actually broken right now.
 /// </summary>
 public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
 {
@@ -22,7 +27,11 @@ public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
             "Remediate without asking: start Hall9k's own Postgres via the generated compose file "
             + "and create the schema, or — if hall9k-postgres is already confirmed running — record "
             + "the connection string that points at it, non-interactively — the shape a script or a "
-            + "dispatched agent needs, since there is no terminal there to answer a prompt.")]
+            + "dispatched agent needs, since there is no terminal there to answer a prompt. Also "
+            + "recreates hall9k-postgres when it is publishing port 5432 on anything but 127.0.0.1, "
+            + "but only when it mounts exactly the pinned hall9k-pgdata volume, was created from this "
+            + "install's own compose file, and no daemon is running — otherwise this prints the exact "
+            + "commands to recreate it by hand instead.")]
         public bool Yes { get; init; }
 
         [CommandOption("--no-configure")]
@@ -41,6 +50,8 @@ public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
         await ToolDoctor.RunAsync(cancellationToken);
+
+        await DatabaseDoctor.CheckContainerPortBindingAsync(settings.Yes, cancellationToken);
 
         if (await DatabaseDoctor.RunAsync(
             offerFixes: true, settings.Yes, cancellationToken,

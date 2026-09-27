@@ -1,3 +1,4 @@
+using Hall9k.Cli.DaemonControl;
 using Hall9k.Connectors.Processes;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -104,6 +105,131 @@ public static class DatabaseDoctor
 
     private static Task<ReachabilityReport> ProbeDefaultConnectionStringAsync(CancellationToken cancellationToken) =>
         DatabaseReachability.ProbeAsync(Hall9kDatabase.DefaultConnectionString, cancellationToken);
+
+    /// <summary>
+    /// The one doctor question that runs whether or not the four questions above find anything
+    /// wrong at all (security review idea 6be68ee2, secrets-files-network finding 1): does
+    /// <c>hall9k-postgres</c> publish port 5432 anywhere but <c>127.0.0.1</c>. Bare <c>"5432:5432"</c>
+    /// in a compose file binds Docker to every interface, which put the container's own superuser
+    /// <c>postgres</c> and its public default password on the network. Rewrites
+    /// <see cref="PostgresRuntime.ComposeFile"/> from the shipped constant first, unconditionally —
+    /// so an install that predates the loopback-only pin, or one whose local copy was hand-edited,
+    /// is never diagnosed against its own stale file — then reads what the running or stopped
+    /// container was actually created with via a single <c>docker inspect</c>
+    /// (<see cref="ContainerRuntimeProbe.InspectPortBindingAsync"/>): the compose file cannot roll
+    /// an existing container's binding forward on its own, since Docker only reads it again at
+    /// creation.
+    /// <para>
+    /// A found drift is recreated automatically — <c>docker compose -f ComposeFile up -d</c>, onto
+    /// the container's existing named volume — only when <paramref name="assumeYes"/> is set
+    /// (<c>h9k doctor --yes</c>; this offer is never interactive, unlike every other fix in this
+    /// file, because recreating a container already holding real data is a bigger action than
+    /// starting or stopping one) and three facts all hold: the container mounts exactly
+    /// <see cref="PostgresRuntime.VolumeName"/> and nothing else, its own compose project's
+    /// <c>config_files</c> label names this exact file, and <paramref name="daemonRunning"/> says
+    /// no daemon is running right now. Any one of those failing means either the container was not
+    /// created by this install's own compose file (a hand-created container, a different project
+    /// mounting a differently-named volume — recreating that would either collide or silently
+    /// orphan real data) or a daemon is still holding a connection through the very socket about to
+    /// be torn down. Every other case, remediated or not, prints the exact hand commands: stop the
+    /// daemon, run the compose recreate, start the daemon again — the same order
+    /// <c>h9k update --restart</c>'s own hand-off already runs in the newly installed binary, which
+    /// is what makes the guard's "no daemon running" true there in the first place (that hand-off
+    /// stops the daemon as its own first step, before ever calling this doctor).
+    /// </para>
+    /// <para>
+    /// Takes <paramref name="daemonRunning"/> as an injected probe, the same seam
+    /// <see cref="DiagnoseNotConfiguredAsync"/> already uses for
+    /// <paramref name="alreadyRunningContainerProbe"/>: a test substitutes a fake answer instead of
+    /// depending on a real daemon process and pid file.
+    /// </para>
+    /// </summary>
+    public static Task CheckContainerPortBindingAsync(bool assumeYes, CancellationToken cancellationToken) =>
+        CheckContainerPortBindingAsync(
+            assumeYes, ExternalProcess.Runner, () => DaemonProcess.Probe() is not null, cancellationToken);
+
+    internal static async Task CheckContainerPortBindingAsync(
+        bool assumeYes, ProcessRunner runner, Func<bool> daemonRunning, CancellationToken cancellationToken)
+    {
+        PostgresRuntime.WriteComposeFile();
+
+        if (await ContainerRuntimeProbe.RuntimeStatusAsync(runner, cancellationToken) != ContainerRuntimeStatus.Running)
+        {
+            return;
+        }
+
+        (bool containerConfirmed, PostgresContainerStatus containerStatus) =
+            await ContainerRuntimeProbe.Hall9kContainerStatusAsync(runner, cancellationToken);
+        if (!containerConfirmed || containerStatus == PostgresContainerStatus.Absent)
+        {
+            return;
+        }
+
+        (bool inspected, string? hostIp, string? configFilesLabel, IReadOnlyList<string> mountedVolumes) =
+            await ContainerRuntimeProbe.InspectPortBindingAsync(runner, cancellationToken);
+        if (!inspected)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]Could not confirm {PostgresRuntime.ContainerName}'s port binding[/] — docker inspect "
+                + "itself failed. Retry once Docker is answering reliably.");
+            return;
+        }
+
+        if (hostIp is null or "127.0.0.1")
+        {
+            return;
+        }
+
+        // Escaped once here, rather than at each of the three places below that print it: the
+        // path underneath it is HALL9K_HOME-derived and could in principle carry a literal '['
+        // or ']' (a custom HALL9K_HOME, an unusual username) that would otherwise reach
+        // AnsiConsole.MarkupLine as unbalanced markup instead of a literal bracket — the same
+        // risk InstallCommand's own compose-file line already guards against.
+        string composeUpCommand = $"docker compose -f {PostgresRuntime.ComposeFile} up -d".EscapeMarkup();
+        AnsiConsole.MarkupLine(
+            $"[red]{PostgresRuntime.ContainerName} publishes port 5432 on {hostIp.EscapeMarkup()}, not 127.0.0.1[/] "
+            + "— anything on the network can reach hall9k's own Postgres, with its known default credentials, "
+            + $"over this. {PostgresRuntime.ComposeFile.EscapeMarkup()} has just been rewritten to bind "
+            + "127.0.0.1 only, but the running container itself keeps its old binding until it is recreated.");
+
+        bool mountsExactlyPinnedVolume = mountedVolumes.Count == 1
+            && string.Equals(mountedVolumes[0], PostgresRuntime.VolumeName, StringComparison.Ordinal);
+        bool labelNamesThisComposeFile = configFilesLabel is not null && ComposeConfigFileMatches(configFilesLabel);
+
+        if (assumeYes && mountsExactlyPinnedVolume && labelNamesThisComposeFile && !daemonRunning())
+        {
+            AnsiConsole.MarkupLine($"[dim]Recreating it now: {composeUpCommand}[/]");
+            bool recreated = await ContainerRuntimeProbe.RecreateFromComposeAsync(runner, cancellationToken);
+            AnsiConsole.MarkupLine(recreated
+                ? $"[green]Recreated[/] — {PostgresRuntime.ContainerName} now publishes 5432 on 127.0.0.1 only."
+                : $"[red]Docker could not recreate it[/] — check docker logs {PostgresRuntime.ContainerName}, "
+                    + "or run the command by hand.");
+            return;
+        }
+
+        AnsiConsole.MarkupLine(
+            "[dim]Not recreating it automatically — that is only safe once the container mounts exactly the "
+            + $"pinned {PostgresRuntime.VolumeName} volume, its compose project's config_files label names "
+            + $"this exact file, and no daemon is running to be caught mid-swap"
+            + (assumeYes ? " — one of those does not hold here" : ", and --yes was not given")
+            + ". Recreate it by hand once that is true:[/]\n"
+            + "  h9k daemon stop\n"
+            + $"  {composeUpCommand}\n"
+            + "  h9k daemon start");
+    }
+
+    /// <summary>
+    /// Whether a container's own <c>com.docker.compose.project.config_files</c> label names
+    /// exactly <see cref="PostgresRuntime.ComposeFile"/> — the label is the absolute path Compose
+    /// was invoked with, so this compares full paths rather than raw strings, and follows the
+    /// platform's own case rule (Windows paths compare case-insensitively; every other platform
+    /// this ships on does not) rather than assuming either.
+    /// </summary>
+    private static bool ComposeConfigFileMatches(string configFilesLabel)
+    {
+        StringComparison comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return string.Equals(Path.GetFullPath(configFilesLabel), Path.GetFullPath(PostgresRuntime.ComposeFile), comparison);
+    }
 
     /// <summary>
     /// Question 1 failed, so question 4 is what is left to say: what is available to point at.
