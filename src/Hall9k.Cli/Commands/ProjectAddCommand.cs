@@ -85,13 +85,17 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             + "joins. Only needed on a project someone else already owns: registering, then being "
             + "told the owner, then pasting their invite here (or later with h9k project join <name> "
             + "--invite <token>) is the flow a newcomer meets. The first owner of a brand-new project "
-            + "needs none of this — that join still just establishes its own root.")]
+            + "needs none of this — that join still just establishes its own root. Pass '-' to read "
+            + "the secret from stdin instead of argv; passing it directly still works but prints a "
+            + "one-line warning.")]
         public string? Invite { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
         RequireExclusiveArchivedCollisionFlags(settings);
+
+        string? invite = await InviteTokenInput.ResolveAsync(settings.Invite, cancellationToken);
 
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
@@ -235,7 +239,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             AnsiConsole.MarkupLine(
                 $"[dim]No home created (--no-home). Give it one later:[/] h9k project init {name.EscapeMarkup()}");
             await AskForRunSkillAsync(session, projectId, name, context.OwnerId, cancellationToken);
-            await TryJoinAsync(session, projectId, name, repositoryPath, settings.Invite, cancellationToken);
+            await TryJoinAsync(session, projectId, name, repositoryPath, invite, cancellationToken);
             return ExitCodes.Ok;
         }
 
@@ -253,7 +257,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         bool ok = ProjectHomeRecipe.Report(steps);
 
         await AskForRunSkillAsync(session, projectId, name, context.OwnerId, cancellationToken);
-        await TryJoinAsync(session, projectId, name, repositoryPath, settings.Invite, cancellationToken);
+        await TryJoinAsync(session, projectId, name, repositoryPath, invite, cancellationToken);
 
         AnsiConsole.MarkupLine(OrchestratorPointer.ForProject(name));
 
@@ -352,7 +356,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             AnsiConsole.MarkupLine(
                 $"[dim]Not joined yet — {repositoryPath.EscapeMarkup()} is not reachable. Once it is: "
                 + $"h9k project join {name.EscapeMarkup()}"
-                + (invite.IsNotBlank() ? $" --invite {invite.EscapeMarkup()}" : string.Empty) + "[/]");
+                + (invite.IsNotBlank() ? " --invite <secret>" : string.Empty) + "[/]");
             return;
         }
 
@@ -369,7 +373,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             AnsiConsole.MarkupLine(
                 $"[yellow]Registered, but could not join yet:[/] {exception.Message.EscapeMarkup()} Retry with: "
                 + $"h9k project join {name.EscapeMarkup()}"
-                + (invite.IsNotBlank() ? $" --invite {invite.EscapeMarkup()}" : string.Empty));
+                + (invite.IsNotBlank() ? " --invite <secret>" : string.Empty));
         }
     }
 
