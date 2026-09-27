@@ -2,6 +2,7 @@ using System.ComponentModel;
 using FluentAssertions;
 using Hall9k.Cli.Diagnostics;
 using Hall9k.Connectors.Processes;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
@@ -198,6 +199,54 @@ public sealed class ToolDoctorTests : IDisposable
         ScopedAnsiConsoleCapture.CaptureAsync(() => ToolDoctor.RunAsync(
             runner, ConnectionStringSource.PlatformConfigFile(ConfigFile), CancellationToken.None));
 
-    /// <summary>Port 1 is reserved and never listened on, so a probe of it fails fast rather than hanging out the doctor's own 3s budget.</summary>
+    /// <summary>
+    /// Pins the fix for task 2f9bc330: the project read used to wrap the caller's token in its own
+    /// shared 3-second deadline across all three steps (reachability, schema, query), which on a
+    /// node where localhost resolves to ::1 before 127.0.0.1 could exhaust itself on
+    /// IPv6-refused-then-IPv4-retry connections even though every other Postgres reader (h9kd,
+    /// h9k project list, and DatabaseDoctor's own health check) passes the ambient token through
+    /// unwrapped and never comes close to failing. A token that still can be canceled when none was
+    /// handed in would mean this method built a fresh CancellationTokenSource of its own again;
+    /// CancellationToken.None staying CanBeCanceled false all the way into each step proves it did not.
+    /// </summary>
+    [Fact]
+    public async Task The_project_read_passes_the_callers_token_straight_through_with_no_extra_deadline()
+    {
+        bool probeTokenCancelable = true;
+        bool schemaTokenCancelable = true;
+        bool readTokenCancelable = true;
+
+        // ToolDoctor.GitHubCliRequirementAsync (internal, exposed to this test project the same
+        // way ToolDoctor.RunAsync's own injectable overload already is) never needs to actually
+        // reach a database here since every step is faked, so the connection string itself is
+        // arbitrary.
+        await ToolDoctor.GitHubCliRequirementAsync(
+            ConnectionStringSource.Configured(UnreachableConnectionString),
+            (_, token) =>
+            {
+                probeTokenCancelable = token.CanBeCanceled;
+                return Task.FromResult(new ReachabilityReport(ReachabilityStatus.Reachable, string.Empty, "127.0.0.1", 1, "nope"));
+            },
+            (_, token) =>
+            {
+                schemaTokenCancelable = token.CanBeCanceled;
+                return Task.FromResult(true);
+            },
+            (_, token) =>
+            {
+                readTokenCancelable = token.CanBeCanceled;
+                return Task.FromResult<IReadOnlyList<ProjectDetails>>([]);
+            },
+            CancellationToken.None);
+
+        probeTokenCancelable.Should().BeFalse(
+            "the reachability step must see the caller's own token, not one linked to an internal timeout");
+        schemaTokenCancelable.Should().BeFalse(
+            "the schema step must see the caller's own token, not one linked to an internal timeout");
+        readTokenCancelable.Should().BeFalse(
+            "the project query must see the caller's own token, not one linked to an internal timeout");
+    }
+
+    /// <summary>Port 1 is reserved and never listened on, so a probe of it fails fast rather than hanging out DatabaseReachability's own 3s probe timeout.</summary>
     private const string UnreachableConnectionString = "Host=127.0.0.1;Port=1;Database=nope;Username=nope;Password=nope";
 }
