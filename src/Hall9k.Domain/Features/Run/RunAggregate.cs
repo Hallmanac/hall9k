@@ -423,6 +423,19 @@ public sealed class RunAggregate
     /// <summary>Why every persona in <see cref="PrReviewForkSkippedPersonas"/> was skipped, verbatim — null exactly when that list is empty.</summary>
     public string? PrReviewForkSkipReason { get; private set; }
 
+    /// <summary>
+    /// The subset of <see cref="PrReviewPersonasSkipped"/> skipped specifically because every path
+    /// this pull request changed matched this project's own non-executable-path set (idea
+    /// 6be68ee2, phase two, Decisions Log #252), not because the persona has no review prompt
+    /// registered — see <see cref="PrReviewPersonasSelected.DocsOnlySkipped"/>. Empty for a run
+    /// whose diff touched anything outside that set, and for one whose stream predates this skip
+    /// existing.
+    /// </summary>
+    public IReadOnlyList<ReviewPersona> PrReviewDocsOnlySkippedPersonas { get; private set; } = [];
+
+    /// <summary>Why every persona in <see cref="PrReviewDocsOnlySkippedPersonas"/> was skipped, verbatim — null exactly when that list is empty.</summary>
+    public string? PrReviewDocsOnlySkipReason { get; private set; }
+
     /// <summary>The personas whose every session has landed its findings (<see cref="PrReviewPersonaReported"/>), in the order they landed.</summary>
     public IReadOnlyList<ReviewPersona> PrReviewPersonasReported => _prReviewPersonasReported;
 
@@ -1431,6 +1444,8 @@ public sealed class RunAggregate
         PrReviewDriveDecisions = @event.DriveDecisions ?? [];
         PrReviewForkSkippedPersonas = ReviewPersona.Declared(@event.ForkSkipped);
         PrReviewForkSkipReason = @event.ForkSkipReason;
+        PrReviewDocsOnlySkippedPersonas = ReviewPersona.Declared(@event.DocsOnlySkipped);
+        PrReviewDocsOnlySkipReason = @event.DocsOnlySkipReason;
     }
 
     /// <summary>

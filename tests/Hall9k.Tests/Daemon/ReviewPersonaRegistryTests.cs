@@ -20,7 +20,7 @@ public sealed class ReviewPersonaRegistryTests
     [Fact]
     public void No_persona_declared_plans_the_engineer_review_unchanged()
     {
-        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(null);
+        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(null, securityReviewEnabled: false);
 
         plan.Requested.Should().Equal(ReviewPersona.Engineer);
         plan.Ran.Should().Equal(ReviewPersona.Engineer);
@@ -37,7 +37,7 @@ public sealed class ReviewPersonaRegistryTests
     [Fact]
     public void Declaring_the_engineer_explicitly_plans_exactly_what_declaring_nothing_does()
     {
-        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan([ReviewPersona.Engineer]);
+        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan([ReviewPersona.Engineer], securityReviewEnabled: false);
 
         plan.Ran.Should().Equal(ReviewPersona.Engineer);
         plan.Skipped.Should().BeEmpty();
@@ -53,7 +53,7 @@ public sealed class ReviewPersonaRegistryTests
     public void An_assignee_holding_several_personas_gets_every_one_named_run_or_skipped()
     {
         ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(
-            [ReviewPersona.Designer, ReviewPersona.Engineer, ReviewPersona.Qa]);
+            [ReviewPersona.Designer, ReviewPersona.Engineer, ReviewPersona.Qa], securityReviewEnabled: false);
 
         plan.Requested.Should().Equal(ReviewPersona.Engineer, ReviewPersona.Qa, ReviewPersona.Designer);
         plan.Ran.Should().Equal(ReviewPersona.Engineer, ReviewPersona.Qa, ReviewPersona.Designer);
@@ -80,7 +80,7 @@ public sealed class ReviewPersonaRegistryTests
     [Fact]
     public void Declaring_qa_alone_runs_the_qa_review_and_nothing_else()
     {
-        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan([ReviewPersona.Qa]);
+        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan([ReviewPersona.Qa], securityReviewEnabled: false);
 
         plan.Requested.Should().Equal(ReviewPersona.Qa);
         plan.Ran.Should().Equal(ReviewPersona.Qa);
@@ -141,15 +141,18 @@ public sealed class ReviewPersonaRegistryTests
             "the QA review's own prompt is piece 2 of this idea, and it has landed");
         ReviewPersonaRegistry.For(ReviewPersona.Designer).IsRegistered.Should().BeTrue(
             "the design review's own prompt is piece 3 of this idea, and it has landed");
+        ReviewPersonaRegistry.For(ReviewPersona.Security).IsRegistered.Should().BeTrue(
+            "the Security persona's own prompt is idea 6be68ee2's phase two, and it has landed");
 
         // Which leaves Plan's fall-back-to-the-engineer arm with no input a member could
-        // actually declare: all three are registered, so every declaration runs the review it
-        // asked for. The arm stays for the next persona added to the set before its prompt
-        // exists — the state QA and the designer were both in — and this is what says it is
-        // unreachable today rather than quietly broken.
+        // actually declare: every persona is registered now, so every declaration runs the
+        // review it asked for. The arm stays for the next persona added to the set before its
+        // prompt exists — the state QA and the designer were both in — and this is what says it
+        // is unreachable today rather than quietly broken. securityReviewEnabled: false — this
+        // loop is about a member's own declaration, never about the always-on persona.
         foreach (ReviewPersona persona in ReviewPersona.All)
         {
-            ReviewPersonaRegistry.Plan([persona]).FellBackToEngineer.Should().BeFalse();
+            ReviewPersonaRegistry.Plan([persona], securityReviewEnabled: false).FellBackToEngineer.Should().BeFalse();
         }
     }
 
@@ -191,7 +194,8 @@ public sealed class ReviewPersonaRegistryTests
                 new ReviewDriveDecision(ReviewPersona.Designer, SettingOn: true, ProjectHasRunSkill: true),
                 new ReviewDriveDecision(ReviewPersona.Engineer, SettingOn: true, ProjectHasRunSkill: true),
                 new ReviewDriveDecision(ReviewPersona.Qa, SettingOn: true, ProjectHasRunSkill: true),
-            ]);
+            ],
+            securityReviewEnabled: false);
 
         plan.DriveDecisions.Should().ContainSingle().Which.Persona.Should().Be(ReviewPersona.Designer);
         plan.DriveFor(ReviewPersona.Designer).Drives.Should().BeTrue();
@@ -309,7 +313,8 @@ public sealed class ReviewPersonaRegistryTests
     public void A_fork_head_skips_every_persona_that_can_drive_the_product()
     {
         ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(
-            [ReviewPersona.Engineer, ReviewPersona.Qa, ReviewPersona.Designer], isForkHead: true);
+            [ReviewPersona.Engineer, ReviewPersona.Qa, ReviewPersona.Designer], isForkHead: true,
+            securityReviewEnabled: false);
 
         plan.Ran.Should().Equal(ReviewPersona.Engineer);
         plan.Skipped.Should().BeEquivalentTo([ReviewPersona.Qa, ReviewPersona.Designer]);
@@ -326,7 +331,8 @@ public sealed class ReviewPersonaRegistryTests
     [Fact]
     public void A_fork_head_with_only_drive_capable_personas_declared_falls_back_to_the_engineer()
     {
-        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan([ReviewPersona.Qa, ReviewPersona.Designer], isForkHead: true);
+        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(
+            [ReviewPersona.Qa, ReviewPersona.Designer], isForkHead: true, securityReviewEnabled: false);
 
         plan.Ran.Should().Equal(ReviewPersona.Engineer);
         plan.FellBackToEngineer.Should().BeTrue();
@@ -411,7 +417,7 @@ public sealed class ReviewPersonaRegistryTests
 
             string body = await PrReviewEngine.ComposePersonaSectionsAsync(
                 runDirectory,
-                ReviewPersonaRegistry.Plan([ReviewPersona.Engineer]),
+                ReviewPersonaRegistry.Plan([ReviewPersona.Engineer], securityReviewEnabled: false),
                 new Dictionary<string, ReviewPersonaSessionFailure>
                 {
                     [ReviewLens.Conformance.Slug] = new(
@@ -451,7 +457,8 @@ public sealed class ReviewPersonaRegistryTests
                 "Matches.\n\nVERDICT: merge-ready");
 
             ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(
-                [ReviewPersona.Engineer, ReviewPersona.Qa, ReviewPersona.Designer], isForkHead: true);
+                [ReviewPersona.Engineer, ReviewPersona.Qa, ReviewPersona.Designer], isForkHead: true,
+                securityReviewEnabled: false);
 
             string body = await PrReviewEngine.ComposePersonaSectionsAsync(
                 runDirectory, plan, new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true,
@@ -487,7 +494,7 @@ public sealed class ReviewPersonaRegistryTests
                 "Matches.\n\nVERDICT: merge-ready");
 
             string body = await PrReviewEngine.ComposePersonaSectionsAsync(
-                runDirectory, ReviewPersonaRegistry.Plan([ReviewPersona.Engineer]),
+                runDirectory, ReviewPersonaRegistry.Plan([ReviewPersona.Engineer], securityReviewEnabled: false),
                 new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true,
                 new Dictionary<string, IReadOnlyList<PermissionDenial>>
                 {
@@ -517,7 +524,7 @@ public sealed class ReviewPersonaRegistryTests
         try
         {
             string body = await PrReviewEngine.ComposePersonaSectionsAsync(
-                runDirectory, ReviewPersonaRegistry.Plan([ReviewPersona.Qa]),
+                runDirectory, ReviewPersonaRegistry.Plan([ReviewPersona.Qa], securityReviewEnabled: false),
                 new Dictionary<string, ReviewPersonaSessionFailure>
                 {
                     [ReviewPersonaRegistry.QaSlug] = new(
@@ -555,7 +562,7 @@ public sealed class ReviewPersonaRegistryTests
         {
             string longInput = new('x', 500);
             string body = await PrReviewEngine.ComposePersonaSectionsAsync(
-                runDirectory, ReviewPersonaRegistry.Plan([ReviewPersona.Engineer]),
+                runDirectory, ReviewPersonaRegistry.Plan([ReviewPersona.Engineer], securityReviewEnabled: false),
                 new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true,
                 new Dictionary<string, IReadOnlyList<PermissionDenial>>
                 {
@@ -624,7 +631,8 @@ public sealed class ReviewPersonaRegistryTests
                 RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Conformance.Slug),
                 "Matches.\n\nVERDICT: merge-ready");
 
-            ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan([ReviewPersona.Qa], isForkHead: true);
+            ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(
+                [ReviewPersona.Qa], isForkHead: true, securityReviewEnabled: false);
 
             string body = await PrReviewEngine.ComposePersonaSectionsAsync(
                 runDirectory, plan, new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true,
@@ -633,6 +641,186 @@ public sealed class ReviewPersonaRegistryTests
             body.Should().Contain(ReviewPersonaRegistry.ForkSkipReason);
             body.Should().NotContain("None of the personas this pull request's assignee declared has a "
                 + "review prompt registered yet");
+        }
+        finally
+        {
+            Directory.Delete(runDirectory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The Security persona (idea 6be68ee2, phase two) is never something an assignee declares —
+    /// it is appended to every plan on top of whatever they declared, gated only by the project's
+    /// own security-review setting.
+    /// </summary>
+    [Fact]
+    public void The_plan_carries_security_by_default_whatever_the_assignee_declared()
+    {
+        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan([ReviewPersona.Qa]);
+
+        plan.Requested.Should().Equal(ReviewPersona.Qa, ReviewPersona.Security);
+        plan.Ran.Should().Equal(ReviewPersona.Qa, ReviewPersona.Security);
+        plan.Sessions.Select(session => session.Slug).Should().Equal(
+            ReviewPersonaRegistry.QaSlug, ReviewPersonaRegistry.SecuritySlug);
+    }
+
+    /// <summary>Declaring nothing at all still gets Security, alongside the engineer's own fallback.</summary>
+    [Fact]
+    public void No_persona_declared_still_carries_security_by_default()
+    {
+        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(null);
+
+        plan.Requested.Should().Equal(ReviewPersona.Engineer, ReviewPersona.Security);
+        plan.Ran.Should().Equal(ReviewPersona.Engineer, ReviewPersona.Security);
+    }
+
+    /// <summary>The project's own off setting drops Security from the plan entirely — nothing else changes.</summary>
+    [Fact]
+    public void Turning_the_project_setting_off_drops_security_from_the_plan()
+    {
+        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan([ReviewPersona.Qa], securityReviewEnabled: false);
+
+        plan.Requested.Should().Equal(ReviewPersona.Qa);
+        plan.Ran.Should().Equal(ReviewPersona.Qa);
+        plan.Skipped.Should().BeEmpty();
+        plan.DocsOnlySkipped.Should().BeEmpty();
+        plan.DocsOnlySkipReason.Should().BeNull();
+    }
+
+    /// <summary>
+    /// A member somehow carrying Security in their own declared list (never possible through
+    /// h9k owner set, which ReviewPersona.Parse refuses) is de-duplicated rather than doubled.
+    /// </summary>
+    [Fact]
+    public void A_declared_list_that_somehow_carries_security_is_never_doubled()
+    {
+        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan([ReviewPersona.Security, ReviewPersona.Qa]);
+
+        plan.Requested.Should().Equal(ReviewPersona.Qa, ReviewPersona.Security);
+        plan.Sessions.Count(session => session.Persona == ReviewPersona.Security).Should().Be(1);
+    }
+
+    /// <summary>
+    /// A pull request whose every changed path matches this project's own non-executable-path set
+    /// (idea 6be68ee2, phase two, Decisions Log #252) skips Security for that reason, named in the
+    /// plan rather than folded into the generic "no prompt registered" skip.
+    /// </summary>
+    [Fact]
+    public void A_docs_only_diff_skips_security_with_its_own_stated_reason()
+    {
+        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(
+            [ReviewPersona.Qa], everyChangedPathIsNonExecutable: true);
+
+        plan.Ran.Should().Equal(ReviewPersona.Qa);
+        plan.Skipped.Should().Equal(ReviewPersona.Security);
+        plan.DocsOnlySkipped.Should().Equal(ReviewPersona.Security);
+        plan.DocsOnlySkipReason.Should().Be(ReviewPersonaRegistry.DocsOnlySkipReason);
+        plan.ForkSkipped.Should().BeEmpty("this is the docs-only skip, not the fork skip");
+    }
+
+    /// <summary>The docs-only flag has nothing to skip once the project setting is already off.</summary>
+    [Fact]
+    public void The_docs_only_flag_does_nothing_once_security_is_already_off()
+    {
+        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(
+            [ReviewPersona.Qa], securityReviewEnabled: false, everyChangedPathIsNonExecutable: true);
+
+        plan.Skipped.Should().BeEmpty();
+        plan.DocsOnlySkipped.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Security never drives the product (idea 6be68ee2, phase two) — CanDriveTheProduct is false
+    /// on its entry — so a fork head, which skips every drive-capable persona, leaves Security
+    /// running against the diff exactly as the engineer's two lenses do.
+    /// </summary>
+    [Fact]
+    public void A_fork_head_never_skips_security_because_it_never_drives()
+    {
+        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan([ReviewPersona.Qa], isForkHead: true);
+
+        plan.ForkSkipped.Should().Equal(ReviewPersona.Qa);
+        plan.Ran.Should().Equal(ReviewPersona.Engineer, ReviewPersona.Security);
+        plan.FellBackToEngineer.Should().BeTrue("qa was the only declared persona and it was fork-skipped");
+    }
+
+    [Fact]
+    public void Security_never_receives_a_drive_decision()
+    {
+        ReviewPersonaRegistry.For(ReviewPersona.Security).CanDriveTheProduct.Should().BeFalse();
+
+        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan([ReviewPersona.Qa]);
+        plan.DriveDecisions.Should().NotContain(decision => decision.Persona == ReviewPersona.Security);
+        plan.DriveFor(ReviewPersona.Security).Drives.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Security_never_fails_the_whole_run_and_never_sees_the_tasks_context()
+    {
+        ReviewPersonaRegistry.For(ReviewPersona.Security).FailureFailsTheRun.Should().BeFalse();
+
+        ReviewPersonaSession session = ReviewPersonaRegistry.For(ReviewPersona.Security).Sessions.Should()
+            .ContainSingle().Subject;
+        session.SeesTaskContext.Should().BeFalse(
+            "this persona hunts classes of defect over the diff and must not be steered by an outsider's own description of the change");
+    }
+
+    /// <summary>The Security persona's own section merges into the findings report, in the fixed order after the designer's.</summary>
+    [Fact]
+    public async Task The_security_persona_gets_its_own_section_merged_into_the_report()
+    {
+        string runDirectory = Path.Combine(Path.GetTempPath(), $"h9k-persona-report-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(runDirectory);
+        try
+        {
+            await File.WriteAllTextAsync(
+                RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Adversarial.Slug),
+                "Nothing found.\n\nVERDICT: merge-ready");
+            await File.WriteAllTextAsync(
+                RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Conformance.Slug),
+                "Matches.\n\nVERDICT: merge-ready");
+            await File.WriteAllTextAsync(
+                RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewPersonaRegistry.SecuritySlug),
+                "No injection, secrets, or unsafe I/O found.\n\nVERDICT: merge-ready");
+
+            ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(null);
+            string body = await PrReviewEngine.ComposePersonaSectionsAsync(
+                runDirectory, plan, new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true,
+                permissionDenials: null, CancellationToken.None);
+
+            body.Should().Contain("## Security review");
+            body.Should().Contain("No injection, secrets, or unsafe I/O found.");
+            body.IndexOf("## Security review", StringComparison.Ordinal).Should().BeGreaterThan(
+                body.IndexOf("## Engineer review", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(runDirectory, recursive: true);
+        }
+    }
+
+    /// <summary>A docs-only skip prints its own reason under the Security heading, not the generic "no prompt registered" text.</summary>
+    [Fact]
+    public async Task A_docs_only_skips_section_names_the_docs_only_reason()
+    {
+        string runDirectory = Path.Combine(Path.GetTempPath(), $"h9k-persona-report-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(runDirectory);
+        try
+        {
+            await File.WriteAllTextAsync(
+                RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Adversarial.Slug),
+                "Nothing found.\n\nVERDICT: merge-ready");
+            await File.WriteAllTextAsync(
+                RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Conformance.Slug),
+                "Matches.\n\nVERDICT: merge-ready");
+
+            ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(null, everyChangedPathIsNonExecutable: true);
+            string body = await PrReviewEngine.ComposePersonaSectionsAsync(
+                runDirectory, plan, new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true,
+                permissionDenials: null, CancellationToken.None);
+
+            body.Should().Contain($"## Security review\n\n{ReviewPersonaRegistry.For(ReviewPersona.Security).Criteria}");
+            body.Should().Contain($"Skipped: {ReviewPersonaRegistry.DocsOnlySkipReason}");
         }
         finally
         {

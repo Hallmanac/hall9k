@@ -350,7 +350,9 @@ public sealed class QaReviewReportTests
             await File.WriteAllTextAsync(
                 RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewPersonaRegistry.QaSlug), qaReport);
             return await PrReviewEngine.ComposePersonaSectionsAsync(
-                runDirectory, ReviewPersonaRegistry.Plan([ReviewPersona.Qa], drive is null ? null : [drive]),
+                runDirectory,
+                ReviewPersonaRegistry.Plan(
+                    [ReviewPersona.Qa], drive is null ? null : [drive], securityReviewEnabled: false),
                 new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true,
                 permissionDenials: null, CancellationToken.None);
         }

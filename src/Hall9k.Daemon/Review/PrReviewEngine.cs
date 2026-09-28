@@ -112,7 +112,8 @@ public sealed class PrReviewEngine(
     private static ReviewPersonaPlan PlanOf(RunAggregate? run) => ReviewPersonaRegistry.Recorded(
         run?.PrReviewPersonasRequested, run?.PrReviewPersonasRan, run?.PrReviewPersonasSkipped,
         run?.PrReviewPersonasFellBackToEngineer ?? false, run?.PrReviewDriveDecisions,
-        run?.PrReviewForkSkippedPersonas, run?.PrReviewForkSkipReason);
+        run?.PrReviewForkSkippedPersonas, run?.PrReviewForkSkipReason,
+        run?.PrReviewDocsOnlySkippedPersonas, run?.PrReviewDocsOnlySkipReason);
 
     private static string PrimarySlugOf(RunAggregate? run) => PlanOf(run).Sessions[0].Slug;
 
@@ -386,9 +387,11 @@ public sealed class PrReviewEngine(
             {
                 body.Append(plan.ForkSkipped.Contains(persona)
                     ? $"\nSkipped: {plan.ForkSkipReason}\n"
-                    : $"\nSkipped: no review prompt is registered for the {persona.Value} persona yet, so "
-                      + "nothing read this pull request through it. Named here rather than left out, so "
-                      + "this report is not read as a review that happened.\n");
+                    : plan.DocsOnlySkipped.Contains(persona)
+                        ? $"\nSkipped: {plan.DocsOnlySkipReason}\n"
+                        : $"\nSkipped: no review prompt is registered for the {persona.Value} persona yet, so "
+                          + "nothing read this pull request through it. Named here rather than left out, so "
+                          + "this report is not read as a review that happened.\n");
                 continue;
             }
 
@@ -690,8 +693,16 @@ public sealed class PrReviewEngine(
         IReadOnlyList<VerifyCommand>? qaGateCommands = personaSession.Persona == ReviewPersona.Qa
             ? QaGateCommandsResolver.Resolve(project)
             : null;
-        AgentModel model = _options.ResolveModel(AgentRole.Review, task.Model, project.Model);
-        AgentEffort effort = _options.ResolveEffort(AgentRole.Review, task.Effort, project.Effort);
+        // The Security persona resolves its own model/effort chain, floored at its own compiled
+        // model (AgentModel.SecurityReviewDefault) rather than the platform default every other
+        // Review-role session falls through to (idea 6be68ee2, phase two, the courier precedent):
+        // it hunts for real vulnerabilities and must never silently run on a cheaper model.
+        AgentModel model = personaSession.Persona == ReviewPersona.Security
+            ? _options.ResolveSecurityReviewModel(task.Model, project.Model)
+            : _options.ResolveModel(AgentRole.Review, task.Model, project.Model);
+        AgentEffort effort = personaSession.Persona == ReviewPersona.Security
+            ? _options.ResolveSecurityReviewEffort(task.Effort, project.Effort)
+            : _options.ResolveEffort(AgentRole.Review, task.Effort, project.Effort);
         // pr-review has no cycle loop — one pass per persona session — so every session name the
         // registry hands back reads as cycle 1 always, never RunDetails.ReviewCycle, which
         // pr-review never sets.
