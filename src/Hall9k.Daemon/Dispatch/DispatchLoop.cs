@@ -1,5 +1,7 @@
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Execution;
+using Hall9k.Connectors.Text;
+using Hall9k.Connectors.Verification;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Node;
@@ -556,21 +558,39 @@ public sealed class DispatchLoop(
 
             IReadOnlyList<ProjectDetails> projects = await session.Query<ProjectDetails>().ToListAsync(cancellationToken);
             DateTimeOffset now = DateTimeOffset.UtcNow;
-            int baselined = 0;
+            List<ProjectDetails> baselined = [];
             foreach (ProjectDetails project in projects.Where(project => project.AcceptedVerifyCommands is null))
             {
                 session.Events.Append(
                     project.Id, new ProjectGateSetAccepted(project.Id, project.VerifyCommands, node.OwnerId, now));
-                baselined++;
+                baselined.Add(project);
             }
 
             session.Events.Append(node.NodeId, new ProjectGateAcceptanceBaselined(node.NodeId, now));
             await session.SaveChangesAsync(cancellationToken);
 
+            // Names each baselined project and the gate set it adopted, not just a count
+            // (independent pre-PR review, cycle 1, conformance lens, medium): this printed record
+            // is the only mitigation the origin finding attaches to the accepted weakness this
+            // baseline carries — a malicious gate set already replicated in before this node's
+            // first start after the feature shipped is baselined as accepted along with every
+            // genuine one — so an operator auditing the upgrade needs to see exactly which
+            // projects and which commands became trusted, not just how many. RelayedText.Printable
+            // (via GateSetAcceptanceDisplay) because a project's own name is replicated
+            // (ProjectRenamed is ProjectScoped) with no restriction on its characters.
             logger.LogInformation(
                 "Gate-set-acceptance baseline: {Count} project(s) with nothing accepted yet were baselined "
                 + "to their current verify gate set on this node",
-                baselined);
+                baselined.Count);
+            foreach (ProjectDetails project in baselined)
+            {
+                logger.LogInformation(
+                    "Gate-set-acceptance baseline: '{ProjectName}' baselined to: {GateList}",
+                    RelayedText.Printable(project.Name),
+                    project.VerifyCommands.Count == 0
+                        ? "(no gates configured)"
+                        : string.Join("; ", GateSetAcceptanceDisplay.FormatGateList(project.VerifyCommands)));
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
