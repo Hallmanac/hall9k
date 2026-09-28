@@ -186,10 +186,11 @@ public sealed class EventReplicationInbox(
         // 2026-09-17: a project's identity no longer depends on which ledger a message arrived
         // through), refused rather than applied, and named the identical way an unvouched sender
         // already is (h9k status's own WriteReplicatedEventsIgnoredSendersAsync reads
-        // EventReplicationInboxCursor.SenderIgnored regardless of which reason set it). A null
-        // envelope key, or one that is not shaped like a 26-character ULID (a pre-ruling envelope
-        // still carrying the retired owner-fingerprint value), is read as "no opinion" and never
-        // refused on that basis alone (MessageEnvelopeV1.ProjectKey's own doc).
+        // EventReplicationInboxCursor.SenderIgnored regardless of which reason set it). Once this
+        // project has a key of its own, a null envelope key or one that is not shaped like a
+        // 26-character ULID is refused the identical way (ProjectKeyMismatch.IsMismatchAsync, idea
+        // 6be68ee2, trust-ledger finding 13); only a project with no key of its own yet reads either
+        // shape as "no opinion" (MessageEnvelopeV1.ProjectKey's own doc).
         bool projectKeyMismatch = false;
         string? projectKeyMismatchReason = null;
         // Every stream this read's own applied batches named, regardless of whether ApplyAsync
@@ -289,16 +290,23 @@ public sealed class EventReplicationInbox(
             // AFTER the kind filter lets an ordinary non-events envelope stamped with the same foreign
             // key clear a standing mismatch mark below without its own key ever being examined, since
             // highestSeqConsidered still advances past it either way.
-            if (envelope.ProjectKey is { Length: 26 } candidateKey
-                && await IsProjectKeyMismatchAsync(session, projectId, candidateKey, localProjectKey, cancellationToken))
+            if (await ProjectKeyMismatch.IsMismatchAsync(
+                session, projectId, envelope.ProjectKey, localProjectKey, cancellationToken))
             {
                 projectKeyMismatch = true;
+                string keyDescription = envelope.ProjectKey switch
+                {
+                    null => "no project key at all",
+                    { Length: 26 } wellFormed => $"project key {wellFormed}",
+                    string malformed => $"a malformed project key ({malformed})",
+                };
                 projectKeyMismatchReason =
-                    $"events envelope {raw.Seq} carries project key {candidateKey}, which does not match "
-                    + "this project's own ledger-derived key, refused rather than applied";
+                    $"events envelope {raw.Seq} carries {keyDescription}, which does not match this project's "
+                    + "own ledger-derived key, refused rather than applied";
                 logger?.LogWarning(
                     "Sender {SenderNodeId}'s events envelope {Seq} carries a project key that does not match "
-                    + "this project's own ledger-derived key, refused", senderNodeId, raw.Seq);
+                    + "this project's own ledger-derived key (or is missing or malformed), refused",
+                    senderNodeId, raw.Seq);
                 continue;
             }
 
@@ -2831,26 +2839,5 @@ public sealed class EventReplicationInbox(
 
         ProjectDetails? localProject = await session.LoadAsync<ProjectDetails>(projectId, cancellationToken);
         return localProject?.ProjectKey;
-    }
-
-    /// <summary>Whether a genuinely 26-character <paramref name="candidateKey"/> fails to name this
-    /// project: a direct mismatch against <paramref name="localProjectKey"/> when this install
-    /// already knows it, or (the only case that needs a lookup at all, since a known key already
-    /// answers the question directly) a hit against some OTHER local project's own recorded key
-    /// when it does not, so a project too new or too far behind to have read its own key back yet
-    /// still refuses an envelope this node can already prove belongs elsewhere. The identical check
-    /// <c>MessageInbox.ReadFromAsync</c>'s own <c>IsProjectKeyMismatchAsync</c> applies.</summary>
-    private static async Task<bool> IsProjectKeyMismatchAsync(
-        IDocumentSession session, Guid projectId, string candidateKey, string? localProjectKey, CancellationToken cancellationToken)
-    {
-        if (localProjectKey is not null)
-        {
-            return candidateKey != localProjectKey;
-        }
-
-        ProjectDetails? resolvedByKey = await session.Query<ProjectDetails>()
-            .Where(candidate => candidate.ProjectKey == candidateKey)
-            .FirstOrDefaultAsync(cancellationToken);
-        return resolvedByKey is not null && resolvedByKey.Id != projectId;
     }
 }

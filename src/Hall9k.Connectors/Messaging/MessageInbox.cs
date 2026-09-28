@@ -195,13 +195,14 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
         // mirror, so every envelope below is refused or accepted against the SAME key regardless of
         // how many this sweep inspects.
         string? localProjectKey = await ResolveLocalProjectKeyAsync(session, projectId, trustChain, cancellationToken);
-        // Every seq whose own envelope carried a project key that does not match this project's own
+        // Every seq whose own envelope carries a project key that does not match this project's own
         // ledger-derived key above is refused, never stored, and folded into the same standing
         // "sender ignored" record an ordinary signature failure already produces below, so h9k
-        // status names it the identical way. A null envelope key, or one that is not shaped like a
-        // 26-character ULID (a pre-ruling envelope still carrying the retired owner-fingerprint
-        // value, or one from a build older than idea 202383dc's M2), is read as "no opinion" and
-        // never refused on that basis alone (MessageEnvelopeV1.ProjectKey's own doc).
+        // status names it the identical way (ProjectKeyMismatch.IsMismatchAsync, idea 6be68ee2,
+        // trust-ledger finding 13). Only when this project has no key of its own yet
+        // (localProjectKey null) is a null or malformed envelope key read as "no opinion" rather than
+        // a mismatch — the local fact that lets a fleet with an unkeyed project never stall
+        // (MessageEnvelopeV1.ProjectKey's own doc).
         List<long> projectKeyMismatchSeqs = [];
         // Every seq whose own envelope's declared FromOwner does not verify against the ledger's own
         // trust chain — the sender's verified key (senderFingerprint) is not currently vouched into
@@ -242,13 +243,14 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
                 continue;
             }
 
-            if (envelope.ProjectKey is { Length: 26 } candidateKey
-                && await IsProjectKeyMismatchAsync(session, projectId, candidateKey, localProjectKey, cancellationToken))
+            if (await ProjectKeyMismatch.IsMismatchAsync(
+                session, projectId, envelope.ProjectKey, localProjectKey, cancellationToken))
             {
                 projectKeyMismatchSeqs.Add(raw.Seq);
                 logger?.LogWarning(
                     "Envelope {Seq} from sender {SenderNodeId} carries a project key that does not match "
-                    + "this project's own ledger-derived key, refused", raw.Seq, senderNodeId);
+                    + "this project's own ledger-derived key (or is missing or malformed), refused",
+                    raw.Seq, senderNodeId);
                 continue;
             }
 
@@ -408,26 +410,6 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
 
         ProjectDetails? localProject = await session.LoadAsync<ProjectDetails>(projectId, cancellationToken);
         return localProject?.ProjectKey;
-    }
-
-    /// <summary>Whether a genuinely 26-character <paramref name="candidateKey"/> fails to name this
-    /// project: a direct mismatch against <paramref name="localProjectKey"/> when this install
-    /// already knows it, or (the only case that needs a lookup at all, since a known key already
-    /// answers the question directly) a hit against some OTHER local project's own recorded key
-    /// when it does not, so a project too new or too far behind to have read its own key back yet
-    /// still refuses an envelope this node can already prove belongs elsewhere.</summary>
-    private static async Task<bool> IsProjectKeyMismatchAsync(
-        IDocumentSession session, Guid projectId, string candidateKey, string? localProjectKey, CancellationToken cancellationToken)
-    {
-        if (localProjectKey is not null)
-        {
-            return candidateKey != localProjectKey;
-        }
-
-        ProjectDetails? resolvedByKey = await session.Query<ProjectDetails>()
-            .Where(candidate => candidate.ProjectKey == candidateKey)
-            .FirstOrDefaultAsync(cancellationToken);
-        return resolvedByKey is not null && resolvedByKey.Id != projectId;
     }
 
     private static void AppendInboxEvents(IDocumentSession session, Guid streamId, bool streamExists, IReadOnlyList<object> events)

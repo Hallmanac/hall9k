@@ -580,11 +580,16 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
                 sendSession, nodeA, ProjectId, impersonatedOwnerClaim, MessageAudience.Node(nodeB), about: null,
                 MessageKind.Note, "a forged owner claim", Now, cts.Token);
             await outbox.FlushAsync(
-                sendSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false,
+                sendSession, RepositoryPath, nodeA, ProjectId, "01ARZ3NDEKTSV4RRFFQ69G5FDA", adoptUnassigned: false,
                 committerA, signingKeyA, Now, cts.Token);
         }
 
         string nodeAFingerprint = NodeKeyStore.Fingerprint($"ssh-ed25519 AAAAFAKE{nodeA:N} test");
+        // A genuine 26-character ULID-shaped key on both the flush and the live trust chain below —
+        // never the short human-readable literal every other test in this file flushes with — since
+        // this test's own live TrustChain.ProjectKey makes this project a KEYED reader
+        // (ProjectKeyMismatch.IsMismatch, idea 6be68ee2, trust-ledger finding 13): a malformed key
+        // would now be refused before the FromOwner check below this test actually exercises ever ran.
         TrustChain trustChain = new(
             new Dictionary<string, TrustedOwner>
             {
@@ -593,7 +598,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
                     [new TrustedNode(nodeA.ToString(), $"ssh-ed25519 AAAAFAKE{nodeA:N} test", nodeAFingerprint, Now)]),
             },
             [],
-            ProjectKey: "shared-project-key");
+            ProjectKey: "01ARZ3NDEKTSV4RRFFQ69G5FDA");
 
         await using IDocumentSession readSession = _postgres.Store.LightweightSession();
         MessageInboxSweepResult sweep = await inbox.ReadFromAsync(

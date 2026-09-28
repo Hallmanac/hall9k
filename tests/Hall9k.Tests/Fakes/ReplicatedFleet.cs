@@ -38,7 +38,12 @@ internal sealed class ReplicatedFleet : IAsyncDisposable
 {
     public const string RepositoryPath = "/repo-shared";
 
-    private const string ProjectKey = "shared-project-key";
+    /// <summary>Genuinely 26-character ULID-shaped, unlike a hand-picked short literal, since a
+    /// caller wiring a live <c>TrustChain.ProjectKey</c> matching this fixture's own flushed key
+    /// needs the two to survive <see cref="Hall9k.Connectors.Messaging.ProjectKeyMismatch"/>'s own
+    /// malformed-key refusal (idea 6be68ee2, trust-ledger finding 13) rather than being refused for
+    /// looking nothing like a real project key once that caller's own project has one.</summary>
+    public const string ProjectKey = "01ARZ3NDEKTSV4RRFFQ69G5FEC";
 
     private readonly EventReplicationOutbox _eventOutbox = new(new ReplicationProjectResolver());
     private readonly EventReplicationInbox _eventInbox;
