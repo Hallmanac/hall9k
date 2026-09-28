@@ -9,10 +9,13 @@ namespace Hall9k.Connectors.Trust;
 /// <summary>
 /// Writes <c>members/&lt;candidateOwnerFingerprint&gt;.yaml</c> — the one write idea 1bb803e1
 /// restricts to a live root key of the project's own owner. Shared by
-/// <see cref="Hall9k.Daemon.Invites.InviteSweepEngine"/>'s own root-direct path (this node's key
+/// <c>Hall9k.Daemon.Invites.InviteSweepEngine</c>'s own root-direct path (this node's key
 /// already is a live root key) and the owner-act watch loop's root-side reaction to a non-root
 /// node's own request (idea 6be68ee2, companion 1bb803e1: "minting is a request, not a local
 /// capability") - one write, one place it is actually made, whichever caller decided it may run.
+/// Named in plain <c>&lt;c&gt;</c> text rather than <c>&lt;see cref&gt;</c> (independent pre-PR
+/// review, cycle 1, conformance lens, low): this project, Hall9k.Connectors, does not reference
+/// Hall9k.Daemon, so a cref naming a Daemon type here can never resolve.
 /// </summary>
 public static class MemberVouchLedgerWriter
 {
