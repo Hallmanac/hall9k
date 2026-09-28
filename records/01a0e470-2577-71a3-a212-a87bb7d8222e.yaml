@@ -33,7 +33,3 @@ context: |-
   Note to the orchestrator, not the build: decision 241 in v0-decisions-log.md says the feed sentence depends on the record alone; once this merges it depends on the record and the node-local lookup, and the decision's wording is the orchestrator's to amend through the decision events.
 
   Boundaries. A criterion never drives the lifecycle of another task (decision 13f11af2). Dispatched sessions must not run install, update, join, or reconcile against the live install. No em dashes in anything authored.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-09-28 05:17:19Z
