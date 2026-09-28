@@ -384,6 +384,38 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         chain.DisplayNameOf(owner.Fingerprint).Value.Should().Be("Newer Name");
     }
 
+    /// <summary>
+    /// The GitHub declaration and the display name share one node file (task e6744304), so a commit
+    /// that refreshes only the GitHub declaration still counts as "touching" the display name's own
+    /// path. The newest-wins tie-break must key off when the name itself last changed, not simply
+    /// the file's own newest commit, or an unrelated GitHub-only refresh on one machine could make
+    /// its own (unchanged) name outrank a different name set more recently on another machine
+    /// (independent pre-PR review, cycle 1, adversarial lens, medium).
+    /// </summary>
+    [Fact]
+    public async Task A_github_only_rewrite_does_not_make_an_unrelated_display_name_look_newer()
+    {
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        await WriteNodeFileAsync(ownerRepo, owner, owner);
+        await RewriteNodeFileWithDisplayNameAsync(
+            ownerRepo, owner, "Ada", new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        GeneratedIdentity nodeB = GenerateIdentity();
+        string nodeBRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(nodeBRepo, nodeB, nodeB, owner.Fingerprint, displayName: "Bob");
+        await VouchAsync(ownerRepo, owner.Fingerprint, nodeB, owner);
+
+        // The owner's own daemon later refreshes only its GitHub declaration — a real commit to the
+        // identical node.yaml, well after node B declared "Bob" — while "Ada" itself never changes.
+        await RewriteNodeFileWithDeclarationAsync(
+            ownerRepo, owner, new DeclaredGitHubAccount(42, "octocat"),
+            new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.Zero), displayName: "Ada");
+
+        TrustChain chain = await _chainReader.ComputeAsync(_repo.CloneNode(hub), CancellationToken.None);
+
+        chain.DisplayNameOf(owner.Fingerprint).Value.Should().Be("Bob");
+    }
+
     [Fact]
     public async Task A_second_clone_reads_the_declaration_another_clone_wrote_after_it_fetches()
     {
@@ -1697,18 +1729,27 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     /// whose committer date is <paramref name="committedAt"/>, which <see cref="ILedger"/> writes cannot set.
     /// </summary>
     private async Task RewriteNodeFileWithDeclarationAsync(
-        string repositoryPath, GeneratedIdentity node, DeclaredGitHubAccount github, DateTimeOffset committedAt)
+        string repositoryPath, GeneratedIdentity node, DeclaredGitHubAccount github, DateTimeOffset committedAt,
+        string? displayName = null)
     {
         string refName = $"refs/hall9k/ledger/nodes/{node.NodeId}";
         string path = $"nodes/{node.NodeId}/node.yaml";
         await RunGitCaptureAsync(repositoryPath, ["fetch", "origin", $"+{refName}:{refName}"]);
         string tip = await RunGitCaptureAsync(repositoryPath, ["rev-parse", "--verify", refName]);
-        string content = BuildYaml(
+        List<(string Key, string Value)> fields =
+        [
             ("node_id", node.NodeId.ToString()),
             ("public_key", node.PublicKeyLine),
             ("owner_fingerprint", node.Fingerprint),
             ("github_login", github.Login),
-            ("github_account_id", github.AccountId.ToString(CultureInfo.InvariantCulture)));
+            ("github_account_id", github.AccountId.ToString(CultureInfo.InvariantCulture)),
+        ];
+        if (displayName is not null)
+        {
+            fields.Add(("display_name", displayName));
+        }
+
+        string content = BuildYaml([.. fields]);
         string tree = await BuildTreeWithFileAsync(repositoryPath, tip, path, content);
         string commit = await CommitTreeAsync(repositoryPath, tree, [tip], node, "declare GitHub account", committerDate: committedAt);
         await RunGitCaptureAsync(repositoryPath, ["push", "origin", $"{commit}:{refName}"]);
