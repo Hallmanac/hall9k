@@ -201,6 +201,7 @@ internal static class DispatchedSessionCommandClassification
             // ---- owner (wholesale) ----
             [typeof(OwnerShowCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "owner show"),
             [typeof(OwnerSetCommand.Settings)] = (DispatchedSessionAccess.Refused, "owner set"),
+            [typeof(OwnerPromoteCommand.Settings)] = (DispatchedSessionAccess.Refused, "owner promote"),
 
             // ---- node (wholesale) ----
             [typeof(NodeInviteCommand.Settings)] = (DispatchedSessionAccess.Refused, "node invite"),

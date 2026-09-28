@@ -448,6 +448,20 @@ public static class CliCommandTree
                 .WithExample("owner", "set", "--display-name", "Ada")
                 .WithExample("owner", "set", "--display-name", "Ada L.", "--project", "hall9k")
                 .WithExample("owner", "set", "--display-name", "''", "--project", "hall9k");
+            owner.AddCommand<OwnerPromoteCommand>("promote")
+                .WithDescription(
+                    "Promote this node's own vouched key onto owner's ranked root-key set (idea 6be68ee2): "
+                    + "writes owners/<root>/rotations/<n>.yaml, signed by this node's own key, into every "
+                    + "non-archived project this owner is registered to. Refused unless this node currently "
+                    + "holds a live successor record (h9k status names it 'successor'). A deliberate, loud act: "
+                    + "prints every project it will write to and the key each write supersedes, then asks for "
+                    + "confirmation, refusing outright in a non-interactive session with no --yes — a pty can "
+                    + "still fake a terminal, so the key file's own 0600 permission is the real boundary. A "
+                    + "re-run only writes to projects still missing the rotation and reports the rest as "
+                    + "already rotated; a project where another heir's rotation already landed is refused there "
+                    + "and never retried.")
+                .WithExample("owner", "promote")
+                .WithExample("owner", "promote", "--yes");
         });
 
         config.AddBranch("node", node =>
