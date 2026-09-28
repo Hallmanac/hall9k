@@ -1,4 +1,5 @@
 using Hall9k.Connectors.Processes;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -49,9 +50,27 @@ public static class StackReplayOntoResolver
             return new Resolution(recordedOntoCommit, ResolvedFromCurrentBaseTip: false);
         }
 
+        // baseBranch is RunLauncher's own runBaseBranch — the resumed or stacked base carried
+        // forward from an earlier run's record — checked there before this call, but checked
+        // again here at the point it actually becomes a fetch argument, the same defense in depth
+        // every other daemon fetch of a run base branch carries (security review idea 6be68ee2,
+        // process-injection finding 2). Silent on refusal, not logged: this resolver takes no
+        // ILogger of its own, and the caller's own "could not read the base's current tip"
+        // warning already covers a fetch that never ran the same way it covers one that failed.
+        if (!GitArgumentValidation.IsLegalBranchName(baseBranch, out _))
+        {
+            return new Resolution(recordedOntoCommit, ResolvedFromCurrentBaseTip: false);
+        }
+
         try
         {
-            ProcessResult fetch = await git("git", ["fetch", "origin", baseBranch], worktreePath, cancellationToken);
+            // `--` stops a value shaped like `--upload-pack=...` from being read as an option,
+            // but not one shaped like `+refs/heads/main:refs/heads/injected`, which git still
+            // reads as a refspec even after it — the predicate above is the actual defence against
+            // that (ReviewEngine.CaptureStrandedDeltaAsync's own comment, verified against git 2.55
+            // in a scratch repository).
+            ProcessResult fetch = await git(
+                "git", ["fetch", "origin", "--", baseBranch], worktreePath, cancellationToken);
             if (fetch.ExitCode != 0)
             {
                 return new Resolution(recordedOntoCommit, ResolvedFromCurrentBaseTip: false);
