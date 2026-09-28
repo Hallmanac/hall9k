@@ -122,7 +122,10 @@ attention (the pre-approval pattern, an unfamiliar log timezone), report it as a
 your own summary to the human, not as a rule baked into the recipe.
 
 **One narrow carve-out.** A line the operator has placed anywhere in a recipe, in exactly one of
-three forms, is not a rule this generator invented and is never treated as one:
+four forms, is not a rule this generator invented and is never treated as one. A carried line is
+the whole paragraph or list item that begins with the marker, running up to the next blank line or
+list item; a rule stated across two paragraphs, each opening with its own marker, carries as two
+lines, not one.
 
 - `Standing grant (<who>, <YYYY-MM-DD>):` grants the window authority to act without asking, for
   whatever scope the line states (today, only the hardest-reasoning tier's propose-and-confirm
@@ -131,12 +134,26 @@ three forms, is not a rule this generator invented and is never treated as one:
   only the dispute-park reading-depth split).
 - `Tier override (<who>, <YYYY-MM-DD>):` replaces one tier's agent CLI, model id, and effort
   triple, or one named kind of spawn's triple, for this project.
+- `House rule (<who>, <YYYY-MM-DD>):` states a ruling the operator already made, for anything not
+  covered by the other three forms. It records what the operator ruled; it never lets this
+  generator mint a rule of its own, and this generator still never writes one.
 
-Regenerating an existing recipe carries every line of these three forms into the `.new` file
-verbatim, in place, wherever in the recipe it appears, and lists each one in the generator's own
-summary; the generator never writes a new one of its own. Anything else observed in a hand-edited
-recipe still falls under the rule above and is never carried forward by inference: only these
-three exact forms are.
+This carve-out, and the carry rule below, apply to every recipe file this skill writes: the project
+or node `recipes/orchestrator.md`, and `recipes/idea-discovery.md` and `recipes/task-refinement.md`
+alike.
+
+**One carry rule covers all four forms.** Regenerating an existing recipe carries every marked line
+forward into the `.new` file, verbatim, unedited: into the same-named section it appeared in,
+placed after any canonical block that section carries and outside that block's own quoting (a
+canonical block is copied verbatim as its own blockquote; a carried line is never inserted inside
+one, so the block itself stays exactly what *The canonical blocks* defines). Several carried lines
+in the same section keep their original relative order. When the section a line was carried from no
+longer exists in the regenerated recipe, whether removed outright or renamed (a rename counts as
+gone: nothing here matches a renamed section back to its old name), the line goes instead under a
+closing "House rules" section at the end of the `.new` file, created the moment the first such line
+needs it. Either way, list each carried line in the generator's own summary. Anything else observed
+in a hand-edited recipe still falls under the rule above and is never carried forward by inference:
+only these four exact forms are.
 
 ## Leanness is a ceiling, not just a floor
 
@@ -206,11 +223,11 @@ other or from what this skill says next time it runs.
 > it has been quiet for a while, so routine activity arrives here already grouped rather than as a
 > reply per event. Anything actionable and human-facing (a park or dispute needing a ruling, a
 > daemon retrying or recovering a run, a message from a person) bypasses that wait outright and is
-> delivered at once — deliberately not a gate or run failure, or a merge that stayed failed, both
-> of which already retry themselves automatically and do not need a human paged the instant they
-> land. Read a courier's own delivered message the way a board report reads: grouped by task,
-> plain description over bare id, and report it to the operator in this recipe's own voice rather
-> than pasting the courier's own wording through unread.
+> delivered at once; that list deliberately leaves out a gate or run failure, or a merge that
+> stayed failed, both of which already retry themselves automatically and do not need a human paged
+> the instant they land. Read a courier's own delivered message the way a board report reads: grouped
+> by task, plain description over bare id, and report it to the operator in this recipe's own voice
+> rather than pasting the courier's own wording through unread.
 >
 > This voice is a default the operator may edit in place, in their own copy of this recipe. Record
 > a hand edit like that in this file's own provenance header, under `hand-edited-since`, the
@@ -572,9 +589,10 @@ command that reads the clock.
 **Standing rules.** Live in this window's memory directory, loaded from there, and never restated
 here — a rule copied into two places drifts the moment one of them changes. See *Never invent a
 standing rule* above for what this recipe may not do instead, and for the one narrow carve-out: a
-dated `Standing grant`, `Opt-out`, or `Tier override` line is the operator's own ruling, may be
-placed anywhere in the recipe, and a regeneration carries it forward verbatim wherever it appears
-rather than treating it as this generator's invention.
+dated `Standing grant`, `Opt-out`, `Tier override`, or `House rule` line is the operator's own
+ruling, may be placed anywhere in the recipe, and a regeneration carries it forward verbatim into
+the same-named section, or into a closing "House rules" section when that section is gone, rather
+than treating it as this generator's invention.
 
 **Ideas and drift.** When the operator says "log this idea," run `h9k idea add` immediately and
 write what is said into the idea's own `workspace/journal.md` as the conversation continues — no
@@ -702,6 +720,10 @@ their own. Both:
   end with a short summary and the open questions the operator still has to settle.
 - Carry the *Writing conventions* and *Talking to the operator* canonical blocks, verbatim; the
   *Model and effort* block is not one of them here (see *The canonical blocks* above).
+- A `Standing grant`, `Opt-out`, `Tier override`, or `House rule` line the operator has placed in
+  either of these recipes carries forward on regeneration exactly as *Never invent a standing rule*
+  above states for the project and node recipes: into the same-named section of the `.new` file, or
+  a closing "House rules" section when that section is gone.
 
 ## Launch text
 
