@@ -322,9 +322,11 @@ public sealed class PrReviewEngine(
             }
         }
 
+        bool gateSetAccepted = GateSetAcceptance.Decide(project.AcceptedVerifyCommands, project.VerifyCommands).Proceed;
         await ComposeReportAndParkAsync(
             runId, taskId, runDirectory, run.LeaseGeneration, run.WorktreePath, run.Branch, task, plan,
-            aggregate.PrReviewPersonaSessionFailures, PersonasReported(plan, aggregate), cancellationToken);
+            aggregate.PrReviewPersonaSessionFailures, PersonasReported(plan, aggregate), gateSetAccepted,
+            cancellationToken);
     }
 
     /// <summary>
@@ -338,7 +340,7 @@ public sealed class PrReviewEngine(
     /// </summary>
     internal static async Task<string> ComposePersonaSectionsAsync(
         string runDirectory, ReviewPersonaPlan plan,
-        IReadOnlyDictionary<string, ReviewPersonaSessionFailure> sessionFailures,
+        IReadOnlyDictionary<string, ReviewPersonaSessionFailure> sessionFailures, bool gateSetAccepted,
         CancellationToken cancellationToken)
     {
         StringBuilder body = new();
@@ -400,7 +402,7 @@ public sealed class PrReviewEngine(
                 // outcome, and the flows this session actually drove.
                 if (session.Persona == ReviewPersona.Qa)
                 {
-                    body.Append(QaSummaryLines(written, plan.DriveFor(persona)));
+                    body.Append(QaSummaryLines(written, plan.DriveFor(persona), gateSetAccepted));
                 }
 
                 // Most sessions' findings go in verbatim, which is what a pr-review report has
@@ -429,7 +431,7 @@ public sealed class PrReviewEngine(
     /// A map with an ungraded entry on it is the specific failure the map exists to surface, and
     /// a summary that silently dropped it would hide exactly what it is for.
     /// </para>
-    /// <para>Internal for the report-shape unit tests — a pure function of its two inputs.</para>
+    /// <para>Internal for the report-shape unit tests — a pure function of its three inputs.</para>
     /// </summary>
     /// <param name="text">The session's own findings file, as it was written.</param>
     /// <param name="drive">
@@ -438,7 +440,13 @@ public sealed class PrReviewEngine(
     /// two readings: a session that was never allowed to launch the product, and one that was and
     /// reported no flows. Asserting the first over both would be an observation nobody made.
     /// </param>
-    internal static string QaSummaryLines(string text, ReviewDriveDecision drive)
+    /// <param name="gateSetAccepted">
+    /// This node's own <c>GateSetAcceptance.Decide</c> read at report time, handed to
+    /// <see cref="QaEndToEndOutcome.Describe"/> so an end-to-end line reading "unaccepted" is
+    /// checked against the platform's own knowledge rather than trusted outright — the session's
+    /// text is a report, not a source of truth about this node's own acceptance state.
+    /// </param>
+    internal static string QaSummaryLines(string text, ReviewDriveDecision drive, bool gateSetAccepted)
     {
         IReadOnlyList<QaBlastRadiusEntry> map = ReviewResultParser.ParseBlastRadiusMap(text);
         int ungraded = map.Count(entry => !entry.Verdict.HasValue);
@@ -450,7 +458,7 @@ public sealed class PrReviewEngine(
               + (ungraded > 0 ? $", {ungraded} with no verdict stated" : string.Empty);
 
         return $"Blast radius: {mapLine}.\n"
-            + $"End-to-end tests: {ReviewResultParser.ParseEndToEndOutcome(text).Describe()}.\n"
+            + $"End-to-end tests: {ReviewResultParser.ParseEndToEndOutcome(text).Describe(gateSetAccepted)}.\n"
             + $"Driven: {QaDrivenLine(text, drive)}.\n";
     }
 
@@ -1002,7 +1010,7 @@ public sealed class PrReviewEngine(
         Guid runId, Guid taskId, string runDirectory, int leaseGeneration, string worktreePath, string branch,
         TaskDetails task, ReviewPersonaPlan plan,
         IReadOnlyDictionary<string, ReviewPersonaSessionFailure> sessionFailures,
-        IReadOnlyList<ReviewPersona> personasReported, CancellationToken cancellationToken)
+        IReadOnlyList<ReviewPersona> personasReported, bool gateSetAccepted, CancellationToken cancellationToken)
     {
         string report =
             "# Pull request review findings\n\n"
@@ -1011,7 +1019,7 @@ public sealed class PrReviewEngine(
             + "or have the session post on your behalf. Resolve with h9k review resolve --merge-ready "
             + "when you are done; it opens or merges nothing of its own, and parks the task waiting on "
             + "the pull request until it merges or closes.\n"
-            + await ComposePersonaSectionsAsync(runDirectory, plan, sessionFailures, cancellationToken)
+            + await ComposePersonaSectionsAsync(runDirectory, plan, sessionFailures, gateSetAccepted, cancellationToken)
             + LocalLaunchOffer.Compose(plan, taskId, runId, worktreePath, branch);
 
         // A mint whose own trigger was a mention (idea 2f079bcd, decision 2 and 3): the primary

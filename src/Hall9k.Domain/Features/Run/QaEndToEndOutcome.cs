@@ -5,13 +5,19 @@ namespace Hall9k.Domain.Features.Run;
 
 /// <summary>
 /// What happened when a QA review ran the project's end-to-end tests on the review worktree
-/// (idea b9b09779, piece 2). Three observations and a sentinel for "the session never said",
-/// because all four are different facts and only three of them are observations.
+/// (idea b9b09779, piece 2). Four observations and a sentinel for "the session never said",
+/// because all five are different facts and only four of them are observations.
 /// <para>
 /// <see cref="Absent"/> is the one worth spelling out: a project with no end-to-end suite to run
 /// is not a passing one, and a report that rendered the two identically would be claiming a
 /// green run nobody ever saw. It is also, on its own, the most useful thing a QA review can tell
 /// a team that thinks it has coverage.
+/// </para>
+/// <para>
+/// <see cref="Unaccepted"/> is the one that is not purely the session's own observation: it names
+/// a fact about this node (whether its operator has accepted the project's current gate set) that
+/// the platform can check independently of what the session wrote, and <see cref="Describe"/>
+/// does exactly that rather than repeating the session's word for it unchecked.
 /// </para>
 /// </summary>
 [JsonConverter(typeof(QaEndToEndOutcomeJsonConverter))]
@@ -55,14 +61,28 @@ public sealed record QaEndToEndOutcome
         _ => Unstated,
     };
 
-    /// <summary>How the outcome reads in a findings report, so every report words it identically.</summary>
-    public string Describe() =>
+    /// <summary>
+    /// How the outcome reads in a findings report, so every report words it identically.
+    /// <paramref name="gateSetAccepted"/> is the platform's own read of this node's gate
+    /// acceptance at report time (<c>GateSetAcceptance.Decide</c>), never the session's:
+    /// <see cref="Unaccepted"/> is parsed out of the session's own text, and a session can write
+    /// that word for reasons that have nothing to do with acceptance (it could not run the suite
+    /// and reached for a cautious-sounding word). Only the platform's own acceptance check can
+    /// tell a genuine hold from that, so a report agreeing with the session gets the ordinary
+    /// wording and one that disagrees says so instead of repeating a claim the platform knows is
+    /// false (independent pre-PR review, cycle 1, adversarial finding).
+    /// </summary>
+    public string Describe(bool gateSetAccepted) =>
         this == Pass ? "ran on the review worktree and passed"
         : this == Fail ? "ran on the review worktree and failed; the evidence is in the report below"
         : this == Absent ? "this project has none to run, so nothing was observed"
         : this == Unaccepted
-            ? "not run — this project's verify gate set is unaccepted on this node, so no command "
-              + "could be handed to the session"
+            ? gateSetAccepted
+                ? "the session reported \"unaccepted\", but this project's verify gate set is "
+                  + "accepted on this node — that claim is unreliable, and this line does not say "
+                  + "whether a suite actually ran; read the report below for what it observed"
+                : "not run — this project's verify gate set is unaccepted on this node, so this review "
+                  + "withheld its recorded gate commands and ran none of them"
             : "not reported by this session";
 
     public static implicit operator string(QaEndToEndOutcome? value) => value?.Value ?? string.Empty;

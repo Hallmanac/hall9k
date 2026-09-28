@@ -93,9 +93,15 @@ public static class ReviewResultParser
     /// here: a session that quoted the contract and then never drove anything would otherwise
     /// have the platform report flows it walked through a product it never started.
     /// <see cref="ParseDrivenFlows"/> reads a value carrying this as the echo it is, not as an
-    /// answer. The end-to-end line needs no equivalent because its own worked example renders as
-    /// a choice placeholder rather than as any of the three real words, so an echo of it already
-    /// parses to <see cref="QaEndToEndOutcome.Unstated"/>.
+    /// answer. The end-to-end line's ordinary contract needs no equivalent because its own worked
+    /// example renders as a choice placeholder rather than as any of the four real words, so an
+    /// echo of it already parses to <see cref="QaEndToEndOutcome.Unstated"/>. The withheld-gates
+    /// contract is the one exception: its own worked example prints the literal word
+    /// <c>unaccepted</c>, not a placeholder, because that word is the correct answer whenever the
+    /// platform shows that contract at all — an echo of it lands on the true value, not a false
+    /// one. <see cref="QaEndToEndOutcome.Describe"/> is what actually guards against a session
+    /// writing that word somewhere it does not belong: it checks the platform's own acceptance
+    /// state rather than trusting the word alone.
     /// </summary>
     public const string ExampleDrivenFlowPlaceholder = "the-flow-you-actually-walked";
 

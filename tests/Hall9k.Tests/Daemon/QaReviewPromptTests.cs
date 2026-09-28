@@ -302,6 +302,42 @@ public sealed class QaReviewPromptTests : IDisposable
     }
 
     /// <summary>
+    /// The static drive section sits right below the withheld-gates notice in the same prompt
+    /// (independent pre-PR review, cycle 1, conformance finding): the ordinary "Read the code,
+    /// run the tests, and stop there" wording would read as license to go find some way to run
+    /// something after all, which is exactly the substitute the withheld notice forbids.
+    /// </summary>
+    [Fact]
+    public void The_static_drive_section_never_tells_a_session_to_run_tests_the_gate_notice_just_withheld()
+    {
+        ProjectDetails project = SomeProject();
+        project.AcceptedVerifyCommands = null;
+
+        string prompt = QaReviewPromptBuilder.Build(Request(NoRunSkill, project: project));
+
+        prompt.Should().NotContain("Read the code, run the tests, and stop there.");
+        prompt.Should().Contain("end-to-end tests are withheld above");
+    }
+
+    /// <summary>
+    /// Same contradiction, the driving branch: "Do it after the tests, not instead of them" reads
+    /// as though a real test run happened this session could act after, when the gate notice just
+    /// told it none did.
+    /// </summary>
+    [Fact]
+    public void The_driving_section_never_implies_a_test_run_the_gate_notice_just_withheld()
+    {
+        ProjectDetails project = SomeProject();
+        project.AcceptedVerifyCommands = null;
+
+        string prompt = QaReviewPromptBuilder.Build(Request(DriveOnWithRunSkill, FixedRunSkill, project: project));
+
+        prompt.Should().NotContain("Do it after the tests, not instead of them.");
+        prompt.Should().Contain("end-to-end tests are withheld above");
+        prompt.Should().Contain("never as a way to satisfy testing that was held back");
+    }
+
+    /// <summary>
     /// The boundary the engineer's conformance lens and the design review both draw over the
     /// same imported text, under the same condition. This review is the one permitted to run
     /// commands and start processes in the checkout, so it needs the reminder most.

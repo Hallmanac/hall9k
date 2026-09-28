@@ -194,8 +194,9 @@ public static class QaReviewPromptBuilder
         // unaccepted command would be the same leak AppendGateLines exists to close, and worse
         // here: this session runs the command itself rather than only reading it (independent
         // pre-PR review of 6edacfa3, this task's C1).
-        if (project.VerifyCommands.Count > 0
-            && !GateSetAcceptance.Decide(project.AcceptedVerifyCommands, project.VerifyCommands).Proceed)
+        bool testsWithheld = project.VerifyCommands.Count > 0
+            && !GateSetAcceptance.Decide(project.AcceptedVerifyCommands, project.VerifyCommands).Proceed;
+        if (testsWithheld)
         {
             AppendFragment(
                 prompt, file, "tests-unaccepted",
@@ -239,7 +240,7 @@ public static class QaReviewPromptBuilder
         }
 
         prompt.AppendLine();
-        AppendDriveSection(prompt, file, drive, runSkill);
+        AppendDriveSection(prompt, file, drive, runSkill, testsWithheld);
         prompt.AppendLine();
         AppendConventionChecks(prompt, file, project);
     }
@@ -281,16 +282,24 @@ public static class QaReviewPromptBuilder
     /// and handed nothing to drive with would go and invent a launch command, which is precisely
     /// the drift the run skill exists to record; the static branch names which of the two
     /// reasons applied rather than asserting the setting was off.
+    /// <para>
+    /// <paramref name="testsWithheld"/> picks a variant of the opening sentence when this
+    /// project's verify gate set is unaccepted (independent pre-PR review, cycle 1, conformance
+    /// finding): the ordinary wording says "run the tests" as an instruction, which sits right
+    /// below the checks section's own "do not run them yourself" for the withheld gate set — a
+    /// session reading both in one prompt could read the second as license to go find some way to
+    /// run something after all, which is the exact substitute the withheld notice forbids.
+    /// </para>
     /// </summary>
     private static void AppendDriveSection(
-        StringBuilder prompt, string file, ReviewDriveDecision drive, string? runSkill)
+        StringBuilder prompt, string file, ReviewDriveDecision drive, string? runSkill, bool testsWithheld)
     {
         if (!drive.Drives)
         {
             prompt.AppendLine(Fragment(file, "drive-off-heading"));
             prompt.AppendLine();
             AppendFragment(
-                prompt, file, "drive-off",
+                prompt, file, testsWithheld ? "drive-off-tests-withheld" : "drive-off",
                 ("WhyNotDriven", Capitalized(drive.WhyNotDriven)),
                 ("WalkThroughWord", QaCoverageVerdict.WalkThrough.Value),
                 ("CoveredWord", QaCoverageVerdict.Covered.Value));
@@ -299,7 +308,7 @@ public static class QaReviewPromptBuilder
 
         prompt.AppendLine(Fragment(file, "drive-on-heading"));
         prompt.AppendLine();
-        AppendFragment(prompt, file, "drive-on-intro");
+        AppendFragment(prompt, file, testsWithheld ? "drive-on-intro-tests-withheld" : "drive-on-intro");
         prompt.AppendLine();
         AppendRunSkill(prompt, file, runSkill);
         prompt.AppendLine();

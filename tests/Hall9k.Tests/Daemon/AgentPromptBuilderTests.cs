@@ -2092,6 +2092,29 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// The conformance lens's own criterion shortcut (independent pre-PR review, cycle 1,
+    /// adversarial finding, medium): it used to tell the reviewer that a build-or-test criterion
+    /// is "already answered by the gate run named below" purely off <c>VerifyCommands.Count > 0</c>,
+    /// with no check that any such run was ever accepted here. When the gate set is unaccepted,
+    /// the gate-status section right below names no run and says verification is on hold, so
+    /// telling the reviewer to treat that as the observation invited a "met" grade for something
+    /// nothing actually observed — the "observation nobody made" hazard this project guards
+    /// against everywhere else.
+    /// </summary>
+    [Fact]
+    public void The_conformance_lens_never_claims_an_unaccepted_gate_set_already_answers_a_criterion()
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands = [new VerifyCommand("build", "dotnet build"), new VerifyCommand("test", "dotnet test")];
+
+        string prompt = AgentPromptBuilder.BuildReview(SomeTask(), project, "task/1-slug", cycle: 1, "Conformance");
+
+        prompt.Should().NotContain(
+            "already answered by the",
+            "the gate-status section below names no run when the gate set is unaccepted, so this claim would be an observation nobody made");
+    }
+
+    /// <summary>
     /// Never guess at unobserved facts: a project with no gates configured had none run, so
     /// the prompt says that rather than claiming a passing build nobody performed.
     /// </summary>

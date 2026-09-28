@@ -321,6 +321,7 @@ public sealed class ReviewPersonaRegistryTests
                     [ReviewPersona.Qa, ReviewPersona.Designer],
                     fellBackToEngineer: false),
                 new Dictionary<string, ReviewPersonaSessionFailure>(),
+                gateSetAccepted: true,
                 CancellationToken.None);
 
             body.IndexOf("## Engineer review", StringComparison.Ordinal).Should().BeGreaterThanOrEqualTo(0);
@@ -366,6 +367,7 @@ public sealed class ReviewPersonaRegistryTests
                         ReviewPersona.Engineer, "The pr-review conformance session died without a result.",
                         DateTimeOffset.UtcNow),
                 },
+                gateSetAccepted: true,
                 CancellationToken.None);
 
             body.Should().Contain("### Conformance");
@@ -393,7 +395,7 @@ public sealed class ReviewPersonaRegistryTests
                 ReviewPersonaRegistry.Recorded(
                     [ReviewPersona.Qa], [ReviewPersona.Engineer], [ReviewPersona.Qa],
                     fellBackToEngineer: true),
-                new Dictionary<string, ReviewPersonaSessionFailure>(), CancellationToken.None);
+                new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true, CancellationToken.None);
 
             body.Should().Contain("the engineer's review ran in their place");
             body.Should().Contain("## QA review");
