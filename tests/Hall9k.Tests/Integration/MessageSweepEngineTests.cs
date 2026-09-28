@@ -199,7 +199,7 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
 
         await engine.SweepOnceAsync(cts.Token);
 
-        snapshots.TryGet(projectId).Should().BeEquivalentTo([nodeB.NodeId, vouched]);
+        snapshots.TryGet(projectId)!.FleetNodeIds.Should().BeEquivalentTo([nodeB.NodeId, vouched]);
     }
 
     /// <summary>

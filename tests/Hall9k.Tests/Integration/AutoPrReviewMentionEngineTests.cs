@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
 using Hall9k.Daemon.AutoPrReview;
@@ -14,6 +15,7 @@ using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -49,6 +51,17 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
     private static bool IsRepositoryHostRead(IReadOnlyList<string> arguments) =>
         arguments.Count > 1 && arguments[0] == "repo" && arguments[1] == "view";
 
+    /// <summary>
+    /// The membership gate's own visibility read (security review idea 6be68ee2, finding 1):
+    /// <c>gh repo view &lt;repo&gt; --json isPrivate</c>, once per project per sweep. Shaped like
+    /// <see cref="IsRepositoryHostRead"/>'s own <c>repo view</c>, so every scripted runner below
+    /// answers it before that refusal ever sees it. <see cref="MentionScriptedGh"/> defaults its own
+    /// <c>isPrivate</c> parameter to true, keeping every existing mention test's own behaviour
+    /// exactly what it was before this gate existed; the one test exercising the gate's own park
+    /// passes <c>isPrivate: false</c> and a <c>pullRequestAuthor</c> instead.
+    /// </summary>
+    private static bool IsVisibilityRead(IReadOnlyList<string> arguments) => arguments.Contains("isPrivate");
+
     private static bool AsksAbout(IReadOnlyList<string> arguments, string repository)
     {
         int repoIndex = arguments.ToList().IndexOf("--repo");
@@ -67,9 +80,15 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
     /// </summary>
     private static ProcessRunner MentionScriptedGh(
         string repository, int number, string login,
-        IReadOnlyList<(string Id, string Author, string Body, DateTimeOffset CreatedAt)> comments) =>
+        IReadOnlyList<(string Id, string Author, string Body, DateTimeOffset CreatedAt)> comments,
+        bool isPrivate = true, (string Login, long AccountId, string Association)? pullRequestAuthor = null) =>
         (fileName, arguments, _, _) =>
         {
+            if (IsVisibilityRead(arguments))
+            {
+                return Task.FromResult(new ProcessResult(0, $$"""{"isPrivate":{{(isPrivate ? "true" : "false")}}}""", string.Empty));
+            }
+
             if (IsRepositoryHostRead(arguments))
             {
                 return Task.FromResult(new ProcessResult(1, string.Empty, "no repository this test knows"));
@@ -113,9 +132,14 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
                      "url":"https://github.com/{{repository}}/pull/{{number}}#issuecomment-{{comment.Id}}",
                      "createdAt":"{{comment.CreatedAt:yyyy-MM-ddTHH:mm:ss}}Z"}
                     """));
+                string authorField = pullRequestAuthor is { } author
+                    ? "\"author\":{\"login\":\"" + author.Login + "\",\"databaseId\":" + author.AccountId + "},"
+                      + "\"authorAssociation\":\"" + author.Association + "\","
+                    : string.Empty;
                 string json =
-                    """{"data":{"repository":{"pullRequest":{"comments":{"nodes":[""" + nodes
-                    + """]},"reviewThreads":{"nodes":[]},"reviews":{"nodes":[]}}}}}""";
+                    "{\"data\":{\"repository\":{\"pullRequest\":{" + authorField
+                    + "\"comments\":{\"nodes\":[" + nodes
+                    + "]},\"reviewThreads\":{\"nodes\":[]},\"reviews\":{\"nodes\":[]}}}}}";
                 return Task.FromResult(new ProcessResult(0, json, string.Empty));
             }
 
@@ -369,6 +393,34 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
     }
 
+    /// <summary>
+    /// A fleet snapshot naming one declared member account plus a second member with no
+    /// declaration at all (a fleet on a version before v0.10.54, or one not restarted since), for
+    /// the membership gate (security review idea 6be68ee2, finding 1) — the identical
+    /// <see cref="EnrolledNodeSnapshots"/> the message sweep would have written, built directly
+    /// rather than through a real chain read, the same shortcut <c>PrReviewTaskEngineTests</c>'s
+    /// own <c>FleetOfThisNodeAnd</c> takes for the mint-hold tests.
+    /// </summary>
+    private static EnrolledNodeSnapshots MemberSnapshot(Guid projectId, NodeContext node, long memberAccountId)
+    {
+        EnrolledNodeSnapshots snapshots = new();
+        ProjectMember member = new("owner-root", MembershipRole.Owner, Now);
+        ProjectMember undeclaredMember = new("other-root", MembershipRole.Member, Now);
+        TrustedOwner owner = new("owner-root", "ssh-ed25519 AAAAFAKE root", [], RootNodeId: node.NodeId.ToString());
+        TrustedOwner undeclaredOwner = new(
+            "other-root", "ssh-ed25519 AAAAFAKE other", [], RootNodeId: Guid.NewGuid().ToString());
+        Dictionary<string, NodeGitHubDeclaration> declarations = new()
+        {
+            [node.NodeId.ToString()] = new NodeGitHubDeclaration(
+                node.NodeId.ToString(), "owner-root", new DeclaredGitHubAccount(memberAccountId, "brian"), Now),
+        };
+        TrustChain chain = new(
+            new Dictionary<string, TrustedOwner> { ["owner-root"] = owner, ["other-root"] = undeclaredOwner },
+            [member, undeclaredMember], NodeDeclarations: declarations);
+        snapshots.Record(projectId, chain, "owner-root");
+        return snapshots;
+    }
+
     // -------------------------------------------------------------------------------------
     // The tests themselves.
     // -------------------------------------------------------------------------------------
@@ -409,6 +461,65 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
             ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
         observed.Outcome.Should().Be(ReviewMentionOutcome.TaskCreated);
+        observed.TaskId.Should().Be(minted.Id);
+    }
+
+    /// <summary>
+    /// The membership gate's own park (security review idea 6be68ee2, finding 1): a mention on a
+    /// public repository, with the pull request's own author not among the project's declared
+    /// members, still mints the pr-review task through the identical Add and Publish
+    /// <see cref="TaskDecider"/> sequence a member's own mention uses — but never Assign, so the
+    /// task sits Published with no claim and no run ever launches. <see cref="RefusingWorktreeManager"/>
+    /// and <see cref="RefusingExecutor"/> both prove that structurally: either one firing would fail
+    /// this test outright (no git, no dispatch).
+    /// </summary>
+    [Fact]
+    public async Task A_mention_from_a_non_member_on_a_public_repository_mints_published_and_unassigned()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-park-test";
+        const int number = 4301;
+        const long memberAccountId = 111;
+        const long strangerAccountId = 999;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-park", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_1", "ryan", "@brian what do you think of this approach?", Now.AddMinutes(5))],
+            isPrivate: false, pullRequestAuthor: ("stranger", strangerAccountId, "NONE"));
+        AutoPrReviewEngine engine = new(
+            store, node,
+            NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("a parked task is never launched"), gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
+            enrolledNodes: MemberSnapshot(projectId, node, memberAccountId));
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem minted = (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token)).Single();
+        minted.Type.Should().Be(TaskType.PrReview);
+        minted.State.Should().Be(TaskState.Published, "Add and Publish land, but the membership gate refuses Assign");
+        minted.PrReviewGateParked.Should().BeTrue();
+        minted.PrReviewGateParkedAuthorAccountId.Should().Be(strangerAccountId);
+        minted.PrReviewGateParkedAuthorLogin.Should().Be("stranger");
+        minted.PrReviewGateParkedIsPrivate.Should().BeFalse();
+        minted.PrReviewGateParkedMemberAccountIds.Should().BeEquivalentTo([memberAccountId],
+            "the card names the project's own declared member ids beside the author's, so a "
+            + "deleted-and-recreated account is diagnosable");
+        minted.PrReviewGateParkedMembersWithoutDeclaredAccount.Should().ContainSingle(
+            "a fleet not yet on v0.10.54 (or not restarted since) is named on the card, not silently dropped");
+
+        (await query.LoadAsync<TaskLease>(minted.Id, cts.Token)).Should().BeNull("an unassigned task was never claimed");
+
+        ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
+        observed.Outcome.Should().Be(ReviewMentionOutcome.TaskCreatedParked);
         observed.TaskId.Should().Be(minted.Id);
     }
 

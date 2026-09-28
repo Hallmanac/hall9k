@@ -4,22 +4,44 @@ using Hall9k.Connectors.Trust;
 namespace Hall9k.Daemon.AutoPrReview;
 
 /// <summary>
-/// The enrolled, unrevoked nodes of this node's own owner as the message sweep last computed them
-/// for each project, held in process so <see cref="AutoPrReviewEngine"/> can rank this node against
-/// its fleet without a git fetch of its own. The message sweep already computes the trust chain for
-/// every eligible project every 15 to 45 seconds and never persists it; it writes here, the
-/// engine reads here, and nothing else does.
+/// One project's fleet as the message sweep last computed it: this node's own owner's fleet, for
+/// <see cref="AutoPrReviewObservation.DecideMintHold"/> to rank against, and the whole project
+/// team's declared GitHub accounts, for <see cref="AutoPrReviewObservation.DecideMembershipGate"/>
+/// to match a pull request's or a comment's author against (security review idea 6be68ee2, finding
+/// 1). <see cref="MemberAccountIds"/> is the union of <c>chain.DeclaredAccountsOf(member.RootFingerprint)</c>
+/// over every current <c>chain.Members</c>, not only this owner's own fleet — the gate has to name
+/// every member's declared accounts, whichever owner root they joined the project under.
+/// <see cref="MembersWithoutDeclaredAccount"/> names, for a park card's sake, every current member
+/// none of whose nodes has declared one at all — a fleet on a version before v0.10.54, or one not
+/// restarted since — so that member's own parked pull requests can say what is actually missing
+/// rather than a bare "not a member".
+/// </summary>
+public sealed record EnrolledFleetSnapshot(
+    IReadOnlyCollection<Guid> FleetNodeIds,
+    IReadOnlyCollection<long> MemberAccountIds,
+    IReadOnlyCollection<string> MembersWithoutDeclaredAccount);
+
+/// <summary>
+/// The trust chain the message sweep last computed for each project, held in process so
+/// <see cref="AutoPrReviewEngine"/> can read it without a git fetch of its own. The message sweep
+/// already computes the trust chain for every eligible project every 15 to 45 seconds and never
+/// persists it; it writes here, the engine reads here, and nothing else does.
 /// <para>
 /// No entry means "this node has no fleet to defer to": the sweep has not run yet, the chain could
-/// not be read, or the chain does not name this node's owner. Every one of those reads as leader,
-/// which is what a single-node install has always done. A failed chain read leaves the previous
-/// snapshot standing rather than erasing it, since the most recently computed chain is still the
-/// best evidence of who the fleet is.
+/// not be read, or the chain does not name this node's owner. <see cref="AutoPrReviewObservation.DecideMintHold"/>
+/// reads that as leader, which is what a single-node install has always done, and
+/// <see cref="AutoPrReviewObservation.DecideMembershipGate"/> reads the identical absence as
+/// genuinely <c>Unknown</c> instead — the one place these two readers of the same snapshot
+/// deliberately disagree, because a mint-leadership question with no fleet to defer to has always
+/// safely defaulted to "mint", while a membership question with no roster to check against has no
+/// safe default at all: skipping the candidate and asking again next sweep is the only answer that
+/// is never a guess. A failed chain read leaves the previous snapshot standing rather than erasing
+/// it, since the most recently computed chain is still the best evidence of who the fleet is.
 /// </para>
 /// </summary>
 public sealed class EnrolledNodeSnapshots
 {
-    private readonly ConcurrentDictionary<Guid, IReadOnlyCollection<Guid>> _byProject = [];
+    private readonly ConcurrentDictionary<Guid, EnrolledFleetSnapshot> _byProject = [];
 
     /// <summary>
     /// The owner's fleet in <paramref name="chain"/>: <see cref="TrustedOwner.FleetNodeIds"/>, which
@@ -34,17 +56,36 @@ public sealed class EnrolledNodeSnapshots
     /// <summary>Records the chain the message sweep just computed for <paramref name="projectId"/>.</summary>
     public void Record(Guid projectId, TrustChain chain, string ownerRootFingerprint)
     {
-        if (FleetOf(chain, ownerRootFingerprint) is { } fleet)
-        {
-            _byProject[projectId] = fleet;
-        }
-        else
+        if (FleetOf(chain, ownerRootFingerprint) is not { } fleet)
         {
             _byProject.TryRemove(projectId, out _);
+            return;
         }
+
+        HashSet<long> memberAccountIds = [];
+        List<string> membersWithoutDeclaredAccount = [];
+        foreach (ProjectMember member in chain.Members)
+        {
+            IReadOnlyList<DeclaredGitHubAccount> declared = chain.DeclaredAccountsOf(member.RootFingerprint);
+            if (declared.Count == 0)
+            {
+                membersWithoutDeclaredAccount.Add(
+                    chain.DisplayNameOf(member.RootFingerprint) is { HasValue: true } name
+                        ? name.Value
+                        : $"root {member.RootFingerprint[..Math.Min(8, member.RootFingerprint.Length)]}");
+                continue;
+            }
+
+            foreach (DeclaredGitHubAccount account in declared)
+            {
+                memberAccountIds.Add(account.AccountId);
+            }
+        }
+
+        _byProject[projectId] = new EnrolledFleetSnapshot(fleet, memberAccountIds, membersWithoutDeclaredAccount);
     }
 
-    /// <summary>The last recorded fleet for the project, or null when there is none.</summary>
-    public IReadOnlyCollection<Guid>? TryGet(Guid projectId) =>
-        _byProject.TryGetValue(projectId, out IReadOnlyCollection<Guid>? fleet) ? fleet : null;
+    /// <summary>The last recorded snapshot for the project, or null when there is none.</summary>
+    public EnrolledFleetSnapshot? TryGet(Guid projectId) =>
+        _byProject.TryGetValue(projectId, out EnrolledFleetSnapshot? snapshot) ? snapshot : null;
 }
