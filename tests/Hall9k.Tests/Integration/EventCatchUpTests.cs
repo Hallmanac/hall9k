@@ -881,12 +881,15 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
 
         // requesterRoot's own fingerprint IS the owner's root fingerprint — no separate
         // TrustedNode entry names it, the exact shape TrustedOwner.ContainsForNode's own root
-        // special case exists to cover.
+        // special case exists to cover. RootNodeId must name requesterRoot itself (idea 6be68ee2,
+        // trust-ledger finding 7): the root's own key now qualifies only for the exact node id the
+        // ledger attached, never for an arbitrary node id that merely claims the same key.
         string rootFingerprint = SeededFingerprintOf(requesterRoot);
         TrustChain trustChain = new(
             new Dictionary<string, TrustedOwner>
             {
-                [rootFingerprint] = new TrustedOwner(rootFingerprint, "ssh-ed25519 AAAAFAKE owner-root", []),
+                [rootFingerprint] = new TrustedOwner(
+                    rootFingerprint, "ssh-ed25519 AAAAFAKE owner-root", [], RootNodeId: requesterRoot.ToString()),
             },
             [new ProjectMember(rootFingerprint, MembershipRole.Owner, Now)]);
 
