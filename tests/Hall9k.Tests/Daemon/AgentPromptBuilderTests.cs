@@ -1844,6 +1844,29 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// The opposite of the test above, for the one lens that does not carry the invariant: a
+    /// pr-review lens session's own real permission file refuses every <c>h9k</c> command outright
+    /// (security review idea 6be68ee2, process-injection finding 1), so printing the instruction
+    /// to run <c>h9k task log-interaction</c> would hand it a rule it cannot follow — noise in the
+    /// very evidence stream the allow list grows from (independent pre-PR review, cycle 1,
+    /// conformance lens).
+    /// </summary>
+    [Theory]
+    [InlineData("Conformance")]
+    [InlineData("Adversarial")]
+    public void A_pr_review_lenss_own_prompt_does_not_ask_for_the_refused_log_interaction_command(string lens)
+    {
+        TaskDetails task = SomeTask();
+
+        string prompt = AgentPromptBuilder.BuildReview(
+            task, SomeProject(), "task/1-slug", cycle: 1, lens,
+            mechanicsOverride: new AgentPromptBuilder.ReviewMechanicsOverride("develop", DiffIsForeignPullRequest: true));
+
+        prompt.Should().NotContain("h9k task log-interaction");
+        prompt.Should().NotContain("Log every outside interaction, unconditionally");
+    }
+
+    /// <summary>
     /// A human directive logged mid-pass (<c>h9k task log-interaction --human-directed</c>) rides
     /// forward into a later review pass through the identical settled-rulings surface a human's
     /// own <c>h9k review resolve</c> verdict already uses (Decisions Log #88, task: a logged

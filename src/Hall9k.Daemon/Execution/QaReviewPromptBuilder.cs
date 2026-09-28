@@ -74,7 +74,7 @@ public static class QaReviewPromptBuilder
             prompt, request.Project, ReviewMode.Discovery, foreignPullRequest);
         AgentPromptBuilder.AppendVerdictContract(prompt, cycle: 1, ReviewMode.Discovery, foreignPullRequest);
 
-        AppendRules(prompt, request.Task, request.CommandTimeout);
+        AppendRules(prompt, request.CommandTimeout);
         AppendClosing(prompt, drive);
         return prompt.ToString();
     }
@@ -412,7 +412,14 @@ public static class QaReviewPromptBuilder
         AppendFragment(prompt, file, "what-is-a-finding");
     }
 
-    private static void AppendRules(StringBuilder prompt, TaskDetails task, TimeSpan? commandTimeout)
+    // No AppendExternalInteractionLoggingRule call here — every QA prompt this builder produces
+    // is for a pr-review lens (foreignPullRequest above is unconditional), and that session's own
+    // real permission file refuses h9k task log-interaction outright, so the instruction would be
+    // dead on arrival — noise in the very evidence stream the allow list grows from (independent
+    // pre-PR review, cycle 1, conformance lens; AgentPromptBuilder.BuildConformanceReview and
+    // BuildAdversarialReview carry the identical guard, conditionally, for the two builders that
+    // are not always pr-review).
+    private static void AppendRules(StringBuilder prompt, TimeSpan? commandTimeout)
     {
         const string file = $"{TemplateDirectory}/rules.md";
         prompt.AppendLine();
@@ -422,7 +429,6 @@ public static class QaReviewPromptBuilder
         AppendFragment(prompt, file, "never-post");
         AppendFragment(prompt, file, "no-fixing");
         AppendFragment(prompt, file, "clean-up");
-        WorkPromptBuilder.AppendExternalInteractionLoggingRule(prompt, task.Id);
         AppendFragment(prompt, file, "foreground-lead");
         // sessionRunsGates: true, unlike every other review leg — this is the one review that is
         // supposed to run the suite, so it gets the wording that tells it the real per-command

@@ -1796,7 +1796,17 @@ public static class WorkPromptBuilder
     /// person typed and rode into every later prompt as though it were (independent pre-PR review,
     /// cycle 3, adversarial lens).
     /// </param>
-    public static void AppendRecordedLessons(StringBuilder prompt, InjectedLessons? lessons, Guid taskId)
+    /// <param name="includeRecordingInstructions">
+    /// Whether the closing "two verbs" paragraph — <c>h9k learn retire</c> and <c>h9k learn "..."
+    /// --task</c> — is printed. False for a pr-review lens session (security review idea 6be68ee2,
+    /// process-injection finding 1): that session's own real permission file refuses every
+    /// <c>h9k</c> command, so the instruction is dead on arrival and only adds noise to the
+    /// evidence stream the allow list grows from (independent pre-PR review, cycle 1, conformance
+    /// lens). The lessons themselves are still worth printing there — they are surrounding
+    /// knowledge about the codebase, not an instruction the session needs to act on.
+    /// </param>
+    public static void AppendRecordedLessons(
+        StringBuilder prompt, InjectedLessons? lessons, Guid taskId, bool includeRecordingInstructions = true)
     {
         if (lessons is not { WorthComposing: true })
         {
@@ -1853,7 +1863,7 @@ public static class WorkPromptBuilder
                 ("HeldForProvenance", HeldForProvenancePhrase(lessons)));
         }
 
-        if (lessons.Any)
+        if (lessons.Any && includeRecordingInstructions)
         {
             prompt.AppendLine();
             AppendFragment(prompt, file, "verbs", ("TaskId", taskId.ToString()));
