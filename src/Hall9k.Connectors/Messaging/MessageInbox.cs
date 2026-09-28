@@ -10,10 +10,11 @@ namespace Hall9k.Connectors.Messaging;
 /// cursor, how many actually stored (addressed here and not a duplicate), and whether the sender is
 /// now ignored — either because it could not be vouched for at all, or because a specific envelope
 /// from it failed signature verification even though the sender itself is vouched. <see cref="StalledAtSeq"/>
-/// is the first seq this sweep could not inspect at all (a numeric gap in the sender's own outbox, or
-/// a transport-level tool failure) — distinct from a rejected candidate, which was inspected and
-/// refused; a stalled seq was never reached, so the cursor stops short of it and the same position is
-/// retried next sweep. <see cref="SenderNotVouched"/> is the specific reason <see cref="SenderIgnored"/>
+/// is the first seq this sweep could not inspect at all — a numeric gap in the sender's own outbox, a
+/// transport-level tool failure, OR a rejected signature (idea 6be68ee2, trust finding 12:
+/// <c>GitLedgerMessageTransport.ReadSinceAsync</c> treats a rejected candidate exactly like an
+/// unreachable gap rather than skipping past it) — never reached, so the cursor stops short of it and
+/// the same position is retried next sweep. <see cref="SenderNotVouched"/> is the specific reason <see cref="SenderIgnored"/>
 /// can be true with <see cref="EnvelopesConsidered"/> and <see cref="EnvelopesStored"/> both zero — no
 /// node file vouches for this sender at all, distinct from a vouched sender whose envelope merely
 /// failed signature verification — so a caller deciding whether this read is worth remembering (a
@@ -303,11 +304,13 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
             stored++;
         }
 
-        // A rejected candidate (a bad signature) was still inspected, so it counts toward the
-        // cursor the same as a stored or skipped one — never just the highest seq that happened to
-        // parse and route, or a rejected candidate at the tail gets re-inspected on every sweep
-        // forever. A stalled seq (read.StalledAtSeq) is the opposite: never inspected at all, so
-        // read.HighestSeqInspected already stops short of it and this Math.Max never counts it.
+        // read.HighestSeqInspected already stops short of anything this sweep did not actually
+        // reach: a stalled seq (read.StalledAtSeq) — which now includes a rejected signature,
+        // GitLedgerMessageTransport.ReadSinceAsync's own stall rather than a skip-and-continue — is
+        // never inspected at all, so this Math.Max never counts it, and the cursor stays behind it
+        // until the stall resolves on its own (independent pre-PR review, cycle 1, both lenses,
+        // low: this comment used to describe a rejected candidate as still advancing the cursor,
+        // which stopped being true the moment a rejected signature started stalling the read).
         highestSeqConsidered = Math.Max(highestSeqConsidered, read.HighestSeqInspected);
 
         bool cursorAdvanced = highestSeqConsidered > persistedCursor && !overrideSkipsAhead;
@@ -348,8 +351,22 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
                     : $"declared owner not vouched for seqs {string.Join(", ", fromOwnerMismatchSeqs)}");
             }
 
-            inboxEvents.Add(MessageInboxDecider.IgnoreSender(
-                senderNodeId, projectId, string.Join("; ", reasons), verificationFailed: true, now));
+            // A rejected signature now stalls the read (GitLedgerMessageTransport.ReadSinceAsync),
+            // so an unresolved one reproduces the identical RejectedSeqs, and therefore the
+            // identical reason string, on every later sweep until it resolves — which can be days
+            // for an idle sender. Recording the same fact again is never new information, so it is
+            // skipped exactly the way the not-vouched path above already skips a repeat of ITS own
+            // standing mark — except a genuine cursor advance always re-records it, since that
+            // means this sweep actually reached different content even if today's reasons happen to
+            // read the same (independent pre-PR review, cycle 1, both lenses, medium).
+            string reason = string.Join("; ", reasons);
+            bool alreadyMarkedForThisExactFailure = !cursorAdvanced && inbox is not null
+                && inbox.SenderIgnored && inbox.IgnoredForVerificationFailure && inbox.IgnoredReason == reason;
+            if (!alreadyMarkedForThisExactFailure)
+            {
+                inboxEvents.Add(MessageInboxDecider.IgnoreSender(
+                    senderNodeId, projectId, reason, verificationFailed: true, now));
+            }
         }
         // This sweep read the sender's outbox successfully but found nothing new to advance the
         // cursor to — without this, a prior "not vouched at all" ignored mark would never clear on
