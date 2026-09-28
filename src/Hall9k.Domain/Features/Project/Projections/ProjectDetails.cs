@@ -1,6 +1,7 @@
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten.Events.Aggregation;
@@ -201,6 +202,20 @@ public sealed class ProjectDetails
     public Guid? GateSetAcceptedByOwnerId { get; set; }
     /// <summary>When <see cref="AcceptedVerifyCommands"/> was last recorded.</summary>
     public DateTimeOffset? GateSetAcceptedAt { get; set; }
+    /// <summary>
+    /// The <c>Run.LocalLaunchStepApproval.Fingerprint</c> of the run skill's parsed command steps
+    /// this node's own operator last approved through <c>h9k task run-local</c> (security review
+    /// idea 6be68ee2, process-injection finding 3) — null when nothing has ever been approved
+    /// here, which <see cref="Run.LocalLaunchStepApproval.Changed"/> reads as changed the same way
+    /// a genuine step change is, so the first run on a node is never silently treated as approved.
+    /// Node-scoped: <see cref="Events.ProjectRunSkillStepsApproved"/> never replicates, the
+    /// identical reasoning <see cref="AcceptedVerifyCommands"/> above already carries.
+    /// </summary>
+    public string? LastApprovedRunSkillStepFingerprint { get; set; }
+    /// <summary>The operator (by this node's own owner id) whose <c>h9k task run-local</c> confirm or <c>--approve</c> last recorded <see cref="LastApprovedRunSkillStepFingerprint"/>.</summary>
+    public Guid? RunSkillStepsApprovedByOwnerId { get; set; }
+    /// <summary>When <see cref="LastApprovedRunSkillStepFingerprint"/> was last recorded.</summary>
+    public DateTimeOffset? RunSkillStepsApprovedAt { get; set; }
     public List<ContextLink> ContextLinks { get; set; } = [];
     /// <summary>This project's launch text, one per agent CLI (task: an operator starts a lean orchestrator window).</summary>
     public List<LaunchText> LaunchTexts { get; set; } = [];
@@ -283,6 +298,19 @@ public sealed class ProjectDetails
     /// how to stand this project up locally (idea b9b09779, piece 4), never what a member on
     /// another machine reads — that is the ledger file the daemon writes from the same event.</summary>
     public ProjectRunSkill? RunSkill { get; set; }
+
+    /// <summary>
+    /// Which node actually recorded the current <see cref="RunSkill"/> — read off
+    /// <see cref="ProjectRunSkillRecorded"/>'s own event headers through
+    /// <see cref="EventRecordingNode"/> (idea b9b09779 piece 5, security review idea 6be68ee2,
+    /// process-injection finding 3), so <c>h9k project run-skill show</c> and <c>h9k task
+    /// run-local</c>'s own confirmation can tell an operator which install actually composed or
+    /// hand-set the plan they are about to approve. Null on a document a discovery session or a
+    /// hand-set carried no readable node for — an event appended before this field existed, or one
+    /// whose <c>nodeId</c> header was this listener's own still-bootstrapping sentinel — read the
+    /// same honest way <see cref="Learning.LearningDetails.RecordedOnNodeId"/> already is.
+    /// </summary>
+    public Guid? RunSkillRecordedOnNodeId { get; set; }
 
     /// <summary>Mirrors <see cref="ProjectAggregate.RunSkillDiscoveryRequestedAt"/>.</summary>
     public DateTimeOffset? RunSkillDiscoveryRequestedAt { get; set; }
@@ -761,6 +789,7 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
         view.RunSkill = new ProjectRunSkill(
             @event.Data.Content, RunSkillShape.FromInput(@event.Data.Shape), @event.Data.ComposedAgainstCommit,
             RunSkillAuthor.FromInput(@event.Data.Author), @event.Data.RecordedAt, @event.Data.RecordedByOwnerId);
+        view.RunSkillRecordedOnNodeId = EventRecordingNode.Of(@event);
         view.RunSkillDiscoveryRequestedAt = null;
         view.RunSkillDiscoveryFailure = null;
     }
@@ -769,5 +798,18 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
     {
         view.RunSkillDiscoveryRequestedAt = null;
         view.RunSkillDiscoveryFailure = @event.Data.Reason;
+    }
+
+    /// <summary>
+    /// This node's own record of a run skill's steps it just approved (security review idea
+    /// 6be68ee2, process-injection finding 3). No stamp gate, the identical reasoning
+    /// <see cref="Apply(IEvent{Events.ProjectGateSetAccepted}, ProjectDetails)"/> already carries:
+    /// this event never replicates in, so the last one applied is simply the last one that happened.
+    /// </summary>
+    public void Apply(IEvent<ProjectRunSkillStepsApproved> @event, ProjectDetails view)
+    {
+        view.LastApprovedRunSkillStepFingerprint = @event.Data.StepFingerprint;
+        view.RunSkillStepsApprovedByOwnerId = @event.Data.ApprovedByOwnerId;
+        view.RunSkillStepsApprovedAt = @event.Data.ApprovedAt;
     }
 }

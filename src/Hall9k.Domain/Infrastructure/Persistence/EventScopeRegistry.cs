@@ -290,6 +290,11 @@ public static class EventScopeRegistry
         [typeof(ProjectRunSkillDiscoveryRequested)] = EventScope.NodeScoped,
         [typeof(ProjectRunSkillDiscoveryDispatched)] = EventScope.NodeScoped,
         [typeof(ProjectRunSkillDiscoveryFailed)] = EventScope.NodeScoped,
+        // This node's own approval of exactly one run skill's parsed command steps (security
+        // review idea 6be68ee2, process-injection finding 3) — a fact about this install alone,
+        // the identical reasoning ProjectGateSetAccepted above already carries: an approval given
+        // on one of an owner's nodes never silently covers another.
+        [typeof(ProjectRunSkillStepsApproved)] = EventScope.NodeScoped,
 
         // GitHub access observed through this install's own connected account (idea 202383dc,
         // A2b): both are what THIS node's own gh call saw, through THIS node's own registered

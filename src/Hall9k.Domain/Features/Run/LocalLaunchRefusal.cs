@@ -56,4 +56,28 @@ public static class LocalLaunchRefusal
     public static string NothingToStop(Guid taskId) =>
         $"Task {taskId} has no local launch to stop: nothing is recorded as up for it, so there is no process "
         + "here to end.";
+
+    /// <summary>
+    /// A step's own command carries a character a terminal or a shell would obey rather than run
+    /// as plain text (security review idea 6be68ee2, process-injection finding 3) — never executed,
+    /// whatever this node has approved before.
+    /// </summary>
+    public static string UnsafeStepCommand(string projectName, int stepNumber, string section) =>
+        $"Step {stepNumber} of {projectName}'s run skill (\"{section}\") carries a character in its command "
+        + "that a terminal or a shell would obey rather than treat as plain text, so nothing in this run "
+        + "skill can be run until it is fixed. Recompose it (h9k project set <project> --discover-run-skill) "
+        + "or correct it by hand (h9k project run-skill set).";
+
+    /// <summary>
+    /// The run skill's steps changed (or this is this node's first run of them) and nothing runs
+    /// without an operator's own approval of exactly the steps just printed — a non-interactive
+    /// session with no matching <c>--approve</c> refuses rather than guessing, the same discipline
+    /// every other refusal here follows, and the same reason <c>--yes</c> is never offered: a bare
+    /// "skip asking" cannot bind approval to the exact steps shown (security review idea 6be68ee2,
+    /// process-injection finding 3).
+    /// </summary>
+    public static string StepsNeedApproval(Guid taskId, string shortFingerprint) =>
+        "This is a non-interactive session, so nothing runs without a matching --approve: a person has to "
+        + "read the steps printed above and approve exactly them. Run again with "
+        + $"h9k task run-local {taskId} --approve {shortFingerprint} once they have.";
 }
