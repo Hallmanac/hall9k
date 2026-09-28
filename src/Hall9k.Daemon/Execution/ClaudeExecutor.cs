@@ -60,7 +60,8 @@ public sealed class ClaudeExecutor(
         // other session gets, never --dangerously-skip-permissions.
         string settingsContent = request.UsesReviewPermissions
             ? ClaudeSettingsFile.BuildForPrReview(
-                options.Value.VerifyGateTimeout, request.WorktreePath, runDirectory, request.QaGateCommands)
+                options.Value.VerifyGateTimeout, request.WorktreePath, runDirectory, request.QaGateCommands,
+                request.Effort)
             : ClaudeSettingsFile.Build(
                 options.Value.VerifyGateTimeout, request.GuardsReviewThreadReplies, request.Effort);
         await File.WriteAllTextAsync(SettingsFile(request, runDirectory), settingsContent, cancellationToken);

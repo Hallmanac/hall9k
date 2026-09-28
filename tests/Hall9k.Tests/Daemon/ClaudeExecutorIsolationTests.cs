@@ -269,9 +269,11 @@ public sealed class ClaudeExecutorIsolationTests
 
             string settingsContent = await File.ReadAllTextAsync(RunPaths.SettingsFile(runDirectory));
             using JsonDocument document = JsonDocument.Parse(settingsContent);
-            document.RootElement.GetProperty("defaultMode").GetString().Should().Be("dontAsk",
-                "an ordinary Build() session carries no defaultMode at all; only the real permission file does");
-            document.RootElement.GetProperty("permissions").GetProperty("deny").EnumerateArray()
+            JsonElement permissions = document.RootElement.GetProperty("permissions");
+            permissions.GetProperty("defaultMode").GetString().Should().Be("dontAsk",
+                "an ordinary Build() session carries no defaultMode at all; only the real permission file does, "
+                + "and Claude Code only reads the mode from permissions.defaultMode, never a top-level key");
+            permissions.GetProperty("deny").EnumerateArray()
                 .Select(element => element.GetString()).Should().Contain("Bash(claude:*)");
         }
         finally

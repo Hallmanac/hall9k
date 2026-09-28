@@ -147,26 +147,20 @@ public sealed class ClaudeSettingsFileTests
 public sealed class ClaudeSettingsFileBuildForPrReviewTests
 {
     [Fact]
-    public void The_built_content_is_well_formed_json()
-    {
-        JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
-            TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run")).Dispose();
-    }
-
-    [Fact]
     public void The_default_mode_is_dont_ask()
     {
         using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
             TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run"));
 
-        document.RootElement.GetProperty("defaultMode").GetString().Should().Be("dontAsk",
-            "the owner's own user settings carry defaultMode: acceptEdits, and --setting-sources " +
-            "user still loads them — with no mode stated here, a session ran under acceptEdits and " +
-            "a Write call created a file (verified: four throwaway claude -p probes)");
+        document.RootElement.GetProperty("permissions").GetProperty("defaultMode").GetString().Should().Be("dontAsk",
+            "Claude Code only reads the mode from permissions.defaultMode — a top-level key is silently " +
+            "ignored, and the owner's own user settings carry defaultMode: acceptEdits, still loaded under " +
+            "--setting-sources user, so a session ran under acceptEdits and a Write call created a file " +
+            "(verified: four throwaway claude -p probes)");
     }
 
     [Fact]
-    public void Read_is_scoped_to_the_checkout_and_the_run_directory()
+    public void Read_and_grep_are_scoped_to_the_checkout_and_the_run_directory()
     {
         using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
             TimeSpan.FromMinutes(30), "/tmp/pr-review-checkout", "/tmp/pr-review-run"));
@@ -174,9 +168,29 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
         string[] allow = [.. document.RootElement.GetProperty("permissions").GetProperty("allow")
             .EnumerateArray().Select(element => element.GetString()!)];
 
-        allow.Should().Contain("Read(/tmp/pr-review-checkout/**)",
-            "an unscoped Read can otherwise reach ~/.config/gh/hosts.yml (fold-in fix, this task's journal.md)");
-        allow.Should().Contain("Read(/tmp/pr-review-run/**)");
+        allow.Should().Contain("Read(//tmp/pr-review-checkout/**)",
+            "a single leading slash is relative to the settings root, not the filesystem root — only " +
+            "the doubled slash Claude Code's own docs use (Edit(//etc/*)) is absolute, and an unscoped " +
+            "Read can otherwise reach ~/.config/gh/hosts.yml (fold-in fix, this task's journal.md)");
+        allow.Should().Contain("Read(//tmp/pr-review-run/**)");
+        allow.Should().Contain("Grep(//tmp/pr-review-checkout/**)",
+            "Grep reads matching lines of file content, not only file names, so it needs the identical " +
+            "scoping Read gets rather than being left unlimited beside Glob");
+        allow.Should().Contain("Grep(//tmp/pr-review-run/**)");
+    }
+
+    [Fact]
+    public void The_allow_list_carries_a_write_rule_for_the_mention_answer_file()
+    {
+        using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run"));
+
+        string[] allow = [.. document.RootElement.GetProperty("permissions").GetProperty("allow")
+            .EnumerateArray().Select(element => element.GetString()!)];
+
+        allow.Should().Contain("Write(//tmp/run/mention-answer.md)",
+            "a mention-minted primary session's own prompt (MentionFollowUpPromptBuilder.BuildMintAddendum) " +
+            "asks it to write this exact file, and with no allow rule the write is refused under dontAsk");
     }
 
     [Fact]
@@ -188,7 +202,7 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
         string[] allow = [.. document.RootElement.GetProperty("permissions").GetProperty("allow")
             .EnumerateArray().Select(element => element.GetString()!)];
 
-        allow.Should().Contain(["Grep", "Glob", "Bash(git diff:*)", "Bash(git log:*)", "Bash(gh pr view:*)",
+        allow.Should().Contain(["Glob", "Bash(git diff:*)", "Bash(git log:*)", "Bash(gh pr view:*)",
             "Bash(gh pr diff:*)", "Bash(gh pr checks:*)", "Bash(gh issue view:*)"]);
         allow.Should().NotContain(rule => rule.Contains("gh api", StringComparison.Ordinal),
             "gh api is refused by the deny list even for a read; deny beats allow");
@@ -220,6 +234,20 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
     }
 
     [Fact]
+    public void The_git_read_only_guard_hook_is_installed_beside_the_reply_guard()
+    {
+        using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run"));
+
+        string[] matchers = [.. document.RootElement.GetProperty("hooks").GetProperty("PreToolUse")
+            .EnumerateArray().Select(element => element.GetProperty("matcher").GetString()!)];
+
+        matchers.Should().HaveCount(2,
+            "the reply guard and the git read-only guard live under the one hooks key a settings file " +
+            "may hold, so both must be assembled together rather than one splice overwriting the other");
+    }
+
+    [Fact]
     public void With_no_qa_gate_commands_the_allow_list_carries_none()
     {
         using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
@@ -228,9 +256,10 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
         string[] allow = [.. document.RootElement.GetProperty("permissions").GetProperty("allow")
             .EnumerateArray().Select(element => element.GetString()!)];
 
-        allow.Should().HaveCount(2 + ClaudeSettingsFile.PrReviewAllowedTools.Count,
-            "the two Read rules plus the fixed tool list, and nothing else — QA's own gate " +
-            "commands are the one earned exception, and nothing was supplied here");
+        allow.Should().HaveCount(5 + ClaudeSettingsFile.PrReviewAllowedTools.Count,
+            "the two Read rules, the two Grep rules, the mention-answer Write rule, and the fixed tool " +
+            "list, and nothing else — QA's own gate commands are the one earned exception, and nothing " +
+            "was supplied here");
     }
 
     [Fact]
@@ -255,5 +284,32 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
 
         document.RootElement.GetProperty("env").GetProperty("BASH_DEFAULT_TIMEOUT_MS").GetString()
             .Should().Be(TimeSpan.FromMinutes(45).TotalMilliseconds.ToString("F0", CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// Every pr-review, mention follow-up and follow-on persona session used to get effortLevel
+    /// through Build's own effort parameter; BuildForPrReview dropped it entirely, silently
+    /// running every one of them at Claude Code's own default effort (independent pre-PR review,
+    /// cycle 1, conformance lens).
+    /// </summary>
+    [Fact]
+    public void Every_accepted_effort_is_written_as_effort_level()
+    {
+        foreach (AgentEffort effort in AgentEffort.All)
+        {
+            using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+                TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run", effort: effort));
+
+            document.RootElement.GetProperty("effortLevel").GetString().Should().Be(effort.Value);
+        }
+    }
+
+    [Fact]
+    public void With_no_effort_the_effort_level_key_is_left_out()
+    {
+        using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run"));
+
+        document.RootElement.TryGetProperty("effortLevel", out _).Should().BeFalse();
     }
 }
