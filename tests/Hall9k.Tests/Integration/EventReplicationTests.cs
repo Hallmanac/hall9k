@@ -1738,13 +1738,14 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
 
         // Node A's own outbox carries an event naming this exact stream, but this read is scoped to
         // project Y — a cross-project append attempt, whether from a forger or from two projects
-        // sharing a stream id by accident.
+        // sharing a stream id by accident. A revision rather than a reassignment: a reassignment is
+        // the one cross-project append the guard can admit, and it has tests of its own below.
         Guid senderLocalProjectId = DomainId.New();
         Guid originEventId = DomainId.New();
         JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
-        IdeaAssignedToProject crossProjectEvent = new(existingIdeaId, projectY, projectX, Now.AddSeconds(1), ownerId);
+        IdeaRevised crossProjectEvent = new(existingIdeaId, "Rewritten from project Y", Now.AddSeconds(1), ownerId);
         EventReplicationCodec.ReplicatedEventRecord forgedRecord = new(
-            existingIdeaId, typeof(IdeaAssignedToProject).FullName!, JsonSerializer.Serialize(crossProjectEvent, jsonOptions),
+            existingIdeaId, typeof(IdeaRevised).FullName!, JsonSerializer.Serialize(crossProjectEvent, jsonOptions),
             originEventId, OriginSequence: 1, nodeA, "owner-a-fingerprint", Now.AddSeconds(1), projectY);
 
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
@@ -1770,8 +1771,48 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IQuerySession session = storeB.QuerySession())
         {
             IdeaDetails idea = (await session.LoadAsync<IdeaDetails>(existingIdeaId, cts.Token))!;
-            idea.ProjectId.Should().Be(projectX, "the cross-project append must never actually land");
+            idea.Text.Should().Be("Existing idea in project X", "the cross-project append must never actually land");
         }
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 2, adversarial lens, medium: an owner who belongs to two
+    /// shared projects revises an idea and moves it from X to Y (<c>h9k idea assign</c>) before the
+    /// next flush. The outbound flush resolves each event's project live, so both events travel
+    /// through Y's own outbox while the receiver still holds the idea under X, and the
+    /// stream-ownership guard above refused them for good, leaving the idea under X on every peer.
+    /// A sender the SOURCE project's own ledger vouches as a member is admitted, for the revision
+    /// ahead of the move as well as the move itself.
+    /// </summary>
+    [Fact]
+    public async Task An_idea_moved_by_a_member_of_the_source_project_lands_with_its_unflushed_revision()
+    {
+        CrossProjectReassignmentOutcome outcome =
+            await ReadCrossProjectIdeaReassignmentAsync(senderIsMemberOfSourceProject: true);
+
+        outcome.Read.EventsApplied.Should().Be(2);
+        outcome.Idea.Text.Should().Be("Revised just before the move");
+        outcome.Idea.ProjectId.Should().Be(
+            outcome.DestinationProjectId, "the move lands on the receiver's own copy of the destination project");
+    }
+
+    /// <summary>
+    /// The adversarial half of the same move: a member of the destination project alone, whom the
+    /// source project's own ledger does not vouch, must never be able to pull that project's idea
+    /// across, or write into it, by forging events through the destination's outbox. Refused and
+    /// burned, since the sender is the record's own claimed origin.
+    /// </summary>
+    [Fact]
+    public async Task An_idea_move_from_a_sender_the_source_project_does_not_vouch_is_refused()
+    {
+        CrossProjectReassignmentOutcome outcome =
+            await ReadCrossProjectIdeaReassignmentAsync(senderIsMemberOfSourceProject: false);
+
+        outcome.Read.EventsApplied.Should().Be(0);
+        outcome.Idea.Text.Should().Be("An idea filed under X");
+        outcome.Idea.ProjectId.Should().Be(
+            outcome.SourceProjectId, "the idea stays under the project it belongs to");
+        outcome.Record.Should().BeEquivalentTo(new { Applied = false }, "a refused native record is burned");
     }
 
     /// <summary>
@@ -5823,6 +5864,104 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
                 RepositoryPath, $"refs/hall9k/ledger/nodes/{nodeId}", $"nodes/{nodeId}/node.yaml", content,
                 ExpectedBlobId: null, "seed node file", committer, signingKey),
             cancellationToken);
+    }
+
+    private sealed record CrossProjectReassignmentOutcome(
+        EventReplicationReadResult Read, IdeaDetails Idea, ReplicatedEventRecord? Record, Guid SourceProjectId,
+        Guid DestinationProjectId);
+
+    /// <summary>
+    /// The receiver hosts two registered projects, X (ledger <c>/repo-x</c>) and Y (ledger
+    /// <c>/repo-y</c>), and holds an idea under X. Node A, always a member of Y, sends an
+    /// <see cref="IdeaRevised"/> then an <see cref="IdeaAssignedToProject"/> for that idea through
+    /// its own outbox in one batch, and the receiver reads it scoped to Y. The returned record is
+    /// the move's own dedupe row. <paramref name="senderIsMemberOfSourceProject"/> decides whether X's own
+    /// ledger vouches node A too.
+    /// </summary>
+    private async Task<CrossProjectReassignmentOutcome> ReadCrossProjectIdeaReassignmentAsync(
+        bool senderIsMemberOfSourceProject)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid ideaId = DomainId.New();
+        Guid projectX = DomainId.New();
+        Guid projectY = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        Dictionary<string, TrustChain> chainsByRepositoryPath = new() { ["/repo-y"] = OwnerChainFor(nodeA) };
+        if (senderIsMemberOfSourceProject)
+        {
+            chainsByRepositoryPath["/repo-x"] = OwnerChainFor(nodeA);
+        }
+
+        EventReplicationInbox replicationInbox = new(
+            transport, chainReader: new FakeLedgerChainReader(chainsByRepositoryPath));
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                projectX,
+                new ProjectRegistered(
+                    projectX, ownerId, DomainId.New(), "Project X", "/repo-x", null, "main", Now));
+            session.Events.StartStream<ProjectAggregate>(
+                projectY,
+                new ProjectRegistered(
+                    projectY, ownerId, DomainId.New(), "Project Y", "/repo-y", null, "main", Now));
+            session.Events.StartStream<IdeaAggregate>(
+                ideaId, new IdeaCaptured(ideaId, ownerId, "An idea filed under X", projectX, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Node A's own local ids for X and Y are its own coordinates, never the receiver's; the
+        // inbox rewrites the payload's ProjectId to the receiver's own Y before applying.
+        Guid senderLocalProjectX = DomainId.New();
+        Guid senderLocalProjectY = DomainId.New();
+        Guid originEventId = DomainId.New();
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+        IdeaRevised revision = new(ideaId, "Revised just before the move", Now.AddSeconds(1), ownerId);
+        EventReplicationCodec.ReplicatedEventRecord revisionRecord = new(
+            ideaId, typeof(IdeaRevised).FullName!, JsonSerializer.Serialize(revision, jsonOptions),
+            DomainId.New(), OriginSequence: 1, nodeA, "owner-a-fingerprint", Now.AddSeconds(1), senderLocalProjectY);
+        IdeaAssignedToProject reassignment = new(ideaId, senderLocalProjectY, senderLocalProjectX, Now.AddSeconds(1), ownerId);
+        EventReplicationCodec.ReplicatedEventRecord reassignmentRecord = new(
+            ideaId, typeof(IdeaAssignedToProject).FullName!, JsonSerializer.Serialize(reassignment, jsonOptions),
+            originEventId, OriginSequence: 2, nodeA, "owner-a-fingerprint", Now.AddSeconds(1), senderLocalProjectY);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, nodeA, senderLocalProjectY, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([revisionRecord, reassignmentRecord]), Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, senderLocalProjectY, "shared-project-key", adoptUnassigned: false,
+                committer, signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        EventReplicationReadResult read;
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectY, DomainId.New(), "owner-b-fingerprint",
+                Now.AddSeconds(3), OwnerChainFor(nodeA), cts.Token);
+        }
+
+        await using IQuerySession query = storeB.QuerySession();
+        IdeaDetails idea = (await query.LoadAsync<IdeaDetails>(ideaId, cts.Token))!;
+        ReplicatedEventRecord? record = await query.LoadAsync<ReplicatedEventRecord>(originEventId, cts.Token);
+        return new CrossProjectReassignmentOutcome(read, idea, record, projectX, projectY);
     }
 
     private static (LedgerCommitter Committer, LedgerSigningKey SigningKey) Signing(string name) =>
