@@ -84,6 +84,21 @@ public sealed class MergedBranchCleanupTests
         plan.Select(step => step.Arguments).Should().Equal(TodaysSequence);
     }
 
+    /// <summary>
+    /// Security review idea 6be68ee2, process-injection finding 2: every step above interpolates
+    /// <c>branch</c> straight into an argument string this plan hands the runner, so a hostile
+    /// value must be refused here rather than reaching <c>branch -D "&lt;value&gt;"</c> or
+    /// <c>push origin --delete "&lt;value&gt;"</c> unexamined. Asserted by refusing outright, not by
+    /// sanitizing: <c>Plan</c>'s own step list carries only a name this platform already vetted.
+    /// </summary>
+    [Fact]
+    public void A_hostile_branch_name_is_refused_before_any_step_is_built()
+    {
+        Action act = () => MergedBranchCleanup.Plan("--upload-pack=x", RemoteBranchDeletionOwner.Daemon);
+
+        act.Should().Throw<WorktreeException>().WithMessage("*not a legal branch name*");
+    }
+
     /// <summary>The decision and the sequence it produces, joined exactly as closeout joins them.</summary>
     private static IReadOnlyList<MergedBranchCleanupStep> PlanFor(bool? repositoryDeletesHeadBranchOnMerge) =>
         MergedBranchCleanup.Plan(Branch, MergedBranchCleanup.OwnerOf(repositoryDeletesHeadBranchOnMerge));

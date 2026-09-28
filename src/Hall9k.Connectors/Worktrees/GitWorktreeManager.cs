@@ -4,6 +4,7 @@ using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Verification;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Shared.ValueObjects;
 using Microsoft.Extensions.Logging;
 
 namespace Hall9k.Connectors.Worktrees;
@@ -35,6 +36,8 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
 
     public async Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken)
     {
+        RefuseIllegalBranch(request.BaseBranch, request.TaskId, "the base branch this worktree is cut from");
+
         string repositoryPath = Path.GetFullPath(request.RepositoryPath);
         await using RepositoryLock repositoryLock = await AcquireRepositoryLockCoreAsync(repositoryPath, cancellationToken);
         {
@@ -93,6 +96,8 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
 
     public async Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken)
     {
+        RefuseIllegalBranch(request.Branch, request.TaskId, "the branch this checkout is asked to resume");
+
         string repositoryPath = Path.GetFullPath(request.RepositoryPath);
         await using RepositoryLock repositoryLock = await AcquireRepositoryLockCoreAsync(repositoryPath, cancellationToken);
         {
@@ -934,6 +939,33 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     // UUIDv7 front-loads the timestamp — same-instant ids share their FIRST chars, so a
     // short id must come from the random tail, never the head.
     private static string Short(Guid id) => id.ToString("N")[^8..];
+
+    /// <summary>
+    /// Refuses <paramref name="branch"/> before it becomes a git argument, whether it names the
+    /// base a fresh worktree is cut from (<see cref="CreateAsync"/>) or the branch an existing one
+    /// is asked to resume (<see cref="CheckoutExistingAsync"/>) — the one choke point every carrier
+    /// of a branch string this platform ever hands to git passes through here, whatever event
+    /// replicated it in (security review idea 6be68ee2, process-injection finding 2): a rendered
+    /// template is already vetted by <c>BranchNameTemplate.Render</c> by the time it reaches this
+    /// class, but <see cref="WorktreeRequest.BaseBranch"/> and <see cref="FollowUpWorktreeRequest.Branch"/>
+    /// never pass through that renderer at all — they are a stacked parent's own branch, or a task's
+    /// own <c>RetryBranch</c>/<c>FollowUpBranch</c>, read straight off task or run state that can
+    /// have replicated from another fleet node.
+    /// </summary>
+    private void RefuseIllegalBranch(string branch, Guid taskId, string role)
+    {
+        if (GitArgumentValidation.IsLegalBranchName(branch, out string? refusalReason))
+        {
+            return;
+        }
+
+        string printable = GitArgumentValidation.Printable(branch);
+        logger.LogWarning(
+            "Task {TaskId}: refusing to run git against {Role} '{Branch}' — {Reason}",
+            taskId, role, printable, refusalReason);
+        throw new WorktreeException(
+            $"'{printable}' is not a legal branch name for {role}: {refusalReason}");
+    }
 
     private async Task RunGitAsync(string repositoryPath, string arguments, CancellationToken cancellationToken)
     {

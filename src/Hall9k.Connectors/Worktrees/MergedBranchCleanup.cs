@@ -1,3 +1,5 @@
+using Hall9k.Domain.Shared.ValueObjects;
+
 namespace Hall9k.Connectors.Worktrees;
 
 /// <summary>
@@ -94,10 +96,22 @@ public static class MergedBranchCleanup
     /// The ordered sequence for <paramref name="branch"/>. The local deletion and the prune are
     /// unconditional; only <see cref="MergedBranchCleanupStage.DeleteRemoteBranch"/> turns on
     /// <paramref name="remoteDeletion"/>.
+    /// <para>
+    /// Refuses before building a single step when <paramref name="branch"/> is not a legal git ref
+    /// name (security review idea 6be68ee2, process-injection finding 2): every step below
+    /// interpolates it straight into an argument string, so an unvalidated caller would otherwise be
+    /// the one entry point this cleanup's own predicate coverage would miss.
+    /// </para>
     /// </summary>
     public static IReadOnlyList<MergedBranchCleanupStep> Plan(
         string branch, RemoteBranchDeletionOwner remoteDeletion)
     {
+        if (!GitArgumentValidation.IsLegalBranchName(branch, out string? refusalReason))
+        {
+            throw new WorktreeException(
+                $"'{GitArgumentValidation.Printable(branch)}' is not a legal branch name to clean up: {refusalReason}");
+        }
+
         List<MergedBranchCleanupStep> plan =
         [
             new(MergedBranchCleanupStage.DeleteLocalBranch, $"branch -D \"{branch}\""),
