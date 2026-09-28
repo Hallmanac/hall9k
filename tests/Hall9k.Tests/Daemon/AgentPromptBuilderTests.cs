@@ -3944,6 +3944,39 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// The total budget cuts off one review's own remaining findings, never the reviews after it:
+    /// <c>GitHubPullRequestInspector.ReadChangesRequestedReviews</c> returns one entry per distinct
+    /// human reviewer with a standing CHANGES_REQUESTED verdict, so a second reviewer's own heading,
+    /// URL, and submission time must survive even when the first reviewer's findings alone exhaust
+    /// the budget (independent pre-PR review, cycle 2, verify pass).
+    /// </summary>
+    [Fact]
+    public void The_changes_requested_prompt_keeps_a_later_reviewer_after_an_earlier_ones_findings_exhaust_the_budget()
+    {
+        TaskDetails task = SomeTask();
+        string firstReviewUrl = "https://github.com/x/y/pull/7#pullrequestreview-42";
+        string secondReviewUrl = "https://github.com/x/y/pull/7#pullrequestreview-43";
+        task.ChangesRequestedReviews =
+        [
+            new ChangesRequestedReview(
+                "first-reviewer", firstReviewUrl, new DateTimeOffset(2026, 9, 6, 12, 15, 0, TimeSpan.Zero),
+                Enumerable.Range(0, 15)
+                    .Select(index => new ChangesRequestedFinding(new string('a', 20_000), $"src/File{index}.cs:1"))
+                    .ToList()),
+            new ChangesRequestedReview(
+                "second-reviewer", secondReviewUrl, new DateTimeOffset(2026, 9, 7, 9, 0, 0, TimeSpan.Zero),
+                [new ChangesRequestedFinding("Also block this.", "src/Other.cs:9")]),
+        ];
+
+        string prompt = AgentPromptBuilder.BuildReviewRequestedChanges(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Narrative);
+
+        prompt.Should().Contain(
+            "Changes requested by @second-reviewer", "a later reviewer's standing must survive an earlier reviewer's budget overrun");
+        prompt.Should().Contain(secondReviewUrl);
+    }
+
+    /// <summary>
     /// The rule the lap exists for, stated where the session will read it.
     /// </summary>
     [Fact]
