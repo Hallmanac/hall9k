@@ -139,10 +139,10 @@ public sealed class OwnerSetCommand : Hall9kAsyncCommand<OwnerSetCommand.Setting
                 + "h9k owner show prints the current preferences.");
         }
 
-        // Refused before the database is opened at all: an option pair that contradicts itself is
-        // not a fact about any owner. DisplayName.Parse's own rule (trimmed, blank clears, else 1
-        // to 64 characters with no control characters) is enforced here too, before anything else
-        // in this command runs.
+        // Refused before any owner is resolved or anything is recorded: an option pair that
+        // contradicts itself is not a fact about any owner. DisplayName.Parse's own rule (trimmed,
+        // blank clears, else 1 to 64 characters with no control characters) is enforced here too,
+        // before anything else in this command runs.
         Optional<VoiceSkillName> voiceSkill =
             VoiceSkillOption.Resolve(settings.VoiceSkill, settings.ClearVoiceSkill);
         Optional<IReadOnlyList<ReviewPersona>> reviewPersonas =
