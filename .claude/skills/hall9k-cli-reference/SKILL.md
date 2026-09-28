@@ -319,10 +319,16 @@ claim the sweep will never make; a task this node already holds says so; and a t
 holds gets a
 `MessageKind.ClaimRequest` envelope queued for it (`ClaimEnvelopeCodec.ClaimRequestRecord`, carrying
 the requester's node, owner, reason, and — for a gated project — this install's own tracker
-identity, resolved locally via `TrackerAssignmentTake.ResolveOwnIdentityAsync` since the granting
-node has no other way to learn it: every teammate's tracker credentials are local to their own
-install). Queues only, the `h9k message send` convention — the daemon's own message sweep is what
-actually sends it. The project's own `take-policy` setting (`h9k project set --take-policy
+identity, resolved locally via `TrackerAssignmentTake.ResolveOwnIdentityAsync`: every teammate's
+tracker credentials are local to their own install). This carried identity is never trusted as-is
+by the granting node for a GitHub-gated project: `ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity`
+replaces it with the requester's own node's declared GitHub login (`node.yaml`'s own declaration,
+read through the ledger's trust chain) before the request is ever recorded, since the carried value
+is otherwise self-declared and unverified — a Jira-linked task is the one exception, since the
+declaration carries no Jira identity and the carried accountId is what the granting node actually
+has to go on (idea 6be68ee2, trust-ledger finding 13). Queues only, the `h9k message send`
+convention — the daemon's own message sweep is what actually sends it. The project's own
+`take-policy` setting (`h9k project set --take-policy
 <auto|ask>`, default `auto`) decides how the holder's node answers, through
 `ClaimRequestWatchLoop` polling its own received-but-unhandled messages of all three
 `MessageKind.MechanicalKindValues` kinds on the ordinary sweep cadence: a `ClaimRequest` is handed
