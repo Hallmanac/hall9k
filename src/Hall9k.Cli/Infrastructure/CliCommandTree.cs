@@ -404,15 +404,22 @@ public static class CliCommandTree
                     "Change an owner's standing preferences: whether closeout asks a pull request's reviewers "
                     + "to look again once a fix follow-up has pushed (Decisions Log #62), the skill this "
                     + "owner writes in (--voice-skill), which every prompt seam that composes text a human "
-                    + "reads as theirs tells the session to load first, and the review personas they hold "
-                    + "(--persona), which decide how a pull request assigned to them is reviewed. A project "
-                    + "setting outranks the re-request policy; the node default sits under both.")
+                    + "reads as theirs tells the session to load first, the review personas they hold "
+                    + "(--persona), which decide how a pull request assigned to them is reviewed, and the "
+                    + "name teammates see for them (--display-name, task e6744304), a label only, set per "
+                    + "project with --project or as this machine's own default beneath every project that "
+                    + "has none of its own, written into the affected project's own node file for h9k "
+                    + "project members to show. A project setting outranks the re-request policy; the node "
+                    + "default sits under both.")
                 .WithExample("owner", "set", "--rerequest-review", "on")
                 .WithExample("owner", "set", "brian", "--rerequest-review", "default")
                 .WithExample("owner", "set", "--voice-skill", "my-voice")
                 .WithExample("owner", "set", "brian", "--clear-voice-skill")
                 .WithExample("owner", "set", "--persona", "engineer", "--persona", "qa")
-                .WithExample("owner", "set", "brian", "--clear-personas");
+                .WithExample("owner", "set", "brian", "--clear-personas")
+                .WithExample("owner", "set", "--display-name", "Ada")
+                .WithExample("owner", "set", "--display-name", "Ada L.", "--project", "hall9k")
+                .WithExample("owner", "set", "--display-name", "''", "--project", "hall9k");
         });
 
         config.AddBranch("node", node =>
