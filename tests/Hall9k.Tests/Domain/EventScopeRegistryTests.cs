@@ -104,6 +104,10 @@ public sealed class EventScopeRegistryTests
         // appended to any stream, so it has no scope to classify. The same exemption
         // MessageEnvelopeV1 has above, for the same reason.
         "Hall9k.Domain.Features.Replication.PartialReplicatedStreamRepairPlan",
+        // One member's own label, carried inside ProjectMemberLabelsObserved's own Labels list
+        // (task b7d8222e). Never appended to a stream by itself, so it has no scope of its own to
+        // classify; ProjectMemberLabelsObserved, which is, already carries one.
+        "Hall9k.Domain.Features.Trust.ProjectMemberLabel",
     ];
 
     [Fact]

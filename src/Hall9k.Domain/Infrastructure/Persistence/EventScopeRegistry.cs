@@ -368,6 +368,11 @@ public static class EventScopeRegistry
         // sweep reaches the identical conclusion by reading the ledger itself.
         [typeof(UnverifiedLedgerWriteObserved)] = EventScope.NodeScoped,
         [typeof(UnverifiedLedgerWriteResolved)] = EventScope.NodeScoped,
+        // task b7d8222e: this node's own copy of one project's trust-chain labels, recomputed by
+        // this node's own message sweep — the identical "this node's own local read" reasoning
+        // UnverifiedLedgerWriteObserved above already carries, never a team fact another node's
+        // differently-timed sweep would reproduce identically.
+        [typeof(ProjectMemberLabelsObserved)] = EventScope.NodeScoped,
 
         // Hall9k.Domain.Features.Invite — idea 202383dc, T2: an invite's own plaintext secret is
         // kept only in the minting node's own store, never the ledger and never replicated; the
