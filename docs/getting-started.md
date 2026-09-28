@@ -38,7 +38,8 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   project already has an owner, registration writes nothing to the remote, names the owner, and
   asks for an invite. The owner mints it on their own node: `h9k project invite <name>` for a
   teammate, who becomes a member, or `h9k node invite` for another of the owner's own machines,
-  which joins the owner's **fleet**. Either way the newcomer finishes with the secret, and the
+  which joins the owner's **fleet**. Never invent an invite; ask the user which case this is.
+  Either way the newcomer finishes with the secret, and the
   minting node's daemon vouches them in within a minute or so, so the newcomer then needs to wait
   rather than run anything else. The join also writes the newcomer's own GitHub login and account
   id into their node file as a declaration, which `h9k project members <name>` shows beside their
@@ -46,9 +47,9 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   existed writes its login once, after its first daemon start following the update. After a
   successful join, offer the person a display name for this project (the name teammates see for
   them, a label only, never part of any trust decision), suggested from their GitHub login or their
-  `git config user.name`: `h9k owner set --display-name '<name>' --project <name>`. Say it can be
-  changed later with the same command, or cleared again with an empty value
-  (`--display-name ''`). Never invent an invite; ask the user which case this is.
+  `git config user.name`: `h9k owner set --display-name '<display-name>' --project <name>`. Say it
+  can be changed later with the same command, or cleared again with an empty value
+  (`--display-name '' --project <name>`).
 
   ```bash
   h9k project join <name> --invite <secret>
@@ -127,11 +128,14 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   h9k owner set --persona engineer --persona qa
   ```
 
-- **The name teammates see, `h9k owner set --display-name '<name>' [--project <name>]`.** A label
-  only: it never feeds a trust or cross-check decision the way a declared GitHub account does.
-  With `--project`, it is that project's own entry; without it, it is this machine's own default,
-  which applies to every project that has no entry of its own. `h9k project members <name>` shows
-  it under a member's root fingerprint. An empty value clears whichever one the call targets.
+- **The name teammates see, `h9k owner set --display-name '<display-name>' [--project <name>]`.**
+  A label only: it never feeds a trust or cross-check decision the way a declared GitHub account
+  does. With `--project`, it is that project's own entry; without it, it is this machine's own
+  default, which applies to every project that has no entry of its own — a per-machine setting,
+  since owner settings never leave the node that set them, so it does not follow the user to
+  another machine of their own. The effective value is written into the node file of every
+  affected project, which `h9k project members <name>` shows under a member's root fingerprint. An
+  empty value clears whichever one the call targets.
 
   ```bash
   h9k owner set --display-name "Ada Lovelace" --project <name>

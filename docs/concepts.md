@@ -1421,7 +1421,9 @@ unconditionally an owner. An owner-role member may mint member invites, remove a
 and can never remove the last owner. `h9k project members <project>` lists what the ledger shows
 right now, recomputed on every run rather than cached: each root fingerprint (with the newest
 display name declared across that root's own nodes underneath, when one is declared: a label
-only, set per project or as a machine's own default with `h9k owner set --display-name`, never
+only, set per project or as a machine's own default with `h9k owner set --display-name` — a
+per-machine setting, since owner settings never leave the node that set them, written from there
+into the effective project's own node file, which this listing reads back — never
 part of any trust or cross-check decision), the GitHub account
 or accounts that root's nodes declare for themselves (`unknown` when none does), the role, that
 root's fleet, and how each declared account stands against the repository's collaborators
