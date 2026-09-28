@@ -393,6 +393,17 @@ internal static class ReviewRequestPane
                 + "nothing covers it by then");
         }
 
+        // Informational, never needs-you, for the identical reason HeldForPeer is above: this
+        // repository's own hourly cap is re-graded every sweep, so the operator is only told why
+        // nothing started yet, never handed a lever that would change nothing (task 7ae690f5).
+        if (outcome == ReviewRequestOutcome.HeldMintCapReached)
+        {
+            return Informational(
+                request.Repository, request.Number,
+                $"{opening}{age}; this repository's own hourly auto-pr-review mint cap is reached — re-graded "
+                + "every sweep, so it mints once the window rolls");
+        }
+
         return Informational(
             request.Repository, request.Number,
             $"{opening}{age}; auto pr-review is on here ({setting.Speed.Value.ToLowerInvariant()}) — a task "
