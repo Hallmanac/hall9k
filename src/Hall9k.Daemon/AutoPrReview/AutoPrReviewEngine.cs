@@ -1062,7 +1062,7 @@ public sealed class AutoPrReviewEngine(
         // h9k task list, every needs-you row — with no fence and no caveat around it, unlike the
         // body WorkItemContext.Compose already quotes. A stranger's title landing there verbatim
         // was this platform's widest unfenced surface for text a pull request's own author wrote.
-        string objective = $"Review pull request {imported.Reference.Key}";
+        string objective = $"Review pull request {imported.Reference.Reference}";
 
         string provenance = actor.Login is { } assigner
             ? $"GitHub reviewer assignment observed: {assigner} requested {login} as a reviewer"
@@ -2189,7 +2189,7 @@ public sealed class AutoPrReviewEngine(
         DateTimeOffset now = _clock.GetUtcNow();
         // Platform-authored, never the pull request's own title — see CreateOneAsync's identical
         // comment (security review idea 6be68ee2, finding 1).
-        string objective = $"Review pull request {imported.Reference.Key}";
+        string objective = $"Review pull request {imported.Reference.Reference}";
 
         string provenance = $"GitHub mention observed: {comment.AuthorLogin} tagged {login} in a comment on "
             + $"this pull request at {comment.CreatedAt:yyyy-MM-dd HH:mm:ss}Z.";
