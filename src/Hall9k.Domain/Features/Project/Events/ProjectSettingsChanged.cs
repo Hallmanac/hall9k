@@ -310,4 +310,17 @@ public sealed record ProjectSettingsChanged(
     /// itself already uses. Node-scoped like <see cref="Effort"/>: it never replicates to a
     /// teammate's node.
     /// </summary>
-    Optional<AgentEffort> OrchestratorEffort = default);
+    Optional<AgentEffort> OrchestratorEffort = default,
+    /// <summary>
+    /// This project's own override of the auto-pr-review membership gate (security review idea
+    /// 6be68ee2, finding 1), set by <c>h9k project set --review-requires-membership on|off|default</c>.
+    /// Present-with-<see cref="ReviewMembershipPolicy.Unknown"/> is how <c>default</c> clears a
+    /// previous choice back to the daemon's own fresh <c>gh repo view --json isPrivate</c> read for
+    /// this project, exactly as <see cref="ReviewRerequestPolicy.Unknown"/> already clears that
+    /// setting. Node-scoped, not team-scoped, unlike <see cref="ReviewRerequest"/>: this override
+    /// is this node's own convenience and does not replicate to a teammate's node, since the
+    /// visibility-computed default it falls back to is already fleet-consistent on its own. Trailing
+    /// and optional so every stream written before this setting existed replays byte-for-byte
+    /// unchanged.
+    /// </summary>
+    Optional<ReviewMembershipPolicy> ReviewRequiresMembership = default);
