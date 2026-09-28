@@ -120,6 +120,23 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {taskId}'s project no longer exists.");
 
+        // A node runs a project's verify gates only after its own operator has accepted that exact
+        // gate set (security review idea 6be68ee2, process-injection finding 1, the local half) —
+        // refused outright, with the diff and the accept command, never an interactive confirm:
+        // this command already runs the gates unsupervised the moment it proceeds, so there is no
+        // safe point after this to ask instead of refuse.
+        GateSetAcceptance.Decision gateSetDecision =
+            GateSetAcceptance.Decide(project.AcceptedVerifyCommands, project.VerifyCommands);
+        if (!gateSetDecision.Proceed)
+        {
+            string diffText = string.Join(
+                Environment.NewLine, GateSetAcceptanceDisplay.FormatDiffLines(gateSetDecision.Diff));
+            throw new DomainConflictException(
+                $"Task {taskId}'s project '{project.Name}' verify gate set has changed and has not been "
+                + $"accepted on this node — accept it first (h9k project accept-gates {project.Name}):"
+                + $"{Environment.NewLine}{diffText}");
+        }
+
         // Unlike h9k task deliver's own refusal, uncommitted files here are only reported, never
         // a hard failure: an operator mid-edit is the ordinary state of an interactive claim, not
         // an anomaly, and dotnet build/test read the working tree regardless of git status — the

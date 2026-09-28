@@ -308,7 +308,23 @@ internal static class TaskPhaseComposer
     private static TaskPhase VerifyingPhase(RunDetails run, SessionLiveness session, DateTimeOffset now) =>
         run.ActiveGate is { } gate
             ? GatePhase(gate, session, now)
-            : HostCoupledGateWaitPhase(run, now) ?? new TaskPhase("gates", SessionLiveness.NotApplicable, "build and test running");
+            : GateSetAcceptanceWaitPhase(run, now)
+                ?? HostCoupledGateWaitPhase(run, now)
+                ?? new TaskPhase("gates", SessionLiveness.NotApplicable, "build and test running");
+
+    /// <summary>
+    /// The wait for this node's own acceptance of the gates a run captured at entry (security
+    /// review idea 6be68ee2, process-injection finding 1, the local half) — the identical shape
+    /// <see cref="HostCoupledGateWaitPhase"/> gives the host-coupled-gate permit wait, checked
+    /// first: a run cannot be waiting on the permit until it has already run this wait, since the
+    /// permit is only ever acquired inside the per-gate loop this wait gates entry to.
+    /// </summary>
+    private static TaskPhase? GateSetAcceptanceWaitPhase(RunDetails run, DateTimeOffset now) =>
+        run.GateSetAcceptanceWaitStartedAt is { } waitStartedAt && run.ActiveSessions.Count == 0
+            ? new TaskPhase(
+                "waiting for this node to accept its verify gates", SessionLiveness.NotApplicable,
+                $"h9k project accept-gates; waited {DurationFormat.Short(now - waitStartedAt)} so far")
+            : null;
 
     /// <summary>
     /// The wait for the node-wide host-coupled-gate permit, when this run is in it (task: at most
@@ -384,6 +400,11 @@ internal static class TaskPhaseComposer
         if (run.ActiveGate is { } gate && run.ActiveSessions.Count == 0)
         {
             return GatePhase(gate, session, now);
+        }
+
+        if (GateSetAcceptanceWaitPhase(run, now) is { } gateSetWaitPhase)
+        {
+            return gateSetWaitPhase;
         }
 
         if (HostCoupledGateWaitPhase(run, now) is { } waitPhase)
