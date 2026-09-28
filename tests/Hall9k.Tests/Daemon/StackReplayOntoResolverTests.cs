@@ -90,6 +90,30 @@ public sealed class StackReplayOntoResolverTests : IDisposable
         result.ResolvedFromCurrentBaseTip.Should().BeFalse();
     }
 
+    /// <summary>
+    /// Security review idea 6be68ee2, process-injection finding 2: <c>baseBranch</c> is
+    /// <c>RunLauncher</c>'s own <c>runBaseBranch</c> — the resumed or stacked base carried forward
+    /// from an earlier run's record — and this resolver's own retry path is one of the three
+    /// daemon fetches that must refuse a hostile value rather than hand it to git, `--` or not
+    /// (<c>--</c> alone does not stop the refspec-shaped example below). Proven over a fake
+    /// <see cref="ProcessRunner"/> that throws if it is ever called, never a real repository.
+    /// </summary>
+    [Theory]
+    [InlineData("+refs/heads/main:refs/heads/injected")]
+    [InlineData("--upload-pack=x")]
+    public async Task A_retry_refuses_a_hostile_base_branch_without_ever_calling_git(string hostileBranch)
+    {
+        ProcessRunner git = (_, _, _, _) => throw new InvalidOperationException(
+            "a hostile base branch must be refused before it ever reaches a git argument");
+        const string recordedOntoCommit = "0123456789abcdef0123456789abcdef01234567";
+
+        StackReplayOntoResolver.Resolution result = await StackReplayOntoResolver.ResolveAsync(
+            git, _worktreePath, hostileBranch, recordedOntoCommit, retryPending: true, CancellationToken.None);
+
+        result.Commit.Should().Be(recordedOntoCommit, "a refused base falls back the same forgiving direction an unreachable one does");
+        result.ResolvedFromCurrentBaseTip.Should().BeFalse();
+    }
+
     private static async Task<string> InitRepoWithOneCommitAsync(string path)
     {
         await RunGitAsync(path, ["init", "-q", "-b", "main"]);
