@@ -37,6 +37,8 @@ public sealed class MessageKindTests
     [InlineData("claim-request")]
     [InlineData("claim-granted")]
     [InlineData("claim-refused")]
+    [InlineData("owner-act-request")]
+    [InlineData("owner-act-outcome")]
     public void Parse_RecognizesTheCooperativeTakeKinds(string raw)
     {
         MessageKind kind = MessageKind.Parse(raw);
@@ -46,9 +48,19 @@ public sealed class MessageKindTests
     }
 
     [Fact]
-    public void MechanicalKindValues_names_exactly_the_cooperative_take_kinds()
+    public void Parse_RecognizesTheOwnerActPair()
+    {
+        MessageKind.Parse("owner-act-request").Should().Be(MessageKind.OwnerActRequest);
+        MessageKind.Parse("owner-act-outcome").Should().Be(MessageKind.OwnerActOutcome);
+    }
+
+    [Fact]
+    public void MechanicalKindValues_names_exactly_the_cooperative_take_and_owner_act_kinds()
     {
         MessageKind.MechanicalKindValues.Should().BeEquivalentTo(
-            [MessageKind.ClaimRequest.Value, MessageKind.ClaimGranted.Value, MessageKind.ClaimRefused.Value]);
+            [
+                MessageKind.ClaimRequest.Value, MessageKind.ClaimGranted.Value, MessageKind.ClaimRefused.Value,
+                MessageKind.OwnerActRequest.Value, MessageKind.OwnerActOutcome.Value,
+            ]);
     }
 }
