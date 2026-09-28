@@ -316,6 +316,50 @@ public sealed class ProjectMembersCommandTests : IClassFixture<PostgresFixture>,
     }
 
     [Fact]
+    public async Task Remove_refuses_before_any_push_when_this_nodes_key_is_not_a_live_root_key()
+    {
+        // idea 6be68ee2, trust-ledger finding 2: this node's own owner DOES hold the owner role,
+        // but this node's own key is merely vouched into that owner's chain, never the owner's own
+        // live root key — a member removal is a members-ref write, so it must refuse before any
+        // push. Never checked against the identity fingerprint or TrustChain.RootNodeId (null on
+        // an older ledger).
+        ProjectDetails project = await SeedProjectAsync(CancellationToken.None);
+        FakeLedger ledger = new();
+
+        Guid nodeId;
+        NodeSigningKey myKey;
+        NodeSigningKey rootKey = await new NodeKeyStore().EnsureAsync(Guid.NewGuid(), CancellationToken.None);
+        await using (IDocumentSession bootstrapSession = _postgres.Store.LightweightSession())
+        {
+            BootstrapContext context = await NodeBootstrap.EnsureAsync(bootstrapSession, CancellationToken.None);
+            await bootstrapSession.SaveChangesAsync(CancellationToken.None);
+            nodeId = context.NodeId;
+            myKey = await new NodeKeyStore().EnsureAsync(context.NodeId, CancellationToken.None);
+
+            OwnerAggregate owner = await bootstrapSession.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: CancellationToken.None)
+                ?? throw new InvalidOperationException("Owner bootstrap did not create an owner stream.");
+            bootstrapSession.Events.Append(context.OwnerId, OwnerDecider.ClaimRoot(owner, rootKey.Fingerprint, verified: true, Now));
+            await bootstrapSession.SaveChangesAsync(CancellationToken.None);
+        }
+
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner>
+            {
+                [rootKey.Fingerprint] = new(
+                    rootKey.Fingerprint, rootKey.PublicKeyLine,
+                    [new TrustedNode(nodeId.ToString(), myKey.PublicKeyLine, myKey.Fingerprint, Now)]),
+            },
+            [new ProjectMember(rootKey.Fingerprint, MembershipRole.Owner, Now)]));
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        ProjectMemberRemoveCommand.Settings settings = new() { Project = project.Name, Fingerprint = new string('a', 64) };
+        Func<Task> act = () => ProjectMemberRemoveCommand.RunAsync(session, settings, ledger, chainReader, new NodeKeyStore(), CancellationToken.None);
+
+        await act.Should().ThrowAsync<DomainValidationException>().WithMessage("*root key*");
+        ledger.Deletes.Should().BeEmpty("this node is merely vouched, never a live root key, so nothing is pushed");
+    }
+
+    [Fact]
     public async Task Remove_deletes_the_member_file_when_this_owner_holds_the_owner_role()
     {
         ProjectDetails project = await SeedProjectAsync(CancellationToken.None);

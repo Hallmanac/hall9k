@@ -341,8 +341,9 @@ public static class CliCommandTree
                     .WithDescription(
                         "Remove a root fingerprint's project membership: deletes members/<fingerprint>.yaml "
                         + "from the ledger's own members ref (a genuine tree deletion, never a tombstone). "
-                        + "Refused, before any push, unless this node's own root currently holds the owner "
-                        + "role in this project's own chain (idea 202383dc, T1).")
+                        + "Refused, before any push, unless this node's own key is a live root key of an "
+                        + "owner-role member in this project's own chain (idea 202383dc, T1; idea 6be68ee2, "
+                        + "trust-ledger finding 2).")
                     .WithExample("project", "member", "remove", "hall9k",
                         "3f9c2a7e1b5d84a6f0c3e2b1a9d8c7f6e5d4c3b2a1908f7e6d5c4b3a29180716");
             });

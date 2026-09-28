@@ -79,6 +79,25 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
             throw new DomainValidationException("No project is registered to this owner yet — run h9k project join <project> first.");
         }
 
+        // Refused before any push, across every project (idea 6be68ee2, trust-ledger finding 2): a
+        // compromised fleet node must never revoke its own peers, so this node's own key must itself
+        // be a LIVE ROOT KEY of this owner — never merely enrolled, which NodeVouchCommand's own
+        // identical-looking gate still correctly accepts for a vouch. Checked against the first
+        // project's own ledger copy: root-key status is an owner-wide fact the succession fan-out
+        // (73d185b5) already keeps in step across every project this owner is registered to, so one
+        // read is enough to fail fast with a single clear message rather than N per-project skips
+        // that would otherwise all say the same thing. RevokeInProjectAsync's own identical check,
+        // per project, is what actually enforces this on every push.
+        TrustChain earlyChain = await chainReader.ComputeAsync(projects[0].RepositoryPath, cancellationToken);
+        if (!earlyChain.IsLiveRootKeyOfOwner(key.Fingerprint, root))
+        {
+            throw new DomainValidationException(
+                $"This node ({key.Fingerprint}) does not currently hold a live root key for owner {root} — "
+                + "only the root itself may revoke a node from its own fleet (idea 6be68ee2, trust-ledger "
+                + $"finding 2: a vouched node key can no longer revoke its peers). Re-run h9k node revoke "
+                + $"{targetNodeId} from a node holding a root key for {root}.");
+        }
+
         int revokedIn = 0;
         List<string> failedProjects = [];
         foreach (ProjectDetails project in projects)
@@ -158,15 +177,14 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
         CancellationToken cancellationToken)
     {
         TrustChain chain = await chainReader.ComputeAsync(repositoryPath, cancellationToken);
-        if (!chain.IsEnrolledInOwner(myFingerprint, root))
+        if (!chain.IsLiveRootKeyOfOwner(myFingerprint, root))
         {
             throw new DomainValidationException(
-                $"This node ({myFingerprint}) is not currently enrolled in owner {root}'s own chain in "
-                + $"'{repositoryPath}' — only the root itself or a node already vouched into it may revoke "
-                + "another (idea 202383dc: \"written by any enrolled node of that owner\").");
+                $"This node ({myFingerprint}) does not currently hold a live root key for owner {root} in "
+                + $"'{repositoryPath}' — only the root itself may revoke a node from its own fleet (idea "
+                + "6be68ee2, trust-ledger finding 2). Re-run h9k node revoke from a node holding a root "
+                + $"key for {root}.");
         }
-
-        bool signedByALiveRootKey = chain.OwnerChains.TryGetValue(root, out TrustedOwner? owner) && owner.IsLiveRootKey(myFingerprint);
 
         string refName = $"refs/hall9k/ledger/owners/{root}";
         string path = $"owners/{root}/revoked/{targetNodeId}.yaml";
@@ -181,25 +199,24 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
                 cancellationToken);
             if (outcome.Verdict == LedgerWriteVerdict.Written)
             {
-                // Only when the revoking key is itself currently a live root key (idea 6be68ee2,
-                // journal finding 5): an ordinary enrolled node's own revoke never writes this, since
-                // a revoked-successor record only counts on read when it is signed by a root key
-                // ranked above the successor it targets. Best-effort, same reasoning as the vouch
-                // side: the revocation itself already landed.
-                if (signedByALiveRootKey)
+                // Unconditional now (idea 6be68ee2, journal finding 5): the gate above already
+                // requires the revoking key to be a live root key before any push, so every
+                // revocation that lands here also revokes this node id's own successor candidacy or
+                // rotation, if it has one — a revoked-successor record only counts on read when it
+                // is signed by a root key ranked above the successor it targets, which this write
+                // always is. Best-effort, same reasoning as the vouch side: the revocation itself
+                // already landed.
+                try
                 {
-                    try
-                    {
-                        await SuccessionLedgerWriter.WriteRevokedSuccessorAsync(
-                            ledger, repositoryPath, root, targetNodeId, now, committer, signingKey, cancellationToken);
-                    }
-                    catch (Exception exception)
-                        when (exception is LedgerPushRejectedException or InvalidOperationException or DomainConflictException)
-                    {
-                        AnsiConsole.MarkupLine(
-                            $"[yellow]Revoked node {targetNodeId}, but could not also write its revoked-successor record "
-                            + $"in '{repositoryPath.EscapeMarkup()}' ({exception.Message.EscapeMarkup()}).[/]");
-                    }
+                    await SuccessionLedgerWriter.WriteRevokedSuccessorAsync(
+                        ledger, repositoryPath, root, targetNodeId, now, committer, signingKey, cancellationToken);
+                }
+                catch (Exception exception)
+                    when (exception is LedgerPushRejectedException or InvalidOperationException or DomainConflictException)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]Revoked node {targetNodeId}, but could not also write its revoked-successor record "
+                        + $"in '{repositoryPath.EscapeMarkup()}' ({exception.Message.EscapeMarkup()}).[/]");
                 }
 
                 return true;

@@ -151,6 +151,57 @@ public sealed class ProjectAssignKeyCommandTests : IClassFixture<PostgresFixture
     }
 
     [Fact]
+    public async Task Assign_key_refuses_before_any_push_when_this_nodes_key_is_not_a_live_root_key()
+    {
+        // idea 6be68ee2, trust-ledger finding 2: this node's own root claim DOES match the genesis
+        // owner's real fingerprint, and that owner DOES hold the owner role — but this node's own
+        // key is merely vouched into that owner's chain, never the owner's own live root key.
+        // Assign-key writes the genesis member's own membership file, so it must refuse before any
+        // push. Never checked against the identity fingerprint or TrustChain.RootNodeId (null on
+        // an older ledger).
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        FakeLedger ledger = new();
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+
+        Guid nodeId;
+        NodeSigningKey myKey;
+        NodeSigningKey rootKey = await new NodeKeyStore().EnsureAsync(Guid.NewGuid(), cts.Token);
+        await using (IDocumentSession claimSession = _postgres.Store.LightweightSession())
+        {
+            BootstrapContext context = await NodeBootstrap.EnsureAsync(claimSession, cts.Token);
+            await claimSession.SaveChangesAsync(cts.Token);
+            nodeId = context.NodeId;
+            myKey = await new NodeKeyStore().EnsureAsync(context.NodeId, cts.Token);
+
+            OwnerAggregate owner = await claimSession.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: cts.Token)
+                ?? throw new InvalidOperationException("Owner bootstrap did not create an owner stream.");
+            claimSession.Events.Append(context.OwnerId, OwnerDecider.ClaimRoot(owner, rootKey.Fingerprint, verified: true, Now));
+            await claimSession.SaveChangesAsync(cts.Token);
+        }
+
+        await WriteGenesisMemberFileWithNoKeyAsync(ledger, rootKey.Fingerprint, cts.Token);
+        int writesBeforeAssignKey = ledger.Writes.Count;
+
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner>
+            {
+                [rootKey.Fingerprint] = new(
+                    rootKey.Fingerprint, rootKey.PublicKeyLine,
+                    [new TrustedNode(nodeId.ToString(), myKey.PublicKeyLine, myKey.Fingerprint, Now)]),
+            },
+            [new ProjectMember(rootKey.Fingerprint, MembershipRole.Owner, Now)],
+            GenesisRootFingerprint: rootKey.Fingerprint));
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        Func<Task> act = () => ProjectAssignKeyCommand.RunAsync(
+            session, project, ledger, chainReader, new NodeKeyStore(), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainValidationException>()).WithMessage("*root key*");
+        ledger.Writes.Should().HaveCount(
+            writesBeforeAssignKey, "this node is merely vouched, never a live root key, so nothing is pushed");
+    }
+
+    [Fact]
     public async Task Assign_key_is_refused_once_a_key_already_exists()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
