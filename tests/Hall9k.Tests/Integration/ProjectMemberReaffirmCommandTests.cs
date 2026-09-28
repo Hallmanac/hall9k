@@ -74,6 +74,64 @@ public sealed class ProjectMemberReaffirmCommandTests : IClassFixture<PostgresFi
     }
 
     [Fact]
+    public async Task Reaffirm_refuses_when_the_raw_files_role_differs_from_the_chains_own_authorized_role()
+    {
+        // Independent pre-PR review, cycle 4, conformance and adversarial lenses, high: a compromised,
+        // merely vouched fleet node can rewrite members/<fingerprint>.yaml's own role — a write the
+        // stricter reader refuses and chain.Members never reflects — so reaffirm must never root-sign
+        // whatever role currently sits at the ledger's tip when the chain's own authorized view
+        // already has an opinion about this fingerprint's role that disagrees with it.
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        FakeLedger ledger = new();
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        (string myRoot, NodeSigningKey myKey) = await EstablishOwnRootAsync(cts.Token);
+
+        string targetFingerprint = new('b', 64);
+        // The chain's own authorized read still has the target as "member", but the raw tip file — a
+        // compromised node's own tampered write — now declares "owner".
+        await WriteMemberFileAsync(ledger, targetFingerprint, "owner", Now.AddDays(-1), cts.Token);
+
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner> { [myRoot] = new(myRoot, myKey.PublicKeyLine, []) },
+            [new ProjectMember(myRoot, MembershipRole.Owner, Now), new ProjectMember(targetFingerprint, MembershipRole.Member, Now.AddDays(-30))]));
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        Func<Task> act = () => ProjectMemberReaffirmCommand.RunAsync(
+            session, project, targetFingerprint, ledger, chainReader, new NodeKeyStore(), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainConflictException>()).WithMessage("*role*");
+        ledger.Writes.Should().HaveCount(1, "only the seed write (the tampered file itself) landed; "
+            + "reaffirm never root-signs a role change no live root key ever authorized");
+    }
+
+    [Fact]
+    public async Task Reaffirm_falls_back_to_the_raw_role_when_the_fingerprint_is_absent_from_the_chains_own_members()
+    {
+        // Commit f035ee73a's own case: a member whose own last write was signed by a node that is now
+        // merely vouched is refused by the stricter reader and so never reaches chain.Members at all —
+        // reaffirm must still be able to re-land that exact file, root-signed, from its raw role.
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        FakeLedger ledger = new();
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        (string myRoot, NodeSigningKey myKey) = await EstablishOwnRootAsync(cts.Token);
+
+        string targetFingerprint = new('b', 64);
+        await WriteMemberFileAsync(ledger, targetFingerprint, "member", Now.AddDays(-30), cts.Token);
+
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner> { [myRoot] = new(myRoot, myKey.PublicKeyLine, []) },
+            [new ProjectMember(myRoot, MembershipRole.Owner, Now)]));
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        int exitCode = await ProjectMemberReaffirmCommand.RunAsync(
+            session, project, targetFingerprint, ledger, chainReader, new NodeKeyStore(), cts.Token);
+
+        exitCode.Should().Be(ExitCodes.Ok);
+        LedgerWriteRequest write = ledger.Writes.Last(w => w.RefName == MembersRefName && w.Path == $"members/{targetFingerprint}.yaml");
+        write.Content.Should().Contain("role: \"member\"");
+    }
+
+    [Fact]
     public async Task Reaffirm_preserves_the_project_key_on_the_genesis_fingerprints_own_file()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
