@@ -3,6 +3,7 @@ using System.Globalization;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
@@ -69,8 +70,11 @@ public sealed class MessageShowCommand : Hall9kAsyncCommand<MessageShowCommand.S
         ProjectDetails? owningProject = details.ProjectId == Guid.Empty
             ? null
             : await session.LoadAsync<ProjectDetails>(details.ProjectId, cancellationToken);
+        ProjectMemberLabels? labels = details.ProjectId == Guid.Empty
+            ? null
+            : await session.LoadAsync<ProjectMemberLabels>(details.ProjectId, cancellationToken);
 
-        foreach (string line in Lines(details, owningProject?.Name, TimeZoneInfo.Local))
+        foreach (string line in Lines(details, owningProject?.Name, labels, TimeZoneInfo.Local))
         {
             // Console.Out, never AnsiConsole: Spectre word-wraps at eighty columns whenever stdout
             // is not a TTY, which is every call a window or a script makes, and a body rewrapped
@@ -95,11 +99,12 @@ public sealed class MessageShowCommand : Hall9kAsyncCommand<MessageShowCommand.S
     /// this command and its paragraphs have to survive.
     /// </para>
     /// </summary>
-    internal static IReadOnlyList<string> Lines(MessageDetails message, string? projectName, TimeZoneInfo zone)
+    internal static IReadOnlyList<string> Lines(
+        MessageDetails message, string? projectName, ProjectMemberLabels? labels, TimeZoneInfo zone)
     {
         List<string> lines =
         [
-            Field("From", Sender(message)),
+            Field("From", Sender(message, labels)),
             Field("Project", ProjectField(message, projectName)),
             Field("Kind", ExternalText.OneLine(message.Kind ?? "not recorded")),
         ];
@@ -124,18 +129,25 @@ public sealed class MessageShowCommand : Hall9kAsyncCommand<MessageShowCommand.S
     private static string Field(string label, string value) => $"{label,-9}{value}";
 
     /// <summary>
-    /// Who sent it: the owner's own cross-node root fingerprint cut to the same short prefix the
-    /// feed and <c>h9k status</c>'s own foreign-holder line already print, alongside the sending
-    /// node's short id. Both, rather than either — a foreign node's friendly name never
-    /// replicates, so these two are the whole of what this node can honestly say about a sender.
+    /// Who sent it: the sender's own label (task b7d8222e) beside the owner's own cross-node root
+    /// fingerprint, cut to the same short prefix the feed and <c>h9k status</c>'s own
+    /// foreign-holder line already print, and the sending node's short id. All three, rather than
+    /// only the label — a detail view keeps the fingerprint beside the label rather than replacing
+    /// it, and a foreign node's friendly name never replicates, so these are the whole of what this
+    /// node can honestly say about a sender.
     /// </summary>
-    private static string Sender(MessageDetails message)
+    private static string Sender(MessageDetails message, ProjectMemberLabels? labels)
     {
         string fingerprint = ExternalText.OneLine(message.FromOwnerFingerprint ?? string.Empty);
-        string owner = fingerprint.IsBlank()
-            ? "owner not recorded"
-            : fingerprint[..Math.Min(12, fingerprint.Length)];
-        return $"{owner} (node {DomainId.Short(message.FromNodeId)})";
+        string node = $"node {DomainId.Short(message.FromNodeId)}";
+        if (fingerprint.IsBlank())
+        {
+            return $"owner not recorded ({node})";
+        }
+
+        string owner = fingerprint[..Math.Min(12, fingerprint.Length)];
+        string label = MemberLabelResolver.LabelForFingerprint(labels, fingerprint);
+        return $"{label} ({owner}, {node})";
     }
 
     /// <summary>

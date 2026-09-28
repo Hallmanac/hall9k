@@ -1,6 +1,8 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Trust;
+using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -22,6 +24,7 @@ public sealed class MessageShowLinesTests
     private static readonly Guid Sender = Guid.Parse("01a0bc05-a960-7657-b708-1aed4a1b2c3d");
     private static readonly Guid Project = Guid.Parse("01a0bc05-a960-7657-b708-1aed9f8e7d6c");
     private static readonly Guid Note = MessageStreamId.ForMessage(Sender, Project, 1);
+    private const string SenderFingerprint = "abcdef0123456789";
 
     /// <summary>
     /// UTC deliberately, not <c>TimeZoneInfo.Local</c>: the command prints local time so a note
@@ -53,8 +56,8 @@ public sealed class MessageShowLinesTests
             + $"The gate failed on [Category!=RequiresDocker] twice. {RightToLeftOverride}Second lap is running.\n"
             + "\tThe log is in runs/28b2d595.";
 
-        MessageShowCommand.Lines(message, "hall9k", Zone).Should().Equal(
-            "From     abcdef012345 (node 4a1b2c3d)",
+        MessageShowCommand.Lines(message, "hall9k", labels: null, Zone).Should().Equal(
+            "From     abcdef012345 (abcdef012345, node 4a1b2c3d)",
             "Project  hall9k (9f8e7d6c)",
             "Kind     note",
             "About    28b19893",
@@ -79,8 +82,8 @@ public sealed class MessageShowLinesTests
         // and a line break in it would otherwise print a header row this node never wrote.
         message.Kind = $"note{ClearScreen}\nStatus   unread";
 
-        MessageShowCommand.Lines(message, "hall9k", Zone).Should().Equal(
-            "From     abcdef012345 (node 4a1b2c3d)",
+        MessageShowCommand.Lines(message, "hall9k", labels: null, Zone).Should().Equal(
+            "From     abcdef012345 (abcdef012345, node 4a1b2c3d)",
             "Project  hall9k (9f8e7d6c)",
             "Kind     note[2J Status   unread",
             "About    28b19893",
@@ -104,8 +107,8 @@ public sealed class MessageShowLinesTests
         message.Kind = MessageKind.Handoff.Value;
         message.Body = string.Empty;
 
-        MessageShowCommand.Lines(message, "hall9k", Zone).Should().Equal(
-            "From     abcdef012345 (node 4a1b2c3d)",
+        MessageShowCommand.Lines(message, "hall9k", labels: null, Zone).Should().Equal(
+            "From     abcdef012345 (abcdef012345, node 4a1b2c3d)",
             "Project  hall9k (9f8e7d6c)",
             "Kind     handoff",
             "Sent     2026-09-22 08:38",
@@ -126,14 +129,14 @@ public sealed class MessageShowLinesTests
         MessageDetails message = Received();
         message.FromOwnerFingerprint = null;
 
-        MessageShowCommand.Lines(message, projectName: null, Zone).Take(2).Should().Equal(
+        MessageShowCommand.Lines(message, projectName: null, labels: null, Zone).Take(2).Should().Equal(
             "From     owner not recorded (node 4a1b2c3d)",
             "Project  9f8e7d6c (no project of that id on this node)");
     }
 
     /// <summary>
-    /// A note queued before messages were project-scoped (idea 202383dc, M2) carries
-    /// <see cref="Guid.Empty"/> rather than a project, which is not an id to shorten and print.
+    /// A note from before project scoping (idea 202383dc, M2) carries <see cref="Guid.Empty"/>
+    /// rather than a project, which is not an id to shorten and print.
     /// </summary>
     [Fact]
     public void A_note_from_before_project_scoping_names_no_project()
@@ -141,9 +144,36 @@ public sealed class MessageShowLinesTests
         MessageDetails message = Received();
         message.ProjectId = Guid.Empty;
 
-        MessageShowCommand.Lines(message, projectName: null, Zone)[1].Should()
+        MessageShowCommand.Lines(message, projectName: null, labels: null, Zone)[1].Should()
             .Be("Project  none recorded (queued before messages were project-scoped)");
     }
+
+    /// <summary>
+    /// The From line names the sender by their label (task b7d8222e) — display name first, else
+    /// their declared login, else the short fingerprint already printed today — with the short
+    /// fingerprint always kept beside it, never replaced.
+    /// </summary>
+    [Fact]
+    public void The_From_line_prefers_a_display_name_over_a_login_over_the_short_fingerprint()
+    {
+        MessageDetails message = Received();
+
+        MessageShowCommand.Lines(
+                message, "hall9k", LabelsWith(DisplayName.Parse("Brian"), "brianhallmanac"), Zone)[0]
+            .Should().Be("From     Brian (abcdef012345, node 4a1b2c3d)");
+
+        MessageShowCommand.Lines(message, "hall9k", LabelsWith(DisplayName.None, "brianhallmanac"), Zone)[0]
+            .Should().Be("From     brianhallmanac (abcdef012345, node 4a1b2c3d)");
+
+        MessageShowCommand.Lines(message, "hall9k", LabelsWith(DisplayName.None, null), Zone)[0]
+            .Should().Be("From     abcdef012345 (abcdef012345, node 4a1b2c3d)");
+    }
+
+    private static ProjectMemberLabels LabelsWith(DisplayName displayName, string? login) => new()
+    {
+        Id = Project,
+        Labels = [new ProjectMemberLabel(SenderFingerprint, [Sender], displayName, login)],
+    };
 
     private static MessageDetails Received() => new()
     {
@@ -154,7 +184,7 @@ public sealed class MessageShowLinesTests
         QueuedAt = new DateTimeOffset(2026, 9, 22, 8, 38, 0, TimeSpan.Zero),
         SentAt = new DateTimeOffset(2026, 9, 22, 8, 38, 0, TimeSpan.Zero),
         ReceivedAt = new DateTimeOffset(2026, 9, 22, 8, 41, 0, TimeSpan.Zero),
-        FromOwnerFingerprint = "abcdef0123456789",
+        FromOwnerFingerprint = SenderFingerprint,
         To = "project",
         About = "28b19893",
         Kind = MessageKind.Note.Value,

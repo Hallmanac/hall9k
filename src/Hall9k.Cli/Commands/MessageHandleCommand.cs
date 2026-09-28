@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Shared.Exceptions;
 using JasperFx.Events;
@@ -85,8 +86,22 @@ public sealed class MessageHandleCommand : Hall9kAsyncCommand<MessageHandleComma
         }
 
         string projectLabel = details.ProjectId == Guid.Empty ? string.Empty : $" ({TaskListCommand.ShortId(details.ProjectId)})";
+        ProjectMemberLabels? labels = details.ProjectId == Guid.Empty
+            ? null
+            : await session.LoadAsync<ProjectMemberLabels>(details.ProjectId, cancellationToken);
         AnsiConsole.MarkupLineInterpolated(
-            $"[blue]Handled[/] message from {details.FromOwnerFingerprint}{projectLabel}.");
+            $"[blue]Handled[/] message from {ConfirmationSender(details.FromOwnerFingerprint, labels)}{projectLabel}.");
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// Who the confirmation names: the sender's own label (task b7d8222e) beside the full
+    /// fingerprint this line has always printed — kept, never replaced, the same "detail view keeps
+    /// the fingerprint" rule <c>MessageShowCommand.Sender</c> applies. Pure and database-free so the
+    /// three shapes a sender's own label can take are unit tests rather than an integration one.
+    /// </summary>
+    internal static string ConfirmationSender(string? fingerprint, ProjectMemberLabels? labels) =>
+        fingerprint.IsNotBlank()
+            ? $"{MemberLabelResolver.LabelForFingerprint(labels, fingerprint!)} ({fingerprint})"
+            : "owner not recorded";
 }
