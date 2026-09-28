@@ -432,8 +432,9 @@ internal static class TaskStatusComposer
     /// recorded, the id is never trusted on its own: a fingerprint matching this machine's own
     /// owner keeps that owner's local name, exactly as before; any other fingerprint resolves to
     /// this project's own member label (task 21c8f2f3) — the display name, else the declared
-    /// login, else the fingerprint's own short prefix — the same "known by fingerprint only" shape
-    /// <c>h9k task show</c>'s own <c>AssigneeMarkupAsync</c> reports for it, never a plain name.
+    /// login, else the fingerprint's own short prefix, bare here since this column stays terse;
+    /// <c>h9k task show</c>'s own <c>AssigneeMarkupAsync</c> resolves the identical fallback but
+    /// keeps the short fingerprint beside it, since a detail row does not.
     /// "?" is reachable only on the no-fingerprint path, when the id resolves nothing either.
     /// </summary>
     private static string AssigneeDisplay(

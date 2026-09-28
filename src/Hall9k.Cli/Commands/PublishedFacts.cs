@@ -62,10 +62,10 @@ internal static class PublishedFacts
     /// login rides alongside, resolved by the claiming owner's cross-node root fingerprint
     /// (<paramref name="ownersByFingerprint"/>) when this install knows it — this machine's own
     /// owner keeps that local name — falling back to this project's own member label (task
-    /// 21c8f2f3) for any other member, the identical "known by fingerprint only" shape
-    /// <see cref="AssigneeDisplay"/> already reports, never standing in for the node id itself the
-    /// way the original rendering did (Windows field report, 2026-09-19: "held by c8f5c85900da"
-    /// named the owner root fingerprint as if it were the node).
+    /// 21c8f2f3) for any other member, the identical "label (short fingerprint)" shape
+    /// <see cref="TaskShowCommand.AssigneeMarkup"/> already reports for its own foreign case, never
+    /// standing in for the node id itself the way the original rendering did (Windows field report,
+    /// 2026-09-19: "held by c8f5c85900da" named the owner root fingerprint as if it were the node).
     /// </summary>
     private static string HeldElsewhereFact(
         TaskListItem task, IReadOnlyDictionary<string, string>? ownersByFingerprint, DateTimeOffset now,
@@ -85,8 +85,11 @@ internal static class PublishedFacts
     /// The owning login when this install can resolve the claiming owner's cross-node root
     /// fingerprint (this machine's own owner), falling back to this project's own member label
     /// (task 21c8f2f3) — the display name, else the declared login, else the fingerprint's own
-    /// short prefix — the identical fallback <see cref="AssigneeDisplay"/> already uses for a
-    /// foreign root fingerprint known by fingerprint alone.
+    /// short prefix, with that short fingerprint kept beside a resolved label (the identical
+    /// "label (short fingerprint)" shape <see cref="TaskShowCommand.AssigneeMarkup"/> already
+    /// gives a foreign root fingerprint known by fingerprint alone — a detail row keeps the
+    /// fingerprint beside the label rather than replacing it) — deduplicated when the label is
+    /// already that same short prefix, so the fallback never reads as "abc123 (abc123)".
     /// </summary>
     private static string OwnerDisplay(
         string? ownerRootFingerprint, IReadOnlyDictionary<string, string>? ownersByFingerprint,
@@ -103,7 +106,9 @@ internal static class PublishedFacts
         }
 
         string label = MemberLabelResolver.LabelForFingerprint(projectMemberLabels, ownerRootFingerprint);
-        return ExternalText.OneLine(RelayedText.Truncate(label, MemberLabelResolver.RenderLimit));
+        string named = ExternalText.OneLine(RelayedText.Truncate(label, MemberLabelResolver.RenderLimit));
+        string shortFingerprint = ownerRootFingerprint[..Math.Min(12, ownerRootFingerprint.Length)];
+        return named == shortFingerprint ? named : $"{named} ({shortFingerprint})";
     }
 
     /// <summary>
