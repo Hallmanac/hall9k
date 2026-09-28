@@ -390,6 +390,15 @@ public sealed class TaskDetails
     public string? TakenOverReason { get; set; }
     /// <summary>See <see cref="TaskAggregate.TakenOverByOwnerId"/>'s own doc.</summary>
     public Guid? TakenOverByOwnerId { get; set; }
+    /// <summary>
+    /// The taking member's own cross-node root fingerprint (task 21c8f2f3), mirroring
+    /// <see cref="Events.TaskHolderTakenOver.NewHolderOwnerRootFingerprint"/> — what <c>h9k task
+    /// show</c>'s own "Taken over" line resolves a label from, since <see cref="TakenOverByOwnerId"/>
+    /// is this node's own local Guid and means nothing to a peer that never registered it (Owner
+    /// events never replicate). Null on a takeover projected before this field existed, which is
+    /// what the line falls back to <see cref="TakenOverByOwnerId"/>'s own short id for.
+    /// </summary>
+    public string? TakenOverByOwnerRootFingerprint { get; set; }
     /// <summary>See <see cref="TaskAggregate.TakenOverAt"/>'s own doc.</summary>
     public DateTimeOffset? TakenOverAt { get; set; }
     /// <summary>See <see cref="TaskAggregate.PendingTakeRequestedByNodeId"/>'s own doc — mirrored for <c>h9k task show</c> and <c>h9k status</c> (idea 202383dc, item 5).</summary>
@@ -404,6 +413,15 @@ public sealed class TaskDetails
     public DateTimeOffset? PendingTakeRequestedAt { get; set; }
     /// <summary>See <see cref="TaskAggregate.LastGrantedToOwnerId"/>'s own doc.</summary>
     public Guid? LastGrantedToOwnerId { get; set; }
+    /// <summary>
+    /// The granted-to member's own cross-node root fingerprint (task 21c8f2f3), mirroring
+    /// <see cref="Events.TaskHolderReleased.GrantedToOwnerFingerprint"/> — what <c>h9k task show</c>'s
+    /// own "Take granted ... to owner" line resolves a label from. Frozen at the grant, unlike
+    /// <see cref="AssignedOwnerFingerprint"/>, which a later assignment or claim can overwrite; null
+    /// on a grant projected before this field existed, which is what the line falls back to
+    /// <see cref="LastGrantedToOwnerId"/>'s own short id for.
+    /// </summary>
+    public string? LastGrantedToOwnerFingerprint { get; set; }
     /// <summary>See <see cref="TaskAggregate.LastGrantedAt"/>'s own doc.</summary>
     public DateTimeOffset? LastGrantedAt { get; set; }
     /// <summary>See <see cref="TaskAggregate.LastTakeRefusedRequesterOwnerId"/>'s own doc.</summary>
@@ -1034,6 +1052,7 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.TakenOverFromNodeId = @event.Data.PreviousHolderNodeId;
         view.TakenOverReason = @event.Data.Reason;
         view.TakenOverByOwnerId = @event.Data.TakenByOwnerId;
+        view.TakenOverByOwnerRootFingerprint = @event.Data.NewHolderOwnerRootFingerprint;
         view.TakenOverAt = @event.Data.TakenAt;
 
         view.ClaimedByNodeId = null;
@@ -1081,6 +1100,7 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         if (@event.Data.GrantedToNodeId is not null)
         {
             view.LastGrantedToOwnerId = @event.Data.GrantedToOwnerId;
+            view.LastGrantedToOwnerFingerprint = @event.Data.GrantedToOwnerFingerprint;
             view.LastGrantedAt = @event.Data.ReleasedAt;
 
             view.ClaimedByNodeId = null;
