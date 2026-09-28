@@ -85,6 +85,16 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
+    /// <summary>
+    /// Resolves an EXISTING target stream's own project inside <see cref="ApplyAsync"/> — the
+    /// stream-ownership guard (idea 6be68ee2, the trust-ledger review's own stream-ownership item):
+    /// a replicated event may only land on a stream its own project owns. Stateless and cheap to
+    /// construct fresh, the identical reason every other caller of this resolver
+    /// (<c>EventCatchUpResponder</c>, <c>EventReplicationOutbox</c>, every test) just news one up
+    /// rather than taking it as a constructor dependency.
+    /// </summary>
+    private readonly ReplicationProjectResolver projectResolver = new();
+
     public async Task<EventReplicationReadResult> ReadFromAsync(
         IDocumentSession session,
         string repositoryPath,
@@ -890,6 +900,58 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
 
         bool streamExists = streamsStartedThisRead.Contains(effectiveStreamId)
             || await session.Events.FetchStreamStateAsync(effectiveStreamId, cancellationToken) is not null;
+
+        // Stream-ownership guard (idea 6be68ee2, trust findings 10/12 and the review's own
+        // stream-ownership item): a replicated event may only append to a stream its own project
+        // owns, never onto a stream belonging to a DIFFERENT project this node also hosts, and a
+        // project LIFECYCLE event specifically (ProjectStreamReplicationRules.IsProjectLifecycleEvent
+        // — the one family that keeps record.StreamId raw above and skips the genesis requirement
+        // below, since a teammate's own archive/rename/purge decision about THEIR install is meant
+        // to phantom-stream under their own foreign coordinate) may never land on THIS node's own
+        // real, registered Project stream: without this, a member who has merely learned this node's
+        // own local project id from an earlier replicated lifecycle event could address a forged
+        // ProjectPurgeScheduled straight at it. Skipped for a stream this read already started
+        // itself — streamsStartedThisRead's own membership already means an earlier record in this
+        // same read passed this identical gate for it, so a later record for the SAME stream (two
+        // lifecycle events for one still-fresh phantom stream in one batch, say) counts as this
+        // project's own without paying for the query again — and skipped for
+        // mergesOntoLocalProjectStream, whose effectiveStreamId is always projectId by construction
+        // and is never what this guard is checking. Runs before the Task/Run act gate just below, so
+        // a record whose own target stream belongs to another project is refused on that ground
+        // alone, whatever its own event type — a foreign stream's act is never this gate's to judge.
+        if (streamExists && !streamsStartedThisRead.Contains(effectiveStreamId) && !mergesOntoLocalProjectStream)
+        {
+            ReplicationOwnership existingOwnership =
+                await projectResolver.ResolveAsync(session, effectiveStreamId, cancellationToken);
+            bool targetsReceiversOwnProjectStream =
+                existingOwnership.IsProjectStreamItself && existingOwnership.ProjectId == projectId;
+            bool crossesIntoAnotherProject = !existingOwnership.IsProjectStreamItself
+                && existingOwnership.ProjectId is { } existingProjectId && existingProjectId != projectId;
+            bool refuseAsLifecycleOntoOwnProject =
+                targetsReceiversOwnProjectStream && ProjectStreamReplicationRules.IsProjectLifecycleEvent(eventType);
+
+            if (refuseAsLifecycleOntoOwnProject || crossesIntoAnotherProject)
+            {
+                logger?.LogWarning(
+                    "Replicated event {OriginEventId} (origin {OriginNodeId}) of type {EventType} from sender "
+                    + "{SenderNodeId} targets stream {StreamId}, which {Reason} — refused, never applied",
+                    record.OriginEventId, record.OriginNodeId, record.EventTypeName, senderNodeId, effectiveStreamId,
+                    refuseAsLifecycleOntoOwnProject
+                        ? "resolves as this node's own registered project stream, never a legitimate target "
+                          + "for a project lifecycle event"
+                        : "belongs to a different project than the one this read is scoped to");
+                session.Store(new ReplicatedEventRecord
+                {
+                    Id = record.OriginEventId,
+                    StreamId = effectiveStreamId,
+                    ProjectId = projectId,
+                    AppliedAt = now,
+                    Applied = false,
+                });
+                await session.SaveChangesAsync(cancellationToken);
+                return 0;
+            }
+        }
 
         // idea 6be68ee2, trust-ledger finding 5: a Task or Run "act" — one of
         // TaskActClassificationRegistry's own entries — applies from a non-owner sender only when

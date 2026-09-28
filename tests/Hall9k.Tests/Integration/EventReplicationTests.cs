@@ -1695,6 +1695,171 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     /// <summary>
+    /// Idea 6be68ee2, trust findings 10/12, stream-ownership item: a replicated event may only
+    /// append to a stream its own project owns, never onto a stream a DIFFERENT project this same
+    /// node also hosts already resolves to. The idea's own <c>ProjectId</c> field is rewritten by
+    /// <c>RewriteProjectIdField</c> before the event is ever applied, so the forgery this test needs
+    /// is the stream itself already belonging elsewhere — <see cref="ReplicationProjectResolver"/>'s
+    /// own answer for the EXISTING stream, checked before the append is ever attempted.
+    /// </summary>
+    [Fact]
+    public async Task A_replicated_event_targeting_an_existing_stream_from_a_different_project_is_refused()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectX = DomainId.New();
+        Guid projectY = DomainId.New();
+        Guid existingIdeaId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The receiver already holds this idea under project X — a genuinely different, unrelated
+        // project this same node also hosts.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<IdeaAggregate>(
+                existingIdeaId, new IdeaCaptured(existingIdeaId, ownerId, "Existing idea in project X", projectX, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Node A's own outbox carries an event naming this exact stream, but this read is scoped to
+        // project Y — a cross-project append attempt, whether from a forger or from two projects
+        // sharing a stream id by accident.
+        Guid senderLocalProjectId = DomainId.New();
+        Guid originEventId = DomainId.New();
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+        IdeaAssignedToProject crossProjectEvent = new(existingIdeaId, projectY, projectX, Now.AddSeconds(1), ownerId);
+        EventReplicationCodec.ReplicatedEventRecord forgedRecord = new(
+            existingIdeaId, typeof(IdeaAssignedToProject).FullName!, JsonSerializer.Serialize(crossProjectEvent, jsonOptions),
+            originEventId, OriginSequence: 1, nodeA, "owner-a-fingerprint", Now.AddSeconds(1), projectY);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, nodeA, senderLocalProjectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([forgedRecord]), Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, senderLocalProjectId, "shared-project-key", adoptUnassigned: false,
+                committer, signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        EventReplicationReadResult read;
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectY, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: TrustChain.Empty, cts.Token);
+        }
+
+        read.EventsApplied.Should().Be(0, "the target stream already belongs to a different project on this node");
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            IdeaDetails idea = (await session.LoadAsync<IdeaDetails>(existingIdeaId, cts.Token))!;
+            idea.ProjectId.Should().Be(projectX, "the cross-project append must never actually land");
+        }
+    }
+
+    /// <summary>
+    /// Idea 6be68ee2, the sharpest item in the stream-ownership finding: every member learns each
+    /// teammate's own local project id from that teammate's own replicated lifecycle events (they
+    /// keep the sender's own foreign stream id, deliberately, so a phantom row can record them as a
+    /// fact — <see cref="A_teammates_project_archived_never_touches_the_receivers_own_project"/>
+    /// above). A member who has learned THIS node's own local project id that way must never be
+    /// able to address a <see cref="ProjectPurgeScheduled"/> straight at it: <c>ProjectPurgeScheduled</c>
+    /// is not in <c>ProjectStreamReplicationRules.IsProjectAggregateStreamEvent</c>, so it keeps
+    /// <c>record.StreamId</c> raw and skips the genesis requirement, which is exactly the hole this
+    /// forged record aims through.
+    /// </summary>
+    [Fact]
+    public async Task A_ProjectPurgeScheduled_aimed_at_the_receivers_own_project_id_is_refused()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectIdB = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Node B's own real, registered project — the receiver's genuine local copy, never a
+        // phantom row.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                projectIdB,
+                new ProjectRegistered(
+                    projectIdB, ownerId, DomainId.New(), "Receiver's own project", "/repo-b", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Node A's own outbox carries a ProjectPurgeScheduled whose own StreamId is forged to be
+        // node B's real local project id, rather than node A's own foreign coordinate — the shape
+        // that would otherwise phantom-stream harmlessly for a genuinely foreign id.
+        Guid senderLocalProjectId = DomainId.New();
+        Guid originEventId = DomainId.New();
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+        ProjectPurgeScheduled forgedPurge = new(projectIdB, Now.AddSeconds(1), Now.AddSeconds(1).AddHours(24), ownerId);
+        EventReplicationCodec.ReplicatedEventRecord forgedRecord = new(
+            projectIdB, typeof(ProjectPurgeScheduled).FullName!, JsonSerializer.Serialize(forgedPurge, jsonOptions),
+            originEventId, OriginSequence: 1, nodeA, "owner-a-fingerprint", Now.AddSeconds(1), projectIdB);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, nodeA, senderLocalProjectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([forgedRecord]), Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, senderLocalProjectId, "shared-project-key", adoptUnassigned: false,
+                committer, signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        EventReplicationReadResult read;
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectIdB, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: TrustChain.Empty, cts.Token);
+        }
+
+        read.EventsApplied.Should().Be(
+            0, "a project lifecycle event may never resolve onto the receiver's own real project stream");
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            ProjectDetails receiverProject = (await session.LoadAsync<ProjectDetails>(projectIdB, cts.Token))!;
+            receiverProject.PurgeAt.Should().BeNull(
+                "the forged purge must never actually schedule the receiver's own real project for a hard delete");
+        }
+    }
+
+    /// <summary>
     /// MessageInbox reads the identical outbox ref EventReplicationInbox does — same ref, same
     /// envelopes, two independent cursors — so an events envelope must never also land as an
     /// ordinary received message there, or h9k messages would show a raw batch of replicated
