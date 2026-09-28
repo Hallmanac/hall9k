@@ -1460,7 +1460,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             store, node,
             NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("a non-leader node never dispatches a follow-up"), gh),
             gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
-            enrolledNodes: fleet);
+            enrolledNodes: fleet, clock: new FixedClock(Now));
 
         await engine.PollOnceAsync(cts.Token);
 
@@ -1477,10 +1477,13 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
     /// <summary>
     /// The fleet-coordination hold applies to a fresh mint from a mention too (task 7ae690f5): a
-    /// lower-ranked peer exists, but the comment's own <c>createdAt</c> is already older than the
-    /// default hold by the time this node's sweep runs, so this node mints at once exactly as
-    /// <c>PrReviewTaskEngineTests</c>' own late-follower review-requested test shows for the
-    /// request side.
+    /// lower-ranked peer exists, and the comment is still inside the default hold on the first
+    /// sweep, so this node holds — nothing minted, and the comment left unrecorded exactly as
+    /// <c>ObservedReviewMention</c>'s own permanent one-shot dedupe requires, since a row recorded
+    /// while held could never be re-decided once the hold ends. Once the hold is over with
+    /// nothing covering the mention, the same node mints at once, the identical two-sweep shape
+    /// <c>PrReviewTaskEngineTests.A_follower_holds_a_fresh_request_for_the_leader_with_one_log_line_and_mints_when_its_hold_ends</c>
+    /// already proves for the request side.
     /// </summary>
     [Fact]
     public async Task A_peer_held_mention_mints_once_its_hold_has_already_elapsed_and_nothing_covers_it()
@@ -1496,18 +1499,41 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             store, node, projectId, "auto-pr-review-mention-peer-hold", repository, Now.AddDays(-2), Now.AddDays(-1),
             Optional<AutoPrReviewSpeed>.None, cts.Token);
 
-        DateTimeOffset commentCreatedAt = Now.AddSeconds(-600);
+        DateTimeOffset commentCreatedAt = Now.AddSeconds(-60);
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
             [("IC_1", "ryan", "@brian what do you think?", commentCreatedAt)]);
         EnrolledNodeSnapshots fleet = FleetOfThisNodeAnd(projectId, node, LowerRankedPeer);
-        AutoPrReviewEngine engine = new(
+
+        AutoPrReviewEngine holding = new(
             store, node,
-            NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("normal speed never launches"), gh),
+            NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("a standing peer hold never mints"), gh),
             gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
             enrolledNodes: fleet, clock: new FixedClock(Now));
 
-        await engine.PollOnceAsync(cts.Token);
+        await holding.PollOnceAsync(cts.Token);
+
+        await using (IQuerySession heldQuery = store.QuerySession())
+        {
+            (await heldQuery.Query<TaskListItem>().Where(task => task.ProjectId == projectId).CountAsync(cts.Token))
+                .Should().Be(0, "the fleet's own leader is still inside its hold, so this node mints nothing yet");
+
+            (await heldQuery.LoadAsync<ObservedReviewMention>(
+                ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))
+                .Should().BeNull(
+                    "a held mint is left unrecorded so the next sweep can still decide it once the hold ends");
+        }
+
+        // The hold is over: the same node, now told never to defer, sees the same standing
+        // mention with nothing covering it and mints.
+        AutoPrReviewEngine minting = new(
+            store, node,
+            NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("normal speed never launches"), gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
+            enrolledNodes: fleet, options: Options.Create(new DaemonOptions { AutoPrReviewMintHoldSeconds = 0 }),
+            clock: new FixedClock(Now));
+
+        await minting.PollOnceAsync(cts.Token);
 
         await using IQuerySession query = store.QuerySession();
         TaskListItem minted = (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token)).Single();
