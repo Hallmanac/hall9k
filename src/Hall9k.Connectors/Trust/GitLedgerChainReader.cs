@@ -476,67 +476,78 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             changedPathsByCommit[commit] = await ChangedPathsAsync(repositoryPath, commit, cancellationToken);
         }
 
-        // Pass 1, preliminary: replay the fleet with a revocation authorized the identical way a
-        // vouch already is (root or any currently enrolled node) — idea 202383dc's own original
-        // rule, unchanged here. This exists solely to feed ComputeSuccessionAsync below a live
-        // fleet state to check successor/rotation candidacy against: succession's own "the named
-        // node is, right now, actually vouched" check (73d185b5) needs the fleet's FINAL state, but
-        // this task's own narrower revocation rule (idea 6be68ee2, trust-ledger finding 2) needs
-        // succession's own live root-key set first — the two cannot both go first. Only this
-        // preliminary pass's own `nodes`/`everEnrolledNodes`/`revokedNodeIds` feed succession; its
-        // own revoke-authorization verdicts are superseded by pass 2 below, which recomputes them
-        // under the real rule — but its carried-record diagnostics are not recomputed anywhere else
-        // (carry verification is identical in both passes), so this pass's own `unverified` is what
-        // the early return just below names, and pass 2's own `unverified` is what every other
-        // return path of this method publishes.
-        (Dictionary<string, TrustedNode> preliminaryNodes, Dictionary<string, TrustedNode> preliminaryEverEnrolledNodes,
-            HashSet<string> preliminaryRevokedNodeIds, bool preliminaryEstablishedByCarry, List<UnverifiedLedgerWrite> preliminaryUnverified) =
-            await ReplayFleetAsync(
+        // The fleet's own authoritative revocation state and succession's own live root-key set are
+        // mutually dependent (idea 6be68ee2, trust-ledger finding 2): a revocation only ever counts
+        // when signed by one of the owner's own live root keys, but "live root key" is itself
+        // succession's own output, computed from that same fleet's live state — neither can go
+        // first alone. Resolved here by iterating both to a fixed point, seeded at K0 alone, rather
+        // than by feeding succession a PRELIMINARY fleet state authorized the old, broader "root or
+        // any currently enrolled node" rule: that preliminary state let a compromised, merely
+        // vouched fleet node's own revocation of a promoted successor strip that successor from the
+        // preliminary fleet, which then made the successor's own rotation fail succession's "is this
+        // node currently vouched" check, silently collapsing the live root-key set back to [K0] even
+        // though the authoritative pass would itself have refused the very revocation responsible —
+        // the "compromised fleet node acts against its own peers" outcome this task exists to
+        // prevent, and aimed at the one node succession exists to protect once K0 is lost
+        // (independent pre-PR review, cycle 1, both lenses, high).
+        //
+        // Every revocation this loop ever authorizes, at every iteration including the first, is
+        // gated the identical strict way (signed by one of the CURRENT iteration's own guessed live
+        // root keys) — there is no broader-rule pass anywhere in this method any more. Each iteration
+        // either leaves the root-key chain exactly as the previous one found it (a fixed point) or
+        // resolves one more link of it for good: a rotation's own validity depends only on commits
+        // signed by keys already ranked strictly above it, so once a link is resolved from a given
+        // iteration's own root-key guess, a later, larger guess can only ever confirm or correctly
+        // retract it based on genuinely root-signed evidence, never on an unauthorized signer's own
+        // say-so — so the loop converges in at most as many iterations as the chain has links, capped
+        // here at the commit count purely as a defensive bound the chain's own rank structure can
+        // never actually reach.
+        IReadOnlyList<LiveRootKey> rootKeys = [new LiveRootKey(publicKeyLine, root, null)];
+        IReadOnlyList<string> successorNodeIds = [];
+        List<UnverifiedLedgerWrite> successionUnverified = [];
+        Dictionary<string, TrustedNode> nodes;
+        Dictionary<string, TrustedNode> everEnrolledNodes;
+        HashSet<string> revokedNodeIds;
+        bool establishedByCarry;
+        List<UnverifiedLedgerWrite> unverified;
+        int iterations = 0;
+        while (true)
+        {
+            IReadOnlyList<string> liveRootKeyLines = [.. rootKeys.Select(key => key.PublicKeyLine)];
+            (nodes, everEnrolledNodes, revokedNodeIds, establishedByCarry, unverified) = await ReplayFleetAsync(
                 repositoryPath, root, publicKeyLine, allCommits, changedPathsByCommit,
-                (commit, currentNodes, token) => IsSignedByAnyAsync(
-                    repositoryPath, commit, [publicKeyLine, .. currentNodes.Values.Select(node => node.PublicKeyLine)], token),
+                (commit, _, token) => IsSignedByAnyAsync(repositoryPath, commit, liveRootKeyLines, token),
                 cancellationToken);
 
+            (IReadOnlyList<LiveRootKey> candidateRootKeys, IReadOnlyList<string> candidateSuccessorNodeIds,
+                IReadOnlyList<UnverifiedLedgerWrite> candidateSuccessionUnverified) = await ComputeSuccessionAsync(
+                    repositoryPath, root, publicKeyLine, allCommits, changedPathsByCommit,
+                    nodes, everEnrolledNodes, revokedNodeIds, cancellationToken);
+
+            successionUnverified = [.. candidateSuccessionUnverified];
+            successorNodeIds = candidateSuccessorNodeIds;
+            bool converged = candidateRootKeys.Count == rootKeys.Count
+                && candidateRootKeys.Select(key => key.Fingerprint).SequenceEqual(rootKeys.Select(key => key.Fingerprint));
+            rootKeys = candidateRootKeys;
+            iterations++;
+
+            if (converged || iterations > allCommits.Count)
+            {
+                break;
+            }
+        }
+
         // Nothing here is trusted when root.yaml's own commit is not signed by the root's own key
-        // AND no carried bundle in the preliminary replay above ever verified either — carry
-        // verification never depends on how a revocation is authorized, so this check reads
-        // identically whichever pass it is taken from. Pass 2 never runs in this branch, so the
-        // preliminary pass's own carried-record diagnostics are the only ones there are to name.
-        if (!rootSelfSigned && !preliminaryEstablishedByCarry)
+        // AND no carried bundle in the final, converged replay above ever verified either.
+        if (!rootSelfSigned && !establishedByCarry)
         {
             return (null, [
                 new UnverifiedLedgerWrite(
                     "root", root, root,
                     $"commit {culpritCommit} for {rootPath} is not signed by that root's own key, and no "
                     + $"owners/{root}/carried/*.yaml bundle verifies it either"),
-                .. preliminaryUnverified, .. refFetchUnverified]);
+                .. unverified, .. refFetchUnverified]);
         }
-
-        // Pass 1 of the succession model (idea 6be68ee2): a walk of this identical root ref, over
-        // successors/, rotations/, and revoked-successors/ alone, using the preliminary fleet state
-        // above — "a successor record counts only while its node is in Nodes" reads the fleet as it
-        // stands now, the same live-state rule every other write in this reader already follows,
-        // never a snapshot pinned to wherever the replay happened to be when it saw that record.
-        (IReadOnlyList<LiveRootKey> rootKeys, IReadOnlyList<string> successorNodeIds, IReadOnlyList<UnverifiedLedgerWrite> successionUnverified) =
-            await ComputeSuccessionAsync(
-                repositoryPath, root, publicKeyLine, allCommits, changedPathsByCommit,
-                preliminaryNodes, preliminaryEverEnrolledNodes, preliminaryRevokedNodeIds, cancellationToken);
-
-        // Pass 2, authoritative: the identical replay, this time with a revocation
-        // (owners/<root>/revoked/<node>.yaml) authorized only by one of the root's own live keys —
-        // rootKeys, just computed above, K0 or a validated rotation — never merely a node vouched
-        // into the fleet, so a compromised fleet node can never revoke its own peers (idea 6be68ee2,
-        // trust-ledger finding 2). A vouch (owners/<root>/nodes/<node>.yaml) is unaffected: still
-        // authorized by the root or any node this pass has itself already enrolled, so peer
-        // vouching keeps working exactly as before. This pass's own `nodes`/`everEnrolledNodes`/
-        // `revokedNodeIds`/`unverified` are what this method actually publishes.
-        IReadOnlyList<string> liveRootKeyLines = [.. rootKeys.Select(key => key.PublicKeyLine)];
-        (Dictionary<string, TrustedNode> nodes, Dictionary<string, TrustedNode> everEnrolledNodes,
-            HashSet<string> revokedNodeIds, _, List<UnverifiedLedgerWrite> unverified) =
-            await ReplayFleetAsync(
-                repositoryPath, root, publicKeyLine, allCommits, changedPathsByCommit,
-                (commit, _, token) => IsSignedByAnyAsync(repositoryPath, commit, liveRootKeyLines, token),
-                cancellationToken);
 
         return (
             new TrustedOwner(
@@ -548,17 +559,15 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// <summary>
     /// One full replay of <paramref name="root"/>'s own <c>owners/&lt;root&gt;/nodes/</c>,
     /// <c>owners/&lt;root&gt;/revoked/</c>, and <c>owners/&lt;root&gt;/carried/</c> history, oldest
-    /// first — the one loop <see cref="ComputeOwnerChainAsync"/> now runs twice (idea 6be68ee2,
-    /// trust-ledger finding 2): a vouch is authorized by the root's own key or by any node this
-    /// same replay has already enrolled, unconditionally, the identical rule idea 202383dc always
-    /// applied; a revocation is authorized by whatever <paramref name="authorizeRevokeAsync"/>
-    /// decides for the commit and this replay's own current fleet state, so one implementation
-    /// serves both of <see cref="ComputeOwnerChainAsync"/>'s own passes — a preliminary run (revoke
-    /// authorized the identical old way a vouch is, so <see cref="ComputeSuccessionAsync"/> can read
-    /// a live fleet state that does not itself depend on the succession chain it is about to
-    /// compute) and the authoritative run (revoke authorized only by one of the root's own live
-    /// keys, now that those keys are known). Carried-record handling is identical in both passes and
-    /// untouched by this task: establishing or re-authorizing a carried node was never a revocation.
+    /// first — the one loop <see cref="ComputeOwnerChainAsync"/> now runs to a fixed point with
+    /// <see cref="ComputeSuccessionAsync"/> (idea 6be68ee2, trust-ledger finding 2): a vouch is
+    /// authorized by the root's own key or by any node this same replay has already enrolled,
+    /// unconditionally, the identical rule idea 202383dc always applied; a revocation is authorized
+    /// only by whatever <paramref name="authorizeRevokeAsync"/> decides is one of the CURRENT
+    /// iteration's own live root keys — never merely an enrolled node, on any iteration, including
+    /// the first — so one implementation serves every iteration <see cref="ComputeOwnerChainAsync"/>
+    /// runs as its own root-key guess is refined. Carried-record handling is untouched by this task:
+    /// establishing or re-authorizing a carried node was never a revocation.
     /// </summary>
     private async Task<(Dictionary<string, TrustedNode> Nodes, Dictionary<string, TrustedNode> EverEnrolledNodes,
         HashSet<string> RevokedNodeIds, bool EstablishedByCarry, List<UnverifiedLedgerWrite> Unverified)> ReplayFleetAsync(
@@ -1264,7 +1273,12 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// <para>
     /// Anything unauthorized is ignored, including a later self-claimed owner with no vouch (idea
     /// 202383dc, T1 criterion 2) — and recorded in the returned unverified list rather than silently
-    /// dropped.
+    /// dropped, unless a LATER commit in this same replay went on to authorize a write to that
+    /// identical path: the refusal is dropped once superseded that way, never left standing forever
+    /// (idea 6be68ee2 criterion 4), since <c>MessageSweepEngine.PersistUnverifiedWritesAsync</c> only
+    /// resolves a standing record once the chain stops naming it, never once a fresher write to the
+    /// identical path supersedes it — the exact case <c>h9k project member reaffirm</c> exists to
+    /// produce (independent pre-PR review, cycle 1, conformance lens, medium).
     /// </para>
     /// </summary>
     private async Task<(IReadOnlyList<ProjectMember> Members, IReadOnlyList<UnverifiedLedgerWrite> Unverified,
@@ -1287,6 +1301,17 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         const string prefix = "members/";
         const string suffix = ".yaml";
         Dictionary<string, ProjectMember> current = [];
+        // Refusals are staged here, never straight into the returned list, so a refusal whose own
+        // path a LATER authorized commit went on to rewrite can be dropped once the full replay
+        // (and so every authorized rewrite still to come) is known (criterion 4: "the reader drops
+        // a refused write whose path a later authorized commit rewrote"). Without this, a member
+        // file whose one bad early write is later legitimately reaffirmed still left that early
+        // write's own refusal standing in h9k status forever, since PersistUnverifiedWritesAsync
+        // only resolves a record once the chain stops naming it at all, never once a fresher write
+        // to that identical path supersedes it (independent pre-PR review, cycle 1, conformance
+        // lens, medium).
+        List<(string Fingerprint, int CommitIndex, UnverifiedLedgerWrite Entry)> refusals = [];
+        Dictionary<string, int> lastAuthorizedCommitIndexByFingerprint = [];
         bool genesisDecided = false;
         string? genesisRootFingerprint = null;
         // The project's own key (idea 202383dc, M2), tracked live during this same replay rather
@@ -1303,8 +1328,10 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         // removal can ever change or lose it again.
         string? projectKey = null;
 
-        foreach (string commit in await CommitsOldestFirstAsync(repositoryPath, tip, cancellationToken))
+        IReadOnlyList<string> membersCommits = await CommitsOldestFirstAsync(repositoryPath, tip, cancellationToken);
+        for (int commitIndex = 0; commitIndex < membersCommits.Count; commitIndex++)
         {
+            string commit = membersCommits[commitIndex];
             foreach (string path in await ChangedPathsAsync(repositoryPath, commit, cancellationToken))
             {
                 if (!path.StartsWith(prefix, StringComparison.Ordinal) || !path.EndsWith(suffix, StringComparison.Ordinal))
@@ -1351,12 +1378,13 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                     {
                         current[fingerprint] = new ProjectMember(fingerprint, MembershipRole.Owner, ParseIssuedAt(content));
                         projectKey ??= ExtractQuotedYamlValue(content, "project_key");
+                        lastAuthorizedCommitIndexByFingerprint[fingerprint] = commitIndex;
                     }
                     else if (!isDeletion)
                     {
-                        unverified.Add(new UnverifiedLedgerWrite(
+                        refusals.Add((fingerprint, commitIndex, new UnverifiedLedgerWrite(
                             "membership", fingerprint, fingerprint,
-                            $"genesis commit {commit} for {fingerprint} is not signed by that root's own key or a node it enrols"));
+                            $"genesis commit {commit} for {fingerprint} is not signed by that root's own key or a node it enrols")));
                     }
 
                     // Whether genesis succeeded or not, the bootstrap exception is spent: only
@@ -1388,11 +1416,11 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 {
                     string ownerRootsChecked = string.Join(
                         ", ", current.Values.Where(m => m.Role == MembershipRole.Owner).Select(m => m.RootFingerprint));
-                    unverified.Add(new UnverifiedLedgerWrite(
+                    refusals.Add((fingerprint, commitIndex, new UnverifiedLedgerWrite(
                         "membership", fingerprint, fingerprint,
                         $"commit {commit} is not signed by a live root key of an owner-role member's own chain "
                         + $"(checked: {ownerRootsChecked}) — re-run this write from a node holding one of those "
-                        + "owners' own root key"));
+                        + "owners' own root key")));
                     continue;
                 }
 
@@ -1414,10 +1442,12 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 if (isDeletion)
                 {
                     current.Remove(fingerprint);
+                    lastAuthorizedCommitIndexByFingerprint[fingerprint] = commitIndex;
                 }
                 else if (ParseRole(content) is { } role)
                 {
                     current[fingerprint] = new ProjectMember(fingerprint, role, ParseIssuedAt(content));
+                    lastAuthorizedCommitIndexByFingerprint[fingerprint] = commitIndex;
                 }
                 else
                 {
@@ -1426,11 +1456,24 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                     // silently granted Member-level trust (independent review finding: this
                     // previously coerced any unrecognized role, including a missing or garbled
                     // one, straight to Member).
-                    unverified.Add(new UnverifiedLedgerWrite(
+                    refusals.Add((fingerprint, commitIndex, new UnverifiedLedgerWrite(
                         "membership", fingerprint, fingerprint,
-                        $"commit {commit} declares a role that is neither \"owner\" nor \"member\""));
+                        $"commit {commit} declares a role that is neither \"owner\" nor \"member\"")));
                 }
             }
+        }
+
+        // A refusal whose own path a LATER authorized commit went on to rewrite is dropped here
+        // (criterion 4) — never one a later authorized commit never touched, which still stands.
+        foreach ((string fingerprint, int commitIndex, UnverifiedLedgerWrite entry) in refusals)
+        {
+            if (lastAuthorizedCommitIndexByFingerprint.TryGetValue(fingerprint, out int authorizedIndex)
+                && authorizedIndex > commitIndex)
+            {
+                continue;
+            }
+
+            unverified.Add(entry);
         }
 
         return ([.. current.Values], unverified, genesisRootFingerprint, projectKey);

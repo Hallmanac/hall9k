@@ -699,6 +699,42 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task A_refused_membership_write_is_dropped_once_a_later_root_signed_commit_rewrites_the_identical_path()
+    {
+        // idea 6be68ee2 criterion 4 (independent pre-PR review, cycle 1, conformance lens, medium):
+        // a refused write must not stand forever in h9k status once a later, authorized commit
+        // rewrites the exact same path — the shape h9k project member reaffirm exists to produce.
+        // Without this, PersistUnverifiedWritesAsync only resolves a standing record once the chain
+        // stops naming it at all, never once a fresher write to the identical path supersedes it.
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+
+        GeneratedIdentity laptop = GenerateIdentity();
+        await WriteNodeFileAsync(ownerRepo, laptop, laptop);
+        await VouchAsync(ownerRepo, owner.Fingerprint, laptop, owner);
+
+        GeneratedIdentity bob = GenerateIdentity();
+        await WriteMemberFileAsync(ownerRepo, bob.Fingerprint, "member", laptop);
+
+        string readerWhileRefused = _repo.CloneNode(hub);
+        (await _chainReader.ComputeAsync(readerWhileRefused, CancellationToken.None)).UnverifiedWrites.Should().Contain(
+            write => write.Kind == "membership" && write.Identifier == bob.Fingerprint,
+            "the laptop's own write is refused and named before any root-signed rewrite lands");
+
+        // Root reaffirms the identical path with a fresh, content-changing, root-signed commit —
+        // the shape `h9k project member reaffirm` produces.
+        await WriteMemberFileAsync(ownerRepo, bob.Fingerprint, "member", owner);
+
+        string readerAfterReaffirm = _repo.CloneNode(hub);
+        TrustChain afterReaffirm = await _chainReader.ComputeAsync(readerAfterReaffirm, CancellationToken.None);
+
+        afterReaffirm.RoleOf(bob.Fingerprint).Should().Be(MembershipRole.Member, "the root-signed rewrite is now what the chain trusts");
+        afterReaffirm.UnverifiedWrites.Should().NotContain(
+            write => write.Kind == "membership" && write.Identifier == bob.Fingerprint,
+            "the laptop's earlier refusal is superseded by the later root-signed rewrite of the identical path, not left standing forever");
+    }
+
+    [Fact]
     public async Task A_revocation_a_members_write_and_a_role_change_are_authorized_only_by_a_live_root_key()
     {
         // idea 6be68ee2, trust-ledger finding 2: the core rule this task adds. A node revocation
@@ -1707,6 +1743,48 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         chain.UnverifiedWrites.Should().Contain(
             write => write.Kind == "revoked-successor" && write.Identifier == firstHeir.NodeId.ToString(),
             "the offending write is named rather than silently ignored");
+    }
+
+    [Fact]
+    public async Task A_merely_vouched_nodes_revocation_of_an_already_rotated_in_successor_never_strips_its_rank()
+    {
+        // idea 6be68ee2, trust-ledger finding 2 (independent pre-PR review, cycle 1, both lenses,
+        // high): succession used to read a PRELIMINARY fleet state authorized the old, broader
+        // "root or any currently enrolled node" rule, so a merely vouched node's own revocation of
+        // an already-rotated-in successor could still strip that successor from the preliminary
+        // fleet, which made succession refuse the successor's own rotation as "not currently
+        // vouched" and silently collapsed the live root-key set back to [K0] — even though the
+        // authoritative pass would itself have refused the very revocation responsible. This is the
+        // exact attack: a compromised, merely vouched fleet node (mallory) must never be able to
+        // strip a promoted successor's own live root key this way.
+        string hub = _repo.CreateHub();
+        (string repositoryPath, GeneratedIdentity root) = await EstablishGenesisRootAsync(hub);
+
+        GeneratedIdentity heir = GenerateIdentity();
+        await WriteNodeFileAsync(repositoryPath, heir, heir);
+        await VouchAsync(repositoryPath, root.Fingerprint, heir, root);
+        await WriteSuccessorAsync(repositoryPath, root.Fingerprint, heir, root);
+        await WriteRotationAsync(repositoryPath, root.Fingerprint, 1, heir, root.PublicKeyLine);
+
+        // Mallory is merely vouched into the fleet — never a root key — and then signs a revocation
+        // of the already-promoted heir's own ordinary fleet membership.
+        GeneratedIdentity mallory = GenerateIdentity();
+        await WriteNodeFileAsync(repositoryPath, mallory, mallory);
+        await VouchAsync(repositoryPath, root.Fingerprint, mallory, root);
+        await RevokeAsync(repositoryPath, root.Fingerprint, heir.NodeId, mallory);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        TrustedOwner owner = chain.OwnerChains[root.Fingerprint];
+        owner.RootKeys.Should().Contain(
+            key => key.Fingerprint == heir.Fingerprint && key.IntroducedByNodeId == heir.NodeId.ToString(),
+            "mallory's own revocation is not signed by a live root key, so the heir's own promoted rank must survive it");
+        owner.Nodes.Should().Contain(
+            node => node.NodeId == heir.NodeId.ToString(), "mallory's own revocation never actually authorized, so the heir stays enrolled too");
+        chain.UnverifiedWrites.Should().Contain(
+            write => write.Kind == "revocation" && write.Identifier == heir.NodeId.ToString(),
+            "mallory's own attempt is named rather than silently taking effect");
     }
 
     [Fact]
