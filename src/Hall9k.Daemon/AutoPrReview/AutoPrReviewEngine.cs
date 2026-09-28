@@ -689,6 +689,19 @@ public sealed class AutoPrReviewEngine(
                 // recording nothing, so the very next sweep decides fresh once the message sweep's
                 // own chain read has caught up (unlike a mention's one-shot comment id, a standing
                 // review request is safe to reconsider every tick).
+                //
+                // Debug, not Info: this fires on every ordinary sweep tick between a restart and
+                // the first successful chain read, which is expected and usually brief. But nothing
+                // else here ever says a word if that read never succeeds — a node whose owner never
+                // got a root fingerprint, or whose chain read throws every tick — so a request on a
+                // public repository this gate covers would otherwise be skipped forever with no log
+                // line and no needs-you row, the exact silent failure Decisions Log #161 exists to
+                // prevent (independent pre-PR review, cycle 3, conformance lens).
+                logger.LogDebug(
+                    "Auto-pr-review is holding {Repository}#{Number} in project {Project}: this node has not "
+                    + "yet computed its declared hall9k team members, so the membership gate cannot decide "
+                    + "whether to mint",
+                    repository, candidate.Number, project.Name);
                 continue;
             }
 
@@ -1780,6 +1793,16 @@ public sealed class AutoPrReviewEngine(
             // all, so the identical comment id is still fresh next sweep — the one shape that keeps
             // "never mint-and-park on a guess" true even though a mention's own dedup is otherwise
             // permanent.
+            //
+            // Debug, not Info, for the identical reason ObserveRequestsAsync's own Unknown line is
+            // Debug: expected and brief on an ordinary restart, but otherwise the one place a node
+            // whose chain read never catches up would silently skip every mention forever with
+            // nothing in the log to say why (independent pre-PR review, cycle 3, conformance lens).
+            logger.LogDebug(
+                "Auto-pr-review is holding a mention on {Repository}#{Number} in project {Project}: this node "
+                + "has not yet computed its declared hall9k team members, so the membership gate cannot decide "
+                + "whether to mint or dispatch",
+                repository, candidate.Number, project.Name);
             return false;
         }
 
