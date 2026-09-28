@@ -478,8 +478,13 @@ public sealed class DaemonOptions
     /// minutes is generous next to the seconds a check run ordinarily takes to appear and short
     /// next to how long a genuinely CI-free repository's very first pre-approved merge would
     /// otherwise be held up for nothing. Once the window elapses with still no check observed, the
-    /// gate proceeds exactly as if no CI gate existed — the honest reading for a repository that
-    /// never configures one.
+    /// gate no longer trusts the silence on its own (security review idea 6be68ee2,
+    /// daemon-consumers finding A, reversing this option's own original reasoning): an empty
+    /// rollup is still indistinguishable from a repository with no CI configured at all, so the
+    /// task parks naming <c>h9k project set --ci none</c> unless the project has already said so —
+    /// see <see cref="Hall9k.Domain.Features.Project.CiPolicy"/>. Only a project recorded as
+    /// <see cref="Hall9k.Domain.Features.Project.CiPolicy.None"/> gets the old behavior, merging
+    /// past the continued silence.
     /// </summary>
     public TimeSpan ChecksRegistrationSettleWindow { get; set; } = TimeSpan.FromMinutes(15);
 

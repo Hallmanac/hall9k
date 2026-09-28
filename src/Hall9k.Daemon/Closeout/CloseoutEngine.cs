@@ -1331,10 +1331,33 @@ public sealed class CloseoutEngine(
                 // from a repository with no CI configured at all until the settle window elapses.
                 // A visible wait, not a park: the next sweep re-reads and either finds real checks
                 // (which flow into the ordinary HasPendingChecks/FailingChecks branches above on
-                // THEIR OWN next sweep) or, once the window is spent, the continued silence is
-                // trusted as "no CI" (independent pre-PR review, cycle 1, adversarial finding).
+                // THEIR OWN next sweep) or, once the window is spent, the outcome below decides.
                 return InspectionOutcome.Inspected;
             }
+
+            if (project.CiPolicy != CiPolicy.None)
+            {
+                // The window is spent and still nothing registered. That is STILL indistinguishable
+                // from a repository with no CI configured at all — the empty rollup alone cannot
+                // tell the two apart, whatever independent pre-PR review's original adversarial
+                // finding assumed. Trusting the silence used to be this gate's whole answer, and
+                // only a project that has said so out loud (h9k project set --ci none) is the case
+                // that answer is honestly right for; every other project parks instead (security
+                // review idea 6be68ee2, daemon-consumers finding A).
+                await ParkAsync(
+                    session, run,
+                    "Pre-approved, but no check has been observed on this pull request's head for over "
+                    + $"{_options.ChecksRegistrationSettleWindow.TotalMinutes:0.#} minutes since it was "
+                    + "pushed — an empty check rollup is never trusted as \"no CI\" on its own. If this "
+                    + $"project genuinely runs no CI, run h9k project set {project.Name} --ci none once; "
+                    + "otherwise find out why CI never registered a run for this head.",
+                    now, cancellationToken);
+                return InspectionOutcome.Inspected;
+            }
+
+            // CiPolicy.None: an explicit declaration this project runs no CI at all, so the
+            // continued silence is trusted and this gate proceeds exactly as it did before this
+            // setting existed.
         }
 
         if (snapshot.ReviewThreadsTruncated)
