@@ -603,11 +603,16 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         // members table cross-checks against the collaborator roster. Null (never guessed) when the
         // connection has none confirmed; the write then carries forward whatever the file already declares.
         ProjectGitHubAccount? githubAccount = await ProjectGitHubClient.TryResolveAccountAsync(session, project, cancellationToken);
+        // This machine's own effective name for this project (task e6744304): that project's own
+        // entry, else this machine's default, else none. Read from the in-memory owner aggregate
+        // above, which already reflects every OwnerSettingsChanged this owner has ever recorded, so
+        // a re-join never erases a name an earlier h9k owner set call gave this project.
+        DisplayName effectiveDisplayName = owner.EffectiveDisplayName(project.Id);
         bool wroteNodeFile = await NodeFileWriter.WriteAsync(
             ledger, project.RepositoryPath, context.NodeId, key, claimedFingerprint,
             node.MachineName, node.OperatingSystem, node.KeyRegisteredAt ?? now, inviteProof,
             githubAccount is null ? null : new DeclaredGitHubAccount(githubAccount.Id, githubAccount.Login),
-            committer, signingKey, cancellationToken);
+            effectiveDisplayName, committer, signingKey, cancellationToken);
 
         // A node's own claim is install-wide (the Node stream), but node.yaml is only ever
         // rewritten in the project being joined right now, above — unlike root retirement, which
@@ -758,6 +763,10 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
                 "[yellow]This node's claimed owner changed. Any other project this node already joined still "
                 + "has the old claim in its own node.yaml until h9k project join <project> runs there too.[/]");
         }
+
+        AnsiConsole.MarkupLine(
+            $"[dim]Set the name teammates see for this project: h9k owner set --display-name '<name>' "
+            + $"--project {project.Name.EscapeMarkup()}[/]");
     }
 
     /// <summary>The prefix every owner root's own ref lives under — the new-shape invite lookup

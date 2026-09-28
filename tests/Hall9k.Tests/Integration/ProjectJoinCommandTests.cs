@@ -122,6 +122,92 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         nodeWrite.Content.Should().Contain("github_login: \"test-user\"").And.Contain("github_account_id: \"1\"");
     }
 
+    /// <summary>task e6744304: the join writes this owner's own effective display name (this
+    /// machine's default here, since no per-project entry exists) into the node file it creates.</summary>
+    [Fact]
+    public async Task Join_writes_the_effective_display_name_into_the_node_file_it_creates()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+
+        await using IDocumentSession ownerSession = _postgres.Store.LightweightSession();
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(ownerSession, cts.Token);
+        await ownerSession.SaveChangesAsync(cts.Token);
+        OwnerAggregate ownerBeforeJoin =
+            (await ownerSession.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: cts.Token))!;
+        ownerSession.Events.Append(
+            context.OwnerId,
+            OwnerDecider.ChangeSettings(
+                ownerBeforeJoin, Optional<ReviewRerequestPolicy>.None, Now,
+                defaultDisplayName: Optional<DisplayName>.Of(DisplayName.Parse("Ada Lovelace"))));
+        await ownerSession.SaveChangesAsync(cts.Token);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
+
+        LedgerWriteRequest nodeWrite = ledger.Writes.Single(w => w.RefName == $"refs/hall9k/ledger/nodes/{outcome.NodeId}");
+        nodeWrite.Content.Should().Contain("display_name: \"Ada Lovelace\"");
+    }
+
+    /// <summary>task e6744304: a re-join never erases the display name an earlier
+    /// <c>h9k owner set --display-name</c> call recorded: WriteAsync always regenerates the file
+    /// from this owner's own current, durable effective value, never from what the file happened to
+    /// carry before.</summary>
+    [Fact]
+    public async Task A_rejoin_keeps_the_display_name_an_earlier_owner_set_call_recorded()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+
+        await using IDocumentSession firstSession = _postgres.Store.LightweightSession();
+        ProjectJoinCommand.JoinOutcome firstOutcome = await ProjectJoinCommand.RunAsync(
+            firstSession, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
+
+        await using IDocumentSession ownerSession = _postgres.Store.LightweightSession();
+        OwnerAggregate owner = (await ownerSession.Events.AggregateStreamAsync<OwnerAggregate>(project.OwnerId, token: cts.Token))!;
+        ownerSession.Events.Append(
+            project.OwnerId,
+            OwnerDecider.ChangeSettings(
+                owner, Optional<ReviewRerequestPolicy>.None, Now,
+                defaultDisplayName: Optional<DisplayName>.Of(DisplayName.Parse("Ada Lovelace"))));
+        await ownerSession.SaveChangesAsync(cts.Token);
+
+        await using IDocumentSession secondSession = _postgres.Store.LightweightSession();
+        await ProjectJoinCommand.RunAsync(
+            secondSession, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
+
+        ledger.Writes.Last(w => w.RefName == $"refs/hall9k/ledger/nodes/{firstOutcome.NodeId}").Content
+            .Should().Contain("display_name: \"Ada Lovelace\"");
+
+        // A third join recording nothing new still carries the name forward rather than erasing it.
+        await using IDocumentSession thirdSession = _postgres.Store.LightweightSession();
+        await ProjectJoinCommand.RunAsync(
+            thirdSession, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
+
+        ledger.Writes.Last(w => w.RefName == $"refs/hall9k/ledger/nodes/{firstOutcome.NodeId}").Content
+            .Should().Contain("display_name: \"Ada Lovelace\"");
+    }
+
+    /// <summary>task e6744304: a successful join always ends with one dim line giving the exact
+    /// command to set the name teammates see, with the joined project filled in.</summary>
+    [Fact]
+    public void A_successful_join_ends_with_the_command_to_set_the_display_name_teammates_see()
+    {
+        ProjectDetails project = new() { Name = "hall9k" };
+        ProjectJoinCommand.JoinOutcome outcome = new(
+            NodeId: Guid.NewGuid(), KeyFingerprint: new string('a', 64), PrivateKeyPath: "/keys/id_ed25519",
+            ClaimedOwnerFingerprint: new string('a', 64), EstablishedRoot: true, RetiredPreviousRoot: false,
+            WroteNodeFile: true, OwnerClaimChanged: false);
+
+        using ScopedAnsiConsoleCapture capture = ScopedAnsiConsoleCapture.Begin();
+        ProjectJoinCommand.Report(project, outcome);
+
+        capture.Text.Should().Contain("h9k owner set --display-name '<name>' --project hall9k");
+    }
+
     /// <summary>idea 202383dc, M2 (Brian's ruling 2026-09-17): the genesis members commit mints a
     /// fresh ULID and records it as this project's own key, and this install's own local Project
     /// stream picks it up in the same join — never a separate step.</summary>
