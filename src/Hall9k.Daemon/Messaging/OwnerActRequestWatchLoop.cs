@@ -5,6 +5,7 @@ using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -196,6 +197,35 @@ public sealed class OwnerActRequestWatchLoop(
         bool isLiveRootKey = chain.IsLiveRootKeyOfOwner(myFingerprint, identity.OwnerRootFingerprint);
 
         OwnerActRequestVerdict verdict = Decide(requesterVerified, expired, isLiveRootKey, request.Role);
+
+        // requesterVerified above only proves the SENDER is a genuinely vouched node of this
+        // owner's own fleet — never that the invite it names is real, unspent, unexpired, or
+        // actually grants the role and candidate the request asks for (independent pre-PR review,
+        // cycle 1, adversarial lens, high): a compromised-but-genuinely-vouched node could otherwise
+        // name any role and any candidate fingerprint at all, including an existing owner's own,
+        // and have this node overwrite that fingerprint's membership on its say-so alone. Checked
+        // only for the two verdicts that would otherwise touch the ledger or hold anything on this
+        // invite's behalf — a refusal already decided above needs no invite of its own to refuse.
+        if (verdict is OwnerActRequestVerdict.PerformMemberWrite or OwnerActRequestVerdict.Hold)
+        {
+            InviteLedgerRecord? inviteRecord = await ReadInviteLedgerRecordAsync(
+                project.RepositoryPath, identity.OwnerRootFingerprint, request.InviteId, cancellationToken);
+            string? existingMemberRole = await ReadMemberRoleAsync(
+                project.RepositoryPath, request.CandidateOwnerFingerprint, cancellationToken);
+            string? invalidReason = ValidateInviteAgainstLedger(inviteRecord, request.Role, existingMemberRole, now);
+            if (invalidReason is not null)
+            {
+                logger.LogWarning(
+                    "Owner-act request {MessageId} from node {FromNodeId} names invite {InviteId}, which {Reason} "
+                    + "— refused", message.Id, message.FromNodeId, request.InviteId, invalidReason);
+                await ReplyAsync(
+                    session, project, message.FromNodeId, request.InviteId, identity.OwnerRootFingerprint,
+                    OwnerActEnvelopeCodec.OwnerActVerdict.Refused, commitId: null, invalidReason, now, cancellationToken);
+                await MarkHandledAsync(message, now, cancellationToken);
+                return;
+            }
+        }
+
         switch (verdict)
         {
             case OwnerActRequestVerdict.RefuseNotVerified:
@@ -238,6 +268,28 @@ public sealed class OwnerActRequestWatchLoop(
                 string? commitId = await MemberVouchLedgerWriter.WriteAsync(
                     ledger, project.RepositoryPath, request.CandidateOwnerFingerprint, request.Role, request.IssuedAt,
                     identity.Committer, identity.SigningKey, cancellationToken);
+
+                // Appended only once the ledger write it describes has actually landed, and only
+                // when this project's own local Members mirror does not already agree — the
+                // identical ordering and !alreadyVouched-shaped guard
+                // InviteSweepEngine.TryClaimAsync's own root-direct path already applies to the
+                // identical event, for the identical reason (that class's own doc comment): this
+                // event feeds ProjectDetails.Members/ProjectAggregate.Members, so recording it
+                // before the write that grounds it — or a second time for a write that already
+                // landed — would leave that mirror wrong or duplicated. Missing entirely on this
+                // path before this fix (independent pre-PR review, cycle 1, conformance lens,
+                // medium, and cycle 1, adversarial lens, medium): the root's own PerformMemberWrite
+                // case wrote the ledger file but never told this project's own event stream, so
+                // ProjectJoinStatus.NotJoined kept reading "not joined yet" for a member admitted
+                // through this exact door.
+                if (!project.Members.TryGetValue(request.CandidateOwnerFingerprint, out ProjectMemberRole? existingRole)
+                    || existingRole != request.Role)
+                {
+                    session.Events.Append(
+                        project.Id, ProjectDecider.VouchMember(project.Id, request.CandidateOwnerFingerprint, request.Role, now));
+                    await session.SaveChangesAsync(cancellationToken);
+                }
+
                 await ReplyAsync(
                     session, project, message.FromNodeId, request.InviteId, identity.OwnerRootFingerprint,
                     OwnerActEnvelopeCodec.OwnerActVerdict.Done, commitId, reason: null, now, cancellationToken);
@@ -261,11 +313,14 @@ public sealed class OwnerActRequestWatchLoop(
         // (idea 6be68ee2's own ruling). Keyed by a Guid DERIVED from this exact message's own stream
         // id (OwnerActHoldStreamId.ForRequest) — never message.Id directly, which already addresses
         // that message's own MessageAggregate stream; starting a second stream under the identical
-        // Guid would collide with it. A resend of the identical request (same invite, same content)
-        // lands on a fresh MessageDetails row with its own id, so FetchStreamStateAsync below finding
-        // nothing is simply "the first time THIS envelope was seen", never a reason to hold the same
-        // write twice; h9k status and h9k project member approve both read the resulting
-        // OwnerActHoldDetails row.
+        // Guid would collide with it. A redelivery of the identical request — a transport-level
+        // retry, or InviteSweepEngine.RequestMemberWriteAsync's own alreadyRequested guard declining
+        // to queue a second one for the same invite — reuses the identical message id (OwnerActHeld's
+        // own doc: "a resend of that same request (byte-identical, same message id) never starts a
+        // second hold"), so FetchStreamStateAsync below finding an existing fence there is exactly
+        // that: this exact write is already held, never a reason to start a second one. Finding
+        // nothing is simply "the first time THIS envelope was seen"; h9k status and h9k project
+        // member approve both read the resulting OwnerActHoldDetails row.
         Guid holdId = OwnerActHoldStreamId.ForRequest(message.Id);
         StreamState? existingHoldFence = await session.Events.FetchStreamStateAsync(holdId, cancellationToken);
         if (existingHoldFence is null)
@@ -326,6 +381,29 @@ public sealed class OwnerActRequestWatchLoop(
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(projectId, cancellationToken);
         if (project is null)
         {
+            await MarkHandledAsync(message, now, cancellationToken);
+            return;
+        }
+
+        // The stale/misdirected guard ReactToRequestAsync already applies to a request's own
+        // sender: an outcome claiming Done is only ever genuine when it actually came from a node
+        // this owner's own trust chain currently vouches as a live root key of the invite's own
+        // minting owner — never merely from message.FromNodeId being authenticated as SOME sender
+        // (independent pre-PR review, cycle 1, adversarial lens, medium). The invite id travels in
+        // cleartext in this node's own outbox About field, so any node that can read this node's
+        // outbox — any project member's own vouched node, not only the root — could otherwise queue
+        // a forged owner-act-outcome naming Done for an invite it never touched, and this reaction
+        // would spend the invite and append InviteSpent despite no member write ever having
+        // happened.
+        string? senderFingerprint = await NodeSelfAnnouncedKeyResolver.ResolveFingerprintAsync(
+            ledger, project.RepositoryPath, message.FromNodeId, cancellationToken);
+        TrustChain chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+        if (senderFingerprint is null || !chain.IsLiveRootKeyOfOwner(senderFingerprint, aggregate.MinterOwnerFingerprint))
+        {
+            logger.LogWarning(
+                "Owner-act outcome {MessageId} claims invite {InviteId}'s own member write is done, but sender "
+                + "node {FromNodeId} does not currently hold a live root key for owner {Owner} — ignored without "
+                + "acting", message.Id, outcome.InviteId, message.FromNodeId, aggregate.MinterOwnerFingerprint);
             await MarkHandledAsync(message, now, cancellationToken);
             return;
         }
@@ -406,6 +484,101 @@ public sealed class OwnerActRequestWatchLoop(
         await ReplyAsync(
             session, project, hold.RequesterNodeId, hold.InviteId, identity.OwnerRootFingerprint,
             OwnerActEnvelopeCodec.OwnerActVerdict.Expired, commitId: null, reason: null, now, cancellationToken);
+    }
+
+    private const string MembersRefName = "refs/hall9k/ledger/members";
+
+    private async Task<InviteLedgerRecord?> ReadInviteLedgerRecordAsync(
+        string repositoryPath, string ownerRootFingerprint, Guid inviteId, CancellationToken cancellationToken)
+    {
+        LedgerFile inviteFile = await ledger.ReadAsync(
+            repositoryPath, InviteLedgerRecord.RefName(ownerRootFingerprint),
+            InviteLedgerRecord.PathFor(ownerRootFingerprint, inviteId), cancellationToken);
+        return inviteFile.Exists ? InviteLedgerRecord.Parse(inviteFile.Content) : null;
+    }
+
+    private async Task<string?> ReadMemberRoleAsync(
+        string repositoryPath, string candidateOwnerFingerprint, CancellationToken cancellationToken)
+    {
+        LedgerFile memberFile = await ledger.ReadAsync(
+            repositoryPath, MembersRefName, $"members/{candidateOwnerFingerprint}.yaml", cancellationToken);
+        return memberFile.Exists ? ExtractQuotedYamlValue(memberFile.Content ?? string.Empty, "role") : null;
+    }
+
+    /// <summary>
+    /// Whether a request naming <paramref name="requestedRole"/> is safe to act on at all, given
+    /// what the ledger itself already says — <c>null</c> when it is, otherwise the reason to refuse
+    /// with. Pure and side-effect-free, the same reason <see cref="Decide"/> is its own static
+    /// method: unit-testable without a document store or a ledger. <paramref name="inviteRecord"/>
+    /// is <c>owners/&lt;root&gt;/invites/&lt;id&gt;.yaml</c> (<see cref="InviteLedgerRecord"/>) — the
+    /// one team-visible fact about this invite every node can read, since the invite's own local
+    /// aggregate never replicates (idea 202383dc classifies <c>InviteMinted</c> and <c>InviteSpent</c>
+    /// both node-scoped) — checked for existence, non-expiry, non-spend, and an exact claim/role
+    /// match; <paramref name="existingMemberRole"/> is whatever role, if any,
+    /// <c>members/&lt;candidateOwnerFingerprint&gt;.yaml</c> already carries, mirroring
+    /// <c>InviteSweepEngine.MemberSlotCheckAsync</c>'s own guard — a member-of-project invite is for
+    /// a NEW member, never a route to rewrite (and so demote or escalate) an existing one.
+    /// <para>
+    /// What this cannot check: the invite's own ledger record never names the specific candidate its
+    /// proof was minted to match (that binding lives solely in the minting node's own local secret,
+    /// which — like the aggregate itself — never replicates), so passing this check alone does not
+    /// prove the request's own candidate is really who that invite's proof matched. What it does
+    /// close: a compromised-but-genuinely-vouched node can no longer manufacture a write against an
+    /// invite that does not exist, is already spent or expired, grants a different role than the one
+    /// asked for, or would silently overwrite an existing member's or owner's own role
+    /// (independent pre-PR review, cycle 1, adversarial lens, high).
+    /// </para>
+    /// </summary>
+    internal static string? ValidateInviteAgainstLedger(
+        InviteLedgerRecord? inviteRecord, ProjectMemberRole requestedRole, string? existingMemberRole, DateTimeOffset now)
+    {
+        if (inviteRecord is null)
+        {
+            return "no invite by that id is recorded in this owner's own ledger";
+        }
+
+        if (inviteRecord.Spent)
+        {
+            return "that invite was already spent";
+        }
+
+        if (inviteRecord.ExpiresAt <= now)
+        {
+            return "that invite has already expired";
+        }
+
+        if (inviteRecord.Claim != InviteClaimKind.MemberOfProject || inviteRecord.Role != requestedRole)
+        {
+            return "that invite does not grant the role this request names";
+        }
+
+        if (existingMemberRole is not null && !string.Equals(existingMemberRole, requestedRole.Value, StringComparison.Ordinal))
+        {
+            return "that candidate is already a project member under a different role";
+        }
+
+        return null;
+    }
+
+    /// <summary>Mirrors <c>GitLedgerChainReader.ExtractQuotedYamlValue</c>'s own small, flat reader —
+    /// duplicated rather than shared across that boundary for the identical reason its own doc
+    /// comment already gives for its own duplication.</summary>
+    private static string? ExtractQuotedYamlValue(string yaml, string key)
+    {
+        foreach (string rawLine in yaml.Split('\n'))
+        {
+            string line = rawLine.TrimEnd('\r');
+            string prefix = $"{key}: \"";
+            if (!line.StartsWith(prefix, StringComparison.Ordinal) || !line.EndsWith('"'))
+            {
+                continue;
+            }
+
+            string inner = line[prefix.Length..^1];
+            return inner.Replace("\\\"", "\"").Replace("\\\\", "\\");
+        }
+
+        return null;
     }
 
     private async Task ReplyAsync(
