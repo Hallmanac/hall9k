@@ -123,9 +123,11 @@ your own summary to the human, not as a rule baked into the recipe.
 
 **One narrow carve-out.** A line the operator has placed anywhere in a recipe, in exactly one of
 four forms, is not a rule this generator invented and is never treated as one. A carried line is
-the whole paragraph or list item that begins with the marker, running up to the next blank line or
-list item; a rule stated across two paragraphs, each opening with its own marker, carries as two
-lines, not one.
+the whole paragraph or list item that begins with the marker, together with anything nested under
+it (a sub-list, a continuation line) and any list that directly follows it with no blank line in
+between — running up to the next sibling list item, the next blank line outside that nested
+content, or the next marker, whichever comes first; a rule stated across two paragraphs, each
+opening with its own marker, carries as two lines, not one.
 
 - `Standing grant (<who>, <YYYY-MM-DD>):` grants the window authority to act without asking, for
   whatever scope the line states (today, only the hardest-reasoning tier's propose-and-confirm
@@ -143,7 +145,7 @@ or node `recipes/orchestrator.md`, and `recipes/idea-discovery.md` and `recipes/
 alike.
 
 **One carry rule covers all four forms.** Regenerating an existing recipe carries every marked line
-forward into the `.new` file, verbatim, unedited: into the same-named section it appeared in,
+forward into the `.new` file, verbatim, unedited, into the same-named section it appeared in,
 placed after any canonical block that section carries and outside that block's own quoting (a
 canonical block is copied verbatim as its own blockquote; a carried line is never inserted inside
 one, so the block itself stays exactly what *The canonical blocks* defines). Several carried lines
@@ -154,6 +156,12 @@ closing "House rules" section at the end of the `.new` file, created the moment 
 needs it. Either way, list each carried line in the generator's own summary. Anything else observed
 in a hand-edited recipe still falls under the rule above and is never carried forward by inference:
 only these four exact forms are.
+
+"Verbatim, unedited" wins over the mandatory pre-save em-dash check below: if a carried line
+contains an em dash (an operator paste from elsewhere, say), leave the line exactly as the operator
+wrote it and name the em dash in the generator's summary alongside the carried line, rather than
+rewriting the operator's own words. That check binds only this generator's own prose, never a
+carried line.
 
 ## Leanness is a ceiling, not just a floor
 
@@ -327,9 +335,10 @@ comparison yourself, and you never rename a `.new` file over the original.
 **Check your own draft before it touches disk, mechanically, not from memory.** The *Writing
 conventions* block above binds every recipe this skill writes to write, and it binds you, right
 now, writing them. Before you save any file under this section, search the draft's full text for
-the em dash character (U+2014, `—`) and rewrite every hit; do not rely on having kept the rule in
-mind while composing. Do this once per file, immediately before that file is written, not as a
-single pass at the end over everything.
+the em dash character (U+2014, `—`) and rewrite every hit, except a carried line — see *One carry
+rule covers all four forms* above for what happens to an em dash inside one of those; do not rely
+on having kept the rule in mind while composing. Do this once per file, immediately before that
+file is written, not as a single pass at the end over everything.
 
 Project mode:
 
