@@ -1529,8 +1529,8 @@ an "Unverifiable writes ignored" block and `h9k status` names each one.
 **A rewind or a side merge over a ledger ref is refused, not silently replayed (idea 6be68ee2).**
 Git gives push access no finer lock than the ref itself, so a repository collaborator can still
 force-push over a ledger ref, or land a merge whose first parent is an old tip and second parent the
-current one — a plain fast-forward to origin, but a shape a replay's own mainline walk never sees
-past the old line. Every fetch of a ledger ref (every one except a node's own outbox, which is
+current one (a plain fast-forward to origin, but a shape a replay's own mainline walk never sees
+past the old line). Every fetch of a ledger ref (every one except a node's own outbox, which is
 squashed and force-pushed with a lease by design) is checked against the last tip this node itself
 verified, kept in a local-only ref beside the live one, before either ref moves: a rewind or that
 side-merge shape is refused, the node keeps reading its own verified tip, and the refusal is named in

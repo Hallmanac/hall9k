@@ -1415,11 +1415,17 @@ and second parent the current one (a plain fast-forward to origin, but never on 
 replay actually walks), is refused: the node keeps reading its own verified tip, the refusal is
 recorded (`h9k status` names it, with the repair command), and the very next write to
 that ref heals a pure rewind on its own by pushing forward from wherever origin now sits. A genuinely
-divergent history is never healed automatically — the push fails and a human reconciles which history
+divergent history is never healed automatically: the push fails and a human reconciles which history
 is correct, or clears the local marker (`git -C <bare> update-ref -d refs/hall9k-verified/<path>`) to
-accept a legitimate owner rewrite (purging a leaked secret) as the new baseline. One accepted residual:
-a node offline across the rewind adopts it if the rewind point is past its own last verified tip —
-there is nothing locally to check the rewind against yet.
+accept a legitimate owner rewrite (purging a leaked secret) as the new baseline. Two residuals are
+accepted rather than engineered around. First, a node offline across the rewind adopts it if the
+rewind point is past its own last verified tip, since there is nothing locally to check the rewind
+against yet. Second, and for the identical reason: a node with no verified tip of its own yet seeds
+one from whatever it already holds locally when it has something, or, with nothing local either,
+adopts whatever origin currently holds outright, so a fleet that had already rewound before this
+check ever shipped, a fresh clone, and a new joiner's first fetch all trust origin (or their own
+stale local copy) blind on that first contact; only the fetch after that first one actually checks
+anything against the tip it just seeded or adopted.
 
 Separately, because a membership write is judged against the owner chain's own
 live state rather than any point-in-time snapshot, a revocation retroactively voids every membership
