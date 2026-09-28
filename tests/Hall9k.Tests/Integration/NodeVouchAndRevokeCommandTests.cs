@@ -241,6 +241,88 @@ public sealed class NodeVouchAndRevokeCommandTests : IClassFixture<PostgresFixtu
     }
 
     [Fact]
+    public async Task Revoke_escalates_rather_than_reports_success_when_this_nodes_root_key_does_not_outrank_the_target()
+    {
+        // Independent pre-PR review, cycle 5, adversarial lens, medium: chain [K0, S1, S2], K0 lost.
+        // A live root key ranked BELOW the target (S2 revoking S1) must never silently report
+        // success — SuccessionLedgerWriter writes the revoked-successor record unconditionally by
+        // design, and only GitLedgerChainReader's own read-time rank check ever refuses it, so the
+        // command itself must catch an outranked signer before it can ever land in the "green,
+        // Revoked" message.
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        await SeedProjectAsync(cts.Token);
+        const string secondRepositoryPath = "/does/not/matter/on/a/fake/ledger/second";
+        await SeedSecondProjectAsync(secondRepositoryPath, cts.Token);
+        FakeLedger ledger = new();
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cts.Token);
+        await session.SaveChangesAsync(cts.Token);
+        NodeSigningKey myKey = await new NodeKeyStore().EnsureAsync(context.NodeId, cts.Token); // S2, this node
+        NodeSigningKey rootKey = await new NodeKeyStore().EnsureAsync(Guid.NewGuid(), cts.Token); // K0, lost
+        Guid targetNodeId = Guid.NewGuid();
+        NodeSigningKey targetKey = await new NodeKeyStore().EnsureAsync(targetNodeId, cts.Token); // S1, ranked above S2
+
+        OwnerAggregate owner = await session.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: cts.Token)
+            ?? throw new InvalidOperationException("Owner bootstrap did not create an owner stream.");
+        session.Events.Append(context.OwnerId, OwnerDecider.ClaimRoot(owner, rootKey.Fingerprint, verified: true, Now));
+        await session.SaveChangesAsync(cts.Token);
+
+        // The first project's own copy never rotated in S1 or S2 as a root key at all — this
+        // node's own key (S2) is still a live root key there via a rotation the second project has
+        // not yet seen, so the early owner-wide gate is satisfied from this project alone and the
+        // revocation proceeds into both.
+        FakeLedgerChainReader chainReader = new(new Dictionary<string, TrustChain>
+        {
+            [RepositoryPath] = new(
+                new Dictionary<string, TrustedOwner>
+                {
+                    [rootKey.Fingerprint] = new(
+                        rootKey.Fingerprint, rootKey.PublicKeyLine, [],
+                        RootKeys:
+                        [
+                            new LiveRootKey(rootKey.PublicKeyLine, rootKey.Fingerprint, null),
+                            new LiveRootKey(myKey.PublicKeyLine, myKey.Fingerprint, context.NodeId.ToString()),
+                        ]),
+                },
+                []),
+            // The second project's own copy has already rotated in S1 (the target) ahead of S2
+            // (this node) — the exact [K0, S1, S2] shape from the finding.
+            [secondRepositoryPath] = new(
+                new Dictionary<string, TrustedOwner>
+                {
+                    [rootKey.Fingerprint] = new(
+                        rootKey.Fingerprint, rootKey.PublicKeyLine,
+                        [new TrustedNode(targetNodeId.ToString(), targetKey.PublicKeyLine, targetKey.Fingerprint, Now)],
+                        RootKeys:
+                        [
+                            new LiveRootKey(rootKey.PublicKeyLine, rootKey.Fingerprint, null),
+                            new LiveRootKey(targetKey.PublicKeyLine, targetKey.Fingerprint, targetNodeId.ToString()),
+                            new LiveRootKey(myKey.PublicKeyLine, myKey.Fingerprint, context.NodeId.ToString()),
+                        ]),
+                },
+                []),
+        });
+
+        NodeRevokeCommand.Settings settings = new() { NodeId = targetNodeId.ToString() };
+        Func<Task> act = () => NodeRevokeCommand.RunAsync(session, settings, ledger, chainReader, new NodeKeyStore(), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainValidationException>()).WithMessage("*failed in 1*");
+
+        // The ordinary fleet revoke still lands in the second project (revoking S1's ordinary
+        // membership is not itself rank-gated) — only the doomed revoked-successor record, which
+        // would be refused on the next read anyway, must never even be attempted.
+        ledger.Writes.Should().Contain(
+            w => w.RefName == $"refs/hall9k/ledger/owners/{rootKey.Fingerprint}"
+                && w.Path == $"owners/{rootKey.Fingerprint}/revoked/{targetNodeId}.yaml"
+                && w.RepositoryPath == secondRepositoryPath);
+        ledger.Writes.Should().NotContain(
+            w => w.RepositoryPath == secondRepositoryPath
+                && w.Path == $"owners/{rootKey.Fingerprint}/revoked-successors/{targetNodeId}.yaml",
+            "S2 does not outrank S1, so this write would only be refused later on read — better never attempted");
+    }
+
+    [Fact]
     public async Task Revoke_succeeds_when_only_a_second_project_confirms_this_nodes_live_root_key()
     {
         // idea 6be68ee2, trust-ledger finding 2 (independent pre-PR review, cycle 1, both lenses,
