@@ -120,13 +120,14 @@ public sealed class ReviewEngine(
     /// assessment-driven mechanical git calls — the fetch-free rebase retry in
     /// <see cref="ActOnPreFinalPassAssessmentAsync"/> and the assessment-driven leg of
     /// <see cref="ReplayCheckpointAsync"/> — the identical calls the non-assessment paths already
-    /// make through a literal <c>ExternalProcess.RunnerWithDeadline(GitDeadline)</c>. It is a
-    /// second injected seam rather than that literal reused directly so the same calls stay
-    /// fake-testable: <paramref name="processRunner"/> is <b>not</b> reused for this, even though
-    /// it is fake-testable too, because giving these calls the short <c>ExternalProcess.Deadline</c>
-    /// (120 seconds) a `git rebase --onto` can genuinely outlast on a large branch or a loaded
-    /// host is a test-seam convenience, not a production-cost decision (independent pre-PR review,
-    /// cycle 1, both lenses).
+    /// make through a literal <c>ExternalProcess.RunnerWithDeadline(GitDeadline)</c>, and also
+    /// <see cref="CaptureStrandedDeltaAsync"/>'s own fetch, which reuses this same seam rather than
+    /// a third one of its own. It is a second injected seam rather than that literal reused
+    /// directly so the same calls stay fake-testable: <paramref name="processRunner"/> is
+    /// <b>not</b> reused for this, even though it is fake-testable too, because giving these calls
+    /// the short <c>ExternalProcess.Deadline</c> (120 seconds) a `git rebase --onto` can genuinely
+    /// outlast on a large branch or a loaded host is a test-seam convenience, not a production-cost
+    /// decision (independent pre-PR review, cycle 1, both lenses).
     /// </para>
     /// </summary>
     internal static readonly TimeSpan GitDeadline = TimeSpan.FromMinutes(10);
@@ -1360,7 +1361,7 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>A follow-up run's worktree carrying commits the merge never included: the patch and the commit list that name them.</summary>
-    private readonly record struct StrandedDelta(IReadOnlyList<string> CommitSummaries, string Patch);
+    internal readonly record struct StrandedDelta(IReadOnlyList<string> CommitSummaries, string Patch);
 
     /// <summary>
     /// Whether <see cref="CaptureStrandedDeltaAsync"/> confirmed there was nothing stranded, or
@@ -1369,8 +1370,11 @@ public sealed class ReviewEngine(
     /// read (<c>git cherry</c> ran clean and named nothing) makes both safe to delete exactly as
     /// before; a failed one (a git error, a thrown exception, a deadline) does not, because the
     /// worktree and branch may be the only place a commit the merge never included still exists.
+    /// Internal, not private, alongside <see cref="CaptureStrandedDeltaAsync"/> itself: the same
+    /// "exercised directly by tests over a fake ProcessRunner" seam this file's stack-assessment
+    /// methods already use (this type's own class doc).
     /// </summary>
-    private readonly record struct StrandedDeltaCapture(StrandedDelta? Delta, bool CaptureFailed)
+    internal readonly record struct StrandedDeltaCapture(StrandedDelta? Delta, bool CaptureFailed)
     {
         public static readonly StrandedDeltaCapture ConfirmedEmpty = new(null, CaptureFailed: false);
 
@@ -1400,7 +1404,7 @@ public sealed class ReviewEngine(
     /// only a commit with no equivalent patch upstream reads as stranded (<c>+</c>).
     /// </para>
     /// </summary>
-    private async Task<StrandedDeltaCapture> CaptureStrandedDeltaAsync(ReviewContext context, CancellationToken cancellationToken)
+    internal async Task<StrandedDeltaCapture> CaptureStrandedDeltaAsync(ReviewContext context, CancellationToken cancellationToken)
     {
         string worktreePath = context.Run.WorktreePath;
         if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
@@ -1408,7 +1412,21 @@ public sealed class ReviewEngine(
             return StrandedDeltaCapture.ConfirmedEmpty;
         }
 
-        ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
+        // context.BaseBranch is this run's own recorded RunDispatched.BaseBranch — a stacked
+        // child's parent branch for a stacked run, which never passes through
+        // BranchNameTemplate.Render — so it is checked here, at the point it becomes a git
+        // argument, rather than trusted because some earlier step rendered a template (security
+        // review idea 6be68ee2, process-injection finding 2).
+        if (!GitArgumentValidation.IsLegalBranchName(context.BaseBranch, out string? refusalReason))
+        {
+            logger.LogWarning(
+                "Run {RunId}: this run's own base branch '{Branch}' is not a legal branch name ({Reason}); " +
+                "treating the worktree's stranded delta as unread rather than handing it to git",
+                context.RunId, GitArgumentValidation.Printable(context.BaseBranch), refusalReason);
+            return StrandedDeltaCapture.Failed();
+        }
+
+        ProcessRunner git = gitProcessRunner;
         string upstream = $"origin/{context.BaseBranch}";
         try
         {
@@ -1421,7 +1439,14 @@ public sealed class ReviewEngine(
             await using (IAsyncDisposable repositoryLock =
                 await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
             {
-                ProcessResult fetch = await git("git", ["fetch", "origin", context.BaseBranch], worktreePath, cancellationToken);
+                // `--` stops a value shaped like `--upload-pack=...` from being read as an
+                // option, but NOT a value shaped like `+refs/heads/main:refs/heads/injected`,
+                // which git still reads as a refspec even after it — the predicate above is the
+                // actual defence against that; `--` only closes the option-injection half of the
+                // same hazard (security review idea 6be68ee2, process-injection finding 2,
+                // verified against git 2.55 in a scratch repository).
+                ProcessResult fetch = await git(
+                    "git", ["fetch", "origin", "--", context.BaseBranch], worktreePath, cancellationToken);
                 if (fetch.ExitCode != 0)
                 {
                     logger.LogWarning(

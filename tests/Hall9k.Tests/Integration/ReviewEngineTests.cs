@@ -10123,7 +10123,12 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             NullLogger<ReviewEngine>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             effectiveGhRunner,
-            effectiveGhRunner,
+            // CaptureStrandedDeltaAsync's own fetch/cherry/log/format-patch calls run against this
+            // test's real worktree and origin (SeedFollowUpRunAtItsOpeningBoundaryAsync clones a
+            // real repository) — effectiveGhRunner would throw the moment it is asked to answer
+            // for git rather than gh, so this seam gets a real runner, exactly like production's
+            // own binding in Program.cs.
+            ExternalProcess.RunnerWithDeadline(ReviewEngine.GitDeadline),
             NewStackedParentWatch(),
             new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             inspector,
