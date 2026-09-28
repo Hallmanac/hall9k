@@ -478,4 +478,94 @@ public sealed class AutoPrReviewObservationTests
             .Should().Be(MembershipGateDecision.Park,
                 "a settled park is never softened back to a retry by the other half being unproven");
     }
+
+    // AttachMentionAsync's own fleet leadership (task 7ae690f5): the identical lowest-Guid ordering
+    // DecideMintHold already ranks a fresh mint by, but with no timeout — a non-leader never
+    // dispatches a follow-up at all, rather than eventually taking over.
+
+    [Fact]
+    public void The_lowest_ranked_node_is_the_fleet_leader()
+    {
+        AutoPrReviewObservation.IsFleetLeader(Lowest, [Lowest, Middle, Highest]).Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_higher_ranked_node_is_not_the_fleet_leader()
+    {
+        AutoPrReviewObservation.IsFleetLeader(Middle, [Lowest, Middle, Highest]).Should().BeFalse();
+    }
+
+    [Fact]
+    public void A_single_node_owner_is_its_own_fleet_leader()
+    {
+        AutoPrReviewObservation.IsFleetLeader(Highest, [Highest]).Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_chain_nobody_could_read_reads_as_fleet_leader()
+    {
+        AutoPrReviewObservation.IsFleetLeader(Highest, null)
+            .Should().BeTrue("no chain computed yet is today's behaviour, which is to dispatch");
+    }
+
+    // The mention follow-up's own LIFETIME cap and cooldown (task 7ae690f5, Opus verdict
+    // 2026-09-27): decided purely over this node's own prior Attached dispatches for the task.
+
+    [Fact]
+    public void A_task_under_the_cap_with_no_prior_dispatch_is_never_held()
+    {
+        AutoPrReviewObservation.DecideMentionFollowUpHold(
+            priorAttachedCount: 0, mostRecentAttachedAt: null, now: RequestedAt, cap: 3, cooldown: Hold)
+            .Should().BeNull();
+    }
+
+    [Fact]
+    public void A_task_at_the_lifetime_cap_is_held_naming_the_cap_and_the_manual_lever()
+    {
+        string? detail = AutoPrReviewObservation.DecideMentionFollowUpHold(
+            priorAttachedCount: 3, mostRecentAttachedAt: RequestedAt.AddDays(-1), now: RequestedAt, cap: 3,
+            cooldown: Hold);
+
+        detail.Should().NotBeNull();
+        detail.Should().Contain("cap");
+        detail.Should().Contain("h9k pr review --since-my-review");
+    }
+
+    [Fact]
+    public void A_task_past_the_lifetime_cap_stays_held_even_with_no_recent_dispatch()
+    {
+        AutoPrReviewObservation.DecideMentionFollowUpHold(
+            priorAttachedCount: 5, mostRecentAttachedAt: null, now: RequestedAt, cap: 3, cooldown: Hold)
+            .Should().NotBeNull();
+    }
+
+    [Fact]
+    public void A_task_still_cooling_down_from_its_last_dispatch_is_held_naming_the_manual_lever()
+    {
+        string? detail = AutoPrReviewObservation.DecideMentionFollowUpHold(
+            priorAttachedCount: 1, mostRecentAttachedAt: RequestedAt, now: RequestedAt.AddMinutes(5), cap: 3,
+            cooldown: TimeSpan.FromMinutes(30));
+
+        detail.Should().NotBeNull();
+        detail.Should().Contain("cools down");
+        detail.Should().Contain("h9k pr review --since-my-review");
+    }
+
+    [Fact]
+    public void A_task_still_cooling_down_on_the_last_second_is_held()
+    {
+        AutoPrReviewObservation.DecideMentionFollowUpHold(
+            priorAttachedCount: 1, mostRecentAttachedAt: RequestedAt, now: RequestedAt.AddMinutes(29),
+            cap: 3, cooldown: TimeSpan.FromMinutes(30))
+            .Should().NotBeNull();
+    }
+
+    [Fact]
+    public void A_task_past_its_cooldown_and_under_the_cap_is_never_held()
+    {
+        AutoPrReviewObservation.DecideMentionFollowUpHold(
+            priorAttachedCount: 1, mostRecentAttachedAt: RequestedAt, now: RequestedAt.AddMinutes(30),
+            cap: 3, cooldown: TimeSpan.FromMinutes(30))
+            .Should().BeNull("the leader had the whole cooldown to answer, and the cap is not yet reached");
+    }
 }

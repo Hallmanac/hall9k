@@ -136,6 +136,55 @@ internal static class AutoPrReviewObservation
     }
 
     /// <summary>
+    /// Whether this node is the fleet's own leader for a follow-up lap's own dispatch (task
+    /// 7ae690f5): the identical lowest-Guid ordering <see cref="DecideMintHold"/> already ranks a
+    /// fresh mint by, but with no timeout or takeover — a follow-up lap answers one specific
+    /// comment rather than a standing request that keeps being true, so there is no "the leader had
+    /// a whole hold to replicate a task" moment for a peer to eventually take over from; every
+    /// non-leader node simply never dispatches one, and the manual lever
+    /// (<c>h9k pr review --since-my-review</c>) is what actually answers a comment the leader never
+    /// gets to. A null <paramref name="enrolledNodeIds"/> reads as leader, the identical
+    /// unknowable-fleet default <see cref="DecideMintHold"/> already applies.
+    /// </summary>
+    public static bool IsFleetLeader(Guid thisNodeId, IReadOnlyCollection<Guid>? enrolledNodeIds) =>
+        enrolledNodeIds is null || enrolledNodeIds.Append(thisNodeId).Min() == thisNodeId;
+
+    /// <summary>
+    /// Whether <c>AttachMentionAsync</c>'s own bounded follow-up dispatch is held for this task —
+    /// the LIFETIME cap or the cooldown between laps (task 7ae690f5, Opus verdict 2026-09-27) —
+    /// decided purely over facts already on the per-node <see cref="ObservedReviewMention"/> rows
+    /// this task carries with <c>Outcome</c> <c>Attached</c>: <paramref name="priorAttachedCount"/>
+    /// is how many follow-ups this node has ever dispatched for the task, and
+    /// <paramref name="mostRecentAttachedAt"/> is the latest one's own <c>ObservedAt</c>. No new
+    /// event or counter is needed because that outcome already records every dispatch. Null means
+    /// dispatch; a non-null string is the detail an <see cref="ReviewMentionOutcome.AttachedNoFollowUp"/>
+    /// row names, pointing at the manual lever (<c>h9k pr review --since-my-review</c>) the cap or
+    /// cooldown leaves standing.
+    /// </summary>
+    public static string? DecideMentionFollowUpHold(
+        int priorAttachedCount, DateTimeOffset? mostRecentAttachedAt, DateTimeOffset now, int cap, TimeSpan cooldown)
+    {
+        if (priorAttachedCount >= cap)
+        {
+            return $"this task has already dispatched {priorAttachedCount} mention follow-up lap(s), the "
+                + $"lifetime cap of {cap} — yours to take by hand with h9k pr review --since-my-review";
+        }
+
+        if (mostRecentAttachedAt is { } lastAttachedAt)
+        {
+            DateTimeOffset readyAt = lastAttachedAt + cooldown;
+            if (now < readyAt)
+            {
+                return $"the last mention follow-up lap dispatched at {lastAttachedAt:yyyy-MM-dd HH:mm:ss}Z; "
+                    + $"this task cools down until {readyAt:yyyy-MM-dd HH:mm:ss}Z — yours to take by hand "
+                    + "with h9k pr review --since-my-review";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Whether hall9k team membership gates this pull request's own review request or mention
     /// before it runs unattended (security review idea 6be68ee2, finding 1): a private or
     /// internal repository already required an owner's own grant to see it at all, so it keeps
@@ -285,6 +334,9 @@ internal static class AutoPrReviewObservation
             { } known when known == ReviewRequestOutcome.HeldForPeer =>
                 "nothing was created yet: a fleet peer ranks first and mints it, so this node holds and mints "
                 + "only if nothing covers it when the hold ends",
+            { } known when known == ReviewRequestOutcome.HeldMintCapReached =>
+                "nothing was created: this repository's own hourly auto-pr-review mint cap is reached — "
+                + "re-graded every sweep, so it mints once the window rolls",
             { } known when known == ReviewRequestOutcome.MintFailed =>
                 "nothing was created: the pull request could not be adopted",
             _ => $"an outcome this build does not recognise ({RelayedText.OneLine(outcome.Value)})",
@@ -398,6 +450,93 @@ public sealed class AutoPrReviewEngine(
     /// </summary>
     private async Task<bool> LaunchHoldActiveAsync(CancellationToken cancellationToken) =>
         await launchHold.CurrentHoldAsync(node.NodeId, cancellationToken) is { LaunchHoldActive: true };
+
+    /// <summary>
+    /// Whether this node's own period spend budget is exhausted, the roughly ten-line equivalent of
+    /// <c>DispatchEngine.SpendBudgetExhaustedAsync</c> built on the identical <see cref="PeriodSpend.ReadAsync"/>
+    /// (task 7ae690f5): a mention follow-up bypasses <c>DispatchEngine</c> entirely with the
+    /// ceiling-exempt sentinel, exactly as a mint's own Now-speed launch does, so nothing else on
+    /// this path ever asks the spend budget's own question before dispatching. No in-memory cache
+    /// of its own, unlike that sibling: a follow-up's own dispatch is rare enough (bounded further
+    /// by the cap and cooldown above it) that resumming the period's events here on every check
+    /// costs nothing worth caching against.
+    /// </summary>
+    private async Task<bool> SpendBudgetExhaustedAsync(IQuerySession session, CancellationToken cancellationToken)
+    {
+        DaemonOptions daemonOptions = options?.Value ?? new DaemonOptions();
+        if (daemonOptions.SpendBudgetTokens is not { } budget)
+        {
+            return false;
+        }
+
+        SpendPeriod period = SpendPeriod.FromInput(daemonOptions.SpendPeriod);
+        DateTimeOffset periodStart = period.StartOf(_clock.GetUtcNow());
+        PeriodSpend spend = await PeriodSpend.ReadAsync(session, periodStart, cancellationToken);
+        return spend.TotalInputTokens >= budget;
+    }
+
+    /// <summary>
+    /// The last moment this node logged the per-repository hourly mint cap being reached, keyed by
+    /// repository — so <see cref="HourlyMintCapReachedAsync"/> logs once per repository per rolling
+    /// hour rather than once per sweep tick for the life of the cap standing (Decisions Log #161's
+    /// own "never a line per tick" discipline, applied to a second cap). A plain dictionary, not a
+    /// concurrent one: sequential ticks only (<see cref="PollOnceAsync"/>'s own doc on
+    /// <see cref="_immediateLaunchesThisSweep"/> gives the identical reasoning), so nothing here is
+    /// ever read or written from two threads at once.
+    /// </summary>
+    private readonly Dictionary<string, DateTimeOffset> _hourlyCapLastLoggedAt = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The per-repository hourly mint cap (task 7ae690f5): a flood-control backstop, decided as a
+    /// query over <see cref="TaskListItem"/> rows already carrying <see cref="TaskListItem.WasAutoPrReviewCreated"/>
+    /// and this repository's own external reference, rather than a counter of its own — a restart
+    /// loses nothing to re-derive, and the count is near fleet-wide within replication lag since
+    /// only the fleet's own leader mints in steady state. The window is rolling (the last hour as
+    /// of <paramref name="now"/>), not aligned to the clock hour, the same "measured off the fact,
+    /// never the sweep tick" discipline <see cref="AutoPrReviewObservation.DecideMintHold"/> already
+    /// applies to its own hold.
+    /// </summary>
+    private async Task<bool> HourlyMintCapReachedAsync(
+        IDocumentSession session, string repository, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        int cap = (options?.Value ?? new DaemonOptions()).AutoPrReviewHourlyMintCapPerRepository;
+        if (cap <= 0)
+        {
+            return false;
+        }
+
+        DateTimeOffset windowStart = now - TimeSpan.FromHours(1);
+        // Filtered to this repository in memory, not in SQL: WasAutoPrReviewCreated and AddedAt
+        // together already narrow this to every auto-created pr-review task across every project
+        // in the last rolling hour — small by construction, since a fleet minting past this cap
+        // every hour is exactly the flood this backstop exists to catch. The identical
+        // externalReference shape CreateOneAsync's own guessedReference is, minus the pull
+        // request number: every mint this repository has ever earned, whichever pull request it
+        // was for, prefixed the same canonical way.
+        string referencePrefix = $"{WorkItemProvider.GitHubPullRequest.Value}:{repository}#";
+        IReadOnlyList<TaskListItem> mintedRecently = await session.Query<TaskListItem>()
+            .Where(task => task.WasAutoPrReviewCreated)
+            .Where(task => task.AddedAt >= windowStart)
+            .ToListAsync(cancellationToken);
+        int mintedThisHour = mintedRecently.Count(task =>
+            task.ExternalReference is { } reference
+            && reference.StartsWith(referencePrefix, StringComparison.OrdinalIgnoreCase));
+        if (mintedThisHour < cap)
+        {
+            return false;
+        }
+
+        if (!_hourlyCapLastLoggedAt.TryGetValue(repository, out DateTimeOffset lastLogged)
+            || now - lastLogged >= TimeSpan.FromHours(1))
+        {
+            _hourlyCapLastLoggedAt[repository] = now;
+            logger.LogWarning(
+                "Auto-pr-review's hourly mint cap ({Cap}) is reached for {Repository}; holding further mints "
+                + "until the window rolls", cap, repository);
+        }
+
+        return true;
+    }
 
     /// <summary>
     /// One Info line per project, at daemon start, naming whether auto pr-review is on or off
@@ -833,6 +972,17 @@ public sealed class AutoPrReviewEngine(
             node.NodeId, enrolledNodes?.TryGet(project.Id)?.FleetNodeIds, requestedAt, _clock.GetUtcNow(), MintHold) is { } peerHold)
         {
             return new MintAttempt(ReviewRequestOutcome.HeldForPeer, null, peerHold.Describe(), actor, peerHold);
+        }
+
+        // The per-repository hourly mint cap (task 7ae690f5): a flood-control backstop distinct
+        // from the fleet-coordination hold just above. A request is re-graded every sweep, so
+        // holding it here costs nothing — the very next sweep past the window re-decides fresh.
+        if (await HourlyMintCapReachedAsync(session, repository, _clock.GetUtcNow(), cancellationToken))
+        {
+            return new MintAttempt(
+                ReviewRequestOutcome.HeldMintCapReached, null,
+                "this repository's own hourly auto-pr-review mint cap is reached — re-graded every sweep, "
+                + "so it mints once the window rolls", actor);
         }
 
         try
@@ -1970,6 +2120,38 @@ public sealed class AutoPrReviewEngine(
             return null;
         }
 
+        // A fresh mint is held for the fleet's own leader exactly as a review request's is (task
+        // 7ae690f5): comment.CreatedAt stands in for GitHub's own requested-at time, since a
+        // comment has no separate "requested" moment of its own, and the fleet snapshot read is
+        // unchanged from DecideAsync's own identical check. Nothing is recorded while held, unlike
+        // HeldForPeer on the request side (independent pre-PR review): ObservedReviewMention's own
+        // class doc makes it a PERMANENT one-shot dedupe, so a row recorded now would never be
+        // re-decided once the hold ends — this comment would simply never mint if the leader never
+        // comes back. Returning null reuses the identical "not decided yet, try again next sweep"
+        // path the membership gate's own Unknown answer already takes.
+        if (AutoPrReviewObservation.DecideMintHold(
+            node.NodeId, enrolledNodes?.TryGet(project.Id)?.FleetNodeIds, comment.CreatedAt, _clock.GetUtcNow(), MintHold)
+            is { } peerHold)
+        {
+            logger.LogDebug(
+                "Auto-pr-review is holding a mention mint on {Repository}#{Number} in project {Project}: {Detail}",
+                repository, candidate.Number, project.Name, peerHold.Describe());
+            return null;
+        }
+
+        // The per-repository hourly mint cap (task 7ae690f5) — left unrecorded past the cap for
+        // the identical permanent-dedupe reason the fleet-leader hold just above is: a capped
+        // mention is retried on the very next sweep once the window rolls, rather than lost for
+        // good the moment ObservedReviewMention's own dedupe closes over it.
+        if (await HourlyMintCapReachedAsync(session, repository, _clock.GetUtcNow(), cancellationToken))
+        {
+            logger.LogDebug(
+                "Auto-pr-review is holding a mention mint on {Repository}#{Number} in project {Project}: the "
+                + "hourly auto-pr-review mint cap is reached for this repository", repository, candidate.Number,
+                project.Name);
+            return null;
+        }
+
         try
         {
             return await CreateFromMentionAsync(
@@ -2108,6 +2290,57 @@ public sealed class AutoPrReviewEngine(
                 "recorded; the comment's own author is not a declared hall9k team member on a repository "
                 + "the membership gate covers, so no follow-up was dispatched — yours to take by hand "
                 + "(security review idea 6be68ee2, finding 1)");
+        }
+
+        // Only the fleet's own leader dispatches a follow-up (task 7ae690f5): the identical
+        // lowest-Guid ordering DecideMintHold already ranks a fresh mint by, with no timeout or
+        // takeover — a follow-up answers one specific comment, not a standing request, so a
+        // non-leader never claims it at all. Without this, every node sharing the fleet's own
+        // database claims with the identical ceiling-exempt sentinel and launches its own run
+        // against the same task.
+        if (!AutoPrReviewObservation.IsFleetLeader(node.NodeId, enrolledNodes?.TryGet(existing.ProjectId)?.FleetNodeIds))
+        {
+            session.Events.Append(existing.Id, expectedVersion: fence.Version + 1, observed);
+            await session.SaveChangesAsync(cancellationToken);
+            return (
+                ReviewMentionOutcome.AttachedNoFollowUp, existing.Id,
+                "recorded; a fleet peer ranks first for this project's own follow-up dispatch, so this node "
+                + "never claims or launches one — yours to take by hand with h9k pr review --since-my-review");
+        }
+
+        // The LIFETIME cap and the cooldown between laps (task 7ae690f5, Opus verdict 2026-09-27),
+        // decided purely over this node's own ObservedReviewMention rows already recorded Attached
+        // for this task — no new event or counter needed, since that outcome already records every
+        // earlier dispatch.
+        DaemonOptions daemonOptions = options?.Value ?? new DaemonOptions();
+        IReadOnlyList<ObservedReviewMention> priorFollowUps = await session.Query<ObservedReviewMention>()
+            .Where(mention => mention.ObservingNodeId == node.NodeId)
+            .Where(mention => mention.TaskId == existing.Id)
+            .Where(mention => mention.MatchesSql("d.data ->> 'outcome' = ?", ReviewMentionOutcome.Attached.Value))
+            .ToListAsync(cancellationToken);
+        if (AutoPrReviewObservation.DecideMentionFollowUpHold(
+            priorFollowUps.Count,
+            priorFollowUps.Count > 0 ? priorFollowUps.Max(mention => mention.ObservedAt) : null,
+            now, daemonOptions.AutoPrReviewMentionFollowUpCap, daemonOptions.AutoPrReviewMentionFollowUpCooldown)
+            is { } capOrCooldownDetail)
+        {
+            session.Events.Append(existing.Id, expectedVersion: fence.Version + 1, observed);
+            await session.SaveChangesAsync(cancellationToken);
+            return (ReviewMentionOutcome.AttachedNoFollowUp, existing.Id, capOrCooldownDetail);
+        }
+
+        // The period spend budget (task 7ae690f5), the roughly ten-line equivalent of
+        // DispatchEngine.SpendBudgetExhaustedAsync built on the identical PeriodSpend.ReadAsync —
+        // no in-memory cache of its own, unlike that sibling, since a follow-up's own dispatch is
+        // rare enough that resumming the period's events here costs nothing worth caching against.
+        if (await SpendBudgetExhaustedAsync(session, cancellationToken))
+        {
+            session.Events.Append(existing.Id, expectedVersion: fence.Version + 1, observed);
+            await session.SaveChangesAsync(cancellationToken);
+            return (
+                ReviewMentionOutcome.AttachedNoFollowUp, existing.Id,
+                "recorded; this node's spend budget for the current period is exhausted, so no follow-up "
+                + "was dispatched — yours to take by hand with h9k pr review --since-my-review");
         }
 
         // Unconditional on setting.Speed, unlike a mint's own Now-only check: a follow-up has no
@@ -2263,7 +2496,7 @@ public sealed class AutoPrReviewEngine(
 
         PullRequestReviewMentionObserved observed = new(
             taskId, imported.Url?.ToString() ?? candidate.Url, comment.CommentId, comment.AuthorLogin,
-            comment.Body, comment.Url, comment.CreatedAt, now, comment.DatabaseId);
+            comment.Body, comment.Url, comment.CreatedAt, now, comment.DatabaseId, MintedTask: true);
 
         TaskAggregate task = new();
         task.Apply(added);
