@@ -14,6 +14,17 @@ public enum MembershipRole
 public sealed record TrustedNode(string NodeId, string PublicKeyLine, string Fingerprint, DateTimeOffset IssuedAt);
 
 /// <summary>
+/// One key in an owner's root authority (idea 6be68ee2: "an owner's root authority is a ranked set
+/// of root keys recoverable by succession"). <see cref="IntroducedByNodeId"/> is null for K0 —
+/// <c>root.yaml</c>'s own key, the identity that never changes — and otherwise the node id whose own
+/// vouched key a validated <c>owners/&lt;root&gt;/rotations/&lt;n&gt;.yaml</c> promoted. Rank is this
+/// list's own order: K0 first, then each rotation in the order it actually landed on the ledger, and
+/// an earlier key always outranks a later one (only a key ranked strictly above another may revoke
+/// it — <see cref="GitLedgerChainReader"/>'s own succession pass is where that rule is enforced).
+/// </summary>
+public sealed record LiveRootKey(string PublicKeyLine, string Fingerprint, string? IntroducedByNodeId);
+
+/// <summary>
 /// One owner root's own chain: its self-certified root key, plus every node currently vouched into
 /// it (latest of vouch or revocation, in ref commit order, already resolved — a revoked node is
 /// simply absent here). Computed entirely from <c>refs/hall9k/ledger/owners/&lt;root&gt;</c>,
@@ -45,7 +56,8 @@ public sealed record TrustedNode(string NodeId, string PublicKeyLine, string Fin
 /// </param>
 public sealed record TrustedOwner(
     string RootFingerprint, string RootPublicKeyLine, IReadOnlyList<TrustedNode> Nodes, string? RootNodeId = null,
-    IReadOnlySet<string>? RevokedNodeIds = null, IReadOnlyList<TrustedNode>? EverEnrolledNodes = null)
+    IReadOnlySet<string>? RevokedNodeIds = null, IReadOnlyList<TrustedNode>? EverEnrolledNodes = null,
+    IReadOnlyList<LiveRootKey>? RootKeys = null, IReadOnlyList<string>? SuccessorNodeIds = null)
 {
     /// <summary>Never null, whatever a caller passed the primary constructor: a pre-existing
     /// four-argument construction (every call site that predates this field) gets an empty set
@@ -60,6 +72,28 @@ public sealed record TrustedOwner(
     /// <see cref="RevokedNodeIds"/> already is: a pre-existing construction gets an empty list.
     /// </summary>
     public IReadOnlyList<TrustedNode> EverEnrolledNodes { get; init; } = EverEnrolledNodes ?? [];
+
+    /// <summary>
+    /// This root's own ranked key set (idea 6be68ee2), K0 (<see cref="RootPublicKeyLine"/>) always
+    /// first: an act is root-authorized when any key in this list signs it
+    /// (<see cref="OwnerChainAuthorization"/>), never only the single "current" one, so a members
+    /// write K0 ever signed keeps verifying after a later rotation adds K1. Never null, on the same
+    /// terms <see cref="RevokedNodeIds"/> already is: a pre-existing construction without an opinion
+    /// on succession gets exactly K0, the one key every owner has always had.
+    /// </summary>
+    public IReadOnlyList<LiveRootKey> RootKeys { get; init; } = RootKeys ?? [new LiveRootKey(RootPublicKeyLine, RootFingerprint, null)];
+
+    /// <summary>
+    /// Node ids this root has currently listed as a successor (a root-signed
+    /// <c>owners/&lt;root&gt;/successors/&lt;node-id&gt;.yaml</c> that has not since rotated in or
+    /// been revoked) — a candidate for <see cref="RootKeys"/>, not yet a member of it. Never null, on
+    /// the same terms <see cref="RevokedNodeIds"/> already is.
+    /// </summary>
+    public IReadOnlyList<string> SuccessorNodeIds { get; init; } = SuccessorNodeIds ?? [];
+
+    /// <summary>Whether <paramref name="fingerprint"/> is one of this root's own live keys — K0, or
+    /// a key a validated rotation added.</summary>
+    public bool IsLiveRootKey(string fingerprint) => RootKeys.Any(key => key.Fingerprint == fingerprint);
 
     /// <summary>Whether <paramref name="fingerprint"/> is this root's own key or a currently vouched node's.</summary>
     public bool Contains(string fingerprint) =>
