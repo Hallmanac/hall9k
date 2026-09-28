@@ -51,7 +51,7 @@ public sealed class MessageSweepEngine(
     PullRequestReviewDuplicateConvergence? duplicateConvergence = null,
     EnrolledNodeSnapshots? enrolledNodes = null,
     NodeGitHubDeclarationOneShot? githubDeclaration = null,
-    NodeSuccessorBackfillOneShot? successorBackfill = null)
+    NodeSuccessorBackfillReconciler? successorBackfill = null)
 {
     /// <summary>Every sender outbox's tip as of this node's last probe, so a sweep that finds an
     /// unmoved tip skips reading it entirely. In-memory and per-process by design: a restart just
@@ -153,12 +153,11 @@ public sealed class MessageSweepEngine(
                 await githubDeclaration.RunOnceAsync(project, identity, cancellationToken);
             }
 
-            // Once per process and project, for a root whose already-vouched fleet predates this
-            // task's succession model (idea 6be68ee2) — rides the identical first-sweep hook, off
-            // the trust chain this tick already computed.
+            // Every tick, self-healing, for a root whose fleet has a node with no counting
+            // successor record yet (idea 6be68ee2) — off the trust chain this tick already computed.
             if (successorBackfill is not null)
             {
-                await successorBackfill.RunOnceAsync(project, identity, trustChain, cancellationToken);
+                await successorBackfill.ReconcileAsync(project, identity, trustChain, cancellationToken);
             }
 
             await PersistUnverifiedWritesAsync(project, trustChain, now, cancellationToken);
