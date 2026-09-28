@@ -143,7 +143,10 @@ internal static class TaskStatusComposer
     /// <summary>
     /// One task's row, for the surfaces that show exactly one (h9k task show). The caller's
     /// detail document comes in with it because it can answer something the lean row cannot:
-    /// see <see cref="RecordedFailureReason"/>.
+    /// see <see cref="RecordedFailureReason"/>. This is the one caller that asks
+    /// <see cref="Compose"/> to keep the short fingerprint beside a HeldElsewhere row's owner
+    /// label — <see cref="ComposeAllAsync"/>'s board surfaces stay bare (independent pre-PR
+    /// review, cycle 2, conformance lens).
     /// </summary>
     public static async Task<TaskStatusRow?> ComposeOneAsync(
         IQuerySession session, TaskDetails details, DateTimeOffset now, CancellationToken cancellationToken)
@@ -155,7 +158,9 @@ internal static class TaskStatusComposer
         }
 
         task.FailureReason = RecordedFailureReason(task, details);
-        return Compose(task, await LoadContextAsync(session, [task], now, cancellationToken), now);
+        return Compose(
+            task, await LoadContextAsync(session, [task], now, cancellationToken), now,
+            keepFingerprintBesideHeldByOwnerLabel: true);
     }
 
     /// <summary>
@@ -331,7 +336,9 @@ internal static class TaskStatusComposer
     /// whether a phase applies at all; the session is observed once and shared by the phase and
     /// the attention line, so the two cannot disagree about whether anything is running.
     /// </summary>
-    public static TaskStatusRow Compose(TaskListItem task, TaskStatusContext context, DateTimeOffset now)
+    public static TaskStatusRow Compose(
+        TaskListItem task, TaskStatusContext context, DateTimeOffset now,
+        bool keepFingerprintBesideHeldByOwnerLabel = false)
     {
         RunDetails? run = task.CurrentRunId is { } runId ? context.Runs.GetValueOrDefault(runId) : null;
         LifecycleState state = State(task, run, context);
@@ -388,7 +395,8 @@ internal static class TaskStatusComposer
             group,
             PublishedFacts.Compose(
                 task, state, held, heldByTracker, now, heldByLedgerHolder, context.OwnersByFingerprint,
-                context.ProjectMemberLabelsById?.GetValueOrDefault(task.ProjectId)),
+                context.ProjectMemberLabelsById?.GetValueOrDefault(task.ProjectId),
+                keepFingerprintBesideHeldByOwnerLabel),
             project,
             task.Objective,
             task.Type.Value,

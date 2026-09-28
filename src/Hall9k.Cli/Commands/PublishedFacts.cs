@@ -62,19 +62,28 @@ internal static class PublishedFacts
     /// login rides alongside, resolved by the claiming owner's cross-node root fingerprint
     /// (<paramref name="ownersByFingerprint"/>) when this install knows it — this machine's own
     /// owner keeps that local name — falling back to this project's own member label (task
-    /// 21c8f2f3) for any other member, the identical "label (short fingerprint)" shape
-    /// <see cref="TaskShowCommand.AssigneeMarkup"/> already reports for its own foreign case, never
-    /// standing in for the node id itself the way the original rendering did (Windows field report,
-    /// 2026-09-19: "held by c8f5c85900da" named the owner root fingerprint as if it were the node).
+    /// 21c8f2f3) for any other member, kept bare here (<paramref name="keepFingerprintBesideOwnerLabel"/>
+    /// false) the same "board stays terse" way <see cref="TaskStatusComposer"/>'s own assignee
+    /// display does, since this fact composes into every board surface (<c>h9k status</c>,
+    /// <c>h9k task list</c>, <c>h9k project show</c>) through the shared
+    /// <see cref="TaskStatusComposer.ComposeAllAsync"/> path — only <c>h9k task show</c>'s own
+    /// <see cref="TaskStatusComposer.ComposeOneAsync"/> asks for the fingerprint kept beside it, the
+    /// identical "label (short fingerprint)" shape <see cref="TaskShowCommand.AssigneeMarkup"/>
+    /// already reports for its own foreign case (independent pre-PR review, cycle 2, conformance
+    /// lens). Never standing in for the node id itself the way the original rendering did (Windows
+    /// field report, 2026-09-19: "held by c8f5c85900da" named the owner root fingerprint as if it
+    /// were the node).
     /// </summary>
     private static string HeldElsewhereFact(
         TaskListItem task, IReadOnlyDictionary<string, string>? ownersByFingerprint, DateTimeOffset now,
-        ProjectMemberLabels? projectMemberLabels)
+        ProjectMemberLabels? projectMemberLabels, bool keepFingerprintBesideOwnerLabel)
     {
         string holderNode = task.ClaimedByNodeId is { } claimedByNodeId
             ? $"node {TaskListCommand.ShortId(claimedByNodeId)}"
             : "an unknown node";
-        string owner = OwnerDisplay(task.ClaimedByOwnerRootFingerprint, ownersByFingerprint, projectMemberLabels);
+        string owner = OwnerDisplay(
+            task.ClaimedByOwnerRootFingerprint, ownersByFingerprint, projectMemberLabels,
+            keepFingerprintBesideOwnerLabel);
         string since = task.ClaimedAt is { } claimedAt
             ? TaskStatusComposer.RelativeAge(now - claimedAt)
             : "an unknown time";
@@ -85,15 +94,19 @@ internal static class PublishedFacts
     /// The owning login when this install can resolve the claiming owner's cross-node root
     /// fingerprint (this machine's own owner), falling back to this project's own member label
     /// (task 21c8f2f3) — the display name, else the declared login, else the fingerprint's own
-    /// short prefix, with that short fingerprint kept beside a resolved label (the identical
-    /// "label (short fingerprint)" shape <see cref="TaskShowCommand.AssigneeMarkup"/> already
-    /// gives a foreign root fingerprint known by fingerprint alone — a detail row keeps the
-    /// fingerprint beside the label rather than replacing it) — deduplicated when the label is
-    /// already that same short prefix, so the fallback never reads as "abc123 (abc123)".
+    /// short prefix. <paramref name="keepFingerprintBesideOwnerLabel"/> is true only on
+    /// <c>h9k task show</c>'s own detail row, which keeps the short fingerprint beside a resolved
+    /// label (the identical "label (short fingerprint)" shape
+    /// <see cref="TaskShowCommand.AssigneeMarkup"/> already gives a foreign root fingerprint known
+    /// by fingerprint alone) — deduplicated when the label is already that same short prefix, so
+    /// the fallback never reads as "abc123 (abc123)". Every board surface asks for the bare label
+    /// instead, terse the same way <see cref="TaskStatusComposer"/>'s own assignee display stays
+    /// terse (independent pre-PR review, cycle 2, conformance lens: the fingerprint suffix must not
+    /// leak onto <c>h9k status</c>, <c>h9k task list</c>, or <c>h9k project show</c>).
     /// </summary>
     private static string OwnerDisplay(
         string? ownerRootFingerprint, IReadOnlyDictionary<string, string>? ownersByFingerprint,
-        ProjectMemberLabels? projectMemberLabels)
+        ProjectMemberLabels? projectMemberLabels, bool keepFingerprintBesideOwnerLabel)
     {
         if (ownerRootFingerprint.IsBlank())
         {
@@ -107,6 +120,11 @@ internal static class PublishedFacts
 
         string label = MemberLabelResolver.LabelForFingerprint(projectMemberLabels, ownerRootFingerprint);
         string named = ExternalText.OneLine(RelayedText.Truncate(label, MemberLabelResolver.RenderLimit));
+        if (!keepFingerprintBesideOwnerLabel)
+        {
+            return named;
+        }
+
         string shortFingerprint = ownerRootFingerprint[..Math.Min(12, ownerRootFingerprint.Length)];
         return named == shortFingerprint ? named : $"{named} ({shortFingerprint})";
     }
@@ -150,6 +168,13 @@ internal static class PublishedFacts
     /// <paramref name="ownersByFingerprint"/> falls back to for a claiming owner this install has
     /// no local record of, rather than the fingerprint's own bare short prefix.
     /// </param>
+    /// <param name="keepFingerprintBesideHeldByOwnerLabel">
+    /// True only on <c>h9k task show</c>'s own detail row (<see cref="TaskStatusComposer.ComposeOneAsync"/>):
+    /// keeps the short fingerprint beside a HeldElsewhere row's resolved owner label. Every board
+    /// surface (<see cref="TaskStatusComposer.ComposeAllAsync"/>) leaves it false and stays bare,
+    /// the same "board stays terse" convention the assignee column already follows (independent
+    /// pre-PR review, cycle 2, conformance lens).
+    /// </param>
     public static IReadOnlyList<string> Compose(
         TaskListItem task,
         LifecycleState state,
@@ -158,7 +183,8 @@ internal static class PublishedFacts
         DateTimeOffset now = default,
         TaskHolderClaimHold? heldByLedgerHolder = null,
         IReadOnlyDictionary<string, string>? ownersByFingerprint = null,
-        ProjectMemberLabels? projectMemberLabels = null)
+        ProjectMemberLabels? projectMemberLabels = null,
+        bool keepFingerprintBesideHeldByOwnerLabel = false)
     {
         if (state != LifecycleState.Published)
         {
@@ -190,7 +216,9 @@ internal static class PublishedFacts
             return
             [
                 .. state == LifecycleState.HeldElsewhere
-                    ? (string[])[HeldElsewhereFact(task, ownersByFingerprint, now, projectMemberLabels)]
+                    ? (string[])[HeldElsewhereFact(
+                        task, ownersByFingerprint, now, projectMemberLabels,
+                        keepFingerprintBesideHeldByOwnerLabel)]
                     : [],
                 .. task.QueuePriorityMarked ? (string[])[QueuePriorityFact] : [],
                 .. task.EffectivePreApproval.MergesAutomatically
