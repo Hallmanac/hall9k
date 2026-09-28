@@ -9,7 +9,11 @@ namespace Hall9k.Domain.Features.Trust;
 /// and <see cref="Identifier"/> mirror <c>Hall9k.Connectors.Trust.UnverifiedLedgerWrite</c>
 /// exactly: for a vouch or revocation, <see cref="Identifier"/> is the node id the write names
 /// under <see cref="RootFingerprint"/>; for a membership write, <see cref="Identifier"/> is the
-/// same fingerprint as <see cref="RootFingerprint"/> — there is no separate node id to name.
+/// same fingerprint as <see cref="RootFingerprint"/> — there is no separate node id to name. For a
+/// "ref" kind refusal (an append-only ref integrity check catching a rewind), <see cref="Identifier"/>
+/// is the ref name itself, and <see cref="RootFingerprint"/> is blank whenever the ref has no single
+/// owning root (records, members, prompt-addenda, run-skill) rather than a specific owner's own root
+/// or node ref.
 /// </summary>
 public sealed record UnverifiedLedgerWriteObserved(
     Guid ProjectId, string Kind, string Identifier, string RootFingerprint, string Reason, DateTimeOffset At);

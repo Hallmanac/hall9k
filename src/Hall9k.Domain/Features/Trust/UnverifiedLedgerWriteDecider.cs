@@ -18,11 +18,12 @@ public static class UnverifiedLedgerWriteDecider
             throw new DomainValidationException("Observing an unverifiable ledger write needs the identifier it named.");
         }
 
-        if (rootFingerprint.IsBlank())
-        {
-            throw new DomainValidationException("Observing an unverifiable ledger write needs the root fingerprint it named.");
-        }
-
+        // rootFingerprint is deliberately allowed blank: a "ref" kind refusal (an append-only ref
+        // integrity check catching a rewind on a ref with no single owning root — records, members,
+        // prompt-addenda, run-skill) genuinely has none to name (independent pre-PR review self-check,
+        // discovered writing this branch's own missing sweep test: every such refusal previously threw
+        // this validation error and was silently swallowed by the sweep's own catch, so it never once
+        // reached h9k status).
         if (reason.IsBlank())
         {
             throw new DomainValidationException("Observing an unverifiable ledger write needs the reason it could not be verified.");
