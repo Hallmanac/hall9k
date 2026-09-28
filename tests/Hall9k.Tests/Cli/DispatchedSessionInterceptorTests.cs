@@ -102,6 +102,24 @@ public sealed class DispatchedSessionInterceptorTests
     }
 
     /// <summary>
+    /// <c>task run-local</c> moved from allowed to refused (security review idea 6be68ee2,
+    /// process-injection finding 3): no dispatched session's own prompt ever calls it — the two
+    /// skills that do (walk-pr-review-findings, orchestrator-recipe-generator) both run in the
+    /// orchestrator window, never inside a dispatched run's own worktree.
+    /// </summary>
+    [Fact]
+    public void Task_run_local_is_refused_with_the_variable_set()
+    {
+        string runId = DomainId.New().ToString();
+        DispatchedSessionInterceptor interceptor = new(name => name == DispatchedRunEnvironment.RunIdVariable ? runId : null);
+
+        Action act = () => interceptor.Intercept(Context, new TaskRunLocalCommand.Settings());
+
+        act.Should().Throw<DomainBusinessRuleException>()
+            .Which.Message.Should().Contain("task run-local");
+    }
+
+    /// <summary>
     /// Spectre resolves <c>--help</c> before an interceptor is ever reached at all
     /// (<see cref="CommandTreeHelpTests.Parse"/>'s own <c>StopOnceBound</c> proves the ordering
     /// empirically for the shipped tree), so a refused verb's help must still render even with the

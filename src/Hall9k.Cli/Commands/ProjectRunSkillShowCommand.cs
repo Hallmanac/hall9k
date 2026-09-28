@@ -1,6 +1,6 @@
 using System.ComponentModel;
-using System.Globalization;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Marten;
@@ -48,13 +48,11 @@ public sealed class ProjectRunSkillShowCommand : Hall9kAsyncCommand<ProjectRunSk
         AnsiConsole.WriteLine();
         AnsiConsole.WriteLine(skill.Content);
         AnsiConsole.WriteLine();
-        AnsiConsole.MarkupLine(
-            $"[dim]Composed by {skill.Author.Value} "
-            + $"{skill.RecordedAt.ToString("u", CultureInfo.InvariantCulture)}, against "
-            + (skill.ComposedAgainstCommit.IsNotBlank()
-                ? $"commit {skill.ComposedAgainstCommit.EscapeMarkup()}"
-                : "no recorded commit")
-            + ".[/]");
+        Guid? thisNodeId = (await session.Query<NodeDetails>()
+            .Where(candidate => candidate.MachineName == Environment.MachineName)
+            .Take(1).ToListAsync(cancellationToken)).FirstOrDefault()?.Id;
+        string provenance = await RunSkillProvenanceDisplay.LineAsync(session, project, thisNodeId, cancellationToken);
+        AnsiConsole.MarkupLine($"[dim]{provenance}[/]");
 
         if (project.RunSkillDiscoveryOutstanding)
         {
