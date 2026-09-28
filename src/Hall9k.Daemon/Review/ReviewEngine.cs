@@ -4037,24 +4037,31 @@ public sealed class ReviewEngine(
         // be reachable from one of these before it is ever trusted as a rebase target, and — once
         // trusted — this is also the set ResolveOntoBranchNameAsync checks to name which one it
         // actually is. context.BaseBranch (this run's own recorded base, which already falls back to
-        // the project's own when this run is not stacked) is included alongside the project's base
-        // outright, since a run already stacked on a resolved parent branch from an earlier
-        // assessment is a legitimate trust root of its own, not just the project's.
+        // the project's own when this run is not stacked) is included alongside the project's base,
+        // since a run already stacked on a resolved parent branch from an earlier assessment is a
+        // legitimate trust root of its own, not just the project's — but ordered after the project's
+        // own base, since ResolveOntoBranchNameAsync returns the first candidate whose tip matches and
+        // the project's base has always won that tie-break for an aligned or unstacked replay verdict:
+        // putting context.BaseBranch first would silently prefer an already-merged parent branch over
+        // the project's own base whenever the two share a tip (independent pre-PR review, cycle 1,
+        // conformance lens).
         IReadOnlyList<string> trustedOntoCandidateBranches =
-            [context.BaseBranch, context.Project.BaseBranch, parentBranch, pullRequestBase, .. additionalCandidateBranches ?? []];
+            [context.Project.BaseBranch, context.BaseBranch, parentBranch, pullRequestBase, .. additionalCandidateBranches ?? []];
 
-        // A replay verdict's own BOUNDARY becomes this run's recorded fork point the moment this
-        // verdict is appended (Apply(StackAssessmentCompleted), RunAggregate), before any mechanical
-        // rebase ever runs — so it earns the identical ancestor-of-HEAD confirmation the aligned
-        // verdict's own ONTO gets above, here rather than at the rebase site, which would already be
-        // too late to stop the fork point from moving. A boundary outside this branch's own history
-        // would poison that fork point for every later reviewer, steered session or not (security
-        // review idea 6be68ee2, daemon-consumers finding A).
-        if (verdict.Kind == StackAssessmentVerdictKind.Replay
+        // An aligned or replay verdict's own BOUNDARY becomes this run's recorded fork point the
+        // moment this verdict is appended (Apply(StackAssessmentCompleted), RunAggregate), before any
+        // mechanical rebase ever runs — so it earns the identical ancestor-of-HEAD confirmation the
+        // aligned verdict's own ONTO gets above, here rather than at the rebase site, which would
+        // already be too late to stop the fork point from moving. A boundary outside this branch's own
+        // history would poison that fork point for every later reviewer, steered session or not
+        // (security review idea 6be68ee2, daemon-consumers finding A) — an aligned verdict is just as
+        // capable of naming one as a replay verdict is (independent pre-PR review, cycle 1, adversarial
+        // lens).
+        if ((verdict.Kind == StackAssessmentVerdictKind.Replay || verdict.Kind == StackAssessmentVerdictKind.Aligned)
             && !await CommitIsAncestorOfHeadAsync(context.Run.WorktreePath, verdict.BoundaryCommit, cancellationToken))
         {
             verdict = StackAssessmentVerdict.Undecidable(
-                $"the assessment declared replay with BOUNDARY {verdict.BoundaryCommit} and ONTO {verdict.OntoCommit}, "
+                $"the assessment declared {verdict.Kind} with BOUNDARY {verdict.BoundaryCommit} and ONTO {verdict.OntoCommit}, "
                 + $"but BOUNDARY is not an ancestor of this branch's own HEAD (git merge-base --is-ancestor "
                 + $"{verdict.BoundaryCommit} HEAD failed), so it is not trusted as this run's own fork point. Its "
                 + $"own evidence: {verdict.Evidence}");
