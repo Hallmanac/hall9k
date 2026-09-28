@@ -85,15 +85,35 @@ public sealed class PrReviewEngine(
         await WritePrimarySessionResultAsync(runDirectory, PrimarySlugOf(run), summary, cancellationToken);
     }
 
-    private static async Task WritePrimarySessionResultAsync(
+    /// <summary>
+    /// Written unconditionally (security review idea 6be68ee2, daemon-consumers finding B): the
+    /// primary session itself has ordinary file-system access to this exact path throughout its
+    /// own run, before it ever exits and before this method's own call runs — a "write only when
+    /// absent" guard used to let whatever the session (or anything running inside its worktree)
+    /// pre-seeded there stand forever, even once the session's actual terminal stdout said
+    /// something else, which is exactly the gap a delete-before-spawn fix would still have missed:
+    /// the session can write here any time up to and including its own final turn, well after any
+    /// pre-spawn deletion. This result file is now always this session's own stdout, verbatim, and
+    /// a warning names the file whenever what was already there differed from it — the honest,
+    /// visible version of the residual risk this result file always carried, rather than a silent
+    /// one. The recovery path above keeps its own absent check unchanged: it only ever calls this
+    /// once the file is confirmed missing, so it never has anything to diff against.
+    /// <para>Internal for the unit test exercising the overwrite-and-warn path directly, the <see cref="EnsurePrimarySessionResultRecordedAsync"/> convention — pure file I/O and a logger, no store needed.</para>
+    /// </summary>
+    internal async Task WritePrimarySessionResultAsync(
         string runDirectory, string slug, string summary, CancellationToken cancellationToken)
     {
         string path = RunPaths.ReviewLensFindingsFile(runDirectory, 1, slug);
-        if (!File.Exists(path))
+        Directory.CreateDirectory(runDirectory);
+        if (File.Exists(path) && await File.ReadAllTextAsync(path, cancellationToken) != summary)
         {
-            Directory.CreateDirectory(runDirectory);
-            await File.WriteAllTextAsync(path, summary, cancellationToken);
+            logger.LogWarning(
+                "{Path} already carried different content before the primary session's own terminal "
+                + "result was recorded — replaced with the session's own stdout.",
+                path);
         }
+
+        await File.WriteAllTextAsync(path, summary, cancellationToken);
     }
 
     /// <summary>
@@ -959,11 +979,16 @@ public sealed class PrReviewEngine(
         string runDirectory, string summary, CancellationToken cancellationToken)
     {
         string path = MentionFollowUpResultFile(runDirectory);
-        if (!File.Exists(path))
+        Directory.CreateDirectory(runDirectory);
+        if (File.Exists(path) && await File.ReadAllTextAsync(path, cancellationToken) != summary)
         {
-            Directory.CreateDirectory(runDirectory);
-            await File.WriteAllTextAsync(path, summary, cancellationToken);
+            logger.LogWarning(
+                "{Path} already carried different content before the mention follow-up session's own "
+                + "terminal result was recorded — replaced with the session's own stdout.",
+                path);
         }
+
+        await File.WriteAllTextAsync(path, summary, cancellationToken);
     }
 
     /// <summary>The recovery half of <see cref="RecordMentionFollowUpResultAsync"/>, mirroring <see cref="EnsurePrimarySessionResultRecordedAsync"/>'s identical daemon-restart gap.</summary>
@@ -1000,7 +1025,8 @@ public sealed class PrReviewEngine(
         }
     }
 
-    private static string MentionFollowUpResultFile(string runDirectory) =>
+    /// <summary>Internal for the unit test asserting on this file's own path, the <see cref="ConformanceArtifactName"/> convention.</summary>
+    internal static string MentionFollowUpResultFile(string runDirectory) =>
         Path.Combine(runDirectory, "mention-followup-session-result.md");
 
     /// <summary>
