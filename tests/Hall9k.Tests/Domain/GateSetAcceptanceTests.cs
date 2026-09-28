@@ -35,43 +35,36 @@ public sealed class GateSetAcceptanceTests
         ]);
     }
 
-    /// <summary>
-    /// An operator's own local change advances the accepted list to match the new current one in a
-    /// single act (h9k project set --verify, ProjectSetCommand's own same-call acceptance) —
-    /// distinct from "unchanged" below: the list itself is genuinely new, but because it is
-    /// accepted the same call that recorded it, the two are equal by the time anything reads them.
-    /// </summary>
     [Fact]
-    public void A_local_change_proceeds()
-    {
-        IReadOnlyList<VerifyCommand> newlyAcceptedAndCurrent = [Build, Test, new VerifyCommand("lint", "dotnet format --verify-no-changes")];
-
-        GateSetAcceptance.Decision decision = GateSetAcceptance.Decide(newlyAcceptedAndCurrent, newlyAcceptedAndCurrent);
-
-        decision.Proceed.Should().BeTrue();
-        decision.Diff.Should().BeEmpty();
-    }
-
-    [Fact]
-    public void Accept_gates_then_proceeds()
+    public void Nothing_accepted_yet_holds()
     {
         IReadOnlyList<VerifyCommand> current = [Build, Test];
 
         GateSetAcceptance.Decide(accepted: null, current).Proceed.Should().BeFalse(
             "nothing has been accepted on this node yet");
-
-        // h9k project accept-gates records exactly the current list as accepted.
-        GateSetAcceptance.Decide(accepted: current, current).Proceed.Should().BeTrue(
-            "the just-accepted list is now identical to what is running");
     }
 
-    [Fact]
-    public void An_unchanged_set_proceeds()
+    /// <summary>
+    /// <see cref="GateSetAcceptance.Decide"/> is pure and order-of-events-blind: it cannot tell "an
+    /// operator's own local change advanced the accepted list to match the new current one in a
+    /// single act" (h9k project set --verify, ProjectSetCommand's own same-call acceptance) apart
+    /// from "the set was never touched at all" (h9k project accept-gates against an already-matching
+    /// set) — both reach it as the identical call, two equal lists — so both scenarios are named
+    /// here as cases of the one branch they actually exercise, rather than as separate tests
+    /// (independent pre-PR review, cycle 1, conformance lens, low: the project's own test-hygiene
+    /// guidance flags duplicate coverage through the same seam).
+    /// </summary>
+    [Theory]
+    [InlineData("a local change accepted in the same call that changed it (h9k project set --verify)")]
+    [InlineData("a set that was never touched (h9k project accept-gates against an already-matching set)")]
+    public void Decide_proceeds_when_current_matches_accepted(string scenario)
     {
-        IReadOnlyList<VerifyCommand> accepted = [Build, Test];
-        IReadOnlyList<VerifyCommand> current = [Build, Test];
+        IReadOnlyList<VerifyCommand> gates = [Build, Test, new VerifyCommand("lint", "dotnet format --verify-no-changes")];
 
-        GateSetAcceptance.Decide(accepted, current).Proceed.Should().BeTrue();
+        GateSetAcceptance.Decision decision = GateSetAcceptance.Decide(gates, gates);
+
+        decision.Proceed.Should().BeTrue(scenario);
+        decision.Diff.Should().BeEmpty();
     }
 
     [Fact]

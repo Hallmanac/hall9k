@@ -22,8 +22,8 @@ public static class GateSetAcceptanceDisplay
     public static string FormatGate(VerifyCommand gate)
     {
         string line = RelayedText.Printable($"{gate.Name}: {gate.Command}");
-        return gate.IsHostCoupled
-            ? $"{line} [host-coupled: {RelayedText.Printable(gate.HostCoupledFilter!)}]"
+        return gate.HostCoupledFilter is { } filter
+            ? $"{line} [host-coupled: {RelayedText.Printable(filter)}]"
             : line;
     }
 

@@ -1599,7 +1599,13 @@ public sealed class DispatchEngine(
         if (project is not null
             && !GateSetAcceptance.Decide(project.AcceptedVerifyCommands, project.VerifyCommands).Proceed)
         {
-            logger.LogInformation(
+            // Debug, not Information (independent pre-PR review, cycle 1, both lenses, low): a
+            // held project's every queued task logs this line on every dispatch sweep until an
+            // operator runs accept-gates, the identical "retried every dispatch tick" shape
+            // FindOlderLiveTwinAsync's own refusal just above already keeps at Debug for.
+            // ReportProjectCapDeferrals's own once-per-episode Information line is what actually
+            // informs an operator here too — h9k status surfaces this hold under needs-you.
+            logger.LogDebug(
                 "Task {TaskId} stays queued: project {ProjectId}'s verify gate set has changed and has not "
                 + "been accepted on this node — h9k project accept-gates",
                 taskId, task.ProjectId);
