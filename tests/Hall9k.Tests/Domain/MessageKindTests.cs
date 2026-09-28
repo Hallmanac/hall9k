@@ -63,4 +63,17 @@ public sealed class MessageKindTests
                 MessageKind.OwnerActRequest.Value, MessageKind.OwnerActOutcome.Value,
             ]);
     }
+
+    [Fact]
+    public void ClaimKindValues_names_exactly_the_claim_kinds_never_the_owner_act_pair()
+    {
+        // ClaimRequestWatchLoop's own poll must read this narrower list, never
+        // MechanicalKindValues — independent pre-PR review, cycle 1, both lenses, high: polling the
+        // wider list let that loop grab an owner-act message before OwnerActRequestWatchLoop's own
+        // separate hosted service ever saw it.
+        MessageKind.ClaimKindValues.Should().BeEquivalentTo(
+            [MessageKind.ClaimRequest.Value, MessageKind.ClaimGranted.Value, MessageKind.ClaimRefused.Value]);
+        MessageKind.ClaimKindValues.Should().NotContain(MessageKind.OwnerActRequest.Value);
+        MessageKind.ClaimKindValues.Should().NotContain(MessageKind.OwnerActOutcome.Value);
+    }
 }

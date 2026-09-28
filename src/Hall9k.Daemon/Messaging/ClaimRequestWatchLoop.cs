@@ -18,8 +18,8 @@ namespace Hall9k.Daemon.Messaging;
 
 /// <summary>
 /// The cooperative take's own reaction loop (idea 202383dc, item 5, "a member can ask a holder for
-/// a task"): polls this node's own received-but-unhandled messages of all three envelope kinds
-/// <see cref="MessageKind.MechanicalKindValues"/> names on the ordinary sweep cadence
+/// a task"): polls this node's own received-but-unhandled messages of the three envelope kinds
+/// <see cref="MessageKind.ClaimKindValues"/> names on the ordinary sweep cadence
 /// (<see cref="DaemonOptions.PollInterval"/>) — its own separate hosted service rather than a step
 /// folded into <see cref="MessageSweepEngine"/>, the same reasoning
 /// <see cref="Execution.TakeoverWatchLoop"/>'s own doc gives for keeping a reactive concern that is
@@ -99,9 +99,14 @@ public sealed class ClaimRequestWatchLoop(
             return;
         }
 
-        IReadOnlyList<string> mechanicalKinds = MessageKind.MechanicalKindValues;
+        // Hall9k.Domain.Features.Message.MessageKind.ClaimKindValues, never MechanicalKindValues:
+        // the latter also names the owner-act pair now, which OwnerActRequestWatchLoop's own
+        // separate hosted service owns exclusively — polling that shared, wider list here let this
+        // loop grab an owner-act message before that other loop ever saw it (independent pre-PR
+        // review, cycle 1, both lenses, high).
+        IReadOnlyList<string> claimKinds = MessageKind.ClaimKindValues;
         IReadOnlyList<MessageDetails> pending = await lookupSession.Query<MessageDetails>()
-            .Where(message => mechanicalKinds.Contains(message.Kind)
+            .Where(message => claimKinds.Contains(message.Kind)
                 && message.ReceivedAt != null && message.HandledAt == null)
             .ToListAsync(cancellationToken);
 
