@@ -99,6 +99,7 @@ public sealed class OwnerPromoteCommand : Hall9kAsyncCommand<OwnerPromoteCommand
         List<(ProjectDetails Project, TrustChain Chain, string SupersededKey)> targets = [];
         List<string> alreadyRotatedPreview = [];
         List<string> ineligibleReasons = [];
+        List<string> unreadableProjects = [];
         foreach (ProjectDetails project in projects)
         {
             TrustChain chain;
@@ -106,8 +107,18 @@ public sealed class OwnerPromoteCommand : Hall9kAsyncCommand<OwnerPromoteCommand
             {
                 chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
             }
-            catch (InvalidOperationException)
+            catch (InvalidOperationException exception)
             {
+                // Named and counted here, never a bare `continue`: a project this preview cannot
+                // read is a partial fan-out the operator is not told about otherwise — the
+                // confirmation would list only the reachable projects, the write would land there,
+                // and the closing summary would report full success (independent pre-PR review,
+                // cycle 1, both lenses, medium).
+                unreadableProjects.Add(project.Name);
+                AnsiConsole.MarkupLine(
+                    $"[red]Could not read '{project.Name.EscapeMarkup()}'s own ledger "
+                    + $"({exception.Message.EscapeMarkup()}) — skipped; re-run h9k owner promote once it is "
+                    + "reachable again.[/]");
                 continue;
             }
 
@@ -160,7 +171,10 @@ public sealed class OwnerPromoteCommand : Hall9kAsyncCommand<OwnerPromoteCommand
         int rotatedInto = 0;
         List<string> alreadyRotated = [.. alreadyRotatedPreview];
         List<string> lostCompareAndSwap = [];
-        List<string> failedProjects = [];
+        // Seeded with the dry run's own unreadable projects, never dropped silently: this makes a
+        // fetch failure at preview time surface exactly the way one at write time already does
+        // (named, counted, and forced into the closing summary and its non-zero exit).
+        List<string> failedProjects = [.. unreadableProjects];
         foreach ((ProjectDetails project, TrustChain _, string _) in targets)
         {
             try
@@ -293,8 +307,8 @@ public sealed class OwnerPromoteCommand : Hall9kAsyncCommand<OwnerPromoteCommand
 
         AnsiConsole.MarkupLine(
             "[dim]The key it supersedes still outranks this one and can undo it "
-            + $"(owners/{root}/revoked-successors/<node-id>.yaml, signed by that earlier key). Nothing is "
-            + "reversible from here once a peer's next sweep observes it.[/]");
+            + $"(owners/{root}/revoked-successors/<node-id>.yaml, signed by that earlier key). This command has "
+            + "no undo of its own, and a peer's next sweep names this rotation the moment it observes it.[/]");
 
         if (!confirmation.IsInteractive)
         {
@@ -347,17 +361,36 @@ public sealed class OwnerPromoteCommand : Hall9kAsyncCommand<OwnerPromoteCommand
         TrustedOwner ownerChain = chain.OwnerChains[root];
         string supersededKey = ownerChain.RootKeys[^1].PublicKeyLine;
         string refName = $"refs/hall9k/ledger/owners/{root}";
+        string rotationsPrefix = $"owners/{root}/rotations/";
 
-        // The sequence number this rotation would occupy is this project's own count of VALIDATED
-        // root keys, K0 included — never a raw count of files under rotations/, which a stale or
-        // never-validated file sitting at a slot could occupy forever with nothing to notice. Two
-        // nodes racing a promotion from the identical starting chain compute the identical count
-        // (neither has observed the other's rotation yet) and so target the identical path — which
-        // is exactly the property the compare-and-swap below needs: the "two valid promotions" race
+        // The sequence number this rotation targets is the next slot past every rotation file
+        // CURRENTLY IN THE LEDGER, validated or not — never this project's own count of validated
+        // root keys: a revoked rotation's own file is never removed (only its content stops
+        // counting once a higher-ranked key voids it), so counting validated keys alone reused
+        // that exact slot forever the moment anything ever voided or superseded whatever first
+        // landed there, permanently losing every later promotion's own compare-and-swap in that
+        // project (independent pre-PR review, cycle 1, both lenses, high). Scanning the ledger's
+        // own current file listing instead guarantees a genuinely open path regardless of what any
+        // of those files validate to. Two nodes racing a promotion from the identical starting
+        // ledger state see the identical listing and so target the identical next slot — exactly
+        // the property the compare-and-swap below still needs: the "two valid promotions" race
         // (HALL9K-P2P-DESIGN.md §6.5) resolves at the git level, first push wins, and the loser is
         // refused here rather than silently landing a second, competing rotation.
-        int sequence = ownerChain.RootKeys.Count;
-        string path = $"owners/{root}/rotations/{sequence}.yaml";
+        IReadOnlyList<LedgerEntry> existingRotations =
+            await ledger.ReadAllAsync(repositoryPath, refName, rotationsPrefix, cancellationToken);
+        int sequence = 1;
+        foreach (LedgerEntry entry in existingRotations)
+        {
+            string suffix = entry.Path[rotationsPrefix.Length..];
+            if (suffix.EndsWith(".yaml", StringComparison.Ordinal)
+                && int.TryParse(suffix[..^".yaml".Length], out int existingSequence)
+                && existingSequence >= sequence)
+            {
+                sequence = existingSequence + 1;
+            }
+        }
+
+        string path = $"{rotationsPrefix}{sequence}.yaml";
         string content = BuildYaml(
             ("node_id", nodeId.ToString()),
             ("public_key", key.PublicKeyLine),

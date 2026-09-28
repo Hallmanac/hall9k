@@ -210,6 +210,45 @@ public sealed class OwnerPromoteCommandTests : IClassFixture<PostgresFixture>, I
     }
 
     [Fact]
+    public async Task An_unreadable_project_in_the_dry_run_is_named_and_forces_a_non_zero_exit_even_though_the_other_project_lands()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        await SeedProjectAsync(cts.Token);
+        await SeedSecondProjectAsync(cts.Token);
+        (BootstrapContext context, NodeSigningKey key, NodeSigningKey rootKey) = await EstablishSurvivingNodeAsync(cts.Token);
+        FakeLedger ledger = new();
+
+        TrustChain eligibleChain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                [rootKey.Fingerprint] = new(
+                    rootKey.Fingerprint, rootKey.PublicKeyLine,
+                    [new TrustedNode(context.NodeId.ToString(), key.PublicKeyLine, key.Fingerprint, Now)],
+                    SuccessorNodeIds: [context.NodeId.ToString()]),
+            },
+            []);
+
+        // The second project's own fetch fails during the dry run — this must be named and force a
+        // non-zero exit, never silently dropped with a bare `continue` while the first project's
+        // own promotion still lands and the closing summary reports full success (independent
+        // pre-PR review, cycle 1, both lenses, medium).
+        FakeLedgerChainReader chainReader = new(path => path == SecondRepositoryPath
+            ? throw new InvalidOperationException("git ls-remote failed: could not resolve host")
+            : eligibleChain);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        OwnerPromoteCommand.Settings settings = new() { Yes = true };
+        Func<Task> act = () => OwnerPromoteCommand.RunAsync(
+            session, settings, ledger, chainReader, new NodeKeyStore(), new FakeInteractiveConfirmation(true, true), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainValidationException>())
+            .WithMessage("*failed in 1: smoke-second*");
+        ledger.Writes.Should().ContainSingle(
+            w => w.RepositoryPath == RepositoryPath && w.Path == $"owners/{rootKey.Fingerprint}/rotations/1.yaml",
+            "the reachable project's own promotion must still land");
+    }
+
+    [Fact]
     public async Task A_fan_out_skips_an_ineligible_project_and_an_idempotent_rerun_writes_only_the_missing_one()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
@@ -291,20 +330,20 @@ public sealed class OwnerPromoteCommandTests : IClassFixture<PostgresFixture>, I
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
         await SeedProjectAsync(cts.Token);
         (BootstrapContext context, NodeSigningKey key, NodeSigningKey rootKey) = await EstablishSurvivingNodeAsync(cts.Token);
-        FakeLedger ledger = new();
+        FakeLedger fakeLedger = new();
 
-        // Another heir's rotation already landed at the exact slot this node would also target —
-        // both computed the identical sequence number (RootKeys.Count) from the identical starting
-        // chain, the "two valid promotions" race (HALL9K-P2P-DESIGN.md §6.5).
-        await ledger.WriteAsync(
-            new LedgerWriteRequest(
-                RepositoryPath, $"refs/hall9k/ledger/owners/{rootKey.Fingerprint}",
-                $"owners/{rootKey.Fingerprint}/rotations/1.yaml",
-                "node_id: \"a-different-heir\"\npublic_key: \"ssh-ed25519 AAAA other\"\nsupersedes_public_key: \""
-                + $"{rootKey.PublicKeyLine}\"\n",
-                ExpectedBlobId: null, "Rotate to a different heir",
-                new LedgerCommitter("Other Heir", "other@test.local"), new LedgerSigningKey("/does/not/matter/key")),
-            cts.Token);
+        // Another heir's rotation lands in the exact instant this node's own attempt reads the
+        // rotations prefix to pick its own next open slot — both computed the identical starting
+        // ledger state (nothing under rotations/ yet), the "two valid promotions" race
+        // (HALL9K-P2P-DESIGN.md §6.5).
+        LedgerWriteRequest racingWrite = new(
+            RepositoryPath, $"refs/hall9k/ledger/owners/{rootKey.Fingerprint}",
+            $"owners/{rootKey.Fingerprint}/rotations/1.yaml",
+            "node_id: \"a-different-heir\"\npublic_key: \"ssh-ed25519 AAAA other\"\nsupersedes_public_key: \""
+            + $"{rootKey.PublicKeyLine}\"\n",
+            ExpectedBlobId: null, "Rotate to a different heir",
+            new LedgerCommitter("Other Heir", "other@test.local"), new LedgerSigningKey("/does/not/matter/key"));
+        RacingLedger ledger = new(fakeLedger, racingWrite);
 
         FakeLedgerChainReader chainReader = EligibleChainReader(context, key, rootKey);
 
@@ -314,10 +353,92 @@ public sealed class OwnerPromoteCommandTests : IClassFixture<PostgresFixture>, I
             session, settings, ledger, chainReader, new NodeKeyStore(), new FakeInteractiveConfirmation(true, true), cts.Token);
 
         (await act.Should().ThrowAsync<DomainValidationException>()).WithMessage("*Nothing was promoted*");
-        ledger.Writes.Should().ContainSingle(
+        fakeLedger.Writes.Should().ContainSingle(
             w => w.Path == $"owners/{rootKey.Fingerprint}/rotations/1.yaml",
             "the other heir's own write is the only one that ever landed there — this node's own attempt must "
             + "never overwrite it, and never retry at a later slot");
+    }
+
+    [Fact]
+    public async Task A_revoked_rotations_file_never_permanently_occupies_the_next_slot()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        await SeedProjectAsync(cts.Token);
+        (BootstrapContext context, NodeSigningKey key, NodeSigningKey rootKey) = await EstablishSurvivingNodeAsync(cts.Token);
+        FakeLedger ledger = new();
+
+        // Heir A's own rotation landed at rotations/1.yaml and was later voided (h9k node revoke
+        // undoing a hijacked or otherwise bad promotion) — the file itself is never removed from
+        // the ledger, only its content stops counting toward the chain's own live root-key set, so
+        // this project's own RootKeys collapses back to [K0] alone even though rotations/1.yaml
+        // still physically occupies that path (independent pre-PR review, cycle 1, both lenses,
+        // high).
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                RepositoryPath, $"refs/hall9k/ledger/owners/{rootKey.Fingerprint}",
+                $"owners/{rootKey.Fingerprint}/rotations/1.yaml",
+                "node_id: \"heir-a\"\npublic_key: \"ssh-ed25519 AAAA heir-a\"\nsupersedes_public_key: \""
+                + $"{rootKey.PublicKeyLine}\"\n",
+                ExpectedBlobId: null, "Rotate to heir A",
+                new LedgerCommitter("Heir A", "heir-a@test.local"), new LedgerSigningKey("/does/not/matter/key")),
+            cts.Token);
+
+        // This node's own chain, as it reads today: only K0 is a live root key (heir A's own
+        // rotation no longer counts), exactly the state a real GitLedgerChainReader would report
+        // once heir A is revoked.
+        FakeLedgerChainReader chainReader = EligibleChainReader(context, key, rootKey);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        OwnerPromoteCommand.Settings settings = new() { Yes = true };
+        int exitCode = await OwnerPromoteCommand.RunAsync(
+            session, settings, ledger, chainReader, new NodeKeyStore(), new FakeInteractiveConfirmation(true, true), cts.Token);
+
+        exitCode.Should().Be(ExitCodes.Ok, "a stale, voided rotation file at the next slot must never permanently block every later promotion");
+        ledger.Writes.Should().ContainSingle(
+            w => w.Path == $"owners/{rootKey.Fingerprint}/rotations/2.yaml",
+            "the next open slot is past every file currently in the ledger, not this project's own count of validated root keys");
+    }
+
+    /// <summary>Wraps a <see cref="FakeLedger"/> and lands <paramref name="racingWrite"/> the
+    /// instant <see cref="OwnerPromoteCommand"/>'s own write attempt reads the rotations prefix to
+    /// pick its own next open slot — the same window a genuine "two nodes race the identical
+    /// starting ledger state" scenario needs (HALL9K-P2P-DESIGN.md §6.5): the read this wraps still
+    /// sees the ledger as it stood before the race, computes its own slot from that, and only then
+    /// discovers, on its own write, that the identical slot is already gone.</summary>
+    private sealed class RacingLedger(FakeLedger inner, LedgerWriteRequest racingWrite) : ILedger
+    {
+        private bool raced;
+
+        public Task<LedgerFile> ReadAsync(string repositoryPath, string refName, string path, CancellationToken cancellationToken) =>
+            inner.ReadAsync(repositoryPath, refName, path, cancellationToken);
+
+        public Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken) =>
+            inner.WriteAsync(request, cancellationToken);
+
+        public Task<LedgerWriteOutcome> WriteManyAsync(LedgerManyWriteRequest request, CancellationToken cancellationToken) =>
+            inner.WriteManyAsync(request, cancellationToken);
+
+        public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
+            inner.DeleteAsync(request, cancellationToken);
+
+        public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.HasAnyAsync(repositoryPath, refName, pathPrefix, cancellationToken);
+
+        public Task<IReadOnlyList<LedgerRef>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken) =>
+            inner.ListRefsAsync(repositoryPath, refPrefix, cancellationToken);
+
+        public async Task<IReadOnlyList<LedgerEntry>> ReadAllAsync(
+            string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken)
+        {
+            IReadOnlyList<LedgerEntry> snapshot = await inner.ReadAllAsync(repositoryPath, refName, pathPrefix, cancellationToken);
+            if (!raced)
+            {
+                raced = true;
+                await inner.WriteAsync(racingWrite, cancellationToken);
+            }
+
+            return snapshot;
+        }
     }
 
     /// <summary>The identical eligible-to-promote chain (vouched, listed successor, RootKeys=[K0]

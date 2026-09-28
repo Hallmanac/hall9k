@@ -855,7 +855,16 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             foreach (RootRotationDetails rotation in rotations.OrderBy(rotation => rotation.FirstObservedAt))
             {
                 ProjectDetails? project = await session.LoadAsync<ProjectDetails>(rotation.ProjectId, cancellationToken);
-                string projectName = (project?.Name ?? rotation.ProjectId.ToString()).EscapeMarkup();
+                if (project is null || project.IsArchived)
+                {
+                    // An archived project's sweep stops refreshing this record the moment it is
+                    // archived, so its own last-known state has no further news to report — the
+                    // same reason h9k owner promote itself skips an archived project outright
+                    // (independent pre-PR review, cycle 1, adversarial lens, medium).
+                    continue;
+                }
+
+                string projectName = project.Name.EscapeMarkup();
                 if (rotation.Revoked)
                 {
                     string revokedBy = rotation.RevokedByNodeId is { } revokedByNodeId
@@ -892,7 +901,16 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             foreach (NodeRootKeyProjectDetails gap in gaps.Where(gap => !gap.IsLiveRootKey))
             {
                 ProjectDetails? project = await session.LoadAsync<ProjectDetails>(gap.Id, cancellationToken);
-                string projectName = (project?.Name ?? gap.Id.ToString()).EscapeMarkup();
+                if (project is null || project.IsArchived)
+                {
+                    // The sweep stops refreshing this document once the project is archived, and
+                    // h9k owner promote itself skips an archived project outright — the re-run this
+                    // line would otherwise recommend can never actually clear it (independent pre-PR
+                    // review, cycle 1, both lenses, medium).
+                    continue;
+                }
+
+                string projectName = project.Name.EscapeMarkup();
                 AnsiConsole.MarkupLineInterpolated(
                     $"[yellow]rotation missing in '{projectName}'[/] — [dim]re-run:[/] h9k owner promote");
             }
