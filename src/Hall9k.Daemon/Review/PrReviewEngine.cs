@@ -351,8 +351,8 @@ public sealed class PrReviewEngine(
     internal static async Task<string> ComposePersonaSectionsAsync(
         string runDirectory, ReviewPersonaPlan plan,
         IReadOnlyDictionary<string, ReviewPersonaSessionFailure> sessionFailures, bool gateSetAccepted,
-        CancellationToken cancellationToken,
-        IReadOnlyDictionary<string, IReadOnlyList<PermissionDenial>>? permissionDenials = null)
+        IReadOnlyDictionary<string, IReadOnlyList<PermissionDenial>>? permissionDenials,
+        CancellationToken cancellationToken)
     {
         StringBuilder body = new();
         if (plan.FellBackToEngineer)
@@ -408,7 +408,8 @@ public sealed class PrReviewEngine(
                     && permissionDenials.TryGetValue(session.Slug, out IReadOnlyList<PermissionDenial>? denials)
                     && denials.Count > 0)
                 {
-                    body.Append($"\nDenied tools: {string.Join(", ", denials.Select(denial => denial.ToolName))}.\n");
+                    body.Append(
+                        $"\nDenied tools: {string.Join(", ", denials.Select(DescribeDenial))}.\n");
                 }
 
                 if (sessionFailures.TryGetValue(session.Slug, out ReviewPersonaSessionFailure? failure))
@@ -456,6 +457,26 @@ public sealed class PrReviewEngine(
 
         return body.ToString();
     }
+
+    /// <summary>
+    /// The size a denial's own tool input renders at in the report, so one <c>Write</c> call
+    /// carrying a whole file's content does not turn one denial into pages of it — what matters
+    /// for growing the allow list is which command or path was denied, not the full payload.
+    /// </summary>
+    private const int MaxDeniedToolInputLength = 200;
+
+    /// <summary>
+    /// One denied tool, named alongside the input it carried, since almost every denial that
+    /// matters is a <c>Bash</c> call and "Denied tools: Bash, Bash, Bash" tells nobody which
+    /// command to add to the allow list — the evidence otherwise exists only in the event store's
+    /// own <see cref="PermissionDenial.ToolInput"/>, which nothing displayed (independent pre-PR
+    /// review, cycle 1, conformance lens). Relayed through <see cref="RelayedText.OneLine"/> and
+    /// <see cref="RelayedText.Truncate"/> because the input is Claude Code's own report of what a
+    /// possibly injected session asked for, not something this platform authored, and it lands
+    /// directly in a report a human reads in a terminal.
+    /// </summary>
+    private static string DescribeDenial(PermissionDenial denial) =>
+        $"{denial.ToolName}({RelayedText.Truncate(RelayedText.OneLine(denial.ToolInput), MaxDeniedToolInputLength)})";
 
     /// <summary>
     /// The three facts a QA review's own report answers that a reader should not have to go
@@ -1107,7 +1128,7 @@ public sealed class PrReviewEngine(
             + "when you are done; it opens or merges nothing of its own, and parks the task waiting on "
             + "the pull request until it merges or closes.\n"
             + await ComposePersonaSectionsAsync(
-                runDirectory, plan, sessionFailures, gateSetAccepted, cancellationToken, permissionDenials)
+                runDirectory, plan, sessionFailures, gateSetAccepted, permissionDenials, cancellationToken)
             + LocalLaunchOffer.Compose(plan, taskId, runId, worktreePath, branch);
 
         // A mint whose own trigger was a mention (idea 2f079bcd, decision 2 and 3): the primary

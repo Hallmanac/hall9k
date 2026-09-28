@@ -380,6 +380,7 @@ public sealed class ReviewPersonaRegistryTests
                     fellBackToEngineer: false),
                 new Dictionary<string, ReviewPersonaSessionFailure>(),
                 gateSetAccepted: true,
+                permissionDenials: null,
                 CancellationToken.None);
 
             body.IndexOf("## Engineer review", StringComparison.Ordinal).Should().BeGreaterThanOrEqualTo(0);
@@ -426,6 +427,7 @@ public sealed class ReviewPersonaRegistryTests
                         DateTimeOffset.UtcNow),
                 },
                 gateSetAccepted: true,
+                permissionDenials: null,
                 CancellationToken.None);
 
             body.Should().Contain("### Conformance");
@@ -461,7 +463,7 @@ public sealed class ReviewPersonaRegistryTests
 
             string body = await PrReviewEngine.ComposePersonaSectionsAsync(
                 runDirectory, plan, new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true,
-                CancellationToken.None);
+                permissionDenials: null, CancellationToken.None);
 
             body.Should().Contain(ReviewPersonaRegistry.ForkSkipReason);
             body.Should().NotContain("no review prompt is registered for the qa persona");
@@ -494,13 +496,14 @@ public sealed class ReviewPersonaRegistryTests
 
             string body = await PrReviewEngine.ComposePersonaSectionsAsync(
                 runDirectory, ReviewPersonaRegistry.Plan([ReviewPersona.Engineer]),
-                new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true, CancellationToken.None,
+                new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true,
                 new Dictionary<string, IReadOnlyList<PermissionDenial>>
                 {
                     [ReviewLens.Adversarial.Slug] = [new PermissionDenial("Bash", """{"command":"npm start"}""")],
-                });
+                },
+                CancellationToken.None);
 
-            body.Should().Contain("Denied tools: Bash.");
+            body.Should().Contain("""Denied tools: Bash({"command":"npm start"}).""");
         }
         finally
         {
@@ -529,14 +532,51 @@ public sealed class ReviewPersonaRegistryTests
                         ReviewPersona.Qa, "The pr-review qa session reported an error result.", DateTimeOffset.UtcNow),
                 },
                 gateSetAccepted: true,
-                CancellationToken.None,
                 new Dictionary<string, IReadOnlyList<PermissionDenial>>
                 {
                     [ReviewPersonaRegistry.QaSlug] = [new PermissionDenial("Bash", """{"command":"npm start"}""")],
-                });
+                },
+                CancellationToken.None);
 
-            body.Should().Contain("Denied tools: Bash.");
+            body.Should().Contain("""Denied tools: Bash({"command":"npm start"}).""");
             body.Should().Contain("Not delivered:");
+        }
+        finally
+        {
+            Directory.Delete(runDirectory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// A denial's own tool input is Claude Code's report of what a possibly injected session
+    /// asked for, not text this platform authored, and it lands directly in a report a human
+    /// reads in a terminal — so an escape sequence in it is stripped rather than obeyed, and a
+    /// long one (a Write call's own file content, say) is cut rather than dumped whole
+    /// (independent pre-PR review, cycle 1, conformance lens).
+    /// </summary>
+    [Fact]
+    public async Task A_denied_tools_own_input_is_relayed_safely_and_cut_short()
+    {
+        string runDirectory = Path.Combine(Path.GetTempPath(), $"h9k-persona-report-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(runDirectory);
+        try
+        {
+            string longInput = new('x', 500);
+            string body = await PrReviewEngine.ComposePersonaSectionsAsync(
+                runDirectory, ReviewPersonaRegistry.Plan([ReviewPersona.Engineer]),
+                new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true,
+                new Dictionary<string, IReadOnlyList<PermissionDenial>>
+                {
+                    [ReviewLens.Adversarial.Slug] =
+                    [
+                        new PermissionDenial("Write", $"\u001b[2J{longInput}"),
+                    ],
+                },
+                CancellationToken.None);
+
+            body.Should().NotContain('\u001b'.ToString());
+            body.Should().Contain("Denied tools: Write(");
+            body.Should().Contain('…'.ToString(), "500 characters of input is cut rather than dumped whole");
         }
         finally
         {
@@ -560,7 +600,8 @@ public sealed class ReviewPersonaRegistryTests
                 ReviewPersonaRegistry.Recorded(
                     [ReviewPersona.Qa], [ReviewPersona.Engineer], [ReviewPersona.Qa],
                     fellBackToEngineer: true),
-                new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true, CancellationToken.None);
+                new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true,
+                permissionDenials: null, CancellationToken.None);
 
             body.Should().Contain("the engineer's review ran in their place");
             body.Should().Contain("## QA review");
@@ -595,7 +636,7 @@ public sealed class ReviewPersonaRegistryTests
 
             string body = await PrReviewEngine.ComposePersonaSectionsAsync(
                 runDirectory, plan, new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true,
-                CancellationToken.None);
+                permissionDenials: null, CancellationToken.None);
 
             body.Should().Contain(ReviewPersonaRegistry.ForkSkipReason);
             body.Should().NotContain("None of the personas this pull request's assignee declared has a "
