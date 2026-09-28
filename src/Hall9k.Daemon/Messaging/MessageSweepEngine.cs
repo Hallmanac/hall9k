@@ -169,6 +169,7 @@ public sealed class MessageSweepEngine(
                 await WithAppendOnlyExactRefIntegrityAsync(project, trustChain, cancellationToken);
             await PersistUnverifiedWritesAsync(project, chainWithRefIntegrity, unresolvedRefNames, now, cancellationToken);
             await PersistMemberLabelsAsync(project, trustChain, now, cancellationToken);
+            await PersistRootRotationsAsync(project, trustChain, now, cancellationToken);
             await ReconcileRootVerificationAsync(project.Id, trustChain, now, cancellationToken);
             await ReconcileSuccessionStateAsync(project.Id, nodeId, identity.OwnerRootFingerprint, trustChain, now, cancellationToken);
 
@@ -844,6 +845,98 @@ public sealed class MessageSweepEngine(
             .OrderBy(label => label.RootFingerprint, StringComparer.Ordinal)];
 
     /// <summary>
+    /// Persists this project's own root-key rotations (idea 6be68ee2, PR B of the succession
+    /// chain), for every member root this project's trust chain currently knows about — never only
+    /// this node's own owner, since a teammate's fleet rotating its own root key is exactly as loud
+    /// as this owner's own (the journal's own finding 7: "every node reading that project's ledger,
+    /// once it runs this version"). The identical "observed and resolved" shape
+    /// <see cref="PersistUnverifiedWritesAsync"/> already uses for the sibling trust fact: a live
+    /// rotation (a <see cref="LiveRootKey"/> whose <see cref="LiveRootKey.IntroducedByNodeId"/> is
+    /// not K0's own null) gets a standing <see cref="RootRotationObserved"/> the first time this
+    /// sweep sees it, and a standing, not-yet-revoked record whose own rotation no longer appears
+    /// among this tick's live root keys — an earlier-ranked key voided it — gets
+    /// <see cref="RootRotationRevoked"/>, naming whichever key is now the chain's own current top
+    /// (null when that is the root's own K0).
+    /// </summary>
+    private async Task PersistRootRotationsAsync(
+        ProjectDetails project, TrustChain trustChain, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        try
+        {
+            Dictionary<Guid, (string RootFingerprint, Guid PromotedNodeId)> live = [];
+            foreach (ProjectMember member in trustChain.Members)
+            {
+                if (!trustChain.OwnerChains.TryGetValue(member.RootFingerprint, out TrustedOwner? owner))
+                {
+                    continue;
+                }
+
+                foreach (LiveRootKey rootKey in owner.RootKeys)
+                {
+                    if (rootKey.IntroducedByNodeId is not { } introducedBy || !Guid.TryParse(introducedBy, out Guid promotedNodeId))
+                    {
+                        continue;
+                    }
+
+                    Guid streamId = RootRotationStreamId.For(project.Id, member.RootFingerprint, promotedNodeId);
+                    live[streamId] = (member.RootFingerprint, promotedNodeId);
+                }
+            }
+
+            await using IDocumentSession session = store.LightweightSession();
+
+            IReadOnlyList<RootRotationDetails> standing = await session.Query<RootRotationDetails>()
+                .Where(details => details.ProjectId == project.Id && !details.Revoked)
+                .ToListAsync(cancellationToken);
+            foreach (RootRotationDetails record in standing)
+            {
+                if (live.ContainsKey(record.Id))
+                {
+                    continue;
+                }
+
+                Guid? revokedByNodeId = trustChain.OwnerChains.TryGetValue(record.RootFingerprint, out TrustedOwner? owner)
+                    && owner.RootKeys.Count > 0 && owner.RootKeys[^1].IntroducedByNodeId is { } currentTopNodeId
+                    && Guid.TryParse(currentTopNodeId, out Guid parsed)
+                        ? parsed
+                        : null;
+                session.Events.Append(
+                    record.Id, RootRotationDecider.Revoke(project.Id, record.RootFingerprint, record.PromotedNodeId, revokedByNodeId, now));
+            }
+
+            HashSet<Guid> standingIds = [.. standing.Select(record => record.Id)];
+            foreach ((Guid streamId, (string rootFingerprint, Guid promotedNodeId)) in live)
+            {
+                if (standingIds.Contains(streamId))
+                {
+                    continue;
+                }
+
+                RootRotationObserved observed = RootRotationDecider.Observe(project.Id, rootFingerprint, promotedNodeId, now);
+                if (await session.Events.AggregateStreamAsync<RootRotationAggregate>(streamId, token: cancellationToken) is null)
+                {
+                    session.Events.StartStream<RootRotationAggregate>(streamId, observed);
+                }
+                else
+                {
+                    // A revoked rotation this tick's own live set has restored (a later
+                    // re-promotion of the identical node, the same "re-vouch after a bad
+                    // revocation" shape an ordinary fleet revoke already allows).
+                    session.Events.Append(streamId, observed);
+                }
+            }
+
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception, "Persisting this sweep's root-key rotations failed for project {ProjectId}; will "
+                + "retry next sweep", project.Id);
+        }
+    }
+
+    /// <summary>
     /// Reconciles this node's own owner's <c>RootFingerprintVerified</c> from the trust chain this
     /// tick already computed for <paramref name="projectId"/> (task f53fecfd, criterion 4 — the gap
     /// draft f245371d found): the daemon's own message sweep is one of the two places this runs, the
@@ -899,6 +992,26 @@ public sealed class MessageSweepEngine(
 
             await using IDocumentSession session = store.LightweightSession();
             NodeSuccessionStateReconciler.Reconcile(session, nodeId, owner, now);
+
+            // Idea 6be68ee2, PR B: this node's own per-project root-key status, so h9k status can
+            // name "rotation missing in <project>" on the promoting node while an h9k owner promote
+            // fan-out is still partial — this node's own key already lives in SOME project's copy
+            // of the chain but not this one's. Keyed by project, unlike NodeSuccessionStateDetails
+            // above (keyed by node id alone, last-project-wins), because the gap this exists to
+            // surface is exactly a difference between projects.
+            NodeDetails? nodeDetails = await session.LoadAsync<NodeDetails>(nodeId, cancellationToken);
+            if (nodeDetails?.KeyFingerprint is { } myFingerprint)
+            {
+                session.Store(new NodeRootKeyProjectDetails
+                {
+                    Id = projectId,
+                    NodeId = nodeId,
+                    RootFingerprint = ownerRootFingerprint,
+                    IsLiveRootKey = owner.IsLiveRootKey(myFingerprint),
+                    UpdatedAt = now,
+                });
+            }
+
             await session.SaveChangesAsync(cancellationToken);
         }
         catch (Exception exception)
