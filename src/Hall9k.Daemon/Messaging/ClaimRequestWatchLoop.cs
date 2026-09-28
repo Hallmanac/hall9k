@@ -286,13 +286,14 @@ public sealed class ClaimRequestWatchLoop(
     /// <paramref name="senderNodeId"/>'s own self-announced device key, resolved by the caller from
     /// its <c>node.yaml</c> the same way <c>GitLedgerMessageTransport.ReadSinceAsync</c> already
     /// resolves it to authenticate the sender in the first place — null when that resolution found
-    /// nothing trustworthy, which never verifies. Pure and side-effect-free, the same reason
-    /// <c>MessageSweepEngine.ResolveVoucherNodeId</c> is its own static method: unit-testable
-    /// without a document store or a ledger.
+    /// nothing trustworthy, which never verifies. A thin wrapper over <see cref="TrustChain.VouchesOwnerForNode"/>
+    /// — the shared primitive <c>MessageInbox.ReadFromAsync</c>'s own FromOwner check now uses too,
+    /// rather than this class re-typing it — kept as its own named method so this class's tests keep
+    /// reading as "does a claim request's own self-declared owner verify" rather than a generic chain
+    /// lookup. Pure and side-effect-free, the same reason <c>MessageSweepEngine.ResolveVoucherNodeId</c>
+    /// is its own static method: unit-testable without a document store or a ledger.
     /// </summary>
     internal static bool IsRequesterOwnerVerified(
         TrustChain chain, string? senderFingerprint, string claimedRequesterOwnerFingerprint, Guid senderNodeId) =>
-        senderFingerprint is not null
-        && chain.OwnerChains.TryGetValue(claimedRequesterOwnerFingerprint, out TrustedOwner? claimedOwner)
-        && claimedOwner.ContainsForNode(senderFingerprint, senderNodeId.ToString());
+        chain.VouchesOwnerForNode(claimedRequesterOwnerFingerprint, senderFingerprint, senderNodeId);
 }

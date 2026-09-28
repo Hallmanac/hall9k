@@ -340,6 +340,24 @@ public sealed record TrustChain(
             && owner.ContainsForNode(fingerprint, nodeId.ToString()));
 
     /// <summary>
+    /// Whether <paramref name="claimedOwnerFingerprint"/>'s own chain vouches
+    /// <paramref name="fingerprint"/> for <paramref name="nodeId"/> specifically — the shared check
+    /// behind verifying a self-declared owner claim (a claim request's own body,
+    /// <c>Hall9k.Domain.Features.Message.MessageEnvelopeV1.FromOwner</c>) against the one fact the
+    /// ledger itself can prove, rather than trusting the claim on its own say-so.
+    /// <see cref="TrustedOwner.ContainsForNode"/> is the same primitive <see cref="IsAllowedSigner(string, Guid)"/>
+    /// itself uses, scoped here to the one owner root the caller is checking rather than "any member
+    /// owner" — <c>ClaimRequestWatchLoop.IsRequesterOwnerVerified</c> and
+    /// <c>MessageInbox.ReadFromAsync</c> both call this rather than each re-typing the lookup.
+    /// <paramref name="fingerprint"/> null never verifies — the honest reading of "nothing to check"
+    /// for a claim whose whole purpose is refusing anything this ledger cannot positively vouch for.
+    /// </summary>
+    public bool VouchesOwnerForNode(string claimedOwnerFingerprint, string? fingerprint, Guid nodeId) =>
+        fingerprint is not null
+        && OwnerChains.TryGetValue(claimedOwnerFingerprint, out TrustedOwner? owner)
+        && owner.ContainsForNode(fingerprint, nodeId.ToString());
+
+    /// <summary>
     /// Whether <paramref name="fingerprint"/> is already enrolled in <paramref name="root"/>'s own
     /// chain — regardless of project membership, the rule <c>h9k node vouch</c>/<c>revoke</c> is
     /// refused against ("any enrolled node of that owner", idea 202383dc): vouching a node into an

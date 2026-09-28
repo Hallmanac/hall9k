@@ -103,9 +103,25 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
             await claimSession.SaveChangesAsync(cts.Token);
         }
 
+        // Node A's own trust chain, vouching the exact device key SeedNodeFileAsync wrote for it
+        // under "owner-a-fingerprint" — the identical string this test's own QueueAsync call above
+        // stamped onto the envelope as its FromOwner — so MessageInbox.ReadFromAsync's own FromOwner
+        // check (idea 6be68ee2, trust findings 10/12) actually verifies rather than refusing an
+        // envelope this test otherwise has no opinion about.
+        string nodeAFingerprint = NodeKeyStore.Fingerprint($"ssh-ed25519 AAAAFAKE{nodeA:N} test");
+        TrustChain trustChain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                ["owner-a-fingerprint"] = new TrustedOwner(
+                    "owner-a-fingerprint", "ssh-ed25519 AAAAFAKE owner-a-root",
+                    [new TrustedNode(nodeA.ToString(), $"ssh-ed25519 AAAAFAKE{nodeA:N} test", nodeAFingerprint, Now)]),
+            },
+            [],
+            ProjectKey: "shared-project-key");
+
         MessageSweepEngine engine = new(
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
-            new FakeLedgerChainReader(new TrustChain(new Dictionary<string, TrustedOwner>(), [], ProjectKey: "shared-project-key")),
+            new FakeLedgerChainReader(trustChain),
             new MessageNodeIdentityResolver(new NodeKeyStore()),
             Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance,
             new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport),
