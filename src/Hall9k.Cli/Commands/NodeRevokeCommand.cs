@@ -126,7 +126,8 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
                 $"This node ({key.Fingerprint}) does not currently hold a live root key for owner {root} — "
                 + "only the root itself may revoke a node from its own fleet (idea 6be68ee2, trust-ledger "
                 + $"finding 2: a vouched node key can no longer revoke its peers). Re-run h9k node revoke "
-                + $"{targetNodeId} from a node holding a root key for {root}{rootNodeDescription}.");
+                + $"{targetNodeId} from a node holding a root key for {root}{rootNodeDescription}."
+                + RootNodeDescription.PromotionHint);
         }
 
         int revokedIn = 0;
@@ -214,7 +215,8 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
                 $"This node ({myFingerprint}) does not currently hold a live root key for owner {root} in "
                 + $"'{repositoryPath}' — only the root itself may revoke a node from its own fleet (idea "
                 + "6be68ee2, trust-ledger finding 2). Re-run h9k node revoke from a node holding a root "
-                + $"key for {root}{RootNodeDescription.Of(chain, root)}.");
+                + $"key for {root}{RootNodeDescription.Of(chain, root)}."
+                + RootNodeDescription.PromotionHint);
         }
 
         // Whether the target currently holds LIVE ROOT KEY status via a validated rotation — never
