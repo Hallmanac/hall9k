@@ -12,6 +12,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
 using Marten;
@@ -207,6 +208,46 @@ public sealed class ProjectMembersCommandTests : IClassFixture<PostgresFixture>,
         exitCode.Should().Be(ExitCodes.Ok);
         output.Should().Contain("declared, unchecked here").And.Contain("collaborator roster unavailable");
     }
+
+    [Fact]
+    public async Task A_declared_display_name_appears_dimmed_under_the_root_fingerprint()
+    {
+        ProjectDetails project = await SeedProjectAsync(CancellationToken.None);
+        TrustChain chain = ChainDeclaring((RootNodeId, new DeclaredGitHubAccount(42, "octocat"))) with
+        {
+            NodeDisplayNames = new Dictionary<string, NodeDisplayNameDeclaration>
+            {
+                [RootNodeId.ToString()] = new(RootNodeId.ToString(), "root-a", DisplayName.Parse("Ada Lovelace"), Now),
+            },
+        };
+
+        (int exitCode, string output) = await RunMembersAsync(
+            project, chain, GitHubAccessFakes.GrantingPush(collaboratorsJson: CollaboratorsJson));
+
+        exitCode.Should().Be(ExitCodes.Ok);
+        output.Should().Contain("root-a").And.Contain("Ada Lovelace").And.Contain("octocat");
+    }
+
+    [Fact]
+    public async Task No_display_name_declared_shows_nothing_extra_for_it()
+    {
+        ProjectDetails project = await SeedProjectAsync(CancellationToken.None);
+
+        (_, string output) = await RunMembersAsync(
+            project, ChainDeclaring((RootNodeId, new DeclaredGitHubAccount(42, "octocat"))),
+            GitHubAccessFakes.GrantingPush(collaboratorsJson: CollaboratorsJson));
+
+        output.Should().Contain("root-a").And.Contain("octocat");
+    }
+
+    [Fact]
+    public void RenderRoot_appends_a_dimmed_line_when_a_name_is_declared() =>
+        ProjectMembersCommand.RenderRoot("fingerprint-a", DisplayName.Parse("Ada Lovelace"))
+            .Should().Be("fingerprint-a\n[dim]Ada Lovelace[/]");
+
+    [Fact]
+    public void RenderRoot_is_just_the_fingerprint_when_no_name_is_declared() =>
+        ProjectMembersCommand.RenderRoot("fingerprint-a", DisplayName.None).Should().Be("fingerprint-a");
 
     private async Task<(int ExitCode, string Output)> RunMembersAsync(
         ProjectDetails project, TrustChain chain, ProjectGitHubAccessMirror mirror)
