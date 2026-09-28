@@ -5,7 +5,9 @@ using Hall9k.Domain.Features.Run.Documents;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -102,6 +104,37 @@ public sealed class HeldElsewhereRenderingTests
         string fact = row.Facts.Should().ContainSingle(line => line.StartsWith("held by")).Subject;
 
         fact.Should().Contain("owner brian");
+    }
+
+    /// <summary>
+    /// When this install has no local record of the claiming owner at all (the ordinary foreign
+    /// case, task 21c8f2f3), the held-by fact falls back to the project's own member label rather
+    /// than the bare fingerprint prefix — the display name when the projection knows one.
+    /// </summary>
+    [Fact]
+    public void The_held_by_fact_names_the_projects_own_member_label_for_a_foreign_owner()
+    {
+        Guid foreignNodeId = DomainId.New();
+        string fingerprint = "c8f5c85900da1234567890abcdef1234567890abcdef1234567890abcdef12";
+        Guid projectId = DomainId.New();
+        TaskListItem task = StatusFixtures.Task(TaskState.Claimed, claimedByNodeId: foreignNodeId, projectId: projectId);
+        task.ClaimedByOwnerRootFingerprint = fingerprint;
+        task.ClaimedAt = StatusFixtures.Now.AddMinutes(-11);
+        ProjectMemberLabels labels = new()
+        {
+            Id = projectId,
+            Labels = [new ProjectMemberLabel(fingerprint, [foreignNodeId], DisplayName.Parse("Windows"), null)],
+        };
+
+        TaskStatusContext context = StatusFixtures.Context() with
+        {
+            ProjectMemberLabelsById = new Dictionary<Guid, ProjectMemberLabels> { [projectId] = labels },
+        };
+        TaskStatusRow row = TaskStatusComposer.Compose(task, context, StatusFixtures.Now);
+
+        string fact = row.Facts.Should().ContainSingle(line => line.StartsWith("held by")).Subject;
+
+        fact.Should().Contain("owner Windows");
     }
 
     /// <summary>
