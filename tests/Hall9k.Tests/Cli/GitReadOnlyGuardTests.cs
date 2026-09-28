@@ -246,12 +246,18 @@ public sealed class GitReadOnlyGuardTests
     /// to leave alone: a <c>"..."</c> span suppresses word-splitting on the substitution's output but
     /// not the substitution itself, and a backtick pair is never suppressed by quoting at all
     /// (independent pre-PR review, cycle 9, adversarial lens). Verified in a throwaway repository:
-    /// each shape ran the embedded command exactly as the unquoted <c>$(...)</c> form does.
+    /// each shape ran the embedded command exactly as the unquoted <c>$(...)</c> form does. The
+    /// <c>$"..."</c> locale-translation form (cycle 10, adversarial lens) is a fourth shape: it takes
+    /// the identical backslash-escaping rules as plain <c>"..."</c> once no translation applies, so a
+    /// substitution inside it runs the same way; verified with
+    /// <c>bash -c 'echo test $"$(echo RAN)"'</c> printing <c>RAN</c>.
     /// </summary>
     [Theory]
     [InlineData("git diff --format=\"$(whoami)\"")]
     [InlineData("git diff --format=`whoami`")]
     [InlineData("git diff --format=\"`whoami`\"")]
+    [InlineData("git diff --format=$\"$(whoami)\"")]
+    [InlineData("git diff --format=$\"`whoami`\"")]
     public void A_command_substitution_inside_or_out_of_double_quotes_is_refused(string command) =>
         GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
 
