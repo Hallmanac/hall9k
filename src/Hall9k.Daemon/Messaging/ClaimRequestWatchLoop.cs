@@ -4,8 +4,12 @@ using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Marten.Events;
 using Microsoft.Extensions.Options;
@@ -201,6 +205,33 @@ public sealed class ClaimRequestWatchLoop(
             return;
         }
 
+        // idea 6be68ee2, trust-ledger finding 13: a GitHub-gated claim request's own carried
+        // RequesterTrackerIdentity is self-declared by the requester, never verified — GrantToAsync
+        // (TrackerAssignmentTake) writes it straight onto the tracker as the new assignee, so a
+        // requester could name any GitHub login, not only its own. Replaced here with the requesting
+        // node's own declared login from its node.yaml (the 37749bc6 declaration, TrustChain
+        // .NodeDeclarations) before TaskTakeRequested is ever appended, so both the auto-grant below
+        // and the manual h9k task grant path (which reads the stored PendingTakeRequesterTrackerIdentity)
+        // see the declared value. A Jira-gated request is untouched: the declaration carries no Jira
+        // identity, and the carried accountId is already recorded on TaskTakeRequested as an audit
+        // fact.
+        TaskDetails? taskForGate = await session.LoadAsync<TaskDetails>(request.TaskId, cancellationToken);
+        WorkItemProvider? externalReferenceProvider = taskForGate?.ExternalReference is { } rawReference
+            ? ExternalReference.Parse(rawReference).Provider
+            : null;
+        (ClaimEnvelopeCodec.ClaimRequestRecord effectiveRequest, bool trackerIdentityReplaced) =
+            ApplyDeclaredTrackerIdentity(project.ClaimGate, externalReferenceProvider, chain, request, message.FromNodeId);
+        if (trackerIdentityReplaced)
+        {
+            logger.LogInformation(
+                "Claim request {MessageId} for task {TaskId} from node {FromNodeId} carried tracker identity "
+                + "{CarriedIdentity}, replaced with its own declared GitHub login {DeclaredLogin} before recording",
+                message.Id, request.TaskId, message.FromNodeId, request.RequesterTrackerIdentity ?? "(none)",
+                effectiveRequest.RequesterTrackerIdentity ?? "(none)");
+        }
+
+        request = effectiveRequest;
+
         TrackerAssignmentTake take = new(new ProjectScopedGitHubRunner(store).Runner);
         try
         {
@@ -296,4 +327,38 @@ public sealed class ClaimRequestWatchLoop(
     internal static bool IsRequesterOwnerVerified(
         TrustChain chain, string? senderFingerprint, string claimedRequesterOwnerFingerprint, Guid senderNodeId) =>
         chain.VouchesOwnerForNode(claimedRequesterOwnerFingerprint, senderFingerprint, senderNodeId);
+
+    /// <summary>
+    /// idea 6be68ee2, trust-ledger finding 13: for a GitHub-gated request — <paramref name="claimGate"/>
+    /// is <see cref="ClaimGate.TrackerAssignee"/> and <paramref name="externalReferenceProvider"/>
+    /// names a GitHub item, never Jira — <paramref name="request"/>'s own carried
+    /// <see cref="ClaimEnvelopeCodec.ClaimRequestRecord.RequesterTrackerIdentity"/> is replaced with
+    /// <paramref name="fromNodeId"/>'s own declared GitHub login from <paramref name="chain"/>'s
+    /// <see cref="TrustChain.NodeDeclarations"/> (the 37749bc6 declaration) — null when that node
+    /// declared none, deliberately never falling back to the untrusted carried value: a node with no
+    /// declaration never blocks the grant (<see cref="ClaimRequestEngine"/>'s own best-effort tracker
+    /// move already carries the existing hand-assign warning for a null identity, decision 229), the
+    /// same fail-closed outcome as today's no-identity case. Every other shape — not gated, no
+    /// external reference yet, or a Jira item, whose declaration carries no Jira identity at all — is
+    /// returned unchanged. Pure and side-effect-free, the same reason
+    /// <see cref="IsRequesterOwnerVerified"/> is its own static method: unit-testable without a
+    /// document store, a ledger, or a daemon loop.
+    /// </summary>
+    internal static (ClaimEnvelopeCodec.ClaimRequestRecord Request, bool Replaced) ApplyDeclaredTrackerIdentity(
+        ClaimGate claimGate, WorkItemProvider? externalReferenceProvider, TrustChain chain,
+        ClaimEnvelopeCodec.ClaimRequestRecord request, Guid fromNodeId)
+    {
+        if (claimGate != ClaimGate.TrackerAssignee || externalReferenceProvider is null
+            || externalReferenceProvider == WorkItemProvider.Jira)
+        {
+            return (request, false);
+        }
+
+        string? declaredLogin = chain.NodeDeclarations.TryGetValue(fromNodeId.ToString(), out NodeGitHubDeclaration? declaration)
+            ? declaration.Account.Login
+            : null;
+
+        bool replaced = !string.Equals(declaredLogin, request.RequesterTrackerIdentity, StringComparison.Ordinal);
+        return (request with { RequesterTrackerIdentity = declaredLogin }, replaced);
+    }
 }

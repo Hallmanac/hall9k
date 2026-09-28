@@ -1,6 +1,10 @@
 using FluentAssertions;
 using Hall9k.Connectors.Trust;
 using Hall9k.Daemon.Messaging;
+using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -91,5 +95,130 @@ public sealed class ClaimRequestWatchLoopTests
         bool verified = ClaimRequestWatchLoop.IsRequesterOwnerVerified(chain, senderFingerprint: null, OwnerRoot, SenderNodeId);
 
         verified.Should().BeFalse("a caller that could not resolve the sender's own device key has nothing to verify against");
+    }
+}
+
+/// <summary>
+/// <see cref="ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity"/> alone (idea 6be68ee2,
+/// trust-ledger finding 13): pure logic, no document store, no ledger, no daemon loop, the same
+/// shape <see cref="ClaimRequestWatchLoopTests"/> already established for
+/// <c>IsRequesterOwnerVerified</c>.
+/// </summary>
+public sealed class ClaimRequestWatchLoopApplyDeclaredTrackerIdentityTests
+{
+    private static readonly Guid RequesterNodeId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    private static readonly Guid RequesterOwnerId = DomainId.New();
+    private static readonly Guid FromNodeId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+
+    private static ClaimEnvelopeCodec.ClaimRequestRecord RequestCarrying(string? trackerIdentity) => new(
+        DomainId.New(), RequesterNodeId, RequesterOwnerId, "requester-owner-fingerprint", "give it back",
+        trackerIdentity);
+
+    private static TrustChain ChainDeclaring(string login) => TrustChain.Empty with
+    {
+        NodeDeclarations = new Dictionary<string, NodeGitHubDeclaration>
+        {
+            [FromNodeId.ToString()] = new(
+                FromNodeId.ToString(), "node-device-fingerprint", new DeclaredGitHubAccount(42, login), DateTimeOffset.UtcNow),
+        },
+    };
+
+    [Fact]
+    public void A_github_gated_request_carrying_a_login_other_than_the_declaration_is_replaced_with_the_declared_login()
+    {
+        TrustChain chain = ChainDeclaring("alice");
+        ClaimEnvelopeCodec.ClaimRequestRecord request = RequestCarrying("mallory");
+
+        (ClaimEnvelopeCodec.ClaimRequestRecord effective, bool replaced) = ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity(
+            ClaimGate.TrackerAssignee, WorkItemProvider.GitHub, chain, request, FromNodeId);
+
+        effective.RequesterTrackerIdentity.Should().Be("alice", "the requesting node's own declared login wins over whatever it self-declared on the request");
+        replaced.Should().BeTrue("the carried identity and the declared login genuinely differ");
+    }
+
+    [Fact]
+    public void A_github_gated_request_already_carrying_the_declared_login_is_not_flagged_as_replaced()
+    {
+        TrustChain chain = ChainDeclaring("alice");
+        ClaimEnvelopeCodec.ClaimRequestRecord request = RequestCarrying("alice");
+
+        (ClaimEnvelopeCodec.ClaimRequestRecord effective, bool replaced) = ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity(
+            ClaimGate.TrackerAssignee, WorkItemProvider.GitHub, chain, request, FromNodeId);
+
+        effective.RequesterTrackerIdentity.Should().Be("alice");
+        replaced.Should().BeFalse("nothing actually changed, so this must never be logged as a replacement");
+    }
+
+    [Fact]
+    public void A_github_gated_request_from_a_node_with_no_declaration_loses_its_carried_identity_rather_than_keeping_it()
+    {
+        // idea 6be68ee2, trust-ledger finding 13: the fail-closed rule. Falling back to the carried,
+        // self-declared value here would defeat the entire fix — a node with no declaration must
+        // never have its own self-declared login trusted either. ClaimRequestEngine's own best-effort
+        // tracker move already turns a null identity into the existing hand-assign warning
+        // (decision 229), the same state as today's no-identity case.
+        TrustChain chainWithNoDeclaration = TrustChain.Empty;
+        ClaimEnvelopeCodec.ClaimRequestRecord request = RequestCarrying("mallory");
+
+        (ClaimEnvelopeCodec.ClaimRequestRecord effective, bool replaced) = ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity(
+            ClaimGate.TrackerAssignee, WorkItemProvider.GitHub, chainWithNoDeclaration, request, FromNodeId);
+
+        effective.RequesterTrackerIdentity.Should().BeNull(
+            "a node with no declaration never falls back to its own untrusted, self-declared carried value");
+        replaced.Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_github_pull_request_gated_request_is_also_replaced_never_only_a_plain_issue()
+    {
+        TrustChain chain = ChainDeclaring("alice");
+        ClaimEnvelopeCodec.ClaimRequestRecord request = RequestCarrying("mallory");
+
+        (ClaimEnvelopeCodec.ClaimRequestRecord effective, bool replaced) = ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity(
+            ClaimGate.TrackerAssignee, WorkItemProvider.GitHubPullRequest, chain, request, FromNodeId);
+
+        effective.RequesterTrackerIdentity.Should().Be("alice");
+        replaced.Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_jira_gated_request_keeps_its_carried_accountId_even_when_a_github_login_is_declared()
+    {
+        // The declaration carries no Jira identity at all (NodeGitHubDeclaration's own doc) — the
+        // carried accountId is already the audit fact TaskTakeRequested records.
+        TrustChain chain = ChainDeclaring("alice");
+        ClaimEnvelopeCodec.ClaimRequestRecord request = RequestCarrying("jira-account-id-123");
+
+        (ClaimEnvelopeCodec.ClaimRequestRecord effective, bool replaced) = ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity(
+            ClaimGate.TrackerAssignee, WorkItemProvider.Jira, chain, request, FromNodeId);
+
+        effective.RequesterTrackerIdentity.Should().Be("jira-account-id-123");
+        replaced.Should().BeFalse();
+    }
+
+    [Fact]
+    public void An_ungated_project_never_touches_the_carried_identity()
+    {
+        TrustChain chain = ChainDeclaring("alice");
+        ClaimEnvelopeCodec.ClaimRequestRecord request = RequestCarrying("mallory");
+
+        (ClaimEnvelopeCodec.ClaimRequestRecord effective, bool replaced) = ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity(
+            ClaimGate.Off, WorkItemProvider.GitHub, chain, request, FromNodeId);
+
+        effective.RequesterTrackerIdentity.Should().Be("mallory");
+        replaced.Should().BeFalse();
+    }
+
+    [Fact]
+    public void A_task_with_no_external_reference_yet_never_touches_the_carried_identity()
+    {
+        TrustChain chain = ChainDeclaring("alice");
+        ClaimEnvelopeCodec.ClaimRequestRecord request = RequestCarrying("mallory");
+
+        (ClaimEnvelopeCodec.ClaimRequestRecord effective, bool replaced) = ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity(
+            ClaimGate.TrackerAssignee, externalReferenceProvider: null, chain, request, FromNodeId);
+
+        effective.RequesterTrackerIdentity.Should().Be("mallory");
+        replaced.Should().BeFalse();
     }
 }
