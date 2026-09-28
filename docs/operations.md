@@ -1523,7 +1523,7 @@ answers them. Read them the way you read a cause line.
 | `Take requested <id> <objective>`, followed by the asking node (with the owning member's own label appended when this node knows one) and its reason, and a note that N minutes have passed once it is overdue | A member's node asked this node for a task it holds, and the project's `--take-policy` is `ask`, so the request is parked for you. Nothing was released. Only the holder and the requester see it | `h9k task grant <id>`, or `h9k task refuse <id> --reason "<why>"`. `grant` refuses while a run of the task is live here, naming `h9k run kill` |
 | `Take requested <id>` naming the node you are waiting on (with its owning member's own label appended when this node knows one), then `Take timed out <id>` once no answer has come in N minutes | You asked another node for a task, and it has not answered; the timeout only changes the wording, since nothing expires | Wait for the answer, or once it reads timed out and you hold the owner role, `h9k task take <id> --force --reason "<why>"` |
 | "N held elsewhere" in the header, and no line of its own | Tasks another node holds. Nothing is being asked of you, so they are counted and never listed here | `h9k task list --state attention-heldelsewhere` lists them, and `h9k task take <id>` asks for one |
-| "catch-up outstanding for `<what>`", "catch-up for `<what>` declined by `<node>` at `<utc>`", or "catch-up holds N stream(s) tail-only" — a node named this way carries its owning member's own label in parentheses when this node knows one | This node asked peers for history it lacks and is still waiting, was declined (shown for a day), or holds the tail of a stream without its start | `h9k task pull <id> --again` for a task's own stream, `h9k project pull <project> --since all` for a project's; see [Catching a node up](concepts.md#catching-a-node-up) |
+| "catch-up outstanding for `<what>`", "catch-up for `<what>` declined by `<node>` at `<utc>`", or "catch-up holds N stream(s) tail-only" (a node named this way carries its owning member's own label in parentheses when this node knows one) | This node asked peers for history it lacks and is still waiting, was declined (shown for a day), or holds the tail of a stream without its start | `h9k task pull <id> --again` for a task's own stream, `h9k project pull <project> --since all` for a project's; see [Catching a node up](concepts.md#catching-a-node-up) |
 | `N unread message(s)`, with `h9k messages` named as the way to see them | A note or a handoff nudge arrived from another node or a person. The mechanical take answers are not counted | `h9k messages`, then `h9k message show <id>` for the whole text, then `h9k message handle <id>` once it is dealt with |
 | `sender <id> ignored`, followed by the reason | A node's outbox was read and set aside, because its key is not currently trusted in this project or an envelope failed its signature | `h9k project members <project>`; a node you expect to trust needs `h9k node vouch <node-id>` first |
 | `fleet reconcile with <peer> for <project> STALLED`, with when it was asked and that it was re-asked once | A node of your own fleet was asked for everything it holds of the project, twice, and no answer has completed | `h9k project reconcile <project>` runs the exchange again |
@@ -1531,11 +1531,11 @@ answers them. Read them the way you read a cause line.
 | `<project> not joined yet`, with `h9k project join <project>` named | The project is registered here but this node has never joined its ledger, so nothing about it can be sent or trusted yet | `h9k project join <project>`, with `--invite <secret>` when someone else owns it |
 
 A task another node holds also says so on its own row in `h9k task show` ("held by node `<short-id>`
-(owner `<who>`) since `<age>`"), where `<who>` is that member's own label — the display name, else
-the declared login, else the fingerprint's own short form, unless it is this machine's own owner,
-who keeps the local name shown today — and a queued task whose ledger holder is another node reads
-"waiting for its ledger record's holder to clear" until the holder clears or the write that would
-clear it succeeds.
+(owner `<who>`) since `<age>`"), where `<who>` is that member's own label with the short fingerprint
+kept beside it (the display name, else the declared login, else the fingerprint's own short form
+alone), unless it is this machine's own owner, who keeps the local name shown today with no
+fingerprint appended. A queued task whose ledger holder is another node reads "waiting for its
+ledger record's holder to clear" until the holder clears or the write that would clear it succeeds.
 
 ## Taking the wheel
 

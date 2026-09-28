@@ -134,7 +134,7 @@ public sealed class HeldElsewhereRenderingTests
 
         string fact = row.Facts.Should().ContainSingle(line => line.StartsWith("held by")).Subject;
 
-        fact.Should().Contain("owner Windows");
+        fact.Should().Contain("owner Windows (c8f5c85900da)", "h9k task show keeps the short fingerprint beside the label");
     }
 
     /// <summary>
