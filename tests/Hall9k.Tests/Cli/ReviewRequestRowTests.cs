@@ -558,6 +558,7 @@ public sealed class ReviewRequestRowTests
         Rendered(ProjectShowCommand.AutoPrReviewRow(Project(), AutoPrReviewSetting.Unrecorded))
             .Should().Contain("normal");
         Rendered(ProjectShowCommand.ClaimGateRow(Project(), recorded: false)).Should().Contain("off");
+        Rendered(ProjectShowCommand.CiPolicyRow(Project(), recorded: false)).Should().Contain("required");
         Rendered(ProjectShowCommand.SkipPermissionsRow(Project(), recorded: false)).Should().Contain("no (default");
         Rendered(ProjectShowCommand.BacklogPolicyRow(Project(), recorded: false)).Should().Contain("none (default");
         Rendered(ProjectShowCommand.CloseLinkedIssueRow(Project(), recorded: false))

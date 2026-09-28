@@ -219,6 +219,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         AutoPrReviewSetting autoPrReview = AutoPrReviewSetting.From(history);
         ReviewMembershipGateSetting membershipGate = ReviewMembershipGateSetting.From(history);
         bool claimGateRecorded = history.WasRecorded(change => change.ClaimGate);
+        bool ciPolicyRecorded = history.WasRecorded(change => change.CiPolicy);
         Table table = new Table().Border(TableBorder.None).HideHeaders();
         table.AddColumns("k", "v");
         table.AddRow("Orchestrator model", OrchestratorModelRow(project, operatingSettings));
@@ -286,6 +287,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             project, ReviewDriveSetting.From(ReviewPersona.Qa, history)));
         table.AddRow("Security review", SecurityReviewRow(project, SecurityReviewSetting.From(history)));
         table.AddRow("Claim gate", ClaimGateRow(project, claimGateRecorded));
+        table.AddRow("CI policy", CiPolicyRow(project, ciPolicyRecorded));
         table.AddRow("Orchestrator feed", OrchestratorFeedRow(project));
         table.AddRow("Courier max wait", CourierMaxWaitRow(
             project, history.WasRecorded(change => change.CourierMaxWaitSeconds)));
@@ -624,6 +626,25 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
               + "Satisfy it in one command with h9k task assign <id> --take, which takes an item nobody "
               + "holds; the gate itself is read-only, has no override flag, and a tracker that cannot be "
               + "read holds the claim[/]";
+    }
+
+    /// <summary>
+    /// Whether the pre-approved merge gate may trust an empty check rollup as "this project has no
+    /// CI" (security review idea 6be68ee2, daemon-consumers finding A), printed with its origin —
+    /// the same "default and a chosen value read identically otherwise" reasoning
+    /// <see cref="ClaimGateRow"/> states just above.
+    /// </summary>
+    internal static string CiPolicyRow(ProjectDetails project, bool recorded)
+    {
+        string name = project.Name.EscapeMarkup();
+        return project.CiPolicy == CiPolicy.None
+            ? "none [dim]— an empty check rollup, still empty past the checks-registration settle "
+              + "window, is trusted and a pre-approved task merges past it, exactly as before this "
+              + $"setting existed. Declare CI instead:[/] h9k project set {name} --ci required"
+            : $"[dim]required ({OriginNote(recorded)}) — past the settle window, an empty check "
+              + "rollup is never trusted as \"no CI\" on its own: a pre-approved task parks instead, "
+              + $"naming this command. If this project genuinely runs no CI:[/] h9k project set {name} "
+              + "--ci none";
     }
 
     /// <summary>

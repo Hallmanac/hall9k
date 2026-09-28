@@ -517,6 +517,23 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "value) restores it")]
         public string? WritingConventions { get; init; }
 
+        [CommandOption("--ci <none|required>")]
+        [Description(
+            "Whether the pre-approved merge gate may trust an empty GitHub check rollup, past the "
+            + "checks-registration settle window (DaemonOptions.ChecksRegistrationSettleWindow, 15 "
+            + "minutes by default), as \"this project runs no CI\" (security review idea 6be68ee2, "
+            + "daemon-consumers finding A). Default 'required': an empty rollup that stays empty past "
+            + "the window parks the pre-approved task instead, naming this command, because a rollup "
+            + "GitHub has not yet populated reads identically to a repository with no CI configured at "
+            + "all — trusting the silence used to be this gate's whole answer to that ambiguity, and a "
+            + "project that genuinely has no CI is the one case that answer was ever right for. 'none' "
+            + "is that explicit declaration: a human statement, never inferred, and once set every such "
+            + "task merges past an empty rollup exactly as it did before this setting existed. This "
+            + "command is refused from inside a dispatched session's own worktree, the same as every "
+            + "other h9k project set flag, so a run cannot declare its own project CI-less to clear its "
+            + "own park.")]
+        public string? Ci { get; init; }
+
         [CommandOption("--discover-run-skill")]
         [Description(
             "Ask the daemon to (re)discover this project's run skill (idea b9b09779, piece 4): how to "
@@ -814,6 +831,9 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             claimGate: settings.ClaimGate is { } claimGate
                 ? Optional<ClaimGate>.Of(ClaimGate.Parse(claimGate))
                 : Optional<ClaimGate>.None,
+            ciPolicy: settings.Ci is { } ciPolicy
+                ? Optional<CiPolicy>.Of(CiPolicy.Parse(ciPolicy))
+                : Optional<CiPolicy>.None,
             orchestratorFeed: settings.OrchestratorFeed is { } orchestratorFeed
                 ? Optional<OrchestratorFeedLevel>.Of(OrchestratorFeedLevel.Parse(orchestratorFeed))
                 : Optional<OrchestratorFeedLevel>.None,
