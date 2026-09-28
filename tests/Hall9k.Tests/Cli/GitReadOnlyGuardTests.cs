@@ -93,6 +93,39 @@ public sealed class GitReadOnlyGuardTests
         GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
 
     /// <summary>
+    /// The whole quoting class cycle 4 human review found live on the pushed head, verified against
+    /// bash and git 2.55: each of these is one shell word once bash removes the quoting, and each
+    /// one really writes or reads the named file. A flag split across a plain quote boundary
+    /// (<c>--out'put=...'</c>, <c>--out"put=...'</c>) or wrapped whole in a plain quote that also
+    /// carries a space (<c>'--output=/tmp/my file.txt'</c>, and the double-quoted form) was never
+    /// checked against <see cref="GitReadOnlyGuardRoutes"/>'s per-word start-of-word rule before —
+    /// only the <c>$'...'</c> branch had one. <c>--outp$'ut=/tmp/my file.txt'</c> defeated even that
+    /// branch's own check, because it looked only at the decoded <c>$'...'</c> span
+    /// (<c>ut=/tmp/my file.txt</c>, which does not start with <c>--output</c>) rather than the whole
+    /// word the unquoted <c>--outp</c> prefix and the span reassemble into. The last case is an
+    /// implicit <c>--no-index</c> read of two quoted absolute paths with no flag at all.
+    /// </summary>
+    [Theory]
+    [InlineData("git diff '--output=/tmp/my file.txt'")]
+    [InlineData("git diff \"--output=/tmp/my file.txt\"")]
+    [InlineData("git diff --out'put=/tmp/my file.txt'")]
+    [InlineData("git diff --out\"put=$HOME/my file\"")]
+    [InlineData("git diff --outp$'ut=/tmp/my file.txt'")]
+    [InlineData("git diff '/Users/b/App Support/a' '/Users/b/App Support/b'")]
+    public void A_shell_word_reassembled_from_any_quoting_that_starts_with_a_refused_term_is_refused(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
+    /// <summary>
+    /// The other half of cycle 4's fix: reassembling plain-quoted words the same way as
+    /// <c>$'...'</c> ones must not start refusing an ordinary plain-quoted multi-word value that
+    /// never itself opens with a refused term, the same guarantee
+    /// <see cref="A_command_that_only_names_the_flag_runs"/> already pins for an unquoted mention.
+    /// </summary>
+    [Fact]
+    public void A_plain_quoted_format_string_runs() =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout("git log -1 --format='format:%H %s'").Should().BeFalse();
+
+    /// <summary>
     /// Either subcommand silently switches to filesystem-diff mode the moment it sees an absolute
     /// path, with no flag naming the mode at all (lesson f059f669) — the read escape that
     /// <c>Bash(git diff:*)</c>'s own prefix rule cannot tell apart from an ordinary diff.
