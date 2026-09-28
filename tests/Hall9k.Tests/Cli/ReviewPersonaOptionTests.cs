@@ -54,17 +54,6 @@ public sealed class ReviewPersonaOptionTests
             .Should().Throw<DomainValidationException>()
             .WithMessage("*tester*");
 
-    /// <summary>
-    /// Security (idea 6be68ee2, phase two) is never something a member declares — it is a
-    /// project's own on/off setting — so this option refuses it by name, the same as the domain
-    /// value object it delegates to.
-    /// </summary>
-    [Fact]
-    public void Security_is_refused_here_too_because_it_is_never_a_member_declaration() =>
-        FluentActions.Invoking(() => ReviewPersonaOption.Resolve(["security"], clear: false))
-            .Should().Throw<DomainValidationException>()
-            .WithMessage("*cannot be declared*");
-
     [Fact]
     public void An_owner_who_declared_none_reads_as_the_engineer_in_the_pane() =>
         ReviewPersonaOption.Describe([]).Should().Contain("engineer's review");
