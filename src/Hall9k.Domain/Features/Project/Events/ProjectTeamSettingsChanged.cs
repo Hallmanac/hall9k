@@ -74,7 +74,15 @@ public sealed record ProjectTeamSettingsChanged(
     /// changed path the identical way. See <see cref="ProjectSettingsChanged.NonExecutablePaths"/>'s
     /// own doc.
     /// </summary>
-    Optional<IReadOnlyList<string>> NonExecutablePaths = default)
+    Optional<IReadOnlyList<string>> NonExecutablePaths = default,
+    /// <summary>
+    /// Whether the Security persona's own review runs on every pr-review for this project (idea
+    /// 6be68ee2, phase two) — a team field, because every node dispatching this project's
+    /// pr-review runs has to append (or not append) the identical persona. See
+    /// <see cref="ProjectSettingsChanged.SecurityReview"/>'s own doc for the default and why
+    /// <see cref="Project.SecurityReviewSetting"/> and not the projection resolves it.
+    /// </summary>
+    Optional<bool> SecurityReview = default)
 {
     /// <summary>
     /// Builds the team companion from whatever <see cref="ProjectDecider.ChangeSettings"/> just
@@ -106,7 +114,8 @@ public sealed record ProjectTeamSettingsChanged(
             || changed.CommitStyle.HasValue
             || changed.DesignReviewDrive.HasValue
             || changed.QaReviewDrive.HasValue
-            || changed.NonExecutablePaths.HasValue;
+            || changed.NonExecutablePaths.HasValue
+            || changed.SecurityReview.HasValue;
 
         return anyTeamField
             ? new ProjectTeamSettingsChanged(
@@ -137,7 +146,8 @@ public sealed record ProjectTeamSettingsChanged(
                 changed.CommitStyle,
                 changed.DesignReviewDrive,
                 changed.QaReviewDrive,
-                changed.NonExecutablePaths)
+                changed.NonExecutablePaths,
+                changed.SecurityReview)
             : null;
     }
 }

@@ -141,6 +141,12 @@ public sealed class ProjectAggregate
     /// </summary>
     public bool QaReviewDrive { get; private set; } = ReviewDriveSetting.DefaultFor(ReviewPersona.Qa);
     /// <summary>
+    /// The last security-review choice this project's stream recorded (idea 6be68ee2, phase two),
+    /// never the effective setting — <see cref="AutoPrReview"/> above states the terms, and
+    /// <see cref="SecurityReviewSetting"/> resolves the effective on/off, default on.
+    /// </summary>
+    public bool SecurityReview { get; private set; } = SecurityReviewSetting.Default;
+    /// <summary>
     /// What has to be true on this install before a task linked to a Jira card or a GitHub issue
     /// may be claimed here (idea 64c75e43); Off is the platform's original behavior.
     /// </summary>
@@ -383,6 +389,11 @@ public sealed class ProjectAggregate
             QaReviewDrive = @event.QaReviewDrive.Value;
         }
 
+        if (@event.SecurityReview.HasValue)
+        {
+            SecurityReview = @event.SecurityReview.Value;
+        }
+
         if (@event.Priority.HasValue)
         {
             Priority = @event.Priority.Value ?? ProjectPriority.Normal;
@@ -525,6 +536,11 @@ public sealed class ProjectAggregate
         if (@event.QaReviewDrive.HasValue)
         {
             QaReviewDrive = @event.QaReviewDrive.Value;
+        }
+
+        if (@event.SecurityReview.HasValue)
+        {
+            SecurityReview = @event.SecurityReview.Value;
         }
 
         if (@event.ClaimGate.HasValue)

@@ -323,4 +323,16 @@ public sealed record ProjectSettingsChanged(
     /// and optional so every stream written before this setting existed replays byte-for-byte
     /// unchanged.
     /// </summary>
-    Optional<ReviewMembershipPolicy> ReviewRequiresMembership = default);
+    Optional<ReviewMembershipPolicy> ReviewRequiresMembership = default,
+    /// <summary>
+    /// Whether the Security persona's own review (idea 6be68ee2, phase two) is appended to every
+    /// pr-review's persona plan for this project, whatever the assignee declared. Default on,
+    /// unlike <see cref="DesignReviewDrive"/> and <see cref="QaReviewDrive"/>: this is not a "may
+    /// this persona drive the product" question — Security never drives — it is whether the
+    /// persona runs at all, so <see cref="Project.SecurityReviewSetting"/> rather than the
+    /// projection resolves the effective value, the same reason <see cref="AutoPrReview"/> has a
+    /// resolver of its own (Decisions Log #161). Trailing and optional so every stream written
+    /// before this setting existed replays byte-for-byte unchanged, and reads as a project that
+    /// never chose.
+    /// </summary>
+    Optional<bool> SecurityReview = default);

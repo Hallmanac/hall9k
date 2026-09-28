@@ -397,6 +397,24 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "the opposite default.")]
         public string? QaReviewDrive { get; init; }
 
+        [CommandOption("--security-review <on|off>")]
+        [Description(
+            "Whether the Security persona's own review (idea 6be68ee2, phase two) is appended to every "
+            + "pr-review's persona plan for this project, whatever the assignee declared — injection, "
+            + "secrets handling, authentication and authorization, unsafe process, file, or network use, "
+            + "dependency changes, and CI or release workflow changes. Default 'on' for every project, new "
+            + "and existing. Unlike --design-review-drive and --qa-review-drive, this is not a \"may this "
+            + "persona drive the product\" question — Security never drives, it only reads the diff — it "
+            + "is whether the persona runs at all, so there is no member declaration to turn it off with: "
+            + "the Security persona cannot be declared on h9k owner set --persona at all. 'off' turns the "
+            + "persona off for this project entirely; the plan still runs whatever the assignee declared "
+            + "among the other personas. A pull request whose every changed path matches this project's "
+            + "own non-executable-path set (--non-executable-path) skips the persona for that reason "
+            + "regardless of this setting, since a diff that touches nothing buildable or testable cannot "
+            + "introduce the classes of defect this review hunts for — a CI or release workflow file never "
+            + "matches that set, so a change to one still runs this review.")]
+        public string? SecurityReview { get; init; }
+
         [CommandOption("--claim-gate <off|tracker-assignee>")]
         [Description(
             "What has to be true on this install before a task linked to a Jira card or a GitHub issue "
@@ -840,7 +858,14 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             // a project could genuinely want a glob that reads "default" as one of its own
             // additions, so the word can only mean "clear this project's own additions" at the
             // level that says so — never at the level that matches a changed path against it.
-            nonExecutablePaths: nonExecutablePaths);
+            nonExecutablePaths: nonExecutablePaths,
+            // No clearing word, the identical --design-review-drive/--qa-review-drive shape: this
+            // is a plain two-state switch and 'off' already IS the way back from 'on'.
+            // h9k project show still separates the default (on) from a recorded choice through
+            // SecurityReviewSetting rather than through a value nobody can type.
+            securityReview: settings.SecurityReview is { } securityReview
+                ? Optional<bool>.Of(SecurityReviewSetting.ParseOnOff(securityReview, "--security-review"))
+                : Optional<bool>.None);
 
         ProjectSettingsChanged changed = BuildChangedEvent(acceptedBrokenGateValue: false);
 

@@ -284,6 +284,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             project, ReviewDriveSetting.From(ReviewPersona.Designer, history)));
         table.AddRow("QA review drive", QaReviewDriveRow(
             project, ReviewDriveSetting.From(ReviewPersona.Qa, history)));
+        table.AddRow("Security review", SecurityReviewRow(project, SecurityReviewSetting.From(history)));
         table.AddRow("Claim gate", ClaimGateRow(project, claimGateRecorded));
         table.AddRow("Orchestrator feed", OrchestratorFeedRow(project));
         table.AddRow("Courier max wait", CourierMaxWaitRow(
@@ -578,6 +579,29 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
               + "end-to-end tests and never launches the product; a verdict that needs the running "
               + "product comes back as a human walk-through instead. Let it drive: "
               + $"h9k project set {name} --qa-review-drive on[/]";
+    }
+
+    /// <summary>
+    /// Whether the Security persona's own review is appended to every pr-review's persona plan for
+    /// this project (idea 6be68ee2, phase two), printed always on the same "off as a default and
+    /// off as a choice are different facts" terms <see cref="AutoPrReviewRow"/> and
+    /// <see cref="DesignReviewDriveRow"/> already state: this setting defaults to ON, so a bare
+    /// "off" a reader could take for the platform's own initial state is exactly the confusion
+    /// Decisions Log #161 names. Unlike those two, there is no "needs a run skill" caveat here —
+    /// this persona never drives the product.
+    /// </summary>
+    internal static string SecurityReviewRow(ProjectDetails project, SecurityReviewSetting setting)
+    {
+        string name = project.Name.EscapeMarkup();
+        string value = $"{setting.OnOff} [dim]({OriginNote(setting.Recorded)})[/]";
+        return setting.IsOn
+            ? $"{value} [dim]— every pr-review here is also reviewed for injection, secrets handling, "
+              + "authentication and authorization, unsafe process, file, or network use, dependency "
+              + "changes, and CI or release workflow changes, whatever the assignee declared. Turn it "
+              + $"off:[/] h9k project set {name} --security-review off"
+            : $"{value} [dim]— pr-review here runs only the personas the assignee declared; nothing "
+              + $"reviews for the classes of defect the Security persona hunts for. Turn it on:[/] "
+              + $"h9k project set {name} --security-review on";
     }
 
     /// <summary>
