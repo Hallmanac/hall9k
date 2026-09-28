@@ -83,6 +83,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         await WriteEventCatchUpRequestsAsync(session, cancellationToken);
         await WriteFleetReconcilesAsync(session, cancellationToken);
         await WriteUnverifiedLedgerWritesAsync(session, cancellationToken);
+        await WriteRootRotationsAsync(session, cancellationToken);
         await WriteMergedWithoutCopilotReviewAsync(session, cancellationToken);
         await WriteLessonsOverCapAsync(session, cancellationToken);
 
@@ -831,6 +832,74 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]unverifiable ledger writes: unavailable ({exception.Message})[/]");
+        }
+    }
+
+    /// <summary>
+    /// Renders every project's own standing root-key rotations (idea 6be68ee2, PR B of the
+    /// succession chain), off the daemon's own message sweep record (<c>RootRotationDetails</c>),
+    /// never a live ledger walk — the same "no git or network work in h9k status itself" rule
+    /// <see cref="WriteUnverifiedLedgerWritesAsync"/> already follows. A live rotation reads "root
+    /// key rotated by node &lt;id&gt;"; one an earlier key has since voided reads "rotation by node
+    /// &lt;id&gt; revoked by an earlier root key (node &lt;id&gt;)". Then, on this machine's own
+    /// node alone, "rotation missing in &lt;project&gt;" for every project whose own copy has not
+    /// yet caught up with a rotation this node's key already holds somewhere else — the visible,
+    /// safe half of a partial <c>h9k owner promote</c> fan-out, with the exact re-run command.
+    /// </summary>
+    internal static async Task WriteRootRotationsAsync(IQuerySession session, CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<RootRotationDetails> rotations = await session.Query<RootRotationDetails>()
+                .ToListAsync(cancellationToken);
+            foreach (RootRotationDetails rotation in rotations.OrderBy(rotation => rotation.FirstObservedAt))
+            {
+                ProjectDetails? project = await session.LoadAsync<ProjectDetails>(rotation.ProjectId, cancellationToken);
+                string projectName = (project?.Name ?? rotation.ProjectId.ToString()).EscapeMarkup();
+                if (rotation.Revoked)
+                {
+                    string revokedBy = rotation.RevokedByNodeId is { } revokedByNodeId
+                        ? $"node {DomainId.Short(revokedByNodeId)}"
+                        : "the root's own key";
+                    AnsiConsole.MarkupLineInterpolated(
+                        $"[yellow]rotation by node {DomainId.Short(rotation.PromotedNodeId)} revoked by an earlier root key ({revokedBy})[/] in project '{projectName}'");
+                }
+                else
+                {
+                    AnsiConsole.MarkupLineInterpolated(
+                        $"[green]root key rotated by node {DomainId.Short(rotation.PromotedNodeId)}[/] in project '{projectName}'");
+                }
+            }
+
+            string machineName = Environment.MachineName;
+            NodeDetails? myNode = (await session.Query<NodeDetails>()
+                .Where(node => node.MachineName == machineName)
+                .Take(1).ToListAsync(cancellationToken)).FirstOrDefault();
+            if (myNode is null)
+            {
+                return;
+            }
+
+            IReadOnlyList<NodeRootKeyProjectDetails> gaps = await session.Query<NodeRootKeyProjectDetails>()
+                .Where(gap => gap.NodeId == myNode.Id)
+                .ToListAsync(cancellationToken);
+            if (!gaps.Any(gap => gap.IsLiveRootKey))
+            {
+                // Never promoted anywhere at all — an ordinary node, not a partial fan-out to name.
+                return;
+            }
+
+            foreach (NodeRootKeyProjectDetails gap in gaps.Where(gap => !gap.IsLiveRootKey))
+            {
+                ProjectDetails? project = await session.LoadAsync<ProjectDetails>(gap.Id, cancellationToken);
+                string projectName = (project?.Name ?? gap.Id.ToString()).EscapeMarkup();
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]rotation missing in '{projectName}'[/] — [dim]re-run:[/] h9k owner promote");
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]root rotations: unavailable ({exception.Message})[/]");
         }
     }
 
