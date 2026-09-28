@@ -1,0 +1,20 @@
+hall9k-task-record: 1
+task-id: 01a0e89c-18f7-74b9-86d6-f657d3437eff
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#638
+objective: Two ledger fetches of one ref into one repository at the same time both succeed on Windows, as they already do on Linux, so the git object-store race stops failing windows-latest CI and stops giving a node a spurious fetch failure
+criteria:
+  - |-
+    When two fetches of one ledger ref run at once against one repository (two processes included), both return the fetched tip and neither throws LedgerFetchFailedException, on Windows as on Linux: FetchAsync and FetchPrefixAsync retry a failed fetch a bounded number of times, on any failure other than a missing remote ref, without matching git's stderr text (it is localized on a non-English node).
+  - A scripted-runner test where the first fetch fails with the unpack-objects error and the second succeeds shows FetchAsync and FetchPrefixAsync each returning the tip; FetchAsync_ConcurrentCalls_UseDistinctStagingNames_AndDoNotCollide keeps its assertions unchanged and passes in the pull request's own windows-latest leg.
+  - With the scripted runner, a fetch that succeeds the first time spawns exactly one git fetch, and a fetch that keeps failing still throws LedgerFetchFailedException after the bounded attempts.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/d3437eff-two-ledger-fetches-of-one-ref
+published: 2026-09-28 16:37:29Z
+context: |-
+  Evidence 2026-09-28 (challenge verdict in the project home notes/win-fetch-race-2026-09-28/journal.md): since #625 (6b96efe8) merged, 7 of 13 first attempts of build-test (windows-latest) failed on FetchAsync_ConcurrentCalls_UseDistinctStagingNames_AndDoNotCollide with 'unable to write file ./objects/..: Permission denied / unpack-objects failed' (runs 36409230913, 36415982391, 36419399826, 36432742652, 36440786787 attempt 1, 36441075799, 36449743498), and every push to main since 10:21Z is red on Windows; ubuntu never fails. Cause: on POSIX git treats EEXIST on an existing object as success; Windows returns a sharing violation. The daemon and every CLI read fetch into one bare repository, so the race is cross-process; an in-process lock would not fix production. A retry is the smallest fix: the winner's objects are present on the second try. Rejected: core.fsyncObjectFiles (durability, not concurrency), fetch.unpackLimit=1 (pack rename can still collide, unprovable without Windows experiments), and a test-only fix (leaves the production defect). Never reproduce by loading the host. Parked siblings, not this task: concurrent hash-object -w (GitLedger.cs:563, GitLedgerMessageTransport.cs:758, GitLedgerCommitReader.cs:201, GitLedgerChainReader.cs:1338) and concurrent base-branch fetches share the shape in principle; none has failed.
