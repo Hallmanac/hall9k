@@ -941,6 +941,39 @@ public sealed class DaemonOptions
             platformDefault: AgentModel.CourierDefault);
 
     /// <summary>
+    /// The effective model for the Security persona's own pr-review session (idea 6be68ee2, phase
+    /// two): a task override still wins, same as any other pass, and so does the project's own
+    /// model (the same "a project model is a blanket statement" ruling <see cref="ResolveVerifyReviewModel"/>
+    /// and <see cref="ResolveFinalFullPassReviewModel"/> already carry); underneath those sits
+    /// <see cref="RoleModelDefaults.SecurityReview"/>, then floors at
+    /// <see cref="AgentModel.SecurityReviewDefault"/> rather than falling through to the ordinary
+    /// Review chain's platform default — the courier precedent
+    /// (<see cref="ResolveCourierModel"/>/<see cref="AgentModel.CourierDefault"/>): a role with an
+    /// opinion of its own bottoms out at its own compiled constant, not a field's shipped value
+    /// (every <see cref="RoleModelDefaults"/> field ships blank by design, Decisions Log #33,
+    /// <c>ModelPolicyTests</c>), because this persona hunts for real vulnerabilities and must never
+    /// silently run on a cheaper model than the platform's strongest available reasoning.
+    /// </summary>
+    public AgentModel ResolveSecurityReviewModel(AgentModel? taskModel, AgentModel? projectModel) =>
+        AgentModel.Resolve(
+            taskOverride: taskModel, projectDefault: projectModel, roleDefault: ModelByRole.SecurityReview,
+            platformDefault: AgentModel.SecurityReviewDefault);
+
+    /// <summary>
+    /// The effective effort for the Security persona's own pr-review session: the same chain as
+    /// <see cref="ResolveVerifyReviewEffort"/>, with the role value being
+    /// <see cref="RoleEffortDefaults.SecurityReview"/> and then <see cref="RoleEffortDefaults.Review"/>
+    /// — a narrower knob under Review rather than a floor of its own, unlike
+    /// <see cref="ResolveSecurityReviewModel"/>: only the model has a compiled floor this persona
+    /// must never run beneath.
+    /// </summary>
+    public AgentEffort ResolveSecurityReviewEffort(AgentEffort? taskEffort, AgentEffort? projectEffort) =>
+        AgentEffort.Resolve(
+            taskEffort, projectEffort,
+            AgentEffort.FirstSet(AgentEffort.FromInput(EffortByRole.SecurityReview), EffortByRole.For(AgentRole.Review)),
+            AgentEffort.FromInput(Effort));
+
+    /// <summary>
     /// The effective effort for a session (<see cref="AgentEffort.Resolve"/>): the task's own value, then
     /// the project's, then this node's value for <paramref name="role"/>, then the node-wide
     /// <see cref="Effort"/>, and <see cref="AgentEffort.Unknown"/> when nothing sets one, which leaves
@@ -1004,6 +1037,9 @@ public sealed class RoleEffortDefaults
 
     /// <summary>The Review role's effort for the mandatory FinalFullPass; blank falls through to <see cref="Review"/>, read by <see cref="DaemonOptions.ResolveFinalFullPassReviewEffort"/> rather than <see cref="For"/>.</summary>
     public string ReviewFinalFullPass { get; set; } = string.Empty;
+
+    /// <summary>The Security persona's own effort (idea 6be68ee2, phase two); blank falls through to <see cref="Review"/>, read by <see cref="DaemonOptions.ResolveSecurityReviewEffort"/> rather than <see cref="For"/>.</summary>
+    public string SecurityReview { get; set; } = string.Empty;
 
     public AgentEffort For(AgentRole role) => role switch
     {
@@ -1073,6 +1109,15 @@ public sealed class RoleModelDefaults
     /// <see cref="DaemonOptions.ResolveFinalFullPassReviewModel"/> rather than <see cref="For"/>.
     /// </summary>
     public string ReviewFinalFullPass { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The Security persona's own model (idea 6be68ee2, phase two), blank like every sibling above
+    /// ("no role opinion, ask the next level down"): its own non-blank floor is
+    /// <see cref="DaemonOptions.ResolveSecurityReviewModel"/>'s, not this field's compiled default,
+    /// the identical reason <see cref="Courier"/> stays empty rather than following its own floor
+    /// directly — see that method's own doc for why.
+    /// </summary>
+    public string SecurityReview { get; set; } = string.Empty;
 
     public AgentModel For(AgentRole role) => role switch
     {

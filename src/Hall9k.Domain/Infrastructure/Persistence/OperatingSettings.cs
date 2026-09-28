@@ -397,6 +397,17 @@ public sealed class RoleModelSettings
     [JsonConverter(typeof(LenientModelStringJsonConverter))]
     public string? ReviewFinalFullPass { get; set; }
 
+    /// <summary>
+    /// The Security persona's own model (idea 6be68ee2, phase two): blank falls through to its
+    /// own floor, <c>AgentModel.SecurityReviewDefault</c>, read by
+    /// <c>DaemonOptions.ResolveSecurityReviewModel</c> rather than a full role chain — the same
+    /// "own floor, not a seventh role" shape <see cref="ReviewVerify"/> and
+    /// <see cref="ReviewFinalFullPass"/> carry, except this one floors at its own compiled
+    /// constant rather than falling through to <see cref="Review"/>.
+    /// </summary>
+    [JsonConverter(typeof(LenientModelStringJsonConverter))]
+    public string? SecurityReview { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
 
@@ -407,6 +418,7 @@ public sealed class RoleModelSettings
         yield return (nameof(Review), Review);
         yield return (nameof(ReviewVerify), ReviewVerify);
         yield return (nameof(ReviewFinalFullPass), ReviewFinalFullPass);
+        yield return (nameof(SecurityReview), SecurityReview);
         yield return (nameof(Fix), Fix);
         yield return (nameof(Synthesis), Synthesis);
         yield return (nameof(Refinement), Refinement);
@@ -447,6 +459,9 @@ public sealed class RoleEffortSettings
     /// <summary>The Review role's effort for the mandatory FinalFullPass specifically; null falls through to <see cref="Review"/>.</summary>
     public string? ReviewFinalFullPass { get; set; }
 
+    /// <summary>The Security persona's own effort (idea 6be68ee2, phase two); null falls through to <see cref="Review"/>, the same narrower-override shape <see cref="RoleModelSettings.SecurityReview"/> is for the model.</summary>
+    public string? SecurityReview { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
 
@@ -457,6 +472,7 @@ public sealed class RoleEffortSettings
         yield return (nameof(Review), Review);
         yield return (nameof(ReviewVerify), ReviewVerify);
         yield return (nameof(ReviewFinalFullPass), ReviewFinalFullPass);
+        yield return (nameof(SecurityReview), SecurityReview);
         yield return (nameof(Fix), Fix);
         yield return (nameof(Synthesis), Synthesis);
         yield return (nameof(Refinement), Refinement);
