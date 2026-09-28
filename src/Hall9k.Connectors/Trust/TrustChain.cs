@@ -284,6 +284,27 @@ public sealed record TrustChain(
             : [];
 
     /// <summary>
+    /// The single GitHub account <paramref name="root"/>'s own fleet most recently declared (task
+    /// b7d8222e): unlike <see cref="DeclaredAccountsOf"/>, which keeps one entry per distinct
+    /// account, this picks the one newest declaration across every account a member's fleet has
+    /// ever declared, since a member's own label carries at most one login. Ordered by
+    /// <see cref="NodeGitHubDeclaration.DeclaredAt"/>, ties broken by the higher node id — the
+    /// identical precedence <see cref="DeclaredAccountsOf"/> already applies within one account.
+    /// Null when nobody in this root's own fleet has declared one.
+    /// </summary>
+    public DeclaredGitHubAccount? NewestDeclaredAccountOf(string root) =>
+        OwnerChains.TryGetValue(root, out TrustedOwner? owner)
+            ? owner.FleetNodeIds()
+                .Select(nodeId => NodeDeclarations.GetValueOrDefault(nodeId.ToString()))
+                .OfType<NodeGitHubDeclaration>()
+                .Where(declaration => owner.ContainsForNode(declaration.KeyFingerprint, declaration.NodeId))
+                .OrderByDescending(declaration => declaration.DeclaredAt)
+                .ThenByDescending(declaration => declaration.NodeId, StringComparer.Ordinal)
+                .Select(declaration => declaration.Account)
+                .FirstOrDefault()
+            : null;
+
+    /// <summary>
     /// The newest display name declared across <paramref name="root"/>'s own nodes (task e6744304),
     /// or <see cref="DisplayName.None"/> when none of them declares one. A label only: this is never
     /// consulted by <see cref="IsAllowedSigner(string)"/> or any other trust or cross-check decision
