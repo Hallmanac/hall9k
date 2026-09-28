@@ -289,7 +289,7 @@ public sealed class TaskRunLocalCommand : Hall9kAsyncCommand<TaskRunLocalCommand
             string text = step.Kind == RunSkillStepKind.Command
                 ? ExternalText.ForTerminalMarkup(step.Command)
                 : $"(human step) {ExternalText.ForTerminalMarkup(step.Text)}";
-            AnsiConsole.MarkupLine($"[dim]{step.Number}. ({step.Section.EscapeMarkup()})[/] {text}");
+            AnsiConsole.MarkupLine($"[dim]{step.Number}. ({ExternalText.OneLineMarkup(step.Section)})[/] {text}");
         }
 
         AnsiConsole.WriteLine();
@@ -477,7 +477,7 @@ public sealed class TaskRunLocalCommand : Hall9kAsyncCommand<TaskRunLocalCommand
             $"[yellow]Stopped at step {step.Number} of {plan.Steps.Count} — this one needs you.[/] "
             + $"[dim]({step.Section.EscapeMarkup()})[/]");
         AnsiConsole.WriteLine();
-        AnsiConsole.WriteLine(step.Text);
+        AnsiConsole.WriteLine(ExternalText.ForTerminal(step.Text));
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine(
             $"When it is done, run [bold]h9k task run-local {Short(task.Id)} --continue[/] and the "
@@ -507,7 +507,7 @@ public sealed class TaskRunLocalCommand : Hall9kAsyncCommand<TaskRunLocalCommand
 
         AnsiConsole.MarkupLine("[bold]Address or entry point[/]");
         AnsiConsole.WriteLine(address.IsNotBlank()
-            ? address
+            ? ExternalText.ForTerminal(address)
             : "This project's run skill names no address or entry point, so there is nothing here to open; "
               + "see its own \"How to know it is up\" below for what it does say.");
         if (chosenPort is { } port)
@@ -521,7 +521,7 @@ public sealed class TaskRunLocalCommand : Hall9kAsyncCommand<TaskRunLocalCommand
         {
             AnsiConsole.WriteLine();
             AnsiConsole.MarkupLine("[bold]How to know it is up[/]");
-            AnsiConsole.WriteLine(plan.HowToKnowItIsUp);
+            AnsiConsole.WriteLine(ExternalText.ForTerminal(plan.HowToKnowItIsUp));
         }
 
         // Every human step, again, in plan order. They have each already been printed and waited
@@ -535,7 +535,7 @@ public sealed class TaskRunLocalCommand : Hall9kAsyncCommand<TaskRunLocalCommand
             foreach (RunSkillStep step in plan.HumanSteps)
             {
                 AnsiConsole.MarkupLine($"[dim]{step.Number}. ({step.Section.EscapeMarkup()})[/]");
-                AnsiConsole.WriteLine(step.Text);
+                AnsiConsole.WriteLine(ExternalText.ForTerminal(step.Text));
             }
         }
 

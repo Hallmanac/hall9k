@@ -1,4 +1,5 @@
 using System.Globalization;
+using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Project.Projections;
 using Marten;
@@ -41,7 +42,7 @@ internal static class RunSkillProvenanceDisplay
         return $"Composed by {skill.Author.Value.EscapeMarkup()} on {nodeLabel}, "
             + $"{skill.RecordedAt.ToString("u", CultureInfo.InvariantCulture)}, against "
             + (skill.ComposedAgainstCommit.IsNotBlank()
-                ? $"commit {skill.ComposedAgainstCommit.EscapeMarkup()}"
+                ? $"commit {ExternalText.OneLineMarkup(skill.ComposedAgainstCommit)}"
                 : "none recorded") + ".";
     }
 }
