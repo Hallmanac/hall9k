@@ -1426,8 +1426,14 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     }
 
     [Fact]
-    public async Task K1s_writes_disappear_after_k0_revokes_it()
+    public async Task A_revoked_successor_record_truncates_a_still_vouched_rotated_keys_rank()
     {
+        // The rank rule in isolation (independent pre-PR review, cycle 1, conformance lens, low —
+        // the test this replaces conflated an ordinary fleet revoke with the rank-only
+        // revoked-successor record, so it never actually proved the rank rule by itself; a rotated
+        // key's own successor and rotation records were already misreported as unverifiable writers
+        // through the identical seam the fix at GitLedgerChainReader.cs:705 addresses, which is what
+        // let the old assertions pass regardless of whether this rank rule worked at all).
         string hub = _repo.CreateHub();
         (string repositoryPath, GeneratedIdentity root) = await EstablishGenesisRootAsync(hub);
         GeneratedIdentity heir = GenerateIdentity();
@@ -1436,25 +1442,66 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         await WriteSuccessorAsync(repositoryPath, root.Fingerprint, heir, root);
         await WriteRotationAsync(repositoryPath, root.Fingerprint, 1, heir, root.PublicKeyLine);
 
-        // K1 (the promoted heir) signs a membership write of its own, and it verifies.
+        // K1 (the promoted heir) still holds its own ordinary vouched key too, and a membership
+        // write it signs verifies through that — Nodes, never RootKeys (OwnerChainAuthorization
+        // tries both).
         GeneratedIdentity newMember = GenerateIdentity();
         await WriteMemberFileAsync(repositoryPath, newMember.Fingerprint, "member", heir);
 
         string beforeReaderRepo = _repo.CloneNode(hub);
         TrustChain beforeRevocation = await _chainReader.ComputeAsync(beforeReaderRepo, CancellationToken.None);
-        beforeRevocation.RoleOf(newMember.Fingerprint).Should().Be(MembershipRole.Member, "K1 is currently a live root key");
+        beforeRevocation.OwnerChains[root.Fingerprint].RootKeys.Should().Contain(
+            key => key.IntroducedByNodeId == heir.NodeId.ToString(), "the rotation already landed");
 
-        // K0 revokes the heir outright — the identical pairing h9k node revoke performs when the
-        // revoking key is itself a live root key: the ordinary fleet revoke, plus the
-        // revoked-successor record that actually strips K1's own root-key rank.
-        await RevokeAsync(repositoryPath, root.Fingerprint, heir.NodeId, root);
+        // K0 revokes only the heir's own RANK — never its ordinary fleet membership: no
+        // `h9k node revoke` ever runs here, so the heir stays vouched in Nodes throughout.
         await WriteRevokedSuccessorAsync(repositoryPath, root.Fingerprint, heir.NodeId, root);
 
         string afterReaderRepo = _repo.CloneNode(hub);
         TrustChain afterRevocation = await _chainReader.ComputeAsync(afterReaderRepo, CancellationToken.None);
 
-        afterRevocation.OwnerChains[root.Fingerprint].RootKeys.Should().ContainSingle(key => key.Fingerprint == root.Fingerprint);
-        afterRevocation.RoleOf(newMember.Fingerprint).Should().BeNull("K1's own earlier membership write disappears once K0 revokes it");
+        TrustedOwner owner = afterRevocation.OwnerChains[root.Fingerprint];
+        owner.RootKeys.Should().ContainSingle(
+            key => key.Fingerprint == root.Fingerprint, "the revoked-successor record, signed by K0, strips the heir's own rank");
+        owner.Nodes.Should().Contain(
+            node => node.NodeId == heir.NodeId.ToString(), "the heir's ordinary fleet membership was never touched — only its rank was revoked");
+        afterRevocation.RoleOf(newMember.Fingerprint).Should().Be(
+            MembershipRole.Member, "the heir's earlier membership write verifies through Nodes, which the rank revocation never changes");
+    }
+
+    [Fact]
+    public async Task A_lower_ranked_keys_revoked_successor_is_refused()
+    {
+        string hub = _repo.CreateHub();
+        (string repositoryPath, GeneratedIdentity root) = await EstablishGenesisRootAsync(hub);
+
+        GeneratedIdentity firstHeir = GenerateIdentity();
+        await WriteNodeFileAsync(repositoryPath, firstHeir, firstHeir);
+        await VouchAsync(repositoryPath, root.Fingerprint, firstHeir, root);
+        await WriteSuccessorAsync(repositoryPath, root.Fingerprint, firstHeir, root);
+        await WriteRotationAsync(repositoryPath, root.Fingerprint, 1, firstHeir, root.PublicKeyLine);
+
+        GeneratedIdentity secondHeir = GenerateIdentity();
+        await WriteNodeFileAsync(repositoryPath, secondHeir, secondHeir);
+        await VouchAsync(repositoryPath, root.Fingerprint, secondHeir, root);
+        await WriteSuccessorAsync(repositoryPath, root.Fingerprint, secondHeir, firstHeir);
+        await WriteRotationAsync(repositoryPath, root.Fingerprint, 2, secondHeir, firstHeir.PublicKeyLine);
+
+        // The chain is now [K0, K1 (firstHeir), K2 (secondHeir)] — an earlier key always outranks a
+        // later one. K2 attempts to revoke K1's own rank, signed by K2's own key: that key ranks
+        // BELOW K1, not above it, so this must be refused rather than silently accepted.
+        await WriteRevokedSuccessorAsync(repositoryPath, root.Fingerprint, firstHeir.NodeId, secondHeir);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        IReadOnlyList<LiveRootKey> rootKeys = chain.OwnerChains[root.Fingerprint].RootKeys;
+        rootKeys.Should().HaveCount(3, "a revocation from a key ranked below its target never touches the chain");
+        rootKeys.Should().Contain(key => key.IntroducedByNodeId == firstHeir.NodeId.ToString());
+        rootKeys.Should().Contain(key => key.IntroducedByNodeId == secondHeir.NodeId.ToString());
+        chain.UnverifiedWrites.Should().Contain(
+            write => write.Kind == "revoked-successor" && write.Identifier == firstHeir.NodeId.ToString(),
+            "the offending write is named rather than silently ignored");
     }
 
     [Fact]

@@ -597,7 +597,9 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         // stands now, the same live-state rule every other write in this reader already follows,
         // never a snapshot pinned to wherever the replay happened to be when it saw that record.
         (IReadOnlyList<LiveRootKey> rootKeys, IReadOnlyList<string> successorNodeIds, IReadOnlyList<UnverifiedLedgerWrite> successionUnverified) =
-            await ComputeSuccessionAsync(repositoryPath, root, publicKeyLine, allCommits, changedPathsByCommit, nodes, cancellationToken);
+            await ComputeSuccessionAsync(
+                repositoryPath, root, publicKeyLine, allCommits, changedPathsByCommit, nodes, everEnrolledNodes, revokedNodeIds,
+                cancellationToken);
 
         return (
             new TrustedOwner(
@@ -627,6 +629,15 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// earlier one. Since a write here can only ever move that top forward by exactly one step, the
     /// first rotation to land always wins: whichever one lands second, however validly signed, now
     /// names a key that is no longer current and is refused as stale.</item>
+    /// <item>A successor or revoked-successor record naming a node that WAS legitimately vouched
+    /// under the exact key it declares, but has since left <paramref name="nodes"/> through an
+    /// ordinary, unrelated <c>h9k node revoke</c> (<paramref name="revokedNodeIds"/>,
+    /// <paramref name="everEnrolledNodes"/>) simply stops counting — never named as an unverifiable
+    /// write: the record was honest when it landed, and the live-state read this whole pass already
+    /// applies to every other check here means its node's own departure is what silently retires it,
+    /// not a sign of forgery (independent pre-PR review, cycle 1, both lenses, medium — an owner's
+    /// own routine revoke of a node it once named a successor otherwise left two permanent yellow
+    /// lines in <c>h9k status</c> that no later read ever clears).</item>
     /// <item><b>A revoked-successor record</b> (<c>revoked-successors/&lt;node-id&gt;.yaml</c>)
     /// removes a node's current candidacy, or — when that node's own rotation already landed — that
     /// key and everything the chain built on top of it, but only when signed by a key ranked ABOVE
@@ -644,7 +655,8 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         ComputeSuccessionAsync(
             string repositoryPath, string root, string rootPublicKeyLine, IReadOnlyList<string> allCommits,
             IReadOnlyDictionary<string, IReadOnlyList<string>> changedPathsByCommit,
-            IReadOnlyDictionary<string, TrustedNode> nodes, CancellationToken cancellationToken)
+            IReadOnlyDictionary<string, TrustedNode> nodes, IReadOnlyDictionary<string, TrustedNode> everEnrolledNodes,
+            IReadOnlySet<string> revokedNodeIds, CancellationToken cancellationToken)
     {
         string successorsPrefix = $"owners/{root}/successors/";
         string rotationsPrefix = $"owners/{root}/rotations/";
@@ -700,6 +712,21 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
 
                     if (!nodes.TryGetValue(nodeId, out TrustedNode? vouchedNode) || vouchedNode.PublicKeyLine != declaredKey)
                     {
+                        // Valid when written but the node has since left Nodes (an ordinary,
+                        // unrelated `h9k node revoke`) is a live-state read, not a forgery: the
+                        // record simply stops counting as a successor candidate, the identical
+                        // "the chain's live state, recomputed fresh on every call" rule this
+                        // reader's own doc already states for membership writes — reporting it as
+                        // an unverifiable writer left a permanent, unresolvable yellow line in
+                        // h9k status for every owner who ever runs an ordinary revoke on a node
+                        // they once vouched a successor record for (independent pre-PR review,
+                        // cycle 1, both lenses, medium).
+                        if (revokedNodeIds.Contains(nodeId)
+                            && everEnrolledNodes.TryGetValue(nodeId, out TrustedNode? everNode) && everNode.PublicKeyLine == declaredKey)
+                        {
+                            continue;
+                        }
+
                         unverified.Add(new UnverifiedLedgerWrite(
                             "successor", nodeId, root,
                             $"commit {commit} for {path} names a node that is not currently vouched into root {root}'s own "
@@ -791,6 +818,18 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                     bool isPendingCandidate = chainIndex < 0 && successorCandidates.ContainsKey(nodeId);
                     if (chainIndex < 0 && !isPendingCandidate)
                     {
+                        // An ordinary node revoke's own cleanup write (h9k node revoke pairs
+                        // `revoked/<id>.yaml` with this record whenever the revoking key is itself a
+                        // live root key): the node's own successor candidacy already lapsed the
+                        // moment it left Nodes above, so there is nothing left here to revoke, and
+                        // that is not a forgery to report — the identical live-state reasoning the
+                        // successor check above already applies (independent pre-PR review, cycle 1,
+                        // both lenses, medium).
+                        if (revokedNodeIds.Contains(nodeId) && everEnrolledNodes.ContainsKey(nodeId))
+                        {
+                            continue;
+                        }
+
                         unverified.Add(new UnverifiedLedgerWrite(
                             "revoked-successor", nodeId, root,
                             $"commit {commit} for {path} names a node with no live successor candidacy or rotation to revoke"));
