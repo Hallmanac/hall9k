@@ -1397,7 +1397,13 @@ lands, the promoted key (**K1**) is live alongside the original (**K0**) rather 
 an earlier key always outranks a later one, so K0 can revoke K1's succession
 (`owners/<root>/revoked-successors/<node-id>.yaml`) but K1 can never revoke K0's. Every write K0 ever
 signed keeps verifying after a rotation, because "the root's own key" now means any key in this ranked
-set, not whichever one is newest. Because the ledger only ever moves forward on a push that cannot be
+set, not whichever one is newest. Trust here is recomputed at every read, the identical rule an
+ordinary fleet revoke already follows, so revoking K1's own rank also voids every write K1 ever
+signed while it was live, before the revocation included, not merely membership going forward from
+it. That is a deliberate departure from treating a once-promoted key as permanently trustworthy: the
+read has no way to tell a legitimate write from one made after the key was actually compromised, so
+it trusts neither once the rank is gone, and a later re-promotion of the same node restores them,
+the same as an ordinary re-vouch. Because the ledger only ever moves forward on a push that cannot be
 forced, the first rotation to actually land wins, and a second one naming a key that rotation already
 superseded is simply stale. `h9k project members` and `h9k status` name each node's own succession
 state, and say "no successor" outright for an owner with a single node, the plainest way to see that
