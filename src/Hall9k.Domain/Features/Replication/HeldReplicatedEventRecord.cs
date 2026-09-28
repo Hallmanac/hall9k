@@ -39,12 +39,16 @@ public sealed class HeldReplicatedEventRecord
     /// The verified key fingerprint this record's own sender read carried, resolved from the
     /// sender's own node file rather than anything the wire record itself claims — the same fact
     /// the transport's own read result names for the read that first tried to apply this record.
-    /// Stored on every held record, but never actually consulted against the gate on replay: a
-    /// project-settings-shaped event (a project-settings change, a member vouch or removal record,
-    /// a prompt addendum, or a run skill) always merges onto this receiver's own local Project
-    /// stream, which already exists on any project the gate runs for, so it never reaches this
-    /// "genesis missing, hold it" table in the first place — every record actually held here is one
-    /// the gate never applies to.
+    /// Stored on every held record. Never consulted against the PROJECT-SETTINGS gate
+    /// (<c>EventReplicationInbox.EvaluateGatedEvent</c>) on replay: a project-settings-shaped event
+    /// (a project-settings change, a member vouch or removal record, a prompt addendum, or a run
+    /// skill) always merges onto this receiver's own local Project stream, which already exists on
+    /// any project that gate runs for, so it never reaches this "genesis missing, hold it" table in
+    /// the first place. It IS consulted against the Task/Run act gate
+    /// (<c>EventReplicationInbox.EvaluateTaskActVerdict</c>), whose own target task's genesis can
+    /// arrive after its own conditional acts do: <c>EventReplicationInbox.ApplyHeldTailAsync</c>
+    /// passes this exact value into that gate's own re-run the moment this record's stream finally
+    /// starts.
     /// </summary>
     public string? SenderFingerprint { get; set; }
 

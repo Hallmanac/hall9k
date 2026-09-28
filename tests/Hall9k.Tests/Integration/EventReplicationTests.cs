@@ -4075,6 +4075,124 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 1, both lenses, high: <see cref="HeldTaskActRecord"/> is
+    /// keyed by THIS RECEIVER's own local project id, never <see cref="EventReplicationCodec.ReplicatedEventRecord.OriginProjectId"/>
+    /// — the sender's own local coordinate, which two real installs never share. Sent here with a
+    /// deliberately different origin project id from the receiver's own, exactly the shape two real
+    /// installs always take, this must still be found by the "earlier held for this origin" check
+    /// and by the recheck that applies it once the assignment lands.
+    /// </summary>
+    [Fact]
+    public async Task A_held_claim_stamped_with_a_foreign_origin_project_id_still_clears_once_the_assignment_lands()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid ownerNode = DomainId.New();
+        Guid memberNode = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid memberOwnerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid foreignOriginProjectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, ownerNode, cts.Token);
+        await SeedNodeFileAsync(ledger, memberNode, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("relay");
+
+        TrustChain chain = TwoRootChain(ownerNode, memberNode, "owner-root-c", "member-root-c");
+        const string memberRoot = "member-root-c";
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Ship the thing", ["it ships"], TaskType.Feature, null, null, null, Now, ownerId);
+            session.Events.StartStream<TaskAggregate>(taskId, added);
+            session.Events.Append(taskId, new TaskPublished(taskId, Now, ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+
+        // Stamped with the SENDER's own local project id (foreignOriginProjectId), never this
+        // receiver's own (projectId) — EventReplicationOutbox.QueuePendingAsync's own doc on why
+        // the two differ on any two real installs.
+        TaskClaimed claimed = new(
+            taskId, memberNode, memberOwnerId, LeaseGeneration: 1, runId, Now.AddSeconds(1),
+            OwnerRootFingerprint: memberRoot);
+        EventReplicationCodec.ReplicatedEventRecord claimRecord = new(
+            taskId, typeof(TaskClaimed).FullName!, JsonSerializer.Serialize(claimed, jsonOptions),
+            DomainId.New(), OriginSequence: 1, memberNode, memberRoot, Now.AddSeconds(1), foreignOriginProjectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, memberNode, projectId, memberRoot, MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([claimRecord]), Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, memberNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, memberNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: chain, cts.Token);
+            read.EventsApplied.Should().Be(0, "the claim is held until the task's own assignment arrives");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            IReadOnlyList<HeldTaskActRecord> held =
+                await session.Query<HeldTaskActRecord>().Where(record => record.TaskId == taskId).ToListAsync(cts.Token);
+            held.Should().ContainSingle().Which.ProjectId.Should().Be(
+                projectId, "the row is keyed by this receiver's own local project id, never the sender's");
+        }
+
+        TaskAssigned assigned = new(
+            taskId, memberOwnerId, UnmetDependencies: [], Now.AddSeconds(4), ownerId,
+            AssignedOwnerRootFingerprint: memberRoot);
+        EventReplicationCodec.ReplicatedEventRecord assignedRecord = new(
+            taskId, typeof(TaskAssigned).FullName!, JsonSerializer.Serialize(assigned, jsonOptions),
+            DomainId.New(), OriginSequence: 1, ownerNode, "owner-root-c", Now.AddSeconds(4), foreignOriginProjectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, ownerNode, projectId, "owner-root-c", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([assignedRecord]), Now.AddSeconds(5), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, ownerNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(5), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, ownerNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(6),
+                trustChain: chain, cts.Token);
+            read.EventsApplied.Should().Be(
+                2, "the assignment itself, plus the held claim it clears, both apply once the recheck finds the "
+                    + "row by this receiver's own project id");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.Query<HeldTaskActRecord>().Where(record => record.TaskId == taskId).ToListAsync(cts.Token))
+                .Should().BeEmpty("the held claim cleared once the recheck could actually find it");
+
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            task.HolderNodeId.Should().Be(memberNode);
+        }
+    }
+
+    /// <summary>
     /// Idea 6be68ee2, trust-ledger finding 5: a hold nothing in the fleet ever answers does not sit
     /// forever — it expires after 24 hours, dropping the queue behind it with one log line naming
     /// the act, rather than blocking that stream's own per-origin order forever.
