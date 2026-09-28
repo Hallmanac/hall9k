@@ -1,3 +1,4 @@
+using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
@@ -83,6 +84,18 @@ internal static class AttentionComposer
         if (state == LifecycleState.HeldElsewhere)
         {
             return TaskAttention.None;
+        }
+
+        // A pr-review task the membership gate minted but deliberately never assigned (security
+        // review idea 6be68ee2, finding 1): the pull request's own author was not a declared
+        // hall9k team member (or was a Bot) on a repository the gate covers. State stays Published
+        // — never NeedsHuman — precisely so h9k task assign still works exactly as it does for any
+        // other published-and-unassigned task; this arm is what tells the two states apart, ahead
+        // of every other check, since a freshly minted Published task with no run yet would
+        // otherwise fall through and read as an ordinary, ignorable queue wait.
+        if (task.State == TaskState.Published && task.PrReviewGateParked)
+        {
+            return new TaskAttention(AttentionLevel.NeedsYou, GateParkedCause(task), $"h9k task assign {id}");
         }
 
         // A Queued row this node refuses to claim because the project's own current verify gate
@@ -1194,6 +1207,46 @@ internal static class AttentionComposer
                         : run.ParkedNeedsFixesOffersNoProgress
                             ? $"h9k review resolve {id} --merge-ready (--needs-fixes will not clear this park — raise the cap or budget first, per the reason above)"
                             : $"h9k review resolve {id} --merge-ready (or --needs-fixes \"…\")";
+
+    /// <summary>
+    /// The membership-gate park's own cause line (security review idea 6be68ee2, finding 1) — only
+    /// deterministic facts carried on the task's own stream, never a model session's own summary
+    /// (tools before tokens): the title, whether the head is a fork, the head owner, the changed-file
+    /// count, and the author's numeric id, so a deleted-and-recreated account is diagnosable from
+    /// this line alone without opening the pull request. The body deliberately never appears here —
+    /// the pull request's own link already carries it.
+    /// </summary>
+    private static string GateParkedCause(TaskListItem task)
+    {
+        string title = TaskListCommand.Truncate(RelayedText.OneLine(task.Objective), 80);
+        string author = task.PrReviewGateParkedAuthorLogin is { } login
+            ? $"{login} (id {task.PrReviewGateParkedAuthorAccountId?.ToString() ?? "unknown"}"
+              + (task.PrReviewGateParkedAuthorAssociation is { Length: > 0 } association ? $", {association}" : string.Empty) + ")"
+            : "an author GitHub did not report";
+        string head = task.PrReviewGateParkedIsCrossRepository
+            ? $"a fork owned by {task.PrReviewGateParkedHeadOwner ?? "an unrecorded owner"}"
+            : $"a branch on {task.PrReviewGateParkedHeadOwner ?? "this repository"}, not a fork";
+        string visibility = task.PrReviewGateParkedIsPrivate switch
+        {
+            true => "private or internal",
+            false => "public",
+            null => "a repository whose visibility could not be read (fail closed)",
+        };
+        string files = task.PrReviewGateParkedChangedFileCount is { } count
+            ? $"{count} file(s) changed"
+            : "the changed-file count could not be read";
+        string memberIds = task.PrReviewGateParkedMemberAccountIds.Count > 0
+            ? string.Join(", ", task.PrReviewGateParkedMemberAccountIds)
+            : "none declared";
+        string missingDeclaration = task.PrReviewGateParkedMembersWithoutDeclaredAccount.Count > 0
+            ? $" (existing members with no declared GitHub account, so they could never have matched "
+              + $"at all: {string.Join(", ", task.PrReviewGateParkedMembersWithoutDeclaredAccount)} — "
+              + "on a version before v0.10.54, or not restarted since)"
+            : string.Empty;
+        return $"\"{title}\" was minted but not assigned: its author is {author}, not a declared hall9k "
+            + $"team member (declared member ids: {memberIds}{missingDeclaration}), on a {visibility} "
+            + $"repository — head is {head}; {files}";
+    }
 
     private static string Reason(string? recorded, string absent) =>
         recorded.IsNotBlank() ? recorded : absent;
