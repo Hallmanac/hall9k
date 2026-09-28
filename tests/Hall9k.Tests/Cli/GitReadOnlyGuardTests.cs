@@ -209,6 +209,49 @@ public sealed class GitReadOnlyGuardTests
     public void An_ordinary_git_diff_or_log_with_no_output_flag_runs(string command) =>
         GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeFalse();
 
+    /// <summary>
+    /// Cycle 8 conformance-lens bypass: quoting or escaping the <c>git</c>, <c>diff</c>, or
+    /// <c>log</c> token itself hid the whole command from <see cref="GitReadOnlyGuardRoutes"/>'s own
+    /// anchor regex, because the word reassembler blanked any quoted word that did not itself start
+    /// with a refused flag or path — including one that decoded to exactly <c>git</c>, <c>diff</c>,
+    /// or <c>log</c>. Claude Code's own Bash prefix rule matches on the parsed argv, not the raw
+    /// text, so <c>Bash(git diff:*)</c> still allowed each of these while the guard fell silent.
+    /// </summary>
+    [Theory]
+    [InlineData("git 'diff' --output=/Users/owner/.zshrc")]
+    [InlineData("git d''iff /dev/null ~/.config/gh/hosts.yml")]
+    [InlineData("\\git log -1 --format=%H --output=/tmp/out.txt")]
+    [InlineData("'git' diff --output=/tmp/out.txt")]
+    public void A_quoted_or_escaped_git_diff_or_log_token_is_still_refused(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
+    /// <summary>
+    /// Cycle 8 adversarial-lens bypass: bash brace expansion and unquoted <c>$IFS</c> word
+    /// splitting build or split a refused flag or path only once bash runs the command, after every
+    /// text-based check above has already looked at the unexpanded text and found nothing. Verified
+    /// in a throwaway repository: <c>git diff {/dev/null,&lt;secret&gt;}</c> printed the secret file,
+    /// and <c>git diff -{-output=&lt;path&gt;,-stat}</c> wrote it (lesson 4a5df6e3).
+    /// </summary>
+    [Theory]
+    [InlineData("git diff {/dev/null,~/.config/gh/hosts.yml}")]
+    [InlineData("git diff -{-output=/tmp/pwn.txt,-stat}")]
+    [InlineData("git diff --output${IFS}/tmp/pwn")]
+    [InlineData("git diff --format=$(whoami)")]
+    public void A_brace_or_dollar_expansion_that_could_build_a_refused_argument_is_refused(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
+    /// <summary>
+    /// A brace group or a <c>$</c> sitting inside a <c>'...'</c> or <c>"..."</c> span never expands
+    /// (bash suppresses brace expansion entirely under quoting, and a double-quoted <c>$</c> expands
+    /// without the word-splitting that makes the unquoted form dangerous), so an ordinary quoted
+    /// format string using either must keep running.
+    /// </summary>
+    [Theory]
+    [InlineData("git log -1 --format='{%H,%s}'")]
+    [InlineData("git log -1 --format=\"cost: $5\"")]
+    public void A_quoted_brace_group_or_dollar_sign_runs(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeFalse();
+
     /// <summary>Naming the flag in a search or a commit message is not using it.</summary>
     [Theory]
     [InlineData("git grep -- --output src/")]

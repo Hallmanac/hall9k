@@ -104,7 +104,126 @@ public static class GitReadOnlyGuardRoutes
                 || OutputFlag.IsMatch(unescaped)
                 || NoIndexFlag.IsMatch(unescaped)
                 || AbsolutePathArgument.IsMatch(unescaped)
-                || ParentDirectorySegment.IsMatch(unescaped));
+                || ParentDirectorySegment.IsMatch(unescaped)
+                || HasUnquotedExpansion(command));
+    }
+
+    /// <summary>
+    /// Whether the command contains an unquoted brace group with a comma (bash brace expansion,
+    /// e.g. <c>{/dev/null,~/.config/gh/hosts.yml}</c>, or <c>-{-output=&lt;path&gt;,-stat}</c>) or a
+    /// bare, unquoted <c>$</c> (parameter, command, or arithmetic expansion — <c>${IFS}</c>,
+    /// <c>$(...)</c>, a plain <c>$IFS</c>) outside a fully single-quoted word. Both build or split a
+    /// refused flag or path only once bash itself runs the command, after every text-based check
+    /// above has already looked at the unexpanded text and found nothing (independent pre-PR
+    /// review, cycle 8, adversarial lens; lesson 4a5df6e3): <c>git diff --output${IFS}/tmp/pwn</c>
+    /// never contains a literal <c>--output</c> followed by <c>=</c>, whitespace, or end of string,
+    /// so <see cref="OutputFlag"/> misses it, yet bash splits it into <c>--output /tmp/pwn</c>, a
+    /// form git accepts. Verified in a throwaway repository: each shape wrote or read its file
+    /// exactly as the unquoted, unexpanded form does.
+    /// <para>
+    /// This runs on the raw command text, not the reassembled one <see cref="UnescapeShellQuoting"/>
+    /// produces: a <c>$'...'</c> or <c>$"..."</c> lead-in is quoting syntax, not an expansion (its
+    /// own <c>$</c> is skipped over here the same way that method decodes it, rather than counted),
+    /// and text inside a <c>'...'</c> or <c>"..."</c> span is skipped rather than inspected — quoting
+    /// suppresses brace expansion entirely, and a double-quoted <c>$</c> still expands but without
+    /// the word-splitting or pathname expansion that makes the unquoted form dangerous, so it costs
+    /// nothing to leave it alone. This is gated by <see cref="GitLogOrDiff"/> matching the
+    /// reassembled text, so it only fires on a command that already reads as <c>git diff</c>/<c>git
+    /// log</c> once quoting is accounted for, never on the term appearing only inside an unrelated
+    /// quoted value.
+    /// </para>
+    /// </summary>
+    private static bool HasUnquotedExpansion(string command)
+    {
+        int index = 0;
+        while (index < command.Length)
+        {
+            char current = command[index];
+            if (current == '\\' && index + 1 < command.Length)
+            {
+                index += 2;
+                continue;
+            }
+
+            if (current == '\'')
+            {
+                index = SkipPastClosingQuote(command, index + 1, '\'', honorBackslash: false);
+                continue;
+            }
+
+            if (current == '"')
+            {
+                index = SkipPastClosingQuote(command, index + 1, '"', honorBackslash: true);
+                continue;
+            }
+
+            if (current == '$' && index + 1 < command.Length && command[index + 1] is '\'' or '"')
+            {
+                index = SkipPastClosingQuote(command, index + 2, command[index + 1], honorBackslash: true);
+                continue;
+            }
+
+            if (current == '$')
+            {
+                return true;
+            }
+
+            if (current == '{')
+            {
+                int depth = 1;
+                int scan = index + 1;
+                bool sawComma = false;
+                while (scan < command.Length && depth > 0)
+                {
+                    if (command[scan] == '{')
+                    {
+                        depth++;
+                    }
+                    else if (command[scan] == '}')
+                    {
+                        depth--;
+                    }
+                    else if (command[scan] == ',' && depth == 1)
+                    {
+                        sawComma = true;
+                    }
+
+                    scan++;
+                }
+
+                if (sawComma && depth == 0)
+                {
+                    return true;
+                }
+
+                index++;
+                continue;
+            }
+
+            index++;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Scans forward from <paramref name="start"/> for the next unescaped <paramref name="quoteChar"/>
+    /// and returns the index just past it (or the end of the string, for an unterminated quote — the
+    /// caller only uses this to skip safe content, so an unterminated quote here is left for
+    /// <see cref="UnescapeShellQuoting"/>'s own <c>hasUnterminatedQuote</c> refusal to catch).
+    /// <paramref name="honorBackslash"/> is false for a plain <c>'...'</c> span, where bash gives
+    /// backslash no special meaning at all, and true for <c>"..."</c> and <c>$'...'</c>/<c>$"..."</c>,
+    /// where a backslash can escape the closing quote.
+    /// </summary>
+    private static int SkipPastClosingQuote(string command, int start, char quoteChar, bool honorBackslash)
+    {
+        int index = start;
+        while (index < command.Length && command[index] != quoteChar)
+        {
+            index += honorBackslash && command[index] == '\\' && index + 1 < command.Length ? 2 : 1;
+        }
+
+        return index < command.Length ? index + 1 : command.Length;
     }
 
     /// <summary>
@@ -289,11 +408,27 @@ public static class GitReadOnlyGuardRoutes
             }
 
             string word = decodedWord.ToString();
-            result.Append(BeginsWithARefusedTerm(word) ? word : new string('#', wordLength));
+            result.Append(
+                BeginsWithARefusedTerm(word) || IsGitLogOrDiffToken(word) ? word : new string('#', wordLength));
         }
 
         return result.ToString();
     }
+
+    /// <summary>
+    /// Whether a reassembled shell word is exactly the <c>git</c>, <c>diff</c>, or <c>log</c> token
+    /// itself, case-insensitively (independent pre-PR review, cycle 8, conformance lens). These
+    /// three are not refused terms the way <see cref="BeginsWithARefusedTerm"/>'s are, but
+    /// <see cref="GitLogOrDiff"/> anchors on them, so a quoted or escaped spelling of any one —
+    /// <c>git 'diff' --output=...</c>, <c>git d''iff ...</c>, <c>\git log ...</c> — must still
+    /// survive as itself rather than being blanked out like an ordinary unrelated word: blanking it
+    /// let <see cref="GitLogOrDiff"/> miss the command entirely, and every check downstream of it
+    /// along with it, regardless of what flags the command carried.
+    /// </summary>
+    private static bool IsGitLogOrDiffToken(string decoded) =>
+        decoded.Equals("git", StringComparison.OrdinalIgnoreCase)
+        || decoded.Equals("diff", StringComparison.OrdinalIgnoreCase)
+        || decoded.Equals("log", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Whether a reassembled shell word — every adjacent unquoted, <c>'...'</c>, <c>"..."</c>, and
