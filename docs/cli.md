@@ -1040,6 +1040,15 @@ run skill (nothing records how it is started, and it will not guess), or when a 
 task is already up. `--stop` ends it, and so does the daemon on its own when the task closes out or
 the worktree is removed: a launch is never left running.
 
+Before any step runs, it compares the plan's own commands against the last ones this node approved
+for this project: an unchanged plan runs immediately, and a changed one (or the first ever run on
+this node) prints every step plus a short fingerprint and asks. In an interactive terminal that is
+a y/n; from a dispatched session it is refused outright (`task run-local` is refused for a
+dispatched session, since no dispatched prompt ever calls it — the orchestrator window is its only
+caller); from any other non-interactive caller, nothing runs without `--approve <fingerprint>`
+matching exactly the steps just printed. There is no `--yes`: approval is bound to the steps shown,
+not to skipping the question.
+
 Which pre-PR review stages a run gets is itself a project-, task-, and node-level setting
 (`--review-stage-composition <full-pipeline|adversarial-only|conformance-only|skip-final-pass|none>`
 at `h9k config set`, `h9k project set`, and `h9k task add`/`revise`, Decisions Log #129): the full

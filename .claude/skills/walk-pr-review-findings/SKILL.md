@@ -72,9 +72,14 @@ so posting a review under their login as their review is exactly what this skill
    A QA or design section may also end with an offer to run the branch locally for the owner. It is
    a question the review is asking them, not a finding and not something to post; put it to them at
    the end of that persona's walk, and on a yes run `h9k task run-local <task>` with the task id the
-   report's own closing *Running this branch locally* block names. Relay what it prints — the
-   address and every step only a person can do — and run `h9k task run-local <task> --continue` once
-   they say they have done a step it stopped at.
+   report's own closing *Running this branch locally* block names. This session is non-interactive,
+   so the command itself asks nothing: it either runs straight through (the plan is unchanged from
+   the last one this node ran here) or prints every step plus a short fingerprint and refuses. On a
+   refusal, show the owner exactly those printed steps — never summarise or skip any of them — and
+   run again with `h9k task run-local <task> --approve <fingerprint>` only on their explicit yes to
+   those steps; never invent a --yes, since this command does not offer one. Relay what it prints
+   once it does run — the address and every step only a person can do — and run
+   `h9k task run-local <task> --continue` once they say they have done a step it stopped at.
 
    Each session's findings open with a **Run-skill drift** line: the pass's answer to the standing
    question of whether the change altered how the application runs locally. "checked, no" means it
