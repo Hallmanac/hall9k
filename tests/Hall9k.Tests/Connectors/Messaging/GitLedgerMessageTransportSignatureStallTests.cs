@@ -4,6 +4,7 @@ using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Tests.Connectors.Ledger;
 using Hall9k.Tests.Fakes;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -21,6 +22,8 @@ namespace Hall9k.Tests.Connectors.Messaging;
 /// testing rule, extended here the same way <c>GitLedgerTests</c> already is): a plain hub and one
 /// node clone, no branch, no GitHub.
 /// </summary>
+[Collection("RealProcessSpawn")]
+[Trait("Category", "RealProcessSpawn")]
 public sealed class GitLedgerMessageTransportSignatureStallTests : IDisposable
 {
     private readonly LedgerTestRepo _repo = new();
@@ -31,7 +34,7 @@ public sealed class GitLedgerMessageTransportSignatureStallTests : IDisposable
     private readonly LedgerSigningKey _signingKey;
     private readonly string _publicKeyLine;
     private readonly string _repositoryPath;
-    private readonly Guid _senderNodeId = Guid.NewGuid();
+    private readonly Guid _senderNodeId = DomainId.New();
     private readonly TrustChain _trustChain;
 
     public GitLedgerMessageTransportSignatureStallTests()
