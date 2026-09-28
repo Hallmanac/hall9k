@@ -58,14 +58,31 @@ public static class GitReadOnlyGuardRoutes
         @"--no-index\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     /// <summary>
-    /// An argument that names an absolute filesystem path — the shape <c>--no-index</c> mode
-    /// triggers on even with no flag naming it (lesson f059f669). Nothing this project's own
-    /// documented pr-review usage runs (<c>review-mechanics.md</c>'s own ordinary-diff-range,
-    /// <c>origin/&lt;base&gt;...HEAD</c>, or a bare <c>git log</c>) ever needs an absolute path
-    /// argument, so refusing every one of them costs a lens nothing.
+    /// An argument that names an absolute filesystem path, or one built from an unexpanded
+    /// environment reference (<c>$HOME/...</c>, <c>${HOME}/...</c>, PowerShell's
+    /// <c>$env:USERPROFILE\...</c>) — the shape <c>--no-index</c> mode triggers on even with no
+    /// flag naming it (lesson f059f669). Nothing this project's own documented pr-review usage
+    /// runs (<c>review-mechanics.md</c>'s own ordinary-diff-range, <c>origin/&lt;base&gt;...HEAD</c>,
+    /// or a bare <c>git log</c>) ever needs a path argument shaped like this, so refusing every one
+    /// of them costs a lens nothing (independent pre-PR review, cycle 6, both lenses: a leading
+    /// <c>$</c> reaches the same filesystem-diff mode once the shell expands it, and this class
+    /// reasons about the command text before any shell expansion happens).
     /// </summary>
     private static readonly Regex AbsolutePathArgument = new(
-        @"(?:^|\s)(?:/|~|[A-Za-z]:[\\/])\S*", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+        @"(?:^|\s)(?:/|~|\$|[A-Za-z]:[\\/])\S*", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+    /// <summary>
+    /// An argument containing a <c>..</c> path segment — the other shape a relative path can take
+    /// to point outside the working tree and still trigger <c>--no-index</c> mode (independent
+    /// pre-PR review, cycle 6, both lenses: <c>git diff ../../sa.txt ../../sb.txt</c> run from a
+    /// checkout under <c>~/.hall9k/projects/.../repo/wt-*</c> printed a file five levels above it).
+    /// Matched anywhere a slash or backslash brackets the segment, or at the start or end of the
+    /// argument, so it catches <c>../secret</c>, <c>foo/../secret</c>, and <c>..\secret</c> alike
+    /// without flagging an ordinary git revision range such as <c>origin/main..HEAD</c>, where the
+    /// dots sit directly against a ref name rather than a path separator.
+    /// </summary>
+    private static readonly Regex ParentDirectorySegment = new(
+        @"(?:^|[\\/\s])\.\.(?:[\\/\s]|$)", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     /// <summary>
     /// Whether this command reaches <c>git diff</c> or <c>git log</c> in a way that escapes the
@@ -81,10 +98,13 @@ public static class GitReadOnlyGuardRoutes
             return false;
         }
 
-        string unescaped = UnescapeShellQuoting(command);
+        string unescaped = UnescapeShellQuoting(command, out bool hasUnterminatedQuote);
         return GitLogOrDiff.IsMatch(unescaped)
-            && (OutputFlag.IsMatch(unescaped) || NoIndexFlag.IsMatch(unescaped)
-                || AbsolutePathArgument.IsMatch(unescaped));
+            && (hasUnterminatedQuote
+                || OutputFlag.IsMatch(unescaped)
+                || NoIndexFlag.IsMatch(unescaped)
+                || AbsolutePathArgument.IsMatch(unescaped)
+                || ParentDirectorySegment.IsMatch(unescaped));
     }
 
     /// <summary>
@@ -110,9 +130,32 @@ public static class GitReadOnlyGuardRoutes
     /// span itself, rather than the whole word around it, missed <c>--outp$'ut=/tmp/my file.txt'</c>
     /// because the refused term only appears once the unquoted prefix and the quoted remainder are
     /// joined (cycle 4, human review).
+    /// <para>
+    /// Also decodes bash's <c>$"..."</c> locale-translation quoting — which takes the identical
+    /// backslash-escaping rules as plain <c>"..."</c> once no translation applies — and treats a
+    /// backslash immediately followed by a newline as bash's line-continuation, removed entirely
+    /// rather than kept as a literal character, both inside and outside a double-quoted span
+    /// (independent pre-PR review, cycle 6, conformance lens: <c>--outp$"ut=..."</c> and
+    /// <c>--out\</c>&lt;newline&gt;<c>put=...</c> each reassemble into <c>--output=...</c> in bash
+    /// 5.3 but previously reassembled into something that did not start with it). Also decodes
+    /// <c>\"</c>, <c>\\</c>, <c>` \` `</c>, and <c>\$</c> inside a double-quoted span the way bash
+    /// does, rather than closing the span at the first <c>"</c> regardless of what precedes it
+    /// (cycle 6, adversarial lens: <c>--format="%H\""</c> closed early on the escaped quote, which
+    /// then folded a following <c>--output=...</c> argument into the same word and blanked it).
+    /// </para>
+    /// <para>
+    /// An unterminated <c>'...'</c>, <c>"..."</c>, or <c>$'...'</c> sets
+    /// <paramref name="hasUnterminatedQuote"/> rather than silently blanking whatever follows: the
+    /// old fallback copied the rest of the command into the current word and then blanked all of it
+    /// because the word did not start with a refused term, which made an unterminated quote a way to
+    /// hide a real flag from every regex downstream (cycle 6, adversarial lens). The caller refuses
+    /// outright on this rather than trying to guess what the shell would have done with a quote it
+    /// never closed.
+    /// </para>
     /// </summary>
-    private static string UnescapeShellQuoting(string command)
+    private static string UnescapeShellQuoting(string command, out bool hasUnterminatedQuote)
     {
+        hasUnterminatedQuote = false;
         StringBuilder result = new(command.Length);
         int index = 0;
         while (index < command.Length)
@@ -135,6 +178,7 @@ public static class GitReadOnlyGuardRoutes
                     wordHasQuoting = true;
                     if (!TryConsumeAnsiCQuoted(command, index, out string decoded, out int nextIndex))
                     {
+                        hasUnterminatedQuote = true;
                         decodedWord.Append(command, index, command.Length - index);
                         index = command.Length;
                         break;
@@ -145,12 +189,68 @@ public static class GitReadOnlyGuardRoutes
                     continue;
                 }
 
-                if (current is '\'' or '"')
+                if (current == '$' && index + 1 < command.Length && command[index + 1] == '"')
+                {
+                    // $"..." locale-translation quoting: without a matching translation loaded,
+                    // bash treats it exactly like "...". Drop the '$' and fall into the double-quote
+                    // branch below on the next iteration.
+                    wordHasQuoting = true;
+                    index++;
+                    continue;
+                }
+
+                if (current == '"')
+                {
+                    wordHasQuoting = true;
+                    int scan = index + 1;
+                    StringBuilder quoted = new();
+                    bool closed = false;
+                    while (scan < command.Length)
+                    {
+                        char quotedChar = command[scan];
+                        if (quotedChar == '"')
+                        {
+                            closed = true;
+                            scan++;
+                            break;
+                        }
+
+                        if (quotedChar == '\\' && scan + 1 < command.Length
+                            && command[scan + 1] is '"' or '\\' or '`' or '$' or '\n')
+                        {
+                            if (command[scan + 1] != '\n')
+                            {
+                                quoted.Append(command[scan + 1]);
+                            }
+
+                            scan += 2;
+                            continue;
+                        }
+
+                        quoted.Append(quotedChar);
+                        scan++;
+                    }
+
+                    if (!closed)
+                    {
+                        hasUnterminatedQuote = true;
+                        decodedWord.Append(command, index, command.Length - index);
+                        index = command.Length;
+                        break;
+                    }
+
+                    decodedWord.Append(quoted);
+                    index = scan;
+                    continue;
+                }
+
+                if (current == '\'')
                 {
                     wordHasQuoting = true;
                     int closingIndex = command.IndexOf(current, index + 1);
                     if (closingIndex < 0)
                     {
+                        hasUnterminatedQuote = true;
                         decodedWord.Append(command, index, command.Length - index);
                         index = command.Length;
                         break;
@@ -164,6 +264,14 @@ public static class GitReadOnlyGuardRoutes
                 if (current == '\\' && index + 1 < command.Length)
                 {
                     wordHasQuoting = true;
+                    if (command[index + 1] == '\n')
+                    {
+                        // bash line continuation: backslash-newline is removed entirely, not kept
+                        // as a literal newline.
+                        index += 2;
+                        continue;
+                    }
+
                     decodedWord.Append(command[index + 1]);
                     index += 2;
                     continue;
@@ -201,6 +309,13 @@ public static class GitReadOnlyGuardRoutes
     /// matches is what keeps the still-required case running: <c>note: mentions --output here</c>
     /// also matches <see cref="OutputFlag"/>, but not at index 0, so <see cref="UnescapeShellQuoting"/>
     /// still blanks it.
+    /// <para>
+    /// A <see cref="ParentDirectorySegment"/> match is checked without that same index-0 requirement
+    /// (independent pre-PR review, cycle 6): unlike a flag or an absolute path, a <c>..</c> segment
+    /// reaches git's filesystem-diff mode wherever it sits in the argument
+    /// (<c>foo/../secret</c> is exactly as much an escape as <c>../secret</c>), so the whole
+    /// reassembled word is kept, not blanked, whenever one appears anywhere in it.
+    /// </para>
     /// </summary>
     private static bool BeginsWithARefusedTerm(string decoded)
     {
@@ -217,7 +332,12 @@ public static class GitReadOnlyGuardRoutes
         }
 
         Match pathMatch = AbsolutePathArgument.Match(decoded);
-        return pathMatch.Success && pathMatch.Index == 0;
+        if (pathMatch.Success && pathMatch.Index == 0)
+        {
+            return true;
+        }
+
+        return ParentDirectorySegment.IsMatch(decoded);
     }
 
     /// <summary>

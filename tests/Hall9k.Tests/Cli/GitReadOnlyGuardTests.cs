@@ -138,6 +138,68 @@ public sealed class GitReadOnlyGuardTests
     public void A_git_diff_or_log_that_reads_outside_the_checkout_is_refused(string command) =>
         GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
 
+    /// <summary>
+    /// The two cycle 6 conformance-lens bypasses in the word reassembler: bash's <c>$"..."</c>
+    /// locale-translation quoting, decoded identically to <c>"..."</c> when no translation applies,
+    /// and a backslash-newline line continuation, removed entirely rather than kept as a literal
+    /// character. Both verified against bash 5.3 directly: each reassembles into
+    /// <c>--output=...</c>, the way <c>$'...'</c> already does above.
+    /// </summary>
+    [Theory]
+    [InlineData("git log -1 --format='format:<payload>' --outp$\"ut=$HOME/.zshrc\"")]
+    [InlineData("git diff --out\\\nput=/tmp/x")]
+    public void A_locale_quoted_or_line_continued_output_flag_is_still_refused(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
+    /// <summary>
+    /// The cycle 6 adversarial-lens bypass: an escaped <c>\"</c> inside a double-quoted span must
+    /// not close the span early. The old per-span-only handling closed at the escaped quote, treated
+    /// the real closing <c>"</c> as opening a new, never-closed quote, and folded the following
+    /// <c>--output=...</c> argument into that unterminated span, which then got blanked instead of
+    /// refused. Verified against bash and git 2.55: <c>git log -1 --format="%H\"" --output=...</c>
+    /// really writes the file.
+    /// </summary>
+    [Fact]
+    public void An_escaped_double_quote_inside_a_double_quoted_span_does_not_hide_a_later_flag() =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(
+            "git log -1 --format=\"%H\\\"\" --output=/tmp/out.txt").Should().BeTrue();
+
+    /// <summary>
+    /// An unterminated quote is refused outright rather than silently blanking whatever follows it
+    /// (cycle 6, adversarial lens) — the fallback this class's other unterminated-quote branches
+    /// (<c>$'...'</c>, <c>'...'</c>) share.
+    /// </summary>
+    [Fact]
+    public void An_unterminated_double_quote_is_refused() =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout("git log -1 --format=\"%H --output=/tmp/out.txt")
+            .Should().BeTrue();
+
+    /// <summary>
+    /// The read-side cycle 6 bypass in both lenses: <c>--no-index</c> mode triggers on a relative
+    /// <c>..</c> path or a <c>$HOME</c>-rooted one exactly as it does on an absolute one, and the
+    /// cycle 4/5 check only refused the absolute form. Verified against a scratch repo: each of
+    /// these printed the outside file's contents as an ordinary diff.
+    /// </summary>
+    [Theory]
+    [InlineData("git diff ../../sa.txt ../../sb.txt")]
+    [InlineData("git diff ../../../../../.ssh/id_ed25519 ../../../../../.zshrc")]
+    [InlineData("git diff $HOME/.ssh/id_ed25519 $HOME/.zshrc")]
+    [InlineData("git diff ../../../../../.config/gh/hosts.yml README.md")]
+    public void A_relative_or_environment_rooted_outside_path_is_refused(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
+    /// <summary>
+    /// An ordinary git revision range spells its own <c>..</c>/<c>...</c> directly against a ref
+    /// name, never against a path separator, so <see cref="GitReadOnlyGuardRoutes"/>'s new
+    /// parent-directory check must not start refusing it.
+    /// </summary>
+    [Theory]
+    [InlineData("git log origin/main..HEAD")]
+    [InlineData("git diff main...feature")]
+    [InlineData("git diff HEAD~3..HEAD~1")]
+    public void An_ordinary_revision_range_still_runs(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeFalse();
+
     [Theory]
     [InlineData("git diff origin/main...HEAD")]
     [InlineData("git log -1 --format=%H")]
