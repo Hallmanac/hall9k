@@ -10,9 +10,10 @@ namespace Hall9k.Cli.Commands;
 /// (<see cref="ClaudeSettingsFile.GitReadOnlyGuardMatcher"/>, independent pre-PR review, cycle 1,
 /// both lenses): Claude Code runs it before every shell tool call in a pr-review session's own
 /// permission file — Bash, and on a Windows node the PowerShell tool beside it — hands it the call
-/// as JSON on stdin, and it refuses a <c>git diff</c>/<c>git log</c> call that carries an
-/// <c>--output</c> flag, which is the one way either subcommand writes outside the checkout
-/// despite the allow list's own prefix rules treating both as read-only.
+/// as JSON on stdin, and it refuses a <c>git diff</c>/<c>git log</c> call that escapes the
+/// checkout, in either direction (see <see cref="GitReadOnlyGuardRoutes"/>'s own doc): an
+/// <c>--output</c> write, or a <c>--no-index</c> read, despite the allow list's own prefix rules
+/// treating both subcommands as read-only.
 /// <para>
 /// Not a command an operator ever types. It is registered in the tree anyway rather than hidden,
 /// on the identical terms <see cref="PullRequestReplyGuardCommand"/> states for itself: an
@@ -51,10 +52,10 @@ public sealed class PrReviewGitOutputGuardCommand : Hall9kAsyncCommand<PrReviewG
     }
 
     /// <summary>
-    /// Whether this hook payload names a shell call that writes outside the checkout through
-    /// <c>git diff</c>/<c>git log</c>'s own <c>--output</c> flag. Internal so the decision is
-    /// testable against real payload shapes rather than only through a process. Every parse
-    /// failure answers false — see the class doc on failing open.
+    /// Whether this hook payload names a shell call that escapes the checkout through
+    /// <c>git diff</c>/<c>git log</c>. Internal so the decision is testable against real payload
+    /// shapes rather than only through a process. Every parse failure answers false — see the
+    /// class doc on failing open.
     /// </summary>
     internal static bool Denies(string? payload)
     {
@@ -83,7 +84,7 @@ public sealed class PrReviewGitOutputGuardCommand : Hall9kAsyncCommand<PrReviewG
                 && input.ValueKind == JsonValueKind.Object
                 && input.TryGetProperty("command", out JsonElement command)
                 && command.ValueKind == JsonValueKind.String
-                && GitReadOnlyGuardRoutes.WritesOutsideTheCheckout(command.GetString());
+                && GitReadOnlyGuardRoutes.EscapesTheCheckout(command.GetString());
         }
         catch (JsonException)
         {
