@@ -3,6 +3,7 @@ using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
 
 namespace Hall9k.Domain.Features.Orchestrator;
@@ -10,9 +11,11 @@ namespace Hall9k.Domain.Features.Orchestrator;
 /// <summary>
 /// The one-line plain sentence an orchestrator reads for one event (idea 89471598, piece 2) —
 /// the feed's whole vocabulary, one arm per event type <see cref="OrchestratorFeedInterest"/>
-/// admits. Deterministic and model-free: the same record always produces the same sentence, on
-/// every node, so a golden test can pin the output and piece 3's courier can compare two drains
-/// without a judgment call.
+/// admits. Deterministic and model-free: the same record and the same <see cref="MemberLabelLookup"/>
+/// always produce the same sentence, on every node, so a golden test can pin the output and piece
+/// 3's courier can compare two drains without a judgment call. The lookup is an optional input
+/// (task b7d8222e) that defaults to <see cref="MemberLabelLookup.Empty"/> — a node the caller has
+/// no fresher labels for reads exactly as it always has, by short fingerprint or bare node id.
 /// <para>
 /// Every arm reads facts already on the record and nothing else. Where a record carries a reason
 /// a person or an agent wrote, it is quoted rather than summarised — flattened to one line and
@@ -36,152 +39,156 @@ public static class OrchestratorFeedDescription
     /// answer <see cref="OrchestratorFeedInterest.BandOf"/> gives for a type it does not name, so
     /// a reader that filters first never sees a null here.
     /// </summary>
-    public static string? Of(object eventData) => eventData switch
+    public static string? Of(object eventData, MemberLabelLookup? lookup = null)
     {
-        // ─── Parks and disputes ────────────────────────────────────────────────────────────────
-        ReviewParked parked => $"the review loop parked for a human: {Quote(parked.Reason)}",
-        CloseoutParked parked => $"closeout parked for a human: {Quote(parked.Reason)}",
-        ReviewDisagreementParked parked =>
-            $"a fix lap disagreed with {Count(parked.Disagreements.Count, "finding")} and drafted a reply "
-            + "nobody has sent",
-        HumanThreadReplyParked parked =>
-            $"a follow-up drafted {Count(parked.Drafts.Count, "reply", "replies")} to a person's own review "
-            + "thread and stopped rather than posting",
-        ReviewThreadReplyRefused refused =>
-            $"a session tried to {DispositionWord(refused.Disposition)} a person's own review thread and was "
-            + $"refused: {Quote(refused.Reason)}",
-        ReviewFindingRouted routed when routed.DraftTaskId is null =>
-            $"a {routed.Severity.Value} review finding at {Field(routed.Location, 60)} could not be routed out "
-            + $"of the pull request: {Quote(routed.FailureReason)}",
-        ReviewFindingRouted routed =>
-            $"a {routed.Severity.Value} review finding at {Field(routed.Location, 60)} was routed onto a draft "
-            + "task nobody has published",
-        QuestionAsked asked => $"an agent asked and stopped: {Quote(asked.Question)}",
+        MemberLabelLookup labels = lookup ?? MemberLabelLookup.Empty;
+        return eventData switch
+        {
+            // ─── Parks and disputes ────────────────────────────────────────────────────────────────
+            ReviewParked parked => $"the review loop parked for a human: {Quote(parked.Reason)}",
+            CloseoutParked parked => $"closeout parked for a human: {Quote(parked.Reason)}",
+            ReviewDisagreementParked parked =>
+                $"a fix lap disagreed with {Count(parked.Disagreements.Count, "finding")} and drafted a reply "
+                + "nobody has sent",
+            HumanThreadReplyParked parked =>
+                $"a follow-up drafted {Count(parked.Drafts.Count, "reply", "replies")} to a person's own review "
+                + "thread and stopped rather than posting",
+            ReviewThreadReplyRefused refused =>
+                $"a session tried to {DispositionWord(refused.Disposition)} a person's own review thread and was "
+                + $"refused: {Quote(refused.Reason)}",
+            ReviewFindingRouted routed when routed.DraftTaskId is null =>
+                $"a {routed.Severity.Value} review finding at {Field(routed.Location, 60)} could not be routed out "
+                + $"of the pull request: {Quote(routed.FailureReason)}",
+            ReviewFindingRouted routed =>
+                $"a {routed.Severity.Value} review finding at {Field(routed.Location, 60)} was routed onto a draft "
+                + "task nobody has published",
+            QuestionAsked asked => $"an agent asked and stopped: {Quote(asked.Question)}",
 
-        // ─── Gate and run failures ─────────────────────────────────────────────────────────────
-        VerificationFailed failed => $"the verification gates failed: {Join(failed.FailedGates)}",
-        SettlingGateRepairCapReached => "the settling-gate repair rounds are spent and the run parked",
-        PullRequestChecksFailed failed => $"the pull request's CI checks failed: {Join(failed.FailedChecks)}",
-        RunFailed failed => $"the run failed: {Quote(failed.Reason)}",
-        RunKilled killed => $"the run was killed ({KillWord(killed.Reason)})",
-        RunBudgetExhausted => "the token budget ran dry mid-run; the run parked until the window resets",
-        ReviewErrored errored =>
-            $"{Field(errored.Reviewer, 40)}'s review came back as an error placeholder rather than a real review",
+            // ─── Gate and run failures ─────────────────────────────────────────────────────────────
+            VerificationFailed failed => $"the verification gates failed: {Join(failed.FailedGates)}",
+            SettlingGateRepairCapReached => "the settling-gate repair rounds are spent and the run parked",
+            PullRequestChecksFailed failed => $"the pull request's CI checks failed: {Join(failed.FailedChecks)}",
+            RunFailed failed => $"the run failed: {Quote(failed.Reason)}",
+            RunKilled killed => $"the run was killed ({KillWord(killed.Reason)})",
+            RunBudgetExhausted => "the token budget ran dry mid-run; the run parked until the window resets",
+            ReviewErrored errored =>
+                $"{Field(errored.Reviewer, 40)}'s review came back as an error placeholder rather than a real review",
 
-        // ─── A merge that stays failed ─────────────────────────────────────────────────────────
-        PullRequestAutoMergeAttempted attempted =>
-            $"the daemon's own merge of the pull request was refused: {Quote(attempted.FailureReason)}",
+            // ─── A merge that stays failed ─────────────────────────────────────────────────────────
+            PullRequestAutoMergeAttempted attempted =>
+                $"the daemon's own merge of the pull request was refused: {Quote(attempted.FailureReason)}",
 
-        // ─── Daemon trouble ────────────────────────────────────────────────────────────────────
-        RunSessionErrorRetried retried =>
-            $"the {LegWord(retried.Leg)} session errored and the daemon retried it once: "
-            + Quote(retried.ObservedMessage),
-        RunUncommittedWorkRecoveryAttempted recovery =>
-            $"a session ended leaving {Count(recovery.StrandedFiles.Count, "file")} uncommitted; the daemon is "
-            + $"recovering the work: {Quote(recovery.Reason)}",
-        RunUnattendedExitFlagged flagged =>
-            $"a headless start exited with nobody watching: {Quote(flagged.Reason)}",
-        RunRecordReconstructed => "the daemon rebuilt a run record for a run that never dispatched",
-        RunLaunchHeld => "this node failed to launch a session; the run is held until the launch hold clears",
+            // ─── Daemon trouble ────────────────────────────────────────────────────────────────────
+            RunSessionErrorRetried retried =>
+                $"the {LegWord(retried.Leg)} session errored and the daemon retried it once: "
+                + Quote(retried.ObservedMessage),
+            RunUncommittedWorkRecoveryAttempted recovery =>
+                $"a session ended leaving {Count(recovery.StrandedFiles.Count, "file")} uncommitted; the daemon is "
+                + $"recovering the work: {Quote(recovery.Reason)}",
+            RunUnattendedExitFlagged flagged =>
+                $"a headless start exited with nobody watching: {Quote(flagged.Reason)}",
+            RunRecordReconstructed => "the daemon rebuilt a run record for a run that never dispatched",
+            RunLaunchHeld => "this node failed to launch a session; the run is held until the launch hold clears",
 
-        // ─── A message from a person or another node's window ──────────────────────────────────
-        MessageReceived received => MessageLine(received),
+            // ─── A message from a person or another node's window ──────────────────────────────────
+            MessageReceived received => MessageLine(received, labels),
 
-        // ─── Task state changes ────────────────────────────────────────────────────────────────
-        TaskPublished => "published and ready to assign",
-        // A claim a person made by hand (h9k task work, h9k task start) carries Guid.Empty as its
-        // node id — the sentinel TaskAggregate.IsInteractiveClaim reads, deliberately naming no
-        // node at all — so these two arms come first: shortening that sentinel would print
-        // "node 00000000" as though a node had been observed (AGENTS.md, never guess at unobserved
-        // facts). The owner's own root fingerprint is what the record actually names there, and
-        // "this install" is not available to say instead: TaskClaimed travels, so a teammate's own
-        // hand-made claim reaches this node's log carrying the identical sentinel.
-        TaskClaimed claimed when claimed.NodeId == Guid.Empty && claimed.InteractiveMode =>
-            $"claimed interactively by {Claimant(claimed)}; a human has the wheel",
-        TaskClaimed claimed when claimed.NodeId == Guid.Empty =>
-            $"claimed by {Claimant(claimed)} as a deliberate kick-off; a run is starting",
-        TaskClaimed claimed when claimed.InteractiveMode =>
-            $"claimed interactively by node {DomainId.Short(claimed.NodeId)}",
-        TaskClaimed claimed => $"claimed by node {DomainId.Short(claimed.NodeId)}; a run is starting",
-        PullRequestOpened opened => $"delivered: pull request #{opened.PullRequestNumber} opened",
-        TaskCompleted completed when completed.PullRequestUrl.IsBlank() =>
-            "the run finished with no pull request to watch",
-        TaskCompleted completed => $"the run finished and pushed its work to {Field(completed.PullRequestUrl, 80)}",
-        PullRequestMerged => "done: the pull request merged",
-        TaskResolved resolved => $"closed as done by hand: {Quote(resolved.Reason)}",
-        TaskFailed failed => $"the task failed: {Quote(failed.Reason)}",
-        TaskAbandoned abandoned when abandoned.Reason.IsBlank() => "abandoned",
-        TaskAbandoned abandoned => $"abandoned: {Quote(abandoned.Reason)}",
+            // ─── Task state changes ────────────────────────────────────────────────────────────────
+            TaskPublished => "published and ready to assign",
+            // A claim a person made by hand (h9k task work, h9k task start) carries Guid.Empty as its
+            // node id — the sentinel TaskAggregate.IsInteractiveClaim reads, deliberately naming no
+            // node at all — so these two arms come first: shortening that sentinel would print
+            // "node 00000000" as though a node had been observed (AGENTS.md, never guess at unobserved
+            // facts). The owner's own root fingerprint is what the record actually names there, and
+            // "this install" is not available to say instead: TaskClaimed travels, so a teammate's own
+            // hand-made claim reaches this node's log carrying the identical sentinel.
+            TaskClaimed claimed when claimed.NodeId == Guid.Empty && claimed.InteractiveMode =>
+                $"claimed interactively by {Claimant(claimed, labels)}; a human has the wheel",
+            TaskClaimed claimed when claimed.NodeId == Guid.Empty =>
+                $"claimed by {Claimant(claimed, labels)} as a deliberate kick-off; a run is starting",
+            TaskClaimed claimed when claimed.InteractiveMode =>
+                $"claimed interactively by {NodeLine(claimed.NodeId, labels)}",
+            TaskClaimed claimed => $"claimed by {NodeLine(claimed.NodeId, labels)}; a run is starting",
+            PullRequestOpened opened => $"delivered: pull request #{opened.PullRequestNumber} opened",
+            TaskCompleted completed when completed.PullRequestUrl.IsBlank() =>
+                "the run finished with no pull request to watch",
+            TaskCompleted completed => $"the run finished and pushed its work to {Field(completed.PullRequestUrl, 80)}",
+            PullRequestMerged => "done: the pull request merged",
+            TaskResolved resolved => $"closed as done by hand: {Quote(resolved.Reason)}",
+            TaskFailed failed => $"the task failed: {Quote(failed.Reason)}",
+            TaskAbandoned abandoned when abandoned.Reason.IsBlank() => "abandoned",
+            TaskAbandoned abandoned => $"abandoned: {Quote(abandoned.Reason)}",
 
-        // ─── Ideas logged or updated ───────────────────────────────────────────────────────────
-        IdeaCaptured captured => $"idea logged: {Quote(captured.Text)}",
-        IdeaRevised revised => $"idea revised: {Quote(revised.Text)}",
-        IdeaAssignedToProject => "an idea was assigned to this project",
-        IdeaTaskCut cut => $"a task was cut from an idea: {Quote(cut.Objective)}",
-        IdeaConcluded concluded => $"idea concluded: {Quote(concluded.Reason)}",
-        IdeaArchived archived => $"idea archived: {Quote(archived.Reason)}",
-        IdeaSpikeConcluded spike =>
-            $"a spike cut from an idea concluded {spike.Verdict.Value}: {Quote(spike.Reason)}",
-        IdeaDiscarded discarded => $"idea discarded: {Quote(discarded.Reason)}",
-        IdeaPromoted promoted => $"an idea was promoted into a task: {Quote(promoted.Objective)}",
+            // ─── Ideas logged or updated ───────────────────────────────────────────────────────────
+            IdeaCaptured captured => $"idea logged: {Quote(captured.Text)}",
+            IdeaRevised revised => $"idea revised: {Quote(revised.Text)}",
+            IdeaAssignedToProject => "an idea was assigned to this project",
+            IdeaTaskCut cut => $"a task was cut from an idea: {Quote(cut.Objective)}",
+            IdeaConcluded concluded => $"idea concluded: {Quote(concluded.Reason)}",
+            IdeaArchived archived => $"idea archived: {Quote(archived.Reason)}",
+            IdeaSpikeConcluded spike =>
+                $"a spike cut from an idea concluded {spike.Verdict.Value}: {Quote(spike.Reason)}",
+            IdeaDiscarded discarded => $"idea discarded: {Quote(discarded.Reason)}",
+            IdeaPromoted promoted => $"an idea was promoted into a task: {Quote(promoted.Objective)}",
 
-        // ─── Claims and takeovers involving another node ───────────────────────────────────────
-        TaskHolderTakenOver taken =>
-            $"node {DomainId.Short(taken.NewHolderNodeId)} took the task over from "
-            + (taken.PreviousHolderNodeId is { } previous
-                ? $"node {DomainId.Short(previous)}"
-                : "an unrecorded holder")
-            + $": {Quote(taken.Reason)}",
-        TaskTakeRequested requested =>
-            $"node {DomainId.Short(requested.RequesterNodeId)} asked for this task: {Quote(requested.Reason)}",
-        TaskTakeRefused refused =>
-            $"node {DomainId.Short(refused.RequesterNodeId)}'s request for this task was refused: "
-            + Quote(refused.Reason),
-        TaskHolderReleased released when released.GrantedToNodeId is { } grantee =>
-            $"the holder released the task to node {DomainId.Short(grantee)}",
-        TaskHolderReleased => "the holder released the task",
+            // ─── Claims and takeovers involving another node ───────────────────────────────────────
+            TaskHolderTakenOver taken =>
+                $"{NodeLine(taken.NewHolderNodeId, labels)} took the task over from "
+                + (taken.PreviousHolderNodeId is { } previous
+                    ? NodeLine(previous, labels)
+                    : "an unrecorded holder")
+                + $": {Quote(taken.Reason)}",
+            TaskTakeRequested requested =>
+                $"{NodeLine(requested.RequesterNodeId, labels)} asked for this task: {Quote(requested.Reason)}",
+            TaskTakeRefused refused =>
+                $"{NodeLine(refused.RequesterNodeId, labels)}'s request for this task was refused: "
+                + Quote(refused.Reason),
+            TaskHolderReleased released when released.GrantedToNodeId is { } grantee =>
+                $"the holder released the task to {NodeLine(grantee, labels)}",
+            TaskHolderReleased => "the holder released the task",
 
-        // ─── A run's phase changes ─────────────────────────────────────────────────────────────
-        RunDispatched dispatched =>
-            $"a {(dispatched.IsFollowUp ? "follow-up run" : "run")} was dispatched on branch "
-            + Field(dispatched.Branch, 60),
-        RunProcessStarted => "the run's session process started",
-        RunResumed => "the run resumed",
-        AgentSessionCompleted => "the agent session finished; the gates are next",
-        GateStarted started => $"the gate {Field(started.GateName, 60)} started",
-        GateEnded => "the gate finished",
-        VerificationPassed => "the verification gates passed",
-        VerificationSkipped skipped =>
-            $"the verification gates were skipped: every changed path "
-            + $"({Count(skipped.ChangedPaths.Count, "path")}) matched the non-executable-path set",
-        ReviewDispatched review => $"review cycle {review.Cycle} dispatched ({LensWord(review.Lens)})",
-        ReviewPassCompleted pass =>
-            $"review cycle {pass.Cycle}'s {LensWord(pass.Lens)} pass returned {VerdictWord(pass.Verdict)}",
-        ReviewCompleted completed =>
-            $"review cycle {completed.Cycle} concluded {VerdictWord(completed.Verdict)}",
-        ReviewFixDispatched fix =>
-            $"a fix session was dispatched over review cycle {fix.Cycle}'s findings"
-            + (fix.Escalated ? ", escalated to the stronger model" : string.Empty),
-        ReviewFixCompleted fix =>
-            $"the fix session for review cycle {fix.Cycle} finished {OutcomeWord(fix.Outcome)}",
-        ReviewParkResolved resolved => $"a human resolved the review park with {VerdictWord(resolved.Verdict)}",
-        ReviewBoundaryApproved => "a human approved the review boundary",
-        ReviewSettled settled =>
-            $"review cycle {settled.Cycle} settled as {settled.Settlement.Value} "
-            + $"({settled.ResidualsFixed} fixed, {settled.ResidualsRouted} routed)",
-        ReviewFeedbackReceived feedback =>
-            $"{Count(feedback.UnresolvedThreadCount, "unresolved review thread")} observed on the pull request",
-        PullRequestUpdated updated => $"pull request #{updated.PullRequestNumber} updated with new commits",
-        PullRequestConflictObserved => "the pull request conflicts with its base branch",
-        PullRequestClosed => "the pull request was closed without merging",
-        RunPhaseDelegated delegated =>
-            $"the operator delegated this phase to a contractor session: {Quote(delegated.Note)}",
-        RunSuperseded superseded =>
-            $"the run was superseded by claim generation {superseded.SupersededByGeneration}",
-        RunCompleted => "the run completed",
+            // ─── A run's phase changes ─────────────────────────────────────────────────────────────
+            RunDispatched dispatched =>
+                $"a {(dispatched.IsFollowUp ? "follow-up run" : "run")} was dispatched on branch "
+                + Field(dispatched.Branch, 60),
+            RunProcessStarted => "the run's session process started",
+            RunResumed => "the run resumed",
+            AgentSessionCompleted => "the agent session finished; the gates are next",
+            GateStarted started => $"the gate {Field(started.GateName, 60)} started",
+            GateEnded => "the gate finished",
+            VerificationPassed => "the verification gates passed",
+            VerificationSkipped skipped =>
+                $"the verification gates were skipped: every changed path "
+                + $"({Count(skipped.ChangedPaths.Count, "path")}) matched the non-executable-path set",
+            ReviewDispatched review => $"review cycle {review.Cycle} dispatched ({LensWord(review.Lens)})",
+            ReviewPassCompleted pass =>
+                $"review cycle {pass.Cycle}'s {LensWord(pass.Lens)} pass returned {VerdictWord(pass.Verdict)}",
+            ReviewCompleted completed =>
+                $"review cycle {completed.Cycle} concluded {VerdictWord(completed.Verdict)}",
+            ReviewFixDispatched fix =>
+                $"a fix session was dispatched over review cycle {fix.Cycle}'s findings"
+                + (fix.Escalated ? ", escalated to the stronger model" : string.Empty),
+            ReviewFixCompleted fix =>
+                $"the fix session for review cycle {fix.Cycle} finished {OutcomeWord(fix.Outcome)}",
+            ReviewParkResolved resolved => $"a human resolved the review park with {VerdictWord(resolved.Verdict)}",
+            ReviewBoundaryApproved => "a human approved the review boundary",
+            ReviewSettled settled =>
+                $"review cycle {settled.Cycle} settled as {settled.Settlement.Value} "
+                + $"({settled.ResidualsFixed} fixed, {settled.ResidualsRouted} routed)",
+            ReviewFeedbackReceived feedback =>
+                $"{Count(feedback.UnresolvedThreadCount, "unresolved review thread")} observed on the pull request",
+            PullRequestUpdated updated => $"pull request #{updated.PullRequestNumber} updated with new commits",
+            PullRequestConflictObserved => "the pull request conflicts with its base branch",
+            PullRequestClosed => "the pull request was closed without merging",
+            RunPhaseDelegated delegated =>
+                $"the operator delegated this phase to a contractor session: {Quote(delegated.Note)}",
+            RunSuperseded superseded =>
+                $"the run was superseded by claim generation {superseded.SupersededByGeneration}",
+            RunCompleted => "the run completed",
 
-        _ => null,
-    };
+            _ => null,
+        };
+    }
 
     /// <summary>
     /// A received message, named by who sent it and what kind it is. A handoff carries no body of
@@ -193,14 +200,18 @@ public static class OrchestratorFeedDescription
     /// <c>h9k message show</c> takes to print the rest. Everything else here is about a task the
     /// group heading already names, so it has somewhere to send a reader and a note does not.
     /// </para>
+    /// <para>
+    /// The sender is named by fingerprint (task b7d8222e): the projection's own label when one is
+    /// known, else the fingerprint's own short form. A message that arrived with no fingerprint at
+    /// all falls back to naming the sending node instead, the one node-id line this table shows
+    /// its label in parentheses rather than replacing outright.
+    /// </para>
     /// </summary>
-    private static string MessageLine(MessageReceived received)
+    private static string MessageLine(MessageReceived received, MemberLabelLookup labels)
     {
-        // The sender's own cross-node root fingerprint, falling back to the node id when a message
-        // arrived without one — a foreign node's friendly name never replicates, so there is
-        // nothing friendlier to print.
-        string from = ShortFingerprint(received.FromOwnerFingerprint)
-            ?? $"node {DomainId.Short(received.FromNodeId)}";
+        string from = received.FromOwnerFingerprint.IsNotBlank()
+            ? labels.LabelForFingerprint(received.FromOwnerFingerprint)
+            : NodeLine(received.FromNodeId, labels);
         if (MessageKind.Parse(received.Kind) == MessageKind.Handoff)
         {
             return $"{from} says a task's handoff note changed";
@@ -216,19 +227,26 @@ public static class OrchestratorFeedDescription
     }
 
     /// <summary>
-    /// Who made a claim that names no node — the owner's own cross-node root fingerprint, or the
-    /// honest absence of a name when the claim predates that field.
+    /// Who made a claim that names no node — the projection's own label for the owner's own
+    /// cross-node root fingerprint (task b7d8222e), or the honest absence of a name when the claim
+    /// predates that field.
     /// </summary>
-    private static string Claimant(TaskClaimed claimed) =>
-        ShortFingerprint(claimed.OwnerRootFingerprint) ?? "somebody the claim does not name";
+    private static string Claimant(TaskClaimed claimed, MemberLabelLookup labels) =>
+        claimed.OwnerRootFingerprint.IsNotBlank()
+            ? labels.LabelForFingerprint(claimed.OwnerRootFingerprint!)
+            : "somebody the claim does not name";
 
     /// <summary>
-    /// An owner root fingerprint cut to the same short, readable prefix
-    /// <c>PublishedFacts.HeldElsewhereFact</c> already uses for a foreign holder, or null when
-    /// none was recorded.
+    /// A node named by its short id, with the owning member's own label appended in parentheses
+    /// when the projection knows one (task b7d8222e, Brian's 2026-09-26 ruling) — never for this
+    /// machine's own owner, which reads as "me" already, and never for a node the projection has
+    /// no member on record for (an unknown node, or one revoked out of every fleet it still knows).
     /// </summary>
-    private static string? ShortFingerprint(string? fingerprint) =>
-        fingerprint.IsBlank() ? null : fingerprint[..Math.Min(12, fingerprint.Length)];
+    private static string NodeLine(Guid nodeId, MemberLabelLookup labels)
+    {
+        string id = $"node {DomainId.Short(nodeId)}";
+        return labels.LabelForNodeId(nodeId) is { } label ? $"{id} ({label})" : id;
+    }
 
     /// <summary>
     /// A leg's own word in a sentence, with the honest fallback for the value a stream written

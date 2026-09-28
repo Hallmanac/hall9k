@@ -1,8 +1,10 @@
 using Hall9k.Connectors.Replication;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Orchestrator;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Trust;
 using JasperFx.Events;
 using Marten;
 
@@ -148,6 +150,7 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
         CancellationToken cancellationToken)
     {
         Dictionary<Guid, ReplicationOwnership> resolved = [];
+        MemberLabelLookup labels = await LabelLookupAsync(session, projectId, cancellationToken);
         return await OrchestratorFeedSelection.SelectAsync(
             [.. raw.Select(e =>
                 new OrchestratorFeedCandidate(
@@ -159,7 +162,24 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
             settledThrough: now - OrchestratorFeedSelection.SettlingWindow,
             scanWasCapped: raw.Count >= MaxEventsPerRead,
             (candidate, token) => ScopeOfAsync(session, candidate, resolved, projectId, token),
-            cancellationToken);
+            cancellationToken,
+            labels);
+    }
+
+    /// <summary>
+    /// This project's own current member labels (task b7d8222e), plus this machine's own owner
+    /// root fingerprint so a node-id line about this owner's own fleet reads as a bare id rather
+    /// than naming "me" (<see cref="MemberLabelResolver.LabelForNodeId"/>'s own doc). Read from the
+    /// <see cref="ProjectMemberLabels"/> projection alone — never a live ledger walk — the identical
+    /// single-owner-per-install lookup <c>NodeBootstrap.EnsureAsync</c> already relies on.
+    /// </summary>
+    private static async Task<MemberLabelLookup> LabelLookupAsync(
+        IQuerySession session, Guid projectId, CancellationToken cancellationToken)
+    {
+        ProjectMemberLabels? labels = await session.LoadAsync<ProjectMemberLabels>(projectId, cancellationToken);
+        OwnerDetails? owner = (await session.Query<OwnerDetails>().Take(1).ToListAsync(cancellationToken))
+            .FirstOrDefault();
+        return new MemberLabelLookup(labels, owner?.RootFingerprint);
     }
 
     /// <summary>
