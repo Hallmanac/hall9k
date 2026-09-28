@@ -21,6 +21,40 @@ namespace Hall9k.Connectors.Text;
 public static partial class RelayedText
 {
     /// <summary>
+    /// Whether any character in <paramref name="text"/> is one <see cref="Printable"/> would strip
+    /// — a control character or a layout-override character — but asked without that method's own
+    /// allowance for a tab, a line feed, or a Windows line break as markdown layout: a shell command
+    /// line is not markdown, and a command carrying any of them still reaches the shell exactly as
+    /// written even though the terminal it is echoed to before running would only ever show the
+    /// stripped, harmless version (security review idea 6be68ee2, process-injection finding 3). So
+    /// this is the one check that has to see the whole raw line, not the one that renders it.
+    /// </summary>
+    public static bool HasUnsafeCharacter(string text)
+    {
+        for (int index = 0; index < text.Length; index++)
+        {
+            char character = text[index];
+            if (char.IsHighSurrogate(character) && index + 1 < text.Length && char.IsLowSurrogate(text[index + 1]))
+            {
+                if (ActsAsPair(new Rune(character, text[index + 1])))
+                {
+                    return true;
+                }
+
+                index++;
+                continue;
+            }
+
+            if (Acts(character))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Relayed text made safe to show, and otherwise left as close to what it said as safety
     /// allows. Tab and the line feeds survive because they are the layout of a Markdown body;
     /// every character the sink would obey instead of showing is dropped rather than escaped,

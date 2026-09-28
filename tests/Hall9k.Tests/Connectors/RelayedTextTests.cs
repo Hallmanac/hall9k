@@ -195,4 +195,43 @@ public sealed class RelayedTextTests
 
         RelayedText.WithoutClosingKeywords(text).Should().BeSameAs(text);
     }
+
+    [Fact]
+    public void Ordinary_shell_text_carries_no_unsafe_character()
+    {
+        RelayedText.HasUnsafeCharacter("npm run dev -- --port 3000").Should().BeFalse();
+    }
+
+    [Fact]
+    public void An_escape_sequence_is_unsafe()
+    {
+        RelayedText.HasUnsafeCharacter("echo hi\u001b[2Jrm -rf /").Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_bidirectional_override_is_unsafe()
+    {
+        RelayedText.HasUnsafeCharacter("echo ‮one thing that looks like another").Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Unlike <see cref="RelayedText.Printable"/>, which keeps a tab and a line feed as markdown
+    /// layout, <see cref="RelayedText.HasUnsafeCharacter"/> flags them too: a run skill's own
+    /// command line is not markdown, and a run skill can be replicated from a compromised member's
+    /// node, so nothing here gets Printable's display-only exception.
+    /// </summary>
+    [Theory]
+    [InlineData("echo hi\tthere")]
+    [InlineData("echo hi\nthere")]
+    public void A_tab_or_line_feed_is_unsafe_here_even_though_printable_keeps_it(string text)
+    {
+        RelayedText.Printable(text).Should().Be(text, "printable text keeps layout characters for display");
+        RelayedText.HasUnsafeCharacter(text).Should().BeTrue("a shell command is not markdown");
+    }
+
+    [Fact]
+    public void Content_that_survives_printable_is_still_safe()
+    {
+        RelayedText.HasUnsafeCharacter("Add \U0001F468‍\U0001F4BB avatar support").Should().BeFalse();
+    }
 }
