@@ -100,7 +100,11 @@ public static class GitReadOnlyGuardRoutes
     /// flag or path split across a quote boundary, and substituting it in place would read a flag's
     /// own name, or an absolute path, out of a value that never reaches git as one (a regression
     /// this method's own tests pin: naming either term inside a quoted commit message must keep
-    /// running).
+    /// running) — except for a <c>$'...'</c> span whose decoded value itself opens with a refused
+    /// term (<see cref="BeginsWithARefusedTerm"/>): there, the whole flag and its whitespace-bearing
+    /// value sit inside the one quote, so blanking on whitespace alone erased the flag's own name
+    /// along with the value it was hiding behind (independent pre-PR review, cycle 3, adversarial
+    /// lens — verify pass).
     /// </summary>
     private static string UnescapeShellQuoting(string command)
     {
@@ -117,7 +121,8 @@ public static class GitReadOnlyGuardRoutes
                     break;
                 }
 
-                result.Append(decoded.Contains(' ') || decoded.Contains('\t')
+                bool hasWhitespace = decoded.Contains(' ') || decoded.Contains('\t');
+                result.Append(hasWhitespace && !BeginsWithARefusedTerm(decoded)
                     ? new string('#', nextIndex - index)
                     : decoded);
                 index = nextIndex;
@@ -153,6 +158,38 @@ public static class GitReadOnlyGuardRoutes
         }
 
         return result.ToString();
+    }
+
+    /// <summary>
+    /// Whether a decoded <c>$'...'</c> span opens with one of the refused terms itself, rather than
+    /// merely naming one somewhere inside a longer, unrelated value (independent pre-PR review,
+    /// cycle 3, adversarial lens — verify pass). Bash hands git the whole decoded span as a single
+    /// argument regardless of where the quote sits, so <c>$'--output=/tmp/my file.txt'</c> reaches
+    /// git exactly as <c>--output=/tmp/my file.txt</c> would unquoted: the flag is the value's own
+    /// prefix, not text mentioning the flag. Blanking that span the same way as an ordinary
+    /// multi-word argument (a commit message, a <c>--format</c> string) erased the
+    /// <c>--output=</c> prefix along with the path, so the flag was never seen at all — reopening
+    /// the write escape a prior cycle's fix was meant to close, through a spelling this class's own
+    /// tests never tried. Checking the match's own index rather than just whether it matches is what
+    /// keeps the still-required case running: <c>$'note: mentions --output here'</c> also matches
+    /// <see cref="OutputFlag"/>, but not at index 0, so it stays blanked.
+    /// </summary>
+    private static bool BeginsWithARefusedTerm(string decoded)
+    {
+        Match outputMatch = OutputFlag.Match(decoded);
+        if (outputMatch.Success && outputMatch.Index == 0)
+        {
+            return true;
+        }
+
+        Match noIndexMatch = NoIndexFlag.Match(decoded);
+        if (noIndexMatch.Success && noIndexMatch.Index == 0)
+        {
+            return true;
+        }
+
+        Match pathMatch = AbsolutePathArgument.Match(decoded);
+        return pathMatch.Success && pathMatch.Index == 0;
     }
 
     /// <summary>

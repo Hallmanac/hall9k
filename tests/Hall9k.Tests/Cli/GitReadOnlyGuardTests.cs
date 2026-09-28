@@ -76,6 +76,23 @@ public sealed class GitReadOnlyGuardTests
         GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeFalse();
 
     /// <summary>
+    /// The write escape the cycle 3 adversarial verify pass reopened: when the whole
+    /// <c>--output=&lt;path&gt;</c> flag, not just the path, sits inside one <c>$'...'</c> span and
+    /// the decoded path itself contains a space or a tab (an ordinary real-world path, e.g.
+    /// <c>/tmp/my file.txt</c>), blanking the entire span on whitespace alone erased the
+    /// <c>--output=</c> prefix along with the value, so the flag was never seen. Verified against
+    /// bash directly: <c>git diff $'--output=/tmp/my file.txt'</c> is one argv token and git's own
+    /// <c>--flag=value</c> parsing takes everything after <c>=</c> as the value regardless of
+    /// embedded whitespace.
+    /// </summary>
+    [Theory]
+    [InlineData("git diff $'--output=/tmp/my file.txt'")]
+    [InlineData("git log -1 --format=%H $'--output=/tmp/my file.txt'")]
+    [InlineData("git diff $'--no-index /tmp/a b'")]
+    public void An_ansi_c_quoted_flag_and_whitespace_bearing_value_together_is_still_refused(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
+    /// <summary>
     /// Either subcommand silently switches to filesystem-diff mode the moment it sees an absolute
     /// path, with no flag naming the mode at all (lesson f059f669) — the read escape that
     /// <c>Bash(git diff:*)</c>'s own prefix rule cannot tell apart from an ordinary diff.
