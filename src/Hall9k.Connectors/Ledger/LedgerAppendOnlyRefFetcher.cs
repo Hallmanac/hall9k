@@ -9,10 +9,15 @@ namespace Hall9k.Connectors.Ledger;
 /// (<see cref="GitLedger"/>, <c>Hall9k.Connectors.Ledger.GitLedgerCommitReader</c>,
 /// <c>Hall9k.Connectors.Trust.GitLedgerChainReader</c>) decides for itself whether that is
 /// something to let propagate or to catch and fall back to whatever this node last had locally — "a
-/// network failure is unchanged per class" (idea 6be68ee2, trust finding 8).
+/// network failure is unchanged per class" (idea 6be68ee2, trust finding 8). Derives from
+/// <see cref="InvalidOperationException"/>, the exact type every one of those three fetch call sites
+/// threw for this same failure before this class existed, because every caller several layers up
+/// (<c>ProjectMembersCommand</c>, <c>TaskAssignCommand</c>, <c>PromptAddendumOwnerRoleGate</c> and
+/// others) still catches only that type to fall back or report "re-run once the remote is
+/// reachable" (independent pre-PR review, cycle 1, both lenses, medium).
 /// </summary>
 public sealed class LedgerFetchFailedException(string refName, string gitError)
-    : Exception($"git fetch of {refName} from origin failed: {gitError.Trim()}")
+    : InvalidOperationException($"git fetch of {refName} from origin failed: {gitError.Trim()}")
 {
     public string RefName { get; } = refName;
 
@@ -82,6 +87,11 @@ public static class LedgerAppendOnlyRefFetcher
     private const string StagingNamespace = "refs/hall9k-staging/";
     private const string VerifiedNamespace = "refs/hall9k-verified/";
 
+    /// <summary>The all-zero object id <c>update-ref &lt;ref&gt; &lt;new&gt; &lt;old&gt;</c> reads as
+    /// "this ref must not already exist" — passed as the old value on a create, so a slower
+    /// concurrent caller can never overwrite a ref a faster one already created or advanced.</summary>
+    private const string NullObjectId = "0000000000000000000000000000000000000000";
+
     /// <summary>Fetches one append-only ref fresh and decides whether to move the live and verified
     /// refs, refuse, or simply report nothing there yet.</summary>
     public static async Task<LedgerAppendOnlyFetchResult> FetchAsync(
@@ -112,7 +122,11 @@ public static class LedgerAppendOnlyRefFetcher
         }
         finally
         {
-            await DeleteRefBestEffortAsync(runner, repositoryPath, stagingRef, cancellationToken);
+            // CancellationToken.None, deliberately: a cancelled caller (a daemon shutdown, say) must
+            // not skip this cleanup and leave the staging ref behind in the shared bare repository
+            // forever, holding its fetched objects reachable (independent pre-PR review, cycle 1,
+            // conformance lens, low).
+            await DeleteRefBestEffortAsync(runner, repositoryPath, stagingRef, CancellationToken.None);
         }
 
         return await DecideAndApplyAsync(runner, repositoryPath, refName, path, fetchedTip, cancellationToken);
@@ -162,7 +176,8 @@ public static class LedgerAppendOnlyRefFetcher
         }
         finally
         {
-            await DeleteStagedPrefixBestEffortAsync(runner, repositoryPath, stagingPrefix, cancellationToken);
+            // CancellationToken.None, deliberately — see FetchAsync's own identical cleanup.
+            await DeleteStagedPrefixBestEffortAsync(runner, repositoryPath, stagingPrefix, CancellationToken.None);
         }
     }
 
@@ -207,8 +222,11 @@ public static class LedgerAppendOnlyRefFetcher
                 // origin's own fetch just brought down: a fleet that had already rewound before this
                 // check shipped must not be re-trusted the moment it happens to fetch fresh content on
                 // this same call. The next call is the first one that actually verifies a fetch
-                // against this baseline.
-                await UpdateRefBestEffortAsync(runner, repositoryPath, verifiedRefName, localLiveTip, oldValue: null, cancellationToken);
+                // against this baseline. The null object id as the old value makes this create-only
+                // (independent pre-PR review, cycle 1, both lenses, low): without it, a slower
+                // concurrent caller could still overwrite a verified ref a faster one had already
+                // seeded or fast-forwarded past, moving the trust anchor backward.
+                await UpdateRefBestEffortAsync(runner, repositoryPath, verifiedRefName, localLiveTip, oldValue: NullObjectId, cancellationToken);
                 return new LedgerAppendOnlyFetchResult(localLiveTip, false, fetchedTip, localLiveTip, null);
             }
 
@@ -218,8 +236,9 @@ public static class LedgerAppendOnlyRefFetcher
             }
 
             // Nothing local to prefer: a fresh clone or a new joiner adopts whatever origin holds.
-            await UpdateRefBestEffortAsync(runner, repositoryPath, refName, fetchedTip, oldValue: null, cancellationToken);
-            await UpdateRefBestEffortAsync(runner, repositoryPath, verifiedRefName, fetchedTip, oldValue: null, cancellationToken);
+            // Create-only, for the identical reason the seed above is.
+            await UpdateRefBestEffortAsync(runner, repositoryPath, refName, fetchedTip, oldValue: NullObjectId, cancellationToken);
+            await UpdateRefBestEffortAsync(runner, repositoryPath, verifiedRefName, fetchedTip, oldValue: NullObjectId, cancellationToken);
             return new LedgerAppendOnlyFetchResult(fetchedTip, false, fetchedTip, fetchedTip, null);
         }
 
@@ -271,11 +290,19 @@ public static class LedgerAppendOnlyRefFetcher
             ? refName[LedgerRefRegistry.Namespace.Length..]
             : throw new ArgumentException($"{refName} does not start with {LedgerRefRegistry.Namespace}.", nameof(refName));
 
+    /// <summary>Whether <paramref name="refName"/> exists in the ref store at all, independent of
+    /// whether the object it names still resolves — <c>show-ref --verify</c> exits 128 ("bad ref"),
+    /// not the "not found" 1, the moment the ref's own commit object is missing, which made the
+    /// corruption branch below dead code (independent pre-PR review, cycle 1, conformance lens,
+    /// medium): a verified ref whose object was lost to local corruption looked identical to no
+    /// verified ref ever existing, so the next fetch silently re-seeded or adopted origin instead of
+    /// refusing. <c>for-each-ref</c> only ever reads the ref store, never the object it points at.
+    /// </summary>
     private static async Task<bool> ShowRefExistsAsync(
         ProcessRunner runner, string repositoryPath, string refName, CancellationToken cancellationToken)
     {
-        ProcessResult result = await runner("git", ["show-ref", "--verify", "--quiet", refName], repositoryPath, cancellationToken);
-        return result.ExitCode == 0;
+        ProcessResult result = await runner("git", ["for-each-ref", "--format=%(refname)", refName], repositoryPath, cancellationToken);
+        return result.ExitCode == 0 && result.StandardOutput.Trim() == refName;
     }
 
     private static async Task<string?> ResolveTipQuietAsync(
@@ -303,12 +330,14 @@ public static class LedgerAppendOnlyRefFetcher
             .Contains(candidateTip, StringComparer.Ordinal);
     }
 
-    /// <summary>Moves a ref, creating it when <paramref name="oldValue"/> is null, or
-    /// compare-and-swapping it into place otherwise (<c>update-ref &lt;ref&gt; &lt;new&gt; &lt;old&gt;</c>)
-    /// so a slow concurrent reader on this same node can never move it backward. Best-effort: losing
-    /// the race here only ever means a concurrent caller already advanced this ref to at least as far
-    /// forward as this call itself would have — never a data-integrity problem, so this call never
-    /// throws over it.</summary>
+    /// <summary>Moves a ref unconditionally when <paramref name="oldValue"/> is null — only ever
+    /// passed that way when this call's own caller has no old value of its own to compare against —
+    /// or compare-and-swapping it into place otherwise
+    /// (<c>update-ref &lt;ref&gt; &lt;new&gt; &lt;old&gt;</c>, <see cref="NullObjectId"/> included, which
+    /// reads as "must not already exist") so a slow concurrent reader on this same node can never
+    /// move it backward. Best-effort: losing the race here only ever means a concurrent caller
+    /// already advanced this ref to at least as far forward as this call itself would have — never a
+    /// data-integrity problem, so this call never throws over it.</summary>
     private static async Task UpdateRefBestEffortAsync(
         ProcessRunner runner, string repositoryPath, string refName, string newValue, string? oldValue,
         CancellationToken cancellationToken)
@@ -376,10 +405,10 @@ public static class LedgerAppendOnlyRefFetcher
 
     private static string BuildRewindReason(string path, string refName, string fetchedTip, string verifiedTip) =>
         $"{refName} was fetched at {fetchedTip}, but the last verified tip {verifiedTip} is not on that "
-        + "commit's own first-parent chain — a rewind, or a side merge whose first parent is the old tip "
-        + "and second parent the current one. Refused; this node keeps reading the verified tip. Repair "
+        + "commit's own first-parent chain (a rewind, or a side merge whose first parent is the old tip "
+        + "and second parent the current one). Refused; this node keeps reading the verified tip. Repair "
         + $"with 'git push origin refs/hall9k-verified/{path}:{refName}' (no plus sign, fast-forward only, "
-        + "safe to run from any node — an older tip pushed by a node that is behind is itself seen as a "
+        + "safe to run from any node: an older tip pushed by a node that is behind is itself seen as a "
         + "rewind by every current node and pushed forward again, converging on the newest). git "
         + "rejecting that push as diverged is a human decision: reconcile which history is correct, or, "
         + "for a legitimate owner rewrite such as purging a leaked secret, run "
