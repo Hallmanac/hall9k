@@ -79,9 +79,7 @@ public sealed class ProjectMembersCommand : Hall9kAsyncCommand<ProjectMembersCom
             IReadOnlyList<Guid> nodes = chain.OwnerChains.TryGetValue(member.RootFingerprint, out TrustedOwner? owner)
                 ? [.. owner.FleetNodeIds()]
                 : [];
-            string nodesCell = nodes.Count == 0
-                ? "[dim]none yet[/]"
-                : string.Join("\n", nodes.Select(nodeId => nodeId.ToString().EscapeMarkup()));
+            string nodesCell = DescribeFleet(nodes, owner);
 
             table.AddRow(
                 member.RootFingerprint.EscapeMarkup(),
@@ -99,6 +97,53 @@ public sealed class ProjectMembersCommand : Hall9kAsyncCommand<ProjectMembersCom
 
         WriteUnverifiedWrites(chain);
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// The Nodes cell: one line per fleet node id, each carrying its own succession state (idea
+    /// 6be68ee2) — <c>(root key)</c> for a node whose own vouched key a validated rotation promoted
+    /// into this root's live key set, <c>(successor)</c> for a node with a currently live successor
+    /// record awaiting one, and no suffix at all for the root's own original node or an ordinary
+    /// fleet node with neither. A one-node fleet with no successor listed at all says so plainly
+    /// (idea 6be68ee2, journal finding 10: "an owner with only one node has no heir"), since a quiet
+    /// cell here would otherwise look identical to a fleet that simply has not been asked about yet.
+    /// </summary>
+    internal static string DescribeFleet(IReadOnlyList<Guid> nodes, TrustedOwner? owner)
+    {
+        if (nodes.Count == 0)
+        {
+            return "[dim]none yet[/]";
+        }
+
+        string cell = string.Join("\n", nodes.Select(nodeId => DescribeFleetNode(nodeId, owner)));
+        if (owner is not null && nodes.Count == 1 && owner.SuccessorNodeIds.Count == 0 && owner.RootKeys.Count == 1)
+        {
+            cell += "\n[dim]no successor[/]";
+        }
+
+        return cell;
+    }
+
+    private static string DescribeFleetNode(Guid nodeId, TrustedOwner? owner)
+    {
+        string label = nodeId.ToString().EscapeMarkup();
+        if (owner is null)
+        {
+            return label;
+        }
+
+        string nodeIdText = nodeId.ToString();
+        if (owner.RootKeys.Any(key => key.IntroducedByNodeId == nodeIdText))
+        {
+            return $"{label} [dim](root key)[/]";
+        }
+
+        if (owner.SuccessorNodeIds.Contains(nodeIdText))
+        {
+            return $"{label} [dim](successor)[/]";
+        }
+
+        return label;
     }
 
     /// <summary>
