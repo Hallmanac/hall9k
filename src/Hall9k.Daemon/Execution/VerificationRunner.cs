@@ -214,20 +214,29 @@ public sealed partial class VerificationRunner(
         }
 
         IReadOnlyList<VerifyCommand> gates = project?.VerifyCommands ?? [];
-        string gatesFingerprint = VerifyCommand.Fingerprint(gates);
 
         // A node runs a project's verify gates only after its own operator has accepted that exact
         // gate set (security review idea 6be68ee2, process-injection finding 1, the local half) —
-        // compared against the ALREADY-LOADED project's own accepted set, never a re-read: `gates`
-        // is the list this pass is about to run, captured once, right here, and it stays that exact
-        // list for the rest of this method even if the project's own current configuration changes
-        // again while this pass waits below. A mismatch holds this run's slot exactly the way the
-        // host-coupled gate permit does (AcquireHostCoupledGatePermitAsync below), never fails it.
+        // compared against the ALREADY-LOADED project's own accepted set. A mismatch holds this
+        // run's slot exactly the way the host-coupled gate permit does
+        // (AcquireHostCoupledGatePermitAsync below), never fails it. The wait itself re-reads the
+        // project's own CURRENT gate list on every poll, not just this frozen snapshot (independent
+        // pre-PR review, cycle 1, both lenses, medium: a wait pinned to the exact list captured here
+        // could never be released by the ordinary ways an operator fixes a bad gate set — a
+        // `h9k project set --verify` that both changes and accepts a corrected list in one call, or
+        // an `accept-gates` run against a set that moved again while this run was already waiting —
+        // because neither one can ever accept the stale snapshot this run captured before either
+        // happened). `gates` is reassigned to whatever list the wait actually resolved against, so
+        // every use below — the fingerprint recorded on the run, the content-task classification,
+        // and the gates that actually execute — runs the list this node's operator most recently
+        // accepted, never a list this run captured and then outran.
         if (project is not null
             && !GateSetAcceptance.Decide(project.AcceptedVerifyCommands, gates).Proceed)
         {
-            await WaitForGateSetAcceptanceAsync(runId, project.Id, gates, cancellationToken);
+            gates = await WaitForGateSetAcceptanceAsync(runId, project.Id, cancellationToken);
         }
+
+        string gatesFingerprint = VerifyCommand.Fingerprint(gates);
 
         // Before any gate runs — and before the no-gates-configured early return just below, so a
         // content task's own refusal fires whether or not the project has any gates configured at
@@ -2160,23 +2169,35 @@ public sealed partial class VerificationRunner(
 
     /// <summary>
     /// Holds this run's slot — exactly the way <see cref="AcquireHostCoupledGatePermitAsync"/> holds
-    /// one for the node-wide host-coupled-gate permit — until this node's own operator accepts the
-    /// fingerprint of <paramref name="gates"/> (security review idea 6be68ee2, process-injection
-    /// finding 1, the local half). Called only once the caller has already confirmed a mismatch, so
-    /// this method always appends <see cref="RunGateSetAcceptanceWaitStarted"/> — unlike the
-    /// host-coupled permit's own silent first-try path, there is no "acquired on the first try"
-    /// shape here to distinguish. <paramref name="gates"/> itself never changes across the poll: what
-    /// this run waits to have accepted is the exact list it captured at entry, never whatever the
-    /// project's own current configuration happens to read on a later poll.
+    /// one for the node-wide host-coupled-gate permit — until this node's own operator accepts this
+    /// project's own CURRENT gate set (security review idea 6be68ee2, process-injection finding 1,
+    /// the local half). Called only once the caller has already confirmed a mismatch, so this method
+    /// always appends <see cref="RunGateSetAcceptanceWaitStarted"/> — unlike the host-coupled
+    /// permit's own silent first-try path, there is no "acquired on the first try" shape here to
+    /// distinguish. Re-reads the project's own current gate list on every poll, not just its
+    /// acceptance, and returns whichever list was actually accepted (independent pre-PR review,
+    /// cycle 1, both lenses, medium: a wait pinned to the exact list the caller captured at entry
+    /// could never be released once the project's own current set moved again — neither
+    /// `h9k project set --verify` correcting and accepting a new list in one call, nor
+    /// `h9k project accept-gates` accepting whatever the project's current set has since become, can
+    /// ever accept a snapshot that is no longer current, so a wait that only ever compared against
+    /// that snapshot held the run's slot forever).
     /// </summary>
-    private async Task WaitForGateSetAcceptanceAsync(
-        Guid runId, Guid projectId, IReadOnlyList<VerifyCommand> gates, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<VerifyCommand>> WaitForGateSetAcceptanceAsync(
+        Guid runId, Guid projectId, CancellationToken cancellationToken)
     {
         await RecordGateSetAcceptanceWaitStartedAsync(runId, cancellationToken);
         try
         {
-            while (!await GateSetAcceptedAsync(projectId, gates, cancellationToken))
+            while (true)
             {
+                (bool proceed, IReadOnlyList<VerifyCommand> current) =
+                    await GateSetAcceptedAsync(projectId, cancellationToken);
+                if (proceed)
+                {
+                    return current;
+                }
+
                 await Task.Delay(options.Value.PollInterval, cancellationToken);
             }
         }
@@ -2200,18 +2221,18 @@ public sealed partial class VerificationRunner(
     }
 
     /// <summary>
-    /// A fresh read of this node's own acceptance, each poll — the ONE re-read this feature ever
-    /// makes, and deliberately narrow: only <see cref="ProjectDetails.AcceptedVerifyCommands"/>,
-    /// never <see cref="ProjectDetails.VerifyCommands"/>, so a project's current configuration
-    /// changing again mid-wait can never substitute a different, unvetted list for the one this run
-    /// captured and is actually waiting to see accepted.
+    /// A fresh read of this node's own acceptance against this project's own CURRENT gate list,
+    /// each poll — both read together, fresh, so a project whose gates moved again since the last
+    /// poll is judged against what it holds now, never a stale snapshot from an earlier poll or
+    /// from the caller's own entry into the wait.
     /// </summary>
-    private async Task<bool> GateSetAcceptedAsync(
-        Guid projectId, IReadOnlyList<VerifyCommand> gates, CancellationToken cancellationToken)
+    private async Task<(bool Proceed, IReadOnlyList<VerifyCommand> Current)> GateSetAcceptedAsync(
+        Guid projectId, CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
         ProjectDetails? project = await query.LoadAsync<ProjectDetails>(projectId, cancellationToken);
-        return GateSetAcceptance.Decide(project?.AcceptedVerifyCommands, gates).Proceed;
+        IReadOnlyList<VerifyCommand> current = project?.VerifyCommands ?? [];
+        return (GateSetAcceptance.Decide(project?.AcceptedVerifyCommands, current).Proceed, current);
     }
 
     private async Task RecordGateSetAcceptanceWaitStartedAsync(Guid runId, CancellationToken cancellationToken)
