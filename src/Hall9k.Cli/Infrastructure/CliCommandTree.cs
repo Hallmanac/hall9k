@@ -318,7 +318,9 @@ public static class CliCommandTree
                     + "through gh first and, when gh cannot answer, the stored copy is used and its date "
                     + "is printed under the table. The chain is recomputed fresh every run — a revocation "
                     + "or a removal another node made shows up the moment this runs again, never a local "
-                    + "cache.")
+                    + "cache. Under the Root fingerprint, dimmed, is the newest display name declared "
+                    + "across that root's own nodes when one is declared (task e6744304, h9k owner set "
+                    + "--display-name): a label only, never part of any trust or cross-check decision.")
                 .WithExample("project", "members", "hall9k");
             project.AddBranch("member", member =>
             {
