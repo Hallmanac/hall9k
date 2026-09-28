@@ -107,7 +107,7 @@ public sealed class ProjectInviteCommand : Hall9kAsyncCommand<ProjectInviteComma
                 $"This node ({key.Fingerprint}) does not currently hold a live root key for owner {myRoot} — "
                 + "only the root itself may mint a member-of-project invite (idea 6be68ee2, trust-ledger "
                 + $"finding 2: a vouched node key can no longer write membership). Re-run h9k project invite "
-                + $"{project.Name} from a node holding a root key for {myRoot}.");
+                + $"{project.Name} from a node holding a root key for {myRoot}{RootNodeDescription.Of(chain, myRoot)}.");
         }
 
         string secret = InviteSecret.Generate();
