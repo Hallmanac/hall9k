@@ -46,4 +46,23 @@ public sealed class MessagesSenderCellTests
 
         MessagesCommand.SenderCell(NodeId, labels).Should().Contain("[[Brian]]");
     }
+
+    /// <summary>
+    /// A node of this machine's own owner shows the id alone (independent pre-PR review, cycle 1,
+    /// both lenses, medium): before this fix, <c>SenderCell</c> never passed an owner root
+    /// fingerprint through to <see cref="MemberLabelResolver.LabelForNodeId"/> at all, so a message
+    /// from this owner's own other node was labelled the same as a message from anyone else's.
+    /// </summary>
+    [Fact]
+    public void Shows_the_id_alone_for_a_node_of_this_machines_own_owner()
+    {
+        ProjectMemberLabels labels = new()
+        {
+            Id = Guid.NewGuid(),
+            Labels = [new("root-fingerprint", [NodeId], DisplayName.Parse("Brian"), null)],
+        };
+
+        MessagesCommand.SenderCell(NodeId, labels, ownRootFingerprint: "root-fingerprint").Should()
+            .Be(Hall9k.Domain.Infrastructure.Ids.DomainId.Short(NodeId));
+    }
 }

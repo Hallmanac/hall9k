@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Extensions;
@@ -74,6 +76,11 @@ public sealed class MessagesCommand : Hall9kAsyncCommand<MessagesCommand.Setting
             ? new Dictionary<Guid, ProjectMemberLabels>()
             : (await session.LoadManyAsync<ProjectMemberLabels>(cancellationToken, projectIds))
                 .ToDictionary(labels => labels.Id);
+        // The identical single-owner-per-install lookup OrchestratorFeedReader.LabelLookupAsync
+        // already relies on, so a node of this machine's own owner reads as a bare id here too
+        // rather than naming "me" (independent pre-PR review, cycle 1, conformance lens, medium).
+        OwnerDetails? owner = (await session.Query<OwnerDetails>().Take(1).ToListAsync(cancellationToken))
+            .FirstOrDefault();
 
         Table table = new Table().Border(TableBorder.Rounded);
         table.AddColumn("Id");
@@ -90,7 +97,7 @@ public sealed class MessagesCommand : Hall9kAsyncCommand<MessagesCommand.Setting
             labelsByProject.TryGetValue(message.ProjectId, out ProjectMemberLabels? projectLabels);
             table.AddRow(
                 shortId,
-                SenderCell(message.FromNodeId, projectLabels),
+                SenderCell(message.FromNodeId, projectLabels, owner?.RootFingerprint),
                 message.ProjectId == Guid.Empty ? "[dim]—[/]" : TaskListCommand.ShortId(message.ProjectId),
                 message.SentAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? string.Empty,
                 message.About is { Length: > 0 } about ? about.EscapeMarkup() : "[dim]—[/]",
@@ -106,16 +113,20 @@ public sealed class MessagesCommand : Hall9kAsyncCommand<MessagesCommand.Setting
 
     /// <summary>
     /// The Sender column: the sending node's short id, with the owning member's own label appended
-    /// in parentheses when this project's own projection knows one (task b7d8222e) — markup-escaped,
-    /// since a display name or a declared login can carry the square brackets Spectre's table cells
-    /// would otherwise try to parse as its own markup. Pure and database-free so it is a unit test
-    /// rather than an integration one.
+    /// in parentheses when this project's own projection knows one for a node that is not this
+    /// machine's own owner's (task b7d8222e) — sanitized and bounded before it is escaped for
+    /// markup (<see cref="ExternalText.OneLineMarkup"/>, <see cref="MemberLabelResolver.RenderLimit"/>),
+    /// since a display name or a declared login is read from another member's own self-signed
+    /// ledger file, not authored by this node, and can carry more than the square brackets
+    /// Spectre's table cells would otherwise try to parse as its own markup (independent pre-PR
+    /// review, cycle 1, both lenses, medium). Pure and database-free so it is a unit test rather
+    /// than an integration one.
     /// </summary>
-    internal static string SenderCell(Guid fromNodeId, ProjectMemberLabels? projectLabels)
+    internal static string SenderCell(Guid fromNodeId, ProjectMemberLabels? projectLabels, string? ownRootFingerprint = null)
     {
         string id = TaskListCommand.ShortId(fromNodeId);
-        return MemberLabelResolver.LabelForNodeId(projectLabels, fromNodeId) is { } label
-            ? $"{id} ({label.EscapeMarkup()})"
+        return MemberLabelResolver.LabelForNodeId(projectLabels, fromNodeId, ownRootFingerprint) is { } label
+            ? $"{id} ({ExternalText.OneLineMarkup(RelayedText.Truncate(label, MemberLabelResolver.RenderLimit))})"
             : id;
     }
 }

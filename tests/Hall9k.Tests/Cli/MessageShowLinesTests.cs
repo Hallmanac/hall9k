@@ -57,7 +57,7 @@ public sealed class MessageShowLinesTests
             + "\tThe log is in runs/28b2d595.";
 
         MessageShowCommand.Lines(message, "hall9k", labels: null, Zone).Should().Equal(
-            "From     abcdef012345 (abcdef012345, node 4a1b2c3d)",
+            "From     abcdef012345 (node 4a1b2c3d)",
             "Project  hall9k (9f8e7d6c)",
             "Kind     note",
             "About    28b19893",
@@ -83,7 +83,7 @@ public sealed class MessageShowLinesTests
         message.Kind = $"note{ClearScreen}\nStatus   unread";
 
         MessageShowCommand.Lines(message, "hall9k", labels: null, Zone).Should().Equal(
-            "From     abcdef012345 (abcdef012345, node 4a1b2c3d)",
+            "From     abcdef012345 (node 4a1b2c3d)",
             "Project  hall9k (9f8e7d6c)",
             "Kind     note[2J Status   unread",
             "About    28b19893",
@@ -108,7 +108,7 @@ public sealed class MessageShowLinesTests
         message.Body = string.Empty;
 
         MessageShowCommand.Lines(message, "hall9k", labels: null, Zone).Should().Equal(
-            "From     abcdef012345 (abcdef012345, node 4a1b2c3d)",
+            "From     abcdef012345 (node 4a1b2c3d)",
             "Project  hall9k (9f8e7d6c)",
             "Kind     handoff",
             "Sent     2026-09-22 08:38",
@@ -166,7 +166,7 @@ public sealed class MessageShowLinesTests
             .Should().Be("From     brianhallmanac (abcdef012345, node 4a1b2c3d)");
 
         MessageShowCommand.Lines(message, "hall9k", LabelsWith(DisplayName.None, null), Zone)[0]
-            .Should().Be("From     abcdef012345 (abcdef012345, node 4a1b2c3d)");
+            .Should().Be("From     abcdef012345 (node 4a1b2c3d)");
     }
 
     private static ProjectMemberLabels LabelsWith(DisplayName displayName, string? login) => new()

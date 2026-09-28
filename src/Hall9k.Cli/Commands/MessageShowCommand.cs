@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Globalization;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Trust;
@@ -135,6 +136,14 @@ public sealed class MessageShowCommand : Hall9kAsyncCommand<MessageShowCommand.S
     /// only the label — a detail view keeps the fingerprint beside the label rather than replacing
     /// it, and a foreign node's friendly name never replicates, so these are the whole of what this
     /// node can honestly say about a sender.
+    /// <para>
+    /// The label is folded to one line and bounded the same way every other header field is
+    /// (<see cref="MemberLabelResolver.RenderLimit"/>) rather than trusted verbatim: it is read
+    /// from another member's own self-signed ledger file, not authored by this node (independent
+    /// pre-PR review, cycle 1, both lenses, medium). When the projection knows no display name or
+    /// login the label falls back to the identical short fingerprint already printed beside it —
+    /// shown once, not twice.
+    /// </para>
     /// </summary>
     private static string Sender(MessageDetails message, ProjectMemberLabels? labels)
     {
@@ -146,8 +155,11 @@ public sealed class MessageShowCommand : Hall9kAsyncCommand<MessageShowCommand.S
         }
 
         string owner = fingerprint[..Math.Min(12, fingerprint.Length)];
-        string label = MemberLabelResolver.LabelForFingerprint(labels, fingerprint);
-        return $"{label} ({owner}, {node})";
+        string label = ExternalText.OneLine(
+            RelayedText.Truncate(MemberLabelResolver.LabelForFingerprint(labels, fingerprint), MemberLabelResolver.RenderLimit));
+        return label == owner
+            ? $"{label} ({node})"
+            : $"{label} ({owner}, {node})";
     }
 
     /// <summary>

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Trust;
@@ -99,9 +100,16 @@ public sealed class MessageHandleCommand : Hall9kAsyncCommand<MessageHandleComma
     /// fingerprint this line has always printed — kept, never replaced, the same "detail view keeps
     /// the fingerprint" rule <c>MessageShowCommand.Sender</c> applies. Pure and database-free so the
     /// three shapes a sender's own label can take are unit tests rather than an integration one.
+    /// <para>
+    /// This line goes through <c>AnsiConsole.MarkupLineInterpolated</c>, so the label is sanitized
+    /// and markup-escaped before it reaches that interpolation (<see cref="ExternalText.OneLineMarkup"/>
+    /// and <see cref="MemberLabelResolver.RenderLimit"/>) rather than trusted verbatim — it is read
+    /// from another member's own self-signed ledger file, not authored by this node (independent
+    /// pre-PR review, cycle 1, both lenses, medium).
+    /// </para>
     /// </summary>
     internal static string ConfirmationSender(string? fingerprint, ProjectMemberLabels? labels) =>
         fingerprint.IsNotBlank()
-            ? $"{MemberLabelResolver.LabelForFingerprint(labels, fingerprint!)} ({fingerprint})"
+            ? $"{ExternalText.OneLineMarkup(RelayedText.Truncate(MemberLabelResolver.LabelForFingerprint(labels, fingerprint), MemberLabelResolver.RenderLimit))} ({fingerprint})"
             : "owner not recorded";
 }

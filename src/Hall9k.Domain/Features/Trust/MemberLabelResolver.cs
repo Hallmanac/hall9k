@@ -10,6 +10,17 @@ namespace Hall9k.Domain.Features.Trust;
 public static class MemberLabelResolver
 {
     /// <summary>
+    /// The bound every surface applies to a resolved label before it reaches a terminal
+    /// (independent pre-PR review, cycle 1, both lenses, medium): a display name is read from
+    /// another member's own self-signed <c>node.yaml</c> through <c>DisplayName.Trusted</c>, which
+    /// skips <c>DisplayName.Parse</c>'s own length and control-character rule, and a declared login
+    /// is read with no rule at all — so the value this method returns can carry a raw escape
+    /// sequence or run to any length. The same bound <c>ProjectMembersCommand.RenderDisplayName</c>
+    /// already applies to the identical value.
+    /// </summary>
+    public const int RenderLimit = 64;
+
+    /// <summary>
     /// The label for <paramref name="fingerprint"/> in one project: its member's newest display
     /// name, else their newest declared login, else the fingerprint's own short form — the honest
     /// fallback for a fingerprint the projection has never recorded a label for (an unknown member,
