@@ -130,7 +130,7 @@ public sealed class ClaimRequestWatchLoopApplyDeclaredTrackerIdentityTests
         ClaimEnvelopeCodec.ClaimRequestRecord request = RequestCarrying("mallory");
 
         (ClaimEnvelopeCodec.ClaimRequestRecord effective, bool replaced) = ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity(
-            ClaimGate.TrackerAssignee, WorkItemProvider.GitHub, chain, request, FromNodeId);
+            WorkItemProvider.GitHub, chain, request, FromNodeId);
 
         effective.RequesterTrackerIdentity.Should().Be("alice", "the requesting node's own declared login wins over whatever it self-declared on the request");
         replaced.Should().BeTrue("the carried identity and the declared login genuinely differ");
@@ -143,7 +143,7 @@ public sealed class ClaimRequestWatchLoopApplyDeclaredTrackerIdentityTests
         ClaimEnvelopeCodec.ClaimRequestRecord request = RequestCarrying("alice");
 
         (ClaimEnvelopeCodec.ClaimRequestRecord effective, bool replaced) = ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity(
-            ClaimGate.TrackerAssignee, WorkItemProvider.GitHub, chain, request, FromNodeId);
+            WorkItemProvider.GitHub, chain, request, FromNodeId);
 
         effective.RequesterTrackerIdentity.Should().Be("alice");
         replaced.Should().BeFalse("nothing actually changed, so this must never be logged as a replacement");
@@ -161,7 +161,7 @@ public sealed class ClaimRequestWatchLoopApplyDeclaredTrackerIdentityTests
         ClaimEnvelopeCodec.ClaimRequestRecord request = RequestCarrying("mallory");
 
         (ClaimEnvelopeCodec.ClaimRequestRecord effective, bool replaced) = ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity(
-            ClaimGate.TrackerAssignee, WorkItemProvider.GitHub, chainWithNoDeclaration, request, FromNodeId);
+            WorkItemProvider.GitHub, chainWithNoDeclaration, request, FromNodeId);
 
         effective.RequesterTrackerIdentity.Should().BeNull(
             "a node with no declaration never falls back to its own untrusted, self-declared carried value");
@@ -175,14 +175,14 @@ public sealed class ClaimRequestWatchLoopApplyDeclaredTrackerIdentityTests
         ClaimEnvelopeCodec.ClaimRequestRecord request = RequestCarrying("mallory");
 
         (ClaimEnvelopeCodec.ClaimRequestRecord effective, bool replaced) = ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity(
-            ClaimGate.TrackerAssignee, WorkItemProvider.GitHubPullRequest, chain, request, FromNodeId);
+            WorkItemProvider.GitHubPullRequest, chain, request, FromNodeId);
 
         effective.RequesterTrackerIdentity.Should().Be("alice");
         replaced.Should().BeTrue();
     }
 
     [Fact]
-    public void A_jira_gated_request_keeps_its_carried_accountId_even_when_a_github_login_is_declared()
+    public void A_jira_linked_request_keeps_its_carried_accountId_even_when_a_github_login_is_declared()
     {
         // The declaration carries no Jira identity at all (NodeGitHubDeclaration's own doc) — the
         // carried accountId is already the audit fact TaskTakeRequested records.
@@ -190,35 +190,47 @@ public sealed class ClaimRequestWatchLoopApplyDeclaredTrackerIdentityTests
         ClaimEnvelopeCodec.ClaimRequestRecord request = RequestCarrying("jira-account-id-123");
 
         (ClaimEnvelopeCodec.ClaimRequestRecord effective, bool replaced) = ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity(
-            ClaimGate.TrackerAssignee, WorkItemProvider.Jira, chain, request, FromNodeId);
+            WorkItemProvider.Jira, chain, request, FromNodeId);
 
         effective.RequesterTrackerIdentity.Should().Be("jira-account-id-123");
         replaced.Should().BeFalse();
     }
 
     [Fact]
-    public void An_ungated_project_never_touches_the_carried_identity()
+    public void An_ungated_project_still_has_its_carried_identity_replaced()
     {
+        // independent pre-PR review, cycle 1, both lenses, medium: the project's own ClaimGate can
+        // still change to TrackerAssignee before the eventual grant, and
+        // ClaimRequestEngine.GrantTrackerAssigneeBestEffortAsync reads the gate fresh at grant time,
+        // not as of this request — so gating this replacement on today's ClaimGate would leave a
+        // stale, unreplaced, attacker-chosen login sitting on PendingTakeRequesterTrackerIdentity
+        // for a later grant to pick up. Replacing here regardless of the gate costs nothing: an
+        // ungated task never reaches GrantTrackerAssigneeBestEffortAsync's own use of this value.
         TrustChain chain = ChainDeclaring("alice");
         ClaimEnvelopeCodec.ClaimRequestRecord request = RequestCarrying("mallory");
 
         (ClaimEnvelopeCodec.ClaimRequestRecord effective, bool replaced) = ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity(
-            ClaimGate.Off, WorkItemProvider.GitHub, chain, request, FromNodeId);
+            WorkItemProvider.GitHub, chain, request, FromNodeId);
 
-        effective.RequesterTrackerIdentity.Should().Be("mallory");
-        replaced.Should().BeFalse();
+        effective.RequesterTrackerIdentity.Should().Be("alice");
+        replaced.Should().BeTrue();
     }
 
     [Fact]
-    public void A_task_with_no_external_reference_yet_never_touches_the_carried_identity()
+    public void A_task_with_no_external_reference_yet_still_has_its_carried_identity_replaced()
     {
+        // The same timing gap as the ungated case above, but for the link rather than the gate: a
+        // task with no external reference yet can still be linked to a GitHub item before the
+        // eventual grant, at which point GrantTrackerAssigneeBestEffortAsync reads that link fresh.
+        // Only a reference already known to be Jira is exempted, since that is the one case this
+        // replacement would get wrong.
         TrustChain chain = ChainDeclaring("alice");
         ClaimEnvelopeCodec.ClaimRequestRecord request = RequestCarrying("mallory");
 
         (ClaimEnvelopeCodec.ClaimRequestRecord effective, bool replaced) = ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity(
-            ClaimGate.TrackerAssignee, externalReferenceProvider: null, chain, request, FromNodeId);
+            externalReferenceProvider: null, chain, request, FromNodeId);
 
-        effective.RequesterTrackerIdentity.Should().Be("mallory");
-        replaced.Should().BeFalse();
+        effective.RequesterTrackerIdentity.Should().Be("alice");
+        replaced.Should().BeTrue();
     }
 }
