@@ -899,50 +899,71 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // gate runs fresh at replay (never reached, or judged, while the stream is still missing).
         if (streamExists && TaskActClassificationRegistry.TryClassificationOf(eventType) is { } classification)
         {
+            // Resolved once, up front, for every act reaching this gate — cheap, in-memory, no
+            // store read — rather than only for the ones a classification would otherwise force a
+            // read for: independent pre-PR review, cycle 8, conformance and adversarial lenses,
+            // high, needs it here too, ahead of the "earlier held for this origin" check just below.
+            SenderResolution? recordSender = ResolveSender(trustChain, senderFingerprint, senderNodeId);
+            bool senderIsOwner = recordSender is { Role: MembershipRole.Owner };
+
             // Every later record from this exact origin targeting this exact stream is held behind
             // an earlier one this origin already has waiting here, whatever its OWN classification
             // says — appending it first would let its own append set this stream's per-origin
             // high-water mark past the held record's own sequence, and the guard below would then
             // refuse the held record as out of order the moment it finally clears
-            // (OriginHighWaterAsync's own doc).
-            HeldTaskActRecord? earlierHeldForThisOrigin = await session.Query<HeldTaskActRecord>()
-                .Where(held => held.ProjectId == projectId && held.StreamId == effectiveStreamId
-                    && held.OriginNodeId == record.OriginNodeId && held.OriginSequence < record.OriginSequence)
-                .OrderBy(held => held.OriginSequence)
-                .FirstOrDefaultAsync(cancellationToken);
-            if (earlierHeldForThisOrigin is not null)
+            // (OriginHighWaterAsync's own doc). Skipped for an owner-role sender's own direct act:
+            // an owner always applies "whatever classification says" (the owner override just
+            // below), and queuing it behind some OTHER sender's still-unresolved claim about a
+            // different act on the same origin would block a fact this node already trusts
+            // unconditionally, for no protective reason at all (independent pre-PR review, cycle 8,
+            // conformance lens, high).
+            if (!senderIsOwner)
             {
-                // This record itself is judged no further once it queues — the earlier held record
-                // is the only one ReCheckHeldTaskActsAsync ever re-judges — so if THIS record is the
-                // true origin's own direct delivery (record.OriginNodeId == senderNodeId), it is also
-                // the one proof that can ever backfill TaskCreatorRootRecord.CreatorRootFingerprint
-                // for a relayed genesis (ResolveCreatorRootFingerprintAsync's own doc). Run before
-                // queuing, not after, or a draft revised entirely through direct deliveries — with no
-                // held relayed act ever superseded by a later run event on a different stream — would
-                // queue forever behind a held head that can never itself resolve who the creator is
-                // (independent pre-PR review, cycle 4, adversarial lens, high).
-                SenderResolution? queuedSender = ResolveSender(trustChain, senderFingerprint, senderNodeId);
-                await ResolveCreatorRootFingerprintAsync(
-                    session, task: null, earlierHeldForThisOrigin.TaskId, record.OriginNodeId, senderNodeId,
-                    queuedSender, cancellationToken);
-                await HoldTaskActAsync(
-                    session, record, effectiveStreamId, earlierHeldForThisOrigin.TaskId, projectId, senderNodeId,
-                    senderFingerprint, originProjectKey, now, taskActCatchUpAskTaskIdsThisRead: null, cancellationToken);
-                return 0;
+                HeldTaskActRecord? earlierHeldForThisOrigin = await session.Query<HeldTaskActRecord>()
+                    .Where(held => held.ProjectId == projectId && held.StreamId == effectiveStreamId
+                        && held.OriginNodeId == record.OriginNodeId && held.OriginSequence < record.OriginSequence)
+                    .OrderBy(held => held.OriginSequence)
+                    .FirstOrDefaultAsync(cancellationToken);
+                if (earlierHeldForThisOrigin is not null)
+                {
+                    // This record itself is judged no further once it queues — the earlier held record
+                    // is the only one ReCheckHeldTaskActsAsync ever re-judges — so if THIS record is the
+                    // true origin's own direct delivery (record.OriginNodeId == senderNodeId), it is also
+                    // the one proof that can ever backfill TaskCreatorRootRecord.CreatorRootFingerprint
+                    // for a relayed genesis (ResolveCreatorRootFingerprintAsync's own doc). Run before
+                    // queuing, not after, or a draft revised entirely through direct deliveries — with no
+                    // held relayed act ever superseded by a later run event on a different stream — would
+                    // queue forever behind a held head that can never itself resolve who the creator is
+                    // (independent pre-PR review, cycle 4, adversarial lens, high).
+                    await ResolveCreatorRootFingerprintAsync(
+                        session, task: null, earlierHeldForThisOrigin.TaskId, record.OriginNodeId, senderNodeId,
+                        recordSender, cancellationToken);
+                    await HoldTaskActAsync(
+                        session, record, effectiveStreamId, earlierHeldForThisOrigin.TaskId, projectId, senderNodeId,
+                        senderFingerprint, originProjectKey, now, taskActCatchUpAskTaskIdsThisRead: null, cancellationToken);
+                    return 0;
+                }
             }
 
             // Plain MemberSafe — every entry but TaskAssigned's own special rule — is always
-            // Allowed here, exactly as EvaluateTaskActVerdict's own first check decides, without
-            // ever consulting the sender, the task, or the creator root; an owner-role sender's act
-            // is Allowed too, whatever classification says, the moment the sender alone is known.
-            // Both skip the aggregate reads below entirely — a full replay of the task stream, the
-            // run stream too for a Run act, and (inside the creator-root backfill) a native task's
-            // own full stream fetch — none of which either verdict was ever going to consult
-            // (independent pre-PR review, cycle 4, both lenses, medium: on a bootstrap or repair
-            // applying a run's history one event at a time, that cost was quadratic in the run's
-            // own event count for every plain observation and every owner-sent act alike).
-            bool alwaysAllowed = classification == TaskActClassification.MemberSafe && eventType != typeof(TaskAssigned);
-            SenderResolution? actSender = alwaysAllowed ? null : ResolveSender(trustChain, senderFingerprint, senderNodeId);
+            // Allowed here without ever consulting the task or the creator root, exactly as
+            // EvaluateTaskActVerdict's own first check decides, but only for a NATIVE delivery
+            // (record.OriginNodeId == senderNodeId): nothing else in this bucket verifies who the
+            // true origin actually is, so extending that shortcut to a FORWARDED claim would let any
+            // current project member stamp an arbitrary origin and sequence onto a plain observation
+            // and freeze that origin's own future writes on this stream for good (independent pre-PR
+            // review, cycle 8, conformance and adversarial lenses, high — EvaluateTaskActVerdict's
+            // own doc). An owner-role sender's act is Allowed too, whatever classification says, the
+            // moment the sender alone is known. Both skip the aggregate reads below entirely — a
+            // full replay of the task stream, the run stream too for a Run act, and (inside the
+            // creator-root backfill) a native task's own full stream fetch — none of which either
+            // verdict was ever going to consult (independent pre-PR review, cycle 4, both lenses,
+            // medium: on a bootstrap or repair applying a run's history one event at a time, that
+            // cost was quadratic in the run's own event count for every plain observation and every
+            // owner-sent act alike).
+            bool alwaysAllowed = classification == TaskActClassification.MemberSafe && eventType != typeof(TaskAssigned)
+                && record.OriginNodeId == senderNodeId;
+            SenderResolution? actSender = alwaysAllowed ? null : recordSender;
             if (!alwaysAllowed && actSender is not { Role: MembershipRole.Owner })
             {
                 TaskActTargetResolution target =
@@ -1709,16 +1730,28 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         SenderResolution? sender, Guid originNodeId, Guid senderNodeId, string? creatorRootFingerprint = null)
     {
         // Plain MemberSafe — every entry in that bucket except TaskAssigned's own special rule —
-        // was never gated at all before this PR, and stays that way: nothing about the sender's
-        // own work (adding, completing, or reporting on a task or run this same node is running)
-        // or a plain observation changes because a trust chain this read happened to compute does
-        // or does not currently resolve the sender to a known project member. Checked before
-        // sender resolution even matters, so a chain this node cannot currently fully resolve (or
-        // TrustChain.Empty, the degenerate case with no chain data at all) never halts the
-        // ordinary run of task and run lifecycle events every install already relied on.
+        // was never gated at all before this PR, and stays that way for a NATIVE delivery
+        // (originNodeId == senderNodeId, this sender's own outbox, never forwarded): nothing about
+        // the sender's own work (adding, completing, or reporting on a task or run this same node
+        // is running) or a plain observation changes because a trust chain this read happened to
+        // compute does or does not currently resolve the sender to a known project member. Checked
+        // before sender resolution even matters, so a chain this node cannot currently fully
+        // resolve (or TrustChain.Empty, the degenerate case with no chain data at all) never halts
+        // the ordinary run of task and run lifecycle events every install already relied on.
+        //
+        // A FORWARDED delivery (originNodeId != senderNodeId) gets none of that: nothing else in
+        // this bucket ever checks who the true origin actually is, so blanket-allowing it here let
+        // any current project member stamp an arbitrary origin and a huge OriginSequence onto a
+        // plain observation and freeze that origin's own future writes on this stream for good
+        // (independent pre-PR review, cycle 8, conformance and adversarial lenses, high — the
+        // identical "forward only inside an admitted catch-up answer" hole IsForwardedRecordAdmitted
+        // exists to close for every OTHER project-scoped event, which this bucket is exempted from).
+        // Judged the same way a Conditional or OwnerOnly act already is when its own real sender
+        // cannot answer for the claimed origin: held, never lost, until the true origin's own
+        // direct delivery clears it.
         if (classification == TaskActClassification.MemberSafe && eventType != typeof(TaskAssigned))
         {
-            return TaskActVerdict.Allowed;
+            return originNodeId == senderNodeId ? TaskActVerdict.Allowed : TaskActVerdict.DroppedWithoutRecording;
         }
 
         if (sender is null)
@@ -2130,8 +2163,16 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 // Allowed without ever consulting the task or the creator root — skipped here the
                 // identical way ApplyAsync's own gate skips them, rather than paying for the same
                 // aggregate reads only to discard them (independent pre-PR review, cycle 4, both
-                // lenses, medium — the class sweep off that same finding).
-                bool alwaysAllowed = classification.Value == TaskActClassification.MemberSafe && eventType != typeof(TaskAssigned);
+                // lenses, medium — the class sweep off that same finding). The MemberSafe shortcut
+                // itself is native-only (current.OriginNodeId == current.SenderNodeId), the identical
+                // narrowing ApplyAsync's own gate now carries (independent pre-PR review, cycle 8,
+                // conformance and adversarial lenses, high): a row still citing a relay that never
+                // proved it was the true origin must keep re-judging through EvaluateTaskActVerdict
+                // below, or this call's own unconditional post-Allowed delete a few lines down would
+                // drop the row the moment ApplyAsync's re-entrant call (still correctly holding it)
+                // declined to replace it.
+                bool alwaysAllowed = classification.Value == TaskActClassification.MemberSafe && eventType != typeof(TaskAssigned)
+                    && current.OriginNodeId == current.SenderNodeId;
                 SenderResolution? sender = alwaysAllowed
                     ? null
                     : ResolveSender(trustChain, current.SenderFingerprint, current.SenderNodeId);
