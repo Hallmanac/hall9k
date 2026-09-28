@@ -995,11 +995,18 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
 
     /// <summary>
     /// The catch-up shape of the same gate: a Member-role peer forwards a batch that carries someone
-    /// ELSE's origin event id (the true author, never this forwarding sender). Dropped here too, but
-    /// the origin event id is never burned, so the identical event still applies the moment its own
-    /// true origin — who is also idea 6be68ee2's own trust-ledger finding 4/7 admission rule
-    /// (<see cref="EventReplicationInbox.IsForwardedRecordAdmitted"/>: a record's own native sender is
-    /// always admitted) and an Owner-role project member — delivers it directly.
+    /// ELSE's origin event id (the true author, never this forwarding sender), answering a broadcast
+    /// this receiving node itself minted for the project stream — the forwarded-record admission
+    /// gate (idea 6be68ee2, trust-ledger findings 4 and 7:
+    /// <see cref="EventReplicationInbox.IsForwardedRecordAdmitted"/>) admits it as an entitled answer,
+    /// and the OWNER-ROLE gate this test is actually about
+    /// (<see cref="EventReplicationInbox.EvaluateGatedEvent"/>) is what drops it, since forwardingNode
+    /// is a Member, never an Owner. Dropped here too, but the origin event id is never burned, so the
+    /// identical event still applies the moment its own true origin — who is also always admitted as
+    /// this record's own native sender, and an Owner-role project member — delivers it directly
+    /// (independent pre-PR review, cycle 1, adversarial lens, low: an earlier version of this test
+    /// sent the first delivery as an ordinary project flush, which the newer admission gate above now
+    /// drops before EvaluateGatedEvent ever runs, so it no longer proved what this doc claims).
     /// </summary>
     [Fact]
     public async Task A_member_signed_forwarded_event_is_dropped_without_burning_the_origin_id_so_an_allowed_delivery_still_applies()
@@ -1007,6 +1014,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         Guid forwardingNode = DomainId.New();
         Guid trueOwnerOriginNode = DomainId.New();
+        Guid receiverNodeId = DomainId.New();
         Guid ownerId = DomainId.New();
         Guid projectId = DomainId.New();
 
@@ -1027,6 +1035,23 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
             await session.SaveChangesAsync(cts.Token);
         }
 
+        // A broadcast this receiving node itself minted for the project stream — the shape
+        // forwardingNode's answer below is entitled to answer at all (ForStreamId = projectId,
+        // Candidates empty: any vouched project member may reply).
+        Guid requestId = DomainId.New();
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Store(new EventCatchUpRequest
+            {
+                Id = requestId,
+                ProjectId = projectId,
+                ForStreamId = projectId,
+                Candidates = [],
+                SentAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
         Guid originEventId = DomainId.New();
         JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
         ProjectTeamSettingsChanged forwarded = new(
@@ -1038,8 +1063,8 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                session, forwardingNode, projectId, "owner-fingerprint", MessageAudience.Project, about: null,
-                MessageKind.Events, EventReplicationCodec.EncodeBatch([record]), Now.AddSeconds(2), cts.Token);
+                session, forwardingNode, projectId, "owner-fingerprint", MessageAudience.Node(receiverNodeId),
+                about: requestId.ToString(), MessageKind.Events, EventReplicationCodec.EncodeBatch([record]), Now.AddSeconds(2), cts.Token);
             await messageOutbox.FlushAsync(
                 session, RepositoryPath, forwardingNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
                 signingKey, Now.AddSeconds(2), cts.Token);
@@ -1062,7 +1087,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, forwardingNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                session, RepositoryPath, forwardingNode, projectId, receiverNodeId, "owner-b-fingerprint", Now.AddSeconds(3),
                 trustChain: memberOnlyChain, cts.Token);
             read.EventsApplied.Should().Be(0, "the forwarding sender is not an owner, so the event is dropped");
         }

@@ -336,6 +336,18 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership, 
         [forStreamId, .. runStreamIds.Where(runId => runId != forStreamId).Distinct()];
 
     /// <summary>
+    /// <see cref="ResolveRequestedStreamIdsAsync"/>, exposed for <see cref="EventReplicationInbox"/>
+    /// to call as well: a forwarded record's own admission (idea 6be68ee2, trust-ledger findings 4
+    /// and 7) narrows a <see cref="EventCatchUpRequest.ForStreamId"/> match to the identical set this
+    /// responder itself would have answered from — the requested stream and its own run streams —
+    /// rather than trusting any stream id a forwarding sender cares to claim (independent pre-PR
+    /// review, cycle 1, conformance lens, medium).
+    /// </summary>
+    internal static Task<List<Guid>> ResolveRequestedStreamIdsForAdmissionAsync(
+        IQuerySession session, Guid forStreamId, CancellationToken cancellationToken) =>
+        ResolveRequestedStreamIdsAsync(session, forStreamId, cancellationToken);
+
+    /// <summary>
     /// One answering envelope, addressed to the requester alone and stamped with the id of the
     /// request it answers. That id is what lets the requester's own <c>EventReplicationInbox</c>
     /// tell THIS request's answer apart from a sibling catch-up answer arriving in the same read: a

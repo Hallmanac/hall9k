@@ -304,6 +304,20 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 continue;
             }
 
+            // Guid.Empty is EventOriginStampingListener's own "genuinely unclaimed at append time"
+            // sentinel, never a real node's own identity — EventReplicationOutbox.ToRecord and
+            // ReplicationEventOriginResolver both now resolve it to the appending node's own id
+            // before it ever reaches the wire, but an envelope already in flight when this node
+            // upgrades, or one flushed by a peer still on an older build, can still carry it.
+            // Normalized to senderNodeId here, once, before anything below reads OriginNodeId: left
+            // as Guid.Empty, it reads as a foreign origin under the new admission gate (idea
+            // 6be68ee2, trust-ledger findings 4 and 7) and is dropped forever outside any catch-up
+            // answer, which permanently loses a genuine native event an unfixed outbox shipped —
+            // if that record was a stream's own genesis, every later event on that stream would stay
+            // held indefinitely (independent pre-PR review, cycle 1, adversarial lens, medium).
+            batch = [.. batch.Select(record =>
+                record.OriginNodeId == Guid.Empty ? record with { OriginNodeId = senderNodeId } : record)];
+
             // Which catch-up request, if any, this envelope answers — resolved once here and read
             // again by the fleet-reconcile tally below, which needs the identical verdict against
             // the identical envelope and must not re-derive it (task 252bc5cf).
@@ -337,12 +351,21 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                         .Where(candidate => candidate.ProjectId == projectId && candidate.Id == requestIdForForeignOriginMatch)
                         .FirstOrDefaultAsync(cancellationToken)
                     : null;
+            // Resolved once per envelope, the identical set EventCatchUpResponder itself would have
+            // answered a ForStreamId ask from (that stream plus its own run streams) — narrows
+            // IsForwardedRecordAdmitted's own ForStreamId match to what the request actually asked
+            // for, rather than any stream id a forwarding sender cares to claim (independent pre-PR
+            // review, cycle 1, conformance lens, medium).
+            List<Guid> requestedStreamIdsForForeignOriginMatch = matchedForeignOriginRequest?.ForStreamId is { } matchedForStreamId
+                ? await EventCatchUpResponder.ResolveRequestedStreamIdsForAdmissionAsync(session, matchedForStreamId, cancellationToken)
+                : [];
 
             int appliedBeforeThisEnvelope = applied;
             foreach (EventReplicationCodec.ReplicatedEventRecord record in batch)
             {
                 if (!IsForwardedRecordAdmitted(
-                    record.OriginNodeId, senderNodeId, matchedForeignOriginRequest, trustChain, senderFingerprint))
+                    record, senderNodeId, matchedForeignOriginRequest, trustChain, senderFingerprint,
+                    requestedStreamIdsForForeignOriginMatch, now))
                 {
                     // Never stored under the claimed OriginEventId: recording a ReplicatedEventRecord
                     // there would let a forger pre-empt the genuine event's own future dedupe the
@@ -1204,13 +1227,50 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     }
 
     /// <summary>
-    /// idea 6be68ee2, trust-ledger findings 4 and 7: whether a replicated record may be applied at
-    /// all, coming from <paramref name="senderNodeId"/>. A record whose own claimed
-    /// <paramref name="originNodeId"/> equals the sender is native to that sender's own outbox and
-    /// always admitted — this method's only real work is a FORWARDED record, one claiming an origin
-    /// other than whoever delivered it. A teammate may forward another node's own record only inside
-    /// an answer to a catch-up request THIS node itself minted, never on its own say-so, and only
-    /// when it is a sender that specific request actually entitles to answer:
+    /// How long a matched <see cref="EventCatchUpRequest"/> keeps entitling a forwarded record after
+    /// it was minted (<see cref="EventCatchUpRequest.SentAt"/>) — independent pre-PR review, cycle 1,
+    /// conformance lens, medium: none of a request's own closing marks (<see cref="EventCatchUpRequest.AnsweredAt"/>,
+    /// <see cref="EventCatchUpRequest.SupersededAt"/>, <see cref="EventCatchUpRequest.Exhausted"/>)
+    /// is ever pruned, and a broadcast request's own id travels in the clear on this node's own
+    /// project-audience outbox (a landed task naming an absent dependency, a human's own
+    /// <c>h9k task pull</c>) for as long as this node keeps that history — reusing it, weeks later,
+    /// to smuggle an unrelated forged record past <see cref="IsForwardedRecordAdmitted"/> would
+    /// otherwise cost an attacker nothing but reading this node's own past outbox. Seven days is
+    /// generously past any legitimate cascade's own per-candidate timeout
+    /// (<c>DaemonOptions.EventCatchUpRequestTimeout</c>, minutes) or re-mint cooldown
+    /// (<see cref="Hall9k.Connectors.Replication.TaskDependencyCatchUp.ReMintCooldown"/>, hours) —
+    /// a genuine late answer inside it is ordinary network delay, never a request stale enough to be
+    /// worth bounding out.
+    /// </summary>
+    internal static readonly TimeSpan ForwardedRecordAdmissionWindow = TimeSpan.FromDays(7);
+
+    /// <summary>
+    /// idea 6be68ee2, trust-ledger findings 4 and 7: whether <paramref name="record"/> may be applied
+    /// at all, coming from <paramref name="senderNodeId"/>. A record whose own claimed
+    /// <see cref="EventReplicationCodec.ReplicatedEventRecord.OriginNodeId"/> equals the sender is
+    /// native to that sender's own outbox and always admitted — this method's only real work is a
+    /// FORWARDED record, one claiming an origin other than whoever delivered it. A teammate may
+    /// forward another node's own record only inside an answer to a catch-up request THIS node
+    /// itself minted, never on its own say-so, only when it is a sender that specific request
+    /// actually entitles to answer, and only when the record itself falls inside what that request
+    /// actually asked for — independent pre-PR review, cycle 1, conformance lens, medium: a stale
+    /// request id read once off this node's own past outbox otherwise entitled ANY forwarded record,
+    /// on ANY stream, from ANY origin, for as long as this node ever remembered minting it, which is
+    /// forever:
+    /// <list type="bullet">
+    /// <item><see cref="EventCatchUpRequest.ForOriginNodeId"/> set (a gap-fill): the record's own
+    /// origin must be that exact origin, and its own sequence must be above
+    /// <see cref="EventCatchUpRequest.SinceOriginSequence"/> — the identical bound
+    /// <see cref="EventCatchUpResponder.AnswerAsync"/>'s own <c>isMatch</c> filters an answer to.</item>
+    /// <item><see cref="EventCatchUpRequest.ForStreamId"/> set (the ledger-record adoption path,
+    /// <c>h9k task pull</c>, or a dependency ask): the record's own stream must be the requested
+    /// stream or one of its own run streams — <paramref name="requestedStreamIds"/>, resolved by the
+    /// caller from <see cref="EventCatchUpResponder.ResolveRequestedStreamIdsForAdmissionAsync"/>,
+    /// the identical set that method itself would have answered from.</item>
+    /// <item>Neither set (a bootstrap or a whole-project pull): nothing narrows the record's own
+    /// content beyond entitlement below, since neither shape ever named anything narrower.</item>
+    /// </list>
+    /// Whichever of those applies, entitlement is then checked the same way as before:
     /// <list type="bullet">
     /// <item>A cascade ask (<see cref="EventCatchUpRequest.Candidates"/> non-empty — a gap-fill or a
     /// bootstrap): the sender is one of the ranked candidates, at ANY index, not only the one
@@ -1225,19 +1285,35 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     /// field, in ANY state (answered, superseded, or exhausted all count — a split answer's later
     /// batches arrive after the first batch already closed the request) — null when About named no
     /// request this node ever minted, including a pre-a56cf16e sender's answer with no About at all,
-    /// which never admits a foreign-origin record. Pure: everything it reads is already-resolved,
-    /// in-memory data, so no test of it needs Docker.
+    /// which never admits a foreign-origin record. <paramref name="now"/> bounds every match to
+    /// <see cref="ForwardedRecordAdmissionWindow"/> after <see cref="EventCatchUpRequest.SentAt"/>,
+    /// whatever else matches: the one check nothing about the request's own shape or state can lift.
+    /// Otherwise pure: everything else it reads is already-resolved, in-memory data, so no test of it
+    /// needs Docker.
     /// </summary>
     internal static bool IsForwardedRecordAdmitted(
-        Guid originNodeId, Guid senderNodeId, EventCatchUpRequest? matchedRequest, TrustChain trustChain,
-        string? senderFingerprint)
+        EventReplicationCodec.ReplicatedEventRecord record, Guid senderNodeId, EventCatchUpRequest? matchedRequest,
+        TrustChain trustChain, string? senderFingerprint, IReadOnlyCollection<Guid> requestedStreamIds,
+        DateTimeOffset now)
     {
-        if (originNodeId == senderNodeId)
+        if (record.OriginNodeId == senderNodeId)
         {
             return true;
         }
 
-        if (matchedRequest is null)
+        if (matchedRequest is null || now - matchedRequest.SentAt > ForwardedRecordAdmissionWindow)
+        {
+            return false;
+        }
+
+        if (matchedRequest.ForOriginNodeId is { } forOriginNodeId)
+        {
+            if (record.OriginNodeId != forOriginNodeId || record.OriginSequence <= matchedRequest.SinceOriginSequence)
+            {
+                return false;
+            }
+        }
+        else if (matchedRequest.ForStreamId is not null && !requestedStreamIds.Contains(record.StreamId))
         {
             return false;
         }
