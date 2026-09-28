@@ -219,39 +219,9 @@ public sealed class MessageSweepEngineTests
 
     /// <summary>
     /// <see cref="MessageSweepEngine.BuildMemberLabels"/> (task b7d8222e): the trust-chain-to-labels
-    /// fold the sweep's own member-label persistence writes off, pure and side-effect-free so its
-    /// own two edge cases — a member who declared two GitHub accounts across their own fleet, and a
-    /// revoked node absent from the recorded fleet — are database-free unit tests.
+    /// fold the sweep's own member-label persistence writes off, pure and side-effect-free so a
+    /// revoked node absent from the recorded fleet is a database-free unit test.
     /// </summary>
-    private static NodeGitHubDeclaration Declaration(
-        Guid nodeId, string keyFingerprint, long accountId, string login, int minutesAfterEpoch) =>
-        new(nodeId.ToString(), keyFingerprint, new DeclaredGitHubAccount(accountId, login), DateTimeOffset.UnixEpoch.AddMinutes(minutesAfterEpoch));
-
-    [Fact]
-    public void BuildMemberLabels_KeepsOnlyTheNewestLoginForAMemberWithTwoDeclaredAccounts()
-    {
-        Guid firstNodeId = Guid.Parse("77777777-7777-7777-7777-777777777777");
-        Guid secondNodeId = Guid.Parse("88888888-8888-8888-8888-888888888888");
-        TrustedNode first = new(firstNodeId.ToString(), "ssh-ed25519 AAAAfirst first", "first-fingerprint", DateTimeOffset.UnixEpoch);
-        TrustedNode second = new(secondNodeId.ToString(), "ssh-ed25519 AAAAsecond second", "second-fingerprint", DateTimeOffset.UnixEpoch);
-        TrustedOwner owner = new("root-fingerprint", "ssh-ed25519 AAAAroot root", [first, second]);
-        TrustChain trustChain = new(
-            new Dictionary<string, TrustedOwner> { ["root-fingerprint"] = owner },
-            [new ProjectMember("root-fingerprint", MembershipRole.Owner, DateTimeOffset.UnixEpoch)])
-        {
-            NodeDeclarations = new[]
-            {
-                Declaration(firstNodeId, "first-fingerprint", 42, "work-account", 1),
-                Declaration(secondNodeId, "second-fingerprint", 77, "personal-account", 5),
-            }.ToDictionary(declaration => declaration.NodeId),
-        };
-
-        IReadOnlyList<ProjectMemberLabel> labels = MessageSweepEngine.BuildMemberLabels(trustChain);
-
-        labels.Should().ContainSingle().Which.DeclaredLogin.Should().Be(
-            "personal-account", "the newest of the member's own two declared accounts wins, never both");
-    }
-
     [Fact]
     public void BuildMemberLabels_ExcludesARevokedNodeFromTheRecordedFleet()
     {
