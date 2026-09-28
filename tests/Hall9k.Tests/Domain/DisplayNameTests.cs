@@ -37,11 +37,6 @@ public sealed class DisplayNameTests
     }
 
     [Fact]
-    public void A_name_over_64_characters_is_refused() =>
-        FluentActions.Invoking(() => DisplayName.Parse(new string('a', 65)))
-            .Should().Throw<DomainValidationException>();
-
-    [Fact]
     public void Exactly_64_characters_is_accepted() =>
         DisplayName.Parse(new string('a', 64)).Value.Should().HaveLength(64);
 

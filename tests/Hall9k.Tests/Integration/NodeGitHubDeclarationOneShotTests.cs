@@ -93,6 +93,27 @@ public sealed class NodeGitHubDeclarationOneShotTests : IClassFixture<PostgresFi
         ledger.Writes.Should().HaveCount(writesBefore, "no GitHub account and no display name means nothing to write");
     }
 
+    /// <summary>
+    /// The branch a missing GitHub account no longer bails out of before this task: the display name
+    /// refresh runs, and writes, on its own regardless of whether the GitHub declaration had
+    /// anything to say (independent pre-PR review, cycle 1, both lenses, test-hygiene finding: the
+    /// prior version of this test only duplicated <see cref="A_connection_with_no_observed_github_account_leaves_the_file_untouched"/>
+    /// and would still have passed with the removed early return restored).
+    /// </summary>
+    [Fact]
+    public async Task A_display_name_is_written_even_with_no_observed_github_account()
+    {
+        (NodeContext node, ProjectDetails project) = await SeedAsync(connectionHasIdentity: false);
+        await SeedDefaultDisplayNameAsync(node, "New Name");
+        FakeLedger ledger = await LedgerWithNodeFileAsync(node, OldFile);
+
+        await OneShot(node, ledger).RunOnceAsync(project, Identity(), CancellationToken.None);
+
+        LedgerWriteRequest write = ledger.Writes[^1];
+        write.CommitMessage.Should().Be("Update node facts");
+        write.Content.Should().Contain("display_name: \"New Name\"").And.NotContain("github_login");
+    }
+
     [Fact]
     public async Task A_failed_push_is_swallowed_and_not_retried_within_the_same_process()
     {
