@@ -237,7 +237,12 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             LedgerAppendOnlyFetchResult fetchResult = fetchResults[nodeId];
             if (fetchResult.WasRefused)
             {
-                unverified.Add(new UnverifiedLedgerWrite("node", nodeId, nodeId, fetchResult.RefusalReason!));
+                // Kind "ref", never "node": a node ref has no single owning root — it is this exact
+                // same refusal VerifyCarriedRecordAsync's own check 4 can independently observe
+                // later against the identical ref, and both must fold to the one stream
+                // ("ref", refName, "") rather than each mint its own shape for the same underlying
+                // rewind (independent pre-PR review, cycle 2, conformance lens, low).
+                unverified.Add(new UnverifiedLedgerWrite("ref", refName, string.Empty, fetchResult.RefusalReason!));
             }
 
             string? tip = fetchResult.Tip;
@@ -1088,9 +1093,13 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         // trusted, so check 4 walks it the same as any ordinary fetch would (independent pre-PR
         // review, cycle 1, conformance lens, medium — the previous fail-closed reading let anyone who
         // can force-push that ref revoke a carry this node had already established, by rewinding past
-        // the very commit that established it).
+        // the very commit that established it). Root is never the third field here: a node ref has
+        // no single owning root the way an owners/<fp> ref owns itself, so this must fold to the
+        // identical ("ref", nodeRefName, "") stream AttachRootNodeIdsAsync's own refusal of this same
+        // ref already uses, rather than mint a second, root-keyed shape for the one underlying rewind
+        // (independent pre-PR review, cycle 2, conformance lens, low).
         UnverifiedLedgerWrite? refRefusal = nodeRefFetch.WasRefused
-            ? new UnverifiedLedgerWrite("ref", nodeRefName, root, nodeRefFetch.RefusalReason!)
+            ? new UnverifiedLedgerWrite("ref", nodeRefName, string.Empty, nodeRefFetch.RefusalReason!)
             : null;
 
         string? localTip = nodeRefFetch.Tip;
