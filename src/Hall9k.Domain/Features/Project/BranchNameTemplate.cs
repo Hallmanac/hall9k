@@ -276,7 +276,7 @@ public sealed record BranchNameTemplate
 
         if (!GitArgumentValidation.IsLegalBranchName(branch, out string? refusalReason))
         {
-            throw Refuse(refusalReason!);
+            throw Refuse(refusalReason);
         }
     }
 

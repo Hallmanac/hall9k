@@ -11,6 +11,7 @@ using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -878,12 +879,16 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     /// RetryBranch would resume can belong to a node other than the one relaunching it — a
     /// forced takeover, or a hostile teammate's own crafted event — and its recorded
     /// <c>WorktreePath</c> is not proof that path is this task's own work on this machine, only a
-    /// string that replicated in. <see cref="RefusingWorktreeManager"/> and
+    /// string that replicated in. The refusal is decided entirely off <c>RunDetails.NodeId</c>,
+    /// before <c>Directory.Exists</c> or anything else on disk is ever consulted
+    /// (<see cref="RunLauncher.TryResumeAtPullRequestOpenAsync"/>'s own doc), so this test proves
+    /// it with a <c>WorktreePath</c> that names no real directory at all — creating a git
+    /// repository here would prove nothing this seam does not already establish without one (this
+    /// project's own test-hygiene guidance). <see cref="RefusingWorktreeManager"/> and
     /// <see cref="RefusingExecutor"/> both throw if touched, the inverse of the sibling test above:
     /// there the fakes must never fire because the shortcut succeeds; here the shortcut must
-    /// refuse before it ever reaches <c>Directory.Exists(failedRun.WorktreePath)</c>, so the
-    /// ordinary dispatch runs instead and hits one of those fakes — proving the shortcut never ran
-    /// git, and never asked <c>PullRequestOpener</c> to push, against a worktree path this node
+    /// refuse and the ordinary dispatch must run instead, hitting one of those fakes — proving the
+    /// shortcut never asked <c>PullRequestOpener</c> to push against a worktree path this node
     /// never actually dispatched.
     /// </summary>
     [Fact]
@@ -894,119 +899,168 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid foreignNodeId = DomainId.New();
 
-        string root = Path.Combine(Path.GetTempPath(), $"hall9k-resume-open-foreign-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
-        using ScopedTestHome homeScope = new();
-        try
+        Guid taskId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid failedRunId = DomainId.New();
+        Guid retriedRunId = DomainId.New();
+        const string branch = "task/resume-open-foreign";
+        const string worktreePath = "/tmp/hall9k-resume-open-foreign-never-created";
+        const string pushedTip = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+
+        TaskAggregate aggregate;
+        await using (IDocumentSession session = store.LightweightSession())
         {
-            string originPath = Path.Combine(root, "github.com-origin.git");
-            string repoPath = Path.Combine(root, "repo");
-            await TestGit.RunAsync(root, ["init", "--bare", "-q", "-b", "main", originPath], cts.Token);
-            await TestGit.RunAsync(root, ["clone", "-q", originPath, repoPath], cts.Token);
-            await File.WriteAllTextAsync(Path.Combine(repoPath, "README.md"), "# resume at open, foreign\n", cts.Token);
-            await TestGit.RunAsync(repoPath, ["add", "-A"], cts.Token);
-            await TestGit.RunAsync(repoPath, TestGit.CommitAs("commit", "-qm", "init"), cts.Token);
-            await TestGit.RunAsync(repoPath, ["push", "-q", "origin", "main"], cts.Token);
+            var registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"resume-open-foreign-{taskId:N}",
+                "/tmp/hall9k-resume-open-foreign-repository-never-created", null, "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
 
-            Guid taskId = DomainId.New();
-            Guid projectId = DomainId.New();
-            Guid failedRunId = DomainId.New();
-            Guid retriedRunId = DomainId.New();
+            object[] lifecycle;
+            (aggregate, lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Resume at pull-request-open, foreign",
+                    ["never resumes a foreign node's own failed run"],
+                    TaskType.Chore, null, null, null, Now.AddHours(-1), node.OwnerId),
+                node.OwnerId, Now.AddHours(-1));
+            // This node's own claim on the task — a forced takeover in shape, though the
+            // command itself is out of scope here: what matters is that the FAILED RUN below
+            // is dispatched-recorded under a different node than the one relaunching it.
+            var firstClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, failedRunId, Now.AddMinutes(-30));
+            aggregate.Apply(firstClaim);
+            TaskBranchPushed pushed = new(taskId, branch, pushedTip, Now.AddMinutes(-20));
+            aggregate.Apply(pushed);
+            var failed = TaskDecider.Fail(aggregate, failedRunId, "PR opening failed: gh timed out", Now.AddMinutes(-10));
+            aggregate.Apply(failed);
+            var retried = TaskDecider.Retry(
+                aggregate, failedRunId, branch, TaskDecider.DefaultRetryReason, Now.AddMinutes(-5), node.OwnerId);
+            aggregate.Apply(retried);
+            var retryClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, retriedRunId, Now);
+            aggregate.Apply(retryClaim);
 
-            // A real worktree exists here on disk for the failed run's own recorded path — the
-            // shape the bug description names ("if that directory exists here"): a coincidence,
-            // or an attacker's guess, is exactly what must not be enough on its own.
-            GitWorktreeManager seedingWorktrees = new(NullLogger<GitWorktreeManager>.Instance);
-            Worktree worktree = await seedingWorktrees.CreateAsync(
-                new WorktreeRequest(repoPath, "main", taskId, failedRunId, "Resume at pull-request-open, foreign",
-                    BranchNameTemplate.Default, ExternalReference: null),
-                cts.Token);
-            await File.WriteAllTextAsync(Path.Combine(worktree.Path, "WORK.md"), "agent output\n", cts.Token);
-            await TestGit.RunAsync(worktree.Path, ["add", "-A"], cts.Token);
-            await TestGit.RunAsync(worktree.Path, TestGit.CommitAs("commit", "-qm", "Add WORK.md"), cts.Token);
-            await TestGit.RunAsync(worktree.Path, ["push", "-q", "origin", worktree.Branch], cts.Token);
-            string pushedTip = (await TestGit.CaptureAsync(worktree.Path, ["rev-parse", "HEAD"], cts.Token)).Trim();
-
-            Directory.CreateDirectory(RunPaths.GlobalDirectory(failedRunId));
-
-            TaskAggregate aggregate;
-            await using (IDocumentSession session = store.LightweightSession())
+            session.Events.StartStream<TaskAggregate>(
+                taskId, [.. lifecycle, firstClaim, pushed, failed, retried, retryClaim]);
+            session.Store(new TaskLease
             {
-                var registered = ProjectDecider.Register(
-                    projectId, node.OwnerId, DomainId.New(), $"resume-open-foreign-{taskId:N}", repoPath, null, "main", Now);
-                session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
+            });
 
-                object[] lifecycle;
-                (aggregate, lifecycle) = TaskSeed.Start(
-                    TaskDecider.Add(
-                        taskId, projectId, "Resume at pull-request-open, foreign",
-                        ["never resumes a foreign node's own failed run"],
-                        TaskType.Chore, null, null, null, Now.AddHours(-1), node.OwnerId),
-                    node.OwnerId, Now.AddHours(-1));
-                // This node's own claim on the task — a forced takeover in shape, though the
-                // command itself is out of scope here: what matters is that the FAILED RUN below
-                // is dispatched-recorded under a different node than the one relaunching it.
-                var firstClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, failedRunId, Now.AddMinutes(-30));
-                aggregate.Apply(firstClaim);
-                TaskBranchPushed pushed = new(taskId, worktree.Branch, pushedTip, Now.AddMinutes(-20));
-                aggregate.Apply(pushed);
-                var failed = TaskDecider.Fail(aggregate, failedRunId, "PR opening failed: gh timed out", Now.AddMinutes(-10));
-                aggregate.Apply(failed);
-                var retried = TaskDecider.Retry(
-                    aggregate, failedRunId, worktree.Branch, TaskDecider.DefaultRetryReason, Now.AddMinutes(-5), node.OwnerId);
-                aggregate.Apply(retried);
-                var retryClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, retriedRunId, Now);
-                aggregate.Apply(retryClaim);
-
-                session.Events.StartStream<TaskAggregate>(
-                    taskId, [.. lifecycle, firstClaim, pushed, failed, retried, retryClaim]);
-                session.Store(new TaskLease
-                {
-                    Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
-                });
-
-                // The failed run's own stream carries the FOREIGN node's id, not this node's —
-                // replicated in exactly the way a run record always does, whether from a genuine
-                // takeover or from a hostile teammate's own event.
-                session.Events.StartStream<RunAggregate>(failedRunId,
-                    new RunDispatched(failedRunId, taskId, foreignNodeId, node.OwnerId, 1, DomainId.New(),
-                        worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now.AddMinutes(-30)),
-                    new RunFailed(
-                        failedRunId, "PR opening failed: gh timed out", Now.AddMinutes(-10),
-                        FailedDuringPullRequestOpen: true));
-                await session.SaveChangesAsync(cts.Token);
-            }
-
-            RecordingProcessRunner gh = RecordingProcessRunner.Succeeding("https://github.com/x/y/pull/99\n");
-            PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance, inspector: null, processRunner: gh.Runner);
-            NotMergedInspector inspector = new();
-            RefusingWorktreeManager worktrees = new();
-            RunLauncher launcher = new(store, worktrees, new RefusingExecutor(),
-                NewSupervisor(store, node), NewContextAssembler(store), inspector,
-                NewCloseoutEngine(store, node, inspector, worktrees), opener, ExternalProcess.Runner,
-                Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
-
-            await launcher.LaunchAsync(taskId, retriedRunId, node.NodeId, node.OwnerId, aggregate.LeaseGeneration, cts.Token);
-
-            // The shortcut never ran: had it, gh pr create would have fired directly against the
-            // foreign run's own retained worktree, exactly the push this fix exists to prevent.
-            gh.Calls.Should().NotContain(
-                call => call.Arguments.Count >= 2 && call.Arguments[0] == "pr" && call.Arguments[1] == "create",
-                "a foreign node's failed run must never be resumed straight into gh pr create");
-
-            await using IQuerySession query = store.QuerySession();
-            TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
-            task.State.Value.Should().Be("Failed",
-                "the shortcut refused, so the ordinary dispatch ran instead and hit RefusingWorktreeManager");
-            task.FailureReason.Should().Contain(
-                "must not get a follow-up worktree",
-                "RefusingWorktreeManager's own refusal is what proves the ordinary checkout path ran, " +
-                "rather than the shortcut pushing straight from the foreign run's own worktree path");
+            // The failed run's own stream carries the FOREIGN node's id, not this node's —
+            // replicated in exactly the way a run record always does, whether from a genuine
+            // takeover or from a hostile teammate's own event.
+            session.Events.StartStream<RunAggregate>(failedRunId,
+                new RunDispatched(failedRunId, taskId, foreignNodeId, node.OwnerId, 1, DomainId.New(),
+                    worktreePath, branch, ExecutorMode.Subscription, Now.AddMinutes(-30)),
+                new RunFailed(
+                    failedRunId, "PR opening failed: gh timed out", Now.AddMinutes(-10),
+                    FailedDuringPullRequestOpen: true));
+            await session.SaveChangesAsync(cts.Token);
         }
-        finally
+
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding("https://github.com/x/y/pull/99\n");
+        PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance, inspector: null, processRunner: gh.Runner);
+        NotMergedInspector inspector = new();
+        RefusingWorktreeManager worktrees = new();
+        RunLauncher launcher = new(store, worktrees, new RefusingExecutor(),
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), opener, ExternalProcess.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, retriedRunId, node.NodeId, node.OwnerId, aggregate.LeaseGeneration, cts.Token);
+
+        // The shortcut never ran: had it, gh pr create would have fired directly against the
+        // foreign run's own retained worktree, exactly the push this fix exists to prevent.
+        gh.Calls.Should().NotContain(
+            call => call.Arguments.Count >= 2 && call.Arguments[0] == "pr" && call.Arguments[1] == "create",
+            "a foreign node's failed run must never be resumed straight into gh pr create");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Value.Should().Be("Failed",
+            "the shortcut refused, so the ordinary dispatch ran instead and hit RefusingWorktreeManager");
+        task.FailureReason.Should().Contain(
+            "must not get a follow-up worktree",
+            "RefusingWorktreeManager's own refusal is what proves the ordinary checkout path ran, " +
+            "rather than the shortcut pushing straight from the foreign run's own worktree path");
+    }
+
+    /// <summary>
+    /// Security review idea 6be68ee2, process-injection finding 2 (independent pre-PR review,
+    /// cycle 1, conformance lens): <see cref="StackedBaseResolver.ResumedBaseAsync"/> carries a
+    /// resumed branch's base forward from the previous run's own <c>RunDispatched.BaseBranch</c>
+    /// and <c>BaseCommit</c> — both replicate off that event exactly like every other carrier
+    /// <see cref="GitArgumentValidation"/> exists for. Before this fix, a hostile pair reached
+    /// <c>RunLauncher</c>'s own <c>git merge-base --is-ancestor</c> positionally and became a
+    /// resumed run's own base with nothing downstream ever checking it — this test calls the
+    /// resolver directly (no worktree, no git, no daemon) to pin the refusal at its source.
+    /// </summary>
+    [Fact]
+    public async Task Resuming_a_branch_refuses_an_illegal_base_carried_by_the_previous_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid previousRunId = DomainId.New();
+        Guid runId = DomainId.New();
+        const string hostileBaseBranch = "+refs/heads/main:refs/heads/injected";
+        const string hostileBaseCommit = "--upload-pack=x";
+        const string branch = "task/resumes-hostile-base";
+
+        await using (IDocumentSession session = store.LightweightSession())
         {
-            TemporaryTree.TryDelete(root);
+            var registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"resumes-hostile-base-{taskId:N}",
+                "/tmp/hall9k-resumes-hostile-base-repository-never-created", null, "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            object[] lifecycle;
+            (TaskAggregate aggregate, lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Resumes a branch whose previous run recorded a hostile base",
+                    ["never carries forward an illegal base branch or fork point"],
+                    TaskType.Chore, null, null, null, Now.AddHours(-1), node.OwnerId),
+                node.OwnerId, Now.AddHours(-1));
+            var firstClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, previousRunId, Now.AddMinutes(-30));
+            aggregate.Apply(firstClaim);
+            var failed = TaskDecider.Fail(aggregate, previousRunId, "build failed", Now.AddMinutes(-10));
+            aggregate.Apply(failed);
+            var retried = TaskDecider.Retry(
+                aggregate, previousRunId, branch, TaskDecider.DefaultRetryReason, Now.AddMinutes(-5), node.OwnerId);
+            aggregate.Apply(retried);
+            var retryClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
+            aggregate.Apply(retryClaim);
+
+            session.Events.StartStream<TaskAggregate>(
+                taskId, [.. lifecycle, firstClaim, failed, retried, retryClaim]);
+
+            // The previous run's own RunDispatched carries a hostile BaseBranch and BaseCommit —
+            // replicated in exactly the way any run record can, whether from a genuine stacked
+            // parent's branch or from a hostile teammate's own crafted event.
+            session.Events.StartStream<RunAggregate>(previousRunId,
+                new RunDispatched(previousRunId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                    "/tmp/hall9k-resumes-hostile-base-worktree-never-created", branch, ExecutorMode.Subscription,
+                    Now.AddMinutes(-30), BaseBranch: hostileBaseBranch, BaseCommit: hostileBaseCommit));
+
+            await session.SaveChangesAsync(cts.Token);
         }
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        ProjectDetails project = (await query.LoadAsync<ProjectDetails>(projectId, cts.Token))!;
+
+        StackedBaseResolver.ResumedBase? resumed =
+            await StackedBaseResolver.ResumedBaseAsync(query, task, project, runId, cts.Token);
+
+        resumed.Should().NotBeNull();
+        resumed!.BaseBranch.Should().Be(project.BaseBranch,
+            "an illegal BaseBranch falls back to the project's own base rather than becoming this run's base "
+            + "with nothing downstream ever checking it");
+        resumed.ForkPointCommit.Should().BeEmpty(
+            "an illegal BaseCommit is dropped rather than handed positionally to a later git merge-base call");
+        resumed.Refused.Should().NotBeNull();
+        resumed.Refused.Should().Contain("RunDispatched.BaseBranch").And.Contain("RunDispatched.BaseCommit");
     }
 
     /// <summary>
@@ -2786,7 +2840,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         Guid projectId = DomainId.New();
         const string parentBranch = "task/parent-slice-one";
         const string childBranch = "task/child-slice-two";
-        const string forkPoint = "abc1234def5678";
+        const string forkPoint = "abc1234def5678abc1234def5678abc1234def56";
         await using (IDocumentSession session = store.LightweightSession())
         {
             ProjectRegistered registered = ProjectDecider.Register(
@@ -2878,7 +2932,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         Guid projectId = DomainId.New();
         const string parentBranch = "task/parent-slice-one";
         const string childBranch = "task/child-slice-two";
-        const string forkPoint = "abc1234def5678";
+        const string forkPoint = "abc1234def5678abc1234def5678abc1234def56";
         const string openedAgainstBaseBranch = "main";
         await using (IDocumentSession session = store.LightweightSession())
         {
@@ -3075,7 +3129,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         Guid projectId = DomainId.New();
         const string parentBranch = "task/parent-slice-one";
         const string childBranch = "task/child-slice-two";
-        const string forkPoint = "abc1234def5678";
+        const string forkPoint = "abc1234def5678abc1234def5678abc1234def56";
         await using (IDocumentSession session = store.LightweightSession())
         {
             ProjectRegistered registered = ProjectDecider.Register(
@@ -3190,7 +3244,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         Guid projectId = DomainId.New();
         const string parentBranch = "task/parent-slice-one";
         const string childBranch = "task/child-slice-two";
-        const string forkPoint = "abc1234def5678";
+        const string forkPoint = "abc1234def5678abc1234def5678abc1234def56";
         int leaseGeneration;
         await using (IDocumentSession session = store.LightweightSession())
         {
@@ -3285,7 +3339,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         Guid projectId = DomainId.New();
         const string parentBranch = "task/parent-slice-one";
         const string childBranch = "task/child-slice-two";
-        const string forkPoint = "abc1234def5678";
+        const string forkPoint = "abc1234def5678abc1234def5678abc1234def56";
         await using (IDocumentSession session = store.LightweightSession())
         {
             ProjectRegistered registered = ProjectDecider.Register(

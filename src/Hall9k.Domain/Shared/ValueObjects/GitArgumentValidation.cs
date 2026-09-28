@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
 
@@ -42,7 +43,7 @@ public static class GitArgumentValidation
     /// a human, whenever this returns <see langword="false"/>; null whenever it returns
     /// <see langword="true"/>.
     /// </summary>
-    public static bool IsLegalBranchName(string branch, out string? refusalReason)
+    public static bool IsLegalBranchName(string branch, [NotNullWhen(false)] out string? refusalReason)
     {
         if (branch.Length == 0)
         {

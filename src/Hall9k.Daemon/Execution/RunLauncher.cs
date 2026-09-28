@@ -370,6 +370,10 @@ public sealed class RunLauncher(
             StackedBaseResolver.ResumedBase? resumedBase = resumesPreviousWork
                 ? await StackedBaseResolver.ResumedBaseAsync(session, task, project, runId, cancellationToken)
                 : null;
+            if (resumedBase?.Refused is { } refusedCarryForward)
+            {
+                logger.LogWarning("Task {TaskId}: run {RunId} — {Refused}", taskId, runId, refusedCarryForward);
+            }
 
             // The base this run records and every prompt below names: the resolver's answer for a
             // fresh cut, the resumed branch's own recorded base otherwise (adversarial review,
@@ -1180,14 +1184,26 @@ public sealed class RunLauncher(
             return false;
         }
 
-        // Refused before WorktreePath or RunDirectory is touched at all (security review idea
+        if (!failedRun.FailedDuringPullRequestOpen
+            || failedRun.Branch != task.RetryBranch
+            || failedRun.WorktreePath.IsBlank())
+        {
+            return false;
+        }
+
+        // Refused before Directory.Exists or RunDirectory is touched at all (security review idea
         // 6be68ee2, process-injection finding 2): failedRun replicated onto this node the same as
         // any other run record, and a run this node never actually dispatched can name a
         // WorktreePath that happens to exist here for reasons that have nothing to do with this
         // task — this node's own unrelated directory of the same name, or a value a malicious
         // teammate crafted to land on one. Without this check, Directory.Exists below would treat
         // that coincidence as "this run's worktree is right here", run git inside it, and
-        // PullRequestOpener would push from it and read pr-summary.md there.
+        // PullRequestOpener would push from it and read pr-summary.md there. Checked only once the
+        // cheap eligibility checks above already passed (independent pre-PR review, cycle 1,
+        // adversarial lens): an ordinary cross-node retry, whose last failed run simply never
+        // failed at pull-request-open at all, used to trip this warning too, even though the
+        // shortcut could never have applied to it either way — moving the check here keeps the
+        // protection while dropping that false warning.
         if (failedRun.NodeId != nodeId)
         {
             logger.LogWarning(
@@ -1198,10 +1214,7 @@ public sealed class RunLauncher(
             return false;
         }
 
-        if (!failedRun.FailedDuringPullRequestOpen
-            || failedRun.Branch != task.RetryBranch
-            || failedRun.WorktreePath.IsBlank()
-            || !Directory.Exists(failedRun.WorktreePath))
+        if (!Directory.Exists(failedRun.WorktreePath))
         {
             return false;
         }
