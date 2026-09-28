@@ -365,11 +365,16 @@ public sealed class RunLauncher(
             // session never leads a plan today, since ReviewPersonaRegistry.Plan always appends
             // it after whatever the assignee declared — but a future persona-ordering change must
             // not silently spawn this slot on the ordinary Review chain instead of this persona's
-            // own floor (idea 6be68ee2, phase two, the courier precedent).
-            if (isPrReview && personaPlan!.Sessions[0].Persona == ReviewPersona.Security)
+            // own floor (idea 6be68ee2, phase two, the courier precedent). Extracted to
+            // ResolvePrimarySessionModel so this floor is unit-testable directly against a
+            // synthetic Security-led plan, rather than only through a shape today's registry can
+            // never actually produce (independent pre-PR review, cycle 1, conformance lens,
+            // medium).
+            if (isPrReview)
             {
-                model = options.Value.ResolveSecurityReviewModel(task.Model, project.Model);
-                effort = options.Value.ResolveSecurityReviewEffort(task.Effort, project.Effort);
+                (model, effort) = ResolvePrimarySessionModel(
+                    personaPlan!.Sessions[0].Persona, task.Model, project.Model, task.Effort, project.Effort,
+                    options.Value, model, effort);
             }
 
             // The primary session's own name (task: every dispatched agent session launches
@@ -1451,23 +1456,25 @@ public sealed class RunLauncher(
     }
 
     /// <summary>
-    /// Origin's current tip for <paramref name="branch"/>, read fresh rather than trusted from any
-    /// earlier record — the live half of <see cref="TryResumeAtPullRequestOpenAsync"/>'s own two-part
-    /// check. Null for every shape that is not "the ref exists and named exactly one commit": no
-    /// matching ref, a read failure, or an unreachable remote all collapse to the same answer here,
-    /// because every one of them fails <see cref="TryResumeAtPullRequestOpenAsync"/>'s own tip
-    /// comparison and falls back to the ordinary dispatch — the safe direction when origin cannot be
-    /// read is dispatching the full pipeline, never assuming the tip still matches.
-    /// </summary>
-    /// <summary>
     /// Whether every path this pull request's checkout changed against <paramref name="baseRef"/>
-    /// matched this project's own non-executable-path set (idea 6be68ee2, phase two, Decisions Log
-    /// #252) — the same question <c>NonExecutablePathClassifier</c> answers for the ordinary build
-    /// and test gates, asked here over the identical diff range every persona's own prompt already
-    /// tells its session to read (<c>git diff origin/&lt;BaseRef&gt;...HEAD</c>). False for any
-    /// diff this could not read, the safe direction: a pull request whose changed paths are
-    /// unobservable is never guessed as content-only, so the Security persona still runs against
-    /// it rather than being silently skipped on a fact nobody actually observed.
+    /// matched <see cref="SecurityReviewNonExecutablePathRules.Resolve"/>'s own rule set (idea
+    /// 6be68ee2, phase two) — never <c>project.EffectiveNonExecutablePaths</c> directly: that set
+    /// answers whether a diff can break the build and test gates (Decisions Log #252), a project
+    /// may add to it freely, and reusing it here let a gate-skipping addition (<c>.github/</c>,
+    /// <c>*.yml</c>) silently skip the one review meant to catch a CI or release workflow change,
+    /// and let its own compiled defaults (<c>.claude/skills/</c>, <c>.claude/commands/</c>, the
+    /// bare <c>*.md</c> rule) wave through agent-executed content this persona exists to read
+    /// (independent pre-PR review, cycle 1, both lenses).
+    /// <para>
+    /// <c>git diff --name-status</c>, not <c>--name-only</c>: a rename or copy is classified by
+    /// both its old and new path (<see cref="WorktreeGitStatus.ParseNameStatus"/>), the same
+    /// rename-safety <c>VerificationRunner</c>'s own build/test skip already has — a file moved
+    /// out of a buildable tree and into <c>docs/</c> used to read as docs-only from the new path
+    /// alone (independent pre-PR review, cycle 1, adversarial lens, high).
+    /// </para>
+    /// False for any diff this could not read, the safe direction: a pull request whose changed
+    /// paths are unobservable is never guessed as content-only, so the Security persona still runs
+    /// against it rather than being silently skipped on a fact nobody actually observed.
     /// </summary>
     private async Task<bool> EveryChangedPathIsNonExecutableAsync(
         string worktreePath, string baseRef, IReadOnlyList<string> nonExecutablePathRules,
@@ -1476,15 +1483,16 @@ public sealed class RunLauncher(
         try
         {
             ProcessResult diff = await processRunner(
-                "git", ["diff", "--name-only", "-z", $"origin/{baseRef}...HEAD"], worktreePath, cancellationToken);
+                "git", ["diff", "--name-status", "-z", $"origin/{baseRef}...HEAD"], worktreePath, cancellationToken);
             if (diff.ExitCode != 0)
             {
                 return false;
             }
 
-            string[] changedPaths = diff.StandardOutput.Split('\0', StringSplitOptions.RemoveEmptyEntries);
-            return changedPaths.Length > 0
-                && NonExecutablePathClassifier.Classify(changedPaths, nonExecutablePathRules).AllMatched;
+            IReadOnlyList<string> changedPaths = WorktreeGitStatus.ParseNameStatus(diff.StandardOutput);
+            return changedPaths.Count > 0
+                && NonExecutablePathClassifier.Classify(
+                    changedPaths, SecurityReviewNonExecutablePathRules.Resolve(nonExecutablePathRules)).AllMatched;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -1494,6 +1502,15 @@ public sealed class RunLauncher(
         }
     }
 
+    /// <summary>
+    /// Origin's current tip for <paramref name="branch"/>, read fresh rather than trusted from any
+    /// earlier record — the live half of <see cref="TryResumeAtPullRequestOpenAsync"/>'s own two-part
+    /// check. Null for every shape that is not "the ref exists and named exactly one commit": no
+    /// matching ref, a read failure, or an unreachable remote all collapse to the same answer here,
+    /// because every one of them fails <see cref="TryResumeAtPullRequestOpenAsync"/>'s own tip
+    /// comparison and falls back to the ordinary dispatch — the safe direction when origin cannot be
+    /// read is dispatching the full pipeline, never assuming the tip still matches.
+    /// </summary>
     private async Task<string?> ReadRemoteBranchTipAsync(
         string worktreePath, string branch, CancellationToken cancellationToken)
     {
@@ -1769,6 +1786,26 @@ public sealed class RunLauncher(
         repository.EndsWith(".git", StringComparison.OrdinalIgnoreCase)
             ? repository[..^4]
             : repository;
+
+    /// <summary>
+    /// The primary session's model and effort: the Security persona's own floor
+    /// (<c>DaemonOptions.ResolveSecurityReviewModel</c>/<c>ResolveSecurityReviewEffort</c>) when
+    /// the plan's first session is that persona's, <paramref name="fallbackModel"/> and
+    /// <paramref name="fallbackEffort"/> — already resolved for the ordinary Review or Build role
+    /// — otherwise. Extracted as a pure function, rather than inlined at the one call site, so
+    /// this floor is unit-testable directly against a synthetic Security-led plan even though
+    /// today's <c>ReviewPersonaRegistry.Plan</c> can never actually produce one (the courier
+    /// precedent this persona otherwise shares must never silently regress unnoticed).
+    /// </summary>
+    // Internal rather than private: unit-tested directly against every ReviewPersona, including
+    // the Security-led shape the registry itself cannot produce today.
+    internal static (AgentModel Model, AgentEffort Effort) ResolvePrimarySessionModel(
+        ReviewPersona firstSessionPersona, AgentModel? taskModel, AgentModel? projectModel, AgentEffort? taskEffort,
+        AgentEffort? projectEffort, DaemonOptions options, AgentModel fallbackModel, AgentEffort fallbackEffort) =>
+        firstSessionPersona == ReviewPersona.Security
+            ? (options.ResolveSecurityReviewModel(taskModel, projectModel),
+                options.ResolveSecurityReviewEffort(taskEffort, projectEffort))
+            : (fallbackModel, fallbackEffort);
 
     /// <summary>
     /// A retried task resumes its failed run's branch through the same checkout path

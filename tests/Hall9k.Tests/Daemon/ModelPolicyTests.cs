@@ -310,6 +310,45 @@ public sealed class ModelPolicyTests
         options.ResolveSecurityReviewEffort(taskEffort: null, projectEffort: null).Should().Be(AgentEffort.Low);
     }
 
+    /// <summary>
+    /// <c>RunLauncher.ResolvePrimarySessionModel</c> is what the primary session's own spawn
+    /// request actually carries when a pr-review's plan leads with the Security persona (idea
+    /// 6be68ee2, phase two, the courier precedent) — extracted out of <c>RunLauncher.LaunchAsync</c>
+    /// so this floor is proved directly rather than only through a shape today's
+    /// <c>ReviewPersonaRegistry.Plan</c> can never actually produce (independent pre-PR review,
+    /// cycle 1, conformance lens, medium: nothing before this test called anything other than
+    /// <c>DaemonOptions.ResolveSecurityReviewModel</c> itself, so a regression at this call site —
+    /// reverting back to the ordinary Review role's resolution — would have passed every test on
+    /// this branch).
+    /// </summary>
+    [Fact]
+    public void The_primary_sessions_model_floors_at_securitys_own_when_the_plan_leads_with_it()
+    {
+        DaemonOptions options = new() { DefaultModel = "claude-opus-5" };
+
+        (AgentModel model, AgentEffort effort) = RunLauncher.ResolvePrimarySessionModel(
+            ReviewPersona.Security, taskModel: null, projectModel: null, taskEffort: null, projectEffort: null,
+            options, fallbackModel: AgentModel.FromInput("claude-opus-5"), fallbackEffort: AgentEffort.Medium);
+
+        model.Value.Should().Be(AgentModel.SecurityReviewDefault,
+            "a Security-led primary session must never silently run on the ordinary Review model");
+        effort.Should().Be(options.ResolveSecurityReviewEffort(taskEffort: null, projectEffort: null));
+    }
+
+    [Fact]
+    public void The_primary_sessions_model_is_untouched_when_the_plan_does_not_lead_with_security()
+    {
+        DaemonOptions options = new();
+        AgentModel fallbackModel = AgentModel.FromInput("claude-sonnet-5");
+
+        (AgentModel model, AgentEffort effort) = RunLauncher.ResolvePrimarySessionModel(
+            ReviewPersona.Engineer, taskModel: null, projectModel: null, taskEffort: null, projectEffort: null,
+            options, fallbackModel, fallbackEffort: AgentEffort.Medium);
+
+        model.Should().Be(fallbackModel);
+        effort.Should().Be(AgentEffort.Medium);
+    }
+
     [Fact]
     public void A_fresh_spawn_always_states_its_model()
     {

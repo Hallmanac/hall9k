@@ -1812,46 +1812,7 @@ public sealed partial class VerificationRunner(
         // is inherently merge-base-relative; a tree diff is not).
         (int exitCode, string output) = await RunGitAsync(
             worktreePath, ["diff", "--name-status", "-z", $"{boundary}...HEAD"], cancellationToken);
-        return exitCode == 0 ? ParseChangedPaths(output) : null;
-    }
-
-    /// <summary>
-    /// Parses <c>git diff --name-status -z</c>'s own NUL-separated record shape: an ordinary
-    /// change (A/M/D/T/U) is one status token followed by one path; a rename or copy (R/C, each
-    /// carrying a trailing similarity score digit string like <c>R100</c>) is one status token
-    /// followed by TWO paths, the old name and the new. A truncated trailing record (the output
-    /// ended mid-record) is dropped rather than guessed at.
-    /// </summary>
-    private static IReadOnlyList<string> ParseChangedPaths(string nameStatusOutput)
-    {
-        string[] tokens = nameStatusOutput.Split('\0', StringSplitOptions.RemoveEmptyEntries);
-        List<string> paths = [];
-        int index = 0;
-        while (index < tokens.Length)
-        {
-            string status = tokens[index++];
-            char kind = status.Length > 0 ? status[0] : '\0';
-            if (kind is 'R' or 'C')
-            {
-                if (index + 1 >= tokens.Length)
-                {
-                    break;
-                }
-
-                paths.Add(tokens[index++]);
-                paths.Add(tokens[index++]);
-                continue;
-            }
-
-            if (index >= tokens.Length)
-            {
-                break;
-            }
-
-            paths.Add(tokens[index++]);
-        }
-
-        return paths;
+        return exitCode == 0 ? WorktreeGitStatus.ParseNameStatus(output) : null;
     }
 
     /// <summary>

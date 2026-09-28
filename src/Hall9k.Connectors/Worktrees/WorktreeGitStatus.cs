@@ -94,4 +94,49 @@ public static class WorktreeGitStatus
         IReadOnlyList<string> byproduct = [.. untracked.Except(strandable)];
         return (strandable, byproduct);
     }
+
+    /// <summary>
+    /// Parses <c>git diff --name-status -z</c>'s own NUL-separated record shape: an ordinary
+    /// change (A/M/D/T/U) is one status token followed by one path; a rename or copy (R/C, each
+    /// carrying a trailing similarity score digit string like <c>R100</c>) is one status token
+    /// followed by TWO paths, the old name and the new — both returned, so a caller classifying
+    /// against a rule set never reads a rename as only its new path (independent pre-PR review,
+    /// cycle 1, adversarial lens, high — a file moved out of a buildable tree and into <c>docs/</c>
+    /// used to read as docs-only from the new path alone). A truncated trailing record (the output
+    /// ended mid-record) is dropped rather than guessed at. Shared by
+    /// <c>VerificationRunner</c>'s build/test skip and <c>RunLauncher</c>'s Security docs-only
+    /// skip, rather than duplicated — <see cref="ParsePorcelain"/>'s own doc explains why a second,
+    /// independently-maintained copy of this parsing is exactly the defect class to avoid.
+    /// </summary>
+    public static IReadOnlyList<string> ParseNameStatus(string nameStatusOutput)
+    {
+        string[] tokens = nameStatusOutput.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+        List<string> paths = [];
+        int index = 0;
+        while (index < tokens.Length)
+        {
+            string status = tokens[index++];
+            char kind = status.Length > 0 ? status[0] : '\0';
+            if (kind is 'R' or 'C')
+            {
+                if (index + 1 >= tokens.Length)
+                {
+                    break;
+                }
+
+                paths.Add(tokens[index++]);
+                paths.Add(tokens[index++]);
+                continue;
+            }
+
+            if (index >= tokens.Length)
+            {
+                break;
+            }
+
+            paths.Add(tokens[index++]);
+        }
+
+        return paths;
+    }
 }
