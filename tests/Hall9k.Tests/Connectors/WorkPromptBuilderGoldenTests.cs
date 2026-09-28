@@ -648,6 +648,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         ProjectDetails project = SomeProject();
         project.VerifyCommands.Add(new VerifyCommand("test", "dotnet test"));
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
         return project;
     }
 
@@ -655,6 +656,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         ProjectDetails project = SomeProject();
         project.VerifyCommands.Add(new VerifyCommand("test", "dotnet test", "Category=RequiresDocker"));
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
         return project;
     }
 

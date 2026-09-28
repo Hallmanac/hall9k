@@ -1134,9 +1134,24 @@ public static class AgentPromptBuilder
         }
 
         AppendFragment(prompt, file, "required-before-finish");
-        foreach (VerifyCommand gate in project.VerifyCommands)
+        // A node runs a project's verify gates only after its own operator has accepted that exact
+        // gate set (security review idea 6be68ee2, process-injection finding 1, the local half) —
+        // this session runs with skip-permissions and would otherwise run whatever shell command
+        // lands here directly, reaching neither the dispatcher's claim-time check nor the daemon's
+        // own gate-entry wait (independent pre-PR review, cycle 1, adversarial lens, medium). The
+        // platform's own post-session verification still holds at gate entry until this node's
+        // operator accepts the current set, so this checklist has nothing to lose by listing no
+        // command at all when it has not been.
+        if (!GateSetAcceptance.Decide(project.AcceptedVerifyCommands, project.VerifyCommands).Proceed)
         {
-            AppendGateLine(prompt, gate, indent: "    ");
+            AppendFragment(prompt, file, "unaccepted-gate-set");
+        }
+        else
+        {
+            foreach (VerifyCommand gate in project.VerifyCommands)
+            {
+                AppendGateLine(prompt, gate, indent: "    ");
+            }
         }
 
         AppendFragment(prompt, file, "commit-fix-note");
@@ -3988,6 +4003,16 @@ public static class AgentPromptBuilder
         if (project.VerifyCommands.Count == 0)
         {
             AppendFragment(prompt, file, "no-tests");
+        }
+        else if (!GateSetAcceptance.Decide(project.AcceptedVerifyCommands, project.VerifyCommands).Proceed)
+        {
+            // The identical guard AppendRebaseVerificationRule's own "required-before-finish"
+            // checklist applies, against the same defect (independent pre-PR review, cycle 1,
+            // adversarial lens, medium): this checklist shares AppendGateLine with that one
+            // precisely so the two could never print a raw, unaccepted gate command differently —
+            // guarding one and not the other would have left this self-check session, which also
+            // runs with skip-permissions, as the one path still reaching it.
+            AppendFragment(prompt, file, "unaccepted-tests");
         }
         else
         {

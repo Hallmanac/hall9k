@@ -418,12 +418,16 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
         CurrentRunId = RunId,
     };
 
+    private static readonly List<VerifyCommand> DefaultVerifyCommands =
+        [new VerifyCommand("build", "dotnet build"), new VerifyCommand("test", "dotnet test")];
+
     private static ProjectDetails SomeProject() => new()
     {
         Name = "hall9k",
         BaseBranch = "main",
         ContextLinks = [new ContextLink("Jira board", new Uri("https://example.atlassian.net/board"))],
-        VerifyCommands = [new VerifyCommand("build", "dotnet build"), new VerifyCommand("test", "dotnet test")],
+        VerifyCommands = [.. DefaultVerifyCommands],
+        AcceptedVerifyCommands = [.. DefaultVerifyCommands],
         WritingConventions = WritingConventions.Default,
     };
 
@@ -431,6 +435,7 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
     {
         ProjectDetails project = SomeProject();
         project.VerifyCommands.Add(new VerifyCommand("integration", "dotnet test", "Category=RequiresDocker"));
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
         return project;
     }
 }

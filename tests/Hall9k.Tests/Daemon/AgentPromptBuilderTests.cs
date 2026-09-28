@@ -143,6 +143,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         ProjectDetails project = SomeProject();
         project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
 
         string prompt = AgentPromptBuilder.Build(SomeTask(), project, "task/1-slug", _worktreePath);
 
@@ -241,6 +242,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         ProjectDetails project = SomeProject();
         project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
 
         string prompt = AgentPromptBuilder.Build(SomeTask(), project, "task/1-slug", _worktreePath);
 
@@ -472,6 +474,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         ProjectDetails project = SomeProject();
         project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
 
         string prompt = AgentPromptBuilder.Build(SomeTask(), project, "task/1-slug", _worktreePath);
 
@@ -579,6 +582,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         ProjectDetails project = SomeProject();
         project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
 
         string[] fixupFlowPrompts =
         [
@@ -913,6 +917,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         ProjectDetails project = SomeProject();
         project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
 
         string prompt = AgentPromptBuilder.BuildRebase(
             SomeTask(), project, "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
@@ -932,6 +937,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         ProjectDetails project = SomeProject();
         project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
 
         string prompt = AgentPromptBuilder.BuildRebase(
             SomeTask(), project, "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Narrative);
@@ -1051,6 +1057,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
         ProjectDetails project = SomeProject();
         project.BaseBranch = "main";
         project.VerifyCommands = [new VerifyCommand("build", "dotnet build"), new VerifyCommand("test", "dotnet test")];
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
 
         string prompt = AgentPromptBuilder.BuildPrReviewLens(
             SomeTask(), project, "pr/42", ReviewLens.Conformance, baseBranch: "release/2.0");
@@ -2002,6 +2009,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         ProjectDetails project = SomeProject();
         project.VerifyCommands = [new VerifyCommand("build", "dotnet build"), new VerifyCommand("test", "dotnet test")];
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
 
         string prompt = AgentPromptBuilder.BuildReview(SomeTask(), project, "task/1-slug", cycle: 1, lens);
 
@@ -2959,6 +2967,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         ProjectDetails project = SomeProject();
         project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
 
         string prompt = AgentPromptBuilder.BuildReviewFix(
             SomeTask(), project, "task/1-slug", "findings go here", cycle: 1);

@@ -533,6 +533,7 @@ public sealed class StackedPromptTests
     {
         ProjectDetails project = SomeProject();
         project.VerifyCommands = [new VerifyCommand("build", "dotnet build")];
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
 
         string prompt = AgentPromptBuilder.BuildStackReplay(
             SomeTask(), project, "task/child-slice-two", "https://github.com/x/y/pull/8",
@@ -666,6 +667,7 @@ public sealed class StackedPromptTests
         BaseBranch = "main",
         CommitStyle = CommitStyle.Narrative,
         VerifyCommands = [new VerifyCommand("build", "dotnet build")],
+        AcceptedVerifyCommands = [new VerifyCommand("build", "dotnet build")],
     };
 
     /// <summary>The same project with the other declared style, for the gate-fix instruction's other arm.</summary>
@@ -675,5 +677,6 @@ public sealed class StackedPromptTests
         BaseBranch = "main",
         CommitStyle = CommitStyle.Append,
         VerifyCommands = [new VerifyCommand("build", "dotnet build")],
+        AcceptedVerifyCommands = [new VerifyCommand("build", "dotnet build")],
     };
 }
