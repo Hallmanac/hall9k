@@ -7,9 +7,11 @@ using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Marten.Events;
 using Spectre.Console;
@@ -118,12 +120,47 @@ public sealed class ProjectMemberApproveCommand : Hall9kAsyncCommand<ProjectMemb
             ledger, hold.ProjectRepositoryPath, hold.CandidateOwnerFingerprint, hold.Role, hold.IssuedAt, committer,
             signingKey, cancellationToken);
 
+        // Appended only once the ledger write it describes has actually landed, and only when this
+        // project's own local Members mirror does not already agree — the identical ordering and
+        // guard InviteSweepEngine.TryClaimAsync's own root-direct path and
+        // OwnerActRequestWatchLoop.ReactToRequestAsync's own PerformMemberWrite case both apply to
+        // the identical event (independent pre-PR review, cycle 1, conformance lens, medium): this
+        // event feeds ProjectDetails.Members/ProjectAggregate.Members, so a human's own approval of
+        // an owner-role hold must land it exactly the way the automatic member-role path does —
+        // missing here left ProjectJoinStatus.NotJoined reading "not joined yet" for a member
+        // admitted through this exact door too.
+        if (!project.Members.TryGetValue(hold.CandidateOwnerFingerprint, out ProjectMemberRole? existingRole)
+            || existingRole != hold.Role)
+        {
+            session.Events.Append(project.Id, ProjectDecider.VouchMember(project.Id, hold.CandidateOwnerFingerprint, hold.Role, now));
+        }
+
+        // The ledger write above can take long enough for the daemon's own OwnerActRequestWatchLoop
+        // (ExpireStaleHoldsAsync, polling independently every PollInterval) to expire this exact hold
+        // while this command is still running — the projection's own hold.Expired check above only
+        // ruled that out as of the moment this command started, not as of now. The write already
+        // landed either way, so OwnerActHoldDecider.Approve refusing to append onto an
+        // already-expired hold must never also swallow the requester's own answer: the requester is
+        // told done regardless of what this hold's own bookkeeping now says, never left holding an
+        // owner-role grant that actually landed in the ledger while believing (from an earlier
+        // expired reply, or no reply at all) that it needs to re-mint (independent pre-PR review,
+        // cycle 1, adversarial lens, medium).
         StreamState fence = await session.Events.FetchStreamStateAsync(hold.Id, cancellationToken)
             ?? throw new InvalidOperationException($"Owner-act hold {hold.Id} has no stream to approve.");
         OwnerActHoldAggregate aggregate = await session.Events.AggregateStreamAsync<OwnerActHoldAggregate>(
             hold.Id, version: fence.Version, token: cancellationToken)
             ?? throw new InvalidOperationException($"Owner-act hold {hold.Id} has no aggregate to approve.");
-        session.Events.Append(hold.Id, expectedVersion: fence.Version + 1, OwnerActHoldDecider.Approve(aggregate, commitId, now));
+        if (aggregate.Expired)
+        {
+            AnsiConsole.MarkupLine(
+                "[yellow]Warning[/] the ten-minute wait closed this hold while this approval's own ledger write "
+                + "was still landing — the write itself already succeeded, so the requesting node is told done "
+                + "anyway.");
+        }
+        else if (!aggregate.Approved)
+        {
+            session.Events.Append(hold.Id, expectedVersion: fence.Version + 1, OwnerActHoldDecider.Approve(aggregate, commitId, now));
+        }
 
         OwnerActEnvelopeCodec.OwnerActOutcomeRecord record = new(
             hold.InviteId, OwnerActEnvelopeCodec.OwnerActVerdict.Done, commitId, Reason: null);
