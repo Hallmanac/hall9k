@@ -92,7 +92,8 @@ public static class ProjectDecider
         Optional<IReadOnlyList<string>> nonExecutablePaths = default,
         Optional<AgentEffort> effort = default,
         Optional<AgentEffort> orchestratorEffort = default,
-        Optional<ReviewMembershipPolicy> reviewRequiresMembership = default)
+        Optional<ReviewMembershipPolicy> reviewRequiresMembership = default,
+        Optional<bool> securityReview = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -482,7 +483,8 @@ public static class ProjectDecider
             NonExecutablePaths: normalizedNonExecutablePaths,
             Effort: effort,
             OrchestratorEffort: orchestratorEffort,
-            ReviewRequiresMembership: reviewRequiresMembership);
+            ReviewRequiresMembership: reviewRequiresMembership,
+            SecurityReview: securityReview);
     }
 
     /// <summary>

@@ -122,6 +122,14 @@ public sealed class ProjectDetails
     /// </summary>
     public bool QaReviewDrive { get; set; } = ReviewDriveSetting.DefaultFor(ReviewPersona.Qa);
     /// <summary>
+    /// The last security-review choice this project's stream recorded — never the effective one
+    /// (idea 6be68ee2, phase two), on the identical terms <see cref="AutoPrReview"/> above states:
+    /// read <see cref="SecurityReviewSetting"/> wherever the effective value or its origin
+    /// matters. Initialised to the platform default (on) so the two at least agree for a project
+    /// that never chose.
+    /// </summary>
+    public bool SecurityReview { get; set; } = SecurityReviewSetting.Default;
+    /// <summary>
     /// What has to be true on this install before a task linked to a Jira card or a GitHub issue
     /// may be claimed here (idea 64c75e43); Off is the platform's original behavior.
     /// </summary>
@@ -442,6 +450,11 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
             view.QaReviewDrive = @event.Data.QaReviewDrive.Value;
         }
 
+        if (@event.Data.SecurityReview.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.SecurityReview), @event.Data.ChangedAt))
+        {
+            view.SecurityReview = @event.Data.SecurityReview.Value;
+        }
+
         if (@event.Data.Priority.HasValue)
         {
             view.Priority = @event.Data.Priority.Value ?? ProjectPriority.Normal;
@@ -591,6 +604,11 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
         if (@event.Data.QaReviewDrive.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.QaReviewDrive), @event.Data.ChangedAt))
         {
             view.QaReviewDrive = @event.Data.QaReviewDrive.Value;
+        }
+
+        if (@event.Data.SecurityReview.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.SecurityReview), @event.Data.ChangedAt))
+        {
+            view.SecurityReview = @event.Data.SecurityReview.Value;
         }
 
         if (@event.Data.ClaimGate.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.ClaimGate), @event.Data.ChangedAt))
