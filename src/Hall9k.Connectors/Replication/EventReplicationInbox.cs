@@ -351,17 +351,19 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             // inside an answer to a catch-up request THIS node minted, never on its own say-so — the
             // attack that otherwise needs no interaction at all, where one flush lets any sender
             // pre-empt any origin's dedupe with a huge OriginSequence and freeze that stream on every
-            // node. This blanket rule stands aside for a Task or Run act (TaskActClassificationRegistry
-            // has an entry for it) — idea 6be68ee2's own trust-ledger finding 5 gates those on the
-            // sender's own root against the task they target instead, in ApplyAsync below, and needs
-            // no catch-up exchange behind a relay's forwarded delivery to do it (the relayed-genesis
-            // and relay-dropped-hold scenarios EventReplicationTests covers). Looked up once per
-            // envelope, never per record, since IsForwardedRecordAdmitted's own verdict for every
-            // (non-task/run-act) record in this batch depends on the identical matched request — and
-            // only when the batch actually needs it, since an ordinary flush (EventReplicationOutbox's
-            // own doc: never ships anything but this sender's own native-origin events) never does.
-            bool batchHasForeignOrigin = batch.Any(
-                record => record.OriginNodeId != senderNodeId && !IsTaskOrRunActRecord(record));
+            // node. A Task or Run act is no exception (independent pre-PR review, cycle 8, terminal
+            // lap): a cycle-8 exemption once let a forwarded Task/Run act skip this guard entirely on
+            // the theory that ApplyAsync's own classification gate judged it instead, but that gate
+            // never inspects the claimed OriginNodeId on its Allowed branch, so a forged forward — a
+            // member relaying a TaskRevised on its own task while claiming origin = the owner's node
+            // with a huge OriginSequence — applied and froze the owner's own later events on that
+            // stream. Every forwarded record, Task and Run acts included, now passes this identical
+            // gate. Looked up once per envelope, never per record, since IsForwardedRecordAdmitted's
+            // own verdict for every record in this batch depends on the identical matched request —
+            // and only when the batch actually needs it, since an ordinary flush
+            // (EventReplicationOutbox's own doc: never ships anything but this sender's own
+            // native-origin events) never does.
+            bool batchHasForeignOrigin = batch.Any(record => record.OriginNodeId != senderNodeId);
             EventCatchUpRequest? matchedForeignOriginRequest =
                 batchHasForeignOrigin && answeredRequestId is { } requestIdForForeignOriginMatch
                     ? await session.Query<EventCatchUpRequest>()
@@ -380,8 +382,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             int appliedBeforeThisEnvelope = applied;
             foreach (EventReplicationCodec.ReplicatedEventRecord record in batch)
             {
-                if (!IsTaskOrRunActRecord(record)
-                    && !IsForwardedRecordAdmitted(
+                if (!IsForwardedRecordAdmitted(
                         record, senderNodeId, matchedForeignOriginRequest, trustChain, senderFingerprint,
                         requestedStreamIdsForForeignOriginMatch, now))
                 {
@@ -947,22 +948,21 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
 
             // Plain MemberSafe — every entry but TaskAssigned's own special rule — is always
             // Allowed here without ever consulting the task or the creator root, exactly as
-            // EvaluateTaskActVerdict's own first check decides, but only for a NATIVE delivery
-            // (record.OriginNodeId == senderNodeId): nothing else in this bucket verifies who the
-            // true origin actually is, so extending that shortcut to a FORWARDED claim would let any
-            // current project member stamp an arbitrary origin and sequence onto a plain observation
-            // and freeze that origin's own future writes on this stream for good (independent pre-PR
-            // review, cycle 8, conformance and adversarial lenses, high — EvaluateTaskActVerdict's
-            // own doc). An owner-role sender's act is Allowed too, whatever classification says, the
-            // moment the sender alone is known. Both skip the aggregate reads below entirely — a
-            // full replay of the task stream, the run stream too for a Run act, and (inside the
-            // creator-root backfill) a native task's own full stream fetch — none of which either
-            // verdict was ever going to consult (independent pre-PR review, cycle 4, both lenses,
-            // medium: on a bootstrap or repair applying a run's history one event at a time, that
-            // cost was quadratic in the run's own event count for every plain observation and every
-            // owner-sent act alike).
-            bool alwaysAllowed = classification == TaskActClassification.MemberSafe && eventType != typeof(TaskAssigned)
-                && record.OriginNodeId == senderNodeId;
+            // EvaluateTaskActVerdict's own first check decides, native or forwarded alike (independent
+            // pre-PR review, cycle 8, terminal lap: a forwarded claim now reaches this gate only after
+            // IsForwardedRecordAdmitted has already verified the relay is speaking inside a catch-up
+            // answer this node itself minted, so narrowing this shortcut to native deliveries only
+            // held every forwarded TaskCompleted and run event a member relay legitimately served,
+            // until the true origin re-sent it directly — undercutting the very catch-up ask this
+            // gate exists to let a held act rely on). An owner-role sender's act is Allowed too,
+            // whatever classification says, the moment the sender alone is known. Both skip the
+            // aggregate reads below entirely — a full replay of the task stream, the run stream too
+            // for a Run act, and (inside the creator-root backfill) a native task's own full stream
+            // fetch — none of which either verdict was ever going to consult (independent pre-PR
+            // review, cycle 4, both lenses, medium: on a bootstrap or repair applying a run's history
+            // one event at a time, that cost was quadratic in the run's own event count for every
+            // plain observation and every owner-sent act alike).
+            bool alwaysAllowed = classification == TaskActClassification.MemberSafe && eventType != typeof(TaskAssigned);
             SenderResolution? actSender = alwaysAllowed ? null : recordSender;
             if (!alwaysAllowed && actSender is not { Role: MembershipRole.Owner })
             {
@@ -1565,24 +1565,6 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     }
 
     /// <summary>
-    /// Whether <paramref name="record"/> is a Task or Run act — one of
-    /// <see cref="TaskActClassificationRegistry"/>'s own entries — rather than the kind of generic
-    /// project-scoped event <see cref="IsForwardedRecordAdmitted"/> was written to police (idea
-    /// 6be68ee2, trust-ledger finding 5 versus findings 4 and 7). A Task or Run act judges a forwarded
-    /// delivery against the task it targets and the sender's own root in <c>ApplyAsync</c> itself —
-    /// <see cref="EvaluateTaskActVerdict"/>'s own Allowed/Held/DroppedWithoutRecording/
-    /// DroppedAndRefusedPermanently verdicts — and must reach that gate even with no catch-up request
-    /// behind it: the ordinary shape of a relay simply forwarding a teammate's own draft or claim,
-    /// which <see cref="IsForwardedRecordAdmitted"/> alone would otherwise refuse outright for lack of
-    /// one, permanently losing a genuine act the classification gate would have held or admitted on
-    /// its own merits. An unresolvable event type name is never a Task or Run act — <c>ApplyAsync</c>
-    /// itself drops it with its own warning either way.
-    /// </summary>
-    private static bool IsTaskOrRunActRecord(EventReplicationCodec.ReplicatedEventRecord record) =>
-        ReplicationEventTypeCatalog.Resolve(record.EventTypeName) is { } eventType
-            && TaskActClassificationRegistry.TryClassificationOf(eventType) is not null;
-
-    /// <summary>
     /// A verified sender fingerprint (idea 6be68ee2, trust-ledger findings 1, 5, and 6), resolved
     /// once against the whole project trust chain — <see cref="RootFingerprint"/> and
     /// <see cref="Role"/> are the sender's own root's; <see cref="FleetNodeIds"/> is that root's
@@ -1730,28 +1712,24 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         SenderResolution? sender, Guid originNodeId, Guid senderNodeId, string? creatorRootFingerprint = null)
     {
         // Plain MemberSafe — every entry in that bucket except TaskAssigned's own special rule —
-        // was never gated at all before this PR, and stays that way for a NATIVE delivery
-        // (originNodeId == senderNodeId, this sender's own outbox, never forwarded): nothing about
-        // the sender's own work (adding, completing, or reporting on a task or run this same node
-        // is running) or a plain observation changes because a trust chain this read happened to
-        // compute does or does not currently resolve the sender to a known project member. Checked
-        // before sender resolution even matters, so a chain this node cannot currently fully
-        // resolve (or TrustChain.Empty, the degenerate case with no chain data at all) never halts
-        // the ordinary run of task and run lifecycle events every install already relied on.
-        //
-        // A FORWARDED delivery (originNodeId != senderNodeId) gets none of that: nothing else in
-        // this bucket ever checks who the true origin actually is, so blanket-allowing it here let
-        // any current project member stamp an arbitrary origin and a huge OriginSequence onto a
-        // plain observation and freeze that origin's own future writes on this stream for good
-        // (independent pre-PR review, cycle 8, conformance and adversarial lenses, high — the
-        // identical "forward only inside an admitted catch-up answer" hole IsForwardedRecordAdmitted
-        // exists to close for every OTHER project-scoped event, which this bucket is exempted from).
-        // Judged the same way a Conditional or OwnerOnly act already is when its own real sender
-        // cannot answer for the claimed origin: held, never lost, until the true origin's own
-        // direct delivery clears it.
+        // was never gated at all before this PR, and stays that way here, native or forwarded alike
+        // (independent pre-PR review, cycle 8, terminal lap): nothing about the sender's own work
+        // (adding, completing, or reporting on a task or run this same node is running) or a plain
+        // observation changes because a trust chain this read happened to compute does or does not
+        // currently resolve the sender to a known project member. Checked before sender resolution
+        // even matters, so a chain this node cannot currently fully resolve (or TrustChain.Empty, the
+        // degenerate case with no chain data at all) never halts the ordinary run of task and run
+        // lifecycle events every install already relied on. A FORWARDED delivery is not narrowed out
+        // of this shortcut: by the time a record reaches this method, IsForwardedRecordAdmitted has
+        // already refused it unless the relay is speaking inside a catch-up answer this node itself
+        // minted for that exact origin and stream, so a forger stamping an arbitrary origin onto a
+        // plain observation is refused there, before this gate ever runs — narrowing this shortcut to
+        // native deliveries only would instead hold every forwarded TaskCompleted and run event a
+        // legitimate relay served, until the true origin re-sent it directly, undercutting the
+        // catch-up ask the held-act queue relies on to clear.
         if (classification == TaskActClassification.MemberSafe && eventType != typeof(TaskAssigned))
         {
-            return originNodeId == senderNodeId ? TaskActVerdict.Allowed : TaskActVerdict.DroppedWithoutRecording;
+            return TaskActVerdict.Allowed;
         }
 
         if (sender is null)
@@ -2163,16 +2141,13 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 // Allowed without ever consulting the task or the creator root — skipped here the
                 // identical way ApplyAsync's own gate skips them, rather than paying for the same
                 // aggregate reads only to discard them (independent pre-PR review, cycle 4, both
-                // lenses, medium — the class sweep off that same finding). The MemberSafe shortcut
-                // itself is native-only (current.OriginNodeId == current.SenderNodeId), the identical
-                // narrowing ApplyAsync's own gate now carries (independent pre-PR review, cycle 8,
-                // conformance and adversarial lenses, high): a row still citing a relay that never
-                // proved it was the true origin must keep re-judging through EvaluateTaskActVerdict
-                // below, or this call's own unconditional post-Allowed delete a few lines down would
-                // drop the row the moment ApplyAsync's re-entrant call (still correctly holding it)
-                // declined to replace it.
-                bool alwaysAllowed = classification.Value == TaskActClassification.MemberSafe && eventType != typeof(TaskAssigned)
-                    && current.OriginNodeId == current.SenderNodeId;
+                // lenses, medium — the class sweep off that same finding), native or forwarded alike
+                // (independent pre-PR review, cycle 8, terminal lap): a held row can only ever hold a
+                // record that already cleared IsForwardedRecordAdmitted before reaching this queue
+                // (queued here for sitting behind an earlier held act from the same origin, never for
+                // its own classification verdict, since a plain MemberSafe act is never itself Held),
+                // so there is no unproven relay left to re-judge by origin at this point.
+                bool alwaysAllowed = classification.Value == TaskActClassification.MemberSafe && eventType != typeof(TaskAssigned);
                 SenderResolution? sender = alwaysAllowed
                     ? null
                     : ResolveSender(trustChain, current.SenderFingerprint, current.SenderNodeId);
