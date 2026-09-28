@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
+using Hall9k.Domain.Infrastructure.Persistence;
 
 namespace Hall9k.Domain.Infrastructure.Storage;
 
@@ -133,11 +134,18 @@ public static class PostgresRuntime
     /// <summary>
     /// Writes (and, on a re-run, refreshes) the compose file, keeping whatever password is already
     /// in effect rather than resetting it: the file is this password's own durable record, and a
-    /// generated one is produced only when <see cref="ReadPasswordFromComposeFile"/> finds nothing
-    /// to keep (a genuinely fresh machine). <c>h9k install</c> calls this on every publish-and-refresh
-    /// and the doctor's start-offer calls it too — both would otherwise regenerate a fresh password on
-    /// every single rewrite, silently orphaning whatever the running container's <c>initdb</c> already
-    /// baked in (security review idea 6be68ee2, secrets-files-network finding 1). Written through
+    /// generated one is produced only when neither <see cref="ReadPasswordFromComposeFile"/> nor
+    /// <see cref="Hall9kDatabase.PasswordOfInstalledContainerConnectionStringInConfigFile"/> finds
+    /// anything to keep (a genuinely fresh machine). The second of those two exists for exactly one
+    /// gap: <c>h9k uninstall</c> without <c>--purge-data</c> deletes this compose file but keeps
+    /// <c>config.json</c> and the already-initialized data volume (Decisions Log #83), so a later
+    /// <c>h9k install</c> finds no compose file to read a password back from even though one already
+    /// governs the surviving container — without this fallback, that install would generate a fresh
+    /// password the running container never adopted (adversarial and conformance pre-PR review,
+    /// cycle 1). <c>h9k install</c> calls this on every publish-and-refresh and the doctor's
+    /// start-offer calls it too — both would otherwise regenerate a fresh password on every single
+    /// rewrite, silently orphaning whatever the running container's <c>initdb</c> already baked in
+    /// (security review idea 6be68ee2, secrets-files-network finding 1). Written through
     /// <see cref="AtomicFileWrite"/> so the file lands at a private, owner-only mode on Unix rather
     /// than whatever the process umask would otherwise leave a password-bearing file at. Returns the
     /// password now in effect, for a caller that needs to build a connection string from it.
@@ -155,7 +163,10 @@ public static class PostgresRuntime
     /// </summary>
     public static async Task<string> WriteComposeFileAsync(string? passwordOverride, CancellationToken cancellationToken)
     {
-        string password = passwordOverride ?? ReadPasswordFromComposeFile() ?? GeneratePassword();
+        string password = passwordOverride
+            ?? ReadPasswordFromComposeFile()
+            ?? Hall9kDatabase.PasswordOfInstalledContainerConnectionStringInConfigFile()
+            ?? GeneratePassword();
         Directory.CreateDirectory(ComposeDirectory);
         await AtomicFileWrite.WriteAllTextAsync(ComposeFile, ComposeFileContentsFor(password), cancellationToken);
         return password;
