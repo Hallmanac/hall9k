@@ -4,6 +4,9 @@ using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Trust;
+using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -121,6 +124,66 @@ public sealed class OrchestratorFeedRendererTests
             .Be("claimed by somebody the claim does not name as a deliberate kick-off; a run is starting");
         OrchestratorFeedDescription.Of(byHand).Should().NotContain("00000000");
         OrchestratorFeedDescription.Of(byHandWithNoFingerprint).Should().NotContain("00000000");
+    }
+
+    /// <summary>
+    /// A node-id line keeps the id and appends the owning member's label in parentheses (task
+    /// b7d8222e, Brian's 2026-09-26 ruling) — but never for this machine's own owner, which reads
+    /// as "me" already, and never for a node the projection has no member on record for.
+    /// </summary>
+    [Fact]
+    public void A_takeover_line_names_another_members_node_by_its_label()
+    {
+        Guid newHolder = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        Guid previousHolder = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        TaskHolderTakenOver taken = new(
+            FeedTask, previousHolder, newHolder, Guid.NewGuid(), "new-holder-root", "asked and got it", Guid.NewGuid(), At);
+        MemberLabelLookup lookup = new(new ProjectMemberLabels
+        {
+            Id = FeedTask,
+            Labels =
+            [
+                new("new-holder-root", [newHolder], DisplayName.Parse("Brian"), null),
+                new("previous-holder-root", [previousHolder], DisplayName.Parse("Alex"), null),
+            ],
+        });
+
+        OrchestratorFeedDescription.Of(taken, lookup).Should().Be(
+            $"node {DomainId.Short(newHolder)} (Brian) took the task over from node {DomainId.Short(previousHolder)} (Alex): asked and got it");
+    }
+
+    [Fact]
+    public void A_takeover_line_names_this_machines_own_owners_node_by_id_alone()
+    {
+        Guid myNode = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        Guid previousHolder = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        TaskHolderTakenOver taken = new(
+            FeedTask, previousHolder, myNode, Guid.NewGuid(), "my-own-root", "took it back", Guid.NewGuid(), At);
+        MemberLabelLookup lookup = new(
+            new ProjectMemberLabels
+            {
+                Id = FeedTask,
+                Labels =
+                [
+                    new("my-own-root", [myNode], DisplayName.Parse("Brian"), null),
+                    new("previous-holder-root", [previousHolder], DisplayName.Parse("Alex"), null),
+                ],
+            },
+            ownRootFingerprint: "my-own-root");
+
+        OrchestratorFeedDescription.Of(taken, lookup).Should().Be(
+            $"node {DomainId.Short(myNode)} took the task over from node {DomainId.Short(previousHolder)} (Alex): took it back");
+    }
+
+    [Fact]
+    public void A_takeover_line_names_an_unknown_node_by_id_alone()
+    {
+        Guid unknownNode = Guid.Parse("33333333-3333-3333-3333-333333333333");
+        TaskHolderTakenOver taken = new(
+            FeedTask, null, unknownNode, Guid.NewGuid(), "unknown-root", "no prior record", Guid.NewGuid(), At);
+
+        OrchestratorFeedDescription.Of(taken, lookup: null).Should().Be(
+            $"node {DomainId.Short(unknownNode)} took the task over from an unrecorded holder: no prior record");
     }
 
     [Fact]

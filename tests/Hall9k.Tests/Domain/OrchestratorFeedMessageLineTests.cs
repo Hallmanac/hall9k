@@ -1,7 +1,9 @@
 using FluentAssertions;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Orchestrator;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -53,6 +55,51 @@ public sealed class OrchestratorFeedMessageLineTests
 
         OrchestratorFeedDescription.Of(handoff).Should()
             .Be("abcdef012345 says a task's handoff note changed");
+    }
+
+    /// <summary>
+    /// The sender fingerprint line resolves through the projection's own label at render time
+    /// (task b7d8222e): a display name wins outright, a login stands in when there is no name, and
+    /// with neither the line reads exactly as it always has, off the short fingerprint alone.
+    /// </summary>
+    [Fact]
+    public void The_senders_line_names_them_by_their_display_name_when_the_projection_has_one()
+    {
+        Guid fromNodeId = Guid.Parse("01a0bc05-a960-7657-b708-1aed4a1b2c3d");
+        Guid projectId = Guid.Parse("01a0bc05-a960-7657-b708-1aed9f8e7d6c");
+        MessageReceived note = Note(fromNodeId, projectId, 1, "please surface this at once");
+        MemberLabelLookup lookup = new(new ProjectMemberLabels
+        {
+            Id = projectId,
+            Labels = [new("abcdef0123456789", [fromNodeId], DisplayName.Parse("Brian"), "brianhallmanac")],
+        });
+
+        OrchestratorFeedDescription.Of(note, lookup).Should().Contain("a message from Brian:");
+    }
+
+    [Fact]
+    public void The_senders_line_falls_back_to_their_login_with_no_display_name_declared()
+    {
+        Guid fromNodeId = Guid.Parse("01a0bc05-a960-7657-b708-1aed4a1b2c3d");
+        Guid projectId = Guid.Parse("01a0bc05-a960-7657-b708-1aed9f8e7d6c");
+        MessageReceived note = Note(fromNodeId, projectId, 1, "please surface this at once");
+        MemberLabelLookup lookup = new(new ProjectMemberLabels
+        {
+            Id = projectId,
+            Labels = [new("abcdef0123456789", [fromNodeId], DisplayName.None, "brianhallmanac")],
+        });
+
+        OrchestratorFeedDescription.Of(note, lookup).Should().Contain("a message from brianhallmanac:");
+    }
+
+    [Fact]
+    public void The_senders_line_falls_back_to_the_short_fingerprint_with_neither_recorded()
+    {
+        Guid fromNodeId = Guid.Parse("01a0bc05-a960-7657-b708-1aed4a1b2c3d");
+        Guid projectId = Guid.Parse("01a0bc05-a960-7657-b708-1aed9f8e7d6c");
+        MessageReceived note = Note(fromNodeId, projectId, 1, "please surface this at once");
+
+        OrchestratorFeedDescription.Of(note, lookup: null).Should().Contain("a message from abcdef012345:");
     }
 
     private static MessageReceived Note(Guid fromNodeId, Guid projectId, long seq, string body) => new(

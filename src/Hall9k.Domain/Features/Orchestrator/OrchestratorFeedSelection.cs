@@ -1,3 +1,5 @@
+using Hall9k.Domain.Features.Trust;
+
 namespace Hall9k.Domain.Features.Orchestrator;
 
 /// <summary>
@@ -63,7 +65,8 @@ public static class OrchestratorFeedSelection
         DateTimeOffset settledThrough,
         bool scanWasCapped,
         Func<OrchestratorFeedCandidate, CancellationToken, ValueTask<OrchestratorFeedScope?>> scopeOf,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        MemberLabelLookup? labels = null)
     {
         List<OrchestratorFeedItem> items = [];
         long drainableThrough = startedFrom;
@@ -90,7 +93,7 @@ public static class OrchestratorFeedSelection
                 continue;
             }
 
-            if (OrchestratorFeedDescription.Of(candidate.Data) is not { } description)
+            if (OrchestratorFeedDescription.Of(candidate.Data, labels) is not { } description)
             {
                 // The interest table named this type and the description table did not — a gap
                 // between two tables a unit test already fails the build over. Skipping is the
