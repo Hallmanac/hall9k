@@ -36,13 +36,18 @@ public abstract class ProcessManagerBase : IProcessManager
 
     /// <summary>
     /// Test-only synchronization seam: fired the instant <see cref="TerminateTree"/> finishes
-    /// snapshotting descendants, before its grace-window wait begins. No production caller
-    /// subscribes, so this costs nothing outside tests — it exists so
-    /// <see cref="Hall9k.Tests.Daemon.ProcessManagerParityTests"/> can kill a root process only
-    /// once TerminateTree has genuinely captured its descendants, instead of racing a fixed
-    /// delay against thread-pool scheduling to approximate the same ordering.
+    /// snapshotting descendants, before its grace-window wait begins, carrying that exact
+    /// snapshot. No production caller subscribes, so this costs nothing outside tests — it
+    /// exists so <see cref="Hall9k.Tests.Daemon.ProcessManagerParityTests"/> can kill a root
+    /// process only once TerminateTree has genuinely captured its descendants, instead of
+    /// racing a fixed delay against thread-pool scheduling to approximate the same ordering.
+    /// Carrying the snapshot itself (independent pre-PR review, cycle 4, both lenses), rather
+    /// than a bare notification, matters because a separate, earlier call to
+    /// <see cref="SnapshotDescendants"/> proves nothing about whether THIS call's own
+    /// enumeration — a fresh, independent shell-out — also found the same descendant: only the
+    /// data this event actually carries answers that.
     /// </summary>
-    internal event Action? DescendantsSnapshotted;
+    internal event Action<IReadOnlyList<(int Id, DateTimeOffset StartedAt)>>? DescendantsSnapshotted;
 
     /// <summary>
     /// Reads a just-started process's start time, tolerating the same race
@@ -134,7 +139,7 @@ public abstract class ProcessManagerBase : IProcessManager
         // cleanup and bubble into the run pipeline for something no production caller even wires up.
         try
         {
-            DescendantsSnapshotted?.Invoke();
+            DescendantsSnapshotted?.Invoke(descendantSnapshotsBeforeExit);
         }
         catch (Exception)
         {
