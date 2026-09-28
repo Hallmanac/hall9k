@@ -1211,14 +1211,30 @@ internal static class AttentionComposer
     /// <summary>
     /// The membership-gate park's own cause line (security review idea 6be68ee2, finding 1) — only
     /// deterministic facts carried on the task's own stream, never a model session's own summary
-    /// (tools before tokens): the title, whether the head is a fork, the head owner, the changed-file
-    /// count, and the author's numeric id, so a deleted-and-recreated account is diagnosable from
-    /// this line alone without opening the pull request. The body deliberately never appears here —
-    /// the pull request's own link already carries it.
+    /// (tools before tokens): the pull request's own title, whether the head is a fork, the head
+    /// owner, the changed-file count, and the author's numeric id, so a deleted-and-recreated
+    /// account is diagnosable from this line alone without opening the pull request. The body
+    /// deliberately never appears here — the pull request's own link already carries it.
+    /// <para>
+    /// The title read here is <see cref="TaskListItem.PrReviewGateParkedTitle"/> — GitHub's own,
+    /// carried on <see cref="Events.PullRequestReviewGateParked"/> — never <see cref="TaskListItem.Objective"/>,
+    /// which this same security review made platform-authored ("Review pull request owner/repo#N")
+    /// precisely because it is one field auto-pr-review prints everywhere: every needs-you row
+    /// printing it verbatim would otherwise be the platform's widest unfenced surface for text a
+    /// pull request's own author wrote (independent pre-PR review, cycle 1, conformance lens: this
+    /// row still read the objective, so a public repository's park card never actually showed the
+    /// pull request's own title at all). Passed through the identical <see cref="RelayedText.OneLine"/>
+    /// and <see cref="TaskListCommand.Truncate"/> pair the objective's own former printing used, so
+    /// a title carrying control characters or running long still folds to one line the row can own.
+    /// Null for a row minted before this field existed — an earlier build's own park card — and the
+    /// row says so rather than falling back to the objective it was fixed to stop trusting.
+    /// </para>
     /// </summary>
     private static string GateParkedCause(TaskListItem task)
     {
-        string title = TaskListCommand.Truncate(RelayedText.OneLine(task.Objective), 80);
+        string title = task.PrReviewGateParkedTitle is { } prTitle
+            ? TaskListCommand.Truncate(RelayedText.OneLine(prTitle), 80)
+            : "a title this row does not record";
         string author = task.PrReviewGateParkedAuthorLogin is { } login
             ? $"{login} (id {task.PrReviewGateParkedAuthorAccountId?.ToString() ?? "unknown"}"
               + (task.PrReviewGateParkedAuthorAssociation is { Length: > 0 } association ? $", {association}" : string.Empty) + ")"

@@ -185,6 +185,8 @@ public sealed class TaskListItem
     public int? PrReviewGateParkedChangedFileCount { get; set; }
     public IReadOnlyList<long> PrReviewGateParkedMemberAccountIds { get; set; } = [];
     public IReadOnlyList<string> PrReviewGateParkedMembersWithoutDeclaredAccount { get; set; } = [];
+    /// <summary>The pull request's own title at park time — see <see cref="TaskAggregate.PrReviewGateParkedTitle"/>.</summary>
+    public string? PrReviewGateParkedTitle { get; set; }
     /// <summary>
     /// Mirrors <see cref="TaskAggregate.PrReviewFollowThroughOpen"/>: whether this pr-review
     /// task's posted review is still being followed through (task: a pr-review task stays open
@@ -987,6 +989,7 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         view.PrReviewGateParkedChangedFileCount = @event.Data.ChangedFileCount;
         view.PrReviewGateParkedMemberAccountIds = @event.Data.MemberAccountIds;
         view.PrReviewGateParkedMembersWithoutDeclaredAccount = @event.Data.MembersWithoutDeclaredAccount;
+        view.PrReviewGateParkedTitle = @event.Data.Title;
     }
 
     // Mirrors TaskAggregate.Apply(PullRequestReviewFollowThroughOpened): the pr-review task's own

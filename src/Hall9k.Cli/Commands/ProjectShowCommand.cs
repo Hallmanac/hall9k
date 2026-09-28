@@ -279,7 +279,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Review stage composition", ReviewStageCompositionRow(project));
         table.AddRow("Auto pr-review", AutoPrReviewRow(project, autoPrReview));
         table.AddRow("Review requires membership", ReviewMembershipOption.Describe(
-            membershipGate.Policy,
+            membershipGate.Policy, visibility?.IsPrivate,
             "a hall9k team member's own request or mention is required before auto-pr-review runs it "
             + "unattended; a non-member's still mints the pr-review task, published but unassigned — "
             + "h9k task assign is the human go",
@@ -487,9 +487,10 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
     /// </summary>
     internal static string RepositoryVisibilityRow(ProjectRepositoryVisibility? visibility) =>
         visibility is null
-            ? "[dim]not yet observed — the daemon's auto-pr-review sweep records this on its first tick[/]"
+            ? "[dim]not yet observed — the membership gate fails closed (on) until a successful read lands[/]"
             : $"{(visibility.IsPrivate ? "private or internal" : "public")} "
-              + $"[dim](observed {visibility.ObservedAt:yyyy-MM-dd HH:mm:ss}Z)[/]";
+              + $"[dim](observed {visibility.ObservedAt:yyyy-MM-dd HH:mm:ss}Z; a failed read on a later sweep "
+              + "still fails the membership gate closed (on), whatever this row shows)[/]";
 
     /// <summary>
     /// How much of this project's history <c>h9k orchestrator feed</c> hands a window (idea

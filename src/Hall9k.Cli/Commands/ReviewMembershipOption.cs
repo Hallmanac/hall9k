@@ -24,11 +24,35 @@ internal static class ReviewMembershipOption
             + "sweep from the repository's own visibility (security review idea 6be68ee2, finding 1)."),
     };
 
-    /// <summary>How the effective value reads in a show pane, including what an unset level defers to.</summary>
-    public static string Describe(ReviewMembershipPolicy policy, string enabledDetail, string unsetDetail) =>
-        policy == ReviewMembershipPolicy.Enabled
-            ? $"[yellow]on[/] [dim]— {enabledDetail}[/]"
-            : policy == ReviewMembershipPolicy.Disabled
-                ? "[dim]off — every request or mention runs unattended, the collaborator behaviour (security review idea 6be68ee2)[/]"
-                : $"[dim]unset — {unsetDetail}[/]";
+    /// <summary>
+    /// How the effective value reads in a show pane, including what an unset level defers to.
+    /// <paramref name="isPrivate"/> is the project's own last-observed <c>ProjectRepositoryVisibility</c>
+    /// (independent pre-PR review, cycle 1, conformance lens) — null before any sweep has ever
+    /// observed it — so an unset row states the CURRENT effective value directly rather than
+    /// leaving the reader to combine this row with the separate visibility row below it to learn
+    /// whether the gate is actually on right now. This is the daemon's own <c>gateOn = explicitSetting
+    /// ?? isPrivate != true</c> formula (<c>AutoPrReviewObservation.DecideMembershipGate</c>)
+    /// applied to the last observation this command can read without a live <c>gh</c> call of its
+    /// own — a sweep that has not observed visibility yet, or whose most recent read failed, reads
+    /// the identical fail-closed default the gate itself falls back to on a failed read: on.
+    /// </summary>
+    public static string Describe(ReviewMembershipPolicy policy, bool? isPrivate, string enabledDetail, string unsetDetail)
+    {
+        if (policy == ReviewMembershipPolicy.Enabled)
+        {
+            return $"[yellow]on[/] [dim]— {enabledDetail}[/]";
+        }
+
+        if (policy == ReviewMembershipPolicy.Disabled)
+        {
+            return "[dim]off — every request or mention runs unattended, the collaborator behaviour (security review idea 6be68ee2)[/]";
+        }
+
+        string effective = isPrivate == true
+            ? "off — the last observed visibility is private or internal"
+            : "on — the fail-closed default applies, whether because the last observed visibility is "
+              + "public or because no successful read exists yet; a failed read on any later sweep "
+              + "fails closed the same way, whatever this row shows";
+        return $"[dim]unset, currently {effective} — {unsetDetail}[/]";
+    }
 }

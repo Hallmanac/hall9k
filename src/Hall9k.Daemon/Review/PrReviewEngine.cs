@@ -1092,19 +1092,24 @@ public sealed class PrReviewEngine(
         // the report to point at, and the line must never claim one that is not there.
         //
         // Read off the ObservedReviewMention row this task was actually MINTED from (Outcome ==
-        // TaskCreated) in preference to task.LatestMention* — a second mention attaching to this
-        // task while this same run was still in flight moves those fields to the newer comment,
-        // which this report never answered (independent pre-PR review, cycle 1, both lenses). No
-        // such row exists for a task this mention only EXTENDED (Outcome == Attached) rather than
-        // minted — a review-request-origin task that picked up a mention before its own first
-        // dispatch is exactly this shape, and it still gets the addendum and mentionAnswer.md, so
-        // it must still get a needs-you prefix naming who asked — falling back to task.LatestMention*
-        // there, the same data RunLauncher's own mint addendum falls back to, on the same accepted
-        // trade: a further mention landing mid-run can still move it before this park line reads it.
+        // TaskCreated or TaskCreatedParked — a parked mint's own mention row carries the identical
+        // marker under whichever outcome the membership gate actually settled it with, independent
+        // pre-PR review, cycle 1, conformance lens) in preference to task.LatestMention* — a second
+        // mention attaching to this task while this same run was still in flight moves those fields
+        // to the newer comment, which this report never answered (independent pre-PR review, cycle
+        // 1, both lenses). No such row exists for a task this mention only EXTENDED (Outcome ==
+        // Attached) rather than minted — a review-request-origin task that picked up a mention
+        // before its own first dispatch is exactly this shape, and it still gets the addendum and
+        // mentionAnswer.md, so it must still get a needs-you prefix naming who asked — falling back
+        // to task.LatestMention* there, the same data RunLauncher's own mint addendum falls back to,
+        // on the same accepted trade: a further mention landing mid-run can still move it before
+        // this park line reads it.
         ObservedReviewMention? mintingMention = mentionAnswer.IsNotBlank()
             ? await session.Query<ObservedReviewMention>()
                 .Where(mention => mention.TaskId == taskId)
-                .Where(mention => mention.MatchesSql("d.data ->> 'outcome' = ?", ReviewMentionOutcome.TaskCreated.Value))
+                .Where(mention => mention.MatchesSql(
+                    "d.data ->> 'outcome' IN (?, ?)",
+                    ReviewMentionOutcome.TaskCreated.Value, ReviewMentionOutcome.TaskCreatedParked.Value))
                 .FirstOrDefaultAsync(cancellationToken)
             : null;
         string? mentionAuthorLogin = mintingMention?.CommentAuthorLogin ?? task.LatestMentionAuthorLogin;
