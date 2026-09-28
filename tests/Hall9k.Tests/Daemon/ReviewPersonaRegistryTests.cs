@@ -508,6 +508,42 @@ public sealed class ReviewPersonaRegistryTests
         }
     }
 
+    /// <summary>
+    /// A session's own denied tools survive even when that same session produced nothing usable
+    /// and is recorded as a failure — the "Not delivered" branch used to print and continue before
+    /// ever reaching the denied-tools line, so the evidence that most likely explains the failure
+    /// never reached the report (independent pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    [Fact]
+    public async Task A_failed_sessions_own_denied_tools_still_reach_the_report()
+    {
+        string runDirectory = Path.Combine(Path.GetTempPath(), $"h9k-persona-report-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(runDirectory);
+        try
+        {
+            string body = await PrReviewEngine.ComposePersonaSectionsAsync(
+                runDirectory, ReviewPersonaRegistry.Plan([ReviewPersona.Qa]),
+                new Dictionary<string, ReviewPersonaSessionFailure>
+                {
+                    [ReviewPersonaRegistry.QaSlug] = new(
+                        ReviewPersona.Qa, "The pr-review qa session reported an error result.", DateTimeOffset.UtcNow),
+                },
+                gateSetAccepted: true,
+                CancellationToken.None,
+                new Dictionary<string, IReadOnlyList<PermissionDenial>>
+                {
+                    [ReviewPersonaRegistry.QaSlug] = [new PermissionDenial("Bash", """{"command":"npm start"}""")],
+                });
+
+            body.Should().Contain("Denied tools: Bash.");
+            body.Should().Contain("Not delivered:");
+        }
+        finally
+        {
+            Directory.Delete(runDirectory, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task A_fallback_to_the_engineer_is_said_plainly_in_the_report()
     {
@@ -528,6 +564,42 @@ public sealed class ReviewPersonaRegistryTests
 
             body.Should().Contain("the engineer's review ran in their place");
             body.Should().Contain("## QA review");
+        }
+        finally
+        {
+            Directory.Delete(runDirectory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// A fallback to the engineer caused entirely by a fork skip (every declared persona is
+    /// registered, but every one sits on a fork head) must not blame a missing prompt — that
+    /// reason is false here and contradicts the per-persona "Skipped: &lt;fork reason&gt;" line
+    /// printed right below it (independent pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    [Fact]
+    public async Task A_fallback_to_the_engineer_caused_by_a_fork_skip_names_the_fork_reason()
+    {
+        string runDirectory = Path.Combine(Path.GetTempPath(), $"h9k-persona-report-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(runDirectory);
+        try
+        {
+            await File.WriteAllTextAsync(
+                RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Adversarial.Slug),
+                "Nothing found.\n\nVERDICT: merge-ready");
+            await File.WriteAllTextAsync(
+                RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Conformance.Slug),
+                "Matches.\n\nVERDICT: merge-ready");
+
+            ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan([ReviewPersona.Qa], isForkHead: true);
+
+            string body = await PrReviewEngine.ComposePersonaSectionsAsync(
+                runDirectory, plan, new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true,
+                CancellationToken.None);
+
+            body.Should().Contain(ReviewPersonaRegistry.ForkSkipReason);
+            body.Should().NotContain("None of the personas this pull request's assignee declared has a "
+                + "review prompt registered yet");
         }
         finally
         {

@@ -1,3 +1,4 @@
+using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Documents;
@@ -88,10 +89,18 @@ public sealed class PrimarySessionResumer(IExecutor executor, IOptions<DaemonOpt
             File.Move(streamFile, $"{streamFile}.pre-resume-{DateTimeOffset.UtcNow.Ticks}");
         }
 
+        bool isPrReview = task.Type == TaskType.PrReview;
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             run.Id, DomainId.New(), run.WorktreePath, run.RunDirectory, prompt,
-            run.ExecutorMode, run.Model, effort, project.SkipPermissions,
-            ResumeSessionId: run.SessionId, UntrustedWorkingDirectory: task.Type == TaskType.PrReview,
+            run.ExecutorMode, run.Model, effort,
+            // Hardcoded false for a pr-review resume, never project.SkipPermissions (Brian's
+            // ruling 2026-09-27: no pr-review session ever runs with permissions skipped, member
+            // or not) — mirrors RunLauncher's own pr-review branch, which a resume must not
+            // silently regress from by falling back to the project's own setting (independent
+            // pre-PR review, cycle 1, both lenses: this was the fourth real spawn site the
+            // security review's own IExecutor doc named only three of).
+            SkipPermissions: isPrReview ? false : project.SkipPermissions,
+            ResumeSessionId: run.SessionId, UntrustedWorkingDirectory: isPrReview,
             // The same guard the original spawn carried (task: a review-feedback follow-up never
             // answers a human reviewer in the owner's name on its own). A resume rewrites the
             // settings file, so omitting it here would silently lift the guard from the retry of
@@ -107,6 +116,18 @@ public sealed class PrimarySessionResumer(IExecutor executor, IOptions<DaemonOpt
         {
             TaskId = task.Id,
             SessionName = sessionName,
+            // The same real permission file the original pr-review dispatch spawned under
+            // (RunLauncher's own isPrReview branch): without this, a resumed pr-review primary
+            // session or mention follow-up fell back to ClaudeSettingsFile.Build's ordinary shape
+            // and SkipPermissions above, ran with no allow/deny list at all (independent pre-PR
+            // review, cycle 1, both lenses). QaGateCommands mirrors the resumed session's own
+            // recorded persona — the first of run.PrReviewPersonasRan is the plan's primary
+            // session (ReviewPersonaPlan.Sessions' own doc), so this is QA's own earned exception
+            // exactly when the session being resumed is QA's.
+            UsesReviewPermissions = isPrReview,
+            QaGateCommands = isPrReview && run.PrReviewPersonasRan.FirstOrDefault() == ReviewPersona.Qa
+                ? QaGateCommandsResolver.Resolve(project)
+                : null,
         }, cancellationToken);
 
         // The retry's stdout redirect truncates the run's stream file fresh (log #2), so the

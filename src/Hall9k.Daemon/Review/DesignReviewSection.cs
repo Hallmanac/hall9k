@@ -303,9 +303,18 @@ public static class DesignReviewSection
         : walkedScreens > 0
             ? "**Drive:** driven — the session stood this project's product up on the review worktree "
               + $"and walked {walkedScreens} screen(s), cited below under Driven."
+            // Driving was authorised (the project setting is on and a run skill exists), and
+            // still refused: this session's own real permission file (security review idea
+            // 6be68ee2, process-injection finding 1) allows nothing that could stand the product
+            // up, by construction — no run-skill or drive command is ever in its allow list — so
+            // no attempt could have reached one regardless of what the session tried. The old
+            // wording blamed the session's own report ("reported walking no screens") and never
+            // said the file is what actually stopped it (independent pre-PR review, cycle 1, both
+            // lenses).
             : "**Drive:** driving was authorised for this review, and the session reported walking no "
-              + "screens at all. Read every lens below as a static read: whatever the reason, nothing "
-              + "here was seen running.";
+              + "screens at all — because this session's own permission file refuses every command "
+              + "that could stand the product up, so nothing here was ever going to run regardless of "
+              + "what the session attempted. Read every lens below as a static read.";
 
     /// <summary>
     /// The clause a static review's drive line ends with when the session reported walking
@@ -406,7 +415,8 @@ public static class DesignReviewSection
         {
             body.Append(
                 "\nNothing. This review was authorised to stand the product up and reported no walked "
-                + "screen, so there is no walk to show and no screenshot to cite.\n");
+                + "screen — because this session's own permission file refuses every command that could "
+                + "actually do that — so there is no walk to show and no screenshot to cite.\n");
             return;
         }
 

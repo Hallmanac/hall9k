@@ -781,7 +781,7 @@ public sealed class RunLauncher(
             // .Plan skips QA outright there.
             IReadOnlyList<VerifyCommand>? primaryQaGateCommands = isPrReview
                 && personaPlan!.Sessions[0].Persona == ReviewPersona.Qa
-                ? (IReadOnlyList<VerifyCommand>?)(project.AcceptedVerifyCommands ?? project.VerifyCommands)
+                ? QaGateCommandsResolver.Resolve(project)
                 : null;
 
             SpawnedAgent agent = await executor.SpawnAsync(

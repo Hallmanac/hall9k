@@ -1433,10 +1433,24 @@ public sealed class RunAggregate
         PrReviewForkSkipReason = @event.ForkSkipReason;
     }
 
-    /// <summary>See <see cref="RunPermissionDenialsRecorded"/>'s own doc.</summary>
+    /// <summary>
+    /// See <see cref="RunPermissionDenialsRecorded"/>'s own doc. Accumulates rather than
+    /// replaces: a session's own error-result retry (<c>PrimarySessionResumer</c>) records a
+    /// second event under the identical slug, and overwriting the first would erase the earlier
+    /// attempt's own denials the moment a retry recorded its own — exactly the evidence the
+    /// allow-list-grows-by-evidence story above depends on (independent pre-PR review, cycle 1,
+    /// adversarial lens). Deduplicated by value rather than concatenated raw, so an identical
+    /// denial recorded twice (the retry reached for the same refused tool) still reads as one
+    /// line in the report.
+    /// </summary>
     public void Apply(RunPermissionDenialsRecorded @event)
     {
-        _prReviewPermissionDenials[@event.SessionSlug] = @event.Denials;
+        IReadOnlyList<PermissionDenial> existing =
+            _prReviewPermissionDenials.TryGetValue(@event.SessionSlug, out IReadOnlyList<PermissionDenial>? prior)
+                ? prior
+                : [];
+        _prReviewPermissionDenials[@event.SessionSlug] =
+            [.. existing, .. @event.Denials.Where(denial => !existing.Contains(denial))];
     }
 
     public void Apply(PrReviewPersonaReported @event)
