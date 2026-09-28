@@ -235,6 +235,20 @@ public static partial class RelayedText
     }
 
     /// <summary>
+    /// Already-printable text wrapped in the fence <see cref="FenceFor"/> computes for it — the
+    /// one shape every caller that fences a stranger's prose builds by hand otherwise. It exists
+    /// separately from <see cref="FenceFor"/> itself for the reason a caller sometimes needs to
+    /// stand between the two: a bound has to cut the text before it is fenced, since fencing first
+    /// and cutting second can sever a backtick run the fence was chosen around, changing what the
+    /// fence needed to be.
+    /// </summary>
+    public static string Fenced(string text)
+    {
+        string fence = FenceFor(text);
+        return text.EndsWith('\n') ? $"{fence}\n{text}{fence}" : $"{fence}\n{text}\n{fence}";
+    }
+
+    /// <summary>
     /// The shortest run length no unpaired run in the text uses, so the pair this method inserts
     /// can only close against itself: CommonMark pairs a run with the next run of exactly its own
     /// length, and every run the text already had is either inside a span it closed (so it is

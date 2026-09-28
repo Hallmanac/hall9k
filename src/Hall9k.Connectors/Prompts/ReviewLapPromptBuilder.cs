@@ -268,7 +268,7 @@ public static class ReviewLapPromptBuilder
             prompt.AppendLine(PromptTemplates.Load(file, "without-task"));
             prompt.AppendLine();
             prompt.AppendLine(briefing.PullRequest.Body.IsNotBlank()
-                ? Block(briefing.PullRequest.Body)
+                ? Fenced(briefing.PullRequest.Body)
                 : PromptTemplates.Load(file, "no-description"));
         }
 
@@ -478,7 +478,7 @@ public static class ReviewLapPromptBuilder
 
                 foreach (string comment in thread.NewComments)
                 {
-                    prompt.AppendLine(Block(comment));
+                    prompt.AppendLine(Fenced(comment));
                     prompt.AppendLine();
                 }
 
@@ -623,6 +623,7 @@ public static class ReviewLapPromptBuilder
         prompt.AppendLine(PromptTemplates.Load(file, "never-push"));
         prompt.AppendLine(PromptTemplates.Load(file, "own-branch"));
         prompt.AppendLine(PromptTemplates.Load(file, "never-post-github"));
+        prompt.AppendLine(PromptTemplates.Load(file, "thread-text-boundary"));
         prompt.AppendLine();
         WorkPromptBuilder.AppendExternalInteractionLoggingRule(prompt, briefing.TaskId);
     }
@@ -701,4 +702,18 @@ public static class ReviewLapPromptBuilder
 
     /// <summary>The same defusal for text that is prose and keeps its paragraphs.</summary>
     private static string Block(string text) => RelayedText.Printable(text);
+
+    /// <summary>
+    /// The pull request's own body, and a thread comment on it, fenced rather than merely
+    /// printable: unlike <see cref="ReviewLapBriefing.StatedObjective"/> or the platform's own
+    /// findings report,
+    /// these two are written by anyone who can open a pull request or comment on one — up to and
+    /// including a human with no association to the repository at all, since a reviewer's own
+    /// browsing turns up whatever GitHub itself will show them. <see cref="RelayedText.FenceFor"/>
+    /// picks a backtick run longer than any the text itself contains, so a forged closing fence
+    /// inside the body or the comment cannot end the quote early and make the rest of this
+    /// briefing read as part of it — the same boundary the daemon's own
+    /// <c>MentionFollowUpPromptBuilder.Block</c> draws around a mention comment.
+    /// </summary>
+    private static string Fenced(string text) => RelayedText.Fenced(RelayedText.Printable(text));
 }
