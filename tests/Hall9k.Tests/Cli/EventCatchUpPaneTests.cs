@@ -2,7 +2,9 @@ using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Connectors.Replication;
 using Hall9k.Domain.Features.Replication;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -205,6 +207,77 @@ public sealed class EventCatchUpPaneTests
     {
         EventCatchUpPane.ComposeLines([], [], new HeldTailSummary(1, 0), Now)
             .Should().ContainSingle().Which.Should().StartWith("catch-up holds 1 stream tail-only, 0 given up");
+    }
+
+    /// <summary>
+    /// The declining node's own member label (task 21c8f2f3) appended in parentheses, when this
+    /// request's own project's labels know one — the same shape every other node-id line this
+    /// task touches carries.
+    /// </summary>
+    [Fact]
+    public void Names_the_declining_nodes_own_member_label_when_the_project_knows_one()
+    {
+        Guid projectId = DomainId.New();
+        Guid mac = DomainId.New();
+        const string fingerprint = "abcdef0123456789";
+        DateTimeOffset declinedAt = Now.AddHours(-1);
+        EventCatchUpRequest declined = new()
+        {
+            Id = DomainId.New(),
+            ProjectId = projectId,
+            ForStreamId = DomainId.New(),
+            Candidates = [],
+            SentAt = Now.AddHours(-2),
+            AnsweredAt = declinedAt,
+        };
+        declined.Declines = [new EventCatchUpDecline(mac, declinedAt, "nothing held here")];
+        declined.ClosedByDecline = declined.Declines[0];
+        ProjectMemberLabels labels = new()
+        {
+            Id = projectId,
+            Labels = [new ProjectMemberLabel(fingerprint, [mac], DisplayName.Parse("The Mac"), "brianhallmanac")],
+        };
+        Dictionary<Guid, MemberLabelLookup> labelsByProject = new() { [projectId] = new MemberLabelLookup(labels) };
+
+        string line = EventCatchUpPane.ComposeLines([], [declined], NoHeldTail, Now, labelsByProject)
+            .Should().ContainSingle().Subject;
+
+        line.Should().Contain($"declined by {DomainId.Short(mac)} (The Mac) at {declinedAt:u}");
+    }
+
+    /// <summary>
+    /// The companion case: the project's own labels are known, but not for this particular node —
+    /// one revoked out of every fleet, or a member the sweep has not yet recorded — so the line
+    /// falls back to the bare id exactly as it always has, never a guessed-at name.
+    /// </summary>
+    [Fact]
+    public void Names_no_label_for_a_node_the_projects_own_labels_do_not_know()
+    {
+        Guid projectId = DomainId.New();
+        Guid mac = DomainId.New();
+        DateTimeOffset declinedAt = Now.AddHours(-1);
+        EventCatchUpRequest declined = new()
+        {
+            Id = DomainId.New(),
+            ProjectId = projectId,
+            ForStreamId = DomainId.New(),
+            Candidates = [],
+            SentAt = Now.AddHours(-2),
+            AnsweredAt = declinedAt,
+        };
+        declined.Declines = [new EventCatchUpDecline(mac, declinedAt, "nothing held here")];
+        declined.ClosedByDecline = declined.Declines[0];
+        Dictionary<Guid, MemberLabelLookup> labelsByProject = new()
+        {
+            [projectId] = new MemberLabelLookup(new ProjectMemberLabels { Id = projectId, Labels = [] }),
+        };
+
+        string line = EventCatchUpPane.ComposeLines([], [declined], NoHeldTail, Now, labelsByProject)
+            .Should().ContainSingle().Subject;
+
+        line.Should().Be(
+            $"catch-up for stream {DomainId.Short(declined.ForStreamId!.Value)} declined by "
+            + $"{DomainId.Short(mac)} at {declinedAt:u} (nothing held here)");
     }
 
     [Fact]
