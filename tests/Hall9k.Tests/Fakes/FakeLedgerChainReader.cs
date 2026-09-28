@@ -22,6 +22,12 @@ internal sealed class FakeLedgerChainReader : ILedgerChainReader
     public FakeLedgerChainReader(IReadOnlyDictionary<string, TrustChain> chainsByRepositoryPath) =>
         chainFor = path => chainsByRepositoryPath.TryGetValue(path, out TrustChain? chain) ? chain : TrustChain.Empty;
 
+    /// <summary>A caller-supplied function per repository path — for a scenario where reading one
+    /// project's own ledger genuinely fails (a fetch or git error), the same
+    /// <see cref="InvalidOperationException"/> a real <see cref="GitLedgerChainReader"/> throws
+    /// rather than folding into an empty or partial chain.</summary>
+    public FakeLedgerChainReader(Func<string, TrustChain> chainFor) => this.chainFor = chainFor;
+
     public Task<TrustChain> ComputeAsync(string repositoryPath, CancellationToken cancellationToken) =>
         Task.FromResult(chainFor(repositoryPath));
 }

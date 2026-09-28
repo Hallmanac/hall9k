@@ -911,6 +911,75 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         }
     }
 
+    /// <summary>
+    /// A standing rotation must not be reported as revoked merely because its own root left this
+    /// project's membership: <c>PersistRootRotationsAsync</c> used to build its "live" set only
+    /// from <see cref="TrustChain.Members"/>, so a member's departure alone made its own rotation
+    /// disappear from that set exactly the way an earlier root key genuinely voiding it would —
+    /// and the revoker it then named, read from <see cref="TrustChain.OwnerChains"/> (discovered
+    /// independently of membership), was usually the very node the rotation itself promoted
+    /// (independent pre-PR review, cycle 1, both lenses, medium). This proves the standing record
+    /// survives an ordinary membership removal untouched.
+    /// </summary>
+    [Fact]
+    public async Task A_standing_rotation_survives_its_own_roots_membership_being_removed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        FakeLedger ledger = new();
+        InMemoryMessageTransport transport = new(ledger);
+        (NodeContext nodeB, Guid projectId) = await SeedOwnerAndProjectAsync(_postgres.Store, "teammate-rotation", cts.Token);
+
+        const string teammateRoot = "teammate-root-fingerprint";
+        const string teammateRootPublicKeyLine = "ssh-ed25519 AAAAFAKE teammate-root";
+        Guid promotedNodeId = DomainId.New();
+        LiveRootKey promotedKey = new("ssh-ed25519 AAAAFAKE promoted-node", "promoted-node-fingerprint", promotedNodeId.ToString());
+        TrustedOwner teammateOwner = new(
+            teammateRoot, teammateRootPublicKeyLine, [],
+            RootKeys: [new LiveRootKey(teammateRootPublicKeyLine, teammateRoot, null), promotedKey]);
+
+        // The teammate root's own chain is unchanged across both ticks — GitLedgerChainReader
+        // discovers every owner root the ledger has ever seen independently of project membership
+        // — only whether it is still a current member of THIS project changes.
+        bool teammateStillAMember = true;
+        FakeLedgerChainReader chainReader = new(_ => new TrustChain(
+            new Dictionary<string, TrustedOwner> { [teammateRoot] = teammateOwner },
+            teammateStillAMember ? [new ProjectMember(teammateRoot, MembershipRole.Member, Now)] : [],
+            ProjectKey: "01ARZ3NDEKTSV4RRFFQ69G5FEC"));
+
+        MessageSweepEngine engine = new(
+            _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
+            chainReader, new MessageNodeIdentityResolver(new NodeKeyStore()),
+            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance,
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport),
+            new EventCatchUpInbox(transport, new EventCatchUpResponder(new ReplicationProjectResolver(), new FakeLedger())),
+            new EventCatchUpCoordinator());
+
+        await engine.SweepOnceAsync(cts.Token);
+
+        await using (IDocumentSession firstVerifySession = _postgres.Store.LightweightSession())
+        {
+            RootRotationDetails? observed = (await firstVerifySession.Query<RootRotationDetails>()
+                .Where(record => record.ProjectId == projectId && record.RootFingerprint == teammateRoot)
+                .ToListAsync(cts.Token)).SingleOrDefault();
+            observed.Should().NotBeNull("the first sweep must observe the teammate's own live rotation");
+            observed!.Revoked.Should().BeFalse();
+        }
+
+        teammateStillAMember = false;
+        await engine.SweepOnceAsync(cts.Token);
+
+        await using (IDocumentSession secondVerifySession = _postgres.Store.LightweightSession())
+        {
+            RootRotationDetails observed = (await secondVerifySession.Query<RootRotationDetails>()
+                .Where(record => record.ProjectId == projectId && record.RootFingerprint == teammateRoot)
+                .ToListAsync(cts.Token)).Single();
+            observed.Revoked.Should().BeFalse(
+                "the teammate's own root simply left this project's membership — nothing in the ledger ever "
+                + "revoked its rotation");
+            observed.RevokedByNodeId.Should().BeNull();
+        }
+    }
+
     /// <summary>An <see cref="ILedgerChainReader"/> that throws for one specific repository path
     /// (standing in for a chain read that genuinely keeps failing, not merely an absent genesis) and
     /// returns a real, usable <see cref="TrustChain"/> for another.</summary>

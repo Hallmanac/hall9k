@@ -28,6 +28,7 @@ public sealed class StatusCommandRootRotationsTests : IClassFixture<PostgresFixt
     private static readonly DateTimeOffset Now = new(2026, 9, 27, 12, 0, 0, TimeSpan.Zero);
     private const string RepositoryPath = "/does/not/matter/on/a/fake/ledger";
     private const string SecondRepositoryPath = "/does/not/matter/on/a/fake/ledger/second";
+    private const string ThirdRepositoryPath = "/does/not/matter/on/a/fake/ledger/third";
 
     private readonly PostgresFixture _postgres;
     private readonly ScopedTestHome _scopedHome = new();
@@ -124,6 +125,60 @@ public sealed class StatusCommandRootRotationsTests : IClassFixture<PostgresFixt
 
         output.Should().Contain($"rotation missing in '{laggingProject.Name}'").And.Contain("h9k owner promote");
         output.Should().NotContain($"rotation missing in '{rotatedProject.Name}'");
+    }
+
+    [Fact]
+    public async Task An_archived_projects_own_rotation_and_gap_are_both_omitted()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        ProjectDetails rotatedProject = await SeedProjectAsync(RepositoryPath, "smoke-rotated", cts.Token);
+        ProjectDetails archivedProject = await SeedProjectAsync(SecondRepositoryPath, "smoke-archived", cts.Token);
+        ProjectDetails laggingProject = await SeedProjectAsync(ThirdRepositoryPath, "smoke-lagging", cts.Token);
+        Guid promotedNodeId = DomainId.New();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            // The archived project's own rotation (idea 6be68ee2) is stale news the moment it is
+            // archived — the sweep stops refreshing it, and h9k owner promote itself skips an
+            // archived project outright, so this loop's own re-run hint could never be acted on
+            // (independent pre-PR review, cycle 1, both lenses, medium).
+            Guid streamId = RootRotationStreamId.For(archivedProject.Id, "owner-a-fingerprint", promotedNodeId);
+            session.Events.StartStream<RootRotationAggregate>(
+                streamId, RootRotationDecider.Observe(archivedProject.Id, "owner-a-fingerprint", promotedNodeId, Now));
+
+            BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cts.Token);
+            session.Store(new NodeRootKeyProjectDetails
+            {
+                Id = rotatedProject.Id, NodeId = context.NodeId, RootFingerprint = "owner-a-fingerprint", IsLiveRootKey = true, UpdatedAt = Now,
+            });
+            session.Store(new NodeRootKeyProjectDetails
+            {
+                Id = archivedProject.Id, NodeId = context.NodeId, RootFingerprint = "owner-a-fingerprint", IsLiveRootKey = false, UpdatedAt = Now,
+            });
+            session.Store(new NodeRootKeyProjectDetails
+            {
+                Id = laggingProject.Id, NodeId = context.NodeId, RootFingerprint = "owner-a-fingerprint", IsLiveRootKey = false, UpdatedAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession archiveSession = _postgres.Store.LightweightSession())
+        {
+            ProjectAggregate project =
+                (await archiveSession.Events.AggregateStreamAsync<ProjectAggregate>(archivedProject.Id, token: cts.Token))!;
+            archiveSession.Events.Append(archivedProject.Id, ProjectDecider.Archive(project, null, Now, project.OwnerId));
+            await archiveSession.SaveChangesAsync(cts.Token);
+        }
+
+        string output;
+        await using (IQuerySession session = _postgres.Store.QuerySession())
+        {
+            output = await ScopedAnsiConsoleCapture.CaptureAsync(() => StatusCommand.WriteRootRotationsAsync(session, cts.Token));
+        }
+
+        output.Should().NotContain(
+            archivedProject.Name, "an archived project's own rotation and gap are both stale news nothing can act on");
+        output.Should().Contain($"rotation missing in '{laggingProject.Name}'", "a still-live project's own gap must still be named");
     }
 
     [Fact]

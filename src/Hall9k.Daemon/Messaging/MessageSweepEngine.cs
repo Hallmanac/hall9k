@@ -885,12 +885,29 @@ public sealed class MessageSweepEngine(
 
             await using IDocumentSession session = store.LightweightSession();
 
+            HashSet<string> currentMemberRoots = [.. trustChain.Members.Select(member => member.RootFingerprint)];
             IReadOnlyList<RootRotationDetails> standing = await session.Query<RootRotationDetails>()
                 .Where(details => details.ProjectId == project.Id && !details.Revoked)
                 .ToListAsync(cancellationToken);
             foreach (RootRotationDetails record in standing)
             {
                 if (live.ContainsKey(record.Id))
+                {
+                    continue;
+                }
+
+                // A standing rotation missing from `live` for two entirely different reasons, only
+                // one of which is an actual revocation: an earlier-ranked root key genuinely voided
+                // it in the ledger (the case this event exists to report), or its own root simply
+                // left this project's membership — `trustChain.OwnerChains` discovers every root
+                // the ledger has ever seen regardless of membership, so that lookup alone cannot
+                // tell the two apart, and the second case is nothing this project's own ledger ever
+                // revoked (independent pre-PR review, cycle 1, both lenses). Reporting the second
+                // shape as a revocation named `revokedByNodeId` — usually the very node this record
+                // already names as promoted — pages every orchestrator window over an ordinary
+                // membership change. Left standing instead: a member re-added later still reads its
+                // own rotation as live, exactly as if nothing had happened.
+                if (!currentMemberRoots.Contains(record.RootFingerprint))
                 {
                     continue;
                 }
