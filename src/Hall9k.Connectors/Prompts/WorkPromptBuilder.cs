@@ -1437,6 +1437,15 @@ public static class WorkPromptBuilder
         {
             AppendFragment(prompt, file, "no-gates");
         }
+        else if (!GateSetAcceptance.Decide(project.AcceptedVerifyCommands, project.VerifyCommands).Proceed)
+        {
+            // A node runs a project's verify gates only after its own operator has accepted that
+            // exact gate set (security review idea 6be68ee2, process-injection finding 1, the
+            // local half) — this session runs with skip-permissions, and printing the raw command
+            // here is exactly the same leak AppendGateLines exists to close, just in a comma list
+            // instead of a bulleted one (independent pre-PR review of 6edacfa3, this task's C1).
+            AppendFragment(prompt, file, "gates-unaccepted");
+        }
         else
         {
             // A host-coupled gate's own bare command never appears here either (task:

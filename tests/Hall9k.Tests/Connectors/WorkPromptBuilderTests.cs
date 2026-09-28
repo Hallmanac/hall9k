@@ -1,3 +1,4 @@
+using System.Text;
 using FluentAssertions;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Domain.Features.Project;
@@ -222,12 +223,64 @@ public sealed class WorkPromptBuilderTests
         TaskDetails task = SomeTask();
         ProjectDetails nodeProject = SomeProject();
         nodeProject.VerifyCommands.Add(new VerifyCommand("test", "npm test"));
+        nodeProject.AcceptedVerifyCommands = [.. nodeProject.VerifyCommands];
 
         string prompt = WorkPromptBuilder.Build(
             task, nodeProject, "task/1-slug", _worktreePath, isInteractive: true, requiresSelfRegistration: true);
 
         prompt.Should().Contain("`npm test`");
         prompt.Should().NotContain("dotnet test", "this project configures no such gate");
+    }
+
+    /// <summary>
+    /// A node runs a project's verify gates only after its own operator has accepted that exact
+    /// gate set (security review idea 6be68ee2, process-injection finding 1, the local half) —
+    /// this reminder's own comma list is the same leak <c>AppendGateLines</c> exists to close,
+    /// just in a different shape (independent pre-PR review of 6edacfa3, this task's C1).
+    /// </summary>
+    [Fact]
+    public void Timeout_reminder_names_no_command_when_the_gate_set_is_unaccepted()
+    {
+        TaskDetails task = SomeTask();
+        ProjectDetails nodeProject = SomeProject();
+        nodeProject.VerifyCommands.Add(new VerifyCommand("test", "npm test"));
+
+        string prompt = WorkPromptBuilder.Build(
+            task, nodeProject, "task/1-slug", _worktreePath, isInteractive: true, requiresSelfRegistration: true);
+
+        prompt.Should().NotContain("npm test");
+        Flatten(prompt).Should().Contain(
+            "has changed and has not yet been accepted on this node, so its commands are not listed here");
+        Flatten(prompt).Should().Contain("do not run them yourself");
+    }
+
+    /// <summary>
+    /// The recompose checklist's own gate list (<c>AppendGateLines</c>, via
+    /// <see cref="WorkPromptBuilder.AppendCheckpointCommitRules"/>) never lists a real command
+    /// when this node has not accepted the project's current gate set, and lists it plainly once
+    /// it has (security review idea 6be68ee2, process-injection finding 1, the local half).
+    /// </summary>
+    [Fact]
+    public void Recompose_checklist_lists_no_command_when_the_gate_set_is_unaccepted_and_lists_it_once_accepted()
+    {
+        ProjectDetails unaccepted = SomeProject();
+        unaccepted.VerifyCommands.Add(new VerifyCommand("test", "dotnet test"));
+
+        StringBuilder unacceptedPrompt = new();
+        WorkPromptBuilder.AppendCheckpointCommitRules(unacceptedPrompt, unaccepted, _worktreePath);
+
+        unacceptedPrompt.ToString().Should().NotContain("- `dotnet test`");
+        Flatten(unacceptedPrompt.ToString()).Should().Contain(
+            "has changed and has not yet been accepted on this node, so its commands are not listed here");
+
+        ProjectDetails accepted = SomeProject();
+        accepted.VerifyCommands.Add(new VerifyCommand("test", "dotnet test"));
+        accepted.AcceptedVerifyCommands = [.. accepted.VerifyCommands];
+
+        StringBuilder acceptedPrompt = new();
+        WorkPromptBuilder.AppendCheckpointCommitRules(acceptedPrompt, accepted, _worktreePath);
+
+        acceptedPrompt.ToString().Should().Contain("- `dotnet test`");
     }
 
     [Fact]
