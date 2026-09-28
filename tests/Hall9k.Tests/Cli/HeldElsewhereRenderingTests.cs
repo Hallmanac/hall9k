@@ -110,9 +110,14 @@ public sealed class HeldElsewhereRenderingTests
     /// When this install has no local record of the claiming owner at all (the ordinary foreign
     /// case, task 21c8f2f3), the held-by fact falls back to the project's own member label rather
     /// than the bare fingerprint prefix — the display name when the projection knows one.
+    /// <see cref="TaskStatusComposer.ComposeAllAsync"/> is what every board surface (<c>h9k
+    /// status</c>, <c>h9k task list</c>, <c>h9k project show</c>) composes through, and it never
+    /// asks for the fingerprint kept beside the label — that suffix is <c>h9k task show</c>'s own
+    /// (independent pre-PR review, cycle 2, conformance lens: the board must stay bare the same
+    /// "board stays terse" way the assignee column already does).
     /// </summary>
     [Fact]
-    public void The_held_by_fact_names_the_projects_own_member_label_for_a_foreign_owner()
+    public void The_held_by_fact_on_a_board_row_names_the_projects_own_member_label_bare_for_a_foreign_owner()
     {
         Guid foreignNodeId = DomainId.New();
         string fingerprint = "c8f5c85900da1234567890abcdef1234567890abcdef1234567890abcdef12";
@@ -131,6 +136,41 @@ public sealed class HeldElsewhereRenderingTests
             ProjectMemberLabelsById = new Dictionary<Guid, ProjectMemberLabels> { [projectId] = labels },
         };
         TaskStatusRow row = TaskStatusComposer.Compose(task, context, StatusFixtures.Now);
+
+        string fact = row.Facts.Should().ContainSingle(line => line.StartsWith("held by")).Subject;
+
+        fact.Should().Contain("owner Windows)", "a board row stays terse, with no fingerprint appended");
+        fact.Should().NotContain("c8f5c85900da", "the fingerprint suffix is h9k task show's own, never the board's");
+    }
+
+    /// <summary>
+    /// The mirror of the board test above: <see cref="TaskStatusComposer.ComposeOneAsync"/> is
+    /// <c>h9k task show</c>'s own composition path, and it is the one caller that asks for the
+    /// fingerprint kept beside a foreign owner's resolved label — the identical "label (short
+    /// fingerprint)" shape <see cref="TaskShowCommand.AssigneeMarkup"/> already gives its own
+    /// foreign case.
+    /// </summary>
+    [Fact]
+    public void The_held_by_fact_on_h9k_task_shows_own_row_keeps_the_short_fingerprint_beside_the_label()
+    {
+        Guid foreignNodeId = DomainId.New();
+        string fingerprint = "c8f5c85900da1234567890abcdef1234567890abcdef1234567890abcdef12";
+        Guid projectId = DomainId.New();
+        TaskListItem task = StatusFixtures.Task(TaskState.Claimed, claimedByNodeId: foreignNodeId, projectId: projectId);
+        task.ClaimedByOwnerRootFingerprint = fingerprint;
+        task.ClaimedAt = StatusFixtures.Now.AddMinutes(-11);
+        ProjectMemberLabels labels = new()
+        {
+            Id = projectId,
+            Labels = [new ProjectMemberLabel(fingerprint, [foreignNodeId], DisplayName.Parse("Windows"), null)],
+        };
+
+        TaskStatusContext context = StatusFixtures.Context() with
+        {
+            ProjectMemberLabelsById = new Dictionary<Guid, ProjectMemberLabels> { [projectId] = labels },
+        };
+        TaskStatusRow row = TaskStatusComposer.Compose(
+            task, context, StatusFixtures.Now, keepFingerprintBesideHeldByOwnerLabel: true);
 
         string fact = row.Facts.Should().ContainSingle(line => line.StartsWith("held by")).Subject;
 
