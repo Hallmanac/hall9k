@@ -15,8 +15,17 @@ namespace Hall9k.Connectors.WorkItems;
 /// at every dispatch (never cached on the task) so the diff a review reads is always against
 /// the PR's current base, not a snapshot from whenever it was adopted.
 /// </summary>
+/// <param name="IsCrossRepository">
+/// Whether this pull request's head sits on a fork of <see cref="Repository"/> rather than a
+/// branch of it (security review idea 6be68ee2, process-injection finding 1) — gh's own
+/// <c>isCrossRepository</c> field. A head repository can never change once a pull request is
+/// opened (only its base can move, on a retarget), so a caller resolves this once at dispatch and
+/// never needs to re-read it later. False when the field was absent or unparseable, never a guess
+/// standing in for an observation this read genuinely could not make.
+/// </param>
 public sealed record PullRequestFacts(
-    string Repository, int Number, string Title, string? Body, string State, string BaseRefName, Uri? Url);
+    string Repository, int Number, string Title, string? Body, string State, string BaseRefName, Uri? Url,
+    bool IsCrossRepository = false);
 
 /// <summary>
 /// GitHub pull requests through the <c>gh</c> CLI, exactly the same already-authenticated seam
@@ -27,7 +36,7 @@ public sealed record PullRequestFacts(
 /// </summary>
 public sealed class GitHubPullRequestProvider(ProcessRunner? runner = null, TimeProvider? clock = null) : IWorkItemProvider
 {
-    private const string RequestedFields = "number,title,body,state,url,baseRefName";
+    private const string RequestedFields = "number,title,body,state,url,baseRefName,isCrossRepository";
 
     private readonly ProcessRunner runner = runner ?? ExternalProcess.Runner;
     private readonly TimeProvider clock = clock ?? TimeProvider.System;
@@ -106,6 +115,10 @@ public sealed class GitHubPullRequestProvider(ProcessRunner? runner = null, Time
                     ? reported
                     : requestedNumber;
 
+            bool isCrossRepository = root.TryGetProperty("isCrossRepository", out JsonElement crossRepository)
+                && crossRepository.ValueKind is JsonValueKind.True or JsonValueKind.False
+                && crossRepository.GetBoolean();
+
             return new PullRequestFacts(
                 GitHubPullRequestReference.RepositoryFromUrl(url),
                 number,
@@ -113,7 +126,8 @@ public sealed class GitHubPullRequestProvider(ProcessRunner? runner = null, Time
                 ReadString(root, "body") is { } body && body.IsNotBlank() ? body : null,
                 ReadString(root, "state") ?? string.Empty,
                 ReadString(root, "baseRefName") ?? string.Empty,
-                url is not null && Uri.TryCreate(url, UriKind.Absolute, out Uri? parsed) ? parsed : null);
+                url is not null && Uri.TryCreate(url, UriKind.Absolute, out Uri? parsed) ? parsed : null,
+                isCrossRepository);
         }
     }
 
