@@ -12,3 +12,8 @@
   Claude Code's stock 2-minute Bash timeout, so pass an explicit, generous
   `timeout` on build/test commands rather than letting the default kill one
   mid-run.
+===gates-unaccepted===
+  default: this project's verify gate set has changed and has not yet been accepted
+  on this node, so its commands are not listed here — do not run them yourself. Any
+  other slow command still deserves an explicit, generous `timeout` rather than
+  trusting Claude Code's stock 2-minute Bash default.
