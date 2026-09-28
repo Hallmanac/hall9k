@@ -309,4 +309,28 @@ public sealed class Hall9kDatabaseTests : IDisposable
         Hall9kDatabase.IsLegacyDefaultConnectionString("Host=elsewhere;Port=5433;Database=custom;Username=someone;Password=secret")
             .Should().BeFalse();
     }
+
+    [Fact]
+    public async Task The_password_of_the_installed_container_connection_string_is_read_back_from_the_config_file()
+    {
+        await Hall9kDatabase.WriteConfiguredConnectionStringAsync(
+            Hall9kDatabase.ConnectionStringWithPassword("abc123"), CancellationToken.None);
+
+        Hall9kDatabase.PasswordOfInstalledContainerConnectionStringInConfigFile().Should().Be("abc123");
+    }
+
+    [Fact]
+    public async Task A_connection_string_pointed_somewhere_else_yields_no_installed_container_password()
+    {
+        await Hall9kDatabase.WriteConfiguredConnectionStringAsync(
+            "Host=elsewhere;Port=5433;Database=custom;Username=someone;Password=secret", CancellationToken.None);
+
+        Hall9kDatabase.PasswordOfInstalledContainerConnectionStringInConfigFile().Should().BeNull();
+    }
+
+    [Fact]
+    public void No_config_file_at_all_yields_no_installed_container_password()
+    {
+        Hall9kDatabase.PasswordOfInstalledContainerConnectionStringInConfigFile().Should().BeNull();
+    }
 }

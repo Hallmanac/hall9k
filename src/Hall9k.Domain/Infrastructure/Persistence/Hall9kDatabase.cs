@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Hall9k.Domain.Infrastructure.Storage;
+using Npgsql;
 
 namespace Hall9k.Domain.Infrastructure.Persistence;
 
@@ -50,6 +51,48 @@ public static class Hall9kDatabase
     /// </summary>
     public static string ConnectionStringWithPassword(string password) =>
         $"Host=127.0.0.1;Port=5432;Database=hall9k;Username=postgres;Password={password}";
+
+    /// <summary>
+    /// The password recorded in <c>config.json</c>'s own connection string, but only when that
+    /// string otherwise names exactly the host, port, database and username
+    /// <see cref="ConnectionStringWithPassword"/> stands up — <see langword="null"/> for anything
+    /// else (nothing configured, a malformed or unreadable file, or a connection string pointed
+    /// elsewhere entirely). Reads the file directly, the same way
+    /// <see cref="ConnectionStringStateAndValueInConfigFile"/> does, rather than through
+    /// <see cref="Resolve"/>'s precedence chain: this exists for <see cref="PostgresRuntime"/> to
+    /// seed a missing compose file's password from whatever the machine already has recorded,
+    /// regardless of whether an environment variable happens to outrank it for this process.
+    /// <para>
+    /// The gap this closes: <c>h9k uninstall</c> without <c>--purge-data</c> deletes the compose
+    /// file but keeps <c>config.json</c> and the still-initialized data volume (Decisions Log #83).
+    /// Without this, a later <c>h9k install</c> (or any other <see cref="PostgresRuntime.WriteComposeFileAsync(CancellationToken)"/>
+    /// caller) would generate a brand-new password for the rewritten compose file while the running
+    /// container and <c>config.json</c> still answer to the old one (adversarial and conformance
+    /// pre-PR review, cycle 1).
+    /// </para>
+    /// </summary>
+    internal static string? PasswordOfInstalledContainerConnectionStringInConfigFile()
+    {
+        (ConfigFileConnectionStringState state, string? value) = ConnectionStringStateAndValueInConfigFile();
+        if (state != ConfigFileConnectionStringState.Supplied)
+        {
+            return null;
+        }
+
+        NpgsqlConnectionStringBuilder builder;
+        try
+        {
+            builder = new NpgsqlConnectionStringBuilder(value);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+
+        return builder is { Host: "127.0.0.1", Port: 5432, Database: "hall9k", Username: "postgres" }
+            ? builder.Password
+            : null;
+    }
 
     /// <summary>
     /// What every install shipped before this task (security review idea 6be68ee2,
