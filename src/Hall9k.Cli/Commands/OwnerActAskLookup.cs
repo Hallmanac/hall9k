@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Marten;
 
@@ -15,7 +16,7 @@ internal static class OwnerActAskLookup
     public sealed record PendingOwnerAct(Guid InviteId, DateTimeOffset RequestedAt, string? Verdict, string? Reason);
 
     public static async Task<IReadOnlyList<PendingOwnerAct>> FindUnansweredAsync(
-        IQuerySession session, Guid myNodeId, CancellationToken cancellationToken)
+        IQuerySession session, Guid myNodeId, DateTimeOffset now, CancellationToken cancellationToken)
     {
         string requestKind = MessageKind.OwnerActRequest.Value;
         IReadOnlyList<MessageDetails> ownRequests = await session.Query<MessageDetails>()
@@ -38,6 +39,18 @@ internal static class OwnerActAskLookup
         foreach (IGrouping<string, MessageDetails> group in ownRequests.GroupBy(message => message.About!))
         {
             if (!Guid.TryParse(group.Key, out Guid inviteId))
+            {
+                continue;
+            }
+
+            // A refused or expired answer is terminal for THIS request, but the invite itself may
+            // since have expired on its own clock — nothing re-asks for it once that happens
+            // (InviteSweepEngine's own outstanding query already drops it), so this view must not
+            // keep warning about it forever either (independent pre-PR review, cycle 1, adversarial
+            // lens, low). A re-mint gets its own fresh invite id and so its own fresh, unanswered
+            // entry here; it is never this same row's concern.
+            InviteDetails? invite = await session.LoadAsync<InviteDetails>(inviteId, cancellationToken);
+            if (invite is null || invite.Spent || invite.ExpiresAt <= now)
             {
                 continue;
             }
