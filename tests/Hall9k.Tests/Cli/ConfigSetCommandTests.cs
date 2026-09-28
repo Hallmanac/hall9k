@@ -398,6 +398,32 @@ public sealed class ConfigSetCommandTests
         act.Should().NotThrow("--effort is a real change, not the 'Nothing to change' no-op");
     }
 
+    [Fact]
+    public void Applying_the_security_review_model_sets_only_that_knob_and_leaves_review_alone()
+    {
+        ConfigSetCommand.Settings settings = new() { ModelSecurityReview = "sonnet" };
+        OperatingSettings operating = new() { ModelByRole = new RoleModelSettings { Review = "opus" } };
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.ModelByRole.SecurityReview.Should().Be("sonnet");
+        operating.ModelByRole.Review.Should().Be("opus", "the Security knob is narrower than Review, not a replacement for it");
+    }
+
+    [Fact]
+    public void The_word_default_clears_an_existing_security_review_override()
+    {
+        ConfigSetCommand.Settings settings = new() { ModelSecurityReview = "default" };
+        OperatingSettings operating = new() { ModelByRole = new RoleModelSettings { SecurityReview = "sonnet" } };
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.ModelByRole.SecurityReview.Should().BeNull();
+        changed.Should().ContainSingle().Which.Should().Contain("cleared");
+    }
+
     public static TheoryData<string, Func<OperatingSettings, string?>> RoleEffortFlags => new()
     {
         { "--effort-build", operating => operating.EffortByRole.Build },
@@ -405,6 +431,7 @@ public sealed class ConfigSetCommandTests
         { "--effort-review", operating => operating.EffortByRole.Review },
         { "--effort-review-verify", operating => operating.EffortByRole.ReviewVerify },
         { "--effort-review-finalpass", operating => operating.EffortByRole.ReviewFinalFullPass },
+        { "--effort-security-review", operating => operating.EffortByRole.SecurityReview },
         { "--effort-synthesis", operating => operating.EffortByRole.Synthesis },
         { "--effort-refinement", operating => operating.EffortByRole.Refinement },
         { "--effort-publication", operating => operating.EffortByRole.Publication },
@@ -418,6 +445,7 @@ public sealed class ConfigSetCommandTests
         "--effort-review" => new() { EffortReview = value },
         "--effort-review-verify" => new() { EffortReviewVerify = value },
         "--effort-review-finalpass" => new() { EffortReviewFinalpass = value },
+        "--effort-security-review" => new() { EffortSecurityReview = value },
         "--effort-synthesis" => new() { EffortSynthesis = value },
         "--effort-refinement" => new() { EffortRefinement = value },
         "--effort-publication" => new() { EffortPublication = value },
@@ -454,7 +482,7 @@ public sealed class ConfigSetCommandTests
             EffortByRole = new RoleEffortSettings
             {
                 Build = "low", Fix = "low", Review = "low", ReviewVerify = "low", ReviewFinalFullPass = "low",
-                Synthesis = "low", Refinement = "low", Publication = "low", Courier = "low",
+                SecurityReview = "low", Synthesis = "low", Refinement = "low", Publication = "low", Courier = "low",
             },
         };
         List<string> changed = [];
@@ -462,7 +490,7 @@ public sealed class ConfigSetCommandTests
         ConfigSetCommand.Apply(SettingsFor(flag, "default"), operating, changed);
 
         read(operating).Should().BeNull();
-        operating.EffortByRole.AsPairs().Count(pair => pair.Effort == "low").Should().Be(8);
+        operating.EffortByRole.AsPairs().Count(pair => pair.Effort == "low").Should().Be(9);
         changed.Should().ContainSingle().Which.Should().Contain("cleared");
     }
 

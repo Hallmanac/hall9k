@@ -696,6 +696,7 @@ public static class OperatingSettingsResolver
         {
             _ when role == nameof(RoleModelSettings.ReviewVerify) => "a Verify-shape review pass",
             _ when role == nameof(RoleModelSettings.ReviewFinalFullPass) => "the mandatory FinalFullPass review",
+            _ when role == nameof(RoleModelSettings.SecurityReview) => "the Security persona's own review",
             _ => $"agent sessions using the '{role}' role",
         };
 

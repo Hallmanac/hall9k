@@ -153,6 +153,7 @@ public sealed class OperatingSettingsRenderingTests
     [Theory]
     [InlineData("ReviewVerify", "effort (review-verify)")]
     [InlineData("ReviewFinalFullPass", "effort (review-finalpass)")]
+    [InlineData("SecurityReview", "effort (security-review)")]
     public void An_unset_pass_effort_falls_through_to_review_before_the_node_wide_level(string role, string label)
     {
         IReadOnlyList<(string Label, string Value)> rows = EffortRows(EffortRole(role));
@@ -213,6 +214,18 @@ public sealed class OperatingSettingsRenderingTests
             .Single(r => r.Label == "model (courier)");
 
         row.Value.Should().Be($"not set — falls through to {AgentModel.CourierDefault}, the courier's own floor");
+    }
+
+    [Fact]
+    public void An_unset_security_review_falls_through_to_its_own_floor_not_the_platform_default()
+    {
+        OperatingSettingsReport report = ReportWithOneRole(nameof(RoleModelSettings.SecurityReview), null);
+
+        (string Label, string Value) row = OperatingSettingsRendering.Rows(report)
+            .Single(r => r.Label == "model (security-review)");
+
+        row.Value.Should().Be(
+            $"not set — falls through to {AgentModel.SecurityReviewDefault}, the Security persona's own floor");
     }
 
     /// <summary>

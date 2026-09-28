@@ -245,6 +245,71 @@ public sealed class ModelPolicyTests
             AgentModel.Opus, "the project's model is more specific than the node's per-role default");
     }
 
+    /// <summary>
+    /// The Security persona (idea 6be68ee2, phase two) is the other role that ships with an
+    /// opinion of its own, the courier's identical shape: with nothing configured at any level,
+    /// it still resolves to its own floor rather than the platform's ordinary Review default,
+    /// because this persona hunts for real vulnerabilities and must never silently run on a
+    /// cheaper model.
+    /// </summary>
+    [Fact]
+    public void An_unconfigured_security_review_resolves_to_its_own_floor_rather_than_the_platform_default()
+    {
+        DaemonOptions options = new() { DefaultModel = "claude-opus-5" };
+
+        options.ResolveSecurityReviewModel(taskModel: null, projectModel: null).Value.Should().Be(
+            AgentModel.SecurityReviewDefault);
+    }
+
+    [Fact]
+    public void A_node_role_default_outranks_the_security_reviews_own_floor()
+    {
+        DaemonOptions options = new() { ModelByRole = new RoleModelDefaults { SecurityReview = "haiku" } };
+
+        options.ResolveSecurityReviewModel(taskModel: null, projectModel: null).Should().Be(AgentModel.Haiku);
+    }
+
+    [Fact]
+    public void A_project_default_outranks_both_the_security_reviews_own_floor_and_the_node_role_default()
+    {
+        DaemonOptions options = new();
+
+        options.ResolveSecurityReviewModel(taskModel: null, projectModel: AgentModel.Opus).Should().Be(AgentModel.Opus);
+
+        options.ModelByRole.SecurityReview = "haiku";
+        options.ResolveSecurityReviewModel(taskModel: null, projectModel: AgentModel.Opus).Should().Be(
+            AgentModel.Opus, "the project's model is more specific than the node's per-role default");
+    }
+
+    [Fact]
+    public void A_task_override_still_wins_over_the_security_reviews_own_floor()
+    {
+        DaemonOptions options = new() { ModelByRole = new RoleModelDefaults { SecurityReview = "haiku" } };
+
+        options.ResolveSecurityReviewModel(taskModel: AgentModel.Fable, projectModel: AgentModel.Opus).Should().Be(
+            AgentModel.Fable, "a task-level override is the most specific level, the Security persona included");
+    }
+
+    /// <summary>Unlike the model, the effort knob falls through to Review's own chain rather than a compiled floor — there is no "effort floor" concept the way there is a model one.</summary>
+    [Fact]
+    public void An_unconfigured_security_review_effort_falls_through_to_review()
+    {
+        DaemonOptions options = new() { EffortByRole = new RoleEffortDefaults { Review = "high" } };
+
+        options.ResolveSecurityReviewEffort(taskEffort: null, projectEffort: null).Should().Be(AgentEffort.High);
+    }
+
+    [Fact]
+    public void A_configured_security_review_effort_outranks_the_plain_review_chain()
+    {
+        DaemonOptions options = new()
+        {
+            EffortByRole = new RoleEffortDefaults { Review = "high", SecurityReview = "low" },
+        };
+
+        options.ResolveSecurityReviewEffort(taskEffort: null, projectEffort: null).Should().Be(AgentEffort.Low);
+    }
+
     [Fact]
     public void A_fresh_spawn_always_states_its_model()
     {

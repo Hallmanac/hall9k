@@ -119,7 +119,8 @@ public static class OperatingSettingsRendering
     /// </summary>
     private static string EffortFallthroughDescription(string role) => role switch
     {
-        nameof(RoleEffortSettings.ReviewVerify) or nameof(RoleEffortSettings.ReviewFinalFullPass) =>
+        nameof(RoleEffortSettings.ReviewVerify) or nameof(RoleEffortSettings.ReviewFinalFullPass)
+            or nameof(RoleEffortSettings.SecurityReview) =>
             "whatever --effort-review itself resolves to",
         _ => "the node-wide effort above, or the model's own default when that is not set either",
     };
@@ -242,6 +243,11 @@ public static class OperatingSettingsRendering
         // courier override that a courier runs on the platform's ordinary build/review tier when
         // it in fact runs on its own cheaper one.
         nameof(RoleModelSettings.Courier) => $"{AgentModel.CourierDefault}, the courier's own floor",
+        // The Security persona's own floor, the identical reasoning the courier's own carve-out
+        // states: unset, this session still never runs on the platform's ordinary Review tier —
+        // it floors at its own compiled model (idea 6be68ee2, phase two).
+        nameof(RoleModelSettings.SecurityReview) =>
+            $"{AgentModel.SecurityReviewDefault}, the Security persona's own floor",
         _ => "the platform default",
     };
 
