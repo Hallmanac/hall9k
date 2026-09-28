@@ -199,6 +199,12 @@ public static class EventScopeRegistry
         // (#225).
         [typeof(RunHostCoupledGateWaitEnded)] = EventScope.NodeScoped,
         [typeof(RunHostCoupledGateWaitStarted)] = EventScope.NodeScoped,
+        // The gate-set-acceptance wait's own start/clear (security review idea 6be68ee2,
+        // process-injection finding 1), the identical liveness-marker shape the host-coupled-gate
+        // wait pair immediately above stays node-scoped for: no other node has any use for which
+        // run on THIS node is waiting on THIS node's own acceptance of a gate set.
+        [typeof(RunGateSetAcceptanceWaitEnded)] = EventScope.NodeScoped,
+        [typeof(RunGateSetAcceptanceWaitStarted)] = EventScope.NodeScoped,
         [typeof(RunKilled)] = EventScope.ProjectScoped,
         [typeof(RunLaunchHeld)] = EventScope.NodeScoped,
         [typeof(RunPhaseDelegated)] = EventScope.ProjectScoped,
@@ -255,6 +261,10 @@ public static class EventScopeRegistry
         [typeof(ProjectRenamed)] = EventScope.ProjectScoped,
         [typeof(ProjectSettingsChanged)] = EventScope.NodeScoped,
         [typeof(ProjectTeamSettingsChanged)] = EventScope.ProjectScoped,
+        // This node's own vetting of a gate set (security review idea 6be68ee2, process-injection
+        // finding 1): a fact about this install alone, never a team decision — a teammate's node
+        // accepting a set says nothing about whether THIS node's operator has looked at it.
+        [typeof(ProjectGateSetAccepted)] = EventScope.NodeScoped,
         // idea 202383dc, M2, Brian's ruling 2026-09-17: this install's own local mirror of the
         // project's ledger-derived key — a fact every install re-derives from the identical ledger
         // itself (h9k project join, h9k project assign-key), never a team decision to replicate.
@@ -320,6 +330,10 @@ public static class EventScopeRegistry
         // idea 202383dc, M2a: this node's own switch-on point — never a team fact, and reading it
         // from another node would be meaningless (each node's own global sequence is local).
         [typeof(ReplicationSwitchedOn)] = EventScope.NodeScoped,
+        // This node's own one-time gate-set-acceptance baseline marker (security review idea
+        // 6be68ee2, process-injection finding 1) — the identical "never a team fact" reasoning
+        // ReplicationSwitchedOn states immediately above.
+        [typeof(ProjectGateAcceptanceBaselined)] = EventScope.NodeScoped,
 
         // Hall9k.Domain.Features.Orchestrator — idea 89471598, piece 1: whether an orchestrator
         // window is up for a project is a fact about one machine's own process table, and no
