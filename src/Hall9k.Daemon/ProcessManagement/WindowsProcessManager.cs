@@ -102,7 +102,35 @@ public sealed class WindowsProcessManager : ProcessManagerBase
 
     private readonly record struct ProcessSnapshotEntry(int ProcessId, int ParentProcessId, DateTimeOffset CreatedAt);
 
+    /// <summary>
+    /// This query fetches every process on the machine, so an empty result is never a genuine
+    /// answer the way "no children" legitimately is one level up in <see cref="CollectDescendants"/>
+    /// — at minimum this very query's own powershell.exe is itself alive and enumerable while it
+    /// runs. An empty list here only ever means the query attempt itself failed or ran past
+    /// <see cref="ProcessManagerBase.ChildProcessQueryTimeout"/> (independent pre-PR review, cycle
+    /// 3, conformance lens: under CI load, PowerShell's own startup plus the CIM query it runs can
+    /// together exceed that timeout), so retrying is safe here in a way it would not be for
+    /// <see cref="CollectDescendants"/>'s own per-node filtering. One retry absorbs a transient
+    /// timeout without taxing the common case, since a second attempt only ever runs after the
+    /// first has already failed.
+    /// </summary>
+    private const int QueryAttempts = 2;
+
     private static List<ProcessSnapshotEntry> QueryAllProcessSnapshots()
+    {
+        for (int attempt = 1; attempt <= QueryAttempts; attempt++)
+        {
+            List<ProcessSnapshotEntry> snapshots = QueryAllProcessSnapshotsOnce();
+            if (snapshots.Count > 0)
+            {
+                return snapshots;
+            }
+        }
+
+        return [];
+    }
+
+    private static List<ProcessSnapshotEntry> QueryAllProcessSnapshotsOnce()
     {
         try
         {
