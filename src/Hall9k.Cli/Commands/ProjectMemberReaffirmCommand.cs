@@ -101,7 +101,7 @@ public sealed class ProjectMemberReaffirmCommand : Hall9kAsyncCommand<ProjectMem
                 $"This node ({key.Fingerprint}) does not currently hold a live root key for owner {myRoot} — "
                 + "only the root itself may reaffirm a member (idea 6be68ee2, trust-ledger finding 2). "
                 + $"Re-run h9k project member reaffirm {project.Name} {fingerprint} from a node holding a "
-                + $"root key for {myRoot}.");
+                + $"root key for {myRoot}{RootNodeDescription.Of(chain, myRoot)}.");
         }
 
         LedgerCommitter committer = new(
@@ -119,12 +119,20 @@ public sealed class ProjectMemberReaffirmCommand : Hall9kAsyncCommand<ProjectMem
     }
 
     /// <summary>
-    /// Rebuilds <c>members/&lt;fingerprint&gt;.yaml</c> from the facts the authorized chain replay
-    /// itself vouches for — the identical "content depends only on authorized facts, never on what
-    /// is currently on disk" discipline <see cref="ProjectAssignKeyCommand"/>'s own
-    /// <c>WriteProjectKeyAsync</c> already applies to this identical ref — with <c>issued_at</c>
-    /// bumped to <paramref name="now"/> so the write is content-changing: a same-role re-invite
-    /// would write byte-identical content and make no commit at all.
+    /// Rebuilds <c>members/&lt;fingerprint&gt;.yaml</c> from the file's own raw content at the
+    /// ledger's tip, never from <c>chain.Members</c>, with <c>issued_at</c> bumped to
+    /// <paramref name="now"/> so the write is content-changing: a same-role re-invite would write
+    /// byte-identical content and make no commit at all. <c>chain.Members</c> is this reader's own
+    /// AUTHORIZED view, filtered by the identical stricter live-root-key rule this command exists to
+    /// route around: the one case this command is for (idea 6be68ee2's own doc: "a member file whose
+    /// own last write was signed by a node that is now merely vouched") is exactly the case the
+    /// stricter reader now refuses, so a lookup keyed on <c>chain.Members</c> could never find the
+    /// very member it was written to reaffirm (independent pre-PR review, cycle 1, both lenses,
+    /// high/medium). The file's own raw role and root_fingerprint are trusted here on read, but never
+    /// unconditionally: root re-signing this exact content, right now, is what makes it authorized —
+    /// the write itself is refused before any push unless this node's own key is a live root key
+    /// (checked above in <see cref="RunAsync"/>), so nothing here can be forged into legitimacy by a
+    /// node that lacks one.
     /// </summary>
     private static async Task ReaffirmMemberAsync(
         ILedger ledger, ILedgerChainReader chainReader, string repositoryPath, TrustChain chain, string fingerprint,
@@ -135,22 +143,21 @@ public sealed class ProjectMemberReaffirmCommand : Hall9kAsyncCommand<ProjectMem
 
         for (int attempt = 1; attempt <= MaxConflictRetries; attempt++)
         {
-            ProjectMember member = chain.Members.FirstOrDefault(m => m.RootFingerprint == fingerprint)
-                ?? throw new DomainValidationException(
-                    $"'{fingerprint}' is not currently a verified member of this project's ledger — nothing to reaffirm.");
-
             LedgerFile current = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
             if (!current.Exists)
             {
-                throw new DomainConflictException(
-                    $"{path} no longer exists — the member was removed since this command started. "
-                    + "Re-run h9k project member reaffirm once membership settles.");
+                throw new DomainValidationException(
+                    $"'{fingerprint}' is not currently a member of this project's ledger — nothing to reaffirm.");
             }
+
+            MembershipRole role = ParseRole(current.Content)
+                ?? throw new DomainConflictException(
+                    $"{path} does not currently declare a valid role (\"owner\" or \"member\") — nothing to reaffirm.");
 
             List<(string Key, string Value)> fields =
             [
-                ("root_fingerprint", member.RootFingerprint),
-                ("role", member.Role == MembershipRole.Owner ? "owner" : "member"),
+                ("root_fingerprint", fingerprint),
+                ("role", role == MembershipRole.Owner ? "owner" : "member"),
                 ("issued_at", now.ToString("o", CultureInfo.InvariantCulture)),
             ];
             if (fingerprint == chain.GenesisRootFingerprint && chain.ProjectKey is { } projectKey)
@@ -169,9 +176,12 @@ public sealed class ProjectMemberReaffirmCommand : Hall9kAsyncCommand<ProjectMem
                 return;
             }
 
-            // Someone else's write landed between our read and ours — re-derive this member's own
-            // authorized facts from a fresh chain for the next attempt's content, never the losing
-            // attempt's stale copy (the identical conflict handling WriteProjectKeyAsync applies).
+            // Someone else's write landed between our read and ours — re-derive the genesis
+            // fingerprint's own project_key (the one field this command still reads from the
+            // authorized chain rather than the raw file) from a fresh chain for the next attempt,
+            // never the losing attempt's stale copy (the identical conflict handling
+            // WriteProjectKeyAsync applies). The role and root_fingerprint fields are re-read
+            // straight from the ledger at the top of the loop regardless.
             chain = await chainReader.ComputeAsync(repositoryPath, cancellationToken);
         }
 
@@ -189,5 +199,42 @@ public sealed class ProjectMemberReaffirmCommand : Hall9kAsyncCommand<ProjectMem
         }
 
         return builder.ToString();
+    }
+
+    /// <summary>Null for anything other than exactly "owner" or "member" — the identical closed-pair
+    /// read <c>GitLedgerChainReader.ParseRole</c> applies, duplicated here for the same reason
+    /// <c>GitLedgerChainReader.ExtractQuotedYamlValue</c>'s own doc gives: no assembly boundary lets
+    /// this command reach that reader's internal parser directly.</summary>
+    private static MembershipRole? ParseRole(string? content)
+    {
+        string? raw = content is null ? null : ExtractQuotedYamlValue(content, "role");
+        return raw switch
+        {
+            _ when string.Equals(raw, "owner", StringComparison.OrdinalIgnoreCase) => MembershipRole.Owner,
+            _ when string.Equals(raw, "member", StringComparison.OrdinalIgnoreCase) => MembershipRole.Member,
+            _ => null,
+        };
+    }
+
+    /// <summary>Reverses the small, flat, every-value-double-quoted YAML shape every ledger file in
+    /// this task uses — the same reader <c>GitLedgerChainReader.ExtractQuotedYamlValue</c> already
+    /// is, duplicated for the identical reason that class' own doc gives for its own duplication of
+    /// <c>GitLedgerMessageTransport.ExtractQuotedYamlValue</c>.</summary>
+    private static string? ExtractQuotedYamlValue(string yaml, string key)
+    {
+        foreach (string rawLine in yaml.Split('\n'))
+        {
+            string line = rawLine.TrimEnd('\r');
+            string prefix = $"{key}: \"";
+            if (!line.StartsWith(prefix, StringComparison.Ordinal) || !line.EndsWith('"'))
+            {
+                continue;
+            }
+
+            string inner = line[prefix.Length..^1];
+            return inner.Replace("\\\"", "\"").Replace("\\\\", "\\");
+        }
+
+        return null;
     }
 }
