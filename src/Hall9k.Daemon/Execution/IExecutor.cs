@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -59,6 +60,18 @@ namespace Hall9k.Daemon.Execution;
 /// pull request at all, under a deny list of its own
 /// (<see cref="Hall9k.Connectors.Prompts.ClaudeSettingsFile.ReviewLapDeniedTools"/>).
 /// </para>
+/// <para>
+/// <see cref="UsesReviewPermissions"/> is what <see cref="ClaudeExecutor"/> (security review idea
+/// 6be68ee2, process-injection finding 1) dispatches on to build this session's settings file
+/// from <see cref="Hall9k.Connectors.Prompts.ClaudeSettingsFile.BuildForPrReview"/> instead of
+/// <see cref="Hall9k.Connectors.Prompts.ClaudeSettingsFile.Build"/>: true for every pr-review
+/// session, its mention follow-up, and every follow-on persona session — the three real spawn
+/// sites are <c>RunLauncher</c>'s own <c>isPrReview</c> branch, its mention follow-up launch, and
+/// <c>PrReviewEngine.DispatchFollowOnSessionAsync</c>. Set together with <see cref="SkipPermissions"/>
+/// false — a project's own <c>SkipPermissions</c> setting is never consulted for any of the three
+/// (Brian's ruling, 2026-09-27: no pr-review session ever runs with permissions skipped, member or
+/// not). <see cref="QaGateCommands"/> rides beside it only for a QA persona session.
+/// </para>
 /// </summary>
 public sealed record AgentSpawnRequest(
     Guid RunId,
@@ -74,7 +87,9 @@ public sealed record AgentSpawnRequest(
     Guid? ResumeSessionId = null,
     bool UntrustedWorkingDirectory = false,
     int? MaxTurns = null,
-    bool GuardsReviewThreadReplies = false)
+    bool GuardsReviewThreadReplies = false,
+    bool UsesReviewPermissions = false,
+    IReadOnlyList<VerifyCommand>? QaGateCommands = null)
 {
     /// <summary>
     /// Environment variables layered onto the owner's environment for this session only.

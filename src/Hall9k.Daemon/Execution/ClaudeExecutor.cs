@@ -54,8 +54,15 @@ public sealed class ClaudeExecutor(
         // Sized to the live VerifyGateTimeout rather than ClaudeSettingsFile's own build-time
         // default (2026-09-02 finding): an operator who raises the option gets a foreground gate
         // run that survives it on every headless dispatch, with no constant to remember to bump.
-        string settingsContent = ClaudeSettingsFile.Build(
-            options.Value.VerifyGateTimeout, request.GuardsReviewThreadReplies, request.Effort);
+        // UsesReviewPermissions (security review idea 6be68ee2, process-injection finding 1) is
+        // what tells a pr-review session's own settings file apart from an ordinary build's: a
+        // real, minimal permission file instead of the co-authored-by/timeout/hooks shape every
+        // other session gets, never --dangerously-skip-permissions.
+        string settingsContent = request.UsesReviewPermissions
+            ? ClaudeSettingsFile.BuildForPrReview(
+                options.Value.VerifyGateTimeout, request.WorktreePath, runDirectory, request.QaGateCommands)
+            : ClaudeSettingsFile.Build(
+                options.Value.VerifyGateTimeout, request.GuardsReviewThreadReplies, request.Effort);
         await File.WriteAllTextAsync(SettingsFile(request, runDirectory), settingsContent, cancellationToken);
 
         string command = $"\"{ClaudeBinary()}\" {string.Join(' ', Arguments(request, runDirectory))}";

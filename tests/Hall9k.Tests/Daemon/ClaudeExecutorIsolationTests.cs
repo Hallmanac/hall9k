@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FluentAssertions;
+using Hall9k.Connectors.Prompts;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Run;
@@ -232,6 +233,77 @@ public sealed class ClaudeExecutorIsolationTests
                 ((long)configuredTimeout.TotalMilliseconds).ToString(),
                 "the configured VerifyGateTimeout, not ClaudeSettingsFile.DefaultCommandTimeout, " +
                 "must reach the session a foreground gate run actually runs inside");
+        }
+        finally
+        {
+            Directory.Delete(runDirectory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Security review idea 6be68ee2, process-injection finding 1: <see cref="AgentSpawnRequest.UsesReviewPermissions"/>
+    /// is what this executor dispatches on to build a pr-review session's own real permission file
+    /// (<see cref="ClaudeSettingsFile.BuildForPrReview"/>) instead of the ordinary
+    /// <see cref="ClaudeSettingsFile.Build"/> shape every other session gets.
+    /// </summary>
+    [Fact]
+    public async Task A_review_permissions_spawn_writes_the_real_permission_file()
+    {
+        string runDirectory = Directory.CreateTempSubdirectory("hall9k-claude-executor-tests-").FullName;
+        try
+        {
+            ClaudeExecutor executor = new(
+                NullLogger<ClaudeExecutor>.Instance, new FakeProcessManager(),
+                Options.Create(new DaemonOptions()));
+
+            AgentSpawnRequest request = new(
+                DomainId.New(), DomainId.New(), "/tmp/pr-review-checkout", runDirectory, "prompt",
+                ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false,
+                UntrustedWorkingDirectory: true)
+            {
+                SessionName = "test-review-adversarial-1",
+                UsesReviewPermissions = true,
+            };
+
+            await executor.SpawnAsync(request, CancellationToken.None);
+
+            string settingsContent = await File.ReadAllTextAsync(RunPaths.SettingsFile(runDirectory));
+            using JsonDocument document = JsonDocument.Parse(settingsContent);
+            document.RootElement.GetProperty("defaultMode").GetString().Should().Be("dontAsk",
+                "an ordinary Build() session carries no defaultMode at all; only the real permission file does");
+            document.RootElement.GetProperty("permissions").GetProperty("deny").EnumerateArray()
+                .Select(element => element.GetString()).Should().Contain("Bash(claude:*)");
+        }
+        finally
+        {
+            Directory.Delete(runDirectory, recursive: true);
+        }
+    }
+
+    /// <summary>An ordinary spawn (UsesReviewPermissions false, the default) never carries the real permission file's own shape.</summary>
+    [Fact]
+    public async Task An_ordinary_spawn_never_carries_the_review_permissions_shape()
+    {
+        string runDirectory = Directory.CreateTempSubdirectory("hall9k-claude-executor-tests-").FullName;
+        try
+        {
+            ClaudeExecutor executor = new(
+                NullLogger<ClaudeExecutor>.Instance, new FakeProcessManager(),
+                Options.Create(new DaemonOptions()));
+
+            AgentSpawnRequest request = new(
+                DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
+                ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false)
+            {
+                SessionName = "test-build",
+            };
+
+            await executor.SpawnAsync(request, CancellationToken.None);
+
+            string settingsContent = await File.ReadAllTextAsync(RunPaths.SettingsFile(runDirectory));
+            using JsonDocument document = JsonDocument.Parse(settingsContent);
+            document.RootElement.TryGetProperty("defaultMode", out _).Should().BeFalse();
+            document.RootElement.TryGetProperty("permissions", out _).Should().BeFalse();
         }
         finally
         {
