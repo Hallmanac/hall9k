@@ -37,6 +37,45 @@ public sealed class GitReadOnlyGuardTests
         GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
 
     /// <summary>
+    /// Bash's own <c>$'...'</c> ANSI-C quoting decodes backslash escapes before the shell ever sees
+    /// a flag or a path, defeating the plain <c>'...'</c>/<c>"..."</c> and backslash handling above
+    /// the identical way (independent pre-PR review, cycle 2, adversarial lens). Both spellings
+    /// verified against bash directly: <c>bash -c "echo --outp\$'\x75't=/tmp/x"</c> prints
+    /// <c>--output=/tmp/x</c>, and <c>bash -c "echo git diff HEAD \$'/etc/passwd'"</c> prints
+    /// <c>git diff HEAD /etc/passwd</c>.
+    /// </summary>
+    [Theory]
+    [InlineData("git diff --outp$'\\x75't=/tmp/x")]
+    [InlineData("git log -1 --format=%H --outp$'\\x75t'=/tmp/y")]
+    public void An_ansi_c_quoted_output_flag_is_still_refused(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
+    /// <summary>
+    /// The read-side half of the same gap: <c>$'...'</c> quoting an absolute path reassembles into
+    /// the identical <c>--no-index</c>-triggering argument once bash decodes it, with no separating
+    /// whitespace left for the plain-quote handling above to notice (independent pre-PR review,
+    /// cycle 2, adversarial lens).
+    /// </summary>
+    [Theory]
+    [InlineData("git diff HEAD $'/etc/passwd'")]
+    [InlineData("git diff $'/dev/null' $'/etc/passwd'")]
+    public void An_ansi_c_quoted_absolute_path_is_still_refused(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
+    /// <summary>
+    /// The identical whitespace-blanking heuristic the plain-quote branch pins (naming the flag or
+    /// an absolute path inside an ordinary multi-word argument must keep running, see
+    /// <see cref="A_command_that_only_names_the_flag_runs"/>) applies to <c>$'...'</c> too: an
+    /// ordinary <c>--format</c> string spelled with ANSI-C quoting that merely names
+    /// <c>--output</c> inside a multi-word value is not using the flag.
+    /// </summary>
+    [Theory]
+    [InlineData("git log -1 --format=$'note: mentions --output here'")]
+    [InlineData("git log -1 --format=$'note: try /etc/passwd someday'")]
+    public void An_ansi_c_quoted_multi_word_argument_that_only_names_a_refused_term_runs(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeFalse();
+
+    /// <summary>
     /// Either subcommand silently switches to filesystem-diff mode the moment it sees an absolute
     /// path, with no flag naming the mode at all (lesson f059f669) — the read escape that
     /// <c>Bash(git diff:*)</c>'s own prefix rule cannot tell apart from an ordinary diff.

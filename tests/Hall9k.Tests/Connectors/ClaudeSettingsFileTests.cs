@@ -179,6 +179,31 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
         allow.Should().Contain("Grep(//tmp/pr-review-run/**)");
     }
 
+    /// <summary>
+    /// Pins <c>NormalizeForPermissionRule</c>'s own behavior (independent pre-PR review, cycle 2,
+    /// conformance lens): a drive-letter backslash path must land in the forward-slash,
+    /// lowercase-drive form Claude Code actually matches on a Windows node (lesson ccc37c9c),
+    /// not the native backslash form every other test here builds from a POSIX path.
+    /// </summary>
+    [Fact]
+    public void A_windows_style_path_is_normalized_to_claude_codes_own_posix_form()
+    {
+        using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), @"C:\Users\owner\checkout", @"C:\Users\owner\run"));
+
+        string[] allow = [.. document.RootElement.GetProperty("permissions").GetProperty("allow")
+            .EnumerateArray().Select(element => element.GetString()!)];
+
+        allow.Should().Contain("Read(//c/Users/owner/checkout/**)",
+            "a drive letter must be lowercased and the backslashes turned to forward slashes before " +
+            "the doubled-leading-slash form is built around it, or the rule silently matches nothing " +
+            "on a Windows node");
+        allow.Should().Contain("Grep(//c/Users/owner/checkout/**)");
+        allow.Should().Contain("Read(//c/Users/owner/run/**)");
+        allow.Should().Contain("Write(//c/Users/owner/run/mention-answer.md)",
+            "the mention-answer write rule is built from the same normalization, not just the Read/Grep rules");
+    }
+
     [Fact]
     public void The_allow_list_carries_a_write_rule_for_the_mention_answer_file()
     {
