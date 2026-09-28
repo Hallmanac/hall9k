@@ -1,8 +1,12 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Identity;
+using Hall9k.Connectors.Ledger;
+using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
+using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -83,36 +87,72 @@ public sealed class OwnerSetCommand : Hall9kAsyncCommand<OwnerSetCommand.Setting
             + "Its own switch rather than a word passed to --persona, because every value that "
             + "option takes is a persona the registry can resolve.")]
         public bool ClearPersonas { get; init; }
+
+        [CommandOption("--display-name <NAME>")]
+        [Description(
+            "The name teammates see for this member: a label only, never part of any trust or "
+            + "cross-check decision (task e6744304). With --project, this is that project's own "
+            + "entry; without it, this is this machine's own default, which applies to every "
+            + "project that has no entry of its own. An empty value ('') clears whichever one this "
+            + "call targets: the project's entry, or the default. The value is trimmed; a blank "
+            + "result clears, and anything else must be 1 to 64 characters with no control "
+            + "characters (a newline, a carriage return, and a tab included). It settles into the "
+            + "effective name and is then written into the affected project's own node file, which "
+            + "h9k project members reads back.")]
+        public string? DisplayName { get; init; }
+
+        [CommandOption("--project <PROJECT>")]
+        [Description(
+            "Scopes --display-name to one project this node has already joined, by name, an "
+            + "unambiguous fragment of it, or its id, instead of changing this machine's own "
+            + "default. Naming a project this node has not joined is refused. Has no effect on any "
+            + "other option.")]
+        public string? Project { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
+    {
+        using var store = CliStore.Open();
+        await using IDocumentSession session = store.LightweightSession();
+        return await RunAsync(
+            session, settings, new GitLedger(new ConsoleWorktreeLogger<GitLedger>()), new NodeKeyStore(), cancellationToken);
+    }
+
+    /// <summary>The whole flow, seamed on <see cref="ILedger"/> and <see cref="NodeKeyStore"/> so a
+    /// test drives the display-name node-file writes against <c>FakeLedger</c> rather than a real
+    /// repository (Brian's 2026-09-13 testing rule), the same shape <c>h9k node vouch</c> already
+    /// uses.</summary>
+    internal static async Task<int> RunAsync(
+        IDocumentSession session, Settings settings, ILedger ledger, NodeKeyStore keyStore, CancellationToken cancellationToken)
     {
         if (settings.RerequestReview is null
             && settings.VoiceSkill is null
             && !settings.ClearVoiceSkill
             && settings.Persona is not { Length: > 0 }
-            && !settings.ClearPersonas)
+            && !settings.ClearPersonas
+            && settings.DisplayName is null)
         {
             throw new DomainValidationException(
                 "Nothing to change — pass --rerequest-review on|off|default, --voice-skill <NAME>, "
-                + "--clear-voice-skill, --persona engineer|qa|designer, or --clear-personas. "
+                + "--clear-voice-skill, --persona engineer|qa|designer, --clear-personas, or "
+                + "--display-name <NAME> (optionally with --project <PROJECT>). "
                 + "h9k owner show prints the current preferences.");
         }
 
         // Refused before the database is opened at all: an option pair that contradicts itself is
-        // not a fact about any owner.
+        // not a fact about any owner. DisplayName.Parse's own rule (trimmed, blank clears, else 1
+        // to 64 characters with no control characters) is enforced here too, before anything else
+        // in this command runs.
         Optional<VoiceSkillName> voiceSkill =
             VoiceSkillOption.Resolve(settings.VoiceSkill, settings.ClearVoiceSkill);
         Optional<IReadOnlyList<ReviewPersona>> reviewPersonas =
             ReviewPersonaOption.Resolve(settings.Persona, settings.ClearPersonas);
-
-        using var store = CliStore.Open();
-        await using IDocumentSession session = store.LightweightSession();
+        DisplayName? displayName = settings.DisplayName is null ? null : DisplayName.Parse(settings.DisplayName);
 
         // Registers this machine's owner if the database has never seen one, so the first
         // command a fresh install runs can be this one (every other writing command does the
         // same). Idempotent: an existing owner is found, not replaced.
-        await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         await session.SaveChangesAsync(cancellationToken);
 
         OwnerDetails details = await OwnerResolver.ResolveOrSoleAsync(session, settings.Owner, cancellationToken);
@@ -136,6 +176,50 @@ public sealed class OwnerSetCommand : Hall9kAsyncCommand<OwnerSetCommand.Setting
                     .Order(StringComparer.Ordinal));
         }
 
+        // A --project naming a project this node has not joined is refused before anything is
+        // recorded: checked purely against this node's own local registrations, the same
+        // ownership tier VoiceSkillLocation.Resolve above already reads from, never against the
+        // ledger, so this refusal is meant to be instant, not a network round trip.
+        ProjectDetails? targetProject = null;
+        if (displayName is not null && settings.Project is not null)
+        {
+            ProjectDetails candidate;
+            try
+            {
+                candidate = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
+            }
+            catch (DomainNotFoundException)
+            {
+                throw new DomainValidationException(
+                    $"'{settings.Project}' is not a project this node has joined: h9k project list shows what "
+                    + "this node already has, and h9k project join <project> joins a new one.");
+            }
+
+            if (candidate.OwnerId != details.Id)
+            {
+                throw new DomainValidationException(
+                    $"'{candidate.Name}' is not a project this node has joined for owner '{details.Name}': "
+                    + "h9k project list shows what this node already has.");
+            }
+
+            targetProject = candidate;
+        }
+
+        Optional<DisplayName> defaultDisplayName = Optional<DisplayName>.None;
+        Optional<OwnerProjectDisplayName> projectDisplayName = Optional<OwnerProjectDisplayName>.None;
+        if (displayName is not null)
+        {
+            if (targetProject is not null)
+            {
+                projectDisplayName = Optional<OwnerProjectDisplayName>.Of(
+                    new OwnerProjectDisplayName(targetProject.Id, displayName));
+            }
+            else
+            {
+                defaultDisplayName = Optional<DisplayName>.Of(displayName);
+            }
+        }
+
         OwnerSettingsChanged changed = OwnerDecider.ChangeSettings(
             owner,
             settings.RerequestReview is null
@@ -143,12 +227,88 @@ public sealed class OwnerSetCommand : Hall9kAsyncCommand<OwnerSetCommand.Setting
                 : Optional<ReviewRerequestPolicy>.Of(ReviewRerequestOption.Parse(settings.RerequestReview)),
             DateTimeOffset.UtcNow,
             voiceSkill,
-            reviewPersonas);
+            reviewPersonas,
+            defaultDisplayName,
+            projectDisplayName);
 
         session.Events.Append(details.Id, changed);
         await session.SaveChangesAsync(cancellationToken);
 
+        // Applied to the in-memory aggregate right away so the node-file writes below see the
+        // effective name this same call just recorded, without a second round trip to re-aggregate
+        // from what was just saved.
+        owner.Apply(changed);
+
+        if (displayName is not null)
+        {
+            IReadOnlyList<ProjectDetails> affected = targetProject is not null
+                ? [targetProject]
+                : await session.Query<ProjectDetails>()
+                    .Where(project => project.OwnerId == details.Id && !project.IsArchived)
+                    .ToListAsync(cancellationToken);
+            await WriteDisplayNamesAsync(ledger, keyStore, context.NodeId, details, owner, affected, cancellationToken);
+        }
+
         AnsiConsole.MarkupLine($"[green]Owner '{details.Name.EscapeMarkup()}' settings updated.[/]");
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Brings each affected project's own node file up to its effective display name: the named
+    /// project alone, or every joined, non-archived project when the machine default changed. The
+    /// local setting is already saved by the time this runs, so a failure here never loses it: this
+    /// only ever throws at the very end, naming every project that failed, after every other
+    /// project has already been attempted (the same per-project isolation <c>h9k node vouch</c>'s
+    /// own loop uses).
+    /// </summary>
+    private static async Task WriteDisplayNamesAsync(
+        ILedger ledger, NodeKeyStore keyStore, Guid nodeId, OwnerDetails details, OwnerAggregate owner,
+        IReadOnlyList<ProjectDetails> affected, CancellationToken cancellationToken)
+    {
+        if (affected.Count == 0)
+        {
+            return;
+        }
+
+        NodeSigningKey key = await keyStore.EnsureAsync(nodeId, cancellationToken);
+        LedgerCommitter committer = new(
+            details.Name.IsNotBlank() ? details.Name : Environment.UserName,
+            details.Email.IsNotBlank() ? details.Email : $"{nodeId}@hall9k.local");
+        LedgerSigningKey signingKey = new(key.PrivateKeyPath);
+
+        List<string> failedProjects = [];
+        foreach (ProjectDetails project in affected)
+        {
+            DisplayName effective = owner.EffectiveDisplayName(project.Id);
+            try
+            {
+                NodeFileRefreshOutcome outcome = await NodeFileWriter.RefreshDisplayNameAsync(
+                    ledger, project.RepositoryPath, nodeId, effective, key.PublicKeyLine, committer, signingKey,
+                    cancellationToken);
+                if (outcome == NodeFileRefreshOutcome.SigningKeyDiffers)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]'{project.Name.EscapeMarkup()}'s own node file names a different public key "
+                        + "than this node signs with now, left untouched; re-run h9k project join there to "
+                        + "fix it.[/]");
+                }
+            }
+            catch (Exception exception)
+                when (exception is LedgerPushRejectedException or InvalidOperationException or DomainConflictException)
+            {
+                failedProjects.Add(project.Name);
+                AnsiConsole.MarkupLine(
+                    $"[red]Failed to update the display name in '{project.Name.EscapeMarkup()}' "
+                    + $"({exception.Message.EscapeMarkup()}).[/]");
+            }
+        }
+
+        if (failedProjects.Count > 0)
+        {
+            throw new DomainValidationException(
+                $"The display name was saved for this machine, but its node file could not be updated in "
+                + $"{failedProjects.Count} project(s): {string.Join(", ", failedProjects)}. The next daemon "
+                + "start there brings it up to date, or re-run h9k owner set once the failure is fixed.");
+        }
     }
 }
