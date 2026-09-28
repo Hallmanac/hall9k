@@ -730,14 +730,14 @@ also appear elsewhere on this page stays where it is.
 | `h9k project join <project> --from-project <name>` | Names the registered project whose ledger already vouches for this node, so the vouch is carried into a brand-new project's ledger without the root-holding node ever touching it. |
 | `h9k project add --invite <token>` | Registers a project and finishes the join in the same call with an invite, which is the flow when the project belongs to someone else. |
 | `h9k project assign-key <project>` | Backfills the project's generated key on a ledger that predates it, once, before the first `project invite` on an adopted project. |
-| `h9k project members <project>` | Lists the members the ledger currently shows, each with its root fingerprint, its role (owner or member), the GitHub accounts its nodes declare, its fleet of nodes, and how each declared account stands against the collaborator roster (push confirmed, read only, not a collaborator, or unchecked here). |
+| `h9k project members <project>` | Lists the members the ledger currently shows, each with its root fingerprint (and, underneath, the newest display name declared across that root's own nodes, when one is declared: a label only), its role (owner or member), the GitHub accounts its nodes declare, its fleet of nodes, and how each declared account stands against the collaborator roster (push confirmed, read only, not a collaborator, or unchecked here). |
 | `h9k project member remove <project> <fingerprint>` | Removes a member by deleting its file from the members ref, refused unless this node's own root holds the owner role. |
 | `h9k project invite <project> --role owner\|member` | Mints a single-use invite secret, printed once, for a new project member, whose role is `member` unless `--role` says otherwise. |
 | `h9k node invite` | Mints a single-use invite secret, printed once, that lets a new machine of yours join your fleet on every non-archived project you are registered to. |
 | `h9k node vouch <node-id>` | Vouches a node into your fleet by writing its id and public key into every non-archived project you are registered to, and prints its key fingerprint. |
 | `h9k node revoke <node-id>` | Revokes a node from your fleet, effective at the next ledger read on any machine, and undone by vouching for the same node id again. |
 | `h9k owner show [owner]` | Prints an owner's id, which is their root fingerprint and the value `--owner` and `--to owner:` take, along with their projects, linked GitHub accounts, this node's key path and public key, and every preference their work runs by. |
-| `h9k owner set [owner]` | Changes an owner's standing preferences; its `--rerequest-review`, `--voice-skill`, `--clear-voice-skill`, `--persona`, and `--clear-personas` options are described under [Projects, owners, connections](#projects-owners-connections). |
+| `h9k owner set [owner]` | Changes an owner's standing preferences; its `--rerequest-review`, `--voice-skill`, `--clear-voice-skill`, `--persona`, `--clear-personas`, `--display-name`, and `--project` options are described under [Projects, owners, connections](#projects-owners-connections). |
 
 **Keeping the fleet's stores whole**
 
@@ -923,8 +923,9 @@ Settings resolve most-specific-wins, and the exact chain differs per setting;
 `owner set` holds the preferences that belong to the human rather than to a project: the review
 re-request policy (`--rerequest-review on|off|default`, which a project setting outranks), the
 skill the owner writes in (`--voice-skill <name>`, forgotten with `--clear-voice-skill`, printed by
-`owner show`), and the review personas they hold (`--persona engineer|qa|designer`, repeatable,
-cleared with `--clear-personas`, also printed by `owner show`). A named voice skill makes every
+`owner show`), the review personas they hold (`--persona engineer|qa|designer`, repeatable,
+cleared with `--clear-personas`, also printed by `owner show`), and the name teammates see for them
+(`--display-name '<name>'`, task e6744304). A named voice skill makes every
 prompt seam where a session composes text a human
 reads as the owner's — a pull request description, a review-thread reply, a commit message, a posted
 review finding, a drafted reply to a GitHub mention — tell that session to load the skill and its
@@ -949,6 +950,17 @@ declaration always runs the review it asked for; a persona added to the set befo
 exists would be named in the report and in `task show` as skipped rather than silently ignored,
 and a member who declared only unregistered personas would get the engineer's review in their
 place rather than an unreviewed pull request.
+
+`--display-name '<name>'` is the name teammates see for this member, set per project with
+`--project <project>` or, without it, as this machine's own default beneath every project that has
+no entry of its own, a machine's own setting because owner settings never leave the node that set
+them. The effective name for a project is its own entry, else the default, else none, written as
+that value into the node file of every affected project (the named one, or every joined project
+when the default changed), which `h9k project members` reads back. The value is trimmed and a
+blank value clears it (a bare `--display-name ''` alone clears the default; with `--project` it
+clears that project's own entry so the default applies again); otherwise it is 1 to 64 characters
+with no control characters. It is a label only, never feeding a trust or cross-check decision the
+way a declared GitHub account does, and naming a project this node has not joined is refused.
 
 The QA review's own subject is blast radius, not correctness. It opens with a map, in plain
 language, as the report's first section: what the diff changes, what sits next to it through a

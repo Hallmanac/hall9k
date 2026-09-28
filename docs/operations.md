@@ -1254,6 +1254,9 @@ h9k project set myproject --never-close-labels epic,adr     # labels that force 
 h9k owner set --rerequest-review on
 h9k owner set --voice-skill my-voice
 h9k owner set --persona engineer --persona qa
+h9k owner set --display-name "Ada Lovelace"                 # this machine's own default, beneath every project with no entry of its own
+h9k owner set --display-name "Ada L." --project myproject   # that project's own entry, outranking the default
+h9k owner set --display-name '' --project myproject         # clears the project's own entry so the default applies again
 ```
 
 `h9k owner set --voice-skill <name>` names the skill the owner writes in, and every prompt seam
@@ -1271,6 +1274,16 @@ one review session per declared persona on its single worktree and branch, and i
 carries one section per persona. All three prompts are registered, so a declaration always runs
 the review it asked for; a persona added to the set before its own prompt exists is named in the
 report and in `h9k task show` as skipped rather than silently ignored.
+
+`h9k owner set --display-name '<name>' [--project <project>]` names what teammates see for this
+member: a label only, never part of any trust or cross-check decision. With `--project`, it sets
+that project's own entry; without it, it sets this machine's own default, which every project with
+no entry of its own falls back to. Owner settings are per machine, so the default is this
+machine's, not this owner's everywhere. The value is trimmed and a blank value clears it; otherwise
+it is 1 to 64 characters with no control characters. The effective value is written into the
+affected project's own node file (the named one, or every joined project when the default changed),
+which `h9k project members` shows under a member's root fingerprint; naming a project this node has
+not joined is refused.
 
 The QA review reads the pull request through blast radius rather than correctness: it maps what
 the diff changes, what sits next to it, and the flows crossing either, grades every entry as

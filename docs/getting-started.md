@@ -43,8 +43,12 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   rather than run anything else. The join also writes the newcomer's own GitHub login and account
   id into their node file as a declaration, which `h9k project members <name>` shows beside their
   root and checks against the repository's collaborators; a node that joined before declarations
-  existed writes its login once, after its first daemon start following the update. Never invent
-  an invite; ask the user which case this is.
+  existed writes its login once, after its first daemon start following the update. After a
+  successful join, offer the person a display name for this project (the name teammates see for
+  them, a label only, never part of any trust decision), suggested from their GitHub login or their
+  `git config user.name`: `h9k owner set --display-name '<name>' --project <name>`. Say it can be
+  changed later with the same command, or cleared again with an empty value
+  (`--display-name ''`). Never invent an invite; ask the user which case this is.
 
   ```bash
   h9k project join <name> --invite <secret>
@@ -121,6 +125,16 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
 
   ```bash
   h9k owner set --persona engineer --persona qa
+  ```
+
+- **The name teammates see, `h9k owner set --display-name '<name>' [--project <name>]`.** A label
+  only: it never feeds a trust or cross-check decision the way a declared GitHub account does.
+  With `--project`, it is that project's own entry; without it, it is this machine's own default,
+  which applies to every project that has no entry of its own. `h9k project members <name>` shows
+  it under a member's root fingerprint. An empty value clears whichever one the call targets.
+
+  ```bash
+  h9k owner set --display-name "Ada Lovelace" --project <name>
   ```
 
 - **The two review-drive settings, `--design-review-drive on|off` and `--qa-review-drive on|off`.**
