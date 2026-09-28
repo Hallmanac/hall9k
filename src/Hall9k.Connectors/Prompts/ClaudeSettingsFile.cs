@@ -389,13 +389,17 @@ public static class ClaudeSettingsFile
     /// list above, on the same terms <see cref="ReviewThreadReplyGuardHook"/>'s own doc states:
     /// a pr-review session never posts to GitHub at all, but the hook costs nothing to carry and
     /// nothing here should depend on the deny list alone. The git read-only guard beside it
-    /// (<see cref="GitReadOnlyGuardMatcher"/>) refuses the one thing the allow list's own prefix
-    /// rules cannot: <c>git diff</c>/<c>git log</c>'s own <c>--output=&lt;path&gt;</c> flag writes
-    /// arbitrary content to any path the owner can write, which a prefix-only allow rule
-    /// (<c>Bash(git diff:*)</c>) has no way to refuse — a deny list matches a command as spelled,
-    /// and this one is still spelled "git diff" (independent pre-PR review, cycle 1, both lenses;
-    /// verified in a throwaway repo: <c>git log -1 --format='format:...' --output=&lt;path&gt;</c>
-    /// wrote the formatted text to that path).
+    /// (<see cref="GitReadOnlyGuardMatcher"/>) refuses what the allow list's own prefix rules
+    /// cannot, in either direction (<see cref="GitReadOnlyGuardRoutes"/>'s own doc): <c>git
+    /// diff</c>/<c>git log</c>'s own <c>--output=&lt;path&gt;</c> flag writes arbitrary content to
+    /// any path the owner can write, and either subcommand's own <c>--no-index</c> mode — entered
+    /// explicitly or implicitly, by naming an absolute path — reads one instead of the checkout's
+    /// own history. Neither is something a prefix-only allow rule (<c>Bash(git diff:*)</c>) has
+    /// any way to refuse — a deny list matches a command as spelled, and both are still spelled
+    /// "git diff" (independent pre-PR review, cycle 1, both lenses; verified in a throwaway repo:
+    /// <c>git log -1 --format='format:...' --output=&lt;path&gt;</c> wrote the formatted text to
+    /// that path, and <c>git diff /dev/null ~/.config/gh/hosts.yml</c> printed that file's own
+    /// content).
     /// </para>
     /// </summary>
     /// <param name="worktreePath">The checkout this session reads — the one directory, besides the run directory, its own <c>Read</c> may reach.</param>

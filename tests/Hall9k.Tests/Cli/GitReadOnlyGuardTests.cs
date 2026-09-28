@@ -21,23 +21,51 @@ public sealed class GitReadOnlyGuardTests
     [InlineData("git log -1 --format='format:echo pwned' --output=/tmp/out.txt")]
     [InlineData("git log --oneline --output=notes.md")]
     public void A_git_diff_or_log_with_an_output_flag_is_refused(string command) =>
-        GitReadOnlyGuardRoutes.WritesOutsideTheCheckout(command).Should().BeTrue();
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
+    /// <summary>
+    /// Quoting or escaping part of the flag still reassembles into the real flag once the shell
+    /// removes the quote or the backslash (independent pre-PR review, cycle 1, adversarial lens;
+    /// each spelling verified in a throwaway repository to write its file identically to the
+    /// unquoted form).
+    /// </summary>
+    [Theory]
+    [InlineData("git diff \"--output\"=/tmp/q1")]
+    [InlineData("git diff --outpu\\t=/tmp/q2")]
+    [InlineData("git log -1 --format='format:echo pwned' '--output'=/tmp/q3")]
+    public void A_quoted_or_escaped_output_flag_is_still_refused(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
+    /// <summary>
+    /// Either subcommand silently switches to filesystem-diff mode the moment it sees an absolute
+    /// path, with no flag naming the mode at all (lesson f059f669) — the read escape that
+    /// <c>Bash(git diff:*)</c>'s own prefix rule cannot tell apart from an ordinary diff.
+    /// </summary>
+    [Theory]
+    [InlineData("git diff /dev/null ~/.config/gh/hosts.yml")]
+    [InlineData("git diff /dev/null /tmp/pr-review-run/secret.txt")]
+    [InlineData("git diff --no-index HEAD ~/.config/gh/hosts.yml")]
+    [InlineData("git log --no-index")]
+    public void A_git_diff_or_log_that_reads_outside_the_checkout_is_refused(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
 
     [Theory]
     [InlineData("git diff origin/main...HEAD")]
     [InlineData("git log -1 --format=%H")]
     [InlineData("git log --oneline -20")]
     [InlineData("git diff --stat")]
+    [InlineData("git diff origin/main...HEAD -- src/Foo.cs")]
     public void An_ordinary_git_diff_or_log_with_no_output_flag_runs(string command) =>
-        GitReadOnlyGuardRoutes.WritesOutsideTheCheckout(command).Should().BeFalse();
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeFalse();
 
     /// <summary>Naming the flag in a search or a commit message is not using it.</summary>
     [Theory]
     [InlineData("git grep -- --output src/")]
     [InlineData("git commit -m \"docs: explain git log --output\"")]
+    [InlineData("git commit -m \"note: try git diff --no-index someday\"")]
     [InlineData("dotnet test")]
     public void A_command_that_only_names_the_flag_runs(string command) =>
-        GitReadOnlyGuardRoutes.WritesOutsideTheCheckout(command).Should().BeFalse();
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeFalse();
 
     [Fact]
     public void The_hook_denies_a_bash_call_with_the_output_flag() =>
