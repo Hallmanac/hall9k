@@ -161,6 +161,7 @@ public sealed class MessageSweepEngine(
             }
 
             await PersistUnverifiedWritesAsync(project, trustChain, now, cancellationToken);
+            await PersistMemberLabelsAsync(project, trustChain, now, cancellationToken);
             await ReconcileRootVerificationAsync(project.Id, trustChain, now, cancellationToken);
             await ReconcileSuccessionStateAsync(project.Id, nodeId, identity.OwnerRootFingerprint, trustChain, now, cancellationToken);
 
@@ -717,6 +718,64 @@ public sealed class MessageSweepEngine(
                 + "will retry next sweep", project.Id);
         }
     }
+
+    /// <summary>
+    /// Persists this project's own current trust-chain labels (task b7d8222e) — every registered
+    /// project, including one whose own project key is not assigned yet, since this runs before the
+    /// no-project-key skip a few lines up in <see cref="SweepOnceAsync"/>. One label per current
+    /// project member: their root fingerprint, their current fleet's node ids (a revoked node
+    /// already excluded by <c>TrustedOwner.FleetNodeIds</c>), their newest display name
+    /// (<see cref="TrustChain.DisplayNameOf"/>), and the login of their newest declared account
+    /// (<see cref="TrustChain.NewestDeclaredAccountOf"/>). Appended only when this sweep's own
+    /// labels differ from what the stream already holds (<see cref="ProjectMemberLabelsDecider.Observe"/>),
+    /// so a project with a settled team appends nothing tick after tick.
+    /// </summary>
+    private async Task PersistMemberLabelsAsync(
+        ProjectDetails project, TrustChain trustChain, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<ProjectMemberLabel> labels = BuildMemberLabels(trustChain);
+
+            await using IDocumentSession session = store.LightweightSession();
+            ProjectMemberLabels? existing = await session.LoadAsync<ProjectMemberLabels>(project.Id, cancellationToken);
+            if (ProjectMemberLabelsDecider.Observe(existing, project.Id, labels, now) is not { } observed)
+            {
+                return;
+            }
+
+            // Always an append, never a StartStream: this rides the project's own existing
+            // aggregate stream (started at genesis by ProjectRegistered), the identical shape
+            // ProjectGitHubAccessMirror already uses for ProjectGitHubCollaboratorsObserved — a
+            // registered project's own stream always already exists by the time this runs.
+            session.Events.Append(project.Id, observed);
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception, "Persisting this sweep's member labels failed for project {ProjectId}; will retry "
+                + "next sweep", project.Id);
+        }
+    }
+
+    /// <summary>
+    /// This project's own current member labels, one per current project member, built from the
+    /// trust chain alone (task b7d8222e) — pure and side-effect-free, the same reason
+    /// <see cref="SendersToRead"/> is its own static method: unit-testable without a document
+    /// store. Sorted by root fingerprint (and each member's own fleet by node id) so two builds off
+    /// an identical chain compare equal regardless of the ledger's own iteration order.
+    /// </summary>
+    internal static IReadOnlyList<ProjectMemberLabel> BuildMemberLabels(TrustChain trustChain) =>
+        [.. trustChain.Members
+            .Select(member => new ProjectMemberLabel(
+                member.RootFingerprint,
+                trustChain.OwnerChains.TryGetValue(member.RootFingerprint, out TrustedOwner? owner)
+                    ? [.. owner.FleetNodeIds().Order()]
+                    : [],
+                trustChain.DisplayNameOf(member.RootFingerprint),
+                trustChain.NewestDeclaredAccountOf(member.RootFingerprint)?.Login))
+            .OrderBy(label => label.RootFingerprint, StringComparer.Ordinal)];
 
     /// <summary>
     /// Reconciles this node's own owner's <c>RootFingerprintVerified</c> from the trust chain this

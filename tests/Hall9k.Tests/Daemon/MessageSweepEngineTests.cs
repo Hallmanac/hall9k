@@ -3,6 +3,7 @@ using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
 using Hall9k.Daemon.Messaging;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Trust;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -214,5 +215,66 @@ public sealed class MessageSweepEngineTests
         Guid? voucherNodeId = MessageSweepEngine.ResolveVoucherNodeId(nodeDetails, trustChain);
 
         voucherNodeId.Should().Be(inviterRootNodeId);
+    }
+
+    /// <summary>
+    /// <see cref="MessageSweepEngine.BuildMemberLabels"/> (task b7d8222e): the trust-chain-to-labels
+    /// fold the sweep's own member-label persistence writes off, pure and side-effect-free so its
+    /// own two edge cases — a member who declared two GitHub accounts across their own fleet, and a
+    /// revoked node absent from the recorded fleet — are database-free unit tests.
+    /// </summary>
+    private static NodeGitHubDeclaration Declaration(
+        Guid nodeId, string keyFingerprint, long accountId, string login, int minutesAfterEpoch) =>
+        new(nodeId.ToString(), keyFingerprint, new DeclaredGitHubAccount(accountId, login), DateTimeOffset.UnixEpoch.AddMinutes(minutesAfterEpoch));
+
+    [Fact]
+    public void BuildMemberLabels_KeepsOnlyTheNewestLoginForAMemberWithTwoDeclaredAccounts()
+    {
+        Guid firstNodeId = Guid.Parse("77777777-7777-7777-7777-777777777777");
+        Guid secondNodeId = Guid.Parse("88888888-8888-8888-8888-888888888888");
+        TrustedNode first = new(firstNodeId.ToString(), "ssh-ed25519 AAAAfirst first", "first-fingerprint", DateTimeOffset.UnixEpoch);
+        TrustedNode second = new(secondNodeId.ToString(), "ssh-ed25519 AAAAsecond second", "second-fingerprint", DateTimeOffset.UnixEpoch);
+        TrustedOwner owner = new("root-fingerprint", "ssh-ed25519 AAAAroot root", [first, second]);
+        TrustChain trustChain = new(
+            new Dictionary<string, TrustedOwner> { ["root-fingerprint"] = owner },
+            [new ProjectMember("root-fingerprint", MembershipRole.Owner, DateTimeOffset.UnixEpoch)])
+        {
+            NodeDeclarations = new[]
+            {
+                Declaration(firstNodeId, "first-fingerprint", 42, "work-account", 1),
+                Declaration(secondNodeId, "second-fingerprint", 77, "personal-account", 5),
+            }.ToDictionary(declaration => declaration.NodeId),
+        };
+
+        IReadOnlyList<ProjectMemberLabel> labels = MessageSweepEngine.BuildMemberLabels(trustChain);
+
+        labels.Should().ContainSingle().Which.DeclaredLogin.Should().Be(
+            "personal-account", "the newest of the member's own two declared accounts wins, never both");
+    }
+
+    [Fact]
+    public void BuildMemberLabels_ExcludesARevokedNodeFromTheRecordedFleet()
+    {
+        Guid vouchedNodeId = Guid.Parse("77777777-7777-7777-7777-777777777777");
+        Guid revokedRootNodeId = Guid.Parse("99999999-9999-9999-9999-999999999999");
+        TrustedNode vouched = new(vouchedNodeId.ToString(), "ssh-ed25519 AAAAnode node", "node-fingerprint", DateTimeOffset.UnixEpoch);
+        TrustedOwner owner = new(
+            "root-fingerprint", "ssh-ed25519 AAAAroot root", [vouched],
+            RootNodeId: revokedRootNodeId.ToString(),
+            RevokedNodeIds: new HashSet<string> { revokedRootNodeId.ToString() });
+        TrustChain trustChain = new(
+            new Dictionary<string, TrustedOwner> { ["root-fingerprint"] = owner },
+            [new ProjectMember("root-fingerprint", MembershipRole.Owner, DateTimeOffset.UnixEpoch)]);
+
+        IReadOnlyList<ProjectMemberLabel> labels = MessageSweepEngine.BuildMemberLabels(trustChain);
+
+        labels.Should().ContainSingle().Which.FleetNodeIds.Should().Equal(
+            [vouchedNodeId], "the revoked root node id must never appear in the recorded fleet");
+    }
+
+    [Fact]
+    public void BuildMemberLabels_IsEmptyWhenTheProjectHasNoMembersYet()
+    {
+        MessageSweepEngine.BuildMemberLabels(TrustChain.Empty).Should().BeEmpty();
     }
 }
