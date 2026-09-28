@@ -413,15 +413,58 @@ public sealed class ProjectHomeRecipeTests : IDisposable
     }
 
     [Fact]
-    public void The_render_lists_an_ordinary_gates_command()
+    public void The_render_lists_an_ordinary_gates_command_once_this_node_has_accepted_it()
     {
         string home = ProjectHomePaths.DefaultFor("hall9k");
         ProjectDetails project = SomeProject();
-        project.VerifyCommands.Add(new VerifyCommand("test", "dotnet test"));
+        VerifyCommand gate = new("test", "dotnet test");
+        project.VerifyCommands.Add(gate);
+        project.AcceptedVerifyCommands = [gate];
 
         string rendered = ProjectAgentsDocument.Render(home, project);
 
         rendered.Should().Contain("- `test`: `dotnet test`");
+    }
+
+    /// <summary>
+    /// A project this node has never accepted gates for at all (idea 6be68ee2, process-injection
+    /// finding 1, the local half): <see cref="ProjectDetails.AcceptedVerifyCommands"/> is null,
+    /// never merely empty, and this render is the one path with no dispatcher or gate entry
+    /// standing between a window reading it and whatever shell command it lists (lesson 4f2802a6).
+    /// </summary>
+    [Fact]
+    public void The_render_lists_no_gate_command_when_this_node_has_never_accepted_any()
+    {
+        string home = ProjectHomePaths.DefaultFor("hall9k");
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands.Add(new VerifyCommand("test", "dotnet test"));
+        project.AcceptedVerifyCommands = null;
+
+        string rendered = ProjectAgentsDocument.Render(home, project);
+
+        rendered.Should().NotContain("dotnet test");
+        rendered.Should().Contain("not accepted on this node");
+        rendered.Should().Contain("h9k project accept-gates hall9k");
+        rendered.Should().Contain("a session working here runs neither that command nor the gates");
+    }
+
+    /// <summary>
+    /// A REPLICATED change (a teammate's node, or this owner's own other node) never passed this
+    /// node's own operator, so a set that no longer fingerprint-matches what this node last
+    /// accepted is exactly as unaccepted as one never accepted at all.
+    /// </summary>
+    [Fact]
+    public void The_render_lists_no_gate_command_when_the_set_changed_since_this_node_last_accepted()
+    {
+        string home = ProjectHomePaths.DefaultFor("hall9k");
+        ProjectDetails project = SomeProject();
+        project.AcceptedVerifyCommands = [new VerifyCommand("test", "dotnet test")];
+        project.VerifyCommands.Add(new VerifyCommand("test", "dotnet test --filter Foo"));
+
+        string rendered = ProjectAgentsDocument.Render(home, project);
+
+        rendered.Should().NotContain("dotnet test --filter Foo");
+        rendered.Should().Contain("not accepted on this node");
     }
 
     /// <summary>
@@ -437,7 +480,9 @@ public sealed class ProjectHomeRecipeTests : IDisposable
     {
         string home = ProjectHomePaths.DefaultFor("hall9k");
         ProjectDetails project = SomeProject();
-        project.VerifyCommands.Add(new VerifyCommand("integration", "dotnet test", "Category=RequiresDocker"));
+        VerifyCommand gate = new("integration", "dotnet test", "Category=RequiresDocker");
+        project.VerifyCommands.Add(gate);
+        project.AcceptedVerifyCommands = [gate];
 
         string rendered = ProjectAgentsDocument.Render(home, project);
 

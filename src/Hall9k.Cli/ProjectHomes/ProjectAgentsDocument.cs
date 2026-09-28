@@ -309,6 +309,16 @@ public static class ProjectAgentsDocument
     /// <c>WorkPromptBuilder.AppendGateLines</c> and <c>AgentPromptBuilder</c>'s own rebase and
     /// review-fix checklists use for the identical fact, so a session reading any of the four
     /// never sees the host-coupled gate described two different ways.
+    /// <para>
+    /// Gated on <see cref="GateSetAcceptance"/> the same way those three prompt builders already
+    /// are (security review idea 6be68ee2, process-injection finding 1, the local half): a
+    /// REPLICATED gate change, or a project this node has never accepted gates for at all, has
+    /// never passed this node's own operator, and a window or scoped session opened in the
+    /// project home reads with no dispatcher or gate entry standing between it and whatever shell
+    /// command lands here. Lists no command in that case; only the operator, reading
+    /// <c>h9k project accept-gates</c>'s own output, decides what this file lists next (lesson
+    /// 4f2802a6; task: the project home's generated AGENTS.md never lists an unaccepted gate).
+    /// </para>
     /// </summary>
     private static void AppendVerifyGateLines(StringBuilder document, ProjectDetails project)
     {
@@ -317,6 +327,16 @@ public static class ProjectAgentsDocument
             document.AppendLine(
                 "This project configures no verification gates of its own "
                 + "(`h9k project set --verify \"name=command\"` registers one).");
+            return;
+        }
+
+        if (!GateSetAcceptance.Decide(project.AcceptedVerifyCommands, project.VerifyCommands).Proceed)
+        {
+            document.AppendLine(
+                "This project's current verify gate set is not accepted on this node, so no gate "
+                + "command is listed here. Only the operator accepts it — after reading its own "
+                + $"output — with `h9k project accept-gates {project.Name}`; a session working "
+                + "here runs neither that command nor the gates themselves.");
             return;
         }
 
