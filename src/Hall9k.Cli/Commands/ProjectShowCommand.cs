@@ -247,13 +247,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             + "capped by DaemonOptions.MaxReviewRerequestsAfterFixes (log #62)",
             "the owner preference decides (h9k owner show), else the node default "
             + "(DaemonOptions.DefaultReviewRerequest, off)"));
-        table.AddRow("Verify gates", project.VerifyCommands.Count == 0
-            ? $"[dim]none — add one: h9k project set {project.Name.EscapeMarkup()} --verify \"test=dotnet test\"[/]"
-            : string.Join("\n", project.VerifyCommands.Select(gate =>
-                $"{gate.Name.EscapeMarkup()} [dim]→[/] {gate.Command.EscapeMarkup()}"
-                + (gate.HostCoupledFilter is { } filter
-                    ? $" [dim](host-coupled, filter: {filter.EscapeMarkup()})[/]"
-                    : string.Empty))));
+        table.AddRow("Verify gates", VerifyGatesRow(project));
         table.AddRow("Non-executable paths", NonExecutablePathsRow(project));
         table.AddRow("Jira board", project.JiraProjectKey.HasValue
             ? $"{project.JiraProjectKey.Value.EscapeMarkup()} [dim]— new cards are filed here; a reported "
@@ -338,6 +332,33 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
               + $"{project.Name.EscapeMarkup()} --writing-conventions default[/]"
             : $"[dim]{text} ({OriginNote(recorded)}); state your own: h9k project set "
               + $"{project.Name.EscapeMarkup()} --writing-conventions \"<how prose has to read>\"[/]";
+    }
+
+    /// <summary>
+    /// The project's current verify gates, marked rather than hidden when this node has not
+    /// accepted them (security review idea 6be68ee2, process-injection finding 1, the local
+    /// half): an unaccepted set is still a fact about the project worth showing, and
+    /// <c>h9k project accept-gates</c> is where an operator reviews the actual command list for
+    /// vetting, not this row (task: the project home's generated AGENTS.md never lists an
+    /// unaccepted gate).
+    /// </summary>
+    internal static string VerifyGatesRow(ProjectDetails project)
+    {
+        if (project.VerifyCommands.Count == 0)
+        {
+            return $"[dim]none — add one: h9k project set {project.Name.EscapeMarkup()} --verify \"test=dotnet test\"[/]";
+        }
+
+        string list = string.Join("\n", project.VerifyCommands.Select(gate =>
+            $"{gate.Name.EscapeMarkup()} [dim]→[/] {gate.Command.EscapeMarkup()}"
+            + (gate.HostCoupledFilter is { } filter
+                ? $" [dim](host-coupled, filter: {filter.EscapeMarkup()})[/]"
+                : string.Empty)));
+
+        return GateSetAcceptance.Decide(project.AcceptedVerifyCommands, project.VerifyCommands).Proceed
+            ? list
+            : $"[yellow]not accepted on this node[/] — vet and accept with h9k project accept-gates "
+              + $"{project.Name.EscapeMarkup()}\n{list}";
     }
 
     /// <summary>

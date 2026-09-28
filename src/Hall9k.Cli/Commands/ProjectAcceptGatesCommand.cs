@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Cli.ProjectHomes;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.Verification;
 using Hall9k.Domain.Features.Project;
@@ -116,6 +117,17 @@ public sealed class ProjectAcceptGatesCommand : Hall9kAsyncCommand<ProjectAccept
 
         AnsiConsole.MarkupLineInterpolated(
             $"[green]Accepted {printed.Count} gate(s) for '{printableName}' on this node.[/]");
+
+        // The project home's AGENTS.md must list these commands the moment they are accepted, not
+        // wait for another h9k project set or init to re-render it (task: the project home's
+        // generated AGENTS.md never lists an unaccepted gate) — ProjectSetCommand re-renders on
+        // the identical HomeDirectory-exists check when its own --verify accepts gates inline.
+        ProjectDetails updated = (await session.LoadAsync<ProjectDetails>(details.Id, cancellationToken))!;
+        if (updated.HomeDirectory.HasValue && Directory.Exists(updated.HomeDirectory.Value))
+        {
+            ProjectHomeRecipe.Report([ProjectAgentsDocument.Write(updated.HomeDirectory.Value, updated)]);
+        }
+
         return ExitCodes.Ok;
     }
 }
