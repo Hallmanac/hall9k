@@ -4,6 +4,7 @@ using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 
 namespace Hall9k.Domain.Features.Tasks.Queries;
@@ -196,7 +197,25 @@ public static class StackedBaseResolver
     /// for the moment the parent gets so much as one follow-up (independent pre-PR review, cycle 1,
     /// conformance lens).
     /// </param>
-    public sealed record ResumedBase(string BaseBranch, string ForkPointCommit, string? OpenedAgainstBaseBranch = null);
+    /// <param name="Refused">
+    /// A sentence for the caller's own log naming what was refused and why, or null when nothing
+    /// was. Every one of the three fields above is carried from <c>RunDispatched.BaseBranch</c>,
+    /// <c>RunDispatched.BaseCommit</c> or <c>RunDispatched.OpenedAgainstBaseBranch</c> on the run
+    /// before this one — which can itself have replicated from another fleet node — so each is
+    /// checked here, at the point it is handed forward, rather than trusted because an earlier run
+    /// already recorded it: a hostile <c>BaseCommit</c> would otherwise reach
+    /// <c>RunLauncher</c>'s and <c>TaskWorkCommand</c>'s own <c>git merge-base --is-ancestor</c>
+    /// positionally, and a hostile <c>BaseBranch</c> would become this run's own base with nothing
+    /// downstream ever checking it — <c>GitWorktreeManager.CheckoutExistingAsync</c> validates only
+    /// the task's own branch, never the base it resumes onto (independent pre-PR review, cycle 1,
+    /// conformance lens). A refused value falls back the same forgiving direction every other
+    /// unhonourable shape here does: the project's own base branch for an illegal
+    /// <see cref="BaseBranch"/>, and blank — the same "nothing observed" this type already uses for
+    /// a run that recorded no fork point — for an illegal <see cref="ForkPointCommit"/> or
+    /// <see cref="OpenedAgainstBaseBranch"/>.
+    /// </param>
+    public sealed record ResumedBase(
+        string BaseBranch, string ForkPointCommit, string? OpenedAgainstBaseBranch = null, string? Refused = null);
 
     /// <summary>
     /// Where <paramref name="task"/>'s existing branch already sits, for a run that resumes it
@@ -241,9 +260,45 @@ public static class StackedBaseResolver
         }
 
         RunDetails? previous = await query.LoadAsync<RunDetails>(previousRunId, cancellationToken);
-        return previous is null
-            ? null
-            : new ResumedBase(
-                previous.BaseBranchOr(project.BaseBranch), previous.BaseCommit, previous.OpenedAgainstBaseBranch);
+        if (previous is null)
+        {
+            return null;
+        }
+
+        List<string> refusals = [];
+
+        string recordedBaseBranch = previous.BaseBranchOr(project.BaseBranch);
+        string baseBranch = recordedBaseBranch;
+        if (!GitArgumentValidation.IsLegalBranchName(recordedBaseBranch, out string? baseBranchRefusalReason))
+        {
+            refusals.Add(
+                $"the previous run's RunDispatched.BaseBranch '{GitArgumentValidation.Printable(recordedBaseBranch)}' "
+                + $"is not a legal branch name ({baseBranchRefusalReason}) — based on {project.BaseBranch} instead");
+            baseBranch = project.BaseBranch;
+        }
+
+        string forkPointCommit = previous.BaseCommit;
+        if (forkPointCommit.IsNotBlank() && !GitArgumentValidation.IsLegalCommitSha(forkPointCommit))
+        {
+            refusals.Add(
+                $"the previous run's RunDispatched.BaseCommit '{GitArgumentValidation.Printable(forkPointCommit)}' "
+                + "is not a legal commit id — recording no fork point instead");
+            forkPointCommit = string.Empty;
+        }
+
+        string? openedAgainstBaseBranch = previous.OpenedAgainstBaseBranch;
+        if (openedAgainstBaseBranch.IsNotBlank()
+            && !GitArgumentValidation.IsLegalBranchName(openedAgainstBaseBranch, out string? openedAgainstRefusalReason))
+        {
+            refusals.Add(
+                $"the previous run's RunDispatched.OpenedAgainstBaseBranch "
+                + $"'{GitArgumentValidation.Printable(openedAgainstBaseBranch)}' is not a legal branch name "
+                + $"({openedAgainstRefusalReason}) — dropping it instead");
+            openedAgainstBaseBranch = null;
+        }
+
+        return new ResumedBase(
+            baseBranch, forkPointCommit, openedAgainstBaseBranch,
+            refusals.Count == 0 ? null : string.Join(' ', refusals));
     }
 }

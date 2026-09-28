@@ -385,7 +385,7 @@ public sealed class StackedParentWatch(
         {
             string recordedMergedInto = parentRun?.BaseBranchOr(project.BaseBranch) ?? project.BaseBranch;
             string actualMergedInto = await ResolveActualMergedIntoAsync(
-                project, parentBranch, parentRun?.PullRequestNumber, recordedMergedInto,
+                project, childRun.TaskId, parentBranch, parentRun?.PullRequestNumber, recordedMergedInto,
                 parentRun?.OpenedAgainstBaseBranch, cancellationToken);
             if (actualMergedInto != project.BaseBranch)
             {
@@ -554,6 +554,7 @@ public sealed class StackedParentWatch(
     /// </summary>
     private async Task<string> ResolveActualMergedIntoAsync(
         ProjectDetails project,
+        Guid taskId,
         string parentBranch,
         int? parentPullRequestNumber,
         string recordedMergedInto,
@@ -581,7 +582,8 @@ public sealed class StackedParentWatch(
         try
         {
             ParentHeadRead branchRead = await ReadRemoteBranchHeadAsync(
-                git, repositoryPath, parentBranch, cancellationToken);
+                git, repositoryPath, parentBranch, cancellationToken,
+                logger, taskId, "this task's own recorded stacked-parent branch");
             ParentHeadRead? pullRequestRead = null;
             if (branchRead.Commit is null && parentPullRequestNumber is > 0)
             {
@@ -643,10 +645,27 @@ public sealed class StackedParentWatch(
         // — a commit id confirmed to be nothing but 40 or 64 hex digits can never be either, so
         // that shape is the whole of the defence here. An illegal value reads exactly as a blank
         // one would to every check below, which already treats a blank BaseCommit as nothing to
-        // vouch for.
-        string validatedBaseCommit = GitArgumentValidation.IsLegalCommitSha(childRun.BaseCommit)
-            ? childRun.BaseCommit
-            : string.Empty;
+        // vouch for. Logged rather than silently blanked (independent pre-PR review, cycle 1,
+        // conformance lens): a blank BaseCommit is the ordinary, unremarkable shape of a run that
+        // recorded no fork point, but a NON-blank value that still fails the shape check is a
+        // refusal worth an operator's attention, named against the event that carried it.
+        string validatedBaseCommit;
+        if (GitArgumentValidation.IsLegalCommitSha(childRun.BaseCommit))
+        {
+            validatedBaseCommit = childRun.BaseCommit;
+        }
+        else if (childRun.BaseCommit.IsNotBlank())
+        {
+            logger.LogWarning(
+                "Task {TaskId}: refusing to treat '{Value}' from run {RunId}'s own RunDispatched.BaseCommit as a "
+                + "fork point — not a legal commit id",
+                childRun.TaskId, GitArgumentValidation.Printable(childRun.BaseCommit), childRun.Id);
+            validatedBaseCommit = string.Empty;
+        }
+        else
+        {
+            validatedBaseCommit = string.Empty;
+        }
 
         ProcessRunner git = _gitProcessRunner;
         string repositoryPath = project.RepositoryPath;
@@ -666,7 +685,8 @@ public sealed class StackedParentWatch(
             // merge, which is before any sweep on this platform has observed that merge (Decisions
             // Log #186).
             ParentHeadRead branchRead = await ReadRemoteBranchHeadAsync(
-                git, repositoryPath, parentBranch, cancellationToken);
+                git, repositoryPath, parentBranch, cancellationToken,
+                logger, childRun.TaskId, "this run's own RunDispatched.BaseBranch");
             ParentHeadRead? pullRequestRead = null;
             if (branchRead.Commit is null && parentPullRequestNumber is > 0)
             {
@@ -689,9 +709,15 @@ public sealed class StackedParentWatch(
                 // exactly that). A failure is reported as what it was: nothing observed, ask again.
                 if (FailedRead(branchRead, pullRequestRead) is { } failed)
                 {
+                    // parentBranch itself is unvalidated on this path — ReadRemoteBranchHeadAsync's
+                    // own refusal is exactly what failed.Detail can report — so it is put through
+                    // the same Printable convention failed.Detail already follows, rather than
+                    // echoed raw into a sentence this observation's own Detail promises is safe to
+                    // log or show a human (independent pre-PR review, cycle 1, conformance lens).
                     return StackedParentObservation.Unobservable(
-                        $"{failed.Detail}, so nothing was observed about {parentBranch} this look — not whether it "
-                        + "exists, and not whether it moved");
+                        $"{failed.Detail}, so nothing was observed about "
+                        + $"'{GitArgumentValidation.Printable(parentBranch)}' this look — not whether it exists, "
+                        + "and not whether it moved");
                 }
 
                 // ParentUnresolvable, then: every lookup answered, and what they answered is that
@@ -1191,8 +1217,23 @@ public sealed class StackedParentWatch(
     /// return, whether that is because origin has no such branch or because the fetch could not be
     /// made at all (see <see cref="ParentHeadRead"/>).
     /// </summary>
+    /// <param name="logger">
+    /// Optional, and every direct caller in this class's own production code passes it: a refusal
+    /// below is otherwise returned as data only, never reported anywhere an operator would see it
+    /// (independent pre-PR review, cycle 1, conformance lens). Null in this method's own direct
+    /// tests, which assert the returned <see cref="ParentHeadRead"/> rather than a log line, and in
+    /// the two calls in this class that read <c>project.BaseBranch</c> — a locally configured
+    /// value, never one carried by a replicated event, so there is nothing about its refusal worth
+    /// naming an event for.
+    /// </param>
+    /// <param name="taskId">The task to name in the log line, alongside <paramref name="carryingEvent"/>.</param>
+    /// <param name="carryingEvent">
+    /// Which event actually carried <paramref name="branch"/> onto this platform's own records, in
+    /// a clause the log line can quote directly.
+    /// </param>
     internal static async Task<ParentHeadRead> ReadRemoteBranchHeadAsync(
-        ProcessRunner git, string repositoryPath, string branch, CancellationToken cancellationToken)
+        ProcessRunner git, string repositoryPath, string branch, CancellationToken cancellationToken,
+        ILogger? logger = null, Guid? taskId = null, string? carryingEvent = null)
     {
         // childRun.BaseBranch (a local parent's own branch, or a remote parent's HeadBranch read
         // off GitHub) reaches this method without ever passing through BranchNameTemplate.Render,
@@ -1204,9 +1245,12 @@ public sealed class StackedParentWatch(
         // either way, since nothing here guesses.
         if (!GitArgumentValidation.IsLegalBranchName(branch, out string? refusalReason))
         {
+            string printable = GitArgumentValidation.Printable(branch);
+            logger?.LogWarning(
+                "Task {TaskId}: refusing to run git against {Event} '{Branch}' — {Reason}",
+                taskId, carryingEvent ?? "an inbound branch", printable, refusalReason);
             return ParentHeadRead.ReadFailed(
-                $"'{GitArgumentValidation.Printable(branch)}' is not a legal branch name ({refusalReason}), so "
-                + "it was never handed to git");
+                $"'{printable}' is not a legal branch name ({refusalReason}), so it was never handed to git");
         }
 
         // `--` stops a value shaped like `--upload-pack=...` from being read as an option, but NOT

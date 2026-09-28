@@ -885,6 +885,11 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 ? await StackedBaseResolver.ResumedBaseAsync(
                     session, taskDetails, project, runId, cancellationToken)
                 : null;
+            if (resumedBase?.Refused is { } refusedCarryForward)
+            {
+                AnsiConsole.MarkupLineInterpolated($"[yellow]Task {task.Id}: {refusedCarryForward}[/]");
+            }
+
             string runBaseBranch = resumedBase?.BaseBranch ?? stackedBase.BaseBranch;
             string baseCommit = await ResumedForkPointAsync(
                 ExternalProcess.Runner, resumedBase, worktree, runBaseBranch, project, cancellationToken);

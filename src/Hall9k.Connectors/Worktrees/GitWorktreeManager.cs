@@ -36,7 +36,10 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
 
     public async Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken)
     {
-        RefuseIllegalBranch(request.BaseBranch, request.TaskId, "the base branch this worktree is cut from");
+        RefuseIllegalBranch(
+            request.BaseBranch, request.TaskId,
+            "the base branch this worktree is cut from — the project's own base, or a stacked parent's branch "
+            + "carried onto this request through StackedBaseResolver's own resolution of RunDispatched.Branch");
 
         string repositoryPath = Path.GetFullPath(request.RepositoryPath);
         await using RepositoryLock repositoryLock = await AcquireRepositoryLockCoreAsync(repositoryPath, cancellationToken);
@@ -96,7 +99,10 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
 
     public async Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken)
     {
-        RefuseIllegalBranch(request.Branch, request.TaskId, "the branch this checkout is asked to resume");
+        RefuseIllegalBranch(
+            request.Branch, request.TaskId,
+            "the branch this checkout is asked to resume — this task's own RetryBranch, last set by "
+            + "TaskClaimed.ResumesBranch, TaskRetried.Branch or TaskHandedBack.Branch");
 
         string repositoryPath = Path.GetFullPath(request.RepositoryPath);
         await using RepositoryLock repositoryLock = await AcquireRepositoryLockCoreAsync(repositoryPath, cancellationToken);
