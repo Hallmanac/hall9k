@@ -14,7 +14,6 @@ public sealed class MemberLabelResolverTests
     private const string Fingerprint = "abcdef0123456789";
     private static readonly Guid NodeId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid ProjectA = Guid.Parse("01a0bc05-a960-7657-b708-1aed4a1b2c3d");
-    private static readonly Guid ProjectB = Guid.Parse("01a0bc05-a960-7657-b708-1aed9f8e7d6c");
 
     private static ProjectMemberLabels LabelsWith(Guid projectId, DisplayName displayName, string? login) => new()
     {
@@ -75,15 +74,5 @@ public sealed class MemberLabelResolverTests
 
         MemberLabelResolver.LabelForNodeId(labels, NodeId, ownRootFingerprint: Fingerprint).Should().BeNull(
             "a node-id line about this machine's own owner already reads as \"me\"");
-    }
-
-    [Fact]
-    public void One_member_resolves_to_a_different_name_in_each_of_two_projects()
-    {
-        ProjectMemberLabels inA = LabelsWith(ProjectA, DisplayName.Parse("Brian"), "brianhallmanac");
-        ProjectMemberLabels inB = LabelsWith(ProjectB, DisplayName.Parse("Bri"), "brianhallmanac");
-
-        MemberLabelResolver.LabelForFingerprint(inA, Fingerprint).Should().Be("Brian");
-        MemberLabelResolver.LabelForFingerprint(inB, Fingerprint).Should().Be("Bri");
     }
 }

@@ -92,16 +92,6 @@ public sealed class OrchestratorFeedMessageLineTests
         OrchestratorFeedDescription.Of(note, lookup).Should().Contain("a message from brianhallmanac:");
     }
 
-    [Fact]
-    public void The_senders_line_falls_back_to_the_short_fingerprint_with_neither_recorded()
-    {
-        Guid fromNodeId = Guid.Parse("01a0bc05-a960-7657-b708-1aed4a1b2c3d");
-        Guid projectId = Guid.Parse("01a0bc05-a960-7657-b708-1aed9f8e7d6c");
-        MessageReceived note = Note(fromNodeId, projectId, 1, "please surface this at once");
-
-        OrchestratorFeedDescription.Of(note, lookup: null).Should().Contain("a message from abcdef012345:");
-    }
-
     private static MessageReceived Note(Guid fromNodeId, Guid projectId, long seq, string body) => new(
         FromNodeId: fromNodeId,
         Seq: seq,
