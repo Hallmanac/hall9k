@@ -419,13 +419,18 @@ A second, independent search runs on the same sweep: GitHub's own `mentions:` qu
 install's login, over the same registered repositories, read fresh every time. A direct `@login`
 mention fires; a team-handle mention never does. A mention on a pull request no live pr-review task
 watches mints the identical task type a review request does — never a new one — at the project's
-own effective speed; a mention on a pull request a live task already covers attaches to it instead,
-and when that task's report is already parked or it is waiting on the pull request, the daemon
-dispatches a bounded follow-up lap that reads the tagged comment against the review already done
-and parks an addendum beside the report — walked with the `walk-pr-review-findings` skill exactly
-like the original report, including its own new step: show the drafted reply, take edits, and post
-it only on the owner's explicit go, under their own login, in the exact thread the mention came
-from. A comment id already handled never fires again, and a comment the install's own login wrote
+own effective speed, capped per repository at ten fresh mints an hour (a mention past the cap holds
+unrecorded and retries on the next sweep once the window rolls); a mention on a pull request a live
+task already covers attaches to it instead, and when that task's report is already parked or it is
+waiting on the pull request, only the fleet's own leader node dispatches a bounded follow-up lap —
+capped at three per task over its lifetime, on a thirty-minute cooldown between laps, and honouring
+the same spend budget an ordinary dispatch does — that reads the tagged comment against the review
+already done and parks an addendum beside the report — walked with the `walk-pr-review-findings`
+skill exactly like the original report, including its own new step: show the drafted reply, take
+edits, and post it only on the owner's explicit go, under their own login, in the exact thread the
+mention came from. A peer node still attaches the mention to the task's own stream but never claims
+it or launches a run; `h9k pr review --since-my-review` is the manual lever it leaves standing. A
+comment id already handled never fires again, and a comment the install's own login wrote
 never counts. `--auto-pr-review off` silences mentions too; there is no separate switch.
 
 On a public repository, a review request or mention must come from a declared hall9k team member

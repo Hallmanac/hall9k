@@ -704,14 +704,19 @@ A second search runs beside that one, over the same registered repositories: Git
 former. A mention on a pull request no live pr-review task watches mints, publishes and starts the
 identical task type a review request does — never a new one — at the project's own effective
 speed, with the same no-backfill cutoff comparing against the comment's own timestamp rather than a
-request's. A mention on a pull request a live task already covers attaches to it instead of minting
-a second one; when that task's report is already parked or it is waiting on the pull request, the
-daemon dispatches a bounded follow-up lap that reads the tagged comment against the review already
-done and parks an addendum beside the report, naming the pull request, who tagged the install, and
-the first line of their comment in the needs-you line itself. A comment id already handled never
-fires again, and a comment the install's own login wrote never counts. `--auto-pr-review off`
-silences mentions exactly as it silences review requests, with no separate switch for either
-trigger.
+request's. A fresh mint from a mention is also capped, per repository, at ten an hour: a mention
+past the cap holds unrecorded rather than minting, and the very next sweep past the window retries
+it. A mention on a pull request a live task already covers attaches to it instead of minting
+a second one; when that task's report is already parked or it is waiting on the pull request, only
+the fleet's own leader node dispatches a bounded follow-up lap — capped at three per task over its
+lifetime, on a thirty-minute cooldown between laps, and honouring the same spend budget an ordinary
+dispatch does — that reads the tagged comment against the review already done and parks an addendum
+beside the report, naming the pull request, who tagged the install, and the first line of their
+comment in the needs-you line itself. A peer node still attaches the mention to the task's own
+stream, but never claims it or launches a run, naming `h9k pr review --since-my-review` as the
+manual lever instead. A comment id already handled never fires again, and a comment the install's
+own login wrote never counts. `--auto-pr-review off` silences mentions exactly as it silences
+review requests, with no separate switch for either trigger.
 
 On a public repository, unattended minting requires the request's or mention's own author to be a
 declared hall9k team member — matched on their numeric GitHub id, never their login — while a
