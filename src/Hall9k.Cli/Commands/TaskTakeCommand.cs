@@ -14,6 +14,7 @@ using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
@@ -125,7 +126,8 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
             ?? throw new DomainNotFoundException($"No project {task.ProjectId}.");
         await AssertOwnerRoleAsync(session, context, project, chainReader, keyStore, cancellationToken);
 
-        await PrintEvidenceAsync(session, previousHolderNodeId, project.Id, task.HolderSince, cancellationToken);
+        MemberLabelLookup labels = await MemberLabelling.LoadAsync(session, project.Id, cancellationToken);
+        await PrintEvidenceAsync(session, previousHolderNodeId, project.Id, task.HolderSince, labels, cancellationToken);
 
         (LedgerCommitter committer, LedgerSigningKey signingKey, string ownerFingerprint) =
             await TaskRecordPublication.ResolveIdentityAsync(session, context, cancellationToken);
@@ -365,7 +367,7 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
         // previousHolderNodeId, and the durable record — not the stale first read — is what this
         // line must agree with.
         string takenFrom = takenOver.PreviousHolderNodeId is { } takenFromNodeId
-            ? $"node {DomainId.Short(takenFromNodeId)}"
+            ? MemberLabelling.NodeMarkup(takenFromNodeId, labels)
             : "no node";
         AnsiConsole.MarkupLine(
             $"[green]Task {taskId} taken over[/] from {takenFrom} — "
@@ -725,6 +727,9 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
                 + "from-owner field has nothing to carry. Run h9k project join first.");
         }
 
+        MemberLabelLookup labels = await MemberLabelling.LoadAsync(session, project.Id, ownerRootFingerprint, cancellationToken);
+        string holderLabel = MemberLabelling.NodeMarkup(holderNodeId, labels);
+
         // The requester's own tracker identity, read locally and carried on the envelope, because
         // the holder's own node has no other way to learn it: every teammate's tracker credentials
         // are local to their own install (ClaimGate's own doc). Best effort — a project that is not
@@ -744,7 +749,7 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
             {
                 AnsiConsole.MarkupLine(
                     $"[yellow]Warning:[/] this install's own tracker identity could not be read — "
-                    + $"{exception.Message.EscapeMarkup()} If node {DomainId.Short(holderNodeId)} grants this "
+                    + $"{exception.Message.EscapeMarkup()} If {holderLabel} grants this "
                     + "request, the gated tracker move will need to be done by hand.");
             }
         }
@@ -758,11 +763,11 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
 
         int timeoutMinutes = project.TakeTimeoutMinutes ?? DefaultTakeTimeoutMinutes;
         AnsiConsole.MarkupLine(
-            $"[blue]Asked[/] node {DomainId.Short(holderNodeId)} for task {taskId} — reason: "
+            $"[blue]Asked[/] {holderLabel} for task {taskId} — reason: "
             + $"{reason.Trim().EscapeMarkup()}");
         AnsiConsole.MarkupLine(
-            "[dim]Waiting — the daemon's next message sweep sends it, and its own reaction on node "
-            + $"{DomainId.Short(holderNodeId)} answers it. Check h9k task show {taskId} or h9k status for the "
+            "[dim]Waiting — the daemon's next message sweep sends it, and its own reaction on "
+            + $"{holderLabel} answers it. Check h9k task show {taskId} or h9k status for the "
             + $"answer; no answer within {timeoutMinutes} minute(s) means --force is the way on.[/]");
         return ExitCodes.Ok;
     }
@@ -869,12 +874,14 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
     /// </summary>
     private static async Task PrintEvidenceAsync(
         IDocumentSession session, Guid holderNodeId, Guid projectId, DateTimeOffset? holderSince,
-        CancellationToken cancellationToken)
+        MemberLabelLookup labels, CancellationToken cancellationToken)
     {
         NodeDetails? holderNode = await session.LoadAsync<NodeDetails>(holderNodeId, cancellationToken);
+        // Raw, unescaped either way — MachineName and the label both go through .EscapeMarkup()
+        // once, at the print sites below, exactly as MachineName always has.
         string holderName = holderNode?.MachineName.IsNotBlank() == true
             ? holderNode.MachineName
-            : $"node {DomainId.Short(holderNodeId)}";
+            : MemberLabelling.NodeText(holderNodeId, labels);
         string since = holderSince is { } sinceAt ? sinceAt.ToString("u") : "an unrecorded time";
 
         EventReplicationInboxCursor? cursor = await session.LoadAsync<EventReplicationInboxCursor>(
