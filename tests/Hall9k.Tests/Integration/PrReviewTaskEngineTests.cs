@@ -1585,6 +1585,42 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// <see cref="ScriptedExecutor"/>'s identical scripted-completion shape, plus every spawn
+    /// request it was ever handed, kept in dispatch order — so a test can drive a plan with more
+    /// than one follow-on session (the Security persona, idea 6be68ee2, phase two, always dispatches
+    /// after the engineer's own two lenses) to completion in one <c>ReviewAsync</c> call while
+    /// still asserting on an earlier session's own spawn request, not only the last one.
+    /// </summary>
+    private sealed class RecordingScriptedExecutor(string summary) : IExecutor
+    {
+        private int _nextProcessId = 8_000;
+
+        public List<AgentSpawnRequest> Requests { get; } = [];
+
+        public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            int processId = _nextProcessId++;
+            string line = JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["type"] = "result",
+                ["subtype"] = "success",
+                ["is_error"] = false,
+                ["usage"] = new Dictionary<string, long> { ["input_tokens"] = 1_000, ["output_tokens"] = 200 },
+                ["total_cost_usd"] = 0.01,
+                ["num_turns"] = 12,
+                ["result"] = summary,
+            });
+            Directory.CreateDirectory(request.RunDirectory);
+            await File.WriteAllTextAsync(
+                RunPaths.SessionStreamFile(request.RunDirectory, request.SessionArtifactName!),
+                line + "\n", cancellationToken);
+
+            return new SpawnedAgent(processId, PrReviewNow);
+        }
+    }
+
+    /// <summary>
     /// The conformance lens's session exiting the 2026-09-07 outage's own way: one turn, zero
     /// tokens, sub-second, an authentication error. Written straight into the session's stream
     /// file with no live pid, exactly as <see cref="ScriptedExecutor"/> does for a working one.
@@ -2113,6 +2149,50 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         // permissions, whatever the project's own SkipPermissions setting says.
         executor.Request.SkipPermissions.Should().BeFalse();
         executor.Request.UsesReviewPermissions.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The Security persona's own model floor (idea 6be68ee2, phase two, the courier precedent)
+    /// reaching the real follow-on spawn request <c>DispatchFollowOnSessionAsync</c> builds —
+    /// never asserted before this test anywhere in the suite: the only coverage of this floor
+    /// called <c>DaemonOptions.ResolveSecurityReviewModel</c> directly, so reverting this call
+    /// site's own ternary back to the ordinary Review role's resolution would have passed every
+    /// test on this branch (independent pre-PR review, cycle 1, conformance lens, medium).
+    /// </summary>
+    [Fact]
+    public async Task The_security_sessions_own_spawn_request_floors_its_model_rather_than_the_ordinary_review_chain()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            // SeedClaimedPrReviewRunAsync's own RunDispatched carries no persona selection, which
+            // plans as the engineer alone (ReviewPersonaRegistry.Recorded's own doc) — appended
+            // here so the plan carries Security too, the same as a real dispatch's own
+            // RunLauncher.LaunchAsync would have recorded for a project with the setting on.
+            session.Events.Append(runId, new PrReviewPersonasSelected(
+                runId, Requested: [ReviewPersona.Engineer, ReviewPersona.Security],
+                Ran: [ReviewPersona.Engineer, ReviewPersona.Security], Skipped: [], FellBackToEngineer: false,
+                PrReviewNow));
+            session.Events.Append(runId, new AgentSessionCompleted(runId, PrReviewNow));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RecordingScriptedExecutor executor = new("Nothing found.\n\nVERDICT: merge-ready");
+        PrReviewEngine engine = NewPrReviewEngine(store, executor, new FakeProcessManager(), new NoOpWorktreeManager());
+        await engine.RecordPrimarySessionResultAsync(runId, runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+
+        await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        executor.Requests.Should().HaveCount(2,
+            "the engineer's own conformance lens dispatches first, then the Security session, both settling "
+            + "within this one ReviewAsync call since the scripted executor completes each synchronously");
+        executor.Requests[1].Model.Value.Should().Be(AgentModel.SecurityReviewDefault,
+            "the Security session must never silently run on the ordinary Review model");
     }
 
     /// <summary>
