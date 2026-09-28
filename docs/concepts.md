@@ -1385,6 +1385,28 @@ Because trust is recomputed at every read rather than remembered, a revocation r
 node the next time it reads the ledger, and it also voids every membership write the revoked node
 ever signed, until a later vouch of the same node restores them.
 
+**An owner's root authority is a ranked set of keys, recoverable by succession, not by backup.**
+Losing the one machine that holds the root key does not have to mean losing the project: a vouched
+node can be promoted to stand in for the root, deliberately and loudly, never automatically and never
+because the original went quiet. The root writes a **successor** record for a vouched node,
+`owners/<root>/successors/<node-id>.yaml`, naming the exact key already vouched for it, since in
+Hall9k the root key already is the root node's own signing key and a separate heir keypair would just
+sit next to it, exposed by the identical compromise. A listed successor promotes itself with a
+**rotation**, `owners/<root>/rotations/<n>.yaml`, naming the key it supersedes; once that record
+lands, the promoted key (**K1**) is live alongside the original (**K0**) rather than replacing it, and
+an earlier key always outranks a later one, so K0 can revoke K1's succession
+(`owners/<root>/revoked-successors/<node-id>.yaml`) but K1 can never revoke K0's. Every write K0 ever
+signed keeps verifying after a rotation, because "the root's own key" now means any key in this ranked
+set, not whichever one is newest. Because the ledger only ever moves forward on a push that cannot be
+forced, the first rotation to actually land wins, and a second one naming a key that rotation already
+superseded is simply stale. `h9k project members` and `h9k status` name each node's own succession
+state, and say "no successor" outright for an owner with a single node, the plainest way to see that
+there is nothing here to recover with yet. What this does not fix: a compromised K0 cannot be
+recovered by succession, since it outranks everything under it by design; an owner with one node has
+no heir until a second one is vouched and listed; and an owner whose only surviving heir is itself
+compromised stays hijacked. The floor there is a member re-inviting you in with a fresh root, which
+for a single-owner project means starting a new ledger, since a project's own genesis is spent once.
+
 **A project's members have one of two roles.** Membership is one file per person, at
 `members/<root-fingerprint>.yaml` on `refs/hall9k/ledger/members`, and the role in it is `owner` or
 `member`, with nothing in between. The first join on a project writes the genesis entry, and it is
@@ -1448,7 +1470,7 @@ readable by anyone who can read the repository:
 
 | Ref | What it holds | Who writes it |
 |---|---|---|
-| `refs/hall9k/ledger/owners/<fingerprint>` | An owner's `root.yaml`, and under it the vouches, revocations, carried vouches, and invites | The owner's own nodes |
+| `refs/hall9k/ledger/owners/<fingerprint>` | An owner's `root.yaml`, and under it the vouches, revocations, carried vouches, invites, successors, rotations, and revoked-successors | The owner's own nodes |
 | `refs/hall9k/ledger/nodes/<node-id>` | One node's own file, announcing its id, its public key, and the owner it claims | That node alone |
 | `refs/hall9k/ledger/members` | One file per member, with the role | Owner-role members, and the invite sweep |
 | `refs/hall9k/ledger/records` | One `records/<task-id>.yaml` per task: its contract, its state, and who holds it | The node that publishes the task, and the node that holds it |
