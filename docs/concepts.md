@@ -1377,12 +1377,12 @@ what vouches for everything else, so it counts as a member of the fleet without 
 **The fleet is the root node plus every node vouched into it.** Adding a second machine of your own
 is a **vouch**: `h9k node vouch <node-id>`, run on a node already in the fleet, writes the new
 node's id and public key into `owners/<root>/nodes/<node-id>.yaml` on every non-archived project you
-are registered to, and any node already in the fleet may still do this — peer vouching keeps
+are registered to, and any node already in the fleet may still do this: peer vouching keeps
 working. `h9k node revoke <node-id>` writes `owners/<root>/revoked/<node-id>.yaml` instead, and
 whichever of the two came latest, in the order of the ref's own commits, wins, so vouching again
 undoes a revocation made by mistake. Revoking, unlike vouching, is root-only: it takes one of the
 owner's own live root keys, never merely a node the fleet already trusts, so a compromised fleet
-node can never revoke its own peers — the command refuses before it pushes anything when this
+node can never revoke its own peers; the command refuses before it pushes anything when this
 node's own key is not one. Because trust is recomputed at every read rather than remembered, a
 revocation reaches every other node the next time it reads the ledger.
 
@@ -1417,8 +1417,8 @@ for a single-owner project means starting a new ledger, since a project's own ge
 **A project's members have one of two roles.** Membership is one file per person, at
 `members/<root-fingerprint>.yaml` on `refs/hall9k/ledger/members`, and the role in it is `owner` or
 `member`, with nothing in between. The first join on a project writes the genesis entry, and it is
-unconditionally an owner. An owner-role member's own live root key — never merely a node vouched
-into that owner's fleet — may mint member invites, remove a member (`h9k project member remove
+unconditionally an owner. An owner-role member's own live root key (never merely a node vouched
+into that owner's fleet) may mint member invites, remove a member (`h9k project member remove
 <project> <fingerprint>`, which deletes the file rather than marking it) and can never remove the
 last owner, or reaffirm one (`h9k project member reaffirm <project> <fingerprint>`, a root-signed
 rewrite of the same file that bumps `issued_at` without changing role, for re-landing a member file
