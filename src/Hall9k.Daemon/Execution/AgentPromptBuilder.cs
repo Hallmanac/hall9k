@@ -699,7 +699,7 @@ public static class AgentPromptBuilder
                         "[remaining findings omitted, over this prompt's total budget for review text — "
                         + $"read the rest at {review.ReviewUrl}]");
                     prompt.AppendLine();
-                    return;
+                    break;
                 }
 
                 List<string> tags = [];
@@ -737,14 +737,19 @@ public static class AgentPromptBuilder
 
     /// <summary>
     /// How much finding text, summed across every finding on every review this task carries, may
-    /// ride into the prompt before the rest is cut off wholesale. <see cref="MaxChangesRequestedFindingBodyLength"/>
-    /// only bounds one finding at a time, so a non-member who splits an oversized paste across many
-    /// inline comments instead of one huge review body sails straight past it —
-    /// <c>GitHubPullRequestInspector</c> reads up to 100 threads of up to 50 comments each on a
-    /// single review, so the per-finding cap alone still lets roughly 2,000,000 characters into this
-    /// prompt (independent pre-PR review, cycle 1, adversarial finding). This is the real ceiling:
-    /// ten times the per-finding bound, which an honest review — even a thorough one, split across
-    /// many comments — has no reason to approach.
+    /// ride into the prompt before each review's own remaining findings are cut off in turn.
+    /// <see cref="MaxChangesRequestedFindingBodyLength"/> only bounds one finding at a time, so a
+    /// non-member who splits an oversized paste across many inline comments instead of one huge
+    /// review body sails straight past it — <c>GitHubPullRequestInspector</c> reads up to 100
+    /// threads of up to 50 comments each on a single review, so the per-finding cap alone still
+    /// lets roughly 2,000,000 characters into this prompt (independent pre-PR review, cycle 1,
+    /// adversarial finding). This is the real ceiling: ten times the per-finding bound, which an
+    /// honest review — even a thorough one, split across many comments — has no reason to
+    /// approach. The cutoff never drops a review wholesale: once it fires, every review still
+    /// gets its own heading, URL, and submission time (independent pre-PR review, cycle 2 —
+    /// a task with more than one distinct human reviewer must not lose a later reviewer's
+    /// standing just because an earlier one's findings alone exhausted the budget), only its
+    /// finding bodies are omitted in favor of a pointer back to that review's own URL.
     /// </summary>
     private const int MaxChangesRequestedTotalFindingBodyLength = 200_000;
 
