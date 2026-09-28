@@ -1084,25 +1084,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 continue;
             }
 
-            // A persona whose session died is named as failed rather than dropped or quietly
-            // counted among the reports that are in. A persona with neither a report nor a
-            // recorded failure is only "running" while the run still is: the engineer's own
-            // session dying is fatal to the whole run, which fails it without recording a
-            // persona failure (that event is for the non-fatal personas), so reading the
-            // absence as "running" left a terminal run claiming a live session indefinitely
-            // (independent pre-PR review, cycle 1).
-            string? failure = run.PrReviewPersonaSessionFailures.Values
-                .Where(entry => entry.Persona == persona)
-                .Select(entry => entry.Reason)
-                .FirstOrDefault();
-            string state = skipped
-                ? run.PrReviewForkSkippedPersonas.Contains(persona)
-                    ? "[yellow]skipped — fork head[/]"
-                    : "[yellow]skipped — no review prompt registered yet[/]"
-                : failure is not null ? $"[red]failed[/] [dim]— {ExternalText.OneLineMarkup(failure)}[/]"
-                : run.PrReviewPersonasReported.Contains(persona) ? "[green]report in[/]"
-                : run.State.IsTerminal ? "[red]no report[/] [dim]— the run ended first[/]"
-                : "[blue]running[/]";
+            string state = ReviewPersonaState(persona, run, skipped);
             parts.Add($"{persona.Value.EscapeMarkup()} {state}");
         }
 
@@ -1128,6 +1110,36 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 : "[dim]  None of the declared personas has a review prompt registered yet, so the "
                   + "engineer's review ran in their place rather than leaving the pull request unreviewed.[/]");
         }
+    }
+
+    /// <summary>
+    /// One persona's own row in the "Review personas" line — extracted out of
+    /// <see cref="WriteReviewPersonas"/> so the three skip reasons (fork head, docs-only, no
+    /// review prompt registered) are a unit test rather than only an integration one, the same
+    /// split this file's own <see cref="AssigneeMarkup"/> already uses. A persona whose session
+    /// died is named as failed rather than dropped or quietly counted among the reports that are
+    /// in. A persona with neither a report nor a recorded failure is only "running" while the run
+    /// still is: the engineer's own session dying is fatal to the whole run, which fails it
+    /// without recording a persona failure (that event is for the non-fatal personas), so reading
+    /// the absence as "running" left a terminal run claiming a live session indefinitely
+    /// (independent pre-PR review, cycle 1).
+    /// </summary>
+    internal static string ReviewPersonaState(ReviewPersona persona, RunDetails run, bool skipped)
+    {
+        string? failure = run.PrReviewPersonaSessionFailures.Values
+            .Where(entry => entry.Persona == persona)
+            .Select(entry => entry.Reason)
+            .FirstOrDefault();
+        return skipped
+            ? run.PrReviewForkSkippedPersonas.Contains(persona)
+                ? "[yellow]skipped — fork head[/]"
+                : run.PrReviewDocsOnlySkippedPersonas.Contains(persona)
+                    ? "[yellow]skipped — every changed path is docs-only[/]"
+                    : "[yellow]skipped — no review prompt registered yet[/]"
+            : failure is not null ? $"[red]failed[/] [dim]— {ExternalText.OneLineMarkup(failure)}[/]"
+            : run.PrReviewPersonasReported.Contains(persona) ? "[green]report in[/]"
+            : run.State.IsTerminal ? "[red]no report[/] [dim]— the run ended first[/]"
+            : "[blue]running[/]";
     }
 
     /// <summary>
