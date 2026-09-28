@@ -1765,7 +1765,11 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(verifyCommands),
                 skipPermissions: Optional<bool>.None,
                 contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
-                Now, node.OwnerId));
+                Now, node.OwnerId),
+            // Accepted on this node in the same seed (security review idea 6be68ee2,
+            // process-injection finding 1) — this file's own gate tests all want their gates to
+            // run for real.
+            new Hall9k.Domain.Features.Project.Events.ProjectGateSetAccepted(projectId, verifyCommands, node.OwnerId, Now));
 
         TaskAggregate task = new();
         (task, object[] lifecycle) = TaskSeed.Start(
@@ -1825,13 +1829,23 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         Hall9k.Domain.Features.Project.ProjectAggregate? project =
             await session.Events.AggregateStreamAsync<Hall9k.Domain.Features.Project.ProjectAggregate>(
                 projectId, token: cancellationToken);
-        session.Events.Append(projectId, Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ChangeSettings(
-            project!,
-            verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(
-                [new Hall9k.Domain.Features.Project.VerifyCommand("test", "dotnet test --help --verbosity quiet")]),
-            skipPermissions: Optional<bool>.None,
-            contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
-            Now, project!.OwnerId));
+        IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand> changedGates =
+            [new Hall9k.Domain.Features.Project.VerifyCommand("test", "dotnet test --help --verbosity quiet")];
+        session.Events.Append(
+            projectId,
+            Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ChangeSettings(
+                project!,
+                verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(changedGates),
+                skipPermissions: Optional<bool>.None,
+                contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
+                Now, project!.OwnerId),
+            // Security review idea 6be68ee2, process-injection finding 1: this mid-run change is
+            // this test's own local operator, accepted the same way h9k project set --verify
+            // accepts locally — what this file's fingerprint-mismatch tests exercise is a
+            // DIFFERENT question (does the mandatory gate notice the content changed), never this
+            // node's own gate-set acceptance.
+            new Hall9k.Domain.Features.Project.Events.ProjectGateSetAccepted(
+                projectId, changedGates, project!.OwnerId, Now));
         await session.SaveChangesAsync(cancellationToken);
     }
 
@@ -1903,7 +1917,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(verifyCommands),
                 skipPermissions: Optional<bool>.None,
                 contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
-                Now, node.OwnerId));
+                Now, node.OwnerId),
+            new Hall9k.Domain.Features.Project.Events.ProjectGateSetAccepted(projectId, verifyCommands, node.OwnerId, Now));
 
         TaskAggregate task = new();
         (task, object[] lifecycle) = TaskSeed.Start(
@@ -2065,7 +2080,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(verifyCommands),
                 skipPermissions: Optional<bool>.None,
                 contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
-                Now, node.OwnerId));
+                Now, node.OwnerId),
+            new Hall9k.Domain.Features.Project.Events.ProjectGateSetAccepted(projectId, verifyCommands, node.OwnerId, Now));
 
         TaskAggregate task = new();
         (task, object[] lifecycle) = TaskSeed.Start(
@@ -4317,12 +4333,21 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             Hall9k.Domain.Features.Project.ProjectAggregate? project =
                 await session.Events.AggregateStreamAsync<Hall9k.Domain.Features.Project.ProjectAggregate>(
                     projectId, token: cts.Token);
-            session.Events.Append(projectId, Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ChangeSettings(
-                project!,
-                verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(failingVerifyCommands),
-                skipPermissions: Optional<bool>.None,
-                contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
-                Now, project!.OwnerId));
+            session.Events.Append(
+                projectId,
+                Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ChangeSettings(
+                    project!,
+                    verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(failingVerifyCommands),
+                    skipPermissions: Optional<bool>.None,
+                    contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
+                    Now, project!.OwnerId),
+                // Security review idea 6be68ee2, process-injection finding 1: this mid-run change
+                // is this test's own local operator, accepted the same way h9k project set --verify
+                // accepts locally — this test's own failing-gate mechanic is a different question
+                // (does the mandatory Settling gate genuinely fail), never this node's own
+                // gate-set acceptance.
+                new Hall9k.Domain.Features.Project.Events.ProjectGateSetAccepted(
+                    projectId, failingVerifyCommands, project!.OwnerId, Now));
             await session.SaveChangesAsync(cts.Token);
         }
 
@@ -4396,12 +4421,21 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             Hall9k.Domain.Features.Project.ProjectAggregate? project =
                 await session.Events.AggregateStreamAsync<Hall9k.Domain.Features.Project.ProjectAggregate>(
                     projectId, token: cts.Token);
-            session.Events.Append(projectId, Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ChangeSettings(
-                project!,
-                verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(failingVerifyCommands),
-                skipPermissions: Optional<bool>.None,
-                contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
-                Now, project!.OwnerId));
+            session.Events.Append(
+                projectId,
+                Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ChangeSettings(
+                    project!,
+                    verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(failingVerifyCommands),
+                    skipPermissions: Optional<bool>.None,
+                    contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
+                    Now, project!.OwnerId),
+                // Security review idea 6be68ee2, process-injection finding 1: this mid-run change
+                // is this test's own local operator, accepted the same way h9k project set --verify
+                // accepts locally — this test's own failing-gate mechanic is a different question
+                // (does the mandatory Settling gate genuinely fail), never this node's own
+                // gate-set acceptance.
+                new Hall9k.Domain.Features.Project.Events.ProjectGateSetAccepted(
+                    projectId, failingVerifyCommands, project!.OwnerId, Now));
             await session.SaveChangesAsync(cts.Token);
         }
 

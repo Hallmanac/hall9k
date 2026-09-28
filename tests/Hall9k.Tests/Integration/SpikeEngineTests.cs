@@ -581,12 +581,18 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         ProjectRegistered registered = ProjectDecider.Register(
             projectId, node.OwnerId, DomainId.New(), $"spike-{taskId:N}", repoPath, null, "main", Now);
         project.Apply(registered);
-        session.Events.StartStream<ProjectAggregate>(projectId, registered, ProjectDecider.ChangeSettings(
-            project,
-            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.Of(gates),
-            skipPermissions: Optional<bool>.None,
-            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
-            Now, node.OwnerId));
+        // Accepted on this node in the same seed, the h9k project set --verify idiom (security
+        // review idea 6be68ee2, process-injection finding 1) — this helper's own callers all want
+        // their gates to run for real.
+        session.Events.StartStream<ProjectAggregate>(
+            projectId, registered,
+            ProjectDecider.ChangeSettings(
+                project,
+                verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.Of(gates),
+                skipPermissions: Optional<bool>.None,
+                contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+                Now, node.OwnerId),
+            new ProjectGateSetAccepted(projectId, gates, node.OwnerId, Now));
 
         (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
             TaskDecider.Add(
