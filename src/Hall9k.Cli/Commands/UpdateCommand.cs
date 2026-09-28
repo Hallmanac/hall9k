@@ -71,7 +71,13 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
     /// <paramref name="containerRuntimeRunner"/> is the same kind of test seam, for the docker
     /// calls <see cref="InstallCommand.FinishAsync"/>'s own port-binding check makes: it defaults
     /// to the real docker CLI, and a test passes a fake so the check never depends on whatever
-    /// Docker happens to be running on the machine the test suite executes on.</summary>
+    /// Docker happens to be running on the machine the test suite executes on.
+    /// <paramref name="scratchRoot"/> is the same kind of seam for where the download/extract
+    /// scratch directories below are created: it defaults to the real machine-wide
+    /// <see cref="Path.GetTempPath"/>, and a test passes a directory unique to itself so its own
+    /// before/after scratch-directory check never observes another process's own in-flight
+    /// scratch directories — this host runs many worktrees' test suites against the same shared
+    /// OS temp directory at once, and two of them racing there is not a defect in either.</summary>
     internal static async Task<int> RunAsync(
         ProcessRunner gh,
         string repository,
@@ -80,6 +86,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
         bool now = false,
         bool linkOntoPath = true,
         ProcessRunner? containerRuntimeRunner = null,
+        string? scratchRoot = null,
         CancellationToken cancellationToken = default)
     {
         string? rid = ReleasePlatform.CurrentRid();
@@ -98,8 +105,9 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
         // ~/.hall9k/bin by way of staging, never read from here again — so they are removed
         // on every exit, success or failure, rather than left for the temp directory to
         // accumulate release-sized payloads across every update.
-        string downloadDirectory = Path.Combine(Path.GetTempPath(), $"h9k-update-{Path.GetRandomFileName()}");
-        string extractDirectory = Path.Combine(Path.GetTempPath(), $"h9k-update-extract-{Path.GetRandomFileName()}");
+        string scratchBase = scratchRoot ?? Path.GetTempPath();
+        string downloadDirectory = Path.Combine(scratchBase, $"h9k-update-{Path.GetRandomFileName()}");
+        string extractDirectory = Path.Combine(scratchBase, $"h9k-update-extract-{Path.GetRandomFileName()}");
         try
         {
             Directory.CreateDirectory(downloadDirectory);

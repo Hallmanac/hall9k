@@ -35,12 +35,19 @@ public sealed class UpdateCommandTests : IDisposable
 {
     private readonly ScopedTestHome _scopedHome = new();
     private readonly string workspace = Path.Combine(Path.GetTempPath(), $"h9k-update-workspace-{Path.GetRandomFileName()}");
+    // A scratch root unique to this test instance, handed to UpdateCommand.RunAsync so its
+    // download/extract directories land here instead of the machine-wide temp directory: this
+    // host runs many worktrees' test suites against that same shared directory at once, and a
+    // sibling process's own in-flight "h9k-update-*" scratch directory would otherwise show up
+    // as a false leak in TempScratchDirectories()'s before/after diff.
+    private readonly string scratchRoot = Path.Combine(Path.GetTempPath(), $"h9k-update-scratch-{Path.GetRandomFileName()}");
 
     private string home => _scopedHome.Home;
 
     public UpdateCommandTests()
     {
         Directory.CreateDirectory(workspace);
+        Directory.CreateDirectory(scratchRoot);
     }
 
     public void Dispose()
@@ -50,6 +57,7 @@ public sealed class UpdateCommandTests : IDisposable
         // executable can still be held by Defender or an indexer, and an unguarded delete
         // here would replace the test's real outcome with an unrelated IOException.
         InstallCommand.TryDelete(workspace);
+        InstallCommand.TryDelete(scratchRoot);
     }
 
     [Fact]
@@ -266,21 +274,20 @@ public sealed class UpdateCommandTests : IDisposable
             "a refused update must not leave its downloaded archive or extracted payload behind in temp");
     }
 
-    // Pre-existing debris from other processes (or other test runs, before this fix) can
-    // already sit in the shared temp directory, so the assertion is a before/after diff
-    // rather than an assumption that temp starts clean.
-    private static IReadOnlySet<string> TempScratchDirectories() =>
-        Directory.EnumerateDirectories(Path.GetTempPath(), "h9k-update-*")
-            .Where(entry => !Path.GetFileName(entry).StartsWith("h9k-update-workspace-", StringComparison.Ordinal))
-            .ToHashSet();
+    // Scoped to this test instance's own scratchRoot (never the machine-wide temp directory),
+    // so a sibling process's own in-flight scratch directory on this shared host never shows up
+    // as a false leak in the before/after diff.
+    private IReadOnlySet<string> TempScratchDirectories() =>
+        Directory.EnumerateDirectories(scratchRoot).ToHashSet();
 
-    private static Task<int> Run(ProcessRunner gh) =>
+    private Task<int> Run(ProcessRunner gh) =>
         UpdateCommand.RunAsync(
             gh, ReleasePlatform.DefaultRepository, restart: false, noRestart: true, linkOntoPath: false,
             // The port-binding check InstallCommand.FinishAsync now runs unconditionally shells
             // out to docker — a fake that never answers keeps this test's outcome independent of
             // whatever Docker happens to be running on the machine the test suite executes on.
             containerRuntimeRunner: (_, _, _, _) => Task.FromResult(new ProcessResult(1, string.Empty, "docker not reached in this test")),
+            scratchRoot: scratchRoot,
             cancellationToken: CancellationToken.None);
 
     /// <summary>
