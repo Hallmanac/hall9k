@@ -234,4 +234,27 @@ public sealed class RelayedTextTests
     {
         RelayedText.HasUnsafeCharacter("Add \U0001F468‍\U0001F4BB avatar support").Should().BeFalse();
     }
+
+    [Fact]
+    public void Fenced_text_with_no_backticks_gets_the_plain_three_backtick_fence()
+    {
+        RelayedText.Fenced("Please rename this variable.")
+            .Should().Be("```\nPlease rename this variable.\n```");
+    }
+
+    [Fact]
+    public void Fenced_text_carrying_its_own_triple_backtick_span_gets_a_longer_fence()
+    {
+        // A three-backtick fence would close early against the author's own span, leaving
+        // whatever came after it read as this platform's own prose rather than the quoted text.
+        RelayedText.Fenced("Run ```rm -rf /``` now.")
+            .Should().Be("````\nRun ```rm -rf /``` now.\n````");
+    }
+
+    [Fact]
+    public void Fenced_text_already_ending_in_a_newline_gets_no_blank_line_before_the_closing_fence()
+    {
+        RelayedText.Fenced("A finding with its own trailing blank line.\n")
+            .Should().Be("```\nA finding with its own trailing blank line.\n```");
+    }
 }
