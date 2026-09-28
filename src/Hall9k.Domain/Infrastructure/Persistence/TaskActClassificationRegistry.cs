@@ -48,7 +48,7 @@ public enum TaskActClassification
 /// <summary>
 /// The classification table itself: every <see cref="EventScope.ProjectScoped"/> event type in
 /// <c>Hall9k.Domain.Features.Tasks.Events</c> and <c>Hall9k.Domain.Features.Run.Events</c> gets one
-/// entry (idea 6be68ee2, trust-ledger finding 5) — <see cref="TaskActClassificationRegistryTests"/>
+/// entry (idea 6be68ee2, trust-ledger finding 5) — <c>TaskActClassificationRegistryTests</c>
 /// fails the build the moment a new one ships unclassified, the identical completeness gate
 /// <see cref="EventScopeRegistry"/> already runs for scope itself.
 /// </summary>
@@ -130,8 +130,15 @@ public static class TaskActClassificationRegistry
         // member's (idea 202383dc, item 4).
         [typeof(TaskHolderTakenOver)] = TaskActClassification.OwnerOnly,
 
-        [typeof(TaskTakeRequested)] = TaskActClassification.MemberSafe,
-        [typeof(TaskTakeRefused)] = TaskActClassification.MemberSafe,
+        // Appended on the HOLDER's own node, never the requester's (TaskDecider.RequestTake's own
+        // doc: "appended on the HOLDER's own node the moment its own claim-request envelope is
+        // received"; TaskDecider.RefuseTake is the holder's own answer the same way) — MemberSafe
+        // let a forged copy from any member overwrite PendingTakeRequestedBy* with a fingerprint
+        // TaskDecider.GrantTake would then hand the task to, contradicting Decisions Log #231's own
+        // "by construction, always the verified requester" (independent pre-PR review, cycle 4,
+        // adversarial lens, medium).
+        [typeof(TaskTakeRequested)] = TaskActClassification.Conditional,
+        [typeof(TaskTakeRefused)] = TaskActClassification.Conditional,
 
         [typeof(TaskInteractiveClaimUnassigned)] = TaskActClassification.Conditional,
 
@@ -272,7 +279,7 @@ public static class TaskActClassificationRegistry
     /// <summary>Null for any event type this registry does not classify at all — either it is not
     /// a Task/Run act (a different feature's own event, or a NodeScoped Task/Run event this gate
     /// never runs for), or it genuinely shipped unclassified, which
-    /// <see cref="TaskActClassificationRegistryTests"/> fails the build over.</summary>
+    /// <c>TaskActClassificationRegistryTests</c> fails the build over.</summary>
     public static TaskActClassification? TryClassificationOf(Type eventType) =>
         Classifications.TryGetValue(eventType, out TaskActClassification classification) ? classification : null;
 }
