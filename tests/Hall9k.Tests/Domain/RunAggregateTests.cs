@@ -2595,6 +2595,41 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// A second recording under the identical slug — an error-result retry that reaches for a
+    /// different refused tool — adds to what the first recorded rather than erasing it, so a
+    /// retried session's report still shows what its FIRST attempt was denied (independent pre-PR
+    /// review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public void A_second_permission_denial_for_the_same_session_accumulates_rather_than_replaces()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+
+        run.Apply(new RunPermissionDenialsRecorded(
+            id, ReviewLens.Adversarial.Slug, [new PermissionDenial("Bash", """{"command":"npm start"}""")], Now));
+        run.Apply(new RunPermissionDenialsRecorded(
+            id, ReviewLens.Adversarial.Slug, [new PermissionDenial("WebFetch", """{"url":"https://example.com"}""")], Now));
+
+        run.PrReviewPermissionDenials[ReviewLens.Adversarial.Slug].Select(denial => denial.ToolName)
+            .Should().BeEquivalentTo(["Bash", "WebFetch"]);
+    }
+
+    /// <summary>An identical denial recorded twice reads as one line, not a duplicate.</summary>
+    [Fact]
+    public void An_identical_permission_denial_recorded_twice_is_not_duplicated()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        PermissionDenial denial = new("Bash", """{"command":"npm start"}""");
+
+        run.Apply(new RunPermissionDenialsRecorded(id, ReviewLens.Adversarial.Slug, [denial], Now));
+        run.Apply(new RunPermissionDenialsRecorded(id, ReviewLens.Adversarial.Slug, [denial], Now));
+
+        run.PrReviewPermissionDenials[ReviewLens.Adversarial.Slug].Should().ContainSingle();
+    }
+
+    /// <summary>
     /// A fork skip's own reason and which personas it named travel with the plan selection, not
     /// only which personas ran — <c>h9k task show</c> and the findings report both read these
     /// back to tell a security refusal apart from a persona with no review prompt registered.

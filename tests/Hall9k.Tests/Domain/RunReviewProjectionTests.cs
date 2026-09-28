@@ -752,6 +752,23 @@ public sealed class RunReviewProjectionTests
             .Which.ToolName.Should().Be("Bash");
     }
 
+    /// <summary>Mirrors <c>RunAggregateTests.A_second_permission_denial_for_the_same_session_accumulates_rather_than_replaces</c> for the projection side.</summary>
+    [Fact]
+    public void A_second_permission_denial_for_the_same_session_accumulates_on_the_projection_too()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+
+        projection.Apply(new FakeEvent<RunPermissionDenialsRecorded>(new RunPermissionDenialsRecorded(
+            id, ReviewLens.Adversarial.Slug, [new PermissionDenial("Bash", """{"command":"npm start"}""")], Now)), view);
+        projection.Apply(new FakeEvent<RunPermissionDenialsRecorded>(new RunPermissionDenialsRecorded(
+            id, ReviewLens.Adversarial.Slug, [new PermissionDenial("WebFetch", """{"url":"https://example.com"}""")], Now)), view);
+
+        view.PrReviewPermissionDenials[ReviewLens.Adversarial.Slug].Select(denial => denial.ToolName)
+            .Should().BeEquivalentTo(["Bash", "WebFetch"]);
+    }
+
     private static RunDetails VerifiedRun(RunDetailsProjection projection, Guid id)
     {
         RunDetails view = projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(

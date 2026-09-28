@@ -1405,10 +1405,15 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         view.PrReviewForkSkipReason = @event.Data.ForkSkipReason;
     }
 
-    /// <summary>See <see cref="RunPermissionDenialsRecorded"/>'s own doc.</summary>
+    /// <summary>Accumulates rather than replaces — mirrors <see cref="RunAggregate.Apply(RunPermissionDenialsRecorded)"/>'s own doc and for the identical reason.</summary>
     public void Apply(IEvent<RunPermissionDenialsRecorded> @event, RunDetails view)
     {
-        view.PrReviewPermissionDenials[@event.Data.SessionSlug] = [.. @event.Data.Denials];
+        List<PermissionDenial> existing =
+            view.PrReviewPermissionDenials.TryGetValue(@event.Data.SessionSlug, out List<PermissionDenial>? prior)
+                ? prior
+                : [];
+        view.PrReviewPermissionDenials[@event.Data.SessionSlug] =
+            [.. existing, .. @event.Data.Denials.Where(denial => !existing.Contains(denial))];
     }
 
     public void Apply(IEvent<PrReviewPersonaReported> @event, RunDetails view)

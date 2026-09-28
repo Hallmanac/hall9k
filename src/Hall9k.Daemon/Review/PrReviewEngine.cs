@@ -357,10 +357,20 @@ public sealed class PrReviewEngine(
         StringBuilder body = new();
         if (plan.FellBackToEngineer)
         {
-            body.Append(
-                "\nNone of the personas this pull request's assignee declared has a review prompt "
-                + "registered yet, so the engineer's review ran in their place rather than leaving the "
-                + "pull request unreviewed. Every declared persona is named below.\n");
+            // Two different reasons collapse to the identical fallback (independent pre-PR
+            // review, cycle 1, both lenses): every declared persona could be one nobody has
+            // registered a prompt for yet, or every one of them could be fork-skipped (security
+            // review idea 6be68ee2, process-injection finding 1) — an assignee who declared only
+            // qa, reviewing a pull request from a fork. The old wording named only the first
+            // reason unconditionally, so it read as false — and contradicted the per-persona
+            // "Skipped: <fork reason>" line printed right below it — on the second.
+            body.Append(plan.ForkSkipped.Count > 0
+                ? $"\nEvery persona this pull request's assignee declared was skipped because "
+                  + $"{plan.ForkSkipReason}, so the engineer's review ran in their place rather than "
+                  + "leaving the pull request unreviewed. Every declared persona is named below.\n"
+                : "\nNone of the personas this pull request's assignee declared has a review prompt "
+                  + "registered yet, so the engineer's review ran in their place rather than leaving the "
+                  + "pull request unreviewed. Every declared persona is named below.\n");
         }
 
         // Ran and Skipped both, merged back into the one fixed order, so a reader sees the whole
@@ -385,6 +395,22 @@ public sealed class PrReviewEngine(
             foreach (ReviewPersonaSession session in entry.Sessions)
             {
                 body.Append($"\n### {session.Heading}\n");
+
+                // Every tool this session reached for and its own real permission file refused
+                // (security review idea 6be68ee2, process-injection finding 1) — named here, ahead
+                // of the failed-session branch below rather than only after it, so a session that
+                // reached for a refused tool and then died still has that evidence in the report:
+                // the denial is very often the reason it died, and a reader could not otherwise
+                // tell "the allow list is missing something this persona genuinely needed" from a
+                // session that simply produced nothing (independent pre-PR review, cycle 1,
+                // conformance lens). Also how the allow list grows by evidence.
+                if (permissionDenials is not null
+                    && permissionDenials.TryGetValue(session.Slug, out IReadOnlyList<PermissionDenial>? denials)
+                    && denials.Count > 0)
+                {
+                    body.Append($"\nDenied tools: {string.Join(", ", denials.Select(denial => denial.ToolName))}.\n");
+                }
+
                 if (sessionFailures.TryGetValue(session.Slug, out ReviewPersonaSessionFailure? failure))
                 {
                     body.Append($"\nNot delivered: {failure.Reason}\n");
@@ -397,17 +423,6 @@ public sealed class PrReviewEngine(
                     : null;
                 body.Append(
                     $"\nRun-skill drift: {ReviewResultParser.ParseRunSkillDrift(written ?? string.Empty).Describe()}.\n");
-
-                // Every tool this session reached for and its own real permission file refused
-                // (security review idea 6be68ee2, process-injection finding 1) — named here so a
-                // reader can tell "the allow list is missing something this persona genuinely
-                // needed" from a session that simply had nothing to report, and so the allow list
-                // can grow by evidence.
-                if (permissionDenials?.TryGetValue(session.Slug, out IReadOnlyList<PermissionDenial>? denials) == true
-                    && denials.Count > 0)
-                {
-                    body.Append($"\nDenied tools: {string.Join(", ", denials.Select(denial => denial.ToolName))}.\n");
-                }
 
                 // No findings file at all. Said in one line and nothing else — never handed to a
                 // composer, which would lay out a full, confident section over a file that does
@@ -499,9 +514,16 @@ public sealed class PrReviewEngine(
     {
         IReadOnlyList<string> driven = ReviewResultParser.ParseDrivenFlows(text);
         return driven.Count > 0 ? string.Join("; ", driven)
+            // Driving was authorised (SettingOn and a run skill both true) and still could not
+            // happen: this session's own real permission file refuses every command that could
+            // stand the product up, by construction (DesignReviewSection.DriveLine's identical
+            // reasoning) — so "the report names none" is not the session choosing to skip it, the
+            // file never gave it a route there (independent pre-PR review, cycle 1, both lenses).
             : drive.Drives
                 ? "no flows named — driving was authorised for this review and the report names none, "
-                  + "so read it as a static review whatever the session did"
+                  + "but this session's own permission file refuses every command that could stand "
+                  + "the product up, so nothing here was ever going to run regardless of what the "
+                  + "session attempted"
                 : $"nothing — the product was not launched, because {drive.WhyNotDriven}";
     }
 
@@ -639,11 +661,13 @@ public sealed class PrReviewEngine(
         // is (qa checks.md). Never for another persona, and — by construction — only ever
         // resolved for a QA session that is actually running: a fork head skips the QA persona
         // outright (ReviewPersonaRegistry.Plan's own isForkHead parameter), so this never reaches
-        // a QA session reviewing a fork's own head. The accepted set (GateSetAcceptance, security
-        // review idea 6be68ee2, finding 1's own local half) wins when this node has ever recorded
-        // one; the project's plain, currently-configured list otherwise.
+        // a QA session reviewing a fork's own head. QaGateCommandsResolver is the shared answer
+        // (also used by RunLauncher and PrimarySessionResumer): the project's current gate list,
+        // only when GateSetAcceptance says this node has actually vetted it — never a fallback to
+        // an unaccepted list, which would hand a QA session shell commands nobody on this node
+        // ever reviewed.
         IReadOnlyList<VerifyCommand>? qaGateCommands = personaSession.Persona == ReviewPersona.Qa
-            ? (IReadOnlyList<VerifyCommand>?)(project.AcceptedVerifyCommands ?? project.VerifyCommands)
+            ? QaGateCommandsResolver.Resolve(project)
             : null;
         AgentModel model = _options.ResolveModel(AgentRole.Review, task.Model, project.Model);
         AgentEffort effort = _options.ResolveEffort(AgentRole.Review, task.Effort, project.Effort);
@@ -743,6 +767,21 @@ public sealed class PrReviewEngine(
                 runId, personaSession.Slug, wait.Lingering.Count, string.Join(", ", wait.Lingering));
         }
 
+        // Recorded here, before any of the branches below that can return early on a budget park,
+        // a launch hold, or a plain error result (independent pre-PR review, cycle 1, conformance
+        // lens): every one of those used to skip straight past the tokensSession write further
+        // down, so a session that reached for a refused tool and then errored out never had that
+        // denial recorded at all — the one case the report and h9k task show most need it, since
+        // the denial is often the reason the session errored. Recorded unconditionally on any
+        // non-null result rather than only the ones that reach a usable verdict.
+        if (result?.PermissionDenials is { Count: > 0 } earlyDenials)
+        {
+            await using IDocumentSession denialsSession = store.LightweightSession();
+            denialsSession.Events.Append(
+                runId, new RunPermissionDenialsRecorded(runId, personaSession.Slug, earlyDenials, DateTimeOffset.UtcNow));
+            await denialsSession.SaveChangesAsync(cancellationToken);
+        }
+
         // Budget exhaustion and a node-wide launch hold are both the whole RUN's state, not one
         // persona's: the session is redispatchable and the daemon will come back to it, so
         // neither is recorded as a persona failure however non-fatal that persona's own failures
@@ -802,15 +841,11 @@ public sealed class PrReviewEngine(
         // fails the run without ever reaching that later write, which used to drop a
         // fully-completed session's whole spend from the run stream. ReviewEngine.RecordReviewPassAsync
         // appends tokens before any verdict handling for the identical reason (ReviewEngine.cs:996).
+        // Permission denials are recorded above, before every early-return branch, not here —
+        // this block only still owns the token spend.
         await using (IDocumentSession tokensSession = store.LightweightSession())
         {
             tokensSession.Events.Append(runId, result.ToTokensRecorded(runId, DateTimeOffset.UtcNow, run.PrReviewConformanceModel));
-            if (result.PermissionDenials is { Count: > 0 } denials)
-            {
-                tokensSession.Events.Append(
-                    runId, new RunPermissionDenialsRecorded(runId, personaSession.Slug, denials, DateTimeOffset.UtcNow));
-            }
-
             await tokensSession.SaveChangesAsync(cancellationToken);
         }
 

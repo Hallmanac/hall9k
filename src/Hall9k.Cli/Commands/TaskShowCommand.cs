@@ -1116,9 +1116,17 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         AnsiConsole.MarkupLine($"\n[bold]Review personas[/]  {string.Join(" · ", parts)}");
         if (run.PrReviewPersonasFellBackToEngineer)
         {
-            AnsiConsole.MarkupLine(
-                "[dim]  None of the declared personas has a review prompt registered yet, so the "
-                + "engineer's review ran in their place rather than leaving the pull request unreviewed.[/]");
+            // The identical two-reason collapse PrReviewEngine.ComposePersonaSectionsAsync's own
+            // opening paragraph disambiguates, and for the identical reason: a fallback caused
+            // entirely by a fork skip must not blame a missing prompt, which is false there and
+            // contradicts the per-persona "skipped — fork head" row printed just above
+            // (independent pre-PR review, cycle 1, both lenses).
+            AnsiConsole.MarkupLine(run.PrReviewForkSkippedPersonas.Count > 0
+                ? "[dim]  Every declared persona was skipped because this pull request's head sits on a "
+                  + "fork, so the engineer's review ran in their place rather than leaving the pull "
+                  + "request unreviewed.[/]"
+                : "[dim]  None of the declared personas has a review prompt registered yet, so the "
+                  + "engineer's review ran in their place rather than leaving the pull request unreviewed.[/]");
         }
     }
 
