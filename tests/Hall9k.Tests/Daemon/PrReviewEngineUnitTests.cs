@@ -9,6 +9,7 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -38,6 +39,9 @@ public sealed class PrReviewEngineUnitTests : IDisposable
 
     private static PrReviewEngine NewEngine(FakeProcessManager processes) =>
         new(null!, null!, processes, null!, null!, Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
+
+    private static PrReviewEngine NewEngine(FakeProcessManager processes, ILogger<PrReviewEngine> logger) =>
+        new(null!, null!, processes, null!, null!, Options.Create(new DaemonOptions()), logger);
 
     private static RunAggregate DispatchedConformance(Guid sessionId, int processId, DateTimeOffset startedAt)
     {
@@ -176,5 +180,61 @@ public sealed class PrReviewEngineUnitTests : IDisposable
 
         File.Exists(RunPaths.ReviewLensFindingsFile(_runDirectory, 1, ReviewLens.Adversarial.Slug)).Should().BeFalse(
             "there was nothing anywhere to recover — DriveAsync's own dispatch has not happened yet in this scenario");
+    }
+
+    /// <summary>
+    /// Security review idea 6be68ee2, daemon-consumers finding B: the primary session has ordinary
+    /// file-system access to its own findings file throughout its run, so something could land
+    /// there before the daemon ever writes the session's own recorded stdout. A "write only when
+    /// absent" guard used to let that planted content stand forever; the write is now
+    /// unconditional and a warning names the file when what was already there differed.
+    /// </summary>
+    [Fact]
+    public async Task Writing_the_primary_result_replaces_differing_content_already_on_disk_and_warns()
+    {
+        string findingsFile = RunPaths.ReviewLensFindingsFile(_runDirectory, 1, ReviewLens.Adversarial.Slug);
+        Directory.CreateDirectory(_runDirectory);
+        await File.WriteAllTextAsync(findingsFile, "planted before the session's own result was recorded");
+
+        ListLogger<PrReviewEngine> logger = new();
+        PrReviewEngine engine = NewEngine(new FakeProcessManager(), logger);
+        await engine.WritePrimarySessionResultAsync(
+            _runDirectory, ReviewLens.Adversarial.Slug, "the session's own real stdout", CancellationToken.None);
+
+        (await File.ReadAllTextAsync(findingsFile)).Should().Be(
+            "the session's own real stdout", "the session's own recorded stdout is the only trustworthy source");
+        logger.Entries.Should().ContainSingle(entry => entry.Level == LogLevel.Warning && entry.Message.Contains(findingsFile),
+            "the file that already carried different content is named in the warning");
+    }
+
+    /// <summary>The same overwrite-and-warn behavior as the pr-review lens above, for a bounded mention follow-up's own result file.</summary>
+    [Fact]
+    public async Task Recording_a_mention_follow_up_result_replaces_differing_content_already_on_disk_and_warns()
+    {
+        string resultFile = PrReviewEngine.MentionFollowUpResultFile(_runDirectory);
+        Directory.CreateDirectory(_runDirectory);
+        await File.WriteAllTextAsync(resultFile, "planted before the session's own result was recorded");
+
+        ListLogger<PrReviewEngine> logger = new();
+        PrReviewEngine engine = NewEngine(new FakeProcessManager(), logger);
+        await engine.RecordMentionFollowUpResultAsync(_runDirectory, "the session's own real stdout", CancellationToken.None);
+
+        (await File.ReadAllTextAsync(resultFile)).Should().Be(
+            "the session's own real stdout", "the session's own recorded stdout is the only trustworthy source");
+        logger.Entries.Should().ContainSingle(entry => entry.Level == LogLevel.Warning && entry.Message.Contains(resultFile),
+            "the file that already carried different content is named in the warning");
+    }
+
+    /// <summary>No planted content, no diff to warn about — the ordinary case stays quiet.</summary>
+    [Fact]
+    public async Task Recording_a_mention_follow_up_result_with_nothing_already_on_disk_writes_quietly()
+    {
+        ListLogger<PrReviewEngine> logger = new();
+        PrReviewEngine engine = NewEngine(new FakeProcessManager(), logger);
+        await engine.RecordMentionFollowUpResultAsync(_runDirectory, "the session's own real stdout", CancellationToken.None);
+
+        string resultFile = PrReviewEngine.MentionFollowUpResultFile(_runDirectory);
+        (await File.ReadAllTextAsync(resultFile)).Should().Be("the session's own real stdout");
+        logger.Entries.Should().BeEmpty("nothing was there to differ from, so there is nothing to warn about");
     }
 }
