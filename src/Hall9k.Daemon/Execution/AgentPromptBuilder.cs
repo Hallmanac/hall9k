@@ -156,6 +156,10 @@ public static class AgentPromptBuilder
         StringBuilder prompt = new();
         prompt.AppendLine($"# Spike: {SpikeHeadingObjective(task.Objective)}");
         prompt.AppendLine();
+        prompt.AppendLine("## Objective, in full");
+        prompt.AppendLine();
+        prompt.AppendLine(SpikeObjectiveBlock(task.Objective));
+        prompt.AppendLine();
         prompt.AppendLine(kind.Value switch
         {
             "Research" => "This is a RESEARCH spike: read and measure, write no code. There is no "
@@ -257,6 +261,18 @@ public static class AgentPromptBuilder
         RelayedText.Truncate(OneLine(objective), MaxSpikeHeadingObjectiveLength);
 
     /// <summary>
+    /// The same objective in full, for the prompt body rather than the heading — the heading
+    /// above cuts it to <see cref="MaxSpikeHeadingObjectiveLength"/> characters, and this is the
+    /// only other place any of the three spike prompts show it at all, so a paragraph past that
+    /// cut point must still reach the session somewhere (independent pre-PR review, cycle 1,
+    /// adversarial finding). Fenced, not merely printed: the same discovery workspace an
+    /// unattended run can mint a spike's task from can put a bare newline in its objective, and a
+    /// fence stops that newline from opening a heading of its own in the middle of this prompt.
+    /// </summary>
+    private static string SpikeObjectiveBlock(string objective) =>
+        RelayedText.Fenced(RelayedText.Printable(objective));
+
+    /// <summary>
     /// A spike's own judge session (task: a spike is a run, not a walk) — SpikeEngine's one review
     /// cycle, dispatched on the review model, outside the spike's own budget (PLAN.md §16
     /// PLACEHOLDER-1d81543a). Judges
@@ -271,6 +287,10 @@ public static class AgentPromptBuilder
     {
         StringBuilder prompt = new();
         prompt.AppendLine($"# Judge a spike: {SpikeHeadingObjective(task.Objective)}");
+        prompt.AppendLine();
+        prompt.AppendLine("## Objective, in full");
+        prompt.AppendLine();
+        prompt.AppendLine(SpikeObjectiveBlock(task.Objective));
         prompt.AppendLine();
         prompt.AppendLine(
             $"You are judging a {task.SpikeKind.Value.ToLowerInvariant()} spike against its own exit "
@@ -323,6 +343,10 @@ public static class AgentPromptBuilder
     {
         StringBuilder prompt = new();
         prompt.AppendLine($"# Spike fix lap: {SpikeHeadingObjective(task.Objective)}");
+        prompt.AppendLine();
+        prompt.AppendLine("## Objective, in full");
+        prompt.AppendLine();
+        prompt.AppendLine(SpikeObjectiveBlock(task.Objective));
         prompt.AppendLine();
         prompt.AppendLine(
             "The reviewer judged this spike's exit criterion not yet met. This is the spike's one "
@@ -644,6 +668,7 @@ public static class AgentPromptBuilder
             ("ThreadTagKey", ReviewResultParser.ThreadTagKey));
         prompt.AppendLine();
 
+        int totalFindingBodyLength = 0;
         foreach (ChangesRequestedReview review in task.ChangesRequestedReviews)
         {
             string submitted = review.SubmittedAt is { } at
@@ -668,6 +693,15 @@ public static class AgentPromptBuilder
 
             foreach (ChangesRequestedFinding finding in review.Findings)
             {
+                if (totalFindingBodyLength >= MaxChangesRequestedTotalFindingBodyLength)
+                {
+                    prompt.AppendLine(
+                        "[remaining findings omitted, over this prompt's total budget for review text — "
+                        + $"read the rest at {review.ReviewUrl}]");
+                    prompt.AppendLine();
+                    return;
+                }
+
                 List<string> tags = [];
                 if (finding.Location.IsNotBlank())
                 {
@@ -682,8 +716,10 @@ public static class AgentPromptBuilder
                 prompt.AppendLine(tags.Count > 0
                     ? $"{ReviewResultParser.FindingMarker} {string.Join("; ", tags)}"
                     : Fragment(file, "no-location-finding", ("FindingMarker", ReviewResultParser.FindingMarker)));
-                prompt.AppendLine(FencedFindingBody(finding.Body, review.ReviewUrl));
+                string body = FencedFindingBody(finding.Body, review.ReviewUrl);
+                prompt.AppendLine(body);
                 prompt.AppendLine();
+                totalFindingBodyLength += body.Length;
             }
         }
     }
@@ -700,6 +736,19 @@ public static class AgentPromptBuilder
     private const int MaxChangesRequestedFindingBodyLength = 20_000;
 
     /// <summary>
+    /// How much finding text, summed across every finding on every review this task carries, may
+    /// ride into the prompt before the rest is cut off wholesale. <see cref="MaxChangesRequestedFindingBodyLength"/>
+    /// only bounds one finding at a time, so a non-member who splits an oversized paste across many
+    /// inline comments instead of one huge review body sails straight past it —
+    /// <c>GitHubPullRequestInspector</c> reads up to 100 threads of up to 50 comments each on a
+    /// single review, so the per-finding cap alone still lets roughly 2,000,000 characters into this
+    /// prompt (independent pre-PR review, cycle 1, adversarial finding). This is the real ceiling:
+    /// ten times the per-finding bound, which an honest review — even a thorough one, split across
+    /// many comments — has no reason to approach.
+    /// </summary>
+    private const int MaxChangesRequestedTotalFindingBodyLength = 200_000;
+
+    /// <summary>
     /// A human reviewer's own text — the review's body, or a single inline comment — fenced and
     /// bounded before it reaches the prompt. Fenced the same way
     /// <c>MentionFollowUpPromptBuilder.Block</c> fences a mention comment:
@@ -709,16 +758,23 @@ public static class AgentPromptBuilder
     /// <see cref="MaxChangesRequestedFindingBodyLength"/>, with a labelled line pointing back at
     /// the review itself rather than silently dropping the rest — the same honesty
     /// <c>PullRequestBody.BoundedBlock</c> observes when it clips the platform's own authored
-    /// prose.
+    /// prose. The label is appended after the fence closes, never inside it: the fence is what
+    /// marks this text as the reviewer's own rather than the platform's, so the platform's own
+    /// truncation notice has to sit outside it to stay recognisably the platform's, never a line a
+    /// reviewer could have typed themselves to mimic it (independent pre-PR review, cycle 1,
+    /// conformance finding).
     /// </summary>
     private static string FencedFindingBody(string text, string reviewUrl)
     {
         string printable = RelayedText.Printable(text);
-        string bounded = printable.Length <= MaxChangesRequestedFindingBodyLength
-            ? printable
-            : printable[..RelayedText.CutLength(printable, MaxChangesRequestedFindingBodyLength)].TrimEnd()
-                + $"\n\n[truncated, read the rest at {reviewUrl}]";
-        return RelayedText.Fenced(bounded);
+        bool wasTruncated = printable.Length > MaxChangesRequestedFindingBodyLength;
+        string bounded = wasTruncated
+            ? printable[..RelayedText.CutLength(printable, MaxChangesRequestedFindingBodyLength)].TrimEnd()
+            : printable;
+        string fenced = RelayedText.Fenced(bounded);
+        return wasTruncated
+            ? $"{fenced}\n\n[truncated, read the rest at {reviewUrl}]"
+            : fenced;
     }
 
     /// <summary>
