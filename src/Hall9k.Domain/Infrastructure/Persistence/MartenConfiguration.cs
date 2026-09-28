@@ -81,6 +81,7 @@ public static class MartenConfiguration
         opts.Projections.Add<RootRotationDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<ProjectMemberLabelsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<InviteDetailsProjection>(ProjectionLifecycle.Inline);
+        opts.Projections.Add<OwnerActHoldDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<OrchestratorPresenceDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<CourierRunDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<DecisionDetailsProjection>(ProjectionLifecycle.Inline);
