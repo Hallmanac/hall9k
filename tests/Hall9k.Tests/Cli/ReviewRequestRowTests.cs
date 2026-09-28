@@ -71,6 +71,19 @@ public sealed class ReviewRequestRowTests
         row.Markup.Should().Contain($"held for node {DomainId.Short(leader)},");
     }
 
+    /// <summary>Task 7ae690f5: the per-repository hourly mint cap is informational, never needs-you, the identical reason HeldForPeer is — the operator is only told why nothing started yet, never handed a lever the cap would swallow.</summary>
+    [Fact]
+    public void A_request_held_by_the_hourly_mint_cap_is_informational_and_names_the_window()
+    {
+        ReviewRequestRow row = ReviewRequestPane.Compose(
+            Observed(ReviewRequestOutcome.HeldMintCapReached, Now.AddMinutes(-1)),
+            "arx-platform", AutoPrReviewSetting.Unrecorded, covering: null, Now);
+
+        row.NeedsYou.Should().BeFalse("the cap is re-graded every sweep and resolves itself once the window rolls");
+        row.Markup.Should().Contain("hourly auto-pr-review mint cap is reached");
+        row.Markup.Should().NotContain("h9k task add");
+    }
+
     [Fact]
     public void A_task_covering_a_held_request_outranks_the_hold()
     {
