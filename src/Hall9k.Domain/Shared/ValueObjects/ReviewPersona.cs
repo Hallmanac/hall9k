@@ -35,7 +35,23 @@ public sealed record ReviewPersona
     public static readonly ReviewPersona Designer = new("designer");
 
     /// <summary>
-    /// Not one of the three — a word nobody could read, or a persona recorded by a build that knew
+    /// Injection, secrets handling, authentication and authorization, unsafe process, file or
+    /// network use, dependency changes, and CI or release workflow changes (idea 6be68ee2, phase
+    /// two) — the second of the two-phase security review: by the time this persona runs, a
+    /// pre-flight has already judged the code safe to pull down and the membership gate has
+    /// already judged the author trusted, so this lap asks whether the code introduces a
+    /// vulnerability in the project, not whether it attacks the host.
+    /// <para>
+    /// Unlike <see cref="Engineer"/>, <see cref="Qa"/> and <see cref="Designer"/>, this persona is
+    /// always on rather than declared: it is not a member's own choice of lens, it is a standing
+    /// project setting (<c>h9k project set --security-review</c>), so <see cref="Parse"/> refuses
+    /// it as a member declaration (<c>h9k owner set --persona</c>) — see <see cref="Declarable"/>.
+    /// </para>
+    /// </summary>
+    public static readonly ReviewPersona Security = new("security");
+
+    /// <summary>
+    /// Not one of the four — a word nobody could read, or a persona recorded by a build that knew
     /// a name this one does not. Serializes as the empty string, and is dropped rather than
     /// guessed at wherever a declared list is read back (<see cref="Declared"/>).
     /// </summary>
@@ -45,8 +61,19 @@ public sealed record ReviewPersona
     /// The whole set, in the fixed order every persona-ordered surface uses: the findings report's
     /// sections, <c>h9k owner show</c>'s line, and <c>h9k task show</c>'s pane. Fixed rather than
     /// declaration order so two members holding the same personas read identically.
+    /// <see cref="Security"/> has to be in this list, and not only in <see cref="Declarable"/>, or
+    /// <see cref="Declared"/> would drop it from a recorded pr-review plan the moment that plan is
+    /// read back — the registry and the report both key off this set, never off what a member may
+    /// type.
     /// </summary>
-    public static readonly IReadOnlyList<ReviewPersona> All = [Engineer, Qa, Designer];
+    public static readonly IReadOnlyList<ReviewPersona> All = [Engineer, Qa, Designer, Security];
+
+    /// <summary>
+    /// The personas a member may actually declare on their own record (<c>h9k owner set
+    /// --persona</c>) — <see cref="All"/> minus <see cref="Security"/>, which runs on every
+    /// pr-review by default and is a project's own on/off call, never an individual's.
+    /// </summary>
+    public static readonly IReadOnlyList<ReviewPersona> Declarable = [Engineer, Qa, Designer];
 
     public string Value { get; }
 
@@ -60,21 +87,35 @@ public sealed record ReviewPersona
         this == Engineer ? "Engineer review"
         : this == Qa ? "QA review"
         : this == Designer ? "Design review"
+        : this == Security ? "Security review"
         : "Unrecognized persona";
 
     /// <summary>
-    /// The persona a human typed, or a refusal naming the whole set. Blank is refused rather than
-    /// read as <see cref="Unknown"/>: at a command line a blank persona is an empty shell variable,
-    /// never a request, and the option that declares none is <c>--clear-personas</c>.
+    /// The persona a human typed, or a refusal naming the declarable set. Blank is refused rather
+    /// than read as <see cref="Unknown"/>: at a command line a blank persona is an empty shell
+    /// variable, never a request, and the option that declares none is <c>--clear-personas</c>.
+    /// <see cref="Security"/> is refused by name, distinctly from an unrecognized word, because an
+    /// always-on persona is not a declaration a member can make at all — it is a project's own
+    /// setting (<c>h9k project set --security-review</c>).
     /// </summary>
     public static ReviewPersona Parse(string? value)
     {
         ReviewPersona read = Read(value);
+        if (read == Security)
+        {
+            throw new DomainValidationException(
+                "'security' cannot be declared on a member's own record: it is not a lens a person "
+                + "chooses, it runs on every pull-request review by default and is a project's own "
+                + "on/off call — h9k project set --security-review off turns it off for a project, "
+                + "rather than a member declaring out of it. The set a member can declare is: "
+                + $"{string.Join(", ", Declarable.Select(persona => persona.Value))}.");
+        }
+
         return read.HasValue
             ? read
             : throw new DomainValidationException(
-                $"'{Legible(value)}' is not a review persona. The set is fixed: "
-                + $"{string.Join(", ", All.Select(persona => persona.Value))}. Each one maps to its own "
+                $"'{Legible(value)}' is not a review persona. The set a member can declare is: "
+                + $"{string.Join(", ", Declarable.Select(persona => persona.Value))}. Each one maps to its own "
                 + "review prompt and criteria in the platform's persona registry, so there is no "
                 + "free-text persona to declare.");
     }
@@ -85,6 +126,7 @@ public sealed record ReviewPersona
         "engineer" => Engineer,
         "qa" => Qa,
         "designer" => Designer,
+        "security" => Security,
         _ => Unknown,
     };
 

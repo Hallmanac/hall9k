@@ -160,6 +160,18 @@ public static class SessionRoleName
     public static string ReviewQa(int cycle) => $"review-qa-{cycle}";
 
     /// <summary>
+    /// The Security persona's own review of a pull request (idea 6be68ee2, phase two) — injection,
+    /// secrets handling, authentication and authorization, unsafe process, file or network use,
+    /// dependency changes, and CI or release workflow changes. Its own role rather than either
+    /// engineer lens for the same reason <see cref="ReviewQa"/> and <see cref="ReviewDesign"/>
+    /// each have theirs: a reader of a session list, and the interaction rules that key on these
+    /// strings, should be able to tell it apart at a glance. Unlike <see cref="ReviewQa"/> and
+    /// <see cref="ReviewDesign"/>, this persona never drives the product — it hunts classes of
+    /// defect over the diff alone.
+    /// </summary>
+    public static string ReviewSecurity(int cycle) => $"review-security-{cycle}";
+
+    /// <summary>
     /// <see cref="ReviewConformance"/>, <see cref="ReviewAdversarial"/>, or <see cref="ReviewVerify"/>,
     /// selected by <paramref name="lens"/> — <see cref="ReviewLens.Unknown"/> (a pass recorded before
     /// lenses existed) reads as conformance, the same precedent <see cref="ReviewLens.Covers"/>
