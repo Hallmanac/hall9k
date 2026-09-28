@@ -81,9 +81,17 @@ public sealed class NodeVouchAndRevokeCommandTests : IClassFixture<PostgresFixtu
         int exitCode = await NodeVouchCommand.RunAsync(session, settings, ledger, chainReader, new NodeKeyStore(), cts.Token);
 
         exitCode.Should().Be(ExitCodes.Ok);
-        LedgerWriteRequest vouchWrite = ledger.Writes.Single(w => w.RefName == $"refs/hall9k/ledger/owners/{myFingerprint}");
-        vouchWrite.Path.Should().Be($"owners/{myFingerprint}/nodes/{targetNodeId}.yaml");
+        LedgerWriteRequest vouchWrite = ledger.Writes.Single(
+            w => w.RefName == $"refs/hall9k/ledger/owners/{myFingerprint}" && w.Path == $"owners/{myFingerprint}/nodes/{targetNodeId}.yaml");
         vouchWrite.Content.Should().Contain(targetKey.PublicKeyLine);
+
+        // This node's own key is a live root key (K0), so the vouch also writes a successor record
+        // for the node it just vouched (idea 6be68ee2) — always attempted, since only a root-signed
+        // one ever counts on read.
+        LedgerWriteRequest successorWrite = ledger.Writes.Single(
+            w => w.RefName == $"refs/hall9k/ledger/owners/{myFingerprint}"
+                && w.Path == $"owners/{myFingerprint}/successors/{targetNodeId}.yaml");
+        successorWrite.Content.Should().Contain(targetKey.PublicKeyLine);
 
         OwnerDetails owner = (await session.LoadAsync<OwnerDetails>((await NodeBootstrap.EnsureAsync(session, cts.Token)).OwnerId, cts.Token))!;
         owner.VouchedNodes.Should().ContainKey(targetNodeId);
@@ -143,8 +151,15 @@ public sealed class NodeVouchAndRevokeCommandTests : IClassFixture<PostgresFixtu
         int exitCode = await NodeRevokeCommand.RunAsync(session, settings, ledger, chainReader, new NodeKeyStore(), cts.Token);
 
         exitCode.Should().Be(ExitCodes.Ok);
-        LedgerWriteRequest revokeWrite = ledger.Writes.Single(w => w.RefName == $"refs/hall9k/ledger/owners/{myFingerprint}");
+        LedgerWriteRequest revokeWrite = ledger.Writes.Single(
+            w => w.RefName == $"refs/hall9k/ledger/owners/{myFingerprint}" && w.Path == $"owners/{myFingerprint}/revoked/{targetNodeId}.yaml");
         revokeWrite.Path.Should().Be($"owners/{myFingerprint}/revoked/{targetNodeId}.yaml");
+
+        // This node's own key is a live root key (K0), so the revoke also writes a
+        // revoked-successor record (idea 6be68ee2, journal finding 5).
+        ledger.Writes.Should().Contain(
+            w => w.RefName == $"refs/hall9k/ledger/owners/{myFingerprint}"
+                && w.Path == $"owners/{myFingerprint}/revoked-successors/{targetNodeId}.yaml");
     }
 
     [Fact]
@@ -176,7 +191,8 @@ public sealed class NodeVouchAndRevokeCommandTests : IClassFixture<PostgresFixtu
         int exitCode = await NodeVouchCommand.RunAsync(session, settings, ledger, chainReader, new NodeKeyStore(), cts.Token);
 
         exitCode.Should().Be(ExitCodes.Ok, "the refusal in the second project must not undo the success already landed in the first");
-        ledger.Writes.Should().ContainSingle(w => w.RefName == $"refs/hall9k/ledger/owners/{myFingerprint}");
+        ledger.Writes.Should().ContainSingle(
+            w => w.RefName == $"refs/hall9k/ledger/owners/{myFingerprint}" && w.Path == $"owners/{myFingerprint}/nodes/{targetNodeId}.yaml");
 
         OwnerDetails owner = (await session.LoadAsync<OwnerDetails>((await NodeBootstrap.EnsureAsync(session, cts.Token)).OwnerId, cts.Token))!;
         owner.VouchedNodes.Should().ContainKey(targetNodeId, "the vouch that did land must still be recorded locally");

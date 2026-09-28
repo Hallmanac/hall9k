@@ -166,6 +166,8 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
                 + "another (idea 202383dc: \"written by any enrolled node of that owner\").");
         }
 
+        bool signedByALiveRootKey = chain.OwnerChains.TryGetValue(root, out TrustedOwner? owner) && owner.IsLiveRootKey(myFingerprint);
+
         string refName = $"refs/hall9k/ledger/owners/{root}";
         string path = $"owners/{root}/revoked/{targetNodeId}.yaml";
         string content = BuildYaml(("node_id", targetNodeId.ToString()), ("revoked_at", now.ToString("o", CultureInfo.InvariantCulture)));
@@ -179,6 +181,27 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
                 cancellationToken);
             if (outcome.Verdict == LedgerWriteVerdict.Written)
             {
+                // Only when the revoking key is itself currently a live root key (idea 6be68ee2,
+                // journal finding 5): an ordinary enrolled node's own revoke never writes this, since
+                // a revoked-successor record only counts on read when it is signed by a root key
+                // ranked above the successor it targets. Best-effort, same reasoning as the vouch
+                // side: the revocation itself already landed.
+                if (signedByALiveRootKey)
+                {
+                    try
+                    {
+                        await SuccessionLedgerWriter.WriteRevokedSuccessorAsync(
+                            ledger, repositoryPath, root, targetNodeId, now, committer, signingKey, cancellationToken);
+                    }
+                    catch (Exception exception)
+                        when (exception is LedgerPushRejectedException or InvalidOperationException or DomainConflictException)
+                    {
+                        AnsiConsole.MarkupLine(
+                            $"[yellow]Revoked node {targetNodeId}, but could not also write its revoked-successor record "
+                            + $"in '{repositoryPath.EscapeMarkup()}' ({exception.Message.EscapeMarkup()}).[/]");
+                    }
+                }
+
                 return true;
             }
         }
