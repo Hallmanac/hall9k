@@ -32,11 +32,25 @@ jobs:
           git config --global user.email "ci@hall9k.invalid"
       - name: Build
         run: dotnet build --configuration Release
+      # blame-hang fails this step on its own once a test hangs past the given timeout and
+      # dumps the in-flight tests' stacks; the step timeout backstops a hang it misses.
       - name: Test
         if: matrix.os == 'ubuntu-latest'
-        run: dotnet test --configuration Release --no-build --verbosity normal
+        timeout-minutes: 20
+        run: >
+          dotnet test --configuration Release --no-build --verbosity normal
+          --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
+          --results-directory ./TestResults
+      - name: Upload hang diagnostics
+        if: failure() && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: blame-hang-${{ github.run_id }}-${{ github.run_attempt }}
+          path: TestResults
+          retention-days: 5
       # Windows runners cannot run Linux containers, so the Testcontainers-backed
       # integration tier is excluded there.
       - name: Test (without Docker-dependent tests)
         if: matrix.os == 'windows-latest'
+        timeout-minutes: 20
         run: dotnet test --configuration Release --no-build --verbosity normal --filter "Category!=RequiresDocker"
