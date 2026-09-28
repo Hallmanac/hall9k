@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Run;
@@ -912,11 +913,12 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
 
             TaskActTargetResolution target =
                 await ResolveTaskActTargetAsync(session, eventType, effectiveStreamId, cancellationToken);
-            TaskCreatorRootRecord? creatorRoot =
-                await session.LoadAsync<TaskCreatorRootRecord>(target.TaskId, cancellationToken);
+            SenderResolution? actSender = ResolveSender(trustChain, senderFingerprint, senderNodeId);
+            string? creatorRootFingerprint = await ResolveCreatorRootFingerprintAsync(
+                session, target.Task, target.TaskId, record.OriginNodeId, senderNodeId, actSender, cancellationToken);
             TaskActVerdict verdict = EvaluateTaskActVerdict(
-                classification, eventType, data, target.Task, ResolveSender(trustChain, senderFingerprint, senderNodeId),
-                record.OriginNodeId, senderNodeId, creatorRoot?.CreatorRootFingerprint);
+                classification, eventType, data, target.Task, actSender,
+                record.OriginNodeId, senderNodeId, creatorRootFingerprint);
 
             switch (verdict)
             {
@@ -1156,25 +1158,31 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             AppliedAt = now,
         });
 
-        // TaskCreatorRootRecord's own doc: recorded once, the moment a task's own genesis
-        // (TaskAdded) starts its stream fresh here, and only from a DIRECT delivery — this node's
-        // own transport verified senderFingerprint against senderNodeId specifically, which is
-        // worth nothing about the true author the moment a relay (senderNodeId != OriginNodeId)
-        // is what actually delivered it. Staged in this same save so a poison-event rollback below
-        // takes it down with everything else this record staged, never leaving an orphaned creator
-        // root for a stream that never actually started.
-        if (!streamExists && eventType == typeof(TaskAdded) && senderNodeId == record.OriginNodeId)
+        // TaskCreatorRootRecord's own doc: staged once, the moment a task's own genesis (TaskAdded)
+        // starts its stream fresh here, whether this delivery is direct or relayed — ClaimedOriginNodeId
+        // is recorded either way so a later direct delivery from that exact node id can still back-fill
+        // CreatorRootFingerprint (independent pre-PR review, cycle 2, adversarial lens, high: the
+        // earlier version of this block recorded nothing at all for a relayed genesis, so a task whose
+        // genesis only ever arrived through catch-up — the ordinary shape a bootstrap or stream repair
+        // takes — could never have its creator root resolved, holding every pre-assignment act against
+        // it forever). CreatorRootFingerprint itself is set now only from a DIRECT delivery — this
+        // node's own transport verified senderFingerprint against senderNodeId specifically, which is
+        // worth nothing about the true author the moment a relay (senderNodeId != OriginNodeId) is what
+        // actually delivered it. Staged in this same save so a poison-event rollback below takes it
+        // down with everything else this record staged, never leaving an orphaned creator root for a
+        // stream that never actually started.
+        if (!streamExists && eventType == typeof(TaskAdded))
         {
-            SenderResolution? genesisSender = ResolveSender(trustChain, senderFingerprint, senderNodeId);
-            if (genesisSender is not null)
+            SenderResolution? genesisSender = senderNodeId == record.OriginNodeId
+                ? ResolveSender(trustChain, senderFingerprint, senderNodeId)
+                : null;
+            session.Store(new TaskCreatorRootRecord
             {
-                session.Store(new TaskCreatorRootRecord
-                {
-                    Id = effectiveStreamId,
-                    ProjectId = projectId,
-                    CreatorRootFingerprint = genesisSender.RootFingerprint,
-                });
-            }
+                Id = effectiveStreamId,
+                ProjectId = projectId,
+                ClaimedOriginNodeId = record.OriginNodeId,
+                CreatorRootFingerprint = genesisSender?.RootFingerprint ?? string.Empty,
+            });
         }
 
         // idea 202383dc, M2b: the coarse "since" bound a future gap-fill events-request for this
@@ -1743,6 +1751,79 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 : TaskActVerdict.DroppedWithoutRecording;
     }
 
+    /// <summary>
+    /// The <see cref="TaskCreatorRootRecord.CreatorRootFingerprint"/> to judge a
+    /// <see cref="PreAssignmentCapableConditionalTypes"/> act against, resolved fresh every call
+    /// rather than trusted from a stale value a caller might be holding: <paramref name="taskId"/>'s
+    /// own record can go from unset to known between one held act and the next re-check.
+    /// <para>
+    /// No <see cref="TaskCreatorRootRecord"/> at all means this task's own genesis never went
+    /// through <see cref="ApplyAsync"/> — it was created natively, right here, so it never crossed
+    /// the wire and its own domain data needs no transport verification: this falls back to
+    /// <paramref name="task"/>'s own <see cref="TaskAggregate.AddedByOwnerId"/>, resolved through
+    /// <see cref="OwnerRootFingerprintResolver"/>, which is exactly what every OTHER door onto a
+    /// task's owner identity already trusts for a locally-authored fact. Guarded by the genesis
+    /// event's own <see cref="ReplicationEventHeaders.OriginNodeId"/> header being absent, so a
+    /// stream that DID replicate in before this record existed (an upgrade gap, never a live one
+    /// going forward) is read as "not yet known" rather than accidentally trusting this node's own
+    /// receiving-side stamp on someone else's fact.
+    /// </para>
+    /// <para>
+    /// A record that DOES exist but still carries an empty <see cref="TaskCreatorRootRecord.CreatorRootFingerprint"/>
+    /// (<see cref="TaskCreatorRootRecord"/>'s own doc on why a relayed genesis leaves it that way) is
+    /// backfilled here the first time this node receives a later Task act DIRECTLY
+    /// (<paramref name="senderNodeId"/> == <paramref name="recordOriginNodeId"/>, the one shape this
+    /// node's own transport has verified) FROM the exact node id the genesis claimed
+    /// (<see cref="TaskCreatorRootRecord.ClaimedOriginNodeId"/>) — the identical proof the genesis
+    /// itself would have carried had that node shipped it directly instead of a relay answering
+    /// first (independent pre-PR review, cycle 2, adversarial lens, high: the earlier version of
+    /// this record could never be completed once any relay had answered even once, holding every
+    /// pre-assignment act against that task until its own 24-hour expiry, forever).
+    /// </para>
+    /// </summary>
+    private static async Task<string?> ResolveCreatorRootFingerprintAsync(
+        IDocumentSession session, TaskAggregate? task, Guid taskId, Guid recordOriginNodeId, Guid senderNodeId,
+        SenderResolution? sender, CancellationToken cancellationToken)
+    {
+        TaskCreatorRootRecord? creatorRoot = await session.LoadAsync<TaskCreatorRootRecord>(taskId, cancellationToken);
+        if (creatorRoot is null)
+        {
+            if (task is null)
+            {
+                return null;
+            }
+
+            IReadOnlyList<IEvent> taskEvents = await session.Events.FetchStreamAsync(taskId, token: cancellationToken);
+            IEvent? genesis = taskEvents.Count > 0 ? taskEvents[0] : null;
+            if (genesis is null || genesis.GetHeader(ReplicationEventHeaders.OriginNodeId) is not null)
+            {
+                return null;
+            }
+
+            string? ownerRootFingerprint =
+                genesis.GetHeader(EventOriginStampingListener.OwnerRootFingerprintHeader) as string;
+            return string.IsNullOrEmpty(ownerRootFingerprint)
+                ? await OwnerRootFingerprintResolver.ResolveAsync(session, task.AddedByOwnerId, cancellationToken)
+                : ownerRootFingerprint;
+        }
+
+        if (!string.IsNullOrEmpty(creatorRoot.CreatorRootFingerprint))
+        {
+            return creatorRoot.CreatorRootFingerprint;
+        }
+
+        if (sender is null
+            || senderNodeId != recordOriginNodeId
+            || recordOriginNodeId != creatorRoot.ClaimedOriginNodeId)
+        {
+            return null;
+        }
+
+        creatorRoot.CreatorRootFingerprint = sender.RootFingerprint;
+        session.Store(creatorRoot);
+        return sender.RootFingerprint;
+    }
+
     /// <summary>The task a Task or Run act's own conditional verdict is judged against, and its id
     /// either way — <see cref="TaskAggregate"/> is null only when this node cannot resolve it at
     /// all (a Run act whose referenced task has never replicated here), never when the task simply
@@ -1916,11 +1997,12 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 TaskActTargetResolution target =
                     await ResolveTaskActTargetAsync(session, eventType, current.StreamId, cancellationToken);
                 SenderResolution? sender = ResolveSender(trustChain, current.SenderFingerprint, current.SenderNodeId);
-                TaskCreatorRootRecord? creatorRoot =
-                    await session.LoadAsync<TaskCreatorRootRecord>(target.TaskId, cancellationToken);
+                string? creatorRootFingerprint = await ResolveCreatorRootFingerprintAsync(
+                    session, target.Task, target.TaskId, current.OriginNodeId, current.SenderNodeId, sender,
+                    cancellationToken);
                 TaskActVerdict verdict = EvaluateTaskActVerdict(
                     classification.Value, eventType, data, target.Task, sender, current.OriginNodeId,
-                    current.SenderNodeId, creatorRoot?.CreatorRootFingerprint);
+                    current.SenderNodeId, creatorRootFingerprint);
 
                 if (verdict == TaskActVerdict.Held)
                 {
