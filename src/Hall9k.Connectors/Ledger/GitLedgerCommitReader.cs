@@ -1,6 +1,5 @@
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Trust;
-using Hall9k.Domain.Infrastructure.Extensions;
 
 namespace Hall9k.Connectors.Ledger;
 
@@ -19,9 +18,7 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
     public async Task<LedgerSignedCommit?> ReadSignedCommitAsync(
         string repositoryPath, string refName, string path, CancellationToken cancellationToken)
     {
-        await FetchRefAsync(repositoryPath, refName, cancellationToken);
-
-        string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
+        string? tip = await FetchAppendOnlyRefAsync(repositoryPath, refName, cancellationToken);
         if (tip is null)
         {
             return null;
@@ -51,9 +48,7 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
         string repositoryPath, string refName, string path,
         Func<string, CancellationToken, Task<bool>> isAuthorizedAsync, CancellationToken cancellationToken)
     {
-        await FetchRefAsync(repositoryPath, refName, cancellationToken);
-
-        string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
+        string? tip = await FetchAppendOnlyRefAsync(repositoryPath, refName, cancellationToken);
         if (tip is null)
         {
             return [];
@@ -172,9 +167,7 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
         string repositoryPath, string refName,
         Func<string, CancellationToken, Task<bool>> isAuthorizedAsync, CancellationToken cancellationToken)
     {
-        await FetchRefAsync(repositoryPath, refName, cancellationToken);
-
-        string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
+        string? tip = await FetchAppendOnlyRefAsync(repositoryPath, refName, cancellationToken);
         if (tip is null)
         {
             return true;
@@ -259,25 +252,18 @@ public sealed class GitLedgerCommitReader(ProcessRunner? runner = null) : ILedge
         }
     }
 
-    private async Task FetchRefAsync(string repositoryPath, string refName, CancellationToken cancellationToken)
-    {
-        ProcessResult result = await runner("git", ["fetch", "origin", $"+{refName}:{refName}"], repositoryPath, cancellationToken);
-        if (result.ExitCode == 0 || result.StandardError.Contains("couldn't find remote ref", StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        throw new InvalidOperationException(
-            $"git fetch of {refName} from origin in {repositoryPath} failed (exit {result.ExitCode}): "
-            + $"{result.StandardError.Trim()}");
-    }
-
-    private async Task<string?> ResolveTipAsync(string repositoryPath, string refName, CancellationToken cancellationToken)
-    {
-        string? tip = (await RunGitCaptureAsync(
-            repositoryPath, ["rev-parse", "--verify", "--quiet", $"{refName}^{{commit}}"], cancellationToken))?.Trim();
-        return tip.IsBlank() ? null : tip;
-    }
+    /// <summary>The one place this class fetches an append-only ref, through
+    /// <see cref="LedgerAppendOnlyRefFetcher"/> — a private staging name, checked against the last
+    /// verified tip before either the live or the verified ref ever moves (idea 6be68ee2, trust
+    /// finding 8), rather than the plain <c>+refName:refName</c> fetch this method used to run
+    /// directly against the shared local ref. A genuine fetch failure throws, the identical
+    /// reasoning this class' own doc already gives for it. A refusal (a rewind, a side merge, or a
+    /// confirmed-gone remote ref this node still holds a verified tip for) never throws: the returned
+    /// tip is the verified one, which every caller here reads from without needing to know a refusal
+    /// happened at all — <c>MessageSweepEngine</c> is what actually surfaces it, by running this
+    /// identical check against every append-only exact ref once a tick.</summary>
+    private async Task<string?> FetchAppendOnlyRefAsync(string repositoryPath, string refName, CancellationToken cancellationToken) =>
+        (await LedgerAppendOnlyRefFetcher.FetchAsync(runner, repositoryPath, refName, cancellationToken)).Tip;
 
     private async Task<string?> ReadAtCommitAsync(string repositoryPath, string commit, string path, CancellationToken cancellationToken)
     {

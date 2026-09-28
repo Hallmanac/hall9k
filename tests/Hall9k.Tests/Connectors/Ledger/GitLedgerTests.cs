@@ -632,11 +632,16 @@ public sealed class GitLedgerTests : IDisposable
         {
             LedgerSigningKey ownerSigningKey = new(ownerKeyPath);
 
-            // A normal, trailer-bearing write, only to obtain a tree that already holds
-            // "a.yaml" — reused below so the legacy commit does not have to build its own tree
-            // from scratch.
+            // A normal, trailer-bearing write on a throwaway SCRATCH ref, only to obtain a tree
+            // that already holds "a.yaml" — reused below so the legacy commit does not have to
+            // build its own tree from scratch. Deliberately a different ref than refName: this
+            // node must never locally verify refName itself before the force push below, or the
+            // append-only integrity check (idea 6be68ee2, trust finding 8) would seed its trust
+            // anchor from a live ref this write never actually touched — refName's own first-ever
+            // local touch has to be the read call below, exactly as a fresh clone's would be.
+            string treeSourceRef = UniqueTestRef();
             LedgerWriteOutcome templateWrite = await _ledger.WriteAsync(
-                new LedgerWriteRequest(node, refName, "a.yaml", "legacy content\n", null, "template", _committer, ownerSigningKey),
+                new LedgerWriteRequest(node, treeSourceRef, "a.yaml", "legacy content\n", null, "template", _committer, ownerSigningKey),
                 CancellationToken.None);
 
             (int treeExit, string treeOutput, string treeError) =
@@ -700,10 +705,16 @@ public sealed class GitLedgerTests : IDisposable
         (string memberKeyPath, _) = GenerateSshKeypair();
         try
         {
-            // A normal, trailer-bearing write, only to obtain a tree that already holds "a.yaml" —
-            // reused below so neither legacy commit has to build its own tree from scratch.
+            // A normal, trailer-bearing write on a throwaway SCRATCH ref, only to obtain a tree
+            // that already holds "a.yaml" — reused below so neither legacy commit has to build
+            // its own tree from scratch. Deliberately a different ref than refName: this node
+            // must never locally verify refName itself before the force push below, or the
+            // append-only integrity check (idea 6be68ee2, trust finding 8) would seed its trust
+            // anchor from a live ref this write never actually touched — refName's own first-ever
+            // local touch has to be the read call below, exactly as a fresh clone's would be.
+            string treeSourceRef = UniqueTestRef();
             LedgerWriteOutcome templateWrite = await _ledger.WriteAsync(
-                new LedgerWriteRequest(node, refName, "a.yaml", "legacy content\n", null, "template", _committer, _signingKey),
+                new LedgerWriteRequest(node, treeSourceRef, "a.yaml", "legacy content\n", null, "template", _committer, _signingKey),
                 CancellationToken.None);
 
             (int treeExit, string treeOutput, string treeError) =
@@ -751,6 +762,88 @@ public sealed class GitLedgerTests : IDisposable
             File.Delete(memberKeyPath);
             File.Delete($"{memberKeyPath}.pub");
         }
+    }
+
+    [Fact]
+    public async Task WriteAsync_AfterAPureRewind_HealsAndRestoresGoodHistoryOnOrigin()
+    {
+        string refName = UniqueTestRef();
+        string hub = _repo.CreateHub();
+        string node = _repo.CloneNode(hub);
+
+        LedgerFile baseline = await _ledger.WriteFirstAndReRead(node, refName, "a.yaml", "v1\n", _committer, _signingKey);
+        (int c1Exit, string commit1Output, string c1Error) = LedgerTestRepo.RevParseQuiet(node, refName);
+        c1Exit.Should().Be(0, c1Error);
+        string commit1 = commit1Output.Trim();
+
+        LedgerWriteOutcome second = await _ledger.WriteAsync(
+            new LedgerWriteRequest(node, refName, "a.yaml", "v2\n", baseline.BlobId, "v2", _committer, _signingKey),
+            CancellationToken.None);
+        second.Verdict.Should().Be(LedgerWriteVerdict.Written);
+
+        // Reading the ref moves the verified tip on to the second commit — the trust anchor this
+        // node will heal back to below.
+        LedgerFile afterSecond = await _ledger.ReadAsync(node, refName, "a.yaml", CancellationToken.None);
+        afterSecond.Content.Should().Be("v2\n");
+
+        // The rewind: origin (the hub) is forced straight back to the first commit, discarding the
+        // second one this node already verified.
+        (int rewindExit, _, string rewindError) = LedgerTestRepo.RunGit(hub, "update-ref", refName, commit1);
+        rewindExit.Should().Be(0, rewindError);
+
+        LedgerWriteOutcome third = await _ledger.WriteAsync(
+            new LedgerWriteRequest(node, refName, "a.yaml", "v3\n", afterSecond.BlobId, "v3", _committer, _signingKey),
+            CancellationToken.None);
+
+        third.Verdict.Should().Be(
+            LedgerWriteVerdict.Written, "the write heals the rewind by building on the verified tip, never the rewound one");
+
+        (int hubExit, string hubTipOutput, string hubError) = LedgerTestRepo.RevParseQuiet(hub, refName);
+        hubExit.Should().Be(0, hubError);
+        hubTipOutput.Trim().Should().Be(third.CommitId);
+
+        (int ancestorExit, _, _) = LedgerTestRepo.RunGit(hub, "merge-base", "--is-ancestor", commit1, third.CommitId!);
+        ancestorExit.Should().Be(0, "the good history — including the commit the rewind tried to discard — is restored on origin");
+
+        string reader = _repo.CloneNode(hub);
+        (await _ledger.ReadAsync(reader, refName, "a.yaml", CancellationToken.None)).Content.Should().Be("v3\n");
+    }
+
+    [Fact]
+    public async Task WriteAsync_AfterADivergentHistory_FailsThePush()
+    {
+        string refName = UniqueTestRef();
+        string hub = _repo.CreateHub();
+        string node = _repo.CloneNode(hub);
+
+        LedgerFile baseline = await _ledger.WriteFirstAndReRead(node, refName, "a.yaml", "v1\n", _committer, _signingKey);
+
+        LedgerWriteOutcome second = await _ledger.WriteAsync(
+            new LedgerWriteRequest(node, refName, "a.yaml", "v2\n", baseline.BlobId, "v2", _committer, _signingKey),
+            CancellationToken.None);
+        second.Verdict.Should().Be(LedgerWriteVerdict.Written);
+
+        LedgerFile afterSecond = await _ledger.ReadAsync(node, refName, "a.yaml", CancellationToken.None);
+
+        // A genuinely divergent history: a fresh root commit sharing no ancestry with either commit
+        // above, forced onto origin directly — never a rewind to something this node once held.
+        (int treeExit, string treeOutput, string treeError) = LedgerTestRepo.RunGit(node, "rev-parse", $"{second.CommitId}^{{tree}}");
+        treeExit.Should().Be(0, treeError);
+        (int divergentExit, string divergentOutput, string divergentError) = LedgerTestRepo.RunGit(
+            node, "-c", "user.name=Ledger Test", "-c", "user.email=ledger-test@hall9k.local",
+            "commit-tree", treeOutput.Trim(), "-m", "divergent");
+        divergentExit.Should().Be(0, divergentError);
+        string divergentCommit = divergentOutput.Trim();
+        (int forceExit, _, string forceError) = LedgerTestRepo.RunGit(node, "push", "origin", $"+{divergentCommit}:{refName}");
+        forceExit.Should().Be(0, forceError);
+
+        Func<Task> write = () => _ledger.WriteAsync(
+            new LedgerWriteRequest(node, refName, "a.yaml", "v3\n", afterSecond.BlobId, "v3", _committer, _signingKey),
+            CancellationToken.None);
+
+        await write.Should().ThrowAsync<LedgerPushRejectedException>(
+            "the healed write still builds on the verified tip, but that tip is no longer reachable from "
+            + "origin's own divergent history, so git rejects every retry and this is a human decision");
     }
 
     private static string UniqueTestRef() => LedgerRefRegistry.RegisterExact($"refs/hall9k/ledger/test-{Guid.NewGuid():N}").RefspecSource;
