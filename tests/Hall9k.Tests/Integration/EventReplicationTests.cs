@@ -9,6 +9,7 @@ using Hall9k.Domain.Features.Decision;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -4308,6 +4309,278 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
             line => line.Contains("24 hours", StringComparison.Ordinal)
                 && line.Contains(nameof(TaskClaimed), StringComparison.Ordinal),
             "the drop is logged with one line naming the act");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 2, adversarial lens, high: the earlier version of
+    /// <see cref="TaskCreatorRootRecord"/> only ever recorded the creator's own root at the instant a
+    /// task's genesis started its stream fresh, direct delivery only — a relayed genesis (the
+    /// ordinary shape a catch-up broadcast answer takes) left the record entirely unset, and once
+    /// the stream existed nothing could ever complete it, so every pre-assignment act the true
+    /// creator ever sent directly afterward sat held until its own 24-hour expiry dropped it. This
+    /// proves the fix: a relayed genesis still records the claimed origin, and the first later act
+    /// the claimed origin delivers directly backfills the verified fingerprint and applies outright.
+    /// </summary>
+    [Fact]
+    public async Task A_relayed_geneses_creator_root_is_backfilled_once_the_true_origin_delivers_directly()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid ownerNode = DomainId.New();
+        Guid memberNode = DomainId.New();
+        Guid memberOwnerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, ownerNode, cts.Token);
+        await SeedNodeFileAsync(ledger, memberNode, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("relay");
+
+        TrustChain chain = TwoRootChain(ownerNode, memberNode, "owner-root-d", "member-root-d");
+        const string memberRoot = "member-root-d";
+        const string ownerRoot = "owner-root-d";
+
+        await using DocumentStore storeB = OpenStoreB();
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+
+        // The member's own draft genesis, delivered here by the OWNER relaying it rather than the
+        // member itself — the ordinary shape a catch-up broadcast answer takes
+        // (EventCatchUpResponder's own doc): the wire record's own OriginNodeId names the member,
+        // but the transport-verified sender is the owner.
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, "Ship the thing", ["it ships"], TaskType.Feature, null, null, null, Now,
+            memberOwnerId);
+        EventReplicationCodec.ReplicatedEventRecord addedRecord = new(
+            taskId, typeof(TaskAdded).FullName!, JsonSerializer.Serialize(added, jsonOptions),
+            DomainId.New(), OriginSequence: 1, memberNode, memberRoot, Now.AddSeconds(1), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, ownerNode, projectId, ownerRoot, MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([addedRecord]), Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, ownerNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, ownerNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: chain, cts.Token);
+            read.EventsApplied.Should().Be(1, "the relayed genesis still starts the stream");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            TaskCreatorRootRecord? creatorRoot = await session.LoadAsync<TaskCreatorRootRecord>(taskId, cts.Token);
+            creatorRoot.Should().NotBeNull("the genesis claims a creator even though it arrived relayed");
+            creatorRoot!.ClaimedOriginNodeId.Should().Be(memberNode);
+            creatorRoot.CreatorRootFingerprint.Should().BeEmpty(
+                "a relay's own verified key proves nothing about who actually authored the genesis");
+        }
+
+        // The true creator, now online, revises their own still-unassigned draft directly — the
+        // identical proof the genesis itself would have carried had the member shipped it directly.
+        TaskRevised revised = new(
+            taskId, Optional<string>.Of("Ship the revised thing"), Optional<IReadOnlyList<string>>.None,
+            Optional<string>.None, Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None,
+            Optional<AgentModel>.None, Now.AddSeconds(4), memberOwnerId);
+        EventReplicationCodec.ReplicatedEventRecord revisedRecord = new(
+            taskId, typeof(TaskRevised).FullName!, JsonSerializer.Serialize(revised, jsonOptions),
+            DomainId.New(), OriginSequence: 2, memberNode, memberRoot, Now.AddSeconds(4), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, memberNode, projectId, memberRoot, MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([revisedRecord]), Now.AddSeconds(5), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, memberNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(5), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, memberNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(6),
+                trustChain: chain, cts.Token);
+            read.EventsApplied.Should().Be(
+                1, "the creator's own direct delivery both backfills the creator root and applies immediately, "
+                    + "never held");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.Query<HeldTaskActRecord>().Where(record => record.TaskId == taskId).ToListAsync(cts.Token))
+                .Should().BeEmpty("the revise was allowed outright, never held");
+
+            TaskCreatorRootRecord creatorRoot = (await session.LoadAsync<TaskCreatorRootRecord>(taskId, cts.Token))!;
+            creatorRoot.CreatorRootFingerprint.Should().Be(
+                memberRoot, "the direct delivery backfilled the fingerprint the relay could not verify");
+
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            task.Objective.Should().Be("Ship the revised thing", "the backfilled act actually applied");
+        }
+    }
+
+    /// <summary>
+    /// Class sweep off the relayed-genesis fix above: <see cref="TaskCreatorRootRecord"/> is written
+    /// only from <c>EventReplicationInbox.ApplyAsync</c>'s own genesis path, so a task created
+    /// NATIVELY, right here, never goes through it at all and never gets a record — the identical
+    /// symptom (a pre-assignment act judged with no creator root on file) from a different cause.
+    /// This proves the fallback: with no <see cref="TaskCreatorRootRecord"/> whatsoever, the gate
+    /// resolves the creator from the task's own <see cref="TaskAggregate.AddedByOwnerId"/> through
+    /// <see cref="OwnerRootFingerprintResolver"/> — trustworthy here because a native genesis never
+    /// crossed the wire, unlike a replicated one's own claims — so the actual creator's other node
+    /// may still act on their own unassigned draft, while an unrelated member is refused outright.
+    /// </summary>
+    [Fact]
+    public async Task A_native_tasks_creator_root_falls_back_to_its_own_added_by_owner_when_never_replicated_in()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid creatorMemberNode = DomainId.New();
+        Guid otherMemberNode = DomainId.New();
+        Guid creatorOwnerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+
+        const string creatorRoot = "member-root-e";
+        const string otherRoot = "other-root-e";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, creatorMemberNode, cts.Token);
+        await SeedNodeFileAsync(ledger, otherMemberNode, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("relay");
+
+        string creatorKeyLine = $"ssh-ed25519 AAAAFAKE{creatorMemberNode:N} test";
+        string otherKeyLine = $"ssh-ed25519 AAAAFAKE{otherMemberNode:N} test";
+        TrustChain chain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                [creatorRoot] = new TrustedOwner(
+                    creatorRoot, $"ssh-ed25519 AAAAFAKE{creatorRoot} test",
+                    [new TrustedNode(
+                        creatorMemberNode.ToString(), creatorKeyLine, NodeKeyStore.Fingerprint(creatorKeyLine), Now)]),
+                [otherRoot] = new TrustedOwner(
+                    otherRoot, $"ssh-ed25519 AAAAFAKE{otherRoot} test",
+                    [new TrustedNode(
+                        otherMemberNode.ToString(), otherKeyLine, NodeKeyStore.Fingerprint(otherKeyLine), Now)]),
+            },
+            [
+                new ProjectMember(creatorRoot, MembershipRole.Member, Now),
+                new ProjectMember(otherRoot, MembershipRole.Member, Now),
+            ]);
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        // The creator's own cross-node root, claimed the same way `h9k project join --owner` records
+        // one — never observed by this task's own genesis below, which never goes through
+        // EventReplicationInbox at all.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<OwnerAggregate>(creatorOwnerId, new OwnerRegistered(creatorOwnerId, "Creator", null, Now));
+            session.Events.Append(creatorOwnerId, new OwnerRootClaimed(creatorOwnerId, creatorRoot, Verified: true, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The task's own genesis, created natively right here — never replicated in, so
+        // TaskCreatorRootRecord is never written for it at all.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Ship the thing", ["it ships"], TaskType.Feature, null, null, null, Now,
+                creatorOwnerId);
+            session.Events.StartStream<TaskAggregate>(taskId, added);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.LoadAsync<TaskCreatorRootRecord>(taskId, cts.Token)).Should().BeNull(
+                "a native genesis never goes through the replication inbox at all");
+        }
+
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+
+        // A different project member, with no claim on this draft at all, tries to revise it
+        // directly — refused outright, never merely held, since this node already knows this
+        // member is not the creator.
+        TaskRevised revisedByStranger = new(
+            taskId, Optional<string>.Of("Hijacked"), Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now.AddSeconds(1),
+            DomainId.New());
+        EventReplicationCodec.ReplicatedEventRecord strangerRecord = new(
+            taskId, typeof(TaskRevised).FullName!, JsonSerializer.Serialize(revisedByStranger, jsonOptions),
+            DomainId.New(), OriginSequence: 1, otherMemberNode, otherRoot, Now.AddSeconds(1), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, otherMemberNode, projectId, otherRoot, MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([strangerRecord]), Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, otherMemberNode, projectId, "shared-project-key", adoptUnassigned: false,
+                committer, signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, otherMemberNode, projectId, DomainId.New(), "owner-b-fingerprint",
+                Now.AddSeconds(3), trustChain: chain, cts.Token);
+            read.EventsApplied.Should().Be(0, "a stranger's own revise of someone else's draft is refused");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            task.Objective.Should().Be("Ship the thing", "the stranger's revise never applied");
+        }
+
+        // The actual creator, acting from a different node in their own fleet than the one that
+        // created the task, revises their own still-unassigned draft directly — allowed, resolved
+        // from the task's own AddedByOwnerId even though no TaskCreatorRootRecord exists at all.
+        TaskRevised revisedByCreator = new(
+            taskId, Optional<string>.Of("Ship the revised thing"), Optional<IReadOnlyList<string>>.None,
+            Optional<string>.None, Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None,
+            Optional<AgentModel>.None, Now.AddSeconds(4), creatorOwnerId);
+        EventReplicationCodec.ReplicatedEventRecord creatorRecord = new(
+            taskId, typeof(TaskRevised).FullName!, JsonSerializer.Serialize(revisedByCreator, jsonOptions),
+            DomainId.New(), OriginSequence: 1, creatorMemberNode, creatorRoot, Now.AddSeconds(4), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, creatorMemberNode, projectId, creatorRoot, MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([creatorRecord]), Now.AddSeconds(5), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, creatorMemberNode, projectId, "shared-project-key", adoptUnassigned: false,
+                committer, signingKey, Now.AddSeconds(5), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, creatorMemberNode, projectId, DomainId.New(), "owner-b-fingerprint",
+                Now.AddSeconds(6), trustChain: chain, cts.Token);
+            read.EventsApplied.Should().Be(
+                1, "the actual creator's own other node may still revise their own unassigned draft, resolved "
+                    + "from AddedByOwnerId with no TaskCreatorRootRecord on file at all");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            task.Objective.Should().Be("Ship the revised thing", "the creator's own revise actually applied");
+        }
     }
 
     /// <summary>A project with one owner root (naming <paramref name="ownerNodeId"/>) and one member
