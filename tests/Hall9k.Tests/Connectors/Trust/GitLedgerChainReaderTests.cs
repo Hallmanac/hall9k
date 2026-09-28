@@ -660,48 +660,14 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     }
 
     [Fact]
-    public async Task A_revocation_voids_the_revoked_nodes_earlier_membership_writes()
+    public async Task A_members_write_signed_by_a_vouched_node_is_refused_regardless_of_its_own_enrollment_state()
     {
-        // The walked model (team half, 2026-09-13; ruled by the window, 2026-09-13): a members-ref
-        // write is authorized against the owner chain's own live state at read time, never a
-        // snapshot pinned to that write's own claimed committer date. Accepted consequence: once a
-        // node is revoked, a membership write it made earlier — even while it was still legitimately
-        // enrolled — is no longer authorized on the next read.
-        string hub = _repo.CreateHub();
-        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
-
-        GeneratedIdentity laptop = GenerateIdentity();
-        string laptopRepo = _repo.CloneNode(hub);
-        await WriteNodeFileAsync(laptopRepo, laptop, laptop);
-        await VouchAsync(ownerRepo, owner.Fingerprint, laptop, owner);
-
-        // The laptop, while still enrolled, adds bob as a member.
-        GeneratedIdentity bob = GenerateIdentity();
-        await WriteMemberFileAsync(ownerRepo, bob.Fingerprint, "member", laptop);
-
-        string readerBeforeRevoke = _repo.CloneNode(hub);
-        (await _chainReader.ComputeAsync(readerBeforeRevoke, CancellationToken.None))
-            .RoleOf(bob.Fingerprint).Should().Be(MembershipRole.Member, "the laptop was enrolled when it signed this write");
-
-        // The laptop is revoked afterward.
-        await RevokeAsync(ownerRepo, owner.Fingerprint, laptop.NodeId, owner);
-
-        string readerAfterRevoke = _repo.CloneNode(hub);
-        TrustChain chain = await _chainReader.ComputeAsync(readerAfterRevoke, CancellationToken.None);
-
-        chain.RoleOf(bob.Fingerprint).Should().BeNull(
-            "the laptop's revocation voids every membership write it ever signed, including this "
-            + "earlier one made while it was still enrolled");
-        chain.IsAllowedSigner(laptop.Fingerprint).Should().BeFalse("the laptop is revoked as of this read");
-    }
-
-    [Fact]
-    public async Task A_re_vouch_restores_a_revoked_nodes_earlier_membership_writes()
-    {
-        // The other half of the same rule: since a membership write is authorized against the
-        // owner chain's own live state at read time, restoring the node to that live state (a
-        // re-vouch) restores every membership write it ever signed, exactly the latest-of-vouch-or-
-        // revocation rule the owner chain itself already applies to enrollment.
+        // idea 6be68ee2, trust-ledger finding 2: a members-ref write now requires the owner's own
+        // live root key, never merely a currently enrolled node — replacing the old rule (T1, ruled
+        // by the window 2026-09-13) under which a vouched node's own write rode the owner chain's
+        // live state and was only voided once that node was later revoked. Under the new rule the
+        // laptop's write is refused from the very first read, whether the laptop is enrolled,
+        // revoked, or re-vouched afterward — none of that ever mattered to authorization again.
         string hub = _repo.CreateHub();
         (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
 
@@ -713,65 +679,131 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         GeneratedIdentity bob = GenerateIdentity();
         await WriteMemberFileAsync(ownerRepo, bob.Fingerprint, "member", laptop);
 
+        string readerWhileEnrolled = _repo.CloneNode(hub);
+        TrustChain whileEnrolled = await _chainReader.ComputeAsync(readerWhileEnrolled, CancellationToken.None);
+        whileEnrolled.RoleOf(bob.Fingerprint).Should().BeNull(
+            "the laptop is fully enrolled but never held the owner's own root key, so its members write "
+            + "is never authorized");
+        whileEnrolled.UnverifiedWrites.Should().Contain(
+            write => write.Kind == "membership" && write.Identifier == bob.Fingerprint,
+            "the refused write is named rather than silently dropped");
+
+        // Revoking and re-vouching the laptop changes nothing: its members write was never
+        // authorized to begin with, so there is nothing for either to void or restore.
         await RevokeAsync(ownerRepo, owner.Fingerprint, laptop.NodeId, owner);
-
-        string readerAfterRevoke = _repo.CloneNode(hub);
-        (await _chainReader.ComputeAsync(readerAfterRevoke, CancellationToken.None))
-            .RoleOf(bob.Fingerprint).Should().BeNull("the laptop is revoked");
-
-        // The laptop is vouched again — a surviving node undoing a bad revocation.
         await VouchAsync(ownerRepo, owner.Fingerprint, laptop, owner);
 
-        string readerAfterReVouch = _repo.CloneNode(hub);
-        TrustChain chain = await _chainReader.ComputeAsync(readerAfterReVouch, CancellationToken.None);
-
-        chain.RoleOf(bob.Fingerprint).Should().Be(
-            MembershipRole.Member, "the re-vouch restores the laptop to the owner chain's live state, "
-            + "which restores every membership write it ever signed, this one included");
-        chain.IsAllowedSigner(laptop.Fingerprint).Should().BeTrue("the laptop is enrolled again as of this read");
+        string readerAfterChurn = _repo.CloneNode(hub);
+        (await _chainReader.ComputeAsync(readerAfterChurn, CancellationToken.None))
+            .RoleOf(bob.Fingerprint).Should().BeNull("the laptop's write was never authorized, so re-enrolling it changes nothing");
     }
 
     [Fact]
-    public async Task A_revoked_nodes_backdated_committer_date_cannot_authorize_a_membership_write()
+    public async Task A_revocation_a_members_write_and_a_role_change_are_authorized_only_by_a_live_root_key()
+    {
+        // idea 6be68ee2, trust-ledger finding 2: the core rule this task adds. A node revocation
+        // (owners/<root>/revoked/<node>.yaml), a members-ref write (an add), and a role change (an
+        // existing member's own role field rewritten) are each authorized only by one of the
+        // owner's own live root keys — never merely a node vouched into that owner's own fleet, so a
+        // compromised fleet node can never revoke its peers or rewrite membership. Peer vouching
+        // itself is unaffected: a plain enrolled node still vouches another node exactly as before.
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+
+        GeneratedIdentity laptop = GenerateIdentity();
+        string laptopRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(laptopRepo, laptop, laptop);
+        await VouchAsync(ownerRepo, owner.Fingerprint, laptop, owner);
+
+        GeneratedIdentity target = GenerateIdentity();
+        string targetRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(targetRepo, target, target);
+        await VouchAsync(ownerRepo, owner.Fingerprint, target, owner);
+
+        GeneratedIdentity bob = GenerateIdentity();
+        await WriteMemberFileAsync(ownerRepo, bob.Fingerprint, "member", owner);
+
+        // Peer vouching keeps working: the laptop, a plain enrolled node, can still vouch a peer.
+        GeneratedIdentity peer = GenerateIdentity();
+        string peerRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(peerRepo, peer, peer);
+        await VouchAsync(ownerRepo, owner.Fingerprint, peer, laptop);
+
+        // The laptop — merely enrolled, never a root key — signs a revocation, a members write
+        // (add), and a role change.
+        await RevokeAsync(ownerRepo, owner.Fingerprint, target.NodeId, laptop);
+        GeneratedIdentity outsider = GenerateIdentity();
+        await WriteMemberFileAsync(ownerRepo, outsider.Fingerprint, "member", laptop);
+        await WriteMemberFileAsync(ownerRepo, bob.Fingerprint, "owner", laptop);
+
+        string readerAfterVouchedAttempts = _repo.CloneNode(hub);
+        TrustChain afterVouchedAttempts = await _chainReader.ComputeAsync(readerAfterVouchedAttempts, CancellationToken.None);
+
+        afterVouchedAttempts.IsAllowedSigner(target.Fingerprint).Should().BeTrue(
+            "the laptop's own revocation is not signed by a live root key and is ignored");
+        afterVouchedAttempts.Members.Should().NotContain(
+            m => m.RootFingerprint == outsider.Fingerprint, "the laptop's own members write is not signed by a live root key and is ignored");
+        afterVouchedAttempts.RoleOf(bob.Fingerprint).Should().Be(
+            MembershipRole.Member, "the laptop's own role change is not signed by a live root key and is ignored");
+        afterVouchedAttempts.IsAllowedSigner(peer.Fingerprint).Should().BeTrue(
+            "peer vouching by a plain enrolled node keeps working — only revocation and membership writes narrowed");
+
+        // The root itself signs the identical three writes — every one applies.
+        await RevokeAsync(ownerRepo, owner.Fingerprint, target.NodeId, owner);
+        await WriteMemberFileAsync(ownerRepo, outsider.Fingerprint, "member", owner);
+        await WriteMemberFileAsync(ownerRepo, bob.Fingerprint, "owner", owner);
+
+        string readerAfterRootSigned = _repo.CloneNode(hub);
+        TrustChain afterRootSigned = await _chainReader.ComputeAsync(readerAfterRootSigned, CancellationToken.None);
+
+        afterRootSigned.IsAllowedSigner(target.Fingerprint).Should().BeFalse("the root's own revocation is applied");
+        afterRootSigned.RoleOf(outsider.Fingerprint).Should().Be(MembershipRole.Member, "the root's own members write is applied");
+        afterRootSigned.RoleOf(bob.Fingerprint).Should().Be(MembershipRole.Owner, "the root's own role change is applied");
+    }
+
+    [Fact]
+    public async Task A_backdated_committer_date_cannot_authorize_a_vouched_nodes_membership_write()
     {
         // The adversarial lens's own injection (cycle 1, both high) against the pre-fix
-        // owner.AsOf(commitTime): a revoked node crafts a members-ref commit and backdates
-        // GIT_COMMITTER_DATE to before its own revocation, hoping to be judged against the chain as
-        // it stood at that claimed date rather than as it stands now. The fix (ruled by the window,
-        // 2026-09-13) removed committer-date pinning from the authorization rule entirely, so a
-        // members-ref write is judged solely against the owner chain's own live state — a claimed
-        // date, true or forged, is never consulted at all, and this test proves backdating buys the
-        // revoked node nothing.
+        // owner.AsOf(commitTime): a node crafts a members-ref commit and backdates
+        // GIT_COMMITTER_DATE, hoping to be judged against the chain as it stood at that claimed
+        // date rather than as it stands now. The fix (ruled by the window, 2026-09-13) removed
+        // committer-date pinning from the authorization rule entirely, so a members-ref write is
+        // judged solely against the owner chain's own live state — a claimed date, true or forged,
+        // is never consulted at all. Under idea 6be68ee2's own narrower rule this write was never
+        // going to be authorized regardless of timing (the laptop never holds a live root key,
+        // revoked or not), so this test backdates to a moment BEFORE the laptop was even vouched —
+        // the one claim that could still matter if committer dates were ever consulted again — and
+        // proves it still buys nothing.
         string hub = _repo.CreateHub();
         (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
 
         GeneratedIdentity laptop = GenerateIdentity();
         string laptopRepo = _repo.CloneNode(hub);
         await WriteNodeFileAsync(laptopRepo, laptop, laptop);
+        DateTimeOffset beforeVouch = DateTimeOffset.UtcNow.AddMinutes(-30);
         await VouchAsync(ownerRepo, owner.Fingerprint, laptop, owner);
-        await RevokeAsync(ownerRepo, owner.Fingerprint, laptop.NodeId, owner);
 
         string membersRefName = "refs/hall9k/ledger/members";
         await RunGitCaptureAsync(ownerRepo, ["fetch", "origin", $"+{membersRefName}:{membersRefName}"]);
         string membersTip = await RunGitCaptureAsync(ownerRepo, ["rev-parse", "--verify", membersRefName]);
 
-        // The laptop, still holding its own key after revocation, crafts a members-ref commit,
-        // self-claiming owner role, and backdates it to well before its own revocation above.
+        // The laptop, fully enrolled but never a root key, crafts a members-ref commit,
+        // self-claiming owner role, and backdates it to before it was even vouched.
         GeneratedIdentity attacker = GenerateIdentity();
         string attackerPath = $"members/{attacker.Fingerprint}.yaml";
         string attackerContent = BuildYaml(("root_fingerprint", attacker.Fingerprint), ("role", "owner"), ("issued_at", Now()));
         string maliciousTree = await BuildTreeWithFileAsync(ownerRepo, membersTip, attackerPath, attackerContent);
         string maliciousCommit = await CommitTreeAsync(
-            ownerRepo, maliciousTree, [membersTip], laptop, "self-promote via backdated commit",
-            committerDate: DateTimeOffset.UtcNow.AddMinutes(-30));
+            ownerRepo, maliciousTree, [membersTip], laptop, "self-promote via backdated commit", committerDate: beforeVouch);
         await RunGitCaptureAsync(ownerRepo, ["push", "origin", $"{maliciousCommit}:{membersRefName}"]);
 
         string readerRepo = _repo.CloneNode(hub);
         TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
 
         chain.RoleOf(attacker.Fingerprint).Should().BeNull(
-            "the laptop is revoked, and a write from its own key can no longer be authorized "
-            + "by claiming an earlier committer date");
+            "the laptop never holds a live root key, so its own write can never be authorized "
+            + "regardless of the committer date it claims");
         chain.UnverifiedWrites.Should().Contain(write => write.Identifier == attacker.Fingerprint);
     }
 
@@ -1108,9 +1140,13 @@ public sealed class GitLedgerChainReaderTests : IDisposable
             rootSigned.Content, rootSigned.Sha, rootSigned.RawBytes, vouchSigned.Content, vouchSigned.Sha, vouchSigned.RawBytes);
         await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/carried/{carrier.NodeId}.yaml", carried, carrier);
 
-        // The carried node revokes itself — the ordinary revoke shape, signed by a key this same
-        // chain already treats as enrolled (this node's own carried establishment above).
-        await RevokeAsync(targetRepo, root.Fingerprint, carrier.NodeId, carrier);
+        // The ordinary revoke shape, signed by the root's own real key (idea 6be68ee2, trust-ledger
+        // finding 2: a revocation now requires a live root key, never merely a node this chain
+        // treats as enrolled). Nobody on this carried-only target ledger ever pushes anything else
+        // signed by root, but this test still has access to root's own private key locally (it is
+        // just a generated keypair), which is exactly what actually holding the root key means —
+        // wherever that holder chooses to sign from.
+        await RevokeAsync(targetRepo, root.Fingerprint, carrier.NodeId, root);
 
         string readerRepo = _repo.CloneNode(targetHub);
         TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
@@ -1118,6 +1154,42 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         chain.OwnerChains.Should().ContainKey(root.Fingerprint, "the root itself is still established by the carried bundle");
         chain.OwnerChains[root.Fingerprint].Nodes.Should().NotContain(node => node.NodeId == carrier.NodeId.ToString());
         chain.IsEnrolledInOwner(carrier.Fingerprint, root.Fingerprint).Should().BeFalse("the revocation lands after the carried vouch in ref order, so it wins");
+    }
+
+    [Fact]
+    public async Task A_carried_nodes_own_self_signed_revocation_is_refused_since_it_never_holds_the_root_key()
+    {
+        // idea 6be68ee2, trust-ledger finding 2: even on a carried ledger, where nobody locally
+        // holds the root's own private key at all, a revocation still requires a live root key —
+        // the carried node's own established key, however legitimately enrolled, is not enough, so
+        // a compromised carried node cannot revoke its own peers (or, exercised here, even itself)
+        // by simply signing with the key its own carry already established. An accepted,
+        // documented consequence of this task's own narrower rule: a purely carried fleet has no
+        // local way to revoke a node until its real root, or a validated succession heir, reaches
+        // this exact ledger directly.
+        (string sourceRepo, GeneratedIdentity root, GeneratedIdentity carrier,
+            var rootSigned, var vouchSigned) = await EstablishSourceVouchAsync();
+
+        string targetHub = _repo.CreateHub();
+        string targetRepo = _repo.CloneNode(targetHub);
+        await WriteNodeFileAsync(targetRepo, carrier, carrier, root.Fingerprint);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/root.yaml", rootSigned.Content, carrier);
+        string carried = BuildCarriedRecordYaml(
+            carrier.NodeId, carrier.PublicKeyLine, Guid.NewGuid(), sourceRepo,
+            rootSigned.Content, rootSigned.Sha, rootSigned.RawBytes, vouchSigned.Content, vouchSigned.Sha, vouchSigned.RawBytes);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/carried/{carrier.NodeId}.yaml", carried, carrier);
+
+        await RevokeAsync(targetRepo, root.Fingerprint, carrier.NodeId, carrier);
+
+        string readerRepo = _repo.CloneNode(targetHub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains.Should().ContainKey(root.Fingerprint, "the root itself is still established by the carried bundle");
+        chain.IsEnrolledInOwner(carrier.Fingerprint, root.Fingerprint).Should().BeTrue(
+            "the carried node's own self-signed revocation is not signed by a live root key and is ignored");
+        chain.UnverifiedWrites.Should().Contain(
+            write => write.Kind == "revocation" && write.Identifier == carrier.NodeId.ToString(),
+            "the refused revocation is named rather than silently dropped");
     }
 
     [Fact]
@@ -1175,7 +1247,10 @@ public sealed class GitLedgerChainReaderTests : IDisposable
             rootSigned.Content, rootSigned.Sha, rootSigned.RawBytes, vouchSigned.Content, vouchSigned.Sha, vouchSigned.RawBytes);
         string carriedPath = $"owners/{root.Fingerprint}/carried/{carrier.NodeId}.yaml";
         await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", carriedPath, carried, carrier);
-        await RevokeAsync(targetRepo, root.Fingerprint, carrier.NodeId, carrier);
+        // Root-signed (idea 6be68ee2, trust-ledger finding 2: a revocation now requires a live root
+        // key) — the test has access to root's own private key locally, standing in for root
+        // reaching this carried-only ledger directly to revoke the carrier.
+        await RevokeAsync(targetRepo, root.Fingerprint, carrier.NodeId, root);
 
         // The revoked node re-pushes its own bundle again, signed with its own (still held)
         // private key — nobody else's. A distinct commit (a different source_project_id this
@@ -1567,9 +1642,9 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         await WriteSuccessorAsync(repositoryPath, root.Fingerprint, heir, root);
         await WriteRotationAsync(repositoryPath, root.Fingerprint, 1, heir, root.PublicKeyLine);
 
-        // K1 (the promoted heir) still holds its own ordinary vouched key too, and a membership
-        // write it signs verifies through that — Nodes, never RootKeys (OwnerChainAuthorization
-        // tries both).
+        // K1 (the promoted heir) signs a membership write while it still holds that rank — a
+        // members-ref write is authorized only by a live root key (idea 6be68ee2, trust-ledger
+        // finding 2), and K1 is one, right now.
         GeneratedIdentity newMember = GenerateIdentity();
         await WriteMemberFileAsync(repositoryPath, newMember.Fingerprint, "member", heir);
 
@@ -1577,6 +1652,8 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         TrustChain beforeRevocation = await _chainReader.ComputeAsync(beforeReaderRepo, CancellationToken.None);
         beforeRevocation.OwnerChains[root.Fingerprint].RootKeys.Should().Contain(
             key => key.IntroducedByNodeId == heir.NodeId.ToString(), "the rotation already landed");
+        beforeRevocation.RoleOf(newMember.Fingerprint).Should().Be(
+            MembershipRole.Member, "K1 was a live root key when it signed this write, and still is at this read");
 
         // K0 revokes only the heir's own RANK — never its ordinary fleet membership: no
         // `h9k node revoke` ever runs here, so the heir stays vouched in Nodes throughout.
@@ -1590,8 +1667,11 @@ public sealed class GitLedgerChainReaderTests : IDisposable
             key => key.Fingerprint == root.Fingerprint, "the revoked-successor record, signed by K0, strips the heir's own rank");
         owner.Nodes.Should().Contain(
             node => node.NodeId == heir.NodeId.ToString(), "the heir's ordinary fleet membership was never touched — only its rank was revoked");
-        afterRevocation.RoleOf(newMember.Fingerprint).Should().Be(
-            MembershipRole.Member, "the heir's earlier membership write verifies through Nodes, which the rank revocation never changes");
+        afterRevocation.RoleOf(newMember.Fingerprint).Should().BeNull(
+            "membership is authorized against the chain's own live state at read time (2026-09-13), never a "
+            + "snapshot of when the write landed — now that the heir's own rank is stripped, its earlier "
+            + "membership write is no longer signed by any live root key (idea 6be68ee2, trust-ledger "
+            + "finding 2: staying vouched in Nodes is no longer enough for a members-ref write)");
     }
 
     [Fact]
