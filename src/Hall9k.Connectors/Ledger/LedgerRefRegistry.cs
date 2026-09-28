@@ -18,8 +18,12 @@ public enum LedgerRefKind
 /// One entry in <see cref="LedgerRefRegistry"/>: what <see cref="LedgerRefRegistry.FetchRefspecs"/>
 /// turns into a fetch (and push destination) refspec, and what
 /// <see cref="LedgerRefRegistry.IsRegistered"/> matches a caller's ref name against.
+/// <see cref="AppendOnly"/> is true for every registered entry except
+/// <see cref="LedgerRefRegistry.MessagesPrefix"/> (idea 6be68ee2, trust finding 8): a node's own
+/// outbox is squashed and force-pushed with a lease by design, so it is the one ref shape
+/// <see cref="LedgerAppendOnlyRefFetcher"/>'s rewind/side-merge check must never run against.
 /// </summary>
-public sealed record LedgerRefEntry(string RefspecSource, LedgerRefKind Kind)
+public sealed record LedgerRefEntry(string RefspecSource, LedgerRefKind Kind, bool AppendOnly = true)
 {
     public bool Matches(string refName) => Kind switch
     {
@@ -95,7 +99,7 @@ public static class LedgerRefRegistry
     /// one writer per node. Registered as a prefix because no node id exists yet for a literal
     /// name the way <see cref="Records"/> has one.
     /// </summary>
-    public static readonly LedgerRefEntry MessagesPrefix = RegisterPrefix("refs/hall9k/messages/");
+    public static readonly LedgerRefEntry MessagesPrefix = RegisterPrefix("refs/hall9k/messages/", appendOnly: false);
 
     /// <summary>
     /// Every owner's root (A2a): <c>refs/hall9k/ledger/owners/&lt;fingerprint&gt;</c>, one ref per
@@ -147,23 +151,28 @@ public static class LedgerRefRegistry
     /// <summary>The only path inside <see cref="RunSkill"/>.</summary>
     public const string RunSkillPath = "run-skill.md";
 
-    public static LedgerRefEntry RegisterExact(string refName) => Register(refName, LedgerRefKind.Exact);
+    public static LedgerRefEntry RegisterExact(string refName, bool appendOnly = true) =>
+        Register(refName, LedgerRefKind.Exact, appendOnly);
 
-    public static LedgerRefEntry RegisterPrefix(string prefix) => Register(
+    public static LedgerRefEntry RegisterPrefix(string prefix, bool appendOnly = true) => Register(
         prefix.EndsWith('/')
             ? prefix
             : throw new ArgumentException($"{prefix} must end in '/' to register as a prefix.", nameof(prefix)),
-        LedgerRefKind.Prefix);
+        LedgerRefKind.Prefix, appendOnly);
 
     /// <summary>
     /// The one namespace every registration is confined to, enforced here rather than trusted to
     /// each call site — a caller that mistypes <c>refs/heads/main</c> into <see cref="RegisterExact"/>
     /// would otherwise make <see cref="GitLedger"/> fetch and push an ordinary branch, silently
     /// violating the <see cref="ILedger"/> contract that every ledger ref lives under this prefix.
+    /// Also what <see cref="LedgerAppendOnlyRefFetcher"/> strips off a registered ref's own name to
+    /// get the path it stages under <c>refs/hall9k-staging/&lt;nonce&gt;/</c> and tracks the last
+    /// verified tip of under <c>refs/hall9k-verified/</c> — public so that class does not duplicate
+    /// the literal.
     /// </summary>
-    private const string Namespace = "refs/hall9k/";
+    public const string Namespace = "refs/hall9k/";
 
-    private static LedgerRefEntry Register(string refspecSource, LedgerRefKind kind)
+    private static LedgerRefEntry Register(string refspecSource, LedgerRefKind kind, bool appendOnly)
     {
         if (!refspecSource.StartsWith(Namespace, StringComparison.Ordinal))
         {
@@ -173,7 +182,7 @@ public static class LedgerRefRegistry
                 nameof(refspecSource));
         }
 
-        LedgerRefEntry entry = new(refspecSource, kind);
+        LedgerRefEntry entry = new(refspecSource, kind, appendOnly);
         Entries.TryAdd(entry, 0);
         return entry;
     }
@@ -188,4 +197,22 @@ public static class LedgerRefRegistry
 
     /// <summary>Whether a ref name is covered by some registered exact name or prefix.</summary>
     public static bool IsRegistered(string refName) => Entries.Keys.Any(entry => entry.Matches(refName));
+
+    /// <summary>The registered entry (exact or prefix) a ref name matches, or null when nothing
+    /// registered here covers it — <see cref="LedgerAppendOnlyRefFetcher"/>'s own guard against
+    /// ever running its rewind check against <see cref="MessagesPrefix"/>.</summary>
+    public static LedgerRefEntry? TryGetEntry(string refName) => Entries.Keys.FirstOrDefault(entry => entry.Matches(refName));
+
+    /// <summary>Every registered <see cref="LedgerRefKind.Exact"/> entry whose own
+    /// <see cref="LedgerRefEntry.AppendOnly"/> is true — what the message sweep walks once per tick
+    /// (<c>Hall9k.Daemon.Messaging.MessageSweepEngine</c>) so a rewind of a tip-read-only ref
+    /// (records, prompt-addenda, run-skill) that nothing else reads on every tick still surfaces in
+    /// <c>h9k status</c> rather than only ever being caught the next time something happens to read
+    /// that specific ref. <see cref="MembersRef"/> is included too even though
+    /// <c>GitLedgerChainReader.ComputeAsync</c> already walks it every tick on its own — the fold in
+    /// <c>MessageSweepEngine.PersistUnverifiedWritesAsync</c> collapses a duplicate sighting to one
+    /// standing record, so re-checking it here costs nothing and keeps this enumeration a single,
+    /// unconditional rule rather than one with its own carved-out exception.</summary>
+    public static IReadOnlyList<LedgerRefEntry> AppendOnlyExactRefs =>
+        [.. Entries.Keys.Where(entry => entry.AppendOnly && entry.Kind == LedgerRefKind.Exact)];
 }
