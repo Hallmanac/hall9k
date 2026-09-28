@@ -671,14 +671,17 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
-    /// Once the checks-registration settle window elapses with still no check observed, the
-    /// silence is trusted as "no CI configured" and the merge proceeds exactly as if the check
-    /// gate never existed — a zero-width window makes the very first observation already overdue,
-    /// without needing to fake elapsed wall-clock time (mirrors the Copilot settle-window pair
-    /// immediately below).
+    /// Once the checks-registration settle window elapses with still no check observed, an empty
+    /// rollup is STILL indistinguishable from a repository with no CI configured at all — trusting
+    /// the silence used to be this gate's whole answer, but that reversed a prior ruling (security
+    /// review idea 6be68ee2, daemon-consumers finding A): only a project that has said so out loud
+    /// (<c>h9k project set --ci none</c>) gets that trust; every other project parks instead, naming
+    /// the command. A zero-width window makes the very first observation already overdue, without
+    /// needing to fake elapsed wall-clock time (mirrors the Copilot settle-window pair immediately
+    /// below).
     /// </summary>
     [Fact]
-    public async Task A_pre_approved_task_merges_once_the_checks_registration_settle_window_elapses_with_still_nothing_observed()
+    public async Task A_pre_approved_task_parks_once_the_checks_registration_settle_window_elapses_with_still_nothing_observed()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
@@ -694,7 +697,58 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         await engine.PollOnceAsync(cts.Token);
 
-        inspector.MergeAttempts.Should().Be(1, "the window is already spent, so the continued silence reads as no CI configured");
+        inspector.MergeAttempts.Should().Be(0, "an empty rollup is never trusted as \"no CI\" without the project saying so");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.CloseoutParked);
+        run.ParkedReason.Should().Contain("h9k project set");
+        run.ParkedReason.Should().Contain("--ci none");
+    }
+
+    /// <summary>
+    /// The other side of the same gate: a project that has explicitly declared it runs no CI
+    /// (<c>h9k project set --ci none</c>) gets the pre-setting behavior back — the continued
+    /// silence past the settle window is trusted, and the merge proceeds exactly as it always did.
+    /// </summary>
+    [Fact]
+    public async Task A_pre_approved_task_on_a_ci_less_project_merges_once_the_checks_registration_settle_window_elapses()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession projectSession = store.LightweightSession())
+        {
+            Hall9k.Domain.Features.Project.ProjectAggregate project = new();
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"ci-less-{projectId:N}", repoPath, null, "main", Now);
+            project.Apply(registered);
+            projectSession.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(
+                projectId, registered,
+                Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ChangeSettings(
+                    project,
+                    verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.None,
+                    skipPermissions: Optional<bool>.None,
+                    contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
+                    Now, node.OwnerId,
+                    ciPolicy: Optional<Hall9k.Domain.Features.Project.CiPolicy>.Of(
+                        Hall9k.Domain.Features.Project.CiPolicy.None)));
+            await projectSession.SaveChangesAsync(cts.Token);
+        }
+
+        (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, preApproval: PreApprovalMode.On, existingProjectId: projectId);
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { HasObservedChecks = false } };
+        CloseoutEngine engine = NewEngine(
+            store, node, inspector, worktrees, checksRegistrationSettleWindow: TimeSpan.Zero);
+
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.MergeAttempts.Should().Be(1, "the project declared it runs no CI, so the continued silence is trusted");
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
