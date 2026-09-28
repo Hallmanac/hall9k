@@ -335,4 +335,15 @@ public sealed record ProjectSettingsChanged(
     /// before this setting existed replays byte-for-byte unchanged, and reads as a project that
     /// never chose.
     /// </summary>
-    Optional<bool> SecurityReview = default);
+    Optional<bool> SecurityReview = default,
+    /// <summary>
+    /// Whether the pre-approved merge gate may trust an empty check rollup as "this project has
+    /// no CI" once the checks-registration settle window elapses (security review idea 6be68ee2,
+    /// daemon-consumers finding A). <see cref="Project.CiPolicy.Required"/> is both the default
+    /// and the explicit "this project has CI" — the <see cref="ClaimGate"/> clearing idiom.
+    /// Team-scoped alongside <see cref="ClaimGate"/> (see <see cref="ProjectTeamSettingsChanged.CiPolicy"/>):
+    /// every node closing out this project's pre-approved tasks has to read the same declaration.
+    /// Trailing and optional so every stream written before this setting existed replays
+    /// byte-for-byte unchanged.
+    /// </summary>
+    Optional<CiPolicy> CiPolicy = default);

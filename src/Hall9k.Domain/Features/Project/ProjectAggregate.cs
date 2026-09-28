@@ -153,6 +153,13 @@ public sealed class ProjectAggregate
     public ClaimGate ClaimGate { get; private set; } = ClaimGate.Off;
 
     /// <summary>
+    /// Whether the pre-approved merge gate may trust an empty check rollup as "this project has
+    /// no CI" (security review idea 6be68ee2, daemon-consumers finding A); Required is the
+    /// platform's default — see <see cref="Events.ProjectSettingsChanged.CiPolicy"/>'s own doc.
+    /// </summary>
+    public CiPolicy CiPolicy { get; private set; } = CiPolicy.Required;
+
+    /// <summary>
     /// How much of this project's own history the orchestrator feed hands a window (idea
     /// 89471598, piece 2) — see <see cref="Events.ProjectSettingsChanged.OrchestratorFeed"/>'s
     /// own doc.
@@ -404,6 +411,11 @@ public sealed class ProjectAggregate
             ClaimGate = @event.ClaimGate.Value ?? ClaimGate.Off;
         }
 
+        if (@event.CiPolicy.HasValue)
+        {
+            CiPolicy = @event.CiPolicy.Value ?? CiPolicy.Required;
+        }
+
         // Only here, never on ProjectTeamSettingsChanged: an orchestrator feed level is this
         // operator's own reading preference on this machine, so it stays on the node-scoped
         // event exactly as the models and the local paths beside it do.
@@ -546,6 +558,11 @@ public sealed class ProjectAggregate
         if (@event.ClaimGate.HasValue)
         {
             ClaimGate = @event.ClaimGate.Value ?? ClaimGate.Off;
+        }
+
+        if (@event.CiPolicy.HasValue)
+        {
+            CiPolicy = @event.CiPolicy.Value ?? CiPolicy.Required;
         }
 
         if (@event.TakePolicy.HasValue)

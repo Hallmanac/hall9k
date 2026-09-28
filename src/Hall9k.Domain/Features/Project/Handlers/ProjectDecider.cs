@@ -93,7 +93,8 @@ public static class ProjectDecider
         Optional<AgentEffort> effort = default,
         Optional<AgentEffort> orchestratorEffort = default,
         Optional<ReviewMembershipPolicy> reviewRequiresMembership = default,
-        Optional<bool> securityReview = default)
+        Optional<bool> securityReview = default,
+        Optional<CiPolicy> ciPolicy = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -297,6 +298,21 @@ public static class ProjectDecider
                 + "tracker shows that item assigned to this install's own tracker identity).");
         }
 
+        // The identical closed-set discipline as ClaimGate just above: CiPolicy's own implicit
+        // string conversion deliberately wraps anything, so this is the one place none|required is
+        // actually enforced — an unrecognized value would silently read as Required, which is safe
+        // but leaves a typo undiscovered.
+        if (ciPolicy.HasValue
+            && ciPolicy.Value is { } chosenCiPolicy
+            && chosenCiPolicy != CiPolicy.Required
+            && chosenCiPolicy != CiPolicy.None)
+        {
+            throw new DomainValidationException(
+                $"The CI policy must be {CiPolicy.None} or {CiPolicy.Required} (whether the pre-approved "
+                + "merge gate may trust an empty check rollup, past the checks-registration settle window, "
+                + "as \"this project has no CI\").");
+        }
+
         // The identical closed-set discipline as ClaimGate just above, for the orchestrator
         // feed's own band (idea 89471598, piece 2). OrchestratorFeedLevel's implicit string
         // conversion deliberately wraps anything, so this is the one place the three bands are
@@ -484,7 +500,8 @@ public static class ProjectDecider
             Effort: effort,
             OrchestratorEffort: orchestratorEffort,
             ReviewRequiresMembership: reviewRequiresMembership,
-            SecurityReview: securityReview);
+            SecurityReview: securityReview,
+            CiPolicy: ciPolicy);
     }
 
     /// <summary>
