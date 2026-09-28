@@ -9,8 +9,11 @@ namespace Hall9k.Connectors.Trust;
 /// leaves this write open, unlike the member-role write it settles): whichever node minted the
 /// invite marks its own record spent, whether that node vouched the candidate directly or only
 /// after the root's own <c>owner-act</c> outcome came back <c>done</c>
-/// (<see cref="Hall9k.Daemon.Invites.InviteSweepEngine"/>'s own direct path and the requester-side
-/// reaction to that outcome both call this).
+/// (<c>Hall9k.Daemon.Invites.InviteSweepEngine</c>'s own direct path and the requester-side
+/// reaction to that outcome both call this). Named in plain <c>&lt;c&gt;</c> text rather than
+/// <c>&lt;see cref&gt;</c> (independent pre-PR review, cycle 1, conformance lens, low): this
+/// project, Hall9k.Connectors, does not reference Hall9k.Daemon, so a cref naming a Daemon type
+/// here can never resolve.
 /// </summary>
 public static class InviteSpendLedgerWriter
 {
