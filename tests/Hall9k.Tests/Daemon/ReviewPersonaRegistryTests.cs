@@ -59,6 +59,10 @@ public sealed class ReviewPersonaRegistryTests
         plan.Ran.Should().Equal(ReviewPersona.Engineer, ReviewPersona.Qa, ReviewPersona.Designer);
         plan.Skipped.Should().BeEmpty("every persona in the fixed set has a review of its own now");
         plan.FellBackToEngineer.Should().BeFalse("the engineer's review really did run, and it was declared");
+        // The fork parameter changes nothing when it is false (the default here): a non-fork
+        // head runs every declared persona with nothing skipped on that account.
+        plan.ForkSkipped.Should().BeEmpty();
+        plan.ForkSkipReason.Should().BeNull();
         // Persona order, then session order within each: the engineer's two lenses, then QA's
         // one, then the designer's. The primary session is still the engineer's adversarial
         // lens, which is what keeps the artifact layout of a mixed-persona run identical to an
@@ -327,18 +331,6 @@ public sealed class ReviewPersonaRegistryTests
         plan.Ran.Should().Equal(ReviewPersona.Engineer);
         plan.FellBackToEngineer.Should().BeTrue();
         plan.ForkSkipped.Should().BeEquivalentTo([ReviewPersona.Qa, ReviewPersona.Designer]);
-    }
-
-    /// <summary>A non-fork head runs every declared persona exactly as before — the fork parameter changes nothing when it is false.</summary>
-    [Fact]
-    public void A_non_fork_head_runs_every_declared_persona()
-    {
-        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(
-            [ReviewPersona.Engineer, ReviewPersona.Qa, ReviewPersona.Designer], isForkHead: false);
-
-        plan.Ran.Should().Equal(ReviewPersona.Engineer, ReviewPersona.Qa, ReviewPersona.Designer);
-        plan.ForkSkipped.Should().BeEmpty();
-        plan.ForkSkipReason.Should().BeNull();
     }
 
     /// <summary>The fork skip reason and which personas it applies to both survive the round trip through what the run recorded.</summary>
