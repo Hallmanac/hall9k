@@ -373,9 +373,26 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
 
             if (!isVerified)
             {
+                // Treated exactly like the numeric-gap and tool-failure stalls above (idea 6be68ee2,
+                // trust finding 12) rather than skipped past: this transport cannot tell a forged or
+                // tampered commit apart from this same sender's own legitimate resend still to come,
+                // so the cursor must never advance beyond it — advancing here would let a single
+                // planted bad seq permanently hide every real envelope behind it from this reader.
+                // rejectedSeqs still names it (never cleared by the break below), so a caller can
+                // tell a rejected-signature stall apart from an ordinary gap or tool failure when it
+                // decides what to surface. Two ways this same stall actually releases on its own,
+                // never requiring intervention here: a NEXT seq beyond the cursor that was planted
+                // releases the moment the sender's own next FlushAsync legitimately re-introduces
+                // that same path in a new, correctly signed commit — `git log -n1 tip -- path` above
+                // then finds that newer commit instead, since it is the one that actually introduces
+                // the path in the ref's new tip's history; a PAST seq the sender itself already sent
+                // legitimately, then tampered with by someone else with push access, releases only at
+                // the sender's own next retention squash (MessageOutbox.SquashAsync), whose low-water
+                // mark moves effectiveSinceSeq in this method past it entirely, the same as any other
+                // pruned range.
                 rejectedSeqs.Add(seq);
-                highestSeqInspected = seq;
-                continue;
+                stalledAtSeq = seq;
+                break;
             }
 
             string? content = await RunGitCaptureAsync(repositoryPath, ["show", $"{introducingCommit}:{path}"], cancellationToken);
