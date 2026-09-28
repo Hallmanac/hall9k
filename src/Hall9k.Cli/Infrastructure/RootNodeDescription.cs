@@ -12,12 +12,25 @@ namespace Hall9k.Cli.Infrastructure;
 internal static class RootNodeDescription
 {
     /// <summary>Empty when the chain cannot name a node for <paramref name="root"/> at all (an
-    /// older ledger, or a caller-built chain with no opinion on it — <c>TrustedOwner.RootNodeId</c>'s
-    /// own doc) — appended straight onto a sentence naming the root fingerprint, never a
-    /// stand-alone clause a caller has to punctuate itself.</summary>
+    /// older ledger, or a caller-built chain with no opinion on it) — appended straight onto a
+    /// sentence naming the root fingerprint, never a stand-alone clause a caller has to punctuate
+    /// itself. Names the node holding the CURRENT top of <c>TrustedOwner.RootKeys</c> — K0's own
+    /// <c>TrustedOwner.RootNodeId</c> only when no rotation has ever landed — rather than always
+    /// K0's node: once succession has rotated a successor in, K0's own device is exactly the one
+    /// least likely to still hold a usable root key, and criterion 3's hint text exists to point an
+    /// operator at a device that actually can act, not at the one that got the owner into this
+    /// refusal in the first place (independent pre-PR review, cycle 2, conformance lens, low).
+    /// </summary>
     public static string Of(TrustChain chain, string root)
     {
-        if (!chain.OwnerChains.TryGetValue(root, out TrustedOwner? owner) || owner.RootNodeId is not { } nodeId)
+        if (!chain.OwnerChains.TryGetValue(root, out TrustedOwner? owner))
+        {
+            return string.Empty;
+        }
+
+        string? nodeId = owner.RootKeys.Count > 0 ? owner.RootKeys[^1].IntroducedByNodeId : null;
+        nodeId ??= owner.RootNodeId;
+        if (nodeId is null)
         {
             return string.Empty;
         }

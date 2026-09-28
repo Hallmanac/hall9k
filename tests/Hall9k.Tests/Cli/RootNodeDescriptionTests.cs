@@ -38,4 +38,25 @@ public sealed class RootNodeDescriptionTests
     {
         RootNodeDescription.Of(TrustChain.Empty, Root).Should().BeEmpty();
     }
+
+    [Fact]
+    public void Names_the_node_holding_the_current_live_root_key_once_succession_has_rotated()
+    {
+        const string SuccessorNodeId = "22222222-2222-2222-2222-222222222222";
+        const string SuccessorPublicKeyLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleSuccessorKeyLine";
+        const string SuccessorFingerprint = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        TrustChain chain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                [Root] = new(Root, RootPublicKeyLine, [], RootNodeId: RootNodeId, RootKeys:
+                [
+                    new LiveRootKey(RootPublicKeyLine, Root, null),
+                    new LiveRootKey(SuccessorPublicKeyLine, SuccessorFingerprint, SuccessorNodeId),
+                ]),
+            },
+            []);
+
+        RootNodeDescription.Of(chain, Root).Should().Be($" (the root node, node {SuccessorNodeId})",
+            "K0's own device is the least likely to still hold a usable root key once a successor has rotated in");
+    }
 }
