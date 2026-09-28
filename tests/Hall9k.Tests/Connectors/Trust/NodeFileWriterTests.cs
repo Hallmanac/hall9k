@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Trust;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Xunit;
 
@@ -9,7 +10,8 @@ namespace Hall9k.Tests.Connectors.Trust;
 
 /// <summary>
 /// <see cref="NodeFileWriter"/> against <see cref="FakeLedger"/>: the join write carries the
-/// GitHub declaration, and the refresh changes only those two fields of an existing file.
+/// GitHub declaration and the display name, and the refresh changes only the named field(s) of an
+/// existing file.
 /// </summary>
 public sealed class NodeFileWriterTests
 {
@@ -36,7 +38,7 @@ public sealed class NodeFileWriterTests
 
         bool wrote = await NodeFileWriter.WriteAsync(
             ledger, Repository, NodeId, Key, "root-fingerprint", "machine", "macOS", DateTimeOffset.UnixEpoch, inviteProof: null,
-            Octocat, Committer, SigningKey, CancellationToken.None);
+            Octocat, DisplayName.None, Committer, SigningKey, CancellationToken.None);
 
         wrote.Should().BeTrue();
         LedgerWriteRequest write = ledger.Writes.Should().ContainSingle().Subject;
@@ -52,9 +54,33 @@ public sealed class NodeFileWriterTests
 
         await NodeFileWriter.WriteAsync(
             ledger, Repository, NodeId, Key, "root-fingerprint", "machine", "macOS", DateTimeOffset.UnixEpoch, null,
-            github: null, Committer, SigningKey, CancellationToken.None);
+            github: null, DisplayName.None, Committer, SigningKey, CancellationToken.None);
 
         ledger.Writes.Single().Content.Should().NotContain("github_");
+    }
+
+    [Fact]
+    public async Task Join_writes_the_effective_display_name_it_is_given()
+    {
+        FakeLedger ledger = new();
+
+        await NodeFileWriter.WriteAsync(
+            ledger, Repository, NodeId, Key, "root-fingerprint", "machine", "macOS", DateTimeOffset.UnixEpoch, null,
+            github: null, DisplayName.Parse("Ada Lovelace"), Committer, SigningKey, CancellationToken.None);
+
+        ledger.Writes.Single().Content.Should().Contain("display_name: \"Ada Lovelace\"");
+    }
+
+    [Fact]
+    public async Task Join_with_no_display_name_omits_the_line_rather_than_writing_an_empty_one()
+    {
+        FakeLedger ledger = new();
+
+        await NodeFileWriter.WriteAsync(
+            ledger, Repository, NodeId, Key, "root-fingerprint", "machine", "macOS", DateTimeOffset.UnixEpoch, null,
+            github: null, DisplayName.None, Committer, SigningKey, CancellationToken.None);
+
+        ledger.Writes.Single().Content.Should().NotContain("display_name");
     }
 
     [Fact]
@@ -63,11 +89,11 @@ public sealed class NodeFileWriterTests
         FakeLedger ledger = new();
         await NodeFileWriter.WriteAsync(
             ledger, Repository, NodeId, Key, "root-fingerprint", "machine", "macOS", DateTimeOffset.UnixEpoch, null,
-            Octocat, Committer, SigningKey, CancellationToken.None);
+            Octocat, DisplayName.None, Committer, SigningKey, CancellationToken.None);
 
         bool wrote = await NodeFileWriter.WriteAsync(
             ledger, Repository, NodeId, Key, "root-fingerprint", "machine", "macOS", DateTimeOffset.UnixEpoch, null,
-            github: null, Committer, SigningKey, CancellationToken.None);
+            github: null, DisplayName.None, Committer, SigningKey, CancellationToken.None);
 
         wrote.Should().BeFalse("the carried declaration makes the regenerated content identical");
         ledger.Writes.Should().ContainSingle();
@@ -145,6 +171,88 @@ public sealed class NodeFileWriterTests
 
         NodeFileRefreshOutcome outcome = await NodeFileWriter.RefreshGitHubDeclarationAsync(
             ledger, Repository, NodeId, Octocat, "ssh-ed25519 AAAAregenerated node", Committer, SigningKey, CancellationToken.None);
+
+        outcome.Should().Be(NodeFileRefreshOutcome.SigningKeyDiffers);
+        ledger.Writes.Should().HaveCount(writesBefore);
+    }
+
+    [Fact]
+    public async Task Display_name_refresh_adds_the_field_and_touches_nothing_else()
+    {
+        FakeLedger ledger = await SeedAsync(OldFile);
+
+        NodeFileRefreshOutcome outcome = await NodeFileWriter.RefreshDisplayNameAsync(
+            ledger, Repository, NodeId, DisplayName.Parse("Ada Lovelace"), Key.PublicKeyLine, Committer, SigningKey,
+            CancellationToken.None);
+
+        outcome.Should().Be(NodeFileRefreshOutcome.Written);
+        LedgerWriteRequest write = ledger.Writes[^1];
+        write.CommitMessage.Should().Be("Update node facts");
+        write.SigningKey.Should().Be(SigningKey);
+        write.Content.Should().Be(OldFile + "display_name: \"Ada Lovelace\"\n");
+    }
+
+    [Fact]
+    public async Task Display_name_refresh_replaces_a_changed_name_in_place_and_touches_nothing_else()
+    {
+        string declared = OldFile.Replace("invite_proof", "display_name: \"Old Name\"\ninvite_proof");
+        FakeLedger ledger = await SeedAsync(declared);
+
+        await NodeFileWriter.RefreshDisplayNameAsync(
+            ledger, Repository, NodeId, DisplayName.Parse("New Name"), Key.PublicKeyLine, Committer, SigningKey,
+            CancellationToken.None);
+
+        ledger.Writes[^1].Content.Should().Be(declared.Replace("Old Name", "New Name"));
+    }
+
+    [Fact]
+    public async Task Display_name_refresh_removes_the_line_entirely_rather_than_writing_an_empty_one()
+    {
+        string declared = OldFile.Replace("invite_proof", "display_name: \"Old Name\"\ninvite_proof");
+        FakeLedger ledger = await SeedAsync(declared);
+
+        NodeFileRefreshOutcome outcome = await NodeFileWriter.RefreshDisplayNameAsync(
+            ledger, Repository, NodeId, DisplayName.None, Key.PublicKeyLine, Committer, SigningKey, CancellationToken.None);
+
+        outcome.Should().Be(NodeFileRefreshOutcome.Written);
+        ledger.Writes[^1].Content.Should().Be(OldFile).And.NotContain("display_name");
+    }
+
+    [Fact]
+    public async Task Display_name_refresh_writes_nothing_when_the_file_already_carries_no_name_and_none_is_asked_for()
+    {
+        FakeLedger ledger = await SeedAsync(OldFile);
+        int writesBefore = ledger.Writes.Count;
+
+        NodeFileRefreshOutcome outcome = await NodeFileWriter.RefreshDisplayNameAsync(
+            ledger, Repository, NodeId, DisplayName.None, Key.PublicKeyLine, Committer, SigningKey, CancellationToken.None);
+
+        outcome.Should().Be(NodeFileRefreshOutcome.Unchanged);
+        ledger.Writes.Should().HaveCount(writesBefore);
+    }
+
+    [Fact]
+    public async Task Display_name_refresh_never_creates_a_node_file_where_none_exists()
+    {
+        FakeLedger ledger = new();
+
+        NodeFileRefreshOutcome outcome = await NodeFileWriter.RefreshDisplayNameAsync(
+            ledger, Repository, NodeId, DisplayName.Parse("Ada Lovelace"), Key.PublicKeyLine, Committer, SigningKey,
+            CancellationToken.None);
+
+        outcome.Should().Be(NodeFileRefreshOutcome.NoNodeFile);
+        ledger.Writes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Display_name_refresh_writes_nothing_when_the_file_names_a_different_key_than_the_one_that_would_sign()
+    {
+        FakeLedger ledger = await SeedAsync(OldFile);
+        int writesBefore = ledger.Writes.Count;
+
+        NodeFileRefreshOutcome outcome = await NodeFileWriter.RefreshDisplayNameAsync(
+            ledger, Repository, NodeId, DisplayName.Parse("Ada Lovelace"), "ssh-ed25519 AAAAregenerated node", Committer,
+            SigningKey, CancellationToken.None);
 
         outcome.Should().Be(NodeFileRefreshOutcome.SigningKeyDiffers);
         ledger.Writes.Should().HaveCount(writesBefore);

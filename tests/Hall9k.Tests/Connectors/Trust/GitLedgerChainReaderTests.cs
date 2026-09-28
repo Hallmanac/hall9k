@@ -5,6 +5,7 @@ using FluentAssertions;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Trust;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Connectors.Ledger;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -289,6 +290,98 @@ public sealed class GitLedgerChainReaderTests : IDisposable
 
         chain.NodeDeclarations.Should().BeEmpty();
         chain.UnverifiedWrites.Should().ContainSingle(write => write.Kind == "node" && write.Identifier == owner.NodeId.ToString());
+    }
+
+    [Fact]
+    public async Task A_root_nodes_self_signed_display_name_is_read_for_the_root()
+    {
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        await WriteNodeFileAsync(ownerRepo, owner, owner, displayName: "Ada Lovelace");
+
+        TrustChain chain = await _chainReader.ComputeAsync(_repo.CloneNode(hub), CancellationToken.None);
+
+        chain.NodeDisplayNames[owner.NodeId.ToString()].Name.Value.Should().Be("Ada Lovelace");
+        chain.DisplayNameOf(owner.Fingerprint).Value.Should().Be("Ada Lovelace");
+        chain.UnverifiedWrites.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_vouched_non_root_nodes_self_signed_display_name_is_read_for_its_owner()
+    {
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        await WriteNodeFileAsync(ownerRepo, owner, owner);
+        GeneratedIdentity nodeB = GenerateIdentity();
+        string nodeBRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(nodeBRepo, nodeB, nodeB, owner.Fingerprint, displayName: "Second Machine");
+        await VouchAsync(ownerRepo, owner.Fingerprint, nodeB, owner);
+
+        TrustChain chain = await _chainReader.ComputeAsync(_repo.CloneNode(hub), CancellationToken.None);
+
+        chain.NodeDisplayNames.Should().ContainKey(nodeB.NodeId.ToString());
+        chain.DisplayNameOf(owner.Fingerprint).Value.Should().Be("Second Machine");
+    }
+
+    [Fact]
+    public async Task A_node_file_written_before_the_display_name_existed_reads_as_no_name()
+    {
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        await WriteNodeFileAsync(ownerRepo, owner, owner);
+
+        TrustChain chain = await _chainReader.ComputeAsync(_repo.CloneNode(hub), CancellationToken.None);
+
+        chain.NodeDisplayNames.Should().BeEmpty();
+        chain.DisplayNameOf(owner.Fingerprint).Should().Be(DisplayName.None);
+    }
+
+    /// <summary>
+    /// The identical self-signature gate a GitHub declaration carries, applied to a display name
+    /// (task e6744304). Unlike a forged GitHub declaration, though, this never reaches
+    /// <see cref="TrustChain.UnverifiedWrites"/>: a label only has no trust consequence to warn
+    /// about.
+    /// </summary>
+    [Fact]
+    public async Task A_node_file_rewritten_by_a_key_other_than_its_own_yields_no_display_name_and_is_not_reported()
+    {
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        GeneratedIdentity nodeB = GenerateIdentity();
+        string nodeBRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(nodeBRepo, nodeB, nodeB, owner.Fingerprint);
+        await VouchAsync(ownerRepo, owner.Fingerprint, nodeB, owner);
+
+        // Anyone with push rewrites node B's file, keeping B's public key line, but signs it as themselves.
+        GeneratedIdentity stranger = GenerateIdentity();
+        string strangerRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(strangerRepo, nodeB, stranger, owner.Fingerprint, displayName: "Forged Name");
+
+        TrustChain chain = await _chainReader.ComputeAsync(_repo.CloneNode(hub), CancellationToken.None);
+
+        chain.NodeDisplayNames.Should().NotContainKey(nodeB.NodeId.ToString());
+        chain.DisplayNameOf(owner.Fingerprint).Should().Be(DisplayName.None);
+        chain.UnverifiedWrites.Should().BeEmpty("a display name is a label only, with no trust consequence to name");
+    }
+
+    [Fact]
+    public async Task Two_nodes_of_one_owner_declaring_different_display_names_the_newest_wins()
+    {
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        await WriteNodeFileAsync(ownerRepo, owner, owner);
+        // Pinned well before node B's write below: the newest-wins rule reads the committer time,
+        // which has one-second resolution, so leaving both to the wall clock could tie them.
+        await RewriteNodeFileWithDisplayNameAsync(
+            ownerRepo, owner, "Older Name", new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        GeneratedIdentity nodeB = GenerateIdentity();
+        string nodeBRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(nodeBRepo, nodeB, nodeB, owner.Fingerprint, displayName: "Newer Name");
+        await VouchAsync(ownerRepo, owner.Fingerprint, nodeB, owner);
+
+        TrustChain chain = await _chainReader.ComputeAsync(_repo.CloneNode(hub), CancellationToken.None);
+
+        chain.DisplayNameOf(owner.Fingerprint).Value.Should().Be("Newer Name");
     }
 
     [Fact]
@@ -1571,7 +1664,7 @@ public sealed class GitLedgerChainReaderTests : IDisposable
 
     private async Task WriteNodeFileAsync(
         string repositoryPath, GeneratedIdentity node, GeneratedIdentity signer, string? ownerFingerprint = null,
-        DeclaredGitHubAccount? github = null)
+        DeclaredGitHubAccount? github = null, string? displayName = null)
     {
         string refName = $"refs/hall9k/ledger/nodes/{node.NodeId}";
         string path = $"nodes/{node.NodeId}/node.yaml";
@@ -1589,6 +1682,11 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         {
             fields.Add(("github_login", github.Login));
             fields.Add(("github_account_id", github.AccountId.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        if (displayName is not null)
+        {
+            fields.Add(("display_name", displayName));
         }
 
         await WriteAsync(repositoryPath, refName, path, BuildYaml([.. fields]), signer);
@@ -1613,6 +1711,26 @@ public sealed class GitLedgerChainReaderTests : IDisposable
             ("github_account_id", github.AccountId.ToString(CultureInfo.InvariantCulture)));
         string tree = await BuildTreeWithFileAsync(repositoryPath, tip, path, content);
         string commit = await CommitTreeAsync(repositoryPath, tree, [tip], node, "declare GitHub account", committerDate: committedAt);
+        await RunGitCaptureAsync(repositoryPath, ["push", "origin", $"{commit}:{refName}"]);
+    }
+
+    /// <summary>The display-name sibling of <see cref="RewriteNodeFileWithDeclarationAsync"/>: adds
+    /// a display name to a self-owned node file already on the hub, as a self-signed commit whose
+    /// committer date is <paramref name="committedAt"/>.</summary>
+    private async Task RewriteNodeFileWithDisplayNameAsync(
+        string repositoryPath, GeneratedIdentity node, string displayName, DateTimeOffset committedAt)
+    {
+        string refName = $"refs/hall9k/ledger/nodes/{node.NodeId}";
+        string path = $"nodes/{node.NodeId}/node.yaml";
+        await RunGitCaptureAsync(repositoryPath, ["fetch", "origin", $"+{refName}:{refName}"]);
+        string tip = await RunGitCaptureAsync(repositoryPath, ["rev-parse", "--verify", refName]);
+        string content = BuildYaml(
+            ("node_id", node.NodeId.ToString()),
+            ("public_key", node.PublicKeyLine),
+            ("owner_fingerprint", node.Fingerprint),
+            ("display_name", displayName));
+        string tree = await BuildTreeWithFileAsync(repositoryPath, tip, path, content);
+        string commit = await CommitTreeAsync(repositoryPath, tree, [tip], node, "declare display name", committerDate: committedAt);
         await RunGitCaptureAsync(repositoryPath, ["push", "origin", $"{commit}:{refName}"]);
     }
 

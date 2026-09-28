@@ -91,7 +91,8 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             }
         }
 
-        (IReadOnlyList<UnverifiedLedgerWrite> nodeUnverified, IReadOnlyDictionary<string, NodeGitHubDeclaration> declarations) =
+        (IReadOnlyList<UnverifiedLedgerWrite> nodeUnverified, IReadOnlyDictionary<string, NodeGitHubDeclaration> declarations,
+            IReadOnlyDictionary<string, NodeDisplayNameDeclaration> displayNames) =
             await AttachRootNodeIdsAsync(repositoryPath, ownerChains, cancellationToken);
         unverified.AddRange(nodeUnverified);
 
@@ -100,7 +101,8 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             await ComputeMembersAsync(repositoryPath, ownerChains, cancellationToken);
         unverified.AddRange(memberUnverified);
 
-        return new TrustChain(ownerChains, members, unverified, genesisRootFingerprint, projectKey, declarations);
+        return new TrustChain(
+            ownerChains, members, unverified, genesisRootFingerprint, projectKey, declarations, displayNames);
     }
 
     /// <summary>Every <c>refs/hall9k/ledger/owners/&lt;fingerprint&gt;</c> ref origin currently
@@ -198,25 +200,27 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// than node-id sort order (independent pre-PR review, cycle 3, both lenses, medium).
     /// </para>
     /// </summary>
-    private async Task<(IReadOnlyList<UnverifiedLedgerWrite> Unverified, IReadOnlyDictionary<string, NodeGitHubDeclaration> Declarations)>
+    private async Task<(IReadOnlyList<UnverifiedLedgerWrite> Unverified, IReadOnlyDictionary<string, NodeGitHubDeclaration> Declarations,
+        IReadOnlyDictionary<string, NodeDisplayNameDeclaration> DisplayNames)>
         AttachRootNodeIdsAsync(
             string repositoryPath, Dictionary<string, TrustedOwner> ownerChains, CancellationToken cancellationToken)
     {
         if (ownerChains.Count == 0)
         {
-            return ([], new Dictionary<string, NodeGitHubDeclaration>());
+            return ([], new Dictionary<string, NodeGitHubDeclaration>(), new Dictionary<string, NodeDisplayNameDeclaration>());
         }
 
         IReadOnlyList<string> nodeIds = await DiscoverNodeIdsAsync(repositoryPath, cancellationToken);
         if (nodeIds.Count == 0)
         {
-            return ([], new Dictionary<string, NodeGitHubDeclaration>());
+            return ([], new Dictionary<string, NodeGitHubDeclaration>(), new Dictionary<string, NodeDisplayNameDeclaration>());
         }
 
         await FetchRefsAsync(repositoryPath, NodesRefPrefix, cancellationToken);
 
         List<UnverifiedLedgerWrite> unverified = [];
         Dictionary<string, NodeGitHubDeclaration> declarations = [];
+        Dictionary<string, NodeDisplayNameDeclaration> displayNames = [];
         foreach (string nodeId in nodeIds)
         {
             string refName = $"{NodesRefPrefix}{nodeId}";
@@ -258,6 +262,21 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                         "node", nodeId, ownerFingerprintLine ?? fingerprint,
                         $"commit {(commits.Count > 0 ? commits[0] : tip)} for {path} declares a GitHub account "
                         + "but is not signed by that node file's own public key"));
+                }
+            }
+
+            // The display name this node declares (task e6744304) counts under the identical
+            // self-signature rule above. Being a label only that never feeds a trust or
+            // cross-check decision, though, an improperly signed one simply yields no name here
+            // rather than also being named in UnverifiedWrites: there is no trust consequence for
+            // this reader to warn about the way a forged GitHub declaration warrants.
+            if (content is not null && NodeFileWriter.ReadDisplayName(content) is { HasValue: true } declaredName)
+            {
+                commits ??= await CommitsTouchingPathAsync(repositoryPath, tip, path, cancellationToken);
+                if (commits.Count > 0 && await IsSignedByAsync(repositoryPath, commits[0], publicKeyLine, cancellationToken))
+                {
+                    DateTimeOffset declaredAt = await CommitTimeAsync(repositoryPath, commits[0], cancellationToken);
+                    displayNames[nodeId] = new NodeDisplayNameDeclaration(nodeId, fingerprint, declaredName, declaredAt);
                 }
             }
 
@@ -305,7 +324,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             }
         }
 
-        return (unverified, declarations);
+        return (unverified, declarations, displayNames);
     }
 
     /// <summary>The committer time of <paramref name="commit"/>, only ever used to order two declarations of the same account against each other (a rename), never as a trust anchor.</summary>

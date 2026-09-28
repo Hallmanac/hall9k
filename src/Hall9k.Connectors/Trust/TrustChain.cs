@@ -1,3 +1,5 @@
+using Hall9k.Domain.Shared.ValueObjects;
+
 namespace Hall9k.Connectors.Trust;
 
 /// <summary>A project member's role — owner or member, idea 202383dc's own closed pair (PLAN.md
@@ -178,6 +180,16 @@ public sealed record ProjectMember(string RootFingerprint, MembershipRole Role, 
 public sealed record NodeGitHubDeclaration(string NodeId, string KeyFingerprint, DeclaredGitHubAccount Account, DateTimeOffset DeclaredAt);
 
 /// <summary>
+/// The display name one node declares for its owner in its own <c>node.yaml</c> (task e6744304),
+/// taken only from a file whose newest commit is signed by that file's own public key
+/// (<see cref="KeyFingerprint"/>), the identical rule <see cref="NodeGitHubDeclaration"/> already
+/// carries. A label only: nothing here ever feeds a trust or cross-check decision.
+/// <see cref="DeclaredAt"/> is the committing time, used only to pick the newest name when a
+/// member's own nodes disagree.
+/// </summary>
+public sealed record NodeDisplayNameDeclaration(string NodeId, string KeyFingerprint, DisplayName Name, DateTimeOffset DeclaredAt);
+
+/// <summary>
 /// A vouch, revocation, or membership write the chain read found but could not verify — its signer
 /// traced back to no currently trusted key, so the file or event it names was never applied to
 /// <see cref="TrustChain.OwnerChains"/> or <see cref="TrustChain.Members"/>. Named here rather than
@@ -225,7 +237,8 @@ public sealed record TrustChain(
     IReadOnlyList<UnverifiedLedgerWrite>? UnverifiedWrites = null,
     string? GenesisRootFingerprint = null,
     string? ProjectKey = null,
-    IReadOnlyDictionary<string, NodeGitHubDeclaration>? NodeDeclarations = null)
+    IReadOnlyDictionary<string, NodeGitHubDeclaration>? NodeDeclarations = null,
+    IReadOnlyDictionary<string, NodeDisplayNameDeclaration>? NodeDisplayNames = null)
 {
     /// <summary>
     /// Every node's verified GitHub declaration, keyed by node id: the file's newest commit was signed
@@ -234,6 +247,14 @@ public sealed record TrustChain(
     /// </summary>
     public IReadOnlyDictionary<string, NodeGitHubDeclaration> NodeDeclarations { get; init; } =
         NodeDeclarations ?? new Dictionary<string, NodeGitHubDeclaration>();
+
+    /// <summary>
+    /// Every node's verified display-name declaration, keyed by node id, on the identical terms
+    /// <see cref="NodeDeclarations"/> already carries (task e6744304). Never null; a node file
+    /// written before the field existed, or whose owner never set a name, simply has no entry.
+    /// </summary>
+    public IReadOnlyDictionary<string, NodeDisplayNameDeclaration> NodeDisplayNames { get; init; } =
+        NodeDisplayNames ?? new Dictionary<string, NodeDisplayNameDeclaration>();
 
     /// <summary>
     /// The distinct GitHub accounts declared across <paramref name="root"/>'s own nodes: distinct by
@@ -256,6 +277,29 @@ public sealed record TrustChain(
                     .ThenByDescending(declaration => declaration.NodeId, StringComparer.Ordinal)
                     .First().Account)]
             : [];
+
+    /// <summary>
+    /// The newest display name declared across <paramref name="root"/>'s own nodes (task e6744304),
+    /// or <see cref="DisplayName.None"/> when none of them declares one. A label only: this is never
+    /// consulted by <see cref="IsAllowedSigner(string)"/> or any other trust or cross-check decision
+    /// here, unlike <see cref="DeclaredAccountsOf"/>'s own accounts. The same tie-break
+    /// <see cref="DeclaredAccountsOf"/> uses (newest commit time, then the higher node id) applies
+    /// when two nodes disagree in the same second, so the answer never depends on fleet list order.
+    /// A declaration counts only for a node in this root's fleet whose file carries the very key the
+    /// chain vouched for that node id, the same <see cref="TrustedOwner.ContainsForNode"/> gate
+    /// <see cref="DeclaredAccountsOf"/> applies.
+    /// </summary>
+    public DisplayName DisplayNameOf(string root) =>
+        OwnerChains.TryGetValue(root, out TrustedOwner? owner)
+            ? owner.FleetNodeIds()
+                .Select(nodeId => NodeDisplayNames.GetValueOrDefault(nodeId.ToString()))
+                .OfType<NodeDisplayNameDeclaration>()
+                .Where(declaration => owner.ContainsForNode(declaration.KeyFingerprint, declaration.NodeId))
+                .OrderByDescending(declaration => declaration.DeclaredAt)
+                .ThenByDescending(declaration => declaration.NodeId, StringComparer.Ordinal)
+                .Select(declaration => declaration.Name)
+                .FirstOrDefault() ?? DisplayName.None
+            : DisplayName.None;
 
     /// <summary>Never null, whatever a caller passed the primary constructor: a two-argument
     /// construction (every call site that predates this field) gets an empty list rather than a

@@ -3,6 +3,7 @@ using System.Text;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Connectors.Trust;
 
@@ -46,17 +47,21 @@ public static class NodeFileWriter
 
     private const string LoginKey = "github_login";
     private const string AccountIdKey = "github_account_id";
+    private const string DisplayNameKey = "display_name";
 
     /// <summary>
     /// Writes the whole node file from this call's own arguments, returning whether a commit landed.
     /// When <paramref name="github"/> is null (gh could not answer), an account the existing file
     /// already declares is carried forward rather than erased, so a join that cannot read gh never
-    /// removes a claim an earlier run made.
+    /// removes a claim an earlier run made. <paramref name="displayName"/> is always the caller's own
+    /// current effective value (task e6744304): this machine's own local record, never something to
+    /// carry forward from the file, so a re-join always regenerates the same line it would write
+    /// fresh, and <see cref="DisplayName.None"/> simply omits it.
     /// </summary>
     public static async Task<bool> WriteAsync(
         ILedger ledger, string repositoryPath, Guid nodeId, NodeSigningKey key, string claimedOwnerFingerprint,
         string machineName, string operatingSystem, DateTimeOffset joinedAt, string? inviteProof,
-        DeclaredGitHubAccount? github, LedgerCommitter committer, LedgerSigningKey signingKey,
+        DeclaredGitHubAccount? github, DisplayName displayName, LedgerCommitter committer, LedgerSigningKey signingKey,
         CancellationToken cancellationToken)
     {
         string refName = RefName(nodeId);
@@ -83,7 +88,8 @@ public static class NodeFileWriter
                 ("joined_at", joinedAt.ToString("o", CultureInfo.InvariantCulture)),
                 ("invite_proof", inviteProof),
                 (LoginKey, declared?.Login),
-                (AccountIdKey, declared?.AccountId.ToString(CultureInfo.InvariantCulture)));
+                (AccountIdKey, declared?.AccountId.ToString(CultureInfo.InvariantCulture)),
+                (DisplayNameKey, displayName.HasValue ? displayName.Value : null));
 
             if (current.Content == content)
             {
@@ -115,10 +121,43 @@ public static class NodeFileWriter
     /// node file: the invite sweep treats a new one as a join candidate. Writes only when the file's
     /// own <c>public_key</c> is <paramref name="signingPublicKeyLine"/>, the key that will sign the commit.
     /// </summary>
-    public static async Task<NodeFileRefreshOutcome> RefreshGitHubDeclarationAsync(
+    public static Task<NodeFileRefreshOutcome> RefreshGitHubDeclarationAsync(
         ILedger ledger, string repositoryPath, Guid nodeId, DeclaredGitHubAccount account,
         string signingPublicKeyLine, LedgerCommitter committer, LedgerSigningKey signingKey,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) =>
+        RefreshFieldsAsync(
+            ledger, repositoryPath, nodeId, signingPublicKeyLine, committer, signingKey, cancellationToken,
+            (LoginKey, account.Login), (AccountIdKey, account.AccountId.ToString(CultureInfo.InvariantCulture)));
+
+    /// <summary>
+    /// Brings the display name in an existing node file up to <paramref name="displayName"/>, the
+    /// caller's own already-resolved effective value for this project (task e6744304): that
+    /// project's own entry, else this machine's default, else <see cref="DisplayName.None"/>.
+    /// Changes only <c>display_name</c>, removing the line entirely rather than writing an empty one
+    /// when <paramref name="displayName"/> has no value, and leaves every other line exactly as read.
+    /// Never creates a node file. Writes only when the file's own <c>public_key</c> is
+    /// <paramref name="signingPublicKeyLine"/>, the key that will sign the commit.
+    /// </summary>
+    public static Task<NodeFileRefreshOutcome> RefreshDisplayNameAsync(
+        ILedger ledger, string repositoryPath, Guid nodeId, DisplayName displayName,
+        string signingPublicKeyLine, LedgerCommitter committer, LedgerSigningKey signingKey,
+        CancellationToken cancellationToken) =>
+        RefreshFieldsAsync(
+            ledger, repositoryPath, nodeId, signingPublicKeyLine, committer, signingKey, cancellationToken,
+            (DisplayNameKey, displayName.HasValue ? displayName.Value : null));
+
+    /// <summary>
+    /// The read-check-write path <see cref="RefreshGitHubDeclarationAsync"/> and
+    /// <see cref="RefreshDisplayNameAsync"/> both share: read the existing file, refuse when it does
+    /// not exist or names a different signing key, skip the write when every field already carries
+    /// its target value, and otherwise change just those fields (<see cref="WithFields"/>) and push a
+    /// fresh "Update node facts" commit, retrying a conflict against a fresh read up to
+    /// <see cref="MaxConflictRetries"/> times. A null field value means "no line at all", used by a
+    /// clear, never by a GitHub declaration, which never clears.
+    /// </summary>
+    private static async Task<NodeFileRefreshOutcome> RefreshFieldsAsync(
+        ILedger ledger, string repositoryPath, Guid nodeId, string signingPublicKeyLine, LedgerCommitter committer,
+        LedgerSigningKey signingKey, CancellationToken cancellationToken, params (string Key, string? Value)[] fields)
     {
         string refName = RefName(nodeId);
         string path = NodePath(nodeId);
@@ -136,14 +175,16 @@ public static class NodeFileWriter
                 return NodeFileRefreshOutcome.SigningKeyDiffers;
             }
 
-            if (ReadDeclaration(current.Content!) == account)
+            bool unchanged = fields.All(
+                field => GitLedgerChainReader.ExtractQuotedYamlValue(current.Content!, field.Key) == field.Value);
+            if (unchanged)
             {
                 return NodeFileRefreshOutcome.Unchanged;
             }
 
             LedgerWriteOutcome outcome = await ledger.WriteAsync(
                 new LedgerWriteRequest(
-                    repositoryPath, refName, path, WithDeclaration(current.Content!, account), current.BlobId,
+                    repositoryPath, refName, path, WithFields(current.Content!, fields), current.BlobId,
                     "Update node facts", committer, signingKey),
                 cancellationToken);
             if (outcome.Verdict == LedgerWriteVerdict.Written)
@@ -153,7 +194,7 @@ public static class NodeFileWriter
         }
 
         throw new DomainConflictException(
-            $"node.yaml for node {nodeId} kept changing out from under the GitHub declaration refresh after "
+            $"node.yaml for node {nodeId} kept changing out from under a facts refresh after "
             + $"{MaxConflictRetries} attempts.");
     }
 
@@ -178,49 +219,65 @@ public static class NodeFileWriter
             ? new DeclaredGitHubAccount(accountId, login)
             : null;
 
+    /// <summary>The display name a node file carries, or <see cref="DisplayName.None"/> when the
+    /// field is absent (a file written before the field existed, or whose owner never set one,
+    /// reads this way).</summary>
+    internal static DisplayName ReadDisplayName(string yaml) =>
+        DisplayName.Trusted(GitLedgerChainReader.ExtractQuotedYamlValue(yaml, DisplayNameKey));
+
     /// <summary>
-    /// <paramref name="yaml"/> with the two declaration lines replaced in place when present and
-    /// appended when not, every other byte untouched. New lines use the file's own line ending, so
-    /// a file written on Windows stays consistently CRLF.
+    /// <paramref name="yaml"/> with each named field's own line replaced in place when present and
+    /// appended when not, every other byte untouched. A field whose value is null is instead removed
+    /// entirely (dropped in place if it was there, never appended if it was not), the shape a clear
+    /// needs that a declaration (which never clears) never used before. New lines use the file's own
+    /// line ending, so a file written on Windows stays consistently CRLF.
     /// </summary>
-    private static string WithDeclaration(string yaml, DeclaredGitHubAccount account)
+    private static string WithFields(string yaml, IReadOnlyList<(string Key, string? Value)> fields)
     {
         string newline = yaml.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
-        string loginLine = $"{LoginKey}: {QuoteYaml(account.Login)}";
-        string idLine = $"{AccountIdKey}: {QuoteYaml(account.AccountId.ToString(CultureInfo.InvariantCulture))}";
-
-        bool sawLogin = false;
-        bool sawId = false;
         string[] lines = yaml.Split('\n');
-        for (int index = 0; index < lines.Length; index++)
+        bool[] seen = new bool[fields.Count];
+        List<string> resultLines = new(lines.Length);
+        foreach (string rawLine in lines)
         {
-            string carriageReturn = lines[index].EndsWith('\r') ? "\r" : string.Empty;
-            if (lines[index].StartsWith($"{LoginKey}:", StringComparison.Ordinal))
+            string carriageReturn = rawLine.EndsWith('\r') ? "\r" : string.Empty;
+            int matchIndex = -1;
+            for (int index = 0; index < fields.Count; index++)
             {
-                lines[index] = loginLine + carriageReturn;
-                sawLogin = true;
+                if (rawLine.StartsWith($"{fields[index].Key}:", StringComparison.Ordinal))
+                {
+                    matchIndex = index;
+                    break;
+                }
             }
-            else if (lines[index].StartsWith($"{AccountIdKey}:", StringComparison.Ordinal))
+
+            if (matchIndex < 0)
             {
-                lines[index] = idLine + carriageReturn;
-                sawId = true;
+                resultLines.Add(rawLine);
+                continue;
+            }
+
+            seen[matchIndex] = true;
+            if (fields[matchIndex].Value is { } value)
+            {
+                resultLines.Add($"{fields[matchIndex].Key}: {QuoteYaml(value)}{carriageReturn}");
             }
         }
 
-        StringBuilder builder = new(string.Join('\n', lines));
-        if ((!sawLogin || !sawId) && builder.Length > 0 && builder[^1] != '\n')
+        StringBuilder builder = new(string.Join('\n', resultLines));
+        for (int index = 0; index < fields.Count; index++)
         {
-            builder.Append(newline);
-        }
+            if (seen[index] || fields[index].Value is not { } value)
+            {
+                continue;
+            }
 
-        if (!sawLogin)
-        {
-            builder.Append(loginLine).Append(newline);
-        }
+            if (builder.Length > 0 && builder[^1] != '\n')
+            {
+                builder.Append(newline);
+            }
 
-        if (!sawId)
-        {
-            builder.Append(idLine).Append(newline);
+            builder.Append(fields[index].Key).Append(": ").Append(QuoteYaml(value)).Append(newline);
         }
 
         return builder.ToString();
@@ -243,7 +300,7 @@ public static class NodeFileWriter
         StringBuilder builder = new();
         foreach ((string key, string? value) in fields)
         {
-            if (value is null && key is LoginKey or AccountIdKey)
+            if (value is null && key is LoginKey or AccountIdKey or DisplayNameKey)
             {
                 continue;
             }
