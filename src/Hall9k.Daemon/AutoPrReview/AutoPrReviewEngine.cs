@@ -222,6 +222,18 @@ internal static class AutoPrReviewObservation
                 && outcome == ReviewRequestOutcome.AlreadyCovered
                 && taskId is not null
                 && recorded.TaskId == taskId => ReviewRequestOutcome.TaskCreated,
+            // The identical rediscovery-of-the-same-task case, for a parked mint (independent
+            // pre-PR review, cycle 1, adversarial lens, low): a non-member's mint records
+            // TaskCreatedParked, and the very next sweep's own fast path rediscovers that same
+            // still-Published task as AlreadyCovered. Without this arm, AlreadyCovered would
+            // overwrite the parked outcome and its detail, and IsReportable would spend an extra
+            // Info line saying nothing new happened — exactly the noise this method exists to
+            // prevent, and the needs-you row an operator assigns from is unaffected either way,
+            // since that comes from the task itself, never this outcome.
+            not null when recorded.Outcome == ReviewRequestOutcome.TaskCreatedParked
+                && outcome == ReviewRequestOutcome.AlreadyCovered
+                && taskId is not null
+                && recorded.TaskId == taskId => ReviewRequestOutcome.TaskCreatedParked,
             _ => outcome,
         };
 
@@ -296,10 +308,19 @@ public sealed class AutoPrReviewEngine(
     ILogger<AutoPrReviewEngine> logger,
     PullRequestReviewDuplicateConvergence? duplicateConvergence = null,
     EnrolledNodeSnapshots? enrolledNodes = null,
-    IOptions<DaemonOptions>? options = null)
+    IOptions<DaemonOptions>? options = null,
+    TimeProvider? clock = null)
 {
     private static readonly string[] TerminalStates =
         [TaskState.Done.Value, TaskState.Abandoned.Value];
+
+    /// <summary>
+    /// Every "now" this sweep stamps onto a record or an event — a seam so a test can fix the
+    /// clock rather than couple to the host's own real one (this project's test-hygiene rule:
+    /// a new test must not reach <c>DateTimeOffset.UtcNow</c> through the code under test while
+    /// fixing its own date). Production never passes <paramref name="clock"/> and gets the real one.
+    /// </summary>
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
 
     /// <summary>
     /// The standing duplicate pass this sweep runs after every project has been read. Optional so a
@@ -487,7 +508,7 @@ public sealed class AutoPrReviewEngine(
             return recorded.AdoptedAt;
         }
 
-        AutoPrReviewDefaultAdoption adoption = new() { Id = node.NodeId, AdoptedAt = DateTimeOffset.UtcNow };
+        AutoPrReviewDefaultAdoption adoption = new() { Id = node.NodeId, AdoptedAt = _clock.GetUtcNow() };
         session.Insert(adoption);
         try
         {
@@ -610,7 +631,7 @@ public sealed class AutoPrReviewEngine(
             {
                 Id = project.Id,
                 IsPrivate = isPrivate,
-                ObservedAt = DateTimeOffset.UtcNow,
+                ObservedAt = _clock.GetUtcNow(),
             });
             await session.SaveChangesAsync(cancellationToken);
             return isPrivate;
@@ -772,7 +793,7 @@ public sealed class AutoPrReviewEngine(
         // stays blind to this. The fleet is the message sweep's own last chain read, never a fetch
         // here.
         if (AutoPrReviewObservation.DecideMintHold(
-            node.NodeId, enrolledNodes?.TryGet(project.Id)?.FleetNodeIds, requestedAt, DateTimeOffset.UtcNow, MintHold) is { } peerHold)
+            node.NodeId, enrolledNodes?.TryGet(project.Id)?.FleetNodeIds, requestedAt, _clock.GetUtcNow(), MintHold) is { } peerHold)
         {
             return new MintAttempt(ReviewRequestOutcome.HeldForPeer, null, peerHold.Describe(), actor, peerHold);
         }
@@ -820,7 +841,7 @@ public sealed class AutoPrReviewEngine(
         string login, ReviewRequestedPullRequest candidate, ObservedReviewRequest? recorded,
         MintAttempt attempt, CancellationToken cancellationToken)
     {
-        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DateTimeOffset now = _clock.GetUtcNow();
         ObservedReviewRequest observed = recorded ?? new ObservedReviewRequest
         {
             Id = ObservedReviewRequest.ComputeId(
@@ -1034,7 +1055,7 @@ public sealed class AutoPrReviewEngine(
                 "an earlier auto-created task already covered this same standing request", actor);
         }
 
-        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DateTimeOffset now = _clock.GetUtcNow();
         // Platform-authored, never the pull request's own title (security review idea 6be68ee2,
         // finding 1): the objective is the one field an auto-mint prints everywhere — h9k status,
         // h9k task list, every needs-you row — with no fence and no caveat around it, unlike the
@@ -1133,7 +1154,8 @@ public sealed class AutoPrReviewEngine(
                 taskId, actor.Author?.Login, actor.Author?.AccountId, actor.Author?.Association,
                 parkFacts.HeadOwner, parkFacts.IsCrossRepository, isPrivate, parkFacts.ChangedFileCount,
                 fleet?.MemberAccountIds is { } memberIds ? [.. memberIds] : [],
-                fleet?.MembersWithoutDeclaredAccount is { } withoutDeclaration ? [.. withoutDeclaration] : [], now);
+                fleet?.MembersWithoutDeclaredAccount is { } withoutDeclaration ? [.. withoutDeclaration] : [], now,
+                imported.Title);
             task.Apply(gateParked);
             events.Add(gateParked);
 
@@ -1350,7 +1372,7 @@ public sealed class AutoPrReviewEngine(
         }
 
         session.Events.Append(taskId, expectedVersion: fence.Version + 1,
-            TaskDecider.Fail(current, runId, $"Auto-pr-review's immediate launch failed: {reason}", DateTimeOffset.UtcNow));
+            TaskDecider.Fail(current, runId, $"Auto-pr-review's immediate launch failed: {reason}", _clock.GetUtcNow()));
         await session.SaveChangesAsync(cancellationToken);
     }
 
@@ -1526,7 +1548,7 @@ public sealed class AutoPrReviewEngine(
             return false;
         }
 
-        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DateTimeOffset now = _clock.GetUtcNow();
         bool concludesBeforeDispatch = task.State == TaskState.Published || task.State == TaskState.Queued;
 
         // The real observed URL from this task's own minting event, matching the sibling Observed
@@ -1642,7 +1664,7 @@ public sealed class AutoPrReviewEngine(
                 try
                 {
                     if (await ProcessMentionAsync(
-                        project, setting, repository, login, cutoff, candidate, comment, search.Author,
+                        project, setting, repository, login, cutoff, candidate, comment,
                         isPrivate, membershipSetting, cancellationToken))
                     {
                         created++;
@@ -1679,7 +1701,7 @@ public sealed class AutoPrReviewEngine(
     private async Task<bool> ProcessMentionAsync(
         ProjectDetails project, AutoPrReviewSetting setting, string repository, string login,
         DateTimeOffset cutoff, ReviewRequestedPullRequest candidate, PullRequestMentionComment comment,
-        PullRequestAuthor? pullRequestAuthor, bool? isPrivate, ReviewMembershipGateSetting membershipSetting,
+        bool? isPrivate, ReviewMembershipGateSetting membershipSetting,
         CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
@@ -1691,7 +1713,7 @@ public sealed class AutoPrReviewEngine(
         }
 
         (ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)? decided = await DecideMentionAsync(
-            session, project, setting, repository, login, cutoff, candidate, comment, pullRequestAuthor, isPrivate,
+            session, project, setting, repository, login, cutoff, candidate, comment, isPrivate,
             membershipSetting, cancellationToken);
         if (decided is not { } decision)
         {
@@ -1717,7 +1739,7 @@ public sealed class AutoPrReviewEngine(
             CommentUrl = comment.Url,
             CommentDatabaseId = comment.DatabaseId,
             CommentCreatedAt = comment.CreatedAt,
-            ObservedAt = DateTimeOffset.UtcNow,
+            ObservedAt = _clock.GetUtcNow(),
             Outcome = decision.Outcome,
             OutcomeDetail = decision.Detail,
             TaskId = decision.TaskId,
@@ -1783,7 +1805,7 @@ public sealed class AutoPrReviewEngine(
     private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)?> DecideMentionAsync(
         IDocumentSession session, ProjectDetails project, AutoPrReviewSetting setting, string repository,
         string login, DateTimeOffset cutoff, ReviewRequestedPullRequest candidate, PullRequestMentionComment comment,
-        PullRequestAuthor? pullRequestAuthor, bool? isPrivate, ReviewMembershipGateSetting membershipSetting,
+        bool? isPrivate, ReviewMembershipGateSetting membershipSetting,
         CancellationToken cancellationToken)
     {
         // The identical guessed-reference fast path DecideAsync's own comment explains at length:
@@ -1817,14 +1839,20 @@ public sealed class AutoPrReviewEngine(
             return (ReviewMentionOutcome.HeldSettingOff, null, null);
         }
 
-        // The membership gate (security review idea 6be68ee2, finding 1), applied to the pull
-        // request's own author for a fresh mint — the identical pure function DecideAsync's own
-        // review-requested path uses. Unknown answers null here so ProcessMentionAsync records
-        // nothing at all for this comment and reconsiders it on the next sweep: a mention comment
-        // id is otherwise decided once (ObservedReviewMention's own permanent dedup), so mint-and-
-        // park on a guess would be irreversible in a way the review-request side's retry never is.
+        // The membership gate (security review idea 6be68ee2, finding 1), applied to the COMMENT's
+        // own author for a fresh mint — never the pull request's own (independent pre-PR review,
+        // cycle 1, both lenses): the report this mint dispatches unattended answers THIS comment
+        // (CreateFromMentionAsync's own "You were asked" criterion), so a stranger's comment on a
+        // member's own pull request is exactly as unattended-unsafe as a stranger's own pull
+        // request is — the identical reasoning AttachMentionAsync's own dispatch gate already
+        // applies to a follow-up comment, and docs/cli.md's own "a review request or mention must
+        // come from a declared hall9k team member" already promised. Unknown answers null here so
+        // ProcessMentionAsync records nothing at all for this comment and reconsiders it on the
+        // next sweep: a mention comment id is otherwise decided once (ObservedReviewMention's own
+        // permanent dedup), so mint-and-park on a guess would be irreversible in a way the
+        // review-request side's retry never is.
         MembershipGateDecision gate = AutoPrReviewObservation.DecideMembershipGate(
-            isPrivate, membershipSetting.ExplicitValue, pullRequestAuthor?.AccountId,
+            isPrivate, membershipSetting.ExplicitValue, comment.AuthorAccountId,
             enrolledNodes?.TryGet(project.Id)?.MemberAccountIds);
         if (gate == MembershipGateDecision.Unknown)
         {
@@ -1835,7 +1863,7 @@ public sealed class AutoPrReviewEngine(
         {
             return await CreateFromMentionAsync(
                 session, project, setting, repository, candidate, login, comment, pastCutoff,
-                parked: gate == MembershipGateDecision.Park, isPrivate, pullRequestAuthor, membershipSetting,
+                parked: gate == MembershipGateDecision.Park, isPrivate, membershipSetting,
                 cancellationToken);
         }
         catch (DomainException exception)
@@ -1873,8 +1901,20 @@ public sealed class AutoPrReviewEngine(
     /// stays attached and visible on the task (an owner can always run
     /// <c>h9k pr review --since-my-review</c> by hand), rather than silently reappearing to
     /// automation on some later sweep with no record of ever having been seen before.
+    /// <para>
+    /// Returns null on the one case that must NOT record anything, ever (independent pre-PR
+    /// review, cycle 1, conformance lens): membership unknown. Unlike a settled Park, Unknown means
+    /// this node has not yet computed the project's declared member accounts at all — the first
+    /// sweep after a restart — and the caller has not yet stored <see cref="ObservedReviewMention"/>
+    /// for this comment id at the point this method returns (<c>ProcessMentionAsync</c> stores it
+    /// only after <c>DecideMentionAsync</c> returns), so this is exactly as safe to skip and retry
+    /// next sweep as a fresh mint's own Unknown is. A comment id already handled never fires again,
+    /// so recording anything here — even <see cref="ReviewMentionOutcome.AttachedNoFollowUp"/> —
+    /// would have permanently closed the door on a genuine member's follow-up dispatching once
+    /// membership becomes known, contradicting the very next sweep this doc otherwise promises.
+    /// </para>
     /// </summary>
-    private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)> AttachMentionAsync(
+    private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)?> AttachMentionAsync(
         IDocumentSession session, TaskListItem existing, AutoPrReviewSetting setting, bool pastCutoff,
         ReviewRequestedPullRequest candidate, PullRequestMentionComment comment, bool? isPrivate,
         ReviewMembershipGateSetting membershipSetting, CancellationToken cancellationToken)
@@ -1892,7 +1932,7 @@ public sealed class AutoPrReviewEngine(
             return (ReviewMentionOutcome.MintFailed, null, "the covering task's own stream could not be read");
         }
 
-        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DateTimeOffset now = _clock.GetUtcNow();
         PullRequestReviewMentionObserved observed = TaskDecider.ObservePrReviewMention(
             task, candidate.Url, comment.CommentId, comment.AuthorLogin, comment.Body, comment.Url,
             comment.CreatedAt, now, comment.DatabaseId);
@@ -1931,13 +1971,24 @@ public sealed class AutoPrReviewEngine(
         // (security review idea 6be68ee2, finding 1) — the identical pure function, since a
         // stranger's own comment on a member's pull request is exactly as unattended-unsafe as a
         // stranger's own pull request is. The attach above already happened unconditionally: only
-        // the dispatch is gated here. Unknown membership answers the same as a non-member rather
-        // than skipping — unlike a fresh mint, this observation is already permanently recorded
-        // (ObservedReviewMention's own one-shot dedup), so there is nothing left to retry later;
-        // the safe answer is not to dispatch on a guess, never to dispatch on one.
-        if (AutoPrReviewObservation.DecideMembershipGate(
+        // the dispatch is gated here.
+        MembershipGateDecision commentGate = AutoPrReviewObservation.DecideMembershipGate(
             isPrivate, membershipSetting.ExplicitValue, comment.AuthorAccountId,
-            enrolledNodes?.TryGet(existing.ProjectId)?.MemberAccountIds) != MembershipGateDecision.Run)
+            enrolledNodes?.TryGet(existing.ProjectId)?.MemberAccountIds);
+        if (commentGate == MembershipGateDecision.Unknown)
+        {
+            // This node has not yet computed the project's declared member accounts at all — the
+            // first sweep after a restart (independent pre-PR review, cycle 1, conformance lens).
+            // Nothing is recorded here, not even the attach: ProcessMentionAsync has not yet stored
+            // ObservedReviewMention for this comment id at this point (it stores only after
+            // DecideMentionAsync returns), so returning null lets the very next sweep decide fresh
+            // once membership is known, exactly as a fresh mint's own Unknown already does — rather
+            // than permanently recording AttachedNoFollowUp on a guess and closing the door on a
+            // genuine member's follow-up for good.
+            return null;
+        }
+
+        if (commentGate != MembershipGateDecision.Run)
         {
             session.Events.Append(existing.Id, expectedVersion: fence.Version + 1, observed);
             await session.SaveChangesAsync(cancellationToken);
@@ -2044,10 +2095,10 @@ public sealed class AutoPrReviewEngine(
     /// Abandoned task's own prior coverage is exactly as silent here as it is on the request side —
     /// nothing about a closed-out earlier review blocks a fresh mint.
     /// </summary>
-    private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)> CreateFromMentionAsync(
+    private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)?> CreateFromMentionAsync(
         IDocumentSession session, ProjectDetails project, AutoPrReviewSetting setting, string repository,
         ReviewRequestedPullRequest candidate, string login, PullRequestMentionComment comment, bool pastCutoff,
-        bool parked, bool? isPrivate, PullRequestAuthor? pullRequestAuthor, ReviewMembershipGateSetting membershipSetting,
+        bool parked, bool? isPrivate, ReviewMembershipGateSetting membershipSetting,
         CancellationToken cancellationToken)
     {
         WorkItemImporter importer = await WorkItemConnections.ImporterAsync(session, cancellationToken, processRunner: processRunner);
@@ -2076,7 +2127,7 @@ public sealed class AutoPrReviewEngine(
                 cancellationToken);
         }
 
-        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DateTimeOffset now = _clock.GetUtcNow();
         // Platform-authored, never the pull request's own title — see CreateOneAsync's identical
         // comment (security review idea 6be68ee2, finding 1).
         string objective = $"Review pull request {imported.Reference.Key}";
@@ -2116,17 +2167,24 @@ public sealed class AutoPrReviewEngine(
 
         // The membership gate's own park (security review idea 6be68ee2, finding 1) — the
         // identical shape CreateOneAsync's own review-requested path follows: Add and Publish
-        // land, Assign never runs, and h9k task assign is the human go.
+        // land, Assign never runs, and h9k task assign is the human go. The author named here is
+        // the COMMENT's own (independent pre-PR review, cycle 1, both lenses), never the pull
+        // request's — PullRequestReviewGateParked.AuthorAccountId promises "what the gate actually
+        // matched on", and DecideMentionAsync's own gate above now matches on comment.AuthorAccountId.
+        // No association: GitHub's authorAssociation is read off the pull request's own author
+        // query, never a comment's, so it is honestly left unrecorded here rather than guessed at
+        // (AGENTS.md, never guess at unobserved facts).
         if (parked)
         {
             PullRequestGateParkFacts parkFacts = await ReadGateParkFactsAsync(
                 repository, candidate.Number, project.RepositoryPath, cancellationToken);
             EnrolledFleetSnapshot? fleet = enrolledNodes?.TryGet(project.Id);
             PullRequestReviewGateParked gateParked = new(
-                taskId, pullRequestAuthor?.Login, pullRequestAuthor?.AccountId, pullRequestAuthor?.Association,
+                taskId, comment.AuthorLogin, comment.AuthorAccountId, null,
                 parkFacts.HeadOwner, parkFacts.IsCrossRepository, isPrivate, parkFacts.ChangedFileCount,
                 fleet?.MemberAccountIds is { } memberIds ? [.. memberIds] : [],
-                fleet?.MembersWithoutDeclaredAccount is { } withoutDeclaration ? [.. withoutDeclaration] : [], now);
+                fleet?.MembersWithoutDeclaredAccount is { } withoutDeclaration ? [.. withoutDeclaration] : [], now,
+                imported.Title);
             task.Apply(gateParked);
             events.Add(gateParked);
 
