@@ -6,8 +6,8 @@ using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Bootstrap;
-using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
 using Marten.Events;
@@ -83,8 +83,9 @@ public sealed class TaskRefuseCommand : Hall9kAsyncCommand<TaskRefuseCommand.Set
             store, session, project, taskId, requesterNodeId, requesterOwnerId, reason, context.NodeId,
             ownerRootFingerprint, DateTimeOffset.UtcNow, cancellationToken);
 
+        MemberLabelLookup labels = await MemberLabelling.LoadAsync(session, project.Id, ownerRootFingerprint, cancellationToken);
         AnsiConsole.MarkupLine(
-            $"[yellow]Refused[/] the take request on task {taskId} from node {DomainId.Short(requesterNodeId)} — "
+            $"[yellow]Refused[/] the take request on task {taskId} from {MemberLabelling.NodeMarkup(requesterNodeId, labels)} — "
             + $"reason: {reason.EscapeMarkup()}");
         return ExitCodes.Ok;
     }

@@ -8,8 +8,8 @@ using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Bootstrap;
-using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
 using Marten.Events;
@@ -101,7 +101,8 @@ public sealed class TaskGrantCommand : Hall9kAsyncCommand<TaskGrantCommand.Setti
             task.PendingTakeRequesterTrackerIdentity, ledger, committer, signingKey, take, context.NodeId,
             ownerFingerprint, DateTimeOffset.UtcNow, cancellationToken);
 
-        AnsiConsole.MarkupLine($"[green]Granted[/] task {taskId} to node {DomainId.Short(requesterNodeId)}.");
+        MemberLabelLookup labels = await MemberLabelling.LoadAsync(session, project.Id, ownerFingerprint, cancellationToken);
+        AnsiConsole.MarkupLine($"[green]Granted[/] task {taskId} to {MemberLabelling.NodeMarkup(requesterNodeId, labels)}.");
         if (outcome.TrackerFailureReason is { } trackerFailure)
         {
             AnsiConsole.MarkupLine($"[yellow]Warning:[/] {trackerFailure.EscapeMarkup()}");
