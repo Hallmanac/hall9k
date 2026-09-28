@@ -98,8 +98,14 @@ public sealed class LearningShowCommand : Hall9kAsyncCommand<LearningShowCommand
             .ToListAsync(cancellationToken)).FirstOrDefault();
         LessonProvenanceMark mark = LessonProvenanceMark.Of(
             learning.Provenance, learning.RecordedOnNodeId, node?.Id ?? Guid.Empty);
+        // Only a project-scoped lesson resolves a label at all (task 21c8f2f3): LearningDetails
+        // carries Scope/ScopeId rather than a ProjectId, and an owner-scoped or unrecorded-scope
+        // lesson has no project whose member-labels projection could ever answer for it.
         string nodeLabel = learning.RecordedOnNodeId is { } recordingNode
-            ? $"node {DomainId.Short(recordingNode)}"
+            ? learning.Scope == KnowledgeScope.Project
+                ? MemberLabelling.NodeMarkup(
+                    recordingNode, await MemberLabelling.LoadAsync(session, learning.ScopeId, cancellationToken))
+                : $"node {DomainId.Short(recordingNode)}"
             : "no node recorded";
         AnsiConsole.MarkupLine($"[dim]Recorded on[/]  {nodeLabel} [dim]({mark.Label})[/]");
         AnsiConsole.MarkupLine(InjectionLine(learning, mark));
