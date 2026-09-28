@@ -4,6 +4,7 @@ using Hall9k.Connectors.Processes;
 using System.Text;
 using System.Text.RegularExpressions;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Text;
 using Hall9k.Connectors.Verification;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project;
@@ -131,9 +132,15 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         {
             string diffText = string.Join(
                 Environment.NewLine, GateSetAcceptanceDisplay.FormatDiffLines(gateSetDecision.Diff));
+            // RelayedText.Printable, the same discipline GateSetAcceptanceDisplay already applies to
+            // every gate it renders (independent pre-PR review, cycle 1, conformance lens, low): a
+            // project's own name is replicated (ProjectRenamed is ProjectScoped) with no restriction
+            // on its characters, so an escape sequence or a lone carriage return in a teammate's
+            // rename must not be able to garble this refusal on the very screen it is meant to warn.
+            string printableName = RelayedText.Printable(project.Name);
             throw new DomainConflictException(
-                $"Task {taskId}'s project '{project.Name}' verify gate set has changed and has not been "
-                + $"accepted on this node — accept it first (h9k project accept-gates {project.Name}):"
+                $"Task {taskId}'s project '{printableName}' verify gate set has changed and has not been "
+                + $"accepted on this node — accept it first (h9k project accept-gates {printableName}):"
                 + $"{Environment.NewLine}{diffText}");
         }
 

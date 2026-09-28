@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Text;
 using Hall9k.Connectors.Verification;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
@@ -44,7 +45,15 @@ public sealed class ProjectAcceptGatesCommand : Hall9kAsyncCommand<ProjectAccept
         IReadOnlyList<VerifyCommand> printed = details.VerifyCommands;
         GateSetAcceptance.Decision decision = GateSetAcceptance.Decide(details.AcceptedVerifyCommands, printed);
 
-        AnsiConsole.MarkupLineInterpolated($"[bold]{details.Name}[/] — current verify gate set:");
+        // RelayedText.Printable, the same discipline GateSetAcceptanceDisplay already applies to
+        // every gate this command prints below (independent pre-PR review, cycle 1, conformance
+        // lens, low): a project's own name is replicated (ProjectRenamed is ProjectScoped) with no
+        // restriction on its characters, so an escape sequence or a lone carriage return in a
+        // teammate's rename must not be able to garble this command's own header, refusal, or
+        // success line on the very screen a human is reading to decide whether to accept a gate set.
+        string printableName = RelayedText.Printable(details.Name);
+
+        AnsiConsole.MarkupLineInterpolated($"[bold]{printableName}[/] — current verify gate set:");
         if (printed.Count == 0)
         {
             AnsiConsole.MarkupLine("[dim](no gates configured)[/]");
@@ -60,14 +69,18 @@ public sealed class ProjectAcceptGatesCommand : Hall9kAsyncCommand<ProjectAccept
         if (decision.Diff.Count == 0)
         {
             // decision.Diff is only ever empty when decision.Proceed is true (GateSetAcceptance.Decide's
-            // own contract: a fingerprint mismatch always produces at least one diff line), so this
-            // branch never has anything to say about a moved set — only which flavor of "nothing to
-            // diff" applies: a genuine prior acceptance that still matches, or nothing recorded yet
-            // because there was never anything here to accept.
-            AnsiConsole.MarkupLine(
-                details.AcceptedVerifyCommands is not null
+            // own contract: a fingerprint mismatch always produces at least one diff line) — except
+            // an empty current list, which Decide always proceeds on unconditionally, whatever this
+            // node previously accepted (independent pre-PR review, cycle 1, both lenses, low): a
+            // project whose gates were all removed by a replicated change would otherwise read as
+            // "Unchanged" even when the accepted set was genuinely non-empty, so that case is named
+            // on its own rather than folded into either of the other two.
+            string message = printed.Count == 0 && details.AcceptedVerifyCommands is { Count: > 0 } removedGates
+                ? $"[dim]All {removedGates.Count} previously accepted gate(s) are gone from the current set — recording the empty set now.[/]"
+                : details.AcceptedVerifyCommands is not null
                     ? "[dim]Unchanged from what this node already accepts.[/]"
-                    : "[dim](nothing recorded yet on this node; recording this now)[/]");
+                    : "[dim](nothing recorded yet on this node; recording this now)[/]";
+            AnsiConsole.MarkupLine(message);
         }
         else
         {
@@ -91,8 +104,8 @@ public sealed class ProjectAcceptGatesCommand : Hall9kAsyncCommand<ProjectAccept
         if (!GateSetAcceptance.CanRecordAcceptance(printed, currentAtCommitTime.VerifyCommands))
         {
             throw new DomainConflictException(
-                $"Project '{details.Name}'s verify gate set changed while this command was running — "
-                + $"nothing was accepted. Run h9k project accept-gates {details.Name} again to review the "
+                $"Project '{printableName}'s verify gate set changed while this command was running — "
+                + $"nothing was accepted. Run h9k project accept-gates {printableName} again to review the "
                 + "current set.");
         }
 
@@ -102,7 +115,7 @@ public sealed class ProjectAcceptGatesCommand : Hall9kAsyncCommand<ProjectAccept
         await session.SaveChangesAsync(cancellationToken);
 
         AnsiConsole.MarkupLineInterpolated(
-            $"[green]Accepted {printed.Count} gate(s) for '{details.Name}' on this node.[/]");
+            $"[green]Accepted {printed.Count} gate(s) for '{printableName}' on this node.[/]");
         return ExitCodes.Ok;
     }
 }
