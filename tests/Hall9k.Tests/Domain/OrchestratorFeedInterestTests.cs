@@ -5,6 +5,7 @@ using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Xunit;
 
@@ -70,6 +71,9 @@ public sealed class OrchestratorFeedInterestTests
     [InlineData(typeof(RunLaunchHeld))]
     // A message from a person or another node's window.
     [InlineData(typeof(MessageReceived))]
+    // A root-key rotation landed on, or was voided from, a project's own ledger.
+    [InlineData(typeof(RootRotationObserved))]
+    [InlineData(typeof(RootRotationRevoked))]
     public void The_actionable_band_is_what_somebody_is_owed(Type eventType) =>
         OrchestratorFeedInterest.BandOf(eventType).Should().Be(OrchestratorFeedLevel.Actionable);
 

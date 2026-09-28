@@ -2,6 +2,7 @@ using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Trust;
 
 namespace Hall9k.Domain.Features.Orchestrator;
 
@@ -84,6 +85,13 @@ public static class OrchestratorFeedInterest
         // what the narrowest band means here, and payload-gated to exclude the daemon's own
         // machine traffic (see Admits).
         [typeof(MessageReceived)] = OrchestratorFeedLevel.Actionable,
+
+        // A root-key rotation landed on, or was voided from, a project's own ledger (idea 6be68ee2,
+        // PR B of the succession chain): an owner's own identity root moved, or moved back — the
+        // one trust fact loud enough to page an orchestrator window over, unlike an ordinary vouch
+        // or revoke, which stays a quiet fleet-management act.
+        [typeof(RootRotationObserved)] = OrchestratorFeedLevel.Actionable,
+        [typeof(RootRotationRevoked)] = OrchestratorFeedLevel.Actionable,
 
         // ─── Transitions: the work's own movement. ──────────────────────────────────────────────
 
