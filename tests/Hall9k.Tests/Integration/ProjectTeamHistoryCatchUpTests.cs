@@ -170,8 +170,12 @@ public sealed class ProjectTeamHistoryCatchUpTests : IClassFixture<PostgresFixtu
                 Now.AddSeconds(2), ownerId);
             StreamAction start = session.Events.StartStream<TaskAggregate>(taskId, added);
             IEvent appended = start.Events[^1];
-            // A test store stamps no node id on its own events, so node A's answer names the empty id as origin.
-            appended.SetHeader(ReplicationEventHeaders.OriginNodeId, Guid.Empty.ToString());
+            // Node A's own outbox flush stamps its native events with node A's own id (idea
+            // 6be68ee2's own origin-resolver fix: an unclaimed-at-append-time header now falls back
+            // to the flushing node's own confirmed identity rather than the empty sentinel), so this
+            // stream's own already-held origin must match that exact id for the guard below to
+            // compare against the SAME origin node A's real answer will carry.
+            appended.SetHeader(ReplicationEventHeaders.OriginNodeId, nodes.NodeA.ToString());
             appended.SetHeader(ReplicationEventHeaders.OriginOwnerRootFingerprint, OwnerAFingerprint);
             appended.SetHeader(ReplicationEventHeaders.OriginEventId, DomainId.New().ToString());
             appended.SetHeader(ReplicationEventHeaders.OriginSequence, "1000000");

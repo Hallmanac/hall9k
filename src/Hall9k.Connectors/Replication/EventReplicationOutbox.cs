@@ -673,7 +673,17 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
         IEvent candidate, Guid nodeId, string fromOwnerFingerprint, Guid projectId)
     {
         string originNodeIdText = candidate.GetHeader(EventOriginStampingListener.NodeIdHeader) as string ?? string.Empty;
-        Guid originNodeId = Guid.TryParse(originNodeIdText, out Guid parsedNodeId) ? parsedNodeId : nodeId;
+        // Guid.Empty (never null: EventOriginStampingListener.NodeIdHeader's own doc, "(nodeId ??
+        // Guid.Empty).ToString()") is that listener's own "genuinely unclaimed at append time"
+        // sentinel, resolved here rather than trusted as a final answer — the identical "resolve or
+        // fall back" rule the sibling owner-fingerprint header just below already applies — so a
+        // node flushing its OWN outbox stamps an unclaimed-at-append-time native event with its own,
+        // now-confirmed identity rather than forwarding the empty sentinel onto the wire (idea
+        // 6be68ee2's own admission gate needs to compare this against the true sending node, and an
+        // empty sentinel can never legitimately match any sender's real node id).
+        Guid originNodeId = Guid.TryParse(originNodeIdText, out Guid parsedNodeId) && parsedNodeId != Guid.Empty
+            ? parsedNodeId
+            : nodeId;
         // string.Empty (never null) is EventOriginStampingListener.UnclaimedOwnerRootFingerprint —
         // that listener's own doc says to resolve or fall back rather than trust it as a final
         // answer, so a blank header falls back exactly as a missing one would.
