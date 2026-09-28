@@ -2867,16 +2867,37 @@ public sealed class ReviewEngine(
     /// still covers whatever residual staleness the REBASE itself could not observe.
     /// </para>
     /// </summary>
-    private async Task<RebaseGateOutcome> EnsureRebasedBeforeFinalPassAsync(
+    internal async Task<RebaseGateOutcome> EnsureRebasedBeforeFinalPassAsync(
         ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
     {
+        // Ahead of the base-branch legality check below, not behind it: a stale generation must
+        // still stop this iteration with RebaseGateOutcome.Stop regardless of what this run's own
+        // base branch looks like — swapping the order would let a superseded run's own illegal
+        // base branch read as RebaseGateOutcome.Proceed instead (self-review finding).
         if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
         {
             return RebaseGateOutcome.Stop;
         }
 
-        string worktreePath = context.Run.WorktreePath;
         string baseBranch = context.BaseBranch;
+
+        // context.BaseBranch replicates from another fleet node exactly the way
+        // CaptureStrandedDeltaAsync's own identical comment documents, and this is the other
+        // place within this run's own review loop that turns it into a fetch argument (the
+        // mandatory final pass's unstacked leg) — checked here, before this method touches the
+        // worktree or the fetch below, for the same reason CaptureStrandedDeltaAsync checks it
+        // rather than trusting that call already checked it once on a different path (security
+        // review idea 6be68ee2, process-injection finding 2).
+        if (!GitArgumentValidation.IsLegalBranchName(baseBranch, out string? baseBranchRefusalReason))
+        {
+            logger.LogWarning(
+                "Run {RunId}: this run's own base branch '{Branch}' is not a legal branch name ({Reason}); " +
+                "proceeding unrebased rather than handing it to git",
+                context.RunId, GitArgumentValidation.Printable(baseBranch), baseBranchRefusalReason);
+            return RebaseGateOutcome.Proceed;
+        }
+
+        string worktreePath = context.Run.WorktreePath;
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
 
         // A stacked child's base is its PARENT's branch, and the operation it needs is not this
@@ -2970,7 +2991,12 @@ public sealed class ReviewEngine(
                 ProcessResult preRebaseHeadResult = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
                 preRebaseHead = preRebaseHeadResult.ExitCode == 0 ? preRebaseHeadResult.StandardOutput.Trim() : null;
 
-                ProcessResult fetch = await git("git", ["fetch", "origin", baseBranch], worktreePath, cancellationToken);
+                // `--` stops a value shaped like `--upload-pack=...` from being read as an option;
+                // the predicate this method already ran on baseBranch above is the actual defence
+                // against one shaped like `+refs/heads/main:refs/heads/injected`, which `--` alone
+                // does not stop (CaptureStrandedDeltaAsync's own identical comment).
+                ProcessResult fetch = await git(
+                    "git", ["fetch", "origin", "--", baseBranch], worktreePath, cancellationToken);
                 if (fetch.ExitCode != 0)
                 {
                     logger.LogWarning(
@@ -4641,7 +4667,7 @@ public sealed class ReviewEngine(
     /// identically named parameter — only <see cref="ActOnStackAssessmentAsync"/>'s own Replay
     /// branch ever passes false, when its mechanical retry never actually ran a rebase.
     /// </param>
-    private async Task<bool> DispatchRebaseRecoverySessionAsync(
+    internal async Task<bool> DispatchRebaseRecoverySessionAsync(
         ReviewContext context, RunAggregate run, string? humanGuidance, string? assessmentGuidance,
         string? baseCommit, bool precedesFirstReviewCycle, CancellationToken cancellationToken,
         bool mechanicalRetryAttempted = true)
@@ -4673,6 +4699,23 @@ public sealed class ReviewEngine(
         // stays the stale pre-assessment base for as long as this track keeps running (independent
         // pre-PR review, cycle 4, adversarial lens).
         string baseBranch = run.BaseBranchOr(context.Project.BaseBranch);
+
+        // Checked here, before anything below touches git or the store, for the same reason
+        // EnsureRebasedBeforeFinalPassAsync's own identical check does: this run's own base
+        // branch replicates from another fleet node, and this is the third of the three places
+        // within this run's own review loop that turns it into a fetch argument (security review
+        // idea 6be68ee2, process-injection finding 2).
+        if (!GitArgumentValidation.IsLegalBranchName(baseBranch, out string? baseBranchRefusalReason))
+        {
+            await FailAsync(
+                context.RunId, context.TaskId,
+                $"The pre-final-pass rebase-recovery session cannot dispatch: this run's own base branch "
+                + $"'{GitArgumentValidation.Printable(baseBranch)}' is not a legal branch name "
+                + $"({baseBranchRefusalReason}).",
+                cancellationToken);
+            return false;
+        }
+
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
         string rebasedFromCommit = RunRebasedOntoBase.UnreadableCommit;
         string rebasedOntoCommit = RunRebasedOntoBase.UnreadableCommit;
@@ -4686,7 +4729,12 @@ public sealed class ReviewEngine(
             // always needs to take its own.
             await using IAsyncDisposable repositoryLock =
                 await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken);
-            ProcessResult fetch = await git("git", ["fetch", "origin", baseBranch], worktreePath, cancellationToken);
+            // `--` stops a value shaped like `--upload-pack=...` from being read as an option;
+            // the predicate this method already ran on baseBranch above is the actual defence
+            // against one shaped like `+refs/heads/main:refs/heads/injected`, which `--` alone
+            // does not stop (CaptureStrandedDeltaAsync's own identical comment).
+            ProcessResult fetch = await git(
+                "git", ["fetch", "origin", "--", baseBranch], worktreePath, cancellationToken);
             if (fetch.ExitCode != 0)
             {
                 // Best-effort only, same as the merge-base/rev-parse reads below: the recorded
