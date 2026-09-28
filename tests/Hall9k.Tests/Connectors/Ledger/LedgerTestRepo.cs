@@ -25,6 +25,7 @@ internal sealed class LedgerTestRepo : IDisposable
     {
         string hub = Path.Combine(_root, $"hub-{Guid.NewGuid():N}.git");
         Git(_root, "init", "-q", "--bare", "-b", "main", hub);
+        SetLongPathsOnWindows(hub);
         return hub;
     }
 
@@ -39,7 +40,23 @@ internal sealed class LedgerTestRepo : IDisposable
         string node = Path.Combine(_root, $"node-{Guid.NewGuid():N}.git");
         Git(_root, "clone", "-q", "--bare", hub, node);
         Git(node, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
+        SetLongPathsOnWindows(node);
         return node;
+    }
+
+    /// <summary>
+    /// The same <c>core.longpaths</c> correction <c>RepoMaterialiser</c> applies to every real
+    /// bare clone (Windows path length is a repository-local git setting): without it, the
+    /// nonce-and-hash staging ref names <c>LedgerAppendOnlyRefFetcher</c> fetches into routinely
+    /// push a temp-directory path over Windows' legacy MAX_PATH, and git's own ref lock fails with
+    /// "Filename too long" rather than any assertion this test meant to make.
+    /// </summary>
+    private static void SetLongPathsOnWindows(string repositoryPath)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Git(repositoryPath, "config", "core.longpaths", "true");
+        }
     }
 
     // Through TemporaryTree: git leaves loose object files read-only, which Directory.Delete
