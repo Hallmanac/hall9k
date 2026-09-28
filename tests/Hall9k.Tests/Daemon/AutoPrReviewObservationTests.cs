@@ -71,6 +71,27 @@ public sealed class AutoPrReviewObservationTests
         AutoPrReviewObservation.IsReportable(recorded, settled, taskId).Should().BeFalse();
     }
 
+    /// <summary>
+    /// The identical rediscovery case, for a parked mint (independent pre-PR review, cycle 1,
+    /// adversarial lens, low): a non-member's request mints TaskCreatedParked, and the next
+    /// sweep's fast path rediscovers that same still-Published task as AlreadyCovered. Without a
+    /// matching Settle arm, AlreadyCovered would overwrite the parked outcome and spend an extra
+    /// Info line saying nothing new happened.
+    /// </summary>
+    [Fact]
+    public void Rediscovering_a_parked_mint_keeps_the_recorded_outcome_and_owes_no_second_line()
+    {
+        Guid taskId = DomainId.New();
+        ObservedReviewRequest recorded = new() { Outcome = ReviewRequestOutcome.TaskCreatedParked, TaskId = taskId };
+
+        ReviewRequestOutcome settled = AutoPrReviewObservation.Settle(
+            recorded, ReviewRequestOutcome.AlreadyCovered, taskId);
+
+        settled.Should().Be(ReviewRequestOutcome.TaskCreatedParked,
+            "the next sweep's fast path rediscovering the same still-parked task is the same fact restated");
+        AutoPrReviewObservation.IsReportable(recorded, settled, taskId).Should().BeFalse();
+    }
+
     [Fact]
     public void A_different_task_covering_the_request_is_a_genuinely_different_answer()
     {
@@ -320,6 +341,9 @@ public sealed class AutoPrReviewObservationTests
     [Fact]
     public void A_public_repositorys_member_runs()
     {
+        // Also covers "account ids compare numerically so a renamed login still matches": the pure
+        // function never sees a login at all, only the numeric id, so this is the identical
+        // assertion for a member whose GitHub account was renamed between declaration and request.
         AutoPrReviewObservation.DecideMembershipGate(
             isPrivate: false, explicitSetting: null, authorAccountId: Member, memberAccountIds: [Member])
             .Should().Be(MembershipGateDecision.Run);
@@ -328,6 +352,11 @@ public sealed class AutoPrReviewObservationTests
     [Fact]
     public void A_public_repositorys_non_member_parks()
     {
+        // Also covers a Bot author (an account no member declared parks exactly the same way,
+        // whatever the size of the declared-member set) and a stranger's own COMMENT gating the
+        // identical way a stranger's own pull request does — AttachMentionAsync's own dispatch
+        // gate is the same pure function with the comment's author in place of the pull request's,
+        // and neither reaches a seam or boundary this case does not already reach.
         AutoPrReviewObservation.DecideMembershipGate(
             isPrivate: false, explicitSetting: null, authorAccountId: Stranger, memberAccountIds: [Member])
             .Should().Be(MembershipGateDecision.Park);
@@ -336,16 +365,9 @@ public sealed class AutoPrReviewObservationTests
     [Fact]
     public void A_private_repositorys_non_member_runs_because_a_private_repository_needs_no_membership()
     {
-        AutoPrReviewObservation.DecideMembershipGate(
-            isPrivate: true, explicitSetting: null, authorAccountId: Stranger, memberAccountIds: [Member])
-            .Should().Be(MembershipGateDecision.Run);
-    }
-
-    [Fact]
-    public void An_internal_repository_runs_exactly_like_a_private_one()
-    {
-        // gh repo view --json isPrivate reads true for INTERNAL exactly as it does for PRIVATE
-        // (the caller's own visibility read never tells the two apart), so the gate cannot either.
+        // Also covers an INTERNAL repository: gh repo view --json isPrivate reads true for
+        // INTERNAL exactly as it does for PRIVATE (the caller's own visibility read never tells
+        // the two apart), so the gate cannot either — the identical isPrivate: true input.
         AutoPrReviewObservation.DecideMembershipGate(
             isPrivate: true, explicitSetting: null, authorAccountId: Stranger, memberAccountIds: [Member])
             .Should().Be(MembershipGateDecision.Run);
@@ -388,14 +410,6 @@ public sealed class AutoPrReviewObservationTests
     }
 
     [Fact]
-    public void A_bot_author_parks_exactly_like_any_other_account_no_member_declared()
-    {
-        AutoPrReviewObservation.DecideMembershipGate(
-            isPrivate: false, explicitSetting: null, authorAccountId: Stranger, memberAccountIds: [Member, OtherMember])
-            .Should().Be(MembershipGateDecision.Park);
-    }
-
-    [Fact]
     public void Unknown_membership_answers_unknown_rather_than_guessing_either_way()
     {
         AutoPrReviewObservation.DecideMembershipGate(
@@ -410,17 +424,6 @@ public sealed class AutoPrReviewObservationTests
         AutoPrReviewObservation.DecideMembershipGate(
             isPrivate: true, explicitSetting: null, authorAccountId: Member, memberAccountIds: null)
             .Should().Be(MembershipGateDecision.Run, "the gate is off here, so unknown membership is never asked about");
-    }
-
-    [Fact]
-    public void Account_ids_compare_numerically_so_a_renamed_login_still_matches()
-    {
-        // The pure function never sees a login at all — only the numeric id survives into it —
-        // so a member who renamed their GitHub account between the declaration and this request
-        // still matches on the id the declaration actually carries.
-        AutoPrReviewObservation.DecideMembershipGate(
-            isPrivate: false, explicitSetting: null, authorAccountId: Member, memberAccountIds: [Member])
-            .Should().Be(MembershipGateDecision.Run);
     }
 
     [Fact]
@@ -441,16 +444,5 @@ public sealed class AutoPrReviewObservationTests
         AutoPrReviewObservation.DecideMembershipGate(
             isPrivate: false, explicitSetting: null, authorAccountId: OtherMember, memberAccountIds: [Member, OtherMember])
             .Should().Be(MembershipGateDecision.Run);
-    }
-
-    [Fact]
-    public void A_strangers_comment_gates_the_identical_way_a_strangers_pull_request_does()
-    {
-        // AttachMentionAsync's own dispatch gate is the same pure function with the comment's
-        // author in place of the pull request's — a stranger's comment on a member's own pull
-        // request parks (attaches without dispatching) exactly like a stranger's pull request does.
-        AutoPrReviewObservation.DecideMembershipGate(
-            isPrivate: false, explicitSetting: null, authorAccountId: Stranger, memberAccountIds: [Member])
-            .Should().Be(MembershipGateDecision.Park);
     }
 }

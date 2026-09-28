@@ -27,9 +27,10 @@ public sealed record EnrolledFleetSnapshot(
 /// already computes the trust chain for every eligible project every 15 to 45 seconds and never
 /// persists it; it writes here, the engine reads here, and nothing else does.
 /// <para>
-/// No entry means "this node has no fleet to defer to": the sweep has not run yet, the chain could
-/// not be read, or the chain does not name this node's owner. <see cref="AutoPrReviewObservation.DecideMintHold"/>
-/// reads that as leader, which is what a single-node install has always done, and
+/// No entry means "this node has no fleet to defer to, and no roster to check against either": the
+/// sweep has not run yet, or the chain could not be read at all — both genuinely transient,
+/// first-sweep-after-restart conditions. <see cref="AutoPrReviewObservation.DecideMintHold"/> reads
+/// that as leader, which is what a single-node install has always done, and
 /// <see cref="AutoPrReviewObservation.DecideMembershipGate"/> reads the identical absence as
 /// genuinely <c>Unknown</c> instead — the one place these two readers of the same snapshot
 /// deliberately disagree, because a mint-leadership question with no fleet to defer to has always
@@ -37,6 +38,18 @@ public sealed record EnrolledFleetSnapshot(
 /// safe default at all: skipping the candidate and asking again next sweep is the only answer that
 /// is never a guess. A failed chain read leaves the previous snapshot standing rather than erasing
 /// it, since the most recently computed chain is still the best evidence of who the fleet is.
+/// </para>
+/// <para>
+/// A chain that read successfully but does not name this node's owner (a join refused because the
+/// account cannot push, a project already owned and still waiting on an invite) is a different
+/// case, and NOT one of the two above (independent pre-PR review, cycle 1, both lenses): the
+/// chain's own <see cref="TrustChain.Members"/> and declarations are still fully readable even
+/// though <see cref="FleetOf"/> cannot rank this owner's own fleet, so <see cref="Record"/> keeps
+/// the member roster from every such successful read — only <see cref="EnrolledFleetSnapshot.FleetNodeIds"/>
+/// goes empty, which <see cref="AutoPrReviewObservation.DecideMintHold"/> already reads the same
+/// way it reads a fleet naming only this node: mint now, never defer. Erasing the whole entry here
+/// used to make the membership gate read <c>Unknown</c> on every sweep forever for a project stuck
+/// in this state — never a retry, since there is nothing left for a later sweep to improve on.
 /// </para>
 /// </summary>
 public sealed class EnrolledNodeSnapshots
@@ -53,14 +66,17 @@ public sealed class EnrolledNodeSnapshots
             ? [.. owner.FleetNodeIds()]
             : null;
 
-    /// <summary>Records the chain the message sweep just computed for <paramref name="projectId"/>.</summary>
+    /// <summary>
+    /// Records the chain the message sweep just computed for <paramref name="projectId"/> — always,
+    /// whether or not <paramref name="chain"/> happens to name <paramref name="ownerRootFingerprint"/>
+    /// (independent pre-PR review, cycle 1, both lenses): the member roster below is a fact about
+    /// the chain's own <see cref="TrustChain.Members"/>, not about this owner's own fleet, so a
+    /// successful read is recorded regardless. Only the fleet-ranking half is owner-specific, and it
+    /// alone goes empty when <see cref="FleetOf"/> cannot name this owner.
+    /// </summary>
     public void Record(Guid projectId, TrustChain chain, string ownerRootFingerprint)
     {
-        if (FleetOf(chain, ownerRootFingerprint) is not { } fleet)
-        {
-            _byProject.TryRemove(projectId, out _);
-            return;
-        }
+        IReadOnlyCollection<Guid> fleet = FleetOf(chain, ownerRootFingerprint) ?? [];
 
         HashSet<long> memberAccountIds = [];
         List<string> membersWithoutDeclaredAccount = [];

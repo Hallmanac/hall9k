@@ -81,7 +81,8 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
     private static ProcessRunner MentionScriptedGh(
         string repository, int number, string login,
         IReadOnlyList<(string Id, string Author, string Body, DateTimeOffset CreatedAt)> comments,
-        bool isPrivate = true, (string Login, long AccountId, string Association)? pullRequestAuthor = null) =>
+        bool isPrivate = true, (string Login, long AccountId, string Association)? pullRequestAuthor = null,
+        long? commentAuthorAccountId = null) =>
         (fileName, arguments, _, _) =>
         {
             if (IsVisibilityRead(arguments))
@@ -126,8 +127,11 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
             if (arguments.Contains("graphql") && arguments.Any(argument => argument.Contains("reviewThreads", StringComparison.Ordinal)))
             {
+                string commentAuthorAccountIdField = commentAuthorAccountId is { } accountId
+                    ? $",\"databaseId\":{accountId}"
+                    : string.Empty;
                 string nodes = string.Join(",", comments.Select(comment => $$"""
-                    {"id":"{{comment.Id}}","author":{"login":"{{comment.Author}}"},
+                    {"id":"{{comment.Id}}","author":{"login":"{{comment.Author}}"{{commentAuthorAccountIdField}}},
                      "body":"{{comment.Body.Replace("\"", "\\\"", StringComparison.Ordinal)}}",
                      "url":"https://github.com/{{repository}}/pull/{{number}}#issuecomment-{{comment.Id}}",
                      "createdAt":"{{comment.CreatedAt:yyyy-MM-ddTHH:mm:ss}}Z"}
@@ -466,12 +470,15 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
     /// <summary>
     /// The membership gate's own park (security review idea 6be68ee2, finding 1): a mention on a
-    /// public repository, with the pull request's own author not among the project's declared
-    /// members, still mints the pr-review task through the identical Add and Publish
-    /// <see cref="TaskDecider"/> sequence a member's own mention uses — but never Assign, so the
-    /// task sits Published with no claim and no run ever launches. <see cref="RefusingWorktreeManager"/>
-    /// and <see cref="RefusingExecutor"/> both prove that structurally: either one firing would fail
-    /// this test outright (no git, no dispatch).
+    /// public repository, with the COMMENT's own author not among the project's declared members,
+    /// still mints the pr-review task through the identical Add and Publish <see cref="TaskDecider"/>
+    /// sequence a member's own mention uses — but never Assign, so the task sits Published with no
+    /// claim and no run ever launches. <see cref="RefusingWorktreeManager"/> and
+    /// <see cref="RefusingExecutor"/> both prove that structurally: either one firing would fail
+    /// this test outright (no git, no dispatch). The pull request's own author is a declared member
+    /// here (independent pre-PR review, cycle 1, both lenses) — proof that the gate no longer reads
+    /// their membership at all for a fresh mint from a mention; only the tagging comment's own
+    /// author decides.
     /// </summary>
     [Fact]
     public async Task A_mention_from_a_non_member_on_a_public_repository_mints_published_and_unassigned()
@@ -492,12 +499,13 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
             [("IC_1", "ryan", "@brian what do you think of this approach?", Now.AddMinutes(5))],
-            isPrivate: false, pullRequestAuthor: ("stranger", strangerAccountId, "NONE"));
+            isPrivate: false, pullRequestAuthor: ("brian", memberAccountId, "OWNER"),
+            commentAuthorAccountId: strangerAccountId);
         AutoPrReviewEngine engine = new(
             store, node,
             NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("a parked task is never launched"), gh),
             gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
-            enrolledNodes: MemberSnapshot(projectId, node, memberAccountId));
+            enrolledNodes: MemberSnapshot(projectId, node, memberAccountId), clock: new FixedClock(Now));
 
         await engine.PollOnceAsync(cts.Token);
 
@@ -506,8 +514,11 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         minted.Type.Should().Be(TaskType.PrReview);
         minted.State.Should().Be(TaskState.Published, "Add and Publish land, but the membership gate refuses Assign");
         minted.PrReviewGateParked.Should().BeTrue();
-        minted.PrReviewGateParkedAuthorAccountId.Should().Be(strangerAccountId);
-        minted.PrReviewGateParkedAuthorLogin.Should().Be("stranger");
+        minted.PrReviewGateParkedAuthorAccountId.Should().Be(
+            strangerAccountId, "the gate matched on the tagging COMMENT's own author, never the pull request's");
+        minted.PrReviewGateParkedAuthorLogin.Should().Be("ryan");
+        minted.PrReviewGateParkedTitle.Should().Be(
+            "Add rate limiting", "the card names the pull request's own title, never the platform-authored objective");
         minted.PrReviewGateParkedIsPrivate.Should().BeFalse();
         minted.PrReviewGateParkedMemberAccountIds.Should().BeEquivalentTo([memberAccountId],
             "the card names the project's own declared member ids beside the author's, so a "
@@ -970,6 +981,54 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
         observed.Outcome.Should().Be(ReviewMentionOutcome.Attached);
         observed.TaskId.Should().Be(watchedTaskId);
+    }
+
+    /// <summary>
+    /// The follow-up gate's own Unknown case (independent pre-PR review, cycle 1, conformance
+    /// lens): this node has not yet computed the project's declared member accounts at all — the
+    /// first sweep after a restart, modelled here by never recording an <see cref="EnrolledNodeSnapshots"/>
+    /// entry for the project at all — must skip without recording anything, exactly as a fresh
+    /// mint's own Unknown already does, so the identical comment id is still fresh next sweep once
+    /// membership is known. Before this fix, this path recorded <see cref="ReviewMentionOutcome.AttachedNoFollowUp"/>
+    /// permanently — a comment id already handled never fires again — closing the door on a
+    /// genuine member's follow-up for good.
+    /// </summary>
+    [Fact]
+    public async Task A_mention_follow_up_with_membership_unknown_skips_without_recording_and_retries_next_sweep()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-membership-unknown-test";
+        const int number = 5303;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-membership-unknown", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+        Guid watchedTaskId = await SeedParkedReviewAsync(store, node, projectId, repository, number, cts.Token);
+
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_1", "ryan", "@brian does the retry logic look right to you?", Now.AddMinutes(5))],
+            isPrivate: false);
+        CapturingExecutor executor = new();
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node, new StubWorktreeManager(), executor, gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails watched = (await query.LoadAsync<TaskDetails>(watchedTaskId, cts.Token))!;
+        watched.LatestMentionCommentId.Should().BeNull("nothing was recorded on the task's own stream either");
+        watched.State.Should().Be(TaskState.Claimed, "the original human review lap, untouched");
+
+        executor.Request.Should().BeNull("a guess must never dispatch a follow-up");
+
+        (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))
+            .Should().BeNull("the comment id must still read as fresh next sweep, once membership is known");
     }
 
     /// <summary>

@@ -69,14 +69,45 @@ public sealed class EnrolledNodeSnapshotsTests
     }
 
     [Fact]
-    public void A_later_chain_that_no_longer_names_the_owner_erases_the_snapshot_so_the_node_reads_as_leader()
+    public void A_later_chain_that_no_longer_names_the_owner_empties_the_fleet_so_the_node_reads_as_leader()
     {
         EnrolledNodeSnapshots snapshots = new();
         snapshots.Record(Project, ChainOf(Owner(Node(Vouched))), Root);
 
         snapshots.Record(Project, ChainOf(null), Root);
 
-        snapshots.TryGet(Project).Should().BeNull();
+        // Empty, not absent (independent pre-PR review, cycle 1, both lenses): a successful chain
+        // read that simply does not name this owner is still recorded, so the membership gate keeps
+        // reading whatever roster the chain's own Members carry rather than falling back to Unknown
+        // forever. An empty FleetNodeIds is exactly what DecideMintHold already reads as "mint now,
+        // never defer" — the same answer TryGet returning null used to produce.
+        snapshots.TryGet(Project)!.FleetNodeIds.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void A_chain_that_does_not_name_this_owner_still_keeps_the_member_roster_it_could_read()
+    {
+        // A join refused because the account cannot push, or a project that already has an owner
+        // and is still waiting on an invite (docs/INSTALL.md): the chain's own Members and
+        // declarations are fully readable even though this owner's own fleet cannot be ranked.
+        // Before this fix, Record threw the whole entry away here, so the membership gate read
+        // Unknown on every sweep forever for a project stuck in this state.
+        EnrolledNodeSnapshots snapshots = new();
+        ProjectMember member = new(OtherRoot, MembershipRole.Member, IssuedAt);
+        Dictionary<string, NodeGitHubDeclaration> declarations = new()
+        {
+            [OtherRootNode.ToString()] = Declaration(OtherRootNode, OtherRoot, 444, "teammate"),
+        };
+        TrustChain chain = new(
+            new Dictionary<string, TrustedOwner> { [OtherRoot] = Owner(OtherRoot, OtherRootNode) },
+            [member], NodeDeclarations: declarations);
+
+        snapshots.Record(Project, chain, Root);
+
+        snapshots.TryGet(Project).Should().NotBeNull();
+        snapshots.TryGet(Project)!.FleetNodeIds.Should().BeEmpty("this owner's own fleet cannot be ranked");
+        snapshots.TryGet(Project)!.MemberAccountIds.Should().BeEquivalentTo([444L],
+            "the roster is a fact about the chain's own Members, not about this owner's own fleet");
     }
 
     [Fact]
