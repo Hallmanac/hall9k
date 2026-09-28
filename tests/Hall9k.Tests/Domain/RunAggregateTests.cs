@@ -2572,4 +2572,45 @@ public sealed class RunAggregateTests
         run.LastMechanicalRebasePushedCommit.Should().Be("abc123");
         run.LastMechanicalRebaseAt.Should().Be(Now);
     }
+
+    /// <summary>
+    /// Security review idea 6be68ee2, process-injection finding 1: a session's own terminal
+    /// result line reports every tool its real permission file refused, and this is where that
+    /// record lands on the run stream — keyed by session slug, so the findings report can look it
+    /// up per persona section the same way it already looks up
+    /// <see cref="RunAggregate.PrReviewPersonaSessionFailures"/>.
+    /// </summary>
+    [Fact]
+    public void A_recorded_permission_denial_lands_on_the_run_keyed_by_session_slug()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+
+        run.Apply(new RunPermissionDenialsRecorded(
+            id, ReviewLens.Adversarial.Slug, [new PermissionDenial("Bash", """{"command":"npm start"}""")], Now));
+
+        run.PrReviewPermissionDenials.Should().ContainKey(ReviewLens.Adversarial.Slug);
+        run.PrReviewPermissionDenials[ReviewLens.Adversarial.Slug].Should().ContainSingle()
+            .Which.ToolName.Should().Be("Bash");
+    }
+
+    /// <summary>
+    /// A fork skip's own reason and which personas it named travel with the plan selection, not
+    /// only which personas ran — <c>h9k task show</c> and the findings report both read these
+    /// back to tell a security refusal apart from a persona with no review prompt registered.
+    /// </summary>
+    [Fact]
+    public void A_fork_skip_selection_records_which_personas_and_why()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+
+        run.Apply(new PrReviewPersonasSelected(
+            id, [ReviewPersona.Engineer, ReviewPersona.Qa], [ReviewPersona.Engineer], [ReviewPersona.Qa],
+            FellBackToEngineer: false, Now, DriveDecisions: null, ForkSkipped: [ReviewPersona.Qa],
+            ForkSkipReason: "the head is a fork"));
+
+        run.PrReviewForkSkippedPersonas.Should().Equal(ReviewPersona.Qa);
+        run.PrReviewForkSkipReason.Should().Be("the head is a fork");
+    }
 }

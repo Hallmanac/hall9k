@@ -730,6 +730,28 @@ public sealed class RunReviewProjectionTests
         view.State.Should().Be(RunState.UnderReview, "a live recovery-session process is resident, not still budget-parked");
     }
 
+    /// <summary>
+    /// Security review idea 6be68ee2, process-injection finding 1: what
+    /// <c>RunSupervisor</c>/<c>PrReviewEngine</c> record off a session's own terminal
+    /// <c>permission_denials</c> lands on the read model <c>h9k task show</c> actually queries,
+    /// keyed by session slug the same way <see cref="RunDetails.PrReviewPersonaSessionFailures"/>
+    /// already is.
+    /// </summary>
+    [Fact]
+    public void Run_details_reads_a_recorded_permission_denial_keyed_by_session_slug()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+
+        projection.Apply(new FakeEvent<RunPermissionDenialsRecorded>(new RunPermissionDenialsRecorded(
+            id, ReviewLens.Adversarial.Slug, [new PermissionDenial("Bash", """{"command":"npm start"}""")], Now)), view);
+
+        view.PrReviewPermissionDenials.Should().ContainKey(ReviewLens.Adversarial.Slug);
+        view.PrReviewPermissionDenials[ReviewLens.Adversarial.Slug].Should().ContainSingle()
+            .Which.ToolName.Should().Be("Bash");
+    }
+
     private static RunDetails VerifiedRun(RunDetailsProjection projection, Guid id)
     {
         RunDetails view = projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(

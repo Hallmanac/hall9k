@@ -411,6 +411,18 @@ public sealed class RunAggregate
     /// <summary>What this run decided about driving the product, per persona (<see cref="PrReviewPersonasSelected.DriveDecisions"/>). Empty for a run whose personas cannot drive, and for one whose stream predates the decision being recorded.</summary>
     public IReadOnlyList<ReviewDriveDecision> PrReviewDriveDecisions { get; private set; } = [];
 
+    /// <summary>
+    /// The subset of <see cref="PrReviewPersonasSkipped"/> skipped specifically because this
+    /// review's head sits on a fork, not because the persona has no review prompt registered
+    /// (security review idea 6be68ee2, process-injection finding 1) — see
+    /// <see cref="PrReviewPersonasSelected.ForkSkipped"/>. Empty for a run whose head is not a
+    /// fork, and for one whose stream predates the fork skip existing.
+    /// </summary>
+    public IReadOnlyList<ReviewPersona> PrReviewForkSkippedPersonas { get; private set; } = [];
+
+    /// <summary>Why every persona in <see cref="PrReviewForkSkippedPersonas"/> was skipped, verbatim — null exactly when that list is empty.</summary>
+    public string? PrReviewForkSkipReason { get; private set; }
+
     /// <summary>The personas whose every session has landed its findings (<see cref="PrReviewPersonaReported"/>), in the order they landed.</summary>
     public IReadOnlyList<ReviewPersona> PrReviewPersonasReported => _prReviewPersonasReported;
 
@@ -425,6 +437,17 @@ public sealed class RunAggregate
         _prReviewPersonaSessionFailures;
 
     private readonly Dictionary<string, ReviewPersonaSessionFailure> _prReviewPersonaSessionFailures =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Every tool a session denied, keyed by that session's own slug (<see cref="RunPermissionDenialsRecorded"/>,
+    /// security review idea 6be68ee2, process-injection finding 1) — read by <c>h9k task show</c> and,
+    /// for a pr-review run, by the findings report's own per-persona section.
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<PermissionDenial>> PrReviewPermissionDenials =>
+        _prReviewPermissionDenials;
+
+    private readonly Dictionary<string, IReadOnlyList<PermissionDenial>> _prReviewPermissionDenials =
         new(StringComparer.Ordinal);
 
     /// <summary>The owner's h9k review resolve --merge-ready verdict on a pr-review park: walk done, close the task.</summary>
@@ -1406,6 +1429,14 @@ public sealed class RunAggregate
         PrReviewPersonasSkipped = ReviewPersona.Declared(@event.Skipped);
         PrReviewPersonasFellBackToEngineer = @event.FellBackToEngineer;
         PrReviewDriveDecisions = @event.DriveDecisions ?? [];
+        PrReviewForkSkippedPersonas = ReviewPersona.Declared(@event.ForkSkipped);
+        PrReviewForkSkipReason = @event.ForkSkipReason;
+    }
+
+    /// <summary>See <see cref="RunPermissionDenialsRecorded"/>'s own doc.</summary>
+    public void Apply(RunPermissionDenialsRecorded @event)
+    {
+        _prReviewPermissionDenials[@event.SessionSlug] = @event.Denials;
     }
 
     public void Apply(PrReviewPersonaReported @event)

@@ -256,6 +256,7 @@ public static class TaskActClassificationRegistry
         [typeof(RunFailed)] = TaskActClassification.MemberSafe,
         [typeof(RunHandoffRecorded)] = TaskActClassification.MemberSafe,
         [typeof(RunKilled)] = TaskActClassification.MemberSafe,
+        [typeof(RunPermissionDenialsRecorded)] = TaskActClassification.MemberSafe,
         [typeof(RunPhaseDelegated)] = TaskActClassification.MemberSafe,
         [typeof(RunRebasedOntoBase)] = TaskActClassification.MemberSafe,
 

@@ -58,6 +58,12 @@ public sealed class RunDetails : IJsonOnDeserialized
     public List<ReviewPersona> PrReviewPersonasReported { get; set; } = [];
     /// <summary>Mirrors <see cref="RunAggregate.PrReviewPersonaSessionFailures"/>, keyed by session slug.</summary>
     public Dictionary<string, ReviewPersonaSessionFailure> PrReviewPersonaSessionFailures { get; set; } = [];
+    /// <summary>Mirrors <see cref="RunAggregate.PrReviewForkSkippedPersonas"/>.</summary>
+    public List<ReviewPersona> PrReviewForkSkippedPersonas { get; set; } = [];
+    /// <summary>Mirrors <see cref="RunAggregate.PrReviewForkSkipReason"/>.</summary>
+    public string? PrReviewForkSkipReason { get; set; }
+    /// <summary>Mirrors <see cref="RunAggregate.PrReviewPermissionDenials"/>, keyed by session slug.</summary>
+    public Dictionary<string, List<PermissionDenial>> PrReviewPermissionDenials { get; set; } = [];
     /// <summary>
     /// The branch this run's work sits on top of — its worktree's start point, its diff and review
     /// range, and the base its pull request targets. Blank for every run based on the project's own
@@ -1395,6 +1401,14 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         view.PrReviewPersonasRan = [.. ReviewPersona.Declared(@event.Data.Ran)];
         view.PrReviewPersonasSkipped = [.. ReviewPersona.Declared(@event.Data.Skipped)];
         view.PrReviewPersonasFellBackToEngineer = @event.Data.FellBackToEngineer;
+        view.PrReviewForkSkippedPersonas = [.. ReviewPersona.Declared(@event.Data.ForkSkipped)];
+        view.PrReviewForkSkipReason = @event.Data.ForkSkipReason;
+    }
+
+    /// <summary>See <see cref="RunPermissionDenialsRecorded"/>'s own doc.</summary>
+    public void Apply(IEvent<RunPermissionDenialsRecorded> @event, RunDetails view)
+    {
+        view.PrReviewPermissionDenials[@event.Data.SessionSlug] = [.. @event.Data.Denials];
     }
 
     public void Apply(IEvent<PrReviewPersonaReported> @event, RunDetails view)
