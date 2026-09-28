@@ -1175,8 +1175,30 @@ public sealed class RunLauncher(
 
         await using IDocumentSession session = store.LightweightSession();
         RunDetails? failedRun = await session.LoadAsync<RunDetails>(failedRunId, cancellationToken);
-        if (failedRun is null
-            || !failedRun.FailedDuringPullRequestOpen
+        if (failedRun is null)
+        {
+            return false;
+        }
+
+        // Refused before WorktreePath or RunDirectory is touched at all (security review idea
+        // 6be68ee2, process-injection finding 2): failedRun replicated onto this node the same as
+        // any other run record, and a run this node never actually dispatched can name a
+        // WorktreePath that happens to exist here for reasons that have nothing to do with this
+        // task — this node's own unrelated directory of the same name, or a value a malicious
+        // teammate crafted to land on one. Without this check, Directory.Exists below would treat
+        // that coincidence as "this run's worktree is right here", run git inside it, and
+        // PullRequestOpener would push from it and read pr-summary.md there.
+        if (failedRun.NodeId != nodeId)
+        {
+            logger.LogWarning(
+                "Task {TaskId}: the failed run {FailedRunId} this task's RetryBranch would resume belongs to "
+                + "node {ForeignNodeId}, not this node {NodeId} — refusing to treat its recorded worktree path "
+                + "as local, and dispatching a full build and review pipeline instead",
+                taskId, failedRunId, failedRun.NodeId, nodeId);
+            return false;
+        }
+
+        if (!failedRun.FailedDuringPullRequestOpen
             || failedRun.Branch != task.RetryBranch
             || failedRun.WorktreePath.IsBlank()
             || !Directory.Exists(failedRun.WorktreePath))
