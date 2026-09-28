@@ -24,6 +24,16 @@ public sealed class OwnerDetails
     /// dispatch and <c>h9k owner show</c> both read this owner's declared personas from.</summary>
     public List<ReviewPersona> ReviewPersonas { get; set; } = [];
 
+    /// <summary>Mirrors <see cref="OwnerAggregate.DefaultDisplayName"/>.</summary>
+    public DisplayName DefaultDisplayName { get; set; } = DisplayName.None;
+
+    /// <summary>Mirrors <see cref="OwnerAggregate.ProjectDisplayNames"/>.</summary>
+    public Dictionary<Guid, DisplayName> ProjectDisplayNames { get; set; } = [];
+
+    /// <summary>Mirrors <see cref="OwnerAggregate.EffectiveDisplayName"/>.</summary>
+    public DisplayName EffectiveDisplayName(Guid projectId) =>
+        ProjectDisplayNames.TryGetValue(projectId, out DisplayName? projectName) ? projectName : DefaultDisplayName;
+
     public DateTimeOffset RegisteredAt { get; set; }
     public DateTimeOffset? SettingsChangedAt { get; set; }
 
@@ -64,6 +74,23 @@ public sealed partial class OwnerDetailsProjection : SingleStreamProjection<Owne
         if (@event.Data.ReviewPersonas.HasValue)
         {
             view.ReviewPersonas = [.. ReviewPersona.Declared(@event.Data.ReviewPersonas.Value)];
+        }
+
+        if (@event.Data.DefaultDisplayName.HasValue)
+        {
+            view.DefaultDisplayName = @event.Data.DefaultDisplayName.Value ?? DisplayName.None;
+        }
+
+        if (@event.Data.ProjectDisplayName.HasValue && @event.Data.ProjectDisplayName.Value is { } change)
+        {
+            if (change.Name.HasValue)
+            {
+                view.ProjectDisplayNames[change.ProjectId] = change.Name;
+            }
+            else
+            {
+                view.ProjectDisplayNames.Remove(change.ProjectId);
+            }
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;

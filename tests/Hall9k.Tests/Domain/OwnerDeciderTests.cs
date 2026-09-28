@@ -155,6 +155,92 @@ public sealed class OwnerDeciderTests
         owner.ReviewRerequest.Should().Be(ReviewRerequestPolicy.Enabled);
     }
 
+    [Fact]
+    public void An_owner_has_no_effective_display_name_for_any_project_until_they_set_one() =>
+        Registered().EffectiveDisplayName(Guid.NewGuid()).Should().Be(DisplayName.None);
+
+    [Fact]
+    public void A_default_display_name_applies_to_every_project_with_no_entry_of_its_own()
+    {
+        OwnerAggregate owner = Registered();
+        Guid projectId = Guid.NewGuid();
+
+        owner.Apply(OwnerDecider.ChangeSettings(
+            owner, Optional<ReviewRerequestPolicy>.None, Now,
+            defaultDisplayName: Optional<DisplayName>.Of(DisplayName.Parse("Ada Lovelace"))));
+
+        owner.EffectiveDisplayName(projectId).Value.Should().Be("Ada Lovelace");
+    }
+
+    [Fact]
+    public void A_projects_own_entry_takes_precedence_over_the_default()
+    {
+        OwnerAggregate owner = Registered();
+        Guid projectId = Guid.NewGuid();
+        Guid otherProjectId = Guid.NewGuid();
+
+        owner.Apply(OwnerDecider.ChangeSettings(
+            owner, Optional<ReviewRerequestPolicy>.None, Now,
+            defaultDisplayName: Optional<DisplayName>.Of(DisplayName.Parse("Default Name"))));
+        owner.Apply(OwnerDecider.ChangeSettings(
+            owner, Optional<ReviewRerequestPolicy>.None, Now.AddMinutes(1),
+            projectDisplayName: Optional<OwnerProjectDisplayName>.Of(
+                new OwnerProjectDisplayName(projectId, DisplayName.Parse("Project Name")))));
+
+        owner.EffectiveDisplayName(projectId).Value.Should().Be("Project Name");
+        owner.EffectiveDisplayName(otherProjectId).Value.Should().Be("Default Name", "no entry of its own, so the default applies");
+    }
+
+    [Fact]
+    public void Clearing_a_projects_own_entry_falls_back_to_the_default()
+    {
+        OwnerAggregate owner = Registered();
+        Guid projectId = Guid.NewGuid();
+        owner.Apply(OwnerDecider.ChangeSettings(
+            owner, Optional<ReviewRerequestPolicy>.None, Now,
+            defaultDisplayName: Optional<DisplayName>.Of(DisplayName.Parse("Default Name"))));
+        owner.Apply(OwnerDecider.ChangeSettings(
+            owner, Optional<ReviewRerequestPolicy>.None, Now.AddMinutes(1),
+            projectDisplayName: Optional<OwnerProjectDisplayName>.Of(
+                new OwnerProjectDisplayName(projectId, DisplayName.Parse("Project Name")))));
+
+        owner.Apply(OwnerDecider.ChangeSettings(
+            owner, Optional<ReviewRerequestPolicy>.None, Now.AddMinutes(2),
+            projectDisplayName: Optional<OwnerProjectDisplayName>.Of(new OwnerProjectDisplayName(projectId, DisplayName.None))));
+
+        owner.EffectiveDisplayName(projectId).Value.Should().Be("Default Name");
+    }
+
+    [Fact]
+    public void Clearing_the_default_clears_it_for_every_project_with_no_entry_of_its_own()
+    {
+        OwnerAggregate owner = Registered();
+        Guid projectId = Guid.NewGuid();
+        owner.Apply(OwnerDecider.ChangeSettings(
+            owner, Optional<ReviewRerequestPolicy>.None, Now,
+            defaultDisplayName: Optional<DisplayName>.Of(DisplayName.Parse("Default Name"))));
+
+        owner.Apply(OwnerDecider.ChangeSettings(
+            owner, Optional<ReviewRerequestPolicy>.None, Now.AddMinutes(1),
+            defaultDisplayName: Optional<DisplayName>.Of(DisplayName.None)));
+
+        owner.EffectiveDisplayName(projectId).Should().Be(DisplayName.None);
+    }
+
+    [Fact]
+    public void A_settings_change_that_never_mentions_the_display_name_leaves_it_alone()
+    {
+        OwnerAggregate owner = Registered();
+        owner.Apply(OwnerDecider.ChangeSettings(
+            owner, Optional<ReviewRerequestPolicy>.None, Now,
+            defaultDisplayName: Optional<DisplayName>.Of(DisplayName.Parse("Ada Lovelace"))));
+
+        owner.Apply(OwnerDecider.ChangeSettings(owner, Optional<ReviewRerequestPolicy>.Of(ReviewRerequestPolicy.Enabled), Now.AddMinutes(1)));
+
+        owner.EffectiveDisplayName(Guid.NewGuid()).Value.Should().Be("Ada Lovelace");
+        owner.ReviewRerequest.Should().Be(ReviewRerequestPolicy.Enabled);
+    }
+
     /// <summary>
     /// The read side every prompt builder's caller actually reads, kept in step with the aggregate
     /// above — <c>h9k owner show</c> and <c>RunLauncher</c> both go through this projection.
@@ -188,6 +274,40 @@ public sealed class OwnerDeciderTests
                 Optional<VoiceSkillName>.Of(VoiceSkillName.None))),
             view);
         view.VoiceSkill.Should().Be(VoiceSkillName.None, "--clear-voice-skill forgets it");
+    }
+
+    [Fact]
+    public void The_projection_resolves_the_effective_display_name_the_same_way_the_aggregate_does()
+    {
+        Guid id = DomainId.New();
+        Guid projectId = DomainId.New();
+        OwnerDetailsProjection projection = new();
+        OwnerDetails view = projection.Create(new FakeEvent<OwnerRegistered>(
+            new OwnerRegistered(id, "Test Owner", "owner@test.local", Now)));
+
+        view.EffectiveDisplayName(projectId).Should().Be(DisplayName.None);
+
+        projection.Apply(
+            new FakeEvent<OwnerSettingsChanged>(new OwnerSettingsChanged(
+                id, Optional<ReviewRerequestPolicy>.None, Now,
+                DefaultDisplayName: Optional<DisplayName>.Of(DisplayName.Parse("Default Name")))),
+            view);
+        view.EffectiveDisplayName(projectId).Value.Should().Be("Default Name");
+
+        projection.Apply(
+            new FakeEvent<OwnerSettingsChanged>(new OwnerSettingsChanged(
+                id, Optional<ReviewRerequestPolicy>.None, Now.AddMinutes(1),
+                ProjectDisplayName: Optional<OwnerProjectDisplayName>.Of(
+                    new OwnerProjectDisplayName(projectId, DisplayName.Parse("Project Name"))))),
+            view);
+        view.EffectiveDisplayName(projectId).Value.Should().Be("Project Name", "the project's own entry outranks the default");
+
+        projection.Apply(
+            new FakeEvent<OwnerSettingsChanged>(new OwnerSettingsChanged(
+                id, Optional<ReviewRerequestPolicy>.None, Now.AddMinutes(2),
+                ProjectDisplayName: Optional<OwnerProjectDisplayName>.Of(new OwnerProjectDisplayName(projectId, DisplayName.None)))),
+            view);
+        view.EffectiveDisplayName(projectId).Value.Should().Be("Default Name", "clearing the project's own entry falls back to the default");
     }
 
     [Fact]

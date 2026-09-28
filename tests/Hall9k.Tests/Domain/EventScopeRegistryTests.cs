@@ -90,6 +90,10 @@ public sealed class EventScopeRegistryTests
         "Hall9k.Domain.Features.Orchestrator.OrchestratorFeedLevel",
         "Hall9k.Domain.Features.Orchestrator.OrchestratorFeedRead",
         "Hall9k.Domain.Features.Orchestrator.OrchestratorFeedScope",
+        // One project's own display-name entry (task e6744304), carried inside OwnerSettingsChanged's
+        // own Optional<T> field. Never appended to a stream by itself, so it has no scope of its own
+        // to classify; OwnerSettingsChanged, which is, already carries one.
+        "Hall9k.Domain.Features.Owner.OwnerProjectDisplayName",
         // One peer's decline, carried in a list on the EventCatchUpRequest document. The whole
         // Replication slice is local bookkeeping about what this node is waiting on rather than
         // event-sourced state (that type's own doc says so), so nothing here is ever appended to a
