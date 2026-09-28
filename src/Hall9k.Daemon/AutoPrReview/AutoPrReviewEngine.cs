@@ -979,10 +979,11 @@ public sealed class AutoPrReviewEngine(
         // holding it here costs nothing — the very next sweep past the window re-decides fresh.
         if (await HourlyMintCapReachedAsync(session, repository, _clock.GetUtcNow(), cancellationToken))
         {
-            return new MintAttempt(
-                ReviewRequestOutcome.HeldMintCapReached, null,
-                "this repository's own hourly auto-pr-review mint cap is reached — re-graded every sweep, "
-                + "so it mints once the window rolls", actor);
+            // Detail is null, not the same sentence Describe's own HeldMintCapReached case already
+            // renders (independent pre-PR review, cycle 1, adversarial lens): a non-null detail here
+            // would have Describe append it a second time in parentheses, since that switch case has
+            // no dynamic facts of its own to add the way HeldForPeer's peerHold.Describe() does.
+            return new MintAttempt(ReviewRequestOutcome.HeldMintCapReached, null, null, actor);
         }
 
         try
@@ -1962,20 +1963,16 @@ public sealed class AutoPrReviewEngine(
             membershipSetting, cancellationToken);
         if (decided is not { } decision)
         {
-            // Membership unknown (security review idea 6be68ee2, finding 1): nothing is recorded at
-            // all, so the identical comment id is still fresh next sweep — the one shape that keeps
-            // "never mint-and-park on a guess" true even though a mention's own dedup is otherwise
-            // permanent.
-            //
-            // Debug, not Info, for the identical reason ObserveRequestsAsync's own Unknown line is
-            // Debug: expected and brief on an ordinary restart, but otherwise the one place a node
-            // whose chain read never catches up would silently skip every mention forever with
-            // nothing in the log to say why (independent pre-PR review, cycle 3, conformance lens).
-            logger.LogDebug(
-                "Auto-pr-review is holding a mention on {Repository}#{Number} in project {Project}: this node "
-                + "has not yet computed its declared hall9k team members, so the membership gate cannot decide "
-                + "whether to mint or dispatch",
-                repository, candidate.Number, project.Name);
+            // Nothing is recorded at all, so the identical comment id is still fresh next sweep —
+            // the one shape that keeps "never mint-and-park on a guess" true even though a
+            // mention's own dedup is otherwise permanent. Every branch that defers to the next
+            // sweep this way — the membership gate reading Unknown for a fresh mint or for an
+            // attach's own follow-up dispatch, the fleet-leader mint hold, and the hourly mint cap
+            // — logs its own specific Debug line at the point it decides to hold, rather than a
+            // catch-all here repeating a membership-gate message that would be wrong for the other
+            // two (independent pre-PR review, cycle 1, conformance lens: the mint hold and hourly
+            // cap branches already logged their own correct line and then fell through to an
+            // incorrect second one here).
             return false;
         }
 
@@ -2117,6 +2114,15 @@ public sealed class AutoPrReviewEngine(
         MembershipGateDecision gate = AutoPrReviewObservation.CombineMembershipGates(commentGate, authorGate);
         if (gate == MembershipGateDecision.Unknown)
         {
+            // Debug, not Info, for the identical reason ObserveRequestsAsync's own Unknown line is
+            // Debug: expected and brief on an ordinary restart, but otherwise the one place a node
+            // whose chain read never catches up would silently skip every mention forever with
+            // nothing in the log to say why (independent pre-PR review, cycle 3, conformance lens).
+            logger.LogDebug(
+                "Auto-pr-review is holding a mention on {Repository}#{Number} in project {Project}: this node "
+                + "has not yet computed its declared hall9k team members, so the membership gate cannot decide "
+                + "whether to mint or dispatch",
+                repository, candidate.Number, project.Name);
             return null;
         }
 
@@ -2278,6 +2284,11 @@ public sealed class AutoPrReviewEngine(
             // once membership is known, exactly as a fresh mint's own Unknown already does — rather
             // than permanently recording AttachedNoFollowUp on a guess and closing the door on a
             // genuine member's follow-up for good.
+            logger.LogDebug(
+                "Auto-pr-review is holding a mention follow-up on task {TaskId} ({Url}): this node has not "
+                + "yet computed its declared hall9k team members, so the membership gate cannot decide "
+                + "whether to dispatch",
+                existing.Id, candidate.Url);
             return null;
         }
 
