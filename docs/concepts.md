@@ -1435,13 +1435,13 @@ the genesis entry, deliberately not derived from anyone's fingerprint), and a pr
 predates that key gets one, once, from `h9k project assign-key`.
 
 **The display name also carries into the orchestrator feed, the feed courier, and the message
-commands.** A line that names another member — the feed's received-message line and its claim,
+commands.** A line that names another member (the feed's received-message line and its claim,
 takeover, take-request, refusal, and released-to-node lines; the courier's own delivered text,
 which is the identical feed lines verbatim; `h9k message show`'s From line; `h9k message handle`'s
-confirmation; and the Sender column of `h9k messages` — names them by this label rather than by a
+confirmation; and the Sender column of `h9k messages`) names them by this label rather than by a
 bare fingerprint or node id. It is the name this node currently knows: a change a member makes
 reaches every other node's own copy within one message sweep of it landing on this node's own
-ledger read, and only while that node's own daemon is running — a CLI reading it with the daemon
+ledger read, and only while that node's own daemon is running: a CLI reading it with the daemon
 stopped keeps the last name the daemon last swept. A node of this machine's own owner is never
 labelled this way; a line about your own node shows its id alone, since it already reads as "me". A
 node the projection does not currently know a member for — one revoked out of every fleet, or a
