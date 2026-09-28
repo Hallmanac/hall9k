@@ -1,4 +1,6 @@
+using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Replication;
 using Hall9k.Connectors.Trust;
 using Hall9k.Daemon.AutoPrReview;
@@ -51,8 +53,11 @@ public sealed class MessageSweepEngine(
     PullRequestReviewDuplicateConvergence? duplicateConvergence = null,
     EnrolledNodeSnapshots? enrolledNodes = null,
     NodeGitHubDeclarationOneShot? githubDeclaration = null,
-    NodeSuccessorBackfillReconciler? successorBackfill = null)
+    NodeSuccessorBackfillReconciler? successorBackfill = null,
+    ProcessRunner? runner = null)
 {
+    private readonly ProcessRunner runner = runner ?? ExternalProcess.Runner;
+
     /// <summary>Every sender outbox's tip as of this node's last probe, so a sweep that finds an
     /// unmoved tip skips reading it entirely. In-memory and per-process by design: a restart just
     /// re-reads every sender once, which is cheap and correct, never lossy.</summary>
@@ -160,7 +165,8 @@ public sealed class MessageSweepEngine(
                 await successorBackfill.ReconcileAsync(project, identity, trustChain, cancellationToken);
             }
 
-            await PersistUnverifiedWritesAsync(project, trustChain, now, cancellationToken);
+            TrustChain chainWithRefIntegrity = await WithAppendOnlyExactRefIntegrityAsync(project, trustChain, cancellationToken);
+            await PersistUnverifiedWritesAsync(project, chainWithRefIntegrity, now, cancellationToken);
             await PersistMemberLabelsAsync(project, trustChain, now, cancellationToken);
             await ReconcileRootVerificationAsync(project.Id, trustChain, now, cancellationToken);
             await ReconcileSuccessionStateAsync(project.Id, nodeId, identity.OwnerRootFingerprint, trustChain, now, cancellationToken);
@@ -623,6 +629,47 @@ public sealed class MessageSweepEngine(
     /// while <c>h9k status</c> still shows a recent-enough "last seen" for an operator to trust it
     /// reflects the current sweep, not a stale one from hours ago.</summary>
     private static readonly TimeSpan UnverifiedWriteRefreshAge = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// Checks every registered append-only <see cref="LedgerRefKind.Exact"/> ref
+    /// (<see cref="LedgerRefRegistry.AppendOnlyExactRefs"/>) once this tick, through the identical
+    /// <see cref="LedgerAppendOnlyRefFetcher"/> every ledger read and write already runs, and folds
+    /// any refusal it finds into <paramref name="trustChain"/>'s own <see cref="TrustChain.UnverifiedWrites"/>
+    /// (idea 6be68ee2, trust finding 8). <c>owners/*</c> and <c>nodes/*</c> are prefix-shaped and
+    /// already get this check every tick as part of <see cref="ILedgerChainReader.ComputeAsync"/>
+    /// itself; this is what gives the tip-read-only refs (records, prompt-addenda, run-skill) and
+    /// members the identical standing coverage, since nothing else here reads those first three on
+    /// every tick the way a message read or a trust-chain replay reads the rest — without this, a
+    /// <see cref="GitLedger"/> or <see cref="GitLedgerCommitReader"/> refusal on one of them would
+    /// never reach <c>h9k status</c> at all. Best-effort per ref, the same as
+    /// every other per-project step in this sweep: a failure checking one ref is logged and retried
+    /// next tick, and never blocks the rest.
+    /// </summary>
+    private async Task<TrustChain> WithAppendOnlyExactRefIntegrityAsync(
+        ProjectDetails project, TrustChain trustChain, CancellationToken cancellationToken)
+    {
+        List<UnverifiedLedgerWrite> extraRefusals = [];
+        foreach (LedgerRefEntry entry in LedgerRefRegistry.AppendOnlyExactRefs)
+        {
+            try
+            {
+                LedgerAppendOnlyFetchResult result = await LedgerAppendOnlyRefFetcher.FetchAsync(
+                    runner, project.RepositoryPath, entry.RefspecSource, cancellationToken);
+                if (result.WasRefused)
+                {
+                    extraRefusals.Add(new UnverifiedLedgerWrite("ref", entry.RefspecSource, string.Empty, result.RefusalReason!));
+                }
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(
+                    exception, "Checking {RefName} for an append-only integrity refusal failed for project "
+                    + "{ProjectId}; will retry next sweep", entry.RefspecSource, project.Id);
+            }
+        }
+
+        return extraRefusals.Count == 0 ? trustChain : trustChain with { UnverifiedWrites = [.. trustChain.UnverifiedWrites, .. extraRefusals] };
+    }
 
     /// <summary>
     /// Persists every writer this sweep's own trust chain read found it could not verify
