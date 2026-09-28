@@ -12,26 +12,30 @@ public sealed record TransportEnvelope(long Seq, string Content);
 /// false means this sender's own node file could not vouch for the outbox this transport just
 /// tried to read — idea 202383dc's sender-verification rule — so <see cref="Envelopes"/> is always
 /// empty in that case and nothing from this sender is trusted this sweep.
-/// <see cref="HighestSeqInspected"/> is the highest seq this call actually looked at, whether or
-/// not it ended up in <see cref="Envelopes"/>: a candidate the transport rejected on its own terms
-/// (an invalid signature) still counts, so a reader's cursor can advance past it instead of
-/// re-inspecting the identical rejected candidate on every sweep. It never counts a candidate the
-/// transport could not even inspect — a numeric gap in the sender's own seq sequence, or a
-/// tool-level failure reading the commit that should have introduced it — since neither case is a
-/// verdict on an envelope that was actually looked at, and stopping is the only safe choice: the
-/// transport cannot tell a forged or corrupted ref apart from this same sender's own earlier failed
-/// send that has not been resent yet (seq allocation is this node's own highest-plus-one, but a
-/// failed push leaves that seq's slot empty on the ref until something explicitly resends it). The
-/// one exception is a range a squash's own verified low-water mark deliberately pruned
-/// (<see cref="PrunedBelowSeq"/>): that range genuinely was never inspected either, yet
-/// <see cref="HighestSeqInspected"/> still advances across it — resuming at the mark rather than
-/// stalling forever on content the sender itself no longer holds is the whole point of the mark
-/// (idea 202383dc, the M1b/gap-stop interaction found 2026-09-14; independent pre-PR review, cycle
-/// 1, both lenses).
-/// <see cref="RejectedSeqs"/> names exactly which candidates were the former — rejected, not merely
-/// uninspected — so the reader can log the sender-verification failure rather than the rejection
-/// passing through silently. <see cref="StalledAtSeq"/> names the first seq this call could not
-/// even inspect, so the caller can log the stall too rather than reading an empty
+/// <see cref="HighestSeqInspected"/> is the highest seq this call actually looked at AND accepted
+/// forward, whether or not it ended up in <see cref="Envelopes"/>. It never counts a candidate the
+/// transport rejected on its own terms (an invalid signature) either — idea 6be68ee2, trust finding
+/// 12: <see cref="GitLedgerMessageTransport"/>'s own <c>ReadSinceAsync</c> treats a rejected
+/// signature exactly like an unreachable gap, stopping the read at it rather than skipping past it,
+/// since it cannot tell a forged or tampered commit apart from this same sender's own legitimate
+/// resend still to come. Nor does it count a candidate the transport could not even inspect — a
+/// numeric gap in the sender's own seq sequence, or a tool-level failure reading the commit that
+/// should have introduced it — since neither case is a verdict on an envelope that was actually
+/// looked at, and stopping is the only safe choice: the transport cannot tell a forged or corrupted
+/// ref apart from this same sender's own earlier failed send that has not been resent yet (seq
+/// allocation is this node's own highest-plus-one, but a failed push leaves that seq's slot empty
+/// on the ref until something explicitly resends it). The one exception is a range a squash's own
+/// verified low-water mark deliberately pruned (<see cref="PrunedBelowSeq"/>): that range genuinely
+/// was never inspected either, yet <see cref="HighestSeqInspected"/> still advances across it —
+/// resuming at the mark rather than stalling forever on content the sender itself no longer holds
+/// is the whole point of the mark (idea 202383dc, the M1b/gap-stop interaction found 2026-09-14;
+/// independent pre-PR review, cycle 1, both lenses).
+/// <see cref="RejectedSeqs"/> names exactly which candidate stalled the read for having been
+/// rejected — always the same seq <see cref="StalledAtSeq"/> names when a rejection is the cause —
+/// so the reader can log the sender-verification failure rather than the stall passing through
+/// silently as if nothing had been found at all. <see cref="StalledAtSeq"/> names the first seq
+/// this call could not even inspect (a rejected signature, a numeric gap, or a tool failure alike),
+/// so the caller can log the stall too rather than reading an empty
 /// <see cref="Envelopes"/> as "the sender genuinely has nothing new" when it may instead mean
 /// "there is more, but this call could not safely reach it yet". <see cref="PrunedBelowSeq"/> names
 /// the first seq a squash's own low-water mark skipped this call past: unlike

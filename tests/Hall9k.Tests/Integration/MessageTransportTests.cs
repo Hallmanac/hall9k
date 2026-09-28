@@ -13,6 +13,7 @@ using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Tests.Fakes;
+using JasperFx.Events;
 using Marten;
 using Xunit;
 
@@ -458,40 +459,43 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     [Fact]
-    public async Task A_transport_rejected_candidate_still_advances_the_cursor_past_it()
+    public async Task A_transport_rejected_candidate_stalls_the_cursor_behind_it()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         Guid nodeA = DomainId.New();
         Guid nodeB = DomainId.New();
         const string ownerB = "owner-b-fingerprint";
 
-        // The shape GitLedgerMessageTransport reports when the only unread candidate failed
-        // sender verification: nothing parses, but the transport still inspected seq 5.
-        RejectingMessageTransport transport = new(HighestSeqInspected: 5, RejectedSeqs: [5]);
+        // The shape GitLedgerMessageTransport.ReadSinceAsync reports when the only unread candidate
+        // failed sender verification: idea 6be68ee2, trust finding 12 treats it exactly like an
+        // unreachable gap, so nothing above the persisted cursor (0, a fresh sender) was ever
+        // actually accepted forward.
+        RejectingMessageTransport transport = new(HighestSeqInspected: 0, RejectedSeqs: [5]);
         MessageInbox inbox = new(transport);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         MessageInboxSweepResult sweep = await inbox.ReadFromAsync(
             session, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now, cancellationToken: cts.Token);
 
-        sweep.EnvelopesConsidered.Should().Be(1, "the rejected candidate was still inspected");
+        sweep.EnvelopesConsidered.Should().Be(1, "the rejected candidate was still considered by this sweep");
         sweep.EnvelopesStored.Should().Be(0);
+        sweep.StalledAtSeq.Should().Be(5, "the rejected candidate stalls the read exactly like an unreachable gap");
 
         MessageInboxDetails? inboxDoc = await session.LoadAsync<MessageInboxDetails>(
             MessageStreamId.ForInbox(nodeA, ProjectId), cts.Token);
         inboxDoc!.HighestSeqReceived.Should().Be(
-            5, "the cursor must move past a rejected candidate, or the identical rejection repeats every sweep");
+            0, "the cursor must never move past a rejected candidate — it stays put until the stall resolves");
     }
 
     [Fact]
-    public async Task A_rejected_candidate_marks_the_sender_ignored_for_status_even_though_the_cursor_moved()
+    public async Task A_rejected_candidate_marks_the_sender_ignored_for_status_even_though_the_cursor_never_moves()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         Guid nodeA = DomainId.New();
         Guid nodeB = DomainId.New();
         const string ownerB = "owner-b-fingerprint";
 
-        RejectingMessageTransport transport = new(HighestSeqInspected: 5, RejectedSeqs: [5]);
+        RejectingMessageTransport transport = new(HighestSeqInspected: 0, RejectedSeqs: [5]);
         MessageInbox inbox = new(transport);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
@@ -503,8 +507,49 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         MessageInboxDetails? inboxDoc = await session.LoadAsync<MessageInboxDetails>(
             MessageStreamId.ForInbox(nodeA, ProjectId), cts.Token);
         inboxDoc!.SenderIgnored.Should().BeTrue(
-            "the cursor advancing past a rejected candidate must never be read as this sender being fine");
-        inboxDoc.HighestSeqReceived.Should().Be(5, "the cursor still moves past the rejected candidate");
+            "a stalled cursor must never be read as this sender being fine");
+        inboxDoc.HighestSeqReceived.Should().Be(0, "the cursor never reaches the rejected candidate");
+    }
+
+    /// <summary>Independent pre-PR review, cycle 1, both lenses, medium: a rejected signature now
+    /// stalls the read (<see cref="GitLedgerMessageTransport.ReadSinceAsync"/>), so an unresolved
+    /// one reproduces the identical <see cref="TransportReadResult.RejectedSeqs"/> — and therefore
+    /// the identical reason string — on every later sweep for as long as the stall lasts. Without a
+    /// dedup, <see cref="MessageInbox"/> would append a fresh <c>InboxSenderIgnored</c> every single
+    /// sweep, growing the inbox stream without bound.</summary>
+    [Fact]
+    public async Task A_repeated_identical_stall_appends_the_sender_ignored_mark_only_once()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        const string ownerB = "owner-b-fingerprint";
+        Guid inboxStreamId = MessageStreamId.ForInbox(nodeA, ProjectId);
+
+        RejectingMessageTransport transport = new(HighestSeqInspected: 0, RejectedSeqs: [5]);
+        MessageInbox inbox = new(transport);
+
+        await using (IDocumentSession firstSession = _postgres.Store.LightweightSession())
+        {
+            await inbox.ReadFromAsync(
+                firstSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now, cancellationToken: cts.Token);
+        }
+
+        // Three more sweeps, each finding the identical still-unresolved stall — the sender never
+        // resent, and nobody squashed it away — the same as a stalled sender left unattended for
+        // several sweep ticks.
+        for (int tick = 1; tick <= 3; tick++)
+        {
+            await using IDocumentSession session = _postgres.Store.LightweightSession();
+            MessageInboxSweepResult sweep = await inbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(tick), cancellationToken: cts.Token);
+            sweep.SenderIgnored.Should().BeTrue("this sweep's own verdict is unchanged by the dedup");
+        }
+
+        await using IQuerySession querySession = _postgres.Store.QuerySession();
+        IReadOnlyList<IEvent> events = await querySession.Events.FetchStreamAsync(inboxStreamId, token: cts.Token);
+        events.Select(@event => @event.Data).OfType<InboxSenderIgnored>().Should().ContainSingle(
+            "the identical verification failure must be recorded once, never re-appended every sweep it repeats");
     }
 
     /// <summary>idea 6be68ee2, trust findings 10/12: an envelope's own <see cref="MessageEnvelopeV1.FromOwner"/>
@@ -575,7 +620,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         const string ownerB = "owner-b-fingerprint";
         Guid inboxStreamId = MessageStreamId.ForInbox(nodeA, ProjectId);
 
-        RejectingMessageTransport rejecting = new(HighestSeqInspected: 5, RejectedSeqs: [5]);
+        RejectingMessageTransport rejecting = new(HighestSeqInspected: 0, RejectedSeqs: [5]);
         MessageInbox inboxOverRejecting = new(rejecting);
 
         await using (IDocumentSession firstSession = _postgres.Store.LightweightSession())
@@ -584,11 +629,12 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
                 firstSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now, cancellationToken: cts.Token);
         }
 
-        // The next sweep finds the sender vouched and nothing new past the cursor — no rejection
-        // this time — but the standing mark is for one specific envelope's own verification
-        // failure, not for the sender being unvouched, so a sweep that merely finds nothing new
-        // must never clear it: that would make a forgery visible for a single sweep interval only.
-        RejectingMessageTransport clean = new(HighestSeqInspected: 5, RejectedSeqs: []);
+        // The next sweep finds the sender vouched and nothing new past the (still-stalled) cursor —
+        // no rejection this time — but the standing mark is for one specific envelope's own
+        // verification failure, not for the sender being unvouched, so a sweep that merely finds
+        // nothing new must never clear it: that would make a forgery visible for a single sweep
+        // interval only.
+        RejectingMessageTransport clean = new(HighestSeqInspected: 0, RejectedSeqs: []);
         MessageInbox inboxOverClean = new(clean);
 
         await using (IDocumentSession secondSession = _postgres.Store.LightweightSession())
@@ -616,7 +662,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         const string ownerB = "owner-b-fingerprint";
         Guid inboxStreamId = MessageStreamId.ForInbox(nodeA, ProjectId);
 
-        RejectingMessageTransport rejecting = new(HighestSeqInspected: 5, RejectedSeqs: [5]);
+        RejectingMessageTransport rejecting = new(HighestSeqInspected: 0, RejectedSeqs: [5]);
         MessageInbox inboxOverRejecting = new(rejecting);
 
         await using (IDocumentSession firstSession = _postgres.Store.LightweightSession())
@@ -1455,10 +1501,16 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
     /// <summary>Stands in for what <see cref="GitLedgerMessageTransport"/> itself cannot be
     /// exercised through here (Brian's 2026-09-13 testing rule): a sender that is vouched for, but
-    /// whose only candidate above the cursor the transport already rejected on its own terms (a bad
+    /// whose next candidate above the cursor the transport already rejected on its own terms (a bad
     /// signature, a missing introducing commit) — <see cref="MessageInbox"/> must still see that
-    /// candidate as inspected, never as "nothing happened this sweep".</summary>
-    private sealed record RejectingMessageTransport(long HighestSeqInspected, IReadOnlyList<long> RejectedSeqs) : IMessageTransport
+    /// candidate as considered, never as "nothing happened this sweep", even though a rejected
+    /// signature now stalls the read exactly like an unreachable gap
+    /// (<see cref="GitLedgerMessageTransport.ReadSinceAsync"/>'s own stall, idea 6be68ee2, trust
+    /// finding 12) rather than being skipped past: <see cref="HighestSeqInspected"/> therefore never
+    /// advances past a rejected seq, and <see cref="StalledAtSeq"/> defaults to naming the same seq
+    /// <see cref="RejectedSeqs"/> does, the coupling the real transport always produces.</summary>
+    private sealed record RejectingMessageTransport(
+        long HighestSeqInspected, IReadOnlyList<long> RejectedSeqs, long? StalledAtSeq = null) : IMessageTransport
     {
         public Task SendAsync(
             string repositoryPath, Guid fromNodeId, long seq, string content, LedgerCommitter committer,
@@ -1473,7 +1525,9 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         public Task<TransportReadResult> ReadSinceAsync(
             string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken,
             TrustChain? trustChain = null) =>
-            Task.FromResult(TransportReadResult.Ok([], HighestSeqInspected, RejectedSeqs));
+            Task.FromResult(TransportReadResult.Ok(
+                [], HighestSeqInspected, RejectedSeqs,
+                stalledAtSeq: StalledAtSeq ?? (RejectedSeqs.Count > 0 ? RejectedSeqs[^1] : null)));
 
         public Task<IReadOnlyList<MessageOutboxTip>> ProbeAsync(string repositoryPath, CancellationToken cancellationToken) =>
             throw new NotSupportedException("This fake only stands in for a read.");
