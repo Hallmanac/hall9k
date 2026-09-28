@@ -1524,9 +1524,20 @@ refs and the members ref and replays them, oldest first, accepting each vouch or
 only if its signer was already trusted when the replay reached it. A stranger who pushes a
 self-consistent root and node file to the repository is simply not a member, so everything they
 wrote is ignored, recorded rather than silently dropped, and reported: `h9k project members` prints
-an "Unverifiable writes ignored" block and `h9k status` names each one. The one thing this cannot
-protect against is a force-push over a ledger ref by someone with push access, which rewrites the
-history the replay reads. Git gives push access no finer lock than the ref itself.
+an "Unverifiable writes ignored" block and `h9k status` names each one.
+
+**A rewind or a side merge over a ledger ref is refused, not silently replayed (idea 6be68ee2).**
+Git gives push access no finer lock than the ref itself, so a repository collaborator can still
+force-push over a ledger ref, or land a merge whose first parent is an old tip and second parent the
+current one — a plain fast-forward to origin, but a shape a replay's own mainline walk never sees
+past the old line. Every fetch of a ledger ref (every one except a node's own outbox, which is
+squashed and force-pushed with a lease by design) is checked against the last tip this node itself
+verified, kept in a local-only ref beside the live one, before either ref moves: a rewind or that
+side-merge shape is refused, the node keeps reading its own verified tip, and the refusal is named in
+`h9k status` with the repair command to push the verified tip forward again. The
+next ordinary write to that ref heals a pure rewind on its own; a genuinely divergent history still
+fails the push, and reconciling it (or accepting a legitimate owner rewrite, such as purging a leaked
+secret) is a human decision.
 
 **A node can carry a vouch into a project the root has never touched.** A node already vouched under
 your root on one project can join a brand-new project's ledger with no `--owner` and no `--invite`:
