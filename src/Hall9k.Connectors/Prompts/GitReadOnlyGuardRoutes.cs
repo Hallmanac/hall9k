@@ -26,13 +26,14 @@ namespace Hall9k.Connectors.Prompts;
 /// Matched on the command text, the same terms <see cref="ReviewThreadReplyRoutes"/> states for
 /// its own routes: a <c>PreToolUse</c> hook is given nothing else, so recognition has to survive
 /// quoting and <c>bash -c</c> wrapping rather than assume a particular shell parses the line. A
-/// single-quoted or backslash-escaped flag (<c>'--output'=&lt;path&gt;</c>,
-/// <c>--outpu\t=&lt;path&gt;</c>) reassembles into the real flag once the shell removes the quote
-/// or the backslash, and this recognizer un-escapes the identical way before matching — verified
-/// against all three spellings in a throwaway repository (independent pre-PR review, cycle 1,
-/// adversarial lens): each one wrote its file exactly as the unquoted form does. A quoted run of
-/// text that contains whitespace — an ordinary commit message or <c>--format</c> string — is
-/// blanked out instead, so naming either flag inside one still runs.
+/// single-quoted, double-quoted, ANSI-C-quoted, or backslash-escaped flag — split across a quote
+/// boundary or reassembled whole inside one — turns into the real flag once the shell removes the
+/// quoting, and this recognizer reassembles whole shell words the identical way before matching
+/// (independent pre-PR review, cycles 1 through 4; each spelling verified in a throwaway
+/// repository: it wrote or read its file exactly as the unquoted form does). A word that is not
+/// itself the refused flag or path once reassembled — an ordinary commit message or
+/// <c>--format</c> string that merely names one inside a longer value — is blanked out instead, so
+/// naming either term inside one still runs.
 /// </para>
 /// </summary>
 public static class GitReadOnlyGuardRoutes
@@ -88,23 +89,27 @@ public static class GitReadOnlyGuardRoutes
 
     /// <summary>
     /// Reverses the shell tricks that reassemble a refused flag or path out of pieces this class's
-    /// own regexes would otherwise miss (independent pre-PR review, cycle 1, adversarial lens, and
-    /// cycle 2's follow-up): splitting a flag across a quote (<c>'--output'=&lt;path&gt;</c>),
-    /// escaping one of its characters (<c>--outpu\t=&lt;path&gt;</c>), and bash's own <c>$'...'</c>
-    /// ANSI-C quoting, whose backslash escapes decode to arbitrary characters before the shell ever
-    /// sees a flag or a path (<c>--outp$'\x75't=&lt;path&gt;</c> decodes to
-    /// <c>--output=&lt;path&gt;</c>; <c>$'/etc/passwd'</c> decodes to the literal absolute path,
-    /// verified against bash directly — cycle 2, adversarial lens). A quoted run of text that
-    /// itself contains whitespace once decoded is blanked out instead of substituted in — that
-    /// shape is an ordinary multi-word argument (a commit message, a <c>--format</c> string), not a
-    /// flag or path split across a quote boundary, and substituting it in place would read a flag's
-    /// own name, or an absolute path, out of a value that never reaches git as one (a regression
-    /// this method's own tests pin: naming either term inside a quoted commit message must keep
-    /// running) — except for a <c>$'...'</c> span whose decoded value itself opens with a refused
-    /// term (<see cref="BeginsWithARefusedTerm"/>): there, the whole flag and its whitespace-bearing
-    /// value sit inside the one quote, so blanking on whitespace alone erased the flag's own name
-    /// along with the value it was hiding behind (independent pre-PR review, cycle 3, adversarial
-    /// lens — verify pass).
+    /// own regexes would otherwise miss, by reasoning about whole shell words rather than isolated
+    /// quoted spans (independent pre-PR review, cycles 1 through 4). A single shell word can mix
+    /// unquoted text, <c>'...'</c>, <c>"..."</c>, <c>$'...'</c> ANSI-C quoting, and backslash escapes
+    /// with no whitespace between the pieces — <c>--out'put=/tmp/my file.txt'</c>,
+    /// <c>--out"put=$HOME/my file"</c>, and <c>--outp$'ut=/tmp/my file.txt'</c> are each one word
+    /// that bash reassembles into <c>--output=/tmp/my file.txt</c> — so this method joins every
+    /// adjacent piece of a word (decoding each quote or escape the way bash does) before judging it,
+    /// and splits only on unquoted whitespace. A word untouched by any quoting or escaping — the
+    /// overwhelming majority, including the literal <c>git</c>/<c>diff</c>/<c>log</c> tokens this
+    /// class's other regexes match on — passes through unchanged. A word that <em>was</em> touched
+    /// is judged as a whole: if its reassembled text opens with a refused term
+    /// (<see cref="BeginsWithARefusedTerm"/> — <c>--output</c>, <c>--no-index</c>, or an absolute
+    /// path), the reassembled text is substituted in so the flag regexes see it exactly as git
+    /// would; otherwise the whole word is blanked out. That covers the ordinary multi-word argument
+    /// (a commit message, a <c>--format</c> string) that merely names a refused term somewhere
+    /// inside itself — substituting it in place would read a flag's own name, or an absolute path,
+    /// out of a value that never reaches git as one (a regression this method's own tests pin) — and
+    /// it also closes the gap a per-span check left open: judging only the decoded <c>$'...'</c>
+    /// span itself, rather than the whole word around it, missed <c>--outp$'ut=/tmp/my file.txt'</c>
+    /// because the refused term only appears once the unquoted prefix and the quoted remainder are
+    /// joined (cycle 4, human review).
     /// </summary>
     private static string UnescapeShellQuoting(string command)
     {
@@ -112,67 +117,90 @@ public static class GitReadOnlyGuardRoutes
         int index = 0;
         while (index < command.Length)
         {
-            char current = command[index];
-            if (current == '$' && index + 1 < command.Length && command[index + 1] == '\'')
+            if (char.IsWhiteSpace(command[index]))
             {
-                if (!TryConsumeAnsiCQuoted(command, index, out string decoded, out int nextIndex))
+                result.Append(command[index]);
+                index++;
+                continue;
+            }
+
+            int wordStart = index;
+            StringBuilder decodedWord = new();
+            bool wordHasQuoting = false;
+            while (index < command.Length && !char.IsWhiteSpace(command[index]))
+            {
+                char current = command[index];
+                if (current == '$' && index + 1 < command.Length && command[index + 1] == '\'')
                 {
-                    result.Append(command, index, command.Length - index);
-                    break;
+                    wordHasQuoting = true;
+                    if (!TryConsumeAnsiCQuoted(command, index, out string decoded, out int nextIndex))
+                    {
+                        decodedWord.Append(command, index, command.Length - index);
+                        index = command.Length;
+                        break;
+                    }
+
+                    decodedWord.Append(decoded);
+                    index = nextIndex;
+                    continue;
                 }
 
-                bool hasWhitespace = decoded.Contains(' ') || decoded.Contains('\t');
-                result.Append(hasWhitespace && !BeginsWithARefusedTerm(decoded)
-                    ? new string('#', nextIndex - index)
-                    : decoded);
-                index = nextIndex;
-                continue;
-            }
-
-            if (current is '\'' or '"')
-            {
-                int closingIndex = command.IndexOf(current, index + 1);
-                if (closingIndex < 0)
+                if (current is '\'' or '"')
                 {
-                    result.Append(command, index, command.Length - index);
-                    break;
+                    wordHasQuoting = true;
+                    int closingIndex = command.IndexOf(current, index + 1);
+                    if (closingIndex < 0)
+                    {
+                        decodedWord.Append(command, index, command.Length - index);
+                        index = command.Length;
+                        break;
+                    }
+
+                    decodedWord.Append(command, index + 1, closingIndex - index - 1);
+                    index = closingIndex + 1;
+                    continue;
                 }
 
-                string quoted = command[(index + 1)..closingIndex];
-                result.Append(quoted.Contains(' ') || quoted.Contains('\t')
-                    ? new string('#', closingIndex - index + 1)
-                    : quoted);
-                index = closingIndex + 1;
-                continue;
+                if (current == '\\' && index + 1 < command.Length)
+                {
+                    wordHasQuoting = true;
+                    decodedWord.Append(command[index + 1]);
+                    index += 2;
+                    continue;
+                }
+
+                decodedWord.Append(current);
+                index++;
             }
 
-            if (current == '\\' && index + 1 < command.Length)
+            int wordLength = index - wordStart;
+            if (!wordHasQuoting)
             {
-                result.Append(command[index + 1]);
-                index += 2;
+                result.Append(command, wordStart, wordLength);
                 continue;
             }
 
-            result.Append(current);
-            index++;
+            string word = decodedWord.ToString();
+            result.Append(BeginsWithARefusedTerm(word) ? word : new string('#', wordLength));
         }
 
         return result.ToString();
     }
 
     /// <summary>
-    /// Whether a decoded <c>$'...'</c> span opens with one of the refused terms itself, rather than
-    /// merely naming one somewhere inside a longer, unrelated value (independent pre-PR review,
-    /// cycle 3, adversarial lens — verify pass). Bash hands git the whole decoded span as a single
-    /// argument regardless of where the quote sits, so <c>$'--output=/tmp/my file.txt'</c> reaches
-    /// git exactly as <c>--output=/tmp/my file.txt</c> would unquoted: the flag is the value's own
-    /// prefix, not text mentioning the flag. Blanking that span the same way as an ordinary
-    /// multi-word argument (a commit message, a <c>--format</c> string) erased the
-    /// <c>--output=</c> prefix along with the path, so the flag was never seen at all — reopening
-    /// the write escape a prior cycle's fix was meant to close, through a spelling this class's own
-    /// tests never tried. Checking the match's own index rather than just whether it matches is what
-    /// keeps the still-required case running: <c>$'note: mentions --output here'</c> also matches
-    /// <see cref="OutputFlag"/>, but not at index 0, so it stays blanked.
+    /// Whether a reassembled shell word — every adjacent unquoted, <c>'...'</c>, <c>"..."</c>, and
+    /// <c>$'...'</c> piece between two runs of unquoted whitespace, joined and decoded — opens with
+    /// one of the refused terms itself, rather than merely naming one somewhere inside a longer,
+    /// unrelated value (independent pre-PR review, cycles 3 and 4). Bash hands git the whole
+    /// reassembled word as a single argument regardless of how many quotes built it, so
+    /// <c>--outp$'ut=/tmp/my file.txt'</c> reaches git exactly as <c>--output=/tmp/my file.txt</c>
+    /// would unquoted: the flag is the word's own prefix, not text mentioning the flag. Judging only
+    /// the quoted span in isolation, rather than the word it sits inside, missed exactly this case —
+    /// the refused term only appears once the unquoted <c>--outp</c> and the quoted <c>ut=...</c>
+    /// are joined (cycle 4, human review). Checking the match's own index rather than just whether it
+    /// matches is what keeps the still-required case running: <c>note: mentions --output here</c>
+    /// also matches <see cref="OutputFlag"/>, but not at index 0, so <see cref="UnescapeShellQuoting"/>
+    /// still blanks it.
     /// </summary>
     private static bool BeginsWithARefusedTerm(string decoded)
     {
