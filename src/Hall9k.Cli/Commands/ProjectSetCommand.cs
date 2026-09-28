@@ -612,9 +612,34 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         // rather than a whole new list, so it needs the resolved list either way.
         if (settings.HostCoupledGateFilter is { } hostCoupledGateFilterValue)
         {
-            IReadOnlyList<VerifyCommand> gatesToMark = verifyCommands is { HasValue: true, Value: { } newlySetGates }
-                ? newlySetGates
-                : details.VerifyCommands;
+            IReadOnlyList<VerifyCommand>? newlySetGates = verifyCommands is { HasValue: true, Value: { } newlyAssignedGates }
+                ? newlyAssignedGates
+                : null;
+            bool verifyPassedThisInvocation = newlySetGates is not null;
+            IReadOnlyList<VerifyCommand> gatesToMark = newlySetGates ?? details.VerifyCommands;
+
+            // A node runs a project's verify gates only after its own operator has accepted that
+            // exact gate set (security review idea 6be68ee2, process-injection finding 1, the local
+            // half) — the comment below this block reasons that the operator who just typed the
+            // gates into this command IS the accepting operator, but that only holds when --verify
+            // itself was passed. A bare --verify-gate-filter never shows the operator a single gate
+            // command: it folds whatever details.VerifyCommands already holds, which may be an
+            // unvetted set this node replicated in and never reviewed, and would otherwise record
+            // that whole list as accepted underneath a command whose only visible output is a gate
+            // name (independent pre-PR review, cycle 1, both lenses, medium). Refused here, before
+            // ValidateGatesAgainstCleanBaseAsync below ever runs the unreviewed command on this
+            // host, rather than silently accepting it.
+            if (!verifyPassedThisInvocation
+                && !GateSetAcceptance.Decide(details.AcceptedVerifyCommands, gatesToMark).Proceed)
+            {
+                throw new DomainConflictException(
+                    $"Project '{details.Name}'s current verify gate set has not been accepted on this "
+                    + $"node — --verify-gate-filter alone would record acceptance of a list this node "
+                    + "has never reviewed. Run h9k project accept-gates "
+                    + $"{details.Name} first, or pass --verify together with --verify-gate-filter to "
+                    + "set and accept a reviewed list in the same call.");
+            }
+
             verifyCommands = Optional<IReadOnlyList<VerifyCommand>>.Of(
                 ApplyHostCoupledGateFilter(gatesToMark, hostCoupledGateFilterValue));
         }
@@ -857,9 +882,12 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         // A node runs a project's verify gates only after its own operator has accepted that exact
         // gate set (security review idea 6be68ee2, process-injection finding 1, the local half).
         // --verify and --verify-gate-filter are the only flags that feed VerifyCommand.Fingerprint,
-        // and verifyCommands.HasValue is exactly "one of them was passed this invocation" — the
-        // operator who just typed the gates into this command IS the accepting operator, so
-        // acceptance rides the same SaveChangesAsync as the settings event rather than a second
+        // and verifyCommands.HasValue is exactly "one of them was passed this invocation" — either
+        // --verify, where the operator just typed the gates into this very command, or a bare
+        // --verify-gate-filter, which the refusal above already limited to a gate list this node
+        // had already accepted (so this append only ever re-records that same list, now carrying
+        // the filter). Either way the operator who just ran this command IS the accepting operator,
+        // so acceptance rides the same SaveChangesAsync as the settings event rather than a second
         // command: a node can never hold itself on its own local change.
         if (verifyCommands is { HasValue: true, Value: { } acceptedGates })
         {
