@@ -241,6 +241,21 @@ public sealed class GitReadOnlyGuardTests
         GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
 
     /// <summary>
+    /// Command substitution runs an arbitrary command as a side effect regardless of quoting, unlike
+    /// the word-splitting danger <see cref="A_quoted_brace_group_or_dollar_sign_runs"/> pins as safe
+    /// to leave alone: a <c>"..."</c> span suppresses word-splitting on the substitution's output but
+    /// not the substitution itself, and a backtick pair is never suppressed by quoting at all
+    /// (independent pre-PR review, cycle 9, adversarial lens). Verified in a throwaway repository:
+    /// each shape ran the embedded command exactly as the unquoted <c>$(...)</c> form does.
+    /// </summary>
+    [Theory]
+    [InlineData("git diff --format=\"$(whoami)\"")]
+    [InlineData("git diff --format=`whoami`")]
+    [InlineData("git diff --format=\"`whoami`\"")]
+    public void A_command_substitution_inside_or_out_of_double_quotes_is_refused(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
+    /// <summary>
     /// A brace group or a <c>$</c> sitting inside a <c>'...'</c> or <c>"..."</c> span never expands
     /// (bash suppresses brace expansion entirely under quoting, and a double-quoted <c>$</c> expands
     /// without the word-splitting that makes the unquoted form dangerous), so an ordinary quoted

