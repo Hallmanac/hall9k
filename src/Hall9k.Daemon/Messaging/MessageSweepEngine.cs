@@ -162,6 +162,7 @@ public sealed class MessageSweepEngine(
 
             await PersistUnverifiedWritesAsync(project, trustChain, now, cancellationToken);
             await ReconcileRootVerificationAsync(project.Id, trustChain, now, cancellationToken);
+            await ReconcileSuccessionStateAsync(project.Id, nodeId, identity.OwnerRootFingerprint, trustChain, now, cancellationToken);
 
             // The project's own generated wire key (idea 202383dc, M2; Brian's ruling 2026-09-17) —
             // never a local project id (differs per install for the identical shared project) and
@@ -748,6 +749,36 @@ public sealed class MessageSweepEngine(
         {
             logger.LogWarning(
                 exception, "Reconciling this owner's root verification failed for project {ProjectId}; will retry next sweep",
+                projectId);
+        }
+    }
+
+    /// <summary>
+    /// Reconciles this node's own <see cref="Hall9k.Domain.Features.Trust.NodeSuccessionStateDetails"/>
+    /// from the trust chain this tick already computed for <paramref name="projectId"/> —
+    /// <c>h9k status</c> reads only this standing record, never a live ledger walk of its own
+    /// (<see cref="NodeSuccessionStateReconciler"/>'s own doc). Best-effort, the same as every other
+    /// per-project step in this sweep: a failure here is logged and retried next tick.
+    /// </summary>
+    private async Task ReconcileSuccessionStateAsync(
+        Guid projectId, Guid nodeId, string ownerRootFingerprint, TrustChain trustChain, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (!trustChain.OwnerChains.TryGetValue(ownerRootFingerprint, out TrustedOwner? owner))
+            {
+                return;
+            }
+
+            await using IDocumentSession session = store.LightweightSession();
+            NodeSuccessionStateReconciler.Reconcile(session, nodeId, owner, now);
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception, "Reconciling this node's own succession state failed for project {ProjectId}; will retry next sweep",
                 projectId);
         }
     }

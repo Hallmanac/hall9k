@@ -3,7 +3,6 @@ using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Connectors.Replication;
-using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.Courier;
@@ -76,7 +75,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         using var store = CliStore.Open();
         await using IQuerySession session = store.QuerySession();
 
-        await WriteIdentityLineAsync(session, new GitLedgerChainReader(), cancellationToken);
+        await WriteIdentityLineAsync(session, cancellationToken);
         await WriteProjectsNeedingInviteAsync(session, cancellationToken);
         await WriteOrchestratorLineAsync(session, cancellationToken);
         await WriteMessagesLineAsync(session, cancellationToken);
@@ -314,8 +313,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// h9k project join has generated one, and the owner root that fingerprint currently claims.
     /// Degraded rather than fatal on a database hiccup, exactly as the other panes below are.
     /// </summary>
-    private static async Task WriteIdentityLineAsync(
-        IQuerySession session, ILedgerChainReader chainReader, CancellationToken cancellationToken)
+    private static async Task WriteIdentityLineAsync(IQuerySession session, CancellationToken cancellationToken)
     {
         try
         {
@@ -333,8 +331,8 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             string root = owner?.RootFingerprint is { } fingerprint
                 ? fingerprint + (owner.RootFingerprintVerified ? string.Empty : " (unverified)")
                 : "not claimed — h9k project join";
-            string? successionState = owner?.RootFingerprint is { } rootFingerprint
-                ? await SuccessionStateAsync(session, chainReader, node, rootFingerprint, cancellationToken)
+            string? successionState = owner?.RootFingerprint is not null
+                ? await SuccessionStateAsync(session, node.Id, cancellationToken)
                 : null;
             string suffix = successionState is null ? string.Empty : $" · {successionState}";
             if (node.PublicKey is { } publicKeyLine)
@@ -356,48 +354,21 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// <summary>
     /// This node's own succession state (idea 6be68ee2): "root key", "successor", "no successor"
     /// for a one-node fleet, or null for an ordinary fleet node with neither and more than one node
-    /// around it. Reads one non-archived project this owner is registered to, live, off the git
-    /// ledger — a real network round trip unlike the rest of this line, so its own failure is caught
-    /// here alone and simply omits the fragment rather than losing the whole identity line to a
-    /// ledger that happens to be unreachable right now.
+    /// around it — read from the standing record the daemon's own message sweep persists
+    /// (<c>Hall9k.Connectors.Trust.NodeSuccessionStateReconciler</c>, off the same trust chain that
+    /// sweep already computes once per tick), never a live ledger chain walk from here: this pane
+    /// reads only what this machine's own store already has, the same "no git or network work in
+    /// h9k status itself" rule every other pane in this command follows (independent pre-PR review,
+    /// cycle 1, conformance lens, medium — a live <c>ILedgerChainReader.ComputeAsync</c> call from
+    /// here ran an unbounded git fetch and ledger replay on every status check, and could collide
+    /// with the daemon's own concurrent ref writes against the identical repository).
     /// </summary>
-    private static async Task<string?> SuccessionStateAsync(
-        IQuerySession session, ILedgerChainReader chainReader, NodeDetails node, string rootFingerprint,
-        CancellationToken cancellationToken)
+    private static async Task<string?> SuccessionStateAsync(IQuerySession session, Guid nodeId, CancellationToken cancellationToken)
     {
         try
         {
-            ProjectDetails? project = (await session.Query<ProjectDetails>()
-                .Where(p => p.OwnerId == node.OwnerId && !p.IsArchived)
-                .Take(1).ToListAsync(cancellationToken)).FirstOrDefault();
-            if (project is null)
-            {
-                return null;
-            }
-
-            TrustChain chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
-            if (!chain.OwnerChains.TryGetValue(rootFingerprint, out TrustedOwner? owner))
-            {
-                return null;
-            }
-
-            string nodeIdText = node.Id.ToString();
-            if (owner.RootKeys.Any(rootKey => rootKey.IntroducedByNodeId == nodeIdText))
-            {
-                return "root key";
-            }
-
-            if (owner.SuccessorNodeIds.Contains(nodeIdText))
-            {
-                return "successor";
-            }
-
-            if (owner.FleetNodeIds().Count() == 1 && owner.SuccessorNodeIds.Count == 0 && owner.RootKeys.Count == 1)
-            {
-                return "no successor";
-            }
-
-            return null;
+            NodeSuccessionStateDetails? details = await session.LoadAsync<NodeSuccessionStateDetails>(nodeId, cancellationToken);
+            return details?.State;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
