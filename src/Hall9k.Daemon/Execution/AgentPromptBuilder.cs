@@ -3409,6 +3409,15 @@ public static class AgentPromptBuilder
     /// knows the question was answered rather than skipped. VerificationRunner runs the
     /// project's gates immediately before the review loop is entered, and again on every
     /// re-verify, so this is a stated observation and not a promise.
+    /// <para>
+    /// A node runs a project's verify gates only after its own operator has accepted that exact
+    /// gate set (security review idea 6be68ee2, process-injection finding 1, the local half) —
+    /// this review lens runs with skip-permissions, and the gate set can change between the
+    /// verification pass this status reports on and the moment this prompt is built (independent
+    /// pre-PR review of 6edacfa3, folded into this task's own C1). Never lists a real command
+    /// when the project's current gate set has not been accepted on this node, whatever this
+    /// exact commit's own verification ran under.
+    /// </para>
     /// </summary>
     private static void AppendReviewGateStatus(StringBuilder prompt, ProjectDetails project, bool gatesObserved = true)
     {
@@ -3423,6 +3432,12 @@ public static class AgentPromptBuilder
         if (gates.Count == 0)
         {
             AppendFragment(prompt, file, "no-gates-configured");
+            return;
+        }
+
+        if (!GateSetAcceptance.Decide(project.AcceptedVerifyCommands, project.VerifyCommands).Proceed)
+        {
+            AppendFragment(prompt, file, "gates-unaccepted");
             return;
         }
 

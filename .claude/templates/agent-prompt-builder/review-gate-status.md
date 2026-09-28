@@ -6,6 +6,11 @@
 ===no-gates-configured===
   This project configures no verification gates, so there is no build of its own
   for you to reproduce; judge the code as written.
+===gates-unaccepted===
+  This project's verify gate set has changed and has not yet been accepted on this node, so
+  its commands are not listed here — do not run them yourself. The platform's own
+  verification holds at gate entry until this node's operator accepts the current set
+  (`h9k project accept-gates`); judge the code as written.
 ===gates-passed===
   The project's gates already ran and passed against this exact commit, immediately
   before this review was dispatched:

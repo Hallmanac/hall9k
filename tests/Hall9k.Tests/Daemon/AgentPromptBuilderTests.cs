@@ -928,6 +928,27 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// A node runs a project's verify gates only after its own operator has accepted that exact
+    /// gate set (security review idea 6be68ee2, process-injection finding 1, the local half) —
+    /// this rebase checklist runs with skip-permissions, so it must never list a real command for
+    /// a gate set this node has not vetted.
+    /// </summary>
+    [Fact]
+    public void Rebase_prompt_lists_no_command_when_the_gate_set_is_unaccepted()
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
+
+        string prompt = AgentPromptBuilder.BuildRebase(
+            SomeTask(), project, "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+
+        prompt.Should().NotContain("- `dotnet test`");
+        Flatten(prompt).Should().Contain(
+            "has changed and has not yet been accepted on this node, so its commands are not listed here");
+        Flatten(prompt).Should().Contain("do not run them yourself");
+    }
+
+    /// <summary>
     /// The narrative counterpart: a gate fix belongs inside the commit whose replay produced
     /// the failure, not a new "fix tests" commit — the same rule <c>AppendCommitStyleRules</c>
     /// already teaches <see cref="AgentPromptBuilder.BuildFixChecks"/>, applied here.
@@ -2038,12 +2059,36 @@ public sealed class AgentPromptBuilderTests : IDisposable
         ProjectDetails project = SomeProject();
         project.VerifyCommands =
             [new VerifyCommand("build", "dotnet build"), new VerifyCommand("test", "dotnet test", HostCoupledFilter: "Category=RequiresDocker")];
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
 
         string prompt = AgentPromptBuilder.BuildReview(SomeTask(), project, "task/1-slug", cycle: 1, lens);
 
         prompt.Should().Contain("- `dotnet build`");
         prompt.Should().Contain("`test` runs only in the daemon's own serialized host gate");
         prompt.Should().NotContain("- `dotnet test`");
+    }
+
+    /// <summary>
+    /// The same race the origin finding describes, at this lens's own gate-status line
+    /// (independent challenge, 2026-09-28): a session that already runs with skip-permissions
+    /// must never be handed a gate command this node's operator has not vetted, even one the
+    /// platform's own verification ran under an earlier, since-changed configuration.
+    /// </summary>
+    [Theory]
+    [InlineData("Conformance")]
+    [InlineData("Adversarial")]
+    public void An_unaccepted_gate_set_is_never_listed_in_the_review_gate_status(string lens)
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands = [new VerifyCommand("build", "dotnet build"), new VerifyCommand("test", "dotnet test")];
+
+        string prompt = AgentPromptBuilder.BuildReview(SomeTask(), project, "task/1-slug", cycle: 1, lens);
+
+        prompt.Should().NotContain("- `dotnet build`");
+        prompt.Should().NotContain("- `dotnet test`");
+        Flatten(prompt).Should().Contain(
+            "has changed and has not yet been accepted on this node, so its commands are not listed here");
+        Flatten(prompt).Should().Contain("do not run them yourself");
     }
 
     /// <summary>
@@ -3019,6 +3064,28 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "the sub-rule states its own precondition rather than ordering a run over a suite that does not exist");
         prompt.Should().NotContain("background them");
         prompt.Should().NotContain("590-600 seconds");
+    }
+
+    /// <summary>
+    /// A node runs a project's verify gates only after its own operator has accepted that exact
+    /// gate set (security review idea 6be68ee2, process-injection finding 1, the local half) —
+    /// this self-check runs with skip-permissions too, and shares <c>AppendGateLine</c> with the
+    /// rebase checklist precisely so the two could never print a raw, unaccepted command
+    /// differently.
+    /// </summary>
+    [Fact]
+    public void Self_check_phase_lists_no_command_when_the_gate_set_is_unaccepted()
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
+
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), project, "task/1-slug", "findings go here", cycle: 1);
+
+        prompt.Should().NotContain("- `dotnet test`");
+        Flatten(prompt).Should().Contain(
+            "has changed and has not yet been accepted on this node, so its commands are not listed here");
+        Flatten(prompt).Should().Contain("do not run them yourself");
     }
 
     /// <summary>
@@ -4062,6 +4129,13 @@ public sealed class AgentPromptBuilderTests : IDisposable
         return AgentPromptBuilder.BuildReviewRequestedChanges(
             task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Narrative);
     }
+
+    /// <summary>
+    /// One line with single spaces, so an assertion about a sentence does not also assert where
+    /// the template happened to wrap it.
+    /// </summary>
+    private static string Flatten(string prompt) =>
+        string.Join(' ', prompt.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 
     private static TaskDetails SomeTask() => new()
     {
