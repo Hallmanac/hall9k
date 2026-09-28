@@ -93,12 +93,26 @@ public sealed class ProjectAssignKeyCommand : Hall9kAsyncCommand<ProjectAssignKe
         // pre-PR review, cycle 1, adversarial lens, medium): without it, a node that merely claims
         // the genesis owner's public root fingerprint — printed in plain sight by h9k owner show —
         // could mint and push a project key no other install ever agreed to.
-        if (chain.RoleOf(myRoot) != MembershipRole.Owner || !chain.IsEnrolledInOwner(key.Fingerprint, myRoot))
+        if (chain.RoleOf(myRoot) != MembershipRole.Owner)
         {
             throw new DomainValidationException(
                 $"This node's own root ({myRoot}) does not currently hold a vouched, owner-role place in "
                 + $"'{project.Name}''s trust chain — only a currently vouched node of the genesis owner may "
                 + "assign the project's key.");
+        }
+
+        // Refused before any push (idea 6be68ee2, trust-ledger finding 2): assign-key writes the
+        // genesis fingerprint's own members-ref file, so it now requires this node's own key to be a
+        // live root key of the genesis owner — never merely a vouched node of it — only the root
+        // itself, never a promoted successor's identity fingerprint (which can never equal a root
+        // key) and never TrustChain.RootNodeId (null on an older ledger).
+        if (!chain.IsLiveRootKeyOfOwner(key.Fingerprint, myRoot))
+        {
+            throw new DomainValidationException(
+                $"This node ({key.Fingerprint}) does not currently hold a live root key for owner {myRoot} — "
+                + "only the root itself may assign the project's key (idea 6be68ee2, trust-ledger finding "
+                + $"2: a vouched node key can no longer write membership). Re-run h9k project assign-key "
+                + $"{project.Name} from a node holding a root key for {myRoot}.");
         }
 
         if (chain.ProjectKey is not null)

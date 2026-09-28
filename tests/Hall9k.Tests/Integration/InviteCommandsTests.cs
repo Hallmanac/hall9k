@@ -717,6 +717,52 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         ledger.Writes.Should().BeEmpty("a member-role owner is refused before any push");
     }
 
+    [Fact]
+    public async Task Project_invite_refuses_before_any_push_when_this_nodes_key_is_not_a_live_root_key()
+    {
+        // idea 6be68ee2, trust-ledger finding 2: this node's own owner DOES hold the owner role, but
+        // this node's own key is merely vouched into that owner's chain, never the owner's own live
+        // root key — the invite sweep's own member write would otherwise land from this node's key,
+        // so minting must refuse before any push. Never checked against the identity fingerprint or
+        // TrustChain.RootNodeId (null on an older ledger).
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        FakeLedger ledger = new();
+
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+
+        Guid nodeId;
+        NodeSigningKey myKey;
+        NodeSigningKey rootKey = await new NodeKeyStore().EnsureAsync(Guid.NewGuid(), cts.Token);
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cts.Token);
+            await session.SaveChangesAsync(cts.Token);
+            nodeId = context.NodeId;
+            myKey = await new NodeKeyStore().EnsureAsync(context.NodeId, cts.Token);
+
+            OwnerAggregate owner = await session.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: cts.Token)
+                ?? throw new InvalidOperationException("Owner bootstrap did not create an owner stream.");
+            session.Events.Append(context.OwnerId, OwnerDecider.ClaimRoot(owner, rootKey.Fingerprint, verified: true, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner>
+            {
+                [rootKey.Fingerprint] = new(
+                    rootKey.Fingerprint, rootKey.PublicKeyLine,
+                    [new TrustedNode(nodeId.ToString(), myKey.PublicKeyLine, myKey.Fingerprint, Now)]),
+            },
+            [new ProjectMember(rootKey.Fingerprint, MembershipRole.Owner, Now)]));
+
+        await using IDocumentSession runSession = _postgres.Store.LightweightSession();
+        Func<Task> act = () => ProjectInviteCommand.RunAsync(
+            runSession, project, roleInput: null, ledger, chainReader, new NodeKeyStore(), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainValidationException>()).WithMessage("*root key*");
+        ledger.Writes.Should().BeEmpty("this node is merely vouched, never a live root key, so nothing is pushed");
+    }
+
     /// <summary>
     /// A project that predates the chain has no members file at all yet, so this node's own root
     /// holds no membership here whatsoever, not merely the wrong role — <see cref="TrustChain.RoleOf"/>

@@ -85,7 +85,7 @@ public sealed class ProjectInviteCommand : Hall9kAsyncCommand<ProjectInviteComma
         LedgerSigningKey signingKey = new(key.PrivateKeyPath);
 
         TrustChain chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
-        if (chain.RoleOf(myRoot) != MembershipRole.Owner || !chain.IsEnrolledInOwner(key.Fingerprint, myRoot))
+        if (chain.RoleOf(myRoot) != MembershipRole.Owner)
         {
             throw new DomainValidationException(
                 $"This node's own owner ({myRoot}) does not currently hold the owner role in "
@@ -94,6 +94,20 @@ public sealed class ProjectInviteCommand : Hall9kAsyncCommand<ProjectInviteComma
                 + $"this chain, with no members yet recorded at all, h9k project join {project.Name} is "
                 + "the step that establishes this node's own root as genesis; only then does this node "
                 + "hold the owner role here and h9k project invite succeed.");
+        }
+
+        // Refused before any push (idea 6be68ee2, trust-ledger finding 2): the invite sweep's own
+        // member write lands from THIS node's key, so a compromised, merely-vouched fleet node must
+        // never mint an invite that would later write membership on its own say-so — only the root
+        // itself, never a promoted successor's identity fingerprint (which can never equal a root
+        // key) and never TrustChain.RootNodeId (null on an older ledger).
+        if (!chain.IsLiveRootKeyOfOwner(key.Fingerprint, myRoot))
+        {
+            throw new DomainValidationException(
+                $"This node ({key.Fingerprint}) does not currently hold a live root key for owner {myRoot} — "
+                + "only the root itself may mint a member-of-project invite (idea 6be68ee2, trust-ledger "
+                + $"finding 2: a vouched node key can no longer write membership). Re-run h9k project invite "
+                + $"{project.Name} from a node holding a root key for {myRoot}.");
         }
 
         string secret = InviteSecret.Generate();

@@ -93,12 +93,26 @@ public sealed class ProjectMemberRemoveCommand : Hall9kAsyncCommand<ProjectMembe
                 + "is reachable again.");
         }
 
-        if (chain.RoleOf(myRoot) != MembershipRole.Owner || !chain.IsEnrolledInOwner(key.Fingerprint, myRoot))
+        if (chain.RoleOf(myRoot) != MembershipRole.Owner)
         {
             throw new DomainValidationException(
                 $"This node's own owner ({myRoot}) does not currently hold the owner role in "
                 + $"'{project.Name}' — only an owner-role member's own node may remove a member "
                 + "(idea 202383dc: \"written by a node whose owner holds the owner role\").");
+        }
+
+        // Refused before any push (idea 6be68ee2, trust-ledger finding 2): a member removal is a
+        // members-ref write, so it now requires this node's own key to be a live root key of the
+        // owner — never merely enrolled — only the root itself, never a promoted successor's
+        // identity fingerprint (which can never equal a root key) and never TrustChain.RootNodeId
+        // (null on an older ledger).
+        if (!chain.IsLiveRootKeyOfOwner(key.Fingerprint, myRoot))
+        {
+            throw new DomainValidationException(
+                $"This node ({key.Fingerprint}) does not currently hold a live root key for owner {myRoot} — "
+                + "only the root itself may remove a member (idea 6be68ee2, trust-ledger finding 2: a "
+                + $"vouched node key can no longer write membership). Re-run h9k project member remove "
+                + $"{project.Name} {settings.Fingerprint} from a node holding a root key for {myRoot}.");
         }
 
         // Refused before any push: removing the project's only owner-role member would leave no

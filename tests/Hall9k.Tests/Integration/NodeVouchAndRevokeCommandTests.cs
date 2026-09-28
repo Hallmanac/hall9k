@@ -130,8 +130,50 @@ public sealed class NodeVouchAndRevokeCommandTests : IClassFixture<PostgresFixtu
         NodeRevokeCommand.Settings settings = new() { NodeId = Guid.NewGuid().ToString() };
         Func<Task> act = () => NodeRevokeCommand.RunAsync(session, settings, ledger, chainReader, new NodeKeyStore(), cts.Token);
 
-        (await act.Should().ThrowAsync<DomainValidationException>()).WithMessage("*enrolled*");
+        // The command's own early, root-key-only gate (idea 6be68ee2, trust-ledger finding 2) now
+        // fires first against an empty chain — this node is neither enrolled nor a live root key,
+        // and the root-key message is the more specific of the two true statements.
+        (await act.Should().ThrowAsync<DomainValidationException>()).WithMessage("*root key*");
         ledger.Writes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Revoke_refuses_before_any_push_when_this_nodes_key_is_not_a_live_root_key()
+    {
+        // idea 6be68ee2, trust-ledger finding 2: this node knows its owner's real root fingerprint
+        // (the claim h9k project join --invite records), but that root is a DIFFERENT key — this
+        // node is merely vouched into it, never a live root key, so the new gate must refuse before
+        // any push. Never checked against the identity fingerprint (which a promoted successor's
+        // key can never match) or TrustChain.RootNodeId (null on an older ledger).
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cts.Token);
+        await session.SaveChangesAsync(cts.Token);
+        NodeSigningKey key = await new NodeKeyStore().EnsureAsync(context.NodeId, cts.Token);
+
+        NodeSigningKey otherRootKey = await new NodeKeyStore().EnsureAsync(Guid.NewGuid(), cts.Token);
+        OwnerAggregate owner = await session.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: cts.Token)
+            ?? throw new InvalidOperationException("Owner bootstrap did not create an owner stream.");
+        session.Events.Append(context.OwnerId, OwnerDecider.ClaimRoot(owner, otherRootKey.Fingerprint, verified: true, Now));
+        await session.SaveChangesAsync(cts.Token);
+
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner>
+            {
+                [otherRootKey.Fingerprint] = new(
+                    otherRootKey.Fingerprint, otherRootKey.PublicKeyLine,
+                    [new TrustedNode(context.NodeId.ToString(), key.PublicKeyLine, key.Fingerprint, Now)]),
+            },
+            []));
+
+        NodeRevokeCommand.Settings settings = new() { NodeId = Guid.NewGuid().ToString() };
+        Func<Task> act = () => NodeRevokeCommand.RunAsync(session, settings, ledger, chainReader, new NodeKeyStore(), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainValidationException>()).WithMessage("*root key*");
+        ledger.Writes.Should().BeEmpty("this node is merely vouched, never a live root key, so nothing is pushed");
     }
 
     [Fact]
