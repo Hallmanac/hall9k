@@ -82,20 +82,50 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
         // Refused before any push, across every project (idea 6be68ee2, trust-ledger finding 2): a
         // compromised fleet node must never revoke its own peers, so this node's own key must itself
         // be a LIVE ROOT KEY of this owner — never merely enrolled, which NodeVouchCommand's own
-        // identical-looking gate still correctly accepts for a vouch. Checked against the first
-        // project's own ledger copy: root-key status is an owner-wide fact the succession fan-out
-        // (73d185b5) already keeps in step across every project this owner is registered to, so one
-        // read is enough to fail fast with a single clear message rather than N per-project skips
-        // that would otherwise all say the same thing. RevokeInProjectAsync's own identical check,
-        // per project, is what actually enforces this on every push.
-        TrustChain earlyChain = await chainReader.ComputeAsync(projects[0].RepositoryPath, cancellationToken);
-        if (!earlyChain.IsLiveRootKeyOfOwner(key.Fingerprint, root))
+        // identical-looking gate still correctly accepts for a vouch. Root-key status is an
+        // owner-wide fact the succession fan-out (73d185b5) usually keeps in step across every
+        // project this owner is registered to, but one project's own ledger copy can still lag or be
+        // briefly unreachable — checked against EVERY project rather than only the first, so this
+        // early gate only needs ONE project to confirm the key is currently live, and a single stale
+        // or unreachable project's own copy never aborts a revocation that would have succeeded
+        // everywhere else (independent pre-PR review, cycle 1, both lenses, medium: reading only
+        // projects[0], an unordered query's own first row, let one bad project block the whole
+        // command, or fail it outright on an unreachable ledger). When every project's own read
+        // fails outright, this gate steps aside rather than reporting a guess — RevokeInProjectAsync's
+        // own identical check, per project, is what actually enforces this on every push regardless,
+        // and its own per-project try/catch below is what then reports the real failure.
+        bool anyProjectReadable = false;
+        bool confirmedLiveRootKey = false;
+        TrustChain? lastReadableChain = null;
+        foreach (ProjectDetails earlyProject in projects)
         {
+            TrustChain earlyChain;
+            try
+            {
+                earlyChain = await chainReader.ComputeAsync(earlyProject.RepositoryPath, cancellationToken);
+            }
+            catch (InvalidOperationException)
+            {
+                continue;
+            }
+
+            anyProjectReadable = true;
+            lastReadableChain = earlyChain;
+            if (earlyChain.IsLiveRootKeyOfOwner(key.Fingerprint, root))
+            {
+                confirmedLiveRootKey = true;
+                break;
+            }
+        }
+
+        if (anyProjectReadable && !confirmedLiveRootKey)
+        {
+            string rootNodeDescription = lastReadableChain is { } chainForMessage ? RootNodeDescription.Of(chainForMessage, root) : string.Empty;
             throw new DomainValidationException(
                 $"This node ({key.Fingerprint}) does not currently hold a live root key for owner {root} — "
                 + "only the root itself may revoke a node from its own fleet (idea 6be68ee2, trust-ledger "
                 + $"finding 2: a vouched node key can no longer revoke its peers). Re-run h9k node revoke "
-                + $"{targetNodeId} from a node holding a root key for {root}.");
+                + $"{targetNodeId} from a node holding a root key for {root}{rootNodeDescription}.");
         }
 
         int revokedIn = 0;
@@ -183,7 +213,7 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
                 $"This node ({myFingerprint}) does not currently hold a live root key for owner {root} in "
                 + $"'{repositoryPath}' — only the root itself may revoke a node from its own fleet (idea "
                 + "6be68ee2, trust-ledger finding 2). Re-run h9k node revoke from a node holding a root "
-                + $"key for {root}.");
+                + $"key for {root}{RootNodeDescription.Of(chain, root)}.");
         }
 
         string refName = $"refs/hall9k/ledger/owners/{root}";
