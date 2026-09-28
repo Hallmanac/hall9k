@@ -229,18 +229,6 @@ public sealed class ProjectMembersCommandTests : IClassFixture<PostgresFixture>,
     }
 
     [Fact]
-    public async Task No_display_name_declared_shows_nothing_extra_for_it()
-    {
-        ProjectDetails project = await SeedProjectAsync(CancellationToken.None);
-
-        (_, string output) = await RunMembersAsync(
-            project, ChainDeclaring((RootNodeId, new DeclaredGitHubAccount(42, "octocat"))),
-            GitHubAccessFakes.GrantingPush(collaboratorsJson: CollaboratorsJson));
-
-        output.Should().Contain("root-a").And.Contain("octocat");
-    }
-
-    [Fact]
     public void RenderRoot_appends_a_dimmed_line_when_a_name_is_declared() =>
         ProjectMembersCommand.RenderRoot("fingerprint-a", DisplayName.Parse("Ada Lovelace"))
             .Should().Be("fingerprint-a\n[dim]Ada Lovelace[/]");
@@ -248,6 +236,32 @@ public sealed class ProjectMembersCommandTests : IClassFixture<PostgresFixture>,
     [Fact]
     public void RenderRoot_is_just_the_fingerprint_when_no_name_is_declared() =>
         ProjectMembersCommand.RenderRoot("fingerprint-a", DisplayName.None).Should().Be("fingerprint-a");
+
+    /// <summary>
+    /// A member's name comes from their own node file through <c>DisplayName.Trusted</c>, which
+    /// skips <c>DisplayName.Parse</c>'s own control-character rule, so a self-signed rewrite of that
+    /// file can carry a raw escape byte meant to repaint or overwrite this table's other rows
+    /// (independent pre-PR review, cycle 1, adversarial lens, medium).
+    /// </summary>
+    [Fact]
+    public void RenderRoot_strips_control_characters_a_peer_authored_name_was_never_validated_against()
+    {
+        DisplayName peerAuthored = DisplayName.Trusted("Ada\u001b[2K\u001b[1ALovelace");
+
+        string rendered = ProjectMembersCommand.RenderRoot("fingerprint-a", peerAuthored);
+
+        rendered.Should().NotContain("\u001b").And.Contain("2K").And.Contain("1A").And.Contain("Lovelace");
+    }
+
+    [Fact]
+    public void RenderRoot_bounds_the_length_of_a_peer_authored_name_that_bypassed_the_64_character_rule()
+    {
+        DisplayName peerAuthored = DisplayName.Trusted(new string('a', 500));
+
+        string rendered = ProjectMembersCommand.RenderRoot("fingerprint-a", peerAuthored);
+
+        rendered.Length.Should().BeLessThan(500);
+    }
 
     private async Task<(int ExitCode, string Output)> RunMembersAsync(
         ProjectDetails project, TrustChain chain, ProjectGitHubAccessMirror mirror)

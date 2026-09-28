@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Text;
 using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project.Projections;
@@ -158,8 +159,27 @@ public sealed class ProjectMembersCommand : Hall9kAsyncCommand<ProjectMembersCom
     /// </summary>
     internal static string RenderRoot(string rootFingerprint, DisplayName displayName) =>
         displayName.HasValue
-            ? $"{rootFingerprint.EscapeMarkup()}\n[dim]{displayName.Value.EscapeMarkup()}[/]"
+            ? $"{rootFingerprint.EscapeMarkup()}\n[dim]{RenderDisplayName(displayName)}[/]"
             : rootFingerprint.EscapeMarkup();
+
+    /// <summary>The longest display name this reader ever wrote itself (<c>DisplayName</c>'s own
+    /// 1-to-64 rule) — also the bound applied to a peer's, since that value never goes through
+    /// <c>DisplayName.Parse</c> to enforce it (see <see cref="RenderDisplayName"/>).</summary>
+    private const int DisplayNameRenderLimit = 64;
+
+    /// <summary>
+    /// A display name is read from another node's own <c>node.yaml</c> through
+    /// <c>NodeFileWriter.ReadDisplayName</c>, which wraps it in <c>DisplayName.Trusted</c> and
+    /// deliberately skips <c>DisplayName.Parse</c>'s own length and control-character rule — a
+    /// self-signed rewrite of a peer's own file is all a member needs to put anything at all into
+    /// this value, including a raw escape sequence meant to repaint or overwrite this table
+    /// (independent pre-PR review, cycle 1, adversarial lens, medium). Sanitized here the same way
+    /// any other text this node relays but did not author is before it reaches a terminal
+    /// (<see cref="ExternalText.OneLineMarkup"/>), plus the length bound this node's own
+    /// <c>h9k owner set</c> would have enforced had this member set it locally.
+    /// </summary>
+    private static string RenderDisplayName(DisplayName displayName) =>
+        ExternalText.OneLineMarkup(RelayedText.Truncate(displayName.Value, DisplayNameRenderLimit));
 
     /// <summary>
     /// The Login and Verified cells for one member: one line per distinct declared account, the two
