@@ -112,7 +112,8 @@ public sealed class ProjectMemberRemoveCommand : Hall9kAsyncCommand<ProjectMembe
                 $"This node ({key.Fingerprint}) does not currently hold a live root key for owner {myRoot} — "
                 + "only the root itself may remove a member (idea 6be68ee2, trust-ledger finding 2: a "
                 + $"vouched node key can no longer write membership). Re-run h9k project member remove "
-                + $"{project.Name} {settings.Fingerprint} from a node holding a root key for {myRoot}.");
+                + $"{project.Name} {settings.Fingerprint} from a node holding a root key for {myRoot}"
+                + $"{RootNodeDescription.Of(chain, myRoot)}.");
         }
 
         // Refused before any push: removing the project's only owner-role member would leave no
