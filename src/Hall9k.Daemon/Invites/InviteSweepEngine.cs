@@ -426,42 +426,86 @@ public sealed class InviteSweepEngine(
                                 + "record in project {ProjectId}; will retry next sweep", aggregate.Id, candidate.NodeId, project.Id);
                         }
                     }
+
+                    await InviteSpendLedgerWriter.WriteAsync(
+                        ledger, project.RepositoryPath, aggregate.MinterOwnerFingerprint, aggregate.Id, aggregate.SecretHash,
+                        aggregate.Claim, aggregate.Role, aggregate.ExpiresAt, committer, signingKey, cancellationToken);
+                    wroteInto++;
                 }
                 else
                 {
-                    await WriteMemberVouchAsync(
-                        project.RepositoryPath, candidate.OwnerFingerprint, role!.Value, issuedAt, committer, signingKey,
-                        cancellationToken);
-
-                    // Appended only once the ledger write it describes has actually landed, unlike
-                    // InviteProjectVouched above: that record is this sweep's own internal retry
-                    // guard and is deliberately written before the ledger write is even attempted, but
-                    // this event feeds ProjectDetails.Members/ProjectAggregate.Members, a read model
-                    // of what the ledger actually holds. Recording it before the write that grounds it
-                    // would leave a member listed here forever if every retry of that write then failed
-                    // until the invite's own expiry dropped it from the outstanding query — guessing at
-                    // an unobserved fact (independent pre-PR review, cycle 1, conformance lens, low).
+                    // idea 6be68ee2, companion 1bb803e1: members/<fingerprint>.yaml is the one write
+                    // 1bb803e1 restricts to a live root key. When this sweep's own minting node key
+                    // already is one for the minting owner, write it directly - the identical flow this
+                    // branch always ran. When it is not, this node's own key was never the write's to
+                    // make in the first place; request it from whichever node holds the owner's own
+                    // highest-ranked live root key instead, and leave this project's own slot open
+                    // (wroteInto never increments here) until that node's own outcome reply says done -
+                    // reacted to by OwnerActRequestWatchLoop, never by this sweep.
                     //
-                    // Gated on !alreadyVouched, the same as InviteProjectVouched above: without it, a
-                    // tick that lands this write (WriteMemberVouchAsync is retry-idempotent and no-ops
-                    // once the ledger already holds the target content) but then fails the later
-                    // MarkInviteSpentInLedgerAsync call left the invite outstanding with alreadyVouched
-                    // now true, so every following tick re-appended a fresh MemberVouched stamped with
-                    // that tick's own now — an unbounded run of duplicate events, each carrying a
-                    // fabricated issued_at that never matched when membership actually took effect
-                    // (independent pre-PR review, cycle 2, adversarial lens, medium).
-                    if (!alreadyVouched)
+                    // myFingerprint == aggregate.MinterOwnerFingerprint is checked first, ahead of any
+                    // chain read: a fingerprint is a hash of a specific public key, so this node can
+                    // only ever produce this owner's own root identity string here by holding that exact
+                    // root's own private key - the genesis-root case needs no ledger confirmation at
+                    // all. This also carries the sweep through a project whose own ledger has not yet
+                    // recorded this owner's chain at all (this project's own ledger predates it, or the
+                    // owner's root has genuinely never pushed an owners/<root> ref), where
+                    // GetProjectTrustChainAsync's own OwnerChains has no entry to consult either way -
+                    // the identical shape this branch always tolerated before this task ever read the
+                    // chain here at all. A key rotated in by succession (idea 6be68ee2) never equals
+                    // this string (RootFingerprint names K0's own identity, never a rotation's), so that
+                    // case still falls through to the chain's own RootKeys check below.
+                    TrustChain chain = await GetProjectTrustChainAsync(project.RepositoryPath, projectTrustChains, cancellationToken);
+                    chain.OwnerChains.TryGetValue(aggregate.MinterOwnerFingerprint, out TrustedOwner? mintingOwner);
+                    bool iAmLiveRootKey = myFingerprint == aggregate.MinterOwnerFingerprint
+                        || (mintingOwner is not null && mintingOwner.IsLiveRootKey(myFingerprint));
+
+                    if (iAmLiveRootKey)
                     {
-                        session.Events.Append(
-                            project.Id, ProjectDecider.VouchMember(project.Id, candidate.OwnerFingerprint, role!.Value, now));
-                        await session.SaveChangesAsync(cancellationToken);
+                        await MemberVouchLedgerWriter.WriteAsync(
+                            ledger, project.RepositoryPath, candidate.OwnerFingerprint, role!.Value, issuedAt, committer,
+                            signingKey, cancellationToken);
+
+                        // Appended only once the ledger write it describes has actually landed, unlike
+                        // InviteProjectVouched above: that record is this sweep's own internal retry
+                        // guard and is deliberately written before the ledger write is even attempted, but
+                        // this event feeds ProjectDetails.Members/ProjectAggregate.Members, a read model
+                        // of what the ledger actually holds. Recording it before the write that grounds it
+                        // would leave a member listed here forever if every retry of that write then failed
+                        // until the invite's own expiry dropped it from the outstanding query — guessing at
+                        // an unobserved fact (independent pre-PR review, cycle 1, conformance lens, low).
+                        //
+                        // Gated on !alreadyVouched, the same as InviteProjectVouched above: without it, a
+                        // tick that lands this write (MemberVouchLedgerWriter is retry-idempotent and
+                        // no-ops once the ledger already holds the target content) but then fails the
+                        // later MarkInviteSpentInLedgerAsync call left the invite outstanding with
+                        // alreadyVouched now true, so every following tick re-appended a fresh
+                        // MemberVouched stamped with that tick's own now — an unbounded run of duplicate
+                        // events, each carrying a fabricated issued_at that never matched when membership
+                        // actually took effect (independent pre-PR review, cycle 2, adversarial lens,
+                        // medium).
+                        if (!alreadyVouched)
+                        {
+                            session.Events.Append(
+                                project.Id, ProjectDecider.VouchMember(project.Id, candidate.OwnerFingerprint, role!.Value, now));
+                            await session.SaveChangesAsync(cancellationToken);
+                        }
+
+                        await InviteSpendLedgerWriter.WriteAsync(
+                            ledger, project.RepositoryPath, aggregate.MinterOwnerFingerprint, aggregate.Id, aggregate.SecretHash,
+                            aggregate.Claim, aggregate.Role, aggregate.ExpiresAt, committer, signingKey, cancellationToken);
+                        wroteInto++;
+                    }
+                    else if (mintingOwner is null
+                        || !await RequestMemberWriteAsync(
+                            session, aggregate, project, mintingOwner, candidate, role!.Value, issuedAt, now, cancellationToken))
+                    {
+                        logger.LogWarning(
+                            "Invite {InviteId} could not resolve a node holding a live root key for owner "
+                            + "{Root} in project {ProjectId} to request its member write from; will retry next sweep.",
+                            aggregate.Id, aggregate.MinterOwnerFingerprint, project.Id);
                     }
                 }
-
-                await MarkInviteSpentInLedgerAsync(
-                    project.RepositoryPath, aggregate.MinterOwnerFingerprint, aggregate.Id, aggregate.SecretHash, aggregate.Claim,
-                    aggregate.Role, aggregate.ExpiresAt, committer, signingKey, cancellationToken);
-                wroteInto++;
             }
             // A per-project failure is a reason to retry that one project next sweep, never to
             // abandon a write that already landed in an earlier one — the identical
@@ -782,29 +826,44 @@ public sealed class InviteSweepEngine(
         return (false, ParseIssuedAt(content));
     }
 
-    /// <summary>Mirrors <see cref="WriteNodeVouchAsync"/>'s own locally-recorded idempotency and doc
-    /// comment, for <c>members/&lt;candidateOwnerFingerprint&gt;.yaml</c> instead.</summary>
-    private async Task WriteMemberVouchAsync(
-        string repositoryPath, string candidateOwnerFingerprint, ProjectMemberRole role, DateTimeOffset issuedAt,
-        LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken)
-    {
-        string path = $"members/{candidateOwnerFingerprint}.yaml";
-        string content = BuildYaml(
-            ("root_fingerprint", candidateOwnerFingerprint),
-            ("role", role.Value),
-            ("issued_at", issuedAt.ToString("o", CultureInfo.InvariantCulture)));
-        await WriteWithRetryAsync(repositoryPath, MembersRefName, path, content, $"Vouch member {candidateOwnerFingerprint} (invite)", committer, signingKey, cancellationToken);
-    }
-
-    private async Task MarkInviteSpentInLedgerAsync(
-        string repositoryPath, string rootFingerprint, Guid inviteId, string secretHash, InviteClaimKind claim,
-        ProjectMemberRole? role, DateTimeOffset expiresAt, LedgerCommitter committer, LedgerSigningKey signingKey,
+    /// <summary>
+    /// Sends this invite's own member write to whichever node holds
+    /// <paramref name="mintingOwner"/>'s own highest-ranked live root key
+    /// (<see cref="TrustedOwner.ResolveRootActingNodeId"/>), unless one is already outstanding — this
+    /// node's own outbox already carries an unhandled-by-nothing-yet <see cref="MessageKind.OwnerActRequest"/>
+    /// for this exact invite, so a tick that finds one queued already leaves it to
+    /// <see cref="MessageOutbox"/>'s own ordinary retry-until-flushed delivery and
+    /// <c>OwnerActRequestWatchLoop</c>'s own reaction to the eventual reply, rather than queuing a
+    /// second, redundant envelope every five seconds until the root answers. Returns false only when
+    /// no node resolves at all — the caller's own cue to log and retry next sweep; true whether this
+    /// call just queued the request or found one already in flight.
+    /// </summary>
+    private async Task<bool> RequestMemberWriteAsync(
+        IDocumentSession session, InviteAggregate aggregate, ProjectDetails project, TrustedOwner mintingOwner,
+        CandidateNode candidate, ProjectMemberRole role, DateTimeOffset issuedAt, DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        InviteLedgerRecord spentRecord = new(secretHash, claim, role, expiresAt, Spent: true);
-        await WriteWithRetryAsync(
-            repositoryPath, InviteLedgerRecord.RefName(rootFingerprint), InviteLedgerRecord.PathFor(rootFingerprint, inviteId),
-            spentRecord.ToYaml(), $"Mark invite {inviteId} spent", committer, signingKey, cancellationToken);
+        if (mintingOwner.ResolveRootActingNodeId() is not { } targetNodeId)
+        {
+            return false;
+        }
+
+        string about = aggregate.Id.ToString();
+        string requestKind = MessageKind.OwnerActRequest.Value;
+        bool alreadyRequested = await session.Query<MessageDetails>()
+            .Where(message => message.FromNodeId == node.NodeId && message.Kind == requestKind && message.About == about)
+            .AnyAsync(cancellationToken);
+        if (alreadyRequested)
+        {
+            return true;
+        }
+
+        OwnerActEnvelopeCodec.OwnerActRequestRecord record = new(
+            aggregate.Id, node.NodeId, candidate.OwnerFingerprint, role, issuedAt);
+        await MessageOutbox.QueueAsync(
+            session, node.NodeId, project.Id, aggregate.MinterOwnerFingerprint, MessageAudience.Node(targetNodeId),
+            about, MessageKind.OwnerActRequest, OwnerActEnvelopeCodec.Encode(record), now, cancellationToken);
+        return true;
     }
 
     private const int MaxConflictRetries = 5;
