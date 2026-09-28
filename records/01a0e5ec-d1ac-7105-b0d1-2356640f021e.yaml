@@ -1,0 +1,20 @@
+hall9k-task-record: 1
+task-id: 01a0e5ec-d1ac-7105-b0d1-2356640f021e
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#618
+objective: A hang in the ubuntu CI leg's test step fails that leg within minutes and leaves an artifact naming the tests that were in flight, instead of holding a pull request for up to six hours with nothing to diagnose from
+criteria:
+  - On a hang, the ubuntu Test step fails within about ten minutes, and the run's failure artifacts name the tests that were in flight, with their stacks (dotnet test --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini, with the TestResults blame output uploaded only on failure, short retention).
+  - |-
+    Both Test steps carry timeout-minutes: 20 at step level (today's slowest green ubuntu Test step took 7m17s), so a hang the blame collector misses still fails in bounded time.
+  - The pull request states what the two hung runs' logs do and do not establish, so nobody later fixes the doctor retry path from this card.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/640f021e-a-hang-in-the-ubuntu-ci-leg-s
+published: 2026-09-28 02:55:44Z
+context: |-
+  Evidence, 2026-09-27, as corrected by this card's challenge (verdict in the project home notes/ci-hang-2026-09-27/journal.md): two ubuntu build-test runs hung in the Docker-dependent Test step and were cancelled (runs 36354992628 and 36364607175, attempt 1; read with gh run view <id> --repo Hallmanac/hall9k --attempt 1 --log). Both logs show a Testcontainers lifecycle stalled mid pg_isready polling while the whole assembly stopped starting classes; PostgresFixture's 5-minute StartAsync cancellation never fired. The logs cannot pin the hung test: normal verbosity prints results, not starts, and classes run in parallel. The DatabaseDoctor.cs:736 'retrying for up to 0s' line is a bystander (DatabaseDoctorOtherErrorRetryTests, fake runner, 300 ms formatted as 0s). Seven green main pushes and ten green PR runs the same day, so it is intermittent. A workflow-only change needs no new tests; never reproduce by loading the host. Gate-limit-stays-at-thirty covers the daemon gate, not this. Note to the orchestrator: the root-cause fix is cut at closeout from the first blame artifact, not in advance.
