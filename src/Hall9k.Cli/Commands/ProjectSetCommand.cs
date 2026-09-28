@@ -212,6 +212,20 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "pull request settles rather than looping on its own refinements.")]
         public string? RerequestReview { get; init; }
 
+        [CommandOption("--review-requires-membership <ON|OFF|DEFAULT>")]
+        [Description(
+            "Whether a GitHub review request or @mention of this install's own login must come from a "
+            + "hall9k team member before auto-pr-review runs it unattended (security review idea "
+            + "6be68ee2, finding 1) — the bar is team membership, never GitHub collaborator status. 'on' "
+            + "requires it whatever the repository's own visibility reads as; 'off' never requires it, "
+            + "the collaborator behaviour every private or internal repository already has by default; "
+            + "'default' clears the override so the daemon decides fresh every sweep from "
+            + "gh repo view --json isPrivate — required on a public repository, not required on a "
+            + "private or internal one. A non-member's request still mints the pr-review task; it is "
+            + "published but left unassigned, so h9k task assign is the human go that starts it. Recorded "
+            + "on this node only: it does not yet replicate to a teammate's node.")]
+        public string? ReviewRequiresMembership { get; init; }
+
         [CommandOption("--jira <KEY>")]
         [Description(
             "Bind this project to a Jira board by its project key — the PROJ in PROJ-123. It is what "
@@ -709,6 +723,9 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             reviewRerequest: settings.RerequestReview is { } rerequestReview
                 ? Optional<ReviewRerequestPolicy>.Of(ReviewRerequestOption.Parse(rerequestReview))
                 : Optional<ReviewRerequestPolicy>.None,
+            reviewRequiresMembership: settings.ReviewRequiresMembership is { } reviewRequiresMembership
+                ? Optional<ReviewMembershipPolicy>.Of(ReviewMembershipOption.Parse(reviewRequiresMembership))
+                : Optional<ReviewMembershipPolicy>.None,
             // 'none' is how a binding is cleared, and it reaches JiraProjectKey.Parse as the word
             // rather than as a key — which would be a perfectly legal one — so it is mapped here,
             // beside the option that documents it, exactly as --commit-style maps 'default'.

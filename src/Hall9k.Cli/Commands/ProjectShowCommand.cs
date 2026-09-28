@@ -43,7 +43,8 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         AnsiConsole.MarkupLine("\n[bold]Settings[/] [dim](change them with h9k project set "
             + $"{project.Name.EscapeMarkup()} …)[/]");
         ProjectSettingsHistory history = await ProjectSettingsHistory.ReadAsync(session, project.Id, cancellationToken);
-        AnsiConsole.Write(SettingsPane(project, operatingSettings, history));
+        ProjectRepositoryVisibility? visibility = await session.LoadAsync<ProjectRepositoryVisibility>(project.Id, cancellationToken);
+        AnsiConsole.Write(SettingsPane(project, operatingSettings, history, visibility));
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
         IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(session, now, cancellationToken);
@@ -212,9 +213,11 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
     /// </para>
     /// </summary>
     private static Table SettingsPane(
-        ProjectDetails project, OperatingSettings operatingSettings, ProjectSettingsHistory history)
+        ProjectDetails project, OperatingSettings operatingSettings, ProjectSettingsHistory history,
+        ProjectRepositoryVisibility? visibility)
     {
         AutoPrReviewSetting autoPrReview = AutoPrReviewSetting.From(history);
+        ReviewMembershipGateSetting membershipGate = ReviewMembershipGateSetting.From(history);
         bool claimGateRecorded = history.WasRecorded(change => change.ClaimGate);
         Table table = new Table().Border(TableBorder.None).HideHeaders();
         table.AddColumns("k", "v");
@@ -275,6 +278,14 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Lifetime review-cycle budget", ReviewCapRow(project, project.LifetimeReviewCycleBudget, "lifetime-review-cycle-budget"));
         table.AddRow("Review stage composition", ReviewStageCompositionRow(project));
         table.AddRow("Auto pr-review", AutoPrReviewRow(project, autoPrReview));
+        table.AddRow("Review requires membership", ReviewMembershipOption.Describe(
+            membershipGate.Policy,
+            "a hall9k team member's own request or mention is required before auto-pr-review runs it "
+            + "unattended; a non-member's still mints the pr-review task, published but unassigned — "
+            + "h9k task assign is the human go",
+            "the daemon decides fresh every sweep from the repository's own visibility — required on "
+            + "a public repository, not required on a private or internal one"));
+        table.AddRow("Repository visibility observed", RepositoryVisibilityRow(visibility));
         table.AddRow("Design review drive", DesignReviewDriveRow(
             project, ReviewDriveSetting.From(ReviewPersona.Designer, history)));
         table.AddRow("QA review drive", QaReviewDriveRow(
@@ -467,6 +478,18 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
               + "of this install's own login is still recorded and shown as a needs-you row in h9k status. "
               + $"Turn it on:[/] h9k project set {name} --auto-pr-review normal";
     }
+
+    /// <summary>
+    /// The daemon's own last <c>gh repo view --json isPrivate</c> read for this project (security
+    /// review idea 6be68ee2, finding 1) — read back from a row only the daemon's own auto-pr-review
+    /// sweep writes; this command never calls <c>gh</c> itself. Null before the first sweep has run
+    /// against this project at all.
+    /// </summary>
+    internal static string RepositoryVisibilityRow(ProjectRepositoryVisibility? visibility) =>
+        visibility is null
+            ? "[dim]not yet observed — the daemon's auto-pr-review sweep records this on its first tick[/]"
+            : $"{(visibility.IsPrivate ? "private or internal" : "public")} "
+              + $"[dim](observed {visibility.ObservedAt:yyyy-MM-dd HH:mm:ss}Z)[/]";
 
     /// <summary>
     /// How much of this project's history <c>h9k orchestrator feed</c> hands a window (idea
