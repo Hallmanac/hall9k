@@ -186,6 +186,7 @@ internal static class DispatchedSessionCommandClassification
             [typeof(ProjectReconcileCommand.Settings)] = (DispatchedSessionAccess.Refused, "project reconcile"),
             [typeof(ProjectMembersCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "project members"),
             [typeof(ProjectMemberRemoveCommand.Settings)] = (DispatchedSessionAccess.Refused, "project member remove"),
+            [typeof(ProjectMemberReaffirmCommand.Settings)] = (DispatchedSessionAccess.Refused, "project member reaffirm"),
             [typeof(ProjectPromptAddendumSetCommand.Settings)] =
                 (DispatchedSessionAccess.Refused, "project prompt-addendum set"),
             [typeof(ProjectPromptAddendumShowCommand.Settings)] =
