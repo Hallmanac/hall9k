@@ -49,6 +49,24 @@ public sealed class PullRequestReviewMentionTests
         task.State.Should().Be(before, "a mention attaches to whatever state the task is already in");
     }
 
+    /// <summary>
+    /// Task 7ae690f5: an attach (this decider) never mints, so <c>MintedTask</c> must default
+    /// false regardless of the task's own shape — including a task a human adopted by hand with
+    /// <c>h9k task add --from-pr</c>, which is exactly the QueuedPrReviewTask shape here. Only
+    /// AutoPrReviewEngine's own CreateFromMentionAsync ever passes true, and it constructs the
+    /// event directly rather than through this decider.
+    /// </summary>
+    [Fact]
+    public void ObservePrReviewMention_never_sets_MintedTask()
+    {
+        TaskAggregate task = QueuedPrReviewTask();
+
+        PullRequestReviewMentionObserved observed = TaskDecider.ObservePrReviewMention(
+            task, "https://github.com/acme/widgets/pull/42", "IC_1", "ryan", "@brian?", "url", Now, Now);
+
+        observed.MintedTask.Should().BeFalse();
+    }
+
     [Fact]
     public void ObservePrReviewMention_refuses_a_task_that_is_not_pr_review()
     {

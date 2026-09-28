@@ -47,6 +47,9 @@ public sealed record ReviewRequestOutcome
     /// <summary>Nothing was minted yet: another node of this owner's fleet ranks first and is expected to mint, and this node mints only if nothing covers the request by the end of its hold.</summary>
     public static readonly ReviewRequestOutcome HeldForPeer = new("HeldForPeer");
 
+    /// <summary>Nothing was minted: this repository's own hourly auto-pr-review mint cap is reached (task 7ae690f5) — re-graded every sweep, so it mints once the window rolls.</summary>
+    public static readonly ReviewRequestOutcome HeldMintCapReached = new("HeldMintCapReached");
+
     /// <summary>The mint was attempted and refused — a pull request that could not be imported, a race with GitHub itself.</summary>
     public static readonly ReviewRequestOutcome MintFailed = new("MintFailed");
 
@@ -82,6 +85,7 @@ public sealed record ReviewRequestOutcome
         "heldbeforecutoff" => HeldBeforeCutoff,
         "heldrequesttimeunknown" => HeldRequestTimeUnknown,
         "heldforpeer" => HeldForPeer,
+        "heldmintcapreached" => HeldMintCapReached,
         "mintfailed" => MintFailed,
         _ => Unknown,
     };
