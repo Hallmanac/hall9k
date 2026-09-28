@@ -6,6 +6,7 @@ using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 
 namespace Hall9k.Daemon.Closeout;
@@ -242,15 +243,31 @@ public sealed record StackedParentObservation(
 public sealed class StackedParentWatch(
     IWorktreeManager worktrees,
     IRemoteParentReader remoteParents,
-    ILogger<StackedParentWatch> logger)
+    ILogger<StackedParentWatch> logger,
+    ProcessRunner? gitProcessRunner = null)
 {
     /// <summary>
     /// Sized like the closeout engine's own git deadline rather than the default process deadline:
     /// the fetch below transfers real data, and the plain runner would kill it mid-transfer on a
     /// large repository or a slow uplink (the same reasoning <c>CloseoutEngine.GitDeadline</c> and
-    /// <c>PullRequestOpener.PushDeadline</c> both state).
+    /// <c>PullRequestOpener.PushDeadline</c> both state). Internal, not private: <c>Program.cs</c>
+    /// binds the optional <see cref="_gitProcessRunner"/> seam to it explicitly
+    /// (<c>ExternalProcess.RunnerWithDeadline(StackedParentWatch.GitDeadline)</c>), the identical
+    /// second-injected-seam shape <c>ReviewEngine</c>'s own <c>gitProcessRunner</c> already uses and
+    /// for the identical reason: a plain constructor-injected (required) <c>ProcessRunner</c> would
+    /// resolve to whichever single instance of that delegate type is registered in the container —
+    /// the short-deadline one every <c>gh</c> read uses — rather than this ten-minute one, and DI
+    /// cannot tell two same-typed parameters apart by name alone. Optional rather than required
+    /// (unlike <c>ReviewEngine</c>'s own): this class is constructed directly, with the pre-seam
+    /// three-argument shape, at every one of this suite's many existing test call sites, and every
+    /// one of them wants today's real-git behaviour rather than a fake — the default below gives
+    /// them that without editing any of them, while still letting a test that wants the fake seam
+    /// pass it explicitly.
     /// </summary>
-    private static readonly TimeSpan GitDeadline = TimeSpan.FromMinutes(10);
+    internal static readonly TimeSpan GitDeadline = TimeSpan.FromMinutes(10);
+
+    /// <summary>The resolved seam every git call in this class reads through — see <see cref="GitDeadline"/>'s own doc.</summary>
+    private readonly ProcessRunner _gitProcessRunner = gitProcessRunner ?? ExternalProcess.RunnerWithDeadline(GitDeadline);
 
     /// <summary>
     /// The temporary ref a parent's pull-request head is fetched into when its branch is gone from
@@ -555,7 +572,7 @@ public sealed class StackedParentWatch(
 
         string fallback = locallyKnownActualBase.IsNotBlank() ? locallyKnownActualBase : recordedMergedInto;
 
-        ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
+        ProcessRunner git = _gitProcessRunner;
         string repositoryPath = project.RepositoryPath;
         await using IAsyncDisposable repositoryLock =
             await worktrees.AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
@@ -618,7 +635,20 @@ public sealed class StackedParentWatch(
         RunDetails childRun,
         CancellationToken cancellationToken)
     {
-        ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
+        // Validated once, here, rather than at each of the three merge-base calls below that take
+        // it positionally: childRun.BaseCommit arrived on this run's own RunDispatched (or a
+        // predecessor's, carried forward through StackedBaseResolver.ResumedBaseAsync), and a
+        // merge-base call takes no `--` of its own to guard against an option- or refspec-shaped
+        // value the way a fetch does (security review idea 6be68ee2, process-injection finding 2)
+        // — a commit id confirmed to be nothing but 40 or 64 hex digits can never be either, so
+        // that shape is the whole of the defence here. An illegal value reads exactly as a blank
+        // one would to every check below, which already treats a blank BaseCommit as nothing to
+        // vouch for.
+        string validatedBaseCommit = GitArgumentValidation.IsLegalCommitSha(childRun.BaseCommit)
+            ? childRun.BaseCommit
+            : string.Empty;
+
+        ProcessRunner git = _gitProcessRunner;
         string repositoryPath = project.RepositoryPath;
         await using IAsyncDisposable repositoryLock =
             await worktrees.AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
@@ -853,18 +883,18 @@ public sealed class StackedParentWatch(
                         advanceAnchor = parentHead;
                     }
                 }
-                else if (childRun.BaseCommit.IsNotBlank())
+                else if (validatedBaseCommit.IsNotBlank())
                 {
                     ProcessResult recordedInChild = await git(
                         "git",
-                        ["merge-base", "--is-ancestor", childRun.BaseCommit, $"refs/heads/{childRun.Branch}"],
+                        ["merge-base", "--is-ancestor", validatedBaseCommit, $"refs/heads/{childRun.Branch}"],
                         repositoryPath,
                         cancellationToken);
                     if (recordedInChild.ExitCode is not (0 or 1))
                     {
                         return StackedParentObservation.Unobservable(
                             $"git could not tell whether this run's recorded fork point "
-                            + $"{Short(childRun.BaseCommit)} is contained in {childRun.Branch}: "
+                            + $"{Short(validatedBaseCommit)} is contained in {childRun.Branch}: "
                             + FirstLine(recordedInChild.StandardError));
                     }
 
@@ -872,20 +902,20 @@ public sealed class StackedParentWatch(
                     {
                         ProcessResult recordedOnBase = await git(
                             "git",
-                            ["merge-base", "--is-ancestor", childRun.BaseCommit, mergedBaseTip],
+                            ["merge-base", "--is-ancestor", validatedBaseCommit, mergedBaseTip],
                             repositoryPath,
                             cancellationToken);
                         if (recordedOnBase.ExitCode is not (0 or 1))
                         {
                             return StackedParentObservation.Unobservable(
                                 $"git could not tell whether this run's recorded fork point "
-                                + $"{Short(childRun.BaseCommit)} is contained in {project.BaseBranch}'s own tip: "
+                                + $"{Short(validatedBaseCommit)} is contained in {project.BaseBranch}'s own tip: "
                                 + FirstLine(recordedOnBase.StandardError));
                         }
 
                         if (recordedOnBase.ExitCode == 0)
                         {
-                            advanceAnchor = childRun.BaseCommit;
+                            advanceAnchor = validatedBaseCommit;
                         }
                     }
                 }
@@ -1006,7 +1036,7 @@ public sealed class StackedParentWatch(
             // as unobservable rather than replayed on a guess.
             string boundary = advancedMergedBoundary ?? (childHoldsParentHead
                 ? parentHead
-                : childRun.BaseCommit);
+                : validatedBaseCommit);
             if (boundary.IsBlank())
             {
                 return StackedParentObservation.Unobservable(
@@ -1095,7 +1125,7 @@ public sealed class StackedParentWatch(
     /// Why one look for a head produced no commit — an unpersisted in-process outcome, so an enum
     /// is right here (TASK-MODEL.md §8).
     /// </summary>
-    private enum ParentHeadLookup
+    internal enum ParentHeadLookup
     {
         /// <summary>A commit was read.</summary>
         Resolved,
@@ -1114,11 +1144,13 @@ public sealed class StackedParentWatch(
     /// ref the remote does not have — from <see cref="StackedParentVerdict.Unobservable"/>, a read
     /// that could not be made; collapsing both to a bare null is what let a network blip park a
     /// checkpoint on the claim that no parent head exists (independent pre-PR review, cycle 1,
-    /// conformance lens).
+    /// conformance lens). Internal, alongside <see cref="ReadRemoteBranchHeadAsync"/> itself: the
+    /// seam a test asserts the branch-name predicate and the fetch's own <c>--</c> against, without
+    /// a real repository.
     /// </summary>
     /// <param name="Commit">Non-null exactly when <paramref name="Lookup"/> is <see cref="ParentHeadLookup.Resolved"/>.</param>
     /// <param name="Detail">Why there is no commit, as a clause a caller's own sentence can carry. Empty on a resolved read.</param>
-    private sealed record ParentHeadRead(ParentHeadLookup Lookup, string? Commit, string Detail)
+    internal sealed record ParentHeadRead(ParentHeadLookup Lookup, string? Commit, string Detail)
     {
         public static ParentHeadRead Resolved(string commit) =>
             new(ParentHeadLookup.Resolved, commit, string.Empty);
@@ -1159,10 +1191,30 @@ public sealed class StackedParentWatch(
     /// return, whether that is because origin has no such branch or because the fetch could not be
     /// made at all (see <see cref="ParentHeadRead"/>).
     /// </summary>
-    private static async Task<ParentHeadRead> ReadRemoteBranchHeadAsync(
+    internal static async Task<ParentHeadRead> ReadRemoteBranchHeadAsync(
         ProcessRunner git, string repositoryPath, string branch, CancellationToken cancellationToken)
     {
-        ProcessResult fetch = await git("git", ["fetch", "origin", branch], repositoryPath, cancellationToken);
+        // childRun.BaseBranch (a local parent's own branch, or a remote parent's HeadBranch read
+        // off GitHub) reaches this method without ever passing through BranchNameTemplate.Render,
+        // so it is checked here, at the point it becomes a git argument (security review idea
+        // 6be68ee2, process-injection finding 2), rather than trusted because some earlier step
+        // rendered a template. Treated the same as any other read this method could not make: the
+        // sweep asks again, and an illegal value never becomes legal by asking again, so this is a
+        // permanent Unobservable in practice rather than a transient one — the honest answer
+        // either way, since nothing here guesses.
+        if (!GitArgumentValidation.IsLegalBranchName(branch, out string? refusalReason))
+        {
+            return ParentHeadRead.ReadFailed(
+                $"'{GitArgumentValidation.Printable(branch)}' is not a legal branch name ({refusalReason}), so "
+                + "it was never handed to git");
+        }
+
+        // `--` stops a value shaped like `--upload-pack=...` from being read as an option, but NOT
+        // a value shaped like `+refs/heads/main:refs/heads/injected`, which git still reads as a
+        // refspec even after it — the predicate above is the actual defence against that, and `--`
+        // only closes the option-injection half of the same hazard (security review idea 6be68ee2,
+        // process-injection finding 2, verified against git 2.55 in a scratch repository).
+        ProcessResult fetch = await git("git", ["fetch", "origin", "--", branch], repositoryPath, cancellationToken);
         if (fetch.ExitCode != 0)
         {
             return NamesAMissingRemoteRef(fetch.StandardError)

@@ -243,8 +243,15 @@ builder.Services.AddSingleton<ProcessRunner>(services =>
 builder.Services.AddSingleton<JiraRequester>(_ => JiraHttp.Requester);
 // Reads the parent branch a stacked child's pull request is built on (task: a stacked pull-request
 // edge exists as an explicit opt-in dependency) — its own seam so CloseoutEngine's stacked path is
-// testable against an observation rather than a real repository.
-builder.Services.AddSingleton<StackedParentWatch>();
+// testable against an observation rather than a real repository. A factory rather than plain
+// AddSingleton<StackedParentWatch>(), mirroring ReviewEngine's own gitProcessRunner registration
+// above: a plain constructor-injected ProcessRunner would resolve to the single short-deadline
+// instance registered below, not the ten-minute one this class's own fetches need.
+builder.Services.AddSingleton(services => new StackedParentWatch(
+    services.GetRequiredService<IWorktreeManager>(),
+    services.GetRequiredService<IRemoteParentReader>(),
+    services.GetRequiredService<ILogger<StackedParentWatch>>(),
+    ExternalProcess.RunnerWithDeadline(StackedParentWatch.GitDeadline)));
 // The single reader of a stacked child's REMOTE parent — the pull request another install owns
 // (task: a stacked child can stand on a pull request another install owns). Its own seam for the
 // same reason the watch has one, and one implementation behind it so nothing else in the daemon
