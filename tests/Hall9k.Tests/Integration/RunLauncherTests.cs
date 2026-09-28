@@ -3725,6 +3725,71 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// Security review idea 6be68ee2, process-injection finding 1, Brian's ruling 2026-09-27: no
+    /// pr-review session ever runs with permissions skipped, member or not. The project is
+    /// registered with <c>skipPermissions: true</c> on purpose — the fact that the spawn still
+    /// carries <c>SkipPermissions: false</c> is what proves the project's own setting is never
+    /// consulted for this call site, rather than merely defaulting to the right answer.
+    /// </summary>
+    [Fact]
+    public async Task A_pr_review_task_never_skips_permissions_even_when_the_project_setting_would_allow_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"pr-review-permissions-{taskId:N}", "/tmp/pr-review-permissions-repo",
+                new Uri("https://github.com/acme/web"), "main", Now, skipPermissions: true);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Review pull request acme/web#43", ["every finding names a file and line"],
+                    TaskType.PrReview, null, null,
+                    new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#43"), Now, node.OwnerId),
+                node.OwnerId, Now);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        const string pullRequestJson = """
+            {
+              "number": 43,
+              "title": "Add rate limiting to auth endpoints",
+              "body": "Fixes an incident.",
+              "state": "OPEN",
+              "url": "https://github.com/acme/web/pull/43",
+              "baseRefName": "release/2.0"
+            }
+            """;
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(pullRequestJson);
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        executor.Request.Should().NotBeNull();
+        executor.Request!.SkipPermissions.Should().BeFalse(
+            "the project's own SkipPermissions setting is never consulted for a pr-review dispatch");
+        executor.Request!.UsesReviewPermissions.Should().BeTrue(
+            "a pr-review session's own real permission file, never --dangerously-skip-permissions");
+    }
+
+    /// <summary>
     /// Task: a content task runs a lighter pipeline by default. Nothing here sets
     /// --review-stage-composition or --accept-reduced-review anywhere — not on the task, not on
     /// the project — so this proves the type's own default reaches RunDispatched entirely on its

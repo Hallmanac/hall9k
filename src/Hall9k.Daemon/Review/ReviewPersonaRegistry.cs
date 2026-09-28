@@ -122,13 +122,22 @@ public sealed record ReviewPersonaEntry(
 /// resolved it (idea b9b09779, piece 3). Empty on a plan built with none supplied, which is what
 /// every caller that has no project stream to read passes.
 /// </param>
+/// <param name="ForkSkipped">
+/// The subset of <paramref name="Skipped"/> skipped specifically because this review's head sits
+/// on a fork (security review idea 6be68ee2, process-injection finding 1), not because the
+/// persona has no review prompt registered — see <see cref="Plan"/>'s own <c>isForkHead</c>
+/// parameter. Empty for a plan built for a non-fork head.
+/// </param>
+/// <param name="ForkSkipReason">Why every persona in <paramref name="ForkSkipped"/> was skipped, verbatim. Null exactly when that list is empty.</param>
 public sealed record ReviewPersonaPlan(
     IReadOnlyList<ReviewPersona> Requested,
     IReadOnlyList<ReviewPersona> Ran,
     IReadOnlyList<ReviewPersona> Skipped,
     bool FellBackToEngineer,
     IReadOnlyList<ReviewPersonaSession> Sessions,
-    IReadOnlyList<ReviewDriveDecision> DriveDecisions)
+    IReadOnlyList<ReviewDriveDecision> DriveDecisions,
+    IReadOnlyList<ReviewPersona> ForkSkipped,
+    string? ForkSkipReason)
 {
     /// <summary>
     /// What this run decided about <paramref name="persona"/> driving. A persona with nothing
@@ -247,16 +256,42 @@ public static class ReviewPersonaRegistry
         : EngineerEntry;
 
     /// <summary>
+    /// The reason every fork-skipped persona is named with, in the plan and in the report
+    /// (security review idea 6be68ee2, process-injection finding 1) — see <see cref="Plan"/>'s
+    /// own <c>isForkHead</c> parameter.
+    /// </summary>
+    public const string ForkSkipReason =
+        "this pull request's head sits on a fork, so nothing this platform runs against it may "
+        + "build, test, or drive the product it belongs to — only the engineer's two read-only "
+        + "lenses run against the diff";
+
+    /// <summary>
     /// What a run assigned to a member holding <paramref name="declared"/> will do. Declaring
     /// nothing reads as the engineer's review (<see cref="ReviewPersona.ForReview"/>), which is
     /// what keeps this invisible to everyone who never declares a persona.
     /// </summary>
+    /// <param name="isForkHead">
+    /// Whether this pull request's head sits on a fork of the project's own repository
+    /// (<c>PullRequestFacts.IsCrossRepository</c>, security review idea 6be68ee2, process-injection
+    /// finding 1) — a head repository can never change once opened, so this is resolved once at
+    /// dispatch and never re-read. True skips every persona registered
+    /// <see cref="ReviewPersonaEntry.CanDriveTheProduct"/> — QA and the designer today — rather
+    /// than running a session against the fork's own code with this project's build or test
+    /// tools, or anything else that could execute it. A declaration holding nothing but
+    /// fork-skipped personas falls back to the engineer's review below, the same fallback an
+    /// unregistered persona already gets, so a fork head is never left unreviewed.
+    /// </param>
     public static ReviewPersonaPlan Plan(
-        IEnumerable<ReviewPersona>? declared, IEnumerable<ReviewDriveDecision>? driveDecisions = null)
+        IEnumerable<ReviewPersona>? declared, IEnumerable<ReviewDriveDecision>? driveDecisions = null,
+        bool isForkHead = false)
     {
         IReadOnlyList<ReviewPersona> requested = ReviewPersona.ForReview(declared);
-        IReadOnlyList<ReviewPersona> ran = [.. requested.Where(persona => For(persona).IsRegistered)];
-        IReadOnlyList<ReviewPersona> skipped = [.. requested.Where(persona => !For(persona).IsRegistered)];
+        IReadOnlyList<ReviewPersona> forkSkipped = isForkHead
+            ? [.. requested.Where(persona => For(persona).IsRegistered && For(persona).CanDriveTheProduct)]
+            : [];
+        IReadOnlyList<ReviewPersona> ran =
+            [.. requested.Where(persona => For(persona).IsRegistered && !forkSkipped.Contains(persona))];
+        IReadOnlyList<ReviewPersona> skipped = [.. requested.Where(persona => !ran.Contains(persona))];
 
         // Nothing the assignee declared can be run yet. Leaving the pull request entirely
         // unreviewed would be the literal reading and the worse outcome: the review they asked for
@@ -271,7 +306,7 @@ public static class ReviewPersonaRegistry
 
         return new ReviewPersonaPlan(
             requested, ran, skipped, fellBack, [.. ran.SelectMany(persona => For(persona).Sessions)],
-            DrivesOf(ran, driveDecisions));
+            DrivesOf(ran, driveDecisions), forkSkipped, forkSkipped.Count > 0 ? ForkSkipReason : null);
     }
 
     /// <summary>
@@ -308,7 +343,8 @@ public static class ReviewPersonaRegistry
     /// </summary>
     public static ReviewPersonaPlan Recorded(
         IEnumerable<ReviewPersona>? requested, IEnumerable<ReviewPersona>? ran, IEnumerable<ReviewPersona>? skipped,
-        bool fellBackToEngineer, IEnumerable<ReviewDriveDecision>? driveDecisions = null)
+        bool fellBackToEngineer, IEnumerable<ReviewDriveDecision>? driveDecisions = null,
+        IEnumerable<ReviewPersona>? forkSkipped = null, string? forkSkipReason = null)
     {
         IReadOnlyList<ReviewPersona> recordedRan = ReviewPersona.Declared(ran);
         IReadOnlyList<ReviewPersonaSession> sessions = [.. recordedRan.SelectMany(persona => For(persona).Sessions)];
@@ -329,7 +365,9 @@ public static class ReviewPersonaRegistry
             ReviewPersona.Declared(skipped),
             fellBackToEngineer,
             sessions,
-            DrivesOf(recordedRan, driveDecisions));
+            DrivesOf(recordedRan, driveDecisions),
+            ReviewPersona.Declared(forkSkipped),
+            forkSkipReason);
     }
 
     private static string BuildLens(ReviewPersonaPromptRequest request, ReviewLens lens) =>

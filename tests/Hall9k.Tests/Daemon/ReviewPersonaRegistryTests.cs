@@ -296,6 +296,64 @@ public sealed class ReviewPersonaRegistryTests
     }
 
     /// <summary>
+    /// Security review idea 6be68ee2, process-injection finding 1: a fork's own head skips every
+    /// persona that can drive the product — QA and the designer today — rather than running a
+    /// session against the fork's own code with this project's build or test tools. The engineer's
+    /// two read-only lenses, which never drive anything, are untouched.
+    /// </summary>
+    [Fact]
+    public void A_fork_head_skips_every_persona_that_can_drive_the_product()
+    {
+        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(
+            [ReviewPersona.Engineer, ReviewPersona.Qa, ReviewPersona.Designer], isForkHead: true);
+
+        plan.Ran.Should().Equal(ReviewPersona.Engineer);
+        plan.Skipped.Should().BeEquivalentTo([ReviewPersona.Qa, ReviewPersona.Designer]);
+        plan.ForkSkipped.Should().BeEquivalentTo([ReviewPersona.Qa, ReviewPersona.Designer]);
+        plan.ForkSkipReason.Should().NotBeNullOrWhiteSpace();
+        plan.FellBackToEngineer.Should().BeFalse("the engineer really was declared and really did run");
+    }
+
+    /// <summary>
+    /// Declaring nothing but drive-capable personas on a fork head leaves the plan with nothing to
+    /// run — the same "nothing the assignee declared can be run yet" case an unregistered persona
+    /// already falls back from, so the pull request is never left unreviewed.
+    /// </summary>
+    [Fact]
+    public void A_fork_head_with_only_drive_capable_personas_declared_falls_back_to_the_engineer()
+    {
+        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan([ReviewPersona.Qa, ReviewPersona.Designer], isForkHead: true);
+
+        plan.Ran.Should().Equal(ReviewPersona.Engineer);
+        plan.FellBackToEngineer.Should().BeTrue();
+        plan.ForkSkipped.Should().BeEquivalentTo([ReviewPersona.Qa, ReviewPersona.Designer]);
+    }
+
+    /// <summary>A non-fork head runs every declared persona exactly as before — the fork parameter changes nothing when it is false.</summary>
+    [Fact]
+    public void A_non_fork_head_runs_every_declared_persona()
+    {
+        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(
+            [ReviewPersona.Engineer, ReviewPersona.Qa, ReviewPersona.Designer], isForkHead: false);
+
+        plan.Ran.Should().Equal(ReviewPersona.Engineer, ReviewPersona.Qa, ReviewPersona.Designer);
+        plan.ForkSkipped.Should().BeEmpty();
+        plan.ForkSkipReason.Should().BeNull();
+    }
+
+    /// <summary>The fork skip reason and which personas it applies to both survive the round trip through what the run recorded.</summary>
+    [Fact]
+    public void A_recorded_fork_skip_is_rebuilt_with_its_own_reason()
+    {
+        ReviewPersonaPlan plan = ReviewPersonaRegistry.Recorded(
+            [ReviewPersona.Engineer, ReviewPersona.Qa], [ReviewPersona.Engineer], [ReviewPersona.Qa],
+            fellBackToEngineer: false, forkSkipped: [ReviewPersona.Qa], forkSkipReason: "the head is a fork");
+
+        plan.ForkSkipped.Should().Equal(ReviewPersona.Qa);
+        plan.ForkSkipReason.Should().Be("the head is a fork");
+    }
+
+    /// <summary>
     /// The findings report a human walks: one section per persona in the fixed order, the
     /// engineer's two lenses under its own, and every skipped persona named with why.
     /// </summary>
@@ -372,6 +430,77 @@ public sealed class ReviewPersonaRegistryTests
 
             body.Should().Contain("### Conformance");
             body.Should().Contain("Not delivered: The pr-review conformance session died without a result.");
+        }
+        finally
+        {
+            Directory.Delete(runDirectory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// A fork-skipped persona's section says why in the fork's own words, not the "no review
+    /// prompt is registered" text an unregistered persona still gets — a reader must be able to
+    /// tell a security refusal apart from a gap in the registry.
+    /// </summary>
+    [Fact]
+    public async Task A_fork_skipped_personas_section_names_the_fork_reason_not_the_unregistered_one()
+    {
+        string runDirectory = Path.Combine(Path.GetTempPath(), $"h9k-persona-report-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(runDirectory);
+        try
+        {
+            await File.WriteAllTextAsync(
+                RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Adversarial.Slug),
+                "Nothing found.\n\nVERDICT: merge-ready");
+            await File.WriteAllTextAsync(
+                RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Conformance.Slug),
+                "Matches.\n\nVERDICT: merge-ready");
+
+            ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(
+                [ReviewPersona.Engineer, ReviewPersona.Qa, ReviewPersona.Designer], isForkHead: true);
+
+            string body = await PrReviewEngine.ComposePersonaSectionsAsync(
+                runDirectory, plan, new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true,
+                CancellationToken.None);
+
+            body.Should().Contain(ReviewPersonaRegistry.ForkSkipReason);
+            body.Should().NotContain("no review prompt is registered for the qa persona");
+            body.Should().NotContain("no review prompt is registered for the designer persona");
+        }
+        finally
+        {
+            Directory.Delete(runDirectory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// A session's own denied tools are named under its section (security review idea 6be68ee2,
+    /// process-injection finding 1) — the surface that lets a project's allow list grow by
+    /// evidence.
+    /// </summary>
+    [Fact]
+    public async Task A_sessions_own_denied_tools_are_named_in_its_section()
+    {
+        string runDirectory = Path.Combine(Path.GetTempPath(), $"h9k-persona-report-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(runDirectory);
+        try
+        {
+            await File.WriteAllTextAsync(
+                RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Adversarial.Slug),
+                "Nothing found.\n\nVERDICT: merge-ready");
+            await File.WriteAllTextAsync(
+                RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Conformance.Slug),
+                "Matches.\n\nVERDICT: merge-ready");
+
+            string body = await PrReviewEngine.ComposePersonaSectionsAsync(
+                runDirectory, ReviewPersonaRegistry.Plan([ReviewPersona.Engineer]),
+                new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true, CancellationToken.None,
+                new Dictionary<string, IReadOnlyList<PermissionDenial>>
+                {
+                    [ReviewLens.Adversarial.Slug] = [new PermissionDenial("Bash", """{"command":"npm start"}""")],
+                });
+
+            body.Should().Contain("Denied tools: Bash.");
         }
         finally
         {

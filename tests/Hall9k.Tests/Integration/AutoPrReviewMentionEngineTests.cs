@@ -774,6 +774,10 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         executor.Request.Should().NotBeNull("a bounded follow-up session was dispatched");
         executor.Request!.Prompt.Should().Contain("@brian one more question about this");
         executor.Request.Prompt.Should().Contain("ryan");
+        // Security review idea 6be68ee2, process-injection finding 1, Brian's ruling 2026-09-27:
+        // a mention follow-up is one of the three real spawn sites that never skips permissions.
+        executor.Request.SkipPermissions.Should().BeFalse();
+        executor.Request.UsesReviewPermissions.Should().BeTrue();
 
         ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
             ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
