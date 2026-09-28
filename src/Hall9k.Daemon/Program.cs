@@ -328,6 +328,7 @@ builder.Services.AddHostedService<LaunchHoldMonitor>();
 builder.Services.AddHostedService<TakeoverWatchLoop>();
 builder.Services.AddHostedService<SpikeBudgetWatchLoop>();
 builder.Services.AddHostedService<ClaimRequestWatchLoop>();
+builder.Services.AddHostedService<OwnerActRequestWatchLoop>();
 builder.Services.AddHostedService<CardPublicationLoop>();
 builder.Services.AddHostedService<JiraWriteRetryLoop>();
 builder.Services.AddHostedService<ProjectHomeRenderLoop>();
