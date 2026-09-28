@@ -565,6 +565,15 @@ public static class CliCommandTree
                     + "rather than hidden so the same check can be run by hand when a session reports a "
                     + "refusal you did not expect: pipe the payload in on stdin.")
                 .WithExample("pr", "reply-guard");
+            pullRequest.AddCommand<PrReviewGitOutputGuardCommand>("review-git-guard")
+                .WithDescription(
+                    "Not for you: the PreToolUse hook a pr-review session launches with, which refuses a "
+                    + "git diff/git log call carrying an --output flag — the one way either otherwise "
+                    + "read-only subcommand writes outside the checkout. Reads Claude Code's hook payload "
+                    + "on stdin and exits 2 to refuse. Registered rather than hidden so the same check can "
+                    + "be run by hand when a session reports a refusal you did not expect: pipe the "
+                    + "payload in on stdin.")
+                .WithExample("pr", "review-git-guard");
             pullRequest.AddCommand<PullRequestReviewCommand>("review")
                 .WithDescription(
                     "Run YOUR own review lap on a pull request (PLAN.md log #149). Attaches to the pr-review "

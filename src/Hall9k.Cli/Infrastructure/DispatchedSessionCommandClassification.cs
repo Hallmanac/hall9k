@@ -45,7 +45,7 @@ internal enum DispatchedSessionAccess
 /// carries its own attendance refusal (Decisions Log, <c>DecisionDecider</c>) — the task-lifecycle reporting verbs
 /// <c>register-session</c>, <c>verify</c>, <c>deliver</c>, <c>handback</c>, <c>release</c>,
 /// <c>log-interaction</c>, <c>write-jira</c>, <c>run-local</c>, <c>pr reply</c>, <c>pr reply-guard</c>,
-/// <c>orchestrator feed</c>, and <c>idea add</c>) are exactly what a dispatched session legitimately
+/// <c>pr review-git-guard</c>, <c>orchestrator feed</c>, and <c>idea add</c>) are exactly what a dispatched session legitimately
 /// does with its own run — <c>pr reply</c> posts no lifecycle state of its own and is the only route a
 /// review-feedback follow-up has into a review thread at all (<c>PullRequestReplyCommand</c>'s own
 /// doc) — or the lightest, most reversible act this platform has (capturing a raw idea) — carved out
@@ -159,6 +159,7 @@ internal static class DispatchedSessionCommandClassification
             [typeof(PullRequestResolveCommand.Settings)] = (DispatchedSessionAccess.Refused, "pr resolve"),
             [typeof(PullRequestReplyCommand.Settings)] = (DispatchedSessionAccess.Allowed, "pr reply"),
             [typeof(PullRequestReplyGuardCommand.Settings)] = (DispatchedSessionAccess.Allowed, "pr reply-guard"),
+            [typeof(PrReviewGitOutputGuardCommand.Settings)] = (DispatchedSessionAccess.Allowed, "pr review-git-guard"),
             [typeof(PullRequestReviewCommand.Settings)] = (DispatchedSessionAccess.Refused, "pr review"),
             [typeof(PullRequestApproveCommand.Settings)] = (DispatchedSessionAccess.Refused, "pr approve"),
             [typeof(PullRequestRequestChangesCommand.Settings)] = (DispatchedSessionAccess.Refused, "pr request-changes"),

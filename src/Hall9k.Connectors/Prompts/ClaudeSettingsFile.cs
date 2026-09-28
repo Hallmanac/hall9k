@@ -357,13 +357,14 @@ public static class ClaudeSettingsFile
     /// <c>review-mechanics.md</c>'s own ordinary-diff-range), the pull request itself
     /// (<c>gh pr view</c>, <c>gh pr diff</c>, <c>gh pr checks</c>), the issues it cites
     /// (<c>gh issue view</c> — all four named in the QA rules' own never-post line), and ordinary
-    /// reading (<c>Read</c>, scoped to the checkout and the run directory so an injected session
-    /// cannot read outside them — an unscoped <c>Read</c> can reach
-    /// <c>~/.config/gh/hosts.yml</c> — plus <c>Grep</c> and <c>Glob</c>, unscoped, since neither
-    /// reads file contents on its own). <c>gh api</c> is deliberately NOT allowed — the reused
-    /// deny list below holds <c>Bash(gh api:*)</c> and deny beats allow, verified — so even a
-    /// read-only <c>gh api GET</c> is refused; the lenses read through <c>gh pr view</c>/<c>gh pr
-    /// diff</c> instead.
+    /// reading (<c>Read</c> and <c>Grep</c>, both scoped to the checkout and the run directory so
+    /// an injected session cannot read outside them — an unscoped <c>Read</c> can reach
+    /// <c>~/.config/gh/hosts.yml</c>, and an unscoped <c>Grep</c> can read that same file's own
+    /// content a line at a time — plus <c>Glob</c>, left unscoped, since it returns matching file
+    /// names only and never reads content on its own). <c>gh api</c> is deliberately NOT allowed —
+    /// the reused deny list below holds <c>Bash(gh api:*)</c> and deny beats allow, verified — so
+    /// even a read-only <c>gh api GET</c> is refused; the lenses read through <c>gh pr view</c>/
+    /// <c>gh pr diff</c> instead.
     /// </para>
     /// <para>
     /// <b>The deny list</b> is <see cref="ReviewLapDeniedTools"/> — the identical write-surface
@@ -387,7 +388,14 @@ public static class ClaudeSettingsFile
     /// The reply-guard hook is installed unconditionally, defense in depth alongside the deny
     /// list above, on the same terms <see cref="ReviewThreadReplyGuardHook"/>'s own doc states:
     /// a pr-review session never posts to GitHub at all, but the hook costs nothing to carry and
-    /// nothing here should depend on the deny list alone.
+    /// nothing here should depend on the deny list alone. The git read-only guard beside it
+    /// (<see cref="GitReadOnlyGuardMatcher"/>) refuses the one thing the allow list's own prefix
+    /// rules cannot: <c>git diff</c>/<c>git log</c>'s own <c>--output=&lt;path&gt;</c> flag writes
+    /// arbitrary content to any path the owner can write, which a prefix-only allow rule
+    /// (<c>Bash(git diff:*)</c>) has no way to refuse — a deny list matches a command as spelled,
+    /// and this one is still spelled "git diff" (independent pre-PR review, cycle 1, both lenses;
+    /// verified in a throwaway repo: <c>git log -1 --format='format:...' --output=&lt;path&gt;</c>
+    /// wrote the formatted text to that path).
     /// </para>
     /// </summary>
     /// <param name="worktreePath">The checkout this session reads — the one directory, besides the run directory, its own <c>Read</c> may reach.</param>
@@ -398,34 +406,69 @@ public static class ClaudeSettingsFile
     /// non-fork head (a fork head skips the QA persona outright, so this never actually
     /// co-occurs with a fork checkout). Null or empty for every other session.
     /// </param>
+    /// <param name="effort">Identical to <see cref="Build"/>'s own parameter of the same name — carried through so a pr-review session is not silently run at Claude Code's default effort.</param>
     public static string BuildForPrReview(
         TimeSpan commandTimeout, string worktreePath, string runDirectory,
-        IReadOnlyList<VerifyCommand>? qaGateCommands = null)
+        IReadOnlyList<VerifyCommand>? qaGateCommands = null, AgentEffort? effort = null)
     {
         long defaultMilliseconds = (long)commandTimeout.TotalMilliseconds;
         long maxMilliseconds = defaultMilliseconds * 2;
+        string effortLevel = effort is { IsWellFormed: true } ? $", \"effortLevel\": \"{effort.Value}\"" : string.Empty;
         List<string> allow =
         [
-            $"Read({EscapeJsonString(worktreePath)}/**)",
-            $"Read({EscapeJsonString(runDirectory)}/**)",
+            AbsolutePathRule("Read", worktreePath),
+            AbsolutePathRule("Read", runDirectory),
+            AbsolutePathRule("Grep", worktreePath),
+            AbsolutePathRule("Grep", runDirectory),
+            // The one write this session's own prompt can ask for (RunLauncher's mint addendum,
+            // MentionFollowUpPromptBuilder.BuildMintAddendum): a mention-minted primary session
+            // drafts its answer to `<runDirectory>/mention-answer.md`, which
+            // PrReviewEngine.ComposeReportAndParkAsync reads back into the findings report. With
+            // no allow rule for it the write is refused under dontAsk and the whole "You were
+            // asked" section silently disappears from every mention-minted review (independent
+            // pre-PR review, cycle 1, adversarial lens). Harmless for every other pr-review
+            // session, which never asks to write here at all.
+            $"Write(/{EscapeJsonString($"{runDirectory}/mention-answer.md")})",
             .. PrReviewAllowedTools,
             .. (qaGateCommands ?? []).Select(gate => $"Bash({EscapeJsonString(gate.Command)}:*)"),
         ];
         string allowJson = string.Join(", ", allow.Select(rule => $"\"{rule}\""));
         string denyJson = string.Join(", ", PrReviewDeniedTools.Select(tool => $"\"{tool}\""));
-        return $$$"""{"includeCoAuthoredBy": false, "defaultMode": "dontAsk", "env": {"BASH_DEFAULT_TIMEOUT_MS": "{{{defaultMilliseconds}}}", "BASH_MAX_TIMEOUT_MS": "{{{maxMilliseconds}}}"}, "permissions": {"allow": [{{{allowJson}}}], "deny": [{{{denyJson}}}]}, {{{ReviewThreadReplyGuardHook}}}}""";
+        return $$$"""{"includeCoAuthoredBy": false{{{effortLevel}}}, "env": {"BASH_DEFAULT_TIMEOUT_MS": "{{{defaultMilliseconds}}}", "BASH_MAX_TIMEOUT_MS": "{{{maxMilliseconds}}}"}, "permissions": {"defaultMode": "dontAsk", "allow": [{{{allowJson}}}], "deny": [{{{denyJson}}}]}, {{{PrReviewHooksJson}}}}""";
     }
 
     /// <summary>
+    /// One <c>Read</c>/<c>Grep</c> rule scoped to an absolute path, in the form Claude Code's own
+    /// path-rule resolver actually reads as absolute. A single leading slash (which every absolute
+    /// path on this platform already carries) is read as relative to the settings file's own
+    /// root, not the filesystem root — the bundled docs' own example is <c>Edit(//etc/*)</c> for
+    /// the absolute path <c>/etc/*</c> — so an unscoped rule built with only the path's own leading
+    /// slash silently matched nothing and every read inside <paramref name="path"/> fell through
+    /// to a refusal (independent pre-PR review, cycle 1, both lenses; reads inside the checkout
+    /// only ever worked because the checkout is the process's own working directory, not because
+    /// of this rule). The extra slash prepended here is what turns it into the platform's
+    /// filesystem-root form.
+    /// </summary>
+    private static string AbsolutePathRule(string tool, string path) =>
+        $"{tool}(/{EscapeJsonString(path)}/**)";
+
+    /// <summary>
     /// The tool rules <see cref="BuildForPrReview"/> allows on every pr-review session, beside the
-    /// two <c>Read</c> rules it scopes itself (worktree and run directory) and whatever
+    /// <c>Read</c>/<c>Grep</c> rules it scopes itself (worktree and run directory) and whatever
     /// <paramref name="qaGateCommands"/> a QA session earns on top. What the lenses actually run:
     /// <c>review-mechanics.md</c>'s own ordinary-diff-range for <c>git diff</c>/<c>git log</c>,
     /// and the QA rules' own never-post line for the four <c>gh</c> reads.
+    /// <para>
+    /// <c>Glob</c> is the one tool left unscoped: it returns matching file NAMES only, never file
+    /// contents, so an unscoped rule cannot read anything outside the checkout the way an unscoped
+    /// <c>Read</c> or <c>Grep</c> could (both scoped above — a session's own <c>Grep</c> reaches
+    /// matching lines of file content, which is exactly what an unscoped rule would have let it
+    /// read out of <c>~/.config/gh/hosts.yml</c>, independent pre-PR review, cycle 1, adversarial
+    /// lens).
+    /// </para>
     /// </summary>
     public static readonly IReadOnlyList<string> PrReviewAllowedTools =
     [
-        "Grep",
         "Glob",
         "Bash(git diff:*)",
         "Bash(git log:*)",
@@ -434,6 +477,28 @@ public static class ClaudeSettingsFile
         "Bash(gh pr checks:*)",
         "Bash(gh issue view:*)",
     ];
+
+    /// <summary>
+    /// Every <c>PreToolUse</c> hook a pr-review session's own settings file installs: the reply
+    /// guard every follow-up already carries (<see cref="ReviewThreadReplyGuardHook"/>'s own doc),
+    /// plus the git read-only guard below — both live under the one <c>hooks</c> key a settings
+    /// file may hold, so they are assembled together here rather than as two independent splices
+    /// that would collide.
+    /// </summary>
+    private static string PrReviewHooksJson =>
+        "\"hooks\": {\"PreToolUse\": ["
+        + $"{{\"matcher\": \"{ReviewThreadReplyGuardMatcher}\", \"hooks\": "
+        + $"[{{\"type\": \"command\", \"command\": \"h9k pr reply-guard\"}}]}}, "
+        + $"{{\"matcher\": \"{GitReadOnlyGuardMatcher}\", \"hooks\": "
+        + $"[{{\"type\": \"command\", \"command\": \"h9k pr review-git-guard\"}}]}}"
+        + "]}";
+
+    /// <summary>
+    /// The tool names <see cref="PrReviewHooksJson"/> attaches the git read-only guard to — see
+    /// <see cref="ReviewThreadReplyGuardMatcher"/>'s own doc for why both shells are named rather
+    /// than <c>Bash</c> alone.
+    /// </summary>
+    public const string GitReadOnlyGuardMatcher = "Bash|PowerShell";
 
     /// <summary>
     /// <see cref="ReviewLapDeniedTools"/> plus <c>Bash(claude:*)</c> — see
