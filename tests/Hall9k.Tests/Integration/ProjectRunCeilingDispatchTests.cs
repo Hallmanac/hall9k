@@ -362,6 +362,64 @@ public sealed class ProjectRunCeilingDispatchTests(PostgresFixture postgres) : I
         stillQueued.State.Value.Should().Be("Queued", "archiving never touches the task itself");
     }
 
+    /// <summary>
+    /// A node runs a project's verify gates only after its own operator has accepted that exact
+    /// gate set (security review idea 6be68ee2, process-injection finding 1, the local half): a
+    /// project whose current gate set was set here as a REPLICATED change (its own
+    /// ProjectTeamSettingsChanged, with no matching ProjectGateSetAccepted ever appended on this
+    /// node) never has a task claimed, however idle the node is, while a sibling project with
+    /// nothing to accept — no gates configured at all — is claimed normally.
+    /// </summary>
+    [Fact]
+    public async Task A_project_whose_current_gate_set_this_node_has_not_accepted_is_never_claimed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await FreshNodeAsync(store, cts.Token);
+        DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 2);
+
+        Guid unaccepted = await SeedProjectAsync(store, node, "unaccepted", maxParallelTasks: null, cts.Token);
+        await ReplicateVerifyCommandsAsync(
+            store, node, unaccepted, [new VerifyCommand("test", "dotnet test")], cts.Token);
+        Guid open = await SeedProjectAsync(store, node, "open", maxParallelTasks: null, cts.Token);
+
+        Guid[] unacceptedTasks = await SeedQueuedAsync(store, node, unaccepted, count: 1, from: Now, cts.Token);
+        Guid[] openTasks = await SeedQueuedAsync(store, node, open, count: 1, from: Now.AddMinutes(10), cts.Token);
+
+        IReadOnlyList<ClaimedWork> claimed = await engine.ClaimEligibleAsync(cts.Token);
+
+        claimed.Select(work => work.TaskId).Should().Equal([openTasks[0]],
+            "the unaccepted project's own task is never claimed, however idle this node otherwise is");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem stillQueued = (await query.LoadAsync<TaskListItem>(unacceptedTasks[0], cts.Token))!;
+        stillQueued.State.Value.Should().Be("Queued", "the hold never errors, parks, or fails anything");
+    }
+
+    /// <summary>
+    /// Appends only <see cref="ProjectTeamSettingsChanged"/> — the shape a replicated event (or one
+    /// from this owner's own other node) actually arrives as on this node — never the
+    /// <see cref="ProjectGateSetAccepted"/> a local <c>h9k project set --verify</c> would ride
+    /// alongside it, so the seeded project reads exactly like a real replicated gate change: a
+    /// current set with nothing accepted for it on this node.
+    /// </summary>
+    private static async Task ReplicateVerifyCommandsAsync(
+        IDocumentStore store, NodeContext node, Guid projectId, IReadOnlyList<VerifyCommand> gates,
+        CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        ProjectAggregate aggregate =
+            (await session.Events.AggregateStreamAsync<ProjectAggregate>(projectId, token: cancellationToken))!;
+        ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
+            aggregate,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.Of(gates),
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: node.OwnerId);
+        session.Events.Append(projectId, changed, ProjectTeamSettingsChanged.From(changed)!);
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
     private static async Task ArchiveAsync(
         IDocumentStore store, NodeContext node, Guid projectId, CancellationToken cancellationToken)
     {

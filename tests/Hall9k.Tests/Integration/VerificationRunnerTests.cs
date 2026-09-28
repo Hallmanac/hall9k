@@ -105,6 +105,105 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// A node runs a project's verify gates only after its own operator has accepted that exact
+    /// gate set (security review idea 6be68ee2, process-injection finding 1, the local half): a
+    /// project whose gates changed on another node (or by another h9k project set --verify on this
+    /// owner's own other node) after this run captured its own list holds at gate entry the way the
+    /// host-coupled-gate permit does — its own RunGateSetAcceptanceWaitStarted/Ended pair, visible
+    /// as this run's own phase — and resumes running the EXACT list it captured, never whatever the
+    /// project's own current configuration reads once accepted.
+    /// </summary>
+    [Fact]
+    public async Task An_unaccepted_gate_set_change_holds_the_run_until_accepted_then_runs_the_captured_list()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        VerifyCommand originalGate = new("truth", GateScript.Passes);
+        (Guid taskId, Guid runId) = await SeedAsync(store, [originalGate], cts.Token);
+
+        Guid projectId;
+        await using (IQuerySession seedQuery = store.QuerySession())
+        {
+            TaskListItem seededTask = (await seedQuery.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+            projectId = seededTask.ProjectId;
+        }
+
+        // A change this run never saw at entry — the shape a replicated event, or another node of
+        // this same owner, actually produces: a new current gate list with no matching
+        // ProjectGateSetAccepted ever appended on THIS node.
+        VerifyCommand replacedGate = new("truth", GateScript.New().Print("ran-the-captured-list").Command);
+        await ChangeGatesWithoutAcceptingAsync(store, projectId, [replacedGate], cts.Token);
+
+        VerificationRunner runner = NewRunner(store, pollInterval: TimeSpan.FromMilliseconds(50));
+        Task<bool> verifying = runner.VerifyAsync(
+            runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            RunDetails? waiting = null;
+            while (waiting?.GateSetAcceptanceWaitStartedAt is null && !cts.IsCancellationRequested)
+            {
+                waiting = await query.LoadAsync<RunDetails>(runId, cts.Token);
+                if (waiting?.GateSetAcceptanceWaitStartedAt is null)
+                {
+                    await Task.Delay(50, cts.Token);
+                }
+            }
+
+            waiting!.GateSetAcceptanceWaitStartedAt.Should().NotBeNull(
+                "the run holds its slot exactly the way the host-coupled gate permit does");
+        }
+
+        await AcceptGatesAsync(store, projectId, [replacedGate], cts.Token);
+
+        bool passed = await verifying;
+        passed.Should().BeTrue("the run resumes once this node accepts the captured list");
+
+        await using IQuerySession result = store.QuerySession();
+        RunDetails run = (await result.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.GateSetAcceptanceWaitStartedAt.Should().BeNull("GateStarted is concrete proof the wait already ended");
+
+        var events = await result.Events.FetchStreamAsync(runId, token: cts.Token);
+        events.Select(e => e.Data).OfType<RunGateSetAcceptanceWaitStarted>().Should().ContainSingle();
+        events.Select(e => e.Data).OfType<RunGateSetAcceptanceWaitEnded>().Should().ContainSingle();
+
+        // Ran the list this run actually captured (the replacement it waited on), never a stale
+        // one and never the original it was seeded with, which was already replaced by the time
+        // the wait began.
+        List<GateStarted> started = [.. events.Select(e => e.Data).OfType<GateStarted>()];
+        started.Should().ContainSingle();
+        File.ReadAllText(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-truth.log"))
+            .Should().Contain("ran-the-captured-list");
+    }
+
+    private static async Task ChangeGatesWithoutAcceptingAsync(
+        DocumentStore store, Guid projectId, IReadOnlyList<VerifyCommand> gates, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        ProjectAggregate aggregate = (await session.Events.AggregateStreamAsync<ProjectAggregate>(
+            projectId, token: cancellationToken))!;
+        ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
+            aggregate,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.Of(gates),
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            DateTimeOffset.UtcNow, aggregate.OwnerId);
+        session.Events.Append(projectId, changed, ProjectTeamSettingsChanged.From(changed)!);
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    private static async Task AcceptGatesAsync(
+        DocumentStore store, Guid projectId, IReadOnlyList<VerifyCommand> gates, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        ProjectAggregate aggregate = (await session.Events.AggregateStreamAsync<ProjectAggregate>(
+            projectId, token: cancellationToken))!;
+        session.Events.Append(
+            projectId, new ProjectGateSetAccepted(projectId, gates, aggregate.OwnerId, DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
     /// Task: a delivered diff that touches no buildable or testable source skips the build and
     /// test gates (origin: ef2fefe5, a two-file skill markdown fix paying roughly twelve minutes
     /// of build-and-test ceremony on every pipeline entry). Covers the runner-level wiring the
@@ -2701,8 +2800,10 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             GateScript.New().CreateFile(marker).Print(ConnectionRefused).Exit(1)).Command);
 
     private static VerificationRunner NewRunner(
-        DocumentStore store, IExecutor? executor = null, IProcessManager? processManager = null) =>
-        new(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance, NewWorktreeManager(),
+        DocumentStore store, IExecutor? executor = null, IProcessManager? processManager = null,
+        TimeSpan? pollInterval = null) =>
+        new(store, Options.Create(new DaemonOptions { PollInterval = pollInterval ?? new DaemonOptions().PollInterval }),
+            NullLogger<VerificationRunner>.Instance, NewWorktreeManager(),
             executor ?? new InstantRecoveryFailureExecutor(), processManager ?? new FakeProcessManager());
 
     /// <summary>
@@ -2878,12 +2979,19 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
                 resolvedProjectId, ownerId, connectionId, $"verify-{resolvedProjectId:N}",
                 repositoryPath ?? _worktree, null, "main", Now);
             project.Apply(registered);
-            session.Events.StartStream<ProjectAggregate>(resolvedProjectId, registered, ProjectDecider.ChangeSettings(
-                project,
-                verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.Of(gates),
-                skipPermissions: Optional<bool>.None,
-                contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
-                Now, ownerId));
+            // Accepted on this node in the same seed, the h9k project set --verify idiom (security
+            // review idea 6be68ee2, process-injection finding 1) — every test through this helper
+            // wants its gates to run for real, and only a dedicated gate-set-acceptance test seeds
+            // an UNACCEPTED set on purpose, which does that directly rather than through here.
+            session.Events.StartStream<ProjectAggregate>(
+                resolvedProjectId, registered,
+                ProjectDecider.ChangeSettings(
+                    project,
+                    verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.Of(gates),
+                    skipPermissions: Optional<bool>.None,
+                    contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+                    Now, ownerId),
+                new ProjectGateSetAccepted(resolvedProjectId, gates, ownerId, Now));
         }
 
         TaskAggregate task = new();

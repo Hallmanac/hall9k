@@ -1589,6 +1589,23 @@ public sealed class DispatchEngine(
             return null;
         }
 
+        // A node runs a project's verify gates only after its own operator has accepted that exact
+        // gate set (security review idea 6be68ee2, process-injection finding 1, the local half) —
+        // the dispatcher never claims a task of a project whose current set this node has not
+        // accepted, so a replicated (or another-node) gate change holds this project's whole queue
+        // here rather than letting a first claim run an unvetted shell command. h9k status reports
+        // the hold under needs-you (QueueHoldKind.GateSetUnaccepted); nothing here records an
+        // event — the hold releases itself at the next sweep after h9k project accept-gates.
+        if (project is not null
+            && !GateSetAcceptance.Decide(project.AcceptedVerifyCommands, project.VerifyCommands).Proceed)
+        {
+            logger.LogInformation(
+                "Task {TaskId} stays queued: project {ProjectId}'s verify gate set has changed and has not "
+                + "been accepted on this node — h9k project accept-gates",
+                taskId, task.ProjectId);
+            return null;
+        }
+
         if (await PreviousRunStillRunsHereAsync(session, taskId, cancellationToken))
         {
             logger.LogWarning(

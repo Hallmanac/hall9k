@@ -2,6 +2,9 @@ using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Execution;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Infrastructure.Bootstrap;
@@ -130,6 +133,14 @@ public sealed class DispatchLoop(
         // produced needs its own one-time fix the moment this build (carrying the guard that
         // refuses the shape going forward) actually starts running.
         await RepairHeadlessReplicatedStreamsAsync(stoppingToken);
+        // The gate-set-acceptance baseline (security review idea 6be68ee2, process-injection
+        // finding 1): at this node's first start after this feature shipped, every project already
+        // here with nothing accepted yet is baselined once to its current set, so a node does not
+        // hold its own tasks the moment it upgrades. Ordered after the backfills above and before
+        // adoption below — the baseline reads ProjectDetails, which the project backfill just
+        // finished repairing, and every claim/gate check that follows this startup sequence must
+        // see the baseline already landed.
+        await BaselineProjectGateAcceptanceAsync(stoppingToken);
 
         // Startup order matters: reattach before declaring anything dead, requeue the
         // genuinely abandoned, and only then take new work.
@@ -518,6 +529,55 @@ public sealed class DispatchLoop(
                 "Repairing a partial replicated stream failed. Its stream is not yet freed for a future genesis "
                 + "to start, and a lease an abandoned claim left on it still counts against this node's run "
                 + "ceiling; the next daemon start retries it");
+        }
+    }
+
+    /// <summary>
+    /// This node's own one-time gate-set-acceptance baseline (security review idea 6be68ee2,
+    /// process-injection finding 1, the local half): guarded on <see cref="NodeDetails.GateAcceptanceBaselinedAt"/>,
+    /// a NodeScoped marker rather than per-project state, so a project that joins after this sweep
+    /// ever runs is never swept up in a LATER restart's own re-check — by then it also reads
+    /// "nothing accepted yet", the identical shape the baseline exists to seed once and never again.
+    /// The accepted weakness this baseline carries (named in the origin finding): a malicious gate
+    /// set that arrived by replication before this node's first start after the feature shipped is
+    /// baselined as accepted along with every genuine one, since nothing here yet distinguishes it
+    /// from a set an operator actually vetted.
+    /// </summary>
+    private async Task BaselineProjectGateAcceptanceAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            NodeDetails? self = await session.LoadAsync<NodeDetails>(node.NodeId, cancellationToken);
+            if (self?.GateAcceptanceBaselinedAt is not null)
+            {
+                return;
+            }
+
+            IReadOnlyList<ProjectDetails> projects = await session.Query<ProjectDetails>().ToListAsync(cancellationToken);
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            int baselined = 0;
+            foreach (ProjectDetails project in projects.Where(project => project.AcceptedVerifyCommands is null))
+            {
+                session.Events.Append(
+                    project.Id, new ProjectGateSetAccepted(project.Id, project.VerifyCommands, node.OwnerId, now));
+                baselined++;
+            }
+
+            session.Events.Append(node.NodeId, new ProjectGateAcceptanceBaselined(node.NodeId, now));
+            await session.SaveChangesAsync(cancellationToken);
+
+            logger.LogInformation(
+                "Gate-set-acceptance baseline: {Count} project(s) with nothing accepted yet were baselined "
+                + "to their current verify gate set on this node",
+                baselined);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogError(exception,
+                "Gate-set-acceptance baseline failed. This node's marker was not recorded, so it retries "
+                + "at the next daemon start; until it succeeds, a project with nothing yet accepted holds "
+                + "its own queue and every run's next gate entry here");
         }
     }
 
