@@ -28,6 +28,17 @@ namespace Hall9k.Cli.Commands;
 /// same-role re-invite writes byte-identical content and so makes no commit at all; this command
 /// exists to force one, root-signed. Root-only, the identical gate every other members-ref write in
 /// this task now applies.
+/// <para>
+/// The raw file at the ledger tip is never trusted for its role on its own (independent pre-PR
+/// review, cycle 4, conformance and adversarial lenses, high): when <c>chain.Members</c> already
+/// holds this fingerprint, the raw file's declared role must match the chain's own authorized role
+/// exactly, or the command refuses rather than silently root-signing a role a live root key never
+/// authorized — the exact write the stricter reader itself refuses (a compromised, merely vouched
+/// node rewriting a member's role). The raw role is trusted only as a fallback, for the one case
+/// commit f035ee73a introduced this raw read for: a member entirely absent from
+/// <c>chain.Members</c>, such as a member whose own last write is itself unauthorized under the
+/// stricter rule and so never reaches that authorized view at all.
+/// </para>
 /// </summary>
 public sealed class ProjectMemberReaffirmCommand : Hall9kAsyncCommand<ProjectMemberReaffirmCommand.Settings>
 {
@@ -109,32 +120,41 @@ public sealed class ProjectMemberReaffirmCommand : Hall9kAsyncCommand<ProjectMem
             owner.Email.IsNotBlank() ? owner.Email : $"{context.NodeId}@hall9k.local");
         LedgerSigningKey signingKey = new(key.PrivateKeyPath);
 
-        await ReaffirmMemberAsync(
+        MembershipRole reaffirmedRole = await ReaffirmMemberAsync(
             ledger, chainReader, project.RepositoryPath, chain, fingerprint, now, committer, signingKey, cancellationToken);
 
+        string roleLabel = reaffirmedRole == MembershipRole.Owner ? "owner" : "member";
         AnsiConsole.MarkupLine(
-            $"[green]Reaffirmed[/] member [dim]{fingerprint}[/] in '{project.Name.EscapeMarkup()}' — "
+            $"[green]Reaffirmed[/] {roleLabel} [dim]{fingerprint}[/] in '{project.Name.EscapeMarkup()}' — "
             + "issued_at bumped by a fresh root-signed commit.");
         return ExitCodes.Ok;
     }
 
     /// <summary>
     /// Rebuilds <c>members/&lt;fingerprint&gt;.yaml</c> from the file's own raw content at the
-    /// ledger's tip, never from <c>chain.Members</c>, with <c>issued_at</c> bumped to
-    /// <paramref name="now"/> so the write is content-changing: a same-role re-invite would write
-    /// byte-identical content and make no commit at all. <c>chain.Members</c> is this reader's own
-    /// AUTHORIZED view, filtered by the identical stricter live-root-key rule this command exists to
-    /// route around: the one case this command is for (idea 6be68ee2's own doc: "a member file whose
-    /// own last write was signed by a node that is now merely vouched") is exactly the case the
-    /// stricter reader now refuses, so a lookup keyed on <c>chain.Members</c> could never find the
-    /// very member it was written to reaffirm (independent pre-PR review, cycle 1, both lenses,
-    /// high/medium). The file's own raw role and root_fingerprint are trusted here on read, but never
-    /// unconditionally: root re-signing this exact content, right now, is what makes it authorized —
-    /// the write itself is refused before any push unless this node's own key is a live root key
-    /// (checked above in <see cref="RunAsync"/>), so nothing here can be forged into legitimacy by a
-    /// node that lacks one.
+    /// ledger's tip, with <c>issued_at</c> bumped to <paramref name="now"/> so the write is
+    /// content-changing: a same-role re-invite would write byte-identical content and make no
+    /// commit at all. <c>chain.Members</c> is this reader's own AUTHORIZED view, filtered by the
+    /// identical stricter live-root-key rule this command exists to route around: the one case this
+    /// command is for (idea 6be68ee2's own doc: "a member file whose own last write was signed by a
+    /// node that is now merely vouched") is exactly the case the stricter reader now refuses, so a
+    /// lookup keyed on <c>chain.Members</c> could never find the very member it was written to
+    /// reaffirm (independent pre-PR review, cycle 1, both lenses, high/medium).
+    /// <para>
+    /// The raw file's role is trusted unconditionally only when <paramref name="fingerprint"/> is
+    /// absent from <c>chain.Members</c> altogether — the one case above. Whenever the fingerprint
+    /// already has an authorized role, the raw file's declared role must match it exactly; a
+    /// mismatch means the ledger's tip holds a role change no live root key ever authorized (a
+    /// compromised, merely vouched node's own rewrite), and reaffirming it would root-sign that
+    /// change into legitimacy instead of merely re-landing the file unchanged (independent pre-PR
+    /// review, cycle 4, conformance and adversarial lenses, high). Root re-signing this exact
+    /// content, right now, is what makes a write authorized — the write itself is refused before
+    /// any push unless this node's own key is a live root key (checked above in
+    /// <see cref="RunAsync"/>) — but that gate gives no cover for signing a role this reader would
+    /// never have accepted from anyone in the first place.
+    /// </para>
     /// </summary>
-    private static async Task ReaffirmMemberAsync(
+    private static async Task<MembershipRole> ReaffirmMemberAsync(
         ILedger ledger, ILedgerChainReader chainReader, string repositoryPath, TrustChain chain, string fingerprint,
         DateTimeOffset now, LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken)
     {
@@ -150,14 +170,28 @@ public sealed class ProjectMemberReaffirmCommand : Hall9kAsyncCommand<ProjectMem
                     $"'{fingerprint}' is not currently a member of this project's ledger — nothing to reaffirm.");
             }
 
-            MembershipRole role = ParseRole(current.Content)
+            MembershipRole rawRole = ParseRole(current.Content)
                 ?? throw new DomainConflictException(
                     $"{path} does not currently declare a valid role (\"owner\" or \"member\") — nothing to reaffirm.");
+
+            MembershipRole? acceptedRole = chain.RoleOf(fingerprint);
+            if (acceptedRole is { } accepted && accepted != rawRole)
+            {
+                throw new DomainConflictException(
+                    $"{path} currently declares role \"{RoleLabel(rawRole)}\", but the chain's own current, "
+                    + $"authorized read already has '{fingerprint}' as \"{RoleLabel(accepted)}\" — this looks "
+                    + "like a role change no live root key ever authorized (idea 6be68ee2, trust-ledger "
+                    + "finding 2). Reaffirm never rewrites a role; re-run the intended role change itself "
+                    + "(h9k project invite or h9k project member remove) from a node holding a live root key "
+                    + "if the role change is genuine.");
+            }
+
+            MembershipRole role = acceptedRole ?? rawRole;
 
             List<(string Key, string Value)> fields =
             [
                 ("root_fingerprint", fingerprint),
-                ("role", role == MembershipRole.Owner ? "owner" : "member"),
+                ("role", RoleLabel(role)),
                 ("issued_at", now.ToString("o", CultureInfo.InvariantCulture)),
             ];
             if (fingerprint == chain.GenesisRootFingerprint && chain.ProjectKey is { } projectKey)
@@ -173,7 +207,7 @@ public sealed class ProjectMemberReaffirmCommand : Hall9kAsyncCommand<ProjectMem
                 cancellationToken);
             if (outcome.Verdict == LedgerWriteVerdict.Written)
             {
-                return;
+                return role;
             }
 
             // Someone else's write landed between our read and ours — re-derive the genesis
@@ -189,6 +223,8 @@ public sealed class ProjectMemberReaffirmCommand : Hall9kAsyncCommand<ProjectMem
             $"{path} kept changing out from under this reaffirm after {MaxConflictRetries} attempts — "
             + "something else is writing it at the same time. Re-run h9k project member reaffirm once that settles.");
     }
+
+    private static string RoleLabel(MembershipRole role) => role == MembershipRole.Owner ? "owner" : "member";
 
     private static string BuildYaml(params (string Key, string Value)[] fields)
     {
