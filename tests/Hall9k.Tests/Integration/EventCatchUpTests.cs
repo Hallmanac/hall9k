@@ -3345,9 +3345,17 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
 
         // Node B's own outbox never received anything at all — proof the refusal happened before
         // EventCatchUpResponder.AnswerAsync ever queued a reply, not merely that this test never
-        // checked for one.
-        TransportReadResult fromB = await transport.ReadSinceAsync(RepositoryPath, nodeB, sinceSeq: 0, cts.Token);
-        fromB.Envelopes.Should().BeEmpty("no answer was ever queued for the refused request");
+        // checked for one. AnswerAsync only ever calls MessageOutbox.QueueAsync, which queues locally
+        // rather than through the transport (independent pre-PR review, cycle 1, conformance lens,
+        // low: a transport.ReadSinceAsync check here can never fail either way, since nothing in this
+        // test ever flushes to the transport) — querying MessageDetails directly is the real proof.
+        await using (IQuerySession read = _postgres.Store.QuerySession())
+        {
+            IReadOnlyList<MessageDetails> queuedForB = await read.Query<MessageDetails>()
+                .Where(message => message.ProjectId == projectId && message.To == MessageAudience.Node(nodeB).Value)
+                .ToListAsync(cts.Token);
+            queuedForB.Should().BeEmpty("no answer was ever queued for the refused request");
+        }
     }
 
     private static async Task<Guid> SeedQueuedTaskAsync(
