@@ -240,6 +240,43 @@ public sealed class NodeVouchAndRevokeCommandTests : IClassFixture<PostgresFixtu
         owner.VouchedNodes.Should().ContainKey(targetNodeId, "the vouch that did land must still be recorded locally");
     }
 
+    [Fact]
+    public async Task Revoke_succeeds_when_only_a_second_project_confirms_this_nodes_live_root_key()
+    {
+        // idea 6be68ee2, trust-ledger finding 2 (independent pre-PR review, cycle 1, both lenses,
+        // medium): the early root-key gate used to read only the first project an unordered Marten
+        // query happened to return, so a stale or lagging copy in THAT one project aborted the
+        // whole revocation even when this node's own key is a live root key everywhere else. The
+        // gate must check every project and only refuse once none of them confirms it.
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        await SeedProjectAsync(cts.Token);
+        const string secondRepositoryPath = "/does/not/matter/on/a/fake/ledger/second";
+        await SeedSecondProjectAsync(secondRepositoryPath, cts.Token);
+        FakeLedger ledger = new();
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        (string myFingerprint, string myPublicKeyLine) = await EstablishOwnRootAsync(session, cts.Token);
+
+        // The first project's own copy has not caught up with this node's root claim at all;
+        // only the second project's copy confirms it as a live root key.
+        FakeLedgerChainReader chainReader = new(new Dictionary<string, TrustChain>
+        {
+            [RepositoryPath] = TrustChain.Empty,
+            [secondRepositoryPath] = new(
+                new Dictionary<string, TrustedOwner> { [myFingerprint] = new(myFingerprint, myPublicKeyLine, []) }, []),
+        });
+
+        Guid targetNodeId = Guid.NewGuid();
+        NodeRevokeCommand.Settings settings = new() { NodeId = targetNodeId.ToString() };
+        int exitCode = await NodeRevokeCommand.RunAsync(session, settings, ledger, chainReader, new NodeKeyStore(), cts.Token);
+
+        exitCode.Should().Be(
+            ExitCodes.Ok, "a stale or lagging copy in one project must never block a revocation this node can prove elsewhere");
+        ledger.Writes.Should().Contain(
+            w => w.RefName == $"refs/hall9k/ledger/owners/{myFingerprint}"
+                && w.Path == $"owners/{myFingerprint}/revoked/{targetNodeId}.yaml");
+    }
+
     private async Task SeedSecondProjectAsync(string repositoryPath, CancellationToken cancellationToken)
     {
         await using IDocumentSession bootstrapSession = _postgres.Store.LightweightSession();
