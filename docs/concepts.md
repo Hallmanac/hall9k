@@ -1416,15 +1416,15 @@ compromised stays hijacked. The floor there is a member re-inviting you in with 
 for a single-owner project means starting a new ledger, since a project's own genesis is spent once.
 
 `h9k owner promote` writes the rotation into every non-archived project the owner is registered to,
-computing the key it supersedes separately in each — a re-run is idempotent, writing only to
+computing the key it supersedes separately in each: a re-run is idempotent, writing only to
 whichever project has not caught up yet and reporting the rest as already rotated. Before any of
 that it prints exactly which projects it will write to, the key each write supersedes, and that an
 earlier key still outranks the new one and can undo it, then asks to confirm; it refuses outright
 when the session has no terminal to ask on and `--yes` was not given. Read that refusal as friction,
 not protection: a pty (`script -q /dev/null`, `expect`) fakes a terminal just as easily as a real
 one, and any process running as this account can already sign a rotation by hand with `ssh-keygen`
-and `git`, no `h9k` involved at all. The private key file's own `0600` permission — readable only by
-this account — is the actual boundary; the confirmation exists so a human does not promote a node by
+and `git`, no `h9k` involved at all. The private key file's own `0600` permission (readable only by
+this account) is the actual boundary; the confirmation exists so a human does not promote a node by
 accident, not to stop one who already controls the account. The rotation is loud everywhere it
 lands: every node reading that project's ledger names it on its next sweep, both in `h9k status`
 ("root key rotated by node `<id>`", or "rotation by node `<id>` revoked by an earlier root key (node
