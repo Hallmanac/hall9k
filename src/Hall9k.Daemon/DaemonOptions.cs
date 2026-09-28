@@ -144,6 +144,50 @@ public sealed class DaemonOptions
     public int AutoPrReviewMintHoldSeconds { get; set; } = 300;
 
     /// <summary>
+    /// The LIFETIME cap on how many bounded follow-up laps <c>AutoPrReviewEngine.AttachMentionAsync</c>
+    /// will ever dispatch for one pr-review task (task 7ae690f5, Opus verdict 2026-09-27: a per-task
+    /// lifetime cap, not a per-period one, because the manual lever
+    /// (<c>h9k pr review --since-my-review</c>) already exists for exactly the case automation should
+    /// stop re-dispatching for). Decided purely over this node's own <see cref="Hall9k.Domain.Features.AutoPrReview.ObservedReviewMention"/>
+    /// rows already recorded with <c>Outcome</c> <c>Attached</c> for the task — no new event or
+    /// counter is needed, since that outcome already records every earlier dispatch.
+    /// </summary>
+    public int AutoPrReviewMentionFollowUpCap { get; set; } = 3;
+
+    /// <summary>
+    /// How long <c>AutoPrReviewEngine.AttachMentionAsync</c> waits after one follow-up dispatch
+    /// before it will dispatch another for the same task (task 7ae690f5) — measured off the most
+    /// recent <c>Attached</c> <see cref="Hall9k.Domain.Features.AutoPrReview.ObservedReviewMention"/>
+    /// row's own <c>ObservedAt</c>, the same "no new event or counter" discipline
+    /// <see cref="AutoPrReviewMentionFollowUpCap"/> follows. Thirty minutes: long enough that a
+    /// burst of comments on one pull request earns one lap rather than one per comment, short
+    /// enough that a genuinely separate later question is not made to wait for a human.
+    /// </summary>
+    public TimeSpan AutoPrReviewMentionFollowUpCooldown { get; set; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// The turn cap a mention follow-up lap is spawned with (task 7ae690f5), passed straight
+    /// through as <c>claude -p --max-turns</c> the same way <see cref="CourierMaxTurns"/> bounds
+    /// its own narrow auxiliary session: the lap reads the prior report, the thread, and parts of
+    /// the diff, writes an addendum, and never posts — a bounded job, so it gets a bounded turn
+    /// budget rather than the unbounded one an ordinary build session gets.
+    /// </summary>
+    public int PrReviewMentionFollowUpMaxTurns { get; set; } = 40;
+
+    /// <summary>
+    /// The ceiling on how many pull requests in one repository auto-pr-review may mint a task for
+    /// within a rolling hour (task 7ae690f5) — a flood-control backstop distinct from
+    /// <see cref="AutoPrReviewMintHoldSeconds"/>'s own per-request fleet coordination. Decided as a
+    /// query over <c>TaskListItem</c> rows already carrying <c>WasAutoPrReviewCreated</c> and this
+    /// repository's own external reference, never a counter of its own, so a restart loses nothing
+    /// to re-derive. A review request is re-graded every sweep and so holds until the window rolls;
+    /// a mention is left unrecorded past the cap for the identical reason a fleet-peer hold is
+    /// (<see cref="Hall9k.Domain.Features.AutoPrReview.ObservedReviewMention"/>'s own permanent
+    /// dedupe would otherwise lose it for good).
+    /// </summary>
+    public int AutoPrReviewHourlyMintCapPerRepository { get; set; } = 10;
+
+    /// <summary>
     /// The message sweep's own active-cadence floor, in whole seconds (idea 202383dc, M1b; Brian's
     /// ruling 2026-09-13: 15 to 25 s active with jitter): the fast end of the range the sweep picks
     /// a jittered interval from whenever this node has an unflushed or unread envelope, or held

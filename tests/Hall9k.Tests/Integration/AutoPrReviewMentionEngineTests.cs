@@ -425,6 +425,53 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         return snapshots;
     }
 
+    /// <summary>A node id that sorts below every id this platform will ever mint — <c>PrReviewTaskEngineTests</c>'s own <c>LowerRankedPeer</c>, this file's own copy for the identical reason every other fixture here is its own.</summary>
+    private static readonly Guid LowerRankedPeer = Guid.Parse("00000000-0000-7000-8000-000000000001");
+
+    /// <summary>
+    /// A fleet naming this node and one lower-ranked peer — the identical shortcut
+    /// <c>PrReviewTaskEngineTests</c>'s own <c>FleetOfThisNodeAnd</c> takes for its own mint-hold
+    /// tests, this file's own copy since every fixture here is deliberately its own.
+    /// </summary>
+    private static EnrolledNodeSnapshots FleetOfThisNodeAnd(Guid projectId, NodeContext node, Guid peer)
+    {
+        EnrolledNodeSnapshots snapshots = new();
+        snapshots.Record(
+            projectId,
+            new TrustChain(
+                new Dictionary<string, TrustedOwner>
+                {
+                    ["owner-root"] = new TrustedOwner(
+                        "owner-root", "ssh-ed25519 AAAAFAKE root",
+                        [
+                            new TrustedNode(peer.ToString(), "ssh-ed25519 AAAAFAKEpeer test", "peer-fingerprint", Now),
+                            new TrustedNode(node.NodeId.ToString(), "ssh-ed25519 AAAAFAKEself test", "self-fingerprint", Now),
+                        ]),
+                },
+                []),
+            "owner-root");
+        return snapshots;
+    }
+
+    /// <summary>An auto-created pr-review task (WasAutoPrReviewCreated) for the hourly mint cap's own query — no Publish or Assign needed, since the cap only ever reads AddedAt and the external reference.</summary>
+    private static async Task SeedAutoCreatedTaskAsync(
+        DocumentStore store, NodeContext node, Guid projectId, string repository, int number, DateTimeOffset addedAt,
+        CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, $"Review pull request {repository}#{number}",
+            ["The findings report is walked with the owner (walk-pr-review-findings) and every finding is directed."],
+            TaskType.PrReview, null, null,
+            new ExternalReference(WorkItemProvider.GitHubPullRequest, $"{repository}#{number}"), addedAt, node.OwnerId);
+        PullRequestReviewAssignmentObserved observed = new(
+            taskId, $"https://github.com/{repository}/pull/{number}", "brian", "someone", addedAt, addedAt);
+
+        session.Events.StartStream<TaskAggregate>(taskId, [added, observed]);
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
     // -------------------------------------------------------------------------------------
     // The tests themselves.
     // -------------------------------------------------------------------------------------
@@ -457,6 +504,10 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         minted.Type.Should().Be(TaskType.PrReview);
         minted.LatestMentionCommentId.Should().Be("IC_1");
         minted.LatestMentionAuthorLogin.Should().Be("ryan");
+        // Task 7ae690f5: a fresh mention mint carries MintedTask true, so this task now counts as
+        // auto-pr-review's own for the duplicate-convergence sweep and the hourly mint cap query,
+        // exactly as a review-requested mint always has.
+        minted.WasAutoPrReviewCreated.Should().BeTrue();
 
         TaskDetails details = (await query.LoadAsync<TaskDetails>(minted.Id, cts.Token))!;
         details.LatestMentionBody.Should().Be("@brian what do you think of this approach?");
@@ -962,11 +1013,24 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         // a mention follow-up is one of the three real spawn sites that never skips permissions.
         executor.Request.SkipPermissions.Should().BeFalse();
         executor.Request.UsesReviewPermissions.Should().BeTrue();
+        // Task 7ae690f5: a follow-up lap is spawned with a hard turn limit, the same shape
+        // CourierEngine passes CourierMaxTurns with, rather than the unbounded budget an ordinary
+        // build session gets.
+        executor.Request.MaxTurns.Should().Be(new DaemonOptions().PrReviewMentionFollowUpMaxTurns);
 
         ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
             ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
         observed.Outcome.Should().Be(ReviewMentionOutcome.Attached);
         observed.TaskId.Should().Be(watchedTaskId);
+
+        // Task 7ae690f5: this task was seeded through SeedWaitingReviewAsync, the same shape a
+        // human's own h9k task add --from-pr adoption takes (no PullRequestReviewAssignmentObserved
+        // ever landed on its stream) — attaching a mention and dispatching a follow-up for it must
+        // never mark it as auto-pr-review's own twin, or PullRequestReviewDuplicateRule.IsRival
+        // would start treating a person's own adopted task as one.
+        TaskListItem watchedListItem = (await query.LoadAsync<TaskListItem>(watchedTaskId, cts.Token))!;
+        watchedListItem.WasAutoPrReviewCreated.Should().BeFalse(
+            "PullRequestReviewMentionObserved carries MintedTask only from a fresh mint, never an attach");
     }
 
     /// <summary>
@@ -1221,5 +1285,282 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         searches.Should().Contain(arguments => arguments.Contains("review-requested:brian"));
         searches.Should().Contain(arguments => arguments.Contains("mentions:brian"), "the second, independent search idea 2f079bcd adds");
+    }
+
+    // -------------------------------------------------------------------------------------
+    // The bounded follow-up's own caps (task 7ae690f5): a LIFETIME per-task cap, a cooldown
+    // between laps, only the fleet's own leader ever dispatches one, a per-repository hourly mint
+    // cap, and the period spend budget — all built over facts this feature already records, no
+    // new event or counter.
+    // -------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// The LIFETIME cap (task 7ae690f5, Opus verdict 2026-09-27): a task that has already
+    /// dispatched as many follow-up laps as <see cref="DaemonOptions.AutoPrReviewMentionFollowUpCap"/>
+    /// allows attaches a further mention to the record but never claims or dispatches another one
+    /// — <see cref="RefusingExecutor"/> and <see cref="RefusingWorktreeManager"/> both prove that
+    /// structurally. Decided purely over the two prior <see cref="ObservedReviewMention"/> rows
+    /// this test seeds directly with <c>Outcome</c> <c>Attached</c>, exactly the rows a real
+    /// dispatch would itself have recorded — no new event or counter is needed.
+    /// </summary>
+    [Fact]
+    public async Task A_task_at_its_lifetime_follow_up_cap_attaches_without_dispatching_another_lap()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-cap-test";
+        const int number = 4401;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-cap", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+        Guid watchedTaskId = await SeedWaitingReviewAsync(store, node, projectId, repository, number, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            for (int i = 0; i < 2; i++)
+            {
+                session.Store(new ObservedReviewMention
+                {
+                    Id = ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", $"IC_prior_{i}"),
+                    ObservingNodeId = node.NodeId,
+                    ProjectId = projectId,
+                    Repository = repository,
+                    Number = number,
+                    PullRequestUrl = $"https://github.com/{repository}/pull/{number}",
+                    MentionedLogin = "brian",
+                    CommentId = $"IC_prior_{i}",
+                    CommentAuthorLogin = "ryan",
+                    CommentBody = "an earlier question",
+                    CommentUrl = $"https://github.com/{repository}/pull/{number}#issuecomment-prior{i}",
+                    CommentCreatedAt = Now.AddHours(-3),
+                    ObservedAt = Now.AddHours(-3),
+                    Outcome = ReviewMentionOutcome.Attached,
+                    TaskId = watchedTaskId,
+                });
+            }
+
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_new", "ryan", "@brian one more question", Now.AddMinutes(5))]);
+        AutoPrReviewEngine engine = new(
+            store, node,
+            NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("the lifetime cap holds this dispatch"), gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
+            options: Options.Create(new DaemonOptions { AutoPrReviewMentionFollowUpCap = 2 }), clock: new FixedClock(Now));
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_new"), cts.Token))!;
+        observed.Outcome.Should().Be(ReviewMentionOutcome.AttachedNoFollowUp);
+        observed.OutcomeDetail.Should().Contain("cap");
+        observed.OutcomeDetail.Should().Contain("h9k pr review --since-my-review");
+
+        TaskDetails watched = (await query.LoadAsync<TaskDetails>(watchedTaskId, cts.Token))!;
+        watched.State.Should().Be(TaskState.AwaitingAuthor, "the cap held the claim, so the task's own state never moved");
+    }
+
+    /// <summary>
+    /// The cooldown between laps (task 7ae690f5): a task whose last follow-up dispatched five
+    /// minutes ago, well inside the default thirty-minute cooldown, attaches a further mention to
+    /// the record but never claims or dispatches another one.
+    /// </summary>
+    [Fact]
+    public async Task A_task_still_cooling_down_from_its_last_follow_up_attaches_without_dispatching_another_lap()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-cooldown-test";
+        const int number = 4402;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-cooldown", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+        Guid watchedTaskId = await SeedWaitingReviewAsync(store, node, projectId, repository, number, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Store(new ObservedReviewMention
+            {
+                Id = ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_prior"),
+                ObservingNodeId = node.NodeId,
+                ProjectId = projectId,
+                Repository = repository,
+                Number = number,
+                PullRequestUrl = $"https://github.com/{repository}/pull/{number}",
+                MentionedLogin = "brian",
+                CommentId = "IC_prior",
+                CommentAuthorLogin = "ryan",
+                CommentBody = "an earlier question",
+                CommentUrl = $"https://github.com/{repository}/pull/{number}#issuecomment-prior",
+                CommentCreatedAt = Now.AddMinutes(-5),
+                ObservedAt = Now.AddMinutes(-5),
+                Outcome = ReviewMentionOutcome.Attached,
+                TaskId = watchedTaskId,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_new", "ryan", "@brian and one more thing", Now.AddMinutes(1))]);
+        AutoPrReviewEngine engine = new(
+            store, node,
+            NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("the cooldown holds this dispatch"), gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
+            options: Options.Create(new DaemonOptions { AutoPrReviewMentionFollowUpCooldown = TimeSpan.FromMinutes(30) }),
+            clock: new FixedClock(Now));
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_new"), cts.Token))!;
+        observed.Outcome.Should().Be(ReviewMentionOutcome.AttachedNoFollowUp);
+        observed.OutcomeDetail.Should().Contain("cools down");
+        observed.OutcomeDetail.Should().Contain("h9k pr review --since-my-review");
+    }
+
+    /// <summary>
+    /// Only the fleet's own leader dispatches a follow-up (task 7ae690f5): a lower-ranked peer
+    /// exists in the fleet snapshot, so this node attaches the mention to the task's own stream —
+    /// the record is never lost — but never claims it or launches a run.
+    /// <see cref="RefusingExecutor"/> and <see cref="RefusingWorktreeManager"/> both prove
+    /// structurally that no dispatch was attempted.
+    /// </summary>
+    [Fact]
+    public async Task A_non_leader_node_attaches_a_mention_without_claiming_or_dispatching()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-non-leader-test";
+        const int number = 4403;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-non-leader", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+        Guid watchedTaskId = await SeedWaitingReviewAsync(store, node, projectId, repository, number, cts.Token);
+
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_1", "ryan", "@brian one more question", Now.AddMinutes(5))]);
+        EnrolledNodeSnapshots fleet = FleetOfThisNodeAnd(projectId, node, LowerRankedPeer);
+        AutoPrReviewEngine engine = new(
+            store, node,
+            NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("a non-leader node never dispatches a follow-up"), gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
+            enrolledNodes: fleet);
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails watched = (await query.LoadAsync<TaskDetails>(watchedTaskId, cts.Token))!;
+        watched.LatestMentionCommentId.Should().Be("IC_1", "the mention still attaches to the task's own stream");
+        watched.State.Should().Be(TaskState.AwaitingAuthor, "a non-leader node never claims the task for a follow-up");
+
+        ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
+        observed.Outcome.Should().Be(ReviewMentionOutcome.AttachedNoFollowUp);
+        observed.OutcomeDetail.Should().Contain("fleet peer ranks first");
+    }
+
+    /// <summary>
+    /// The fleet-coordination hold applies to a fresh mint from a mention too (task 7ae690f5): a
+    /// lower-ranked peer exists, but the comment's own <c>createdAt</c> is already older than the
+    /// default hold by the time this node's sweep runs, so this node mints at once exactly as
+    /// <c>PrReviewTaskEngineTests</c>' own late-follower review-requested test shows for the
+    /// request side.
+    /// </summary>
+    [Fact]
+    public async Task A_peer_held_mention_mints_once_its_hold_has_already_elapsed_and_nothing_covers_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-peer-hold-test";
+        const int number = 4404;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-peer-hold", repository, Now.AddDays(-2), Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+
+        DateTimeOffset commentCreatedAt = Now.AddSeconds(-600);
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_1", "ryan", "@brian what do you think?", commentCreatedAt)]);
+        EnrolledNodeSnapshots fleet = FleetOfThisNodeAnd(projectId, node, LowerRankedPeer);
+        AutoPrReviewEngine engine = new(
+            store, node,
+            NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("normal speed never launches"), gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
+            enrolledNodes: fleet, clock: new FixedClock(Now));
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem minted = (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token)).Single();
+        minted.Type.Should().Be(TaskType.PrReview);
+
+        ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
+        observed.Outcome.Should().Be(ReviewMentionOutcome.TaskCreated);
+        observed.TaskId.Should().Be(minted.Id);
+    }
+
+    /// <summary>
+    /// The per-repository hourly mint cap (task 7ae690f5): with the cap set to one and this
+    /// repository already carrying one auto-created task minted ten minutes ago, a mention on a
+    /// second pull request in the same repository holds rather than mints — and is left
+    /// unrecorded, the identical permanent-dedupe reason a fleet-peer hold is, so the next sweep
+    /// retries once the window rolls rather than losing the comment for good.
+    /// </summary>
+    [Fact]
+    public async Task A_fresh_mention_mint_past_the_hourly_cap_holds_and_is_left_unrecorded()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-hourly-cap-test";
+        const int alreadyMintedNumber = 4501;
+        const int number = 4502;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-hourly-cap", repository, Now.AddDays(-2), Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+        await SeedAutoCreatedTaskAsync(store, node, projectId, repository, alreadyMintedNumber, Now.AddMinutes(-10), cts.Token);
+
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_1", "ryan", "@brian what about this one?", Now.AddMinutes(5))]);
+        AutoPrReviewEngine engine = new(
+            store, node,
+            NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("the hourly cap holds this mint"), gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
+            options: Options.Create(new DaemonOptions { AutoPrReviewHourlyMintCapPerRepository = 1 }), clock: new FixedClock(Now));
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).CountAsync(cts.Token))
+            .Should().Be(1, "the hourly cap holds a fresh mint for the second pull request");
+
+        (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))
+            .Should().BeNull(
+                "left unrecorded so the next sweep retries once the window rolls, the identical reason a "
+                + "fleet-peer hold is");
     }
 }
