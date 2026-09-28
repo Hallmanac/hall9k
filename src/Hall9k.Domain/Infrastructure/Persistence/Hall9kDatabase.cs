@@ -66,6 +66,18 @@ public static class Hall9kDatabase
         $"Host=127.0.0.1;Port=5432;Database=hall9k;Username=postgres;Password={LegacyPassword}";
 
     /// <summary>
+    /// The form <see cref="LegacyDefaultConnectionString"/> itself replaced: what both <c>h9k
+    /// install</c> and the doctor's start-offer actually wrote into <c>config.json</c> from
+    /// 2026-08-16 until commit 6185ff2e8 (2026-09-27) changed only the constant's host, never
+    /// rewriting an already-configured machine's file. <see cref="IsLegacyDefaultConnectionString"/>
+    /// treats this the same as the current form — the real installed population is on this one, and
+    /// a migration that recognises only the newer literal would silently skip almost every existing
+    /// install (adversarial pre-PR review, cycle 1).
+    /// </summary>
+    private const string LegacyDefaultConnectionStringWithLocalhostHost =
+        $"Host=localhost;Port=5432;Database=hall9k;Username=postgres;Password={LegacyPassword}";
+
+    /// <summary>
     /// The password every install shipped before this task — already public (it has always been a
     /// literal in this file, and in the repository's own shipped compose template), so naming it
     /// plainly in a recovery message is not the exposure the generated password's own secrecy
@@ -77,13 +89,14 @@ public static class Hall9kDatabase
     public const string LegacyPassword = "hall9k";
 
     /// <summary>
-    /// Whether <paramref name="connectionString"/> is exactly <see cref="LegacyDefaultConnectionString"/> —
-    /// the migration's own eligibility test, exposed this way (rather than the literal itself) so
-    /// nothing outside <c>Hall9k.Domain</c> ever needs to carry the old password as a string of its
-    /// own.
+    /// Whether <paramref name="connectionString"/> is exactly <see cref="LegacyDefaultConnectionString"/>
+    /// or <see cref="LegacyDefaultConnectionStringWithLocalhostHost"/> — the migration's own
+    /// eligibility test, exposed this way (rather than either literal itself) so nothing outside
+    /// <c>Hall9k.Domain</c> ever needs to carry the old password as a string of its own.
     /// </summary>
     public static bool IsLegacyDefaultConnectionString(string? connectionString) =>
-        string.Equals(connectionString, LegacyDefaultConnectionString, StringComparison.Ordinal);
+        string.Equals(connectionString, LegacyDefaultConnectionString, StringComparison.Ordinal)
+        || string.Equals(connectionString, LegacyDefaultConnectionStringWithLocalhostHost, StringComparison.Ordinal);
 
     public const string EnvironmentVariableName = "HALL9K_CONNECTION_STRING";
 

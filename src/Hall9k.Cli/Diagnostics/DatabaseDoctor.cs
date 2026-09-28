@@ -661,12 +661,38 @@ public static class DatabaseDoctor
             return (connectionString, resolution, false);
         }
 
-        if (Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName) is { Length: > 0 })
+        if (resolution.Origin == ConnectionStringOrigin.EnvironmentVariable)
         {
-            // The environment variable is what this process actually resolved against (it outranks
-            // the config file), so a config file still naming the old default while the environment
-            // variable points elsewhere means this migration would rotate a credential nothing here
-            // is even using — silent, the same reasoning as the branch above.
+            // resolution.Origin, not a direct Environment.GetEnvironmentVariable read: this is what
+            // the process actually resolved against (it outranks the config file), so a config file
+            // still naming the old default while the environment variable points elsewhere means
+            // this migration would rotate a credential nothing here is even using. Unlike the
+            // branch above, this is worth telling the operator about — a config file stuck on the
+            // shipped default indefinitely, with no message ever explaining why, is exactly what an
+            // operator with a stray HALL9K_CONNECTION_STRING in their shell profile would otherwise
+            // never notice (conformance pre-PR review, cycle 1).
+            AnsiConsole.MarkupLine(
+                $"[dim]{PostgresRuntime.ContainerName} is still using the shipped default password — not rotating "
+                + $"it automatically because {Hall9kDatabase.EnvironmentVariableName} is set, and this process "
+                + $"resolved its connection string from that variable rather than from {Hall9kDatabase.ConfigFile.EscapeMarkup()}. "
+                + $"Unset {Hall9kDatabase.EnvironmentVariableName} (or point it at the rotated credential yourself) "
+                + "if you want this migration to run.[/]");
+            return (connectionString, resolution, false);
+        }
+
+        if (resolution.Origin != ConnectionStringOrigin.PlatformConfigFile)
+        {
+            // Silent, the same as the eligibility check above: Configured (Aspire's dev-loop
+            // wiring), TestOverride, and ProjectOverride all resolve connectionString from
+            // somewhere config.json never named, so config.json's own legacy default just
+            // detected above describes a server this run is not even talking to. Proceeding
+            // regardless would rotate (or, for the ownership guard's docker inspect, merely
+            // probe) whatever connectionString actually points at, then overwrite config.json
+            // with that unrelated server's address — the wrong fix for a config file that was
+            // never in play here (a test's own throwaway database was the shape that surfaced
+            // this: DatabaseDoctorTests.Assume_yes_creates_the_schema_without_asking runs against
+            // a fixture database while a real, unmigrated config.json happened to sit on the same
+            // host).
             return (connectionString, resolution, false);
         }
 

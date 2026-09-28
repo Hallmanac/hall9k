@@ -17,25 +17,13 @@ namespace Hall9k.Tests.Cli;
 /// verifier, the config and compose rewrites) are <c>DatabaseDoctorPasswordMigrationTests</c>,
 /// which needs a real container.
 /// </summary>
-[Collection("Environment")]
-[Trait("Category", "Environment")]
 public sealed class DatabaseDoctorPasswordMigrationEligibilityTests : IDisposable
 {
     private const string PlaceholderConnectionString = "Host=127.0.0.1;Port=5432;Database=hall9k;Username=postgres;Password=unused";
 
     private readonly ScopedTestHome scopedHome = new();
 
-    private readonly string? previousConnectionString =
-        Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-
-    public DatabaseDoctorPasswordMigrationEligibilityTests() =>
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, null);
-
-    public void Dispose()
-    {
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
-        scopedHome.Dispose();
-    }
+    public void Dispose() => scopedHome.Dispose();
 
     private static ConnectionStringResolution PlaceholderResolution() =>
         new(PlaceholderConnectionString, ConnectionStringOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile);
@@ -72,18 +60,49 @@ public sealed class DatabaseDoctorPasswordMigrationEligibilityTests : IDisposabl
     }
 
     [Fact]
-    public async Task Silent_when_the_environment_variable_outranks_the_legacy_config_file()
+    public async Task Reports_and_skips_when_the_environment_variable_outranks_the_legacy_config_file()
     {
         await Hall9kDatabase.WriteConfiguredConnectionStringAsync(Hall9kDatabase.ConnectionStringWithPassword("hall9k"), CancellationToken.None);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, "Host=env-wins;Port=5432;Database=x;Username=x;Password=x");
+        ConnectionStringResolution fromEnvironment = new(
+            "Host=env-wins;Port=5432;Database=x;Username=x;Password=x",
+            ConnectionStringOrigin.EnvironmentVariable,
+            Hall9kDatabase.EnvironmentVariableName);
 
-        (_, _, bool abort) = await DatabaseDoctor.MaybeMigrateLegacyPasswordAsync(
-            PlaceholderConnectionString, PlaceholderResolution(), assumeYes: true, GuardPassingRunner().Runner, () => false, CancellationToken.None);
+        bool abort = true;
+        string output = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
+        {
+            (_, _, abort) = await DatabaseDoctor.MaybeMigrateLegacyPasswordAsync(
+                fromEnvironment.Value!, fromEnvironment, assumeYes: true, GuardPassingRunner().Runner, () => false, CancellationToken.None);
+        });
 
         abort.Should().BeFalse();
+        output.Should().Contain(Hall9kDatabase.EnvironmentVariableName, "the operator needs to be told which variable to unset");
         Hall9kDatabase.ConnectionStringStateAndValueInConfigFile().Value.Should().Be(
             Hall9kDatabase.ConnectionStringWithPassword("hall9k"),
             "the environment variable is what actually resolves, so the config file underneath it must be left alone");
+    }
+
+    [Fact]
+    public async Task Proceeds_past_the_legacy_check_when_the_config_file_names_the_pre_6185ff2e8_localhost_form()
+    {
+        // Every install between 2026-08-16 and commit 6185ff2e8 (2026-09-27) recorded this exact
+        // form, and that commit never rewrote an already-configured machine's config.json — so
+        // this must be recognised as eligible too, or the real installed population is silently
+        // never migrated (adversarial pre-PR review, cycle 1). Proven here via the --yes gate
+        // (rather than a real Postgres connection) so this stays Docker-free like every other
+        // case in this class: reaching that gate at all is what proves the eligibility check
+        // itself passed.
+        const string localhostLegacy = "Host=localhost;Port=5432;Database=hall9k;Username=postgres;Password=hall9k";
+        await Hall9kDatabase.WriteConfiguredConnectionStringAsync(localhostLegacy, CancellationToken.None);
+
+        string output = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
+        {
+            await DatabaseDoctor.MaybeMigrateLegacyPasswordAsync(
+                PlaceholderConnectionString, PlaceholderResolution(), assumeYes: false, GuardPassingRunner().Runner,
+                () => false, CancellationToken.None);
+        });
+
+        output.Should().Contain("--yes was not given");
     }
 
     [Fact]

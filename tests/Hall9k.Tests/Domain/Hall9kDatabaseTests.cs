@@ -285,4 +285,28 @@ public sealed class Hall9kDatabaseTests : IDisposable
         Hall9kDatabase.ConnectionStringStateAndValueInConfigFile().Value.Should().Be("config-value",
             "an autostarted daemon has no environment variable of its own, so this is the value it would actually resolve to");
     }
+
+    [Fact]
+    public void The_current_default_host_form_is_recognised_as_the_legacy_default()
+    {
+        Hall9kDatabase.IsLegacyDefaultConnectionString(Hall9kDatabase.LegacyDefaultConnectionString).Should().BeTrue();
+    }
+
+    [Fact]
+    public void The_pre_6185ff2e8_localhost_host_form_is_also_recognised_as_the_legacy_default()
+    {
+        // Every install between 2026-08-16 and commit 6185ff2e8 (2026-09-27) recorded this form,
+        // and that commit never rewrote an already-configured machine's config.json — so the
+        // migration has to recognise it too, or the real installed population is never migrated
+        // (adversarial pre-PR review, cycle 1).
+        Hall9kDatabase.IsLegacyDefaultConnectionString(
+            "Host=localhost;Port=5432;Database=hall9k;Username=postgres;Password=hall9k").Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_hand_set_connection_string_is_never_mistaken_for_the_legacy_default()
+    {
+        Hall9kDatabase.IsLegacyDefaultConnectionString("Host=elsewhere;Port=5433;Database=custom;Username=someone;Password=secret")
+            .Should().BeFalse();
+    }
 }
