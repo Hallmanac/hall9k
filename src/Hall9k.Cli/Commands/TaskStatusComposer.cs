@@ -1,3 +1,5 @@
+using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
@@ -9,6 +11,7 @@ using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Marten;
@@ -79,6 +82,13 @@ namespace Hall9k.Cli.Commands;
 /// direction to default: an absent entry never grants a claim the dispatcher's own check would
 /// refuse.
 /// </param>
+/// <param name="ProjectMemberLabelsById">
+/// Each row's own project's current member labels (task 21c8f2f3), keyed by
+/// <see cref="Hall9k.Domain.Features.Tasks.Projections.TaskListItem.ProjectId"/> — what
+/// <see cref="OwnersByFingerprint"/> falls back to for a foreign fingerprint no local owner record
+/// answers, rather than the fingerprint's own bare short prefix. Null on every construction that
+/// never bothered to compute one, the same optional-and-absent shape the fields above use.
+/// </param>
 internal sealed record TaskStatusContext(
     IReadOnlyDictionary<Guid, RunDetails> Runs,
     IReadOnlyDictionary<Guid, RunActivity> Activity,
@@ -93,7 +103,8 @@ internal sealed record TaskStatusContext(
     int InteractiveClaimStaleAfterDays = OperatingSettings.DefaultInteractiveClaimStaleAfterDays,
     IReadOnlyDictionary<Guid, TaskHolderClaimHold>? HolderClaimHolds = null,
     IReadOnlyDictionary<string, string>? OwnersByFingerprint = null,
-    IReadOnlyDictionary<Guid, bool>? GateSetUnaccepted = null);
+    IReadOnlyDictionary<Guid, bool>? GateSetUnaccepted = null,
+    IReadOnlyDictionary<Guid, ProjectMemberLabels>? ProjectMemberLabelsById = null);
 
 /// <summary>
 /// The one truth about how a task reads. Every surface that shows a task — h9k status,
@@ -208,6 +219,10 @@ internal static class TaskStatusComposer
         Dictionary<Guid, RunActivity> activity = runIds.Length == 0
             ? []
             : (await session.LoadManyAsync<RunActivity>(cancellationToken, runIds)).ToDictionary(a => a.Id);
+        Guid[] projectIds = [.. tasks.Select(task => task.ProjectId).Distinct()];
+        Dictionary<Guid, ProjectMemberLabels> projectMemberLabelsById = projectIds.Length == 0
+            ? []
+            : (await session.LoadManyAsync<ProjectMemberLabels>(cancellationToken, projectIds)).ToDictionary(l => l.Id);
         // Every other describe-only caller (OperatingSettingsResolver, and through it
         // h9k config show and h9k daemon status) deliberately reads through the non-throwing
         // TryReadOperatingSettingsAsync so a malformed config file degrades to the built-in
@@ -233,7 +248,8 @@ internal static class TaskStatusComposer
             operatingSettings.InteractiveClaimStaleAfterDays ?? OperatingSettings.DefaultInteractiveClaimStaleAfterDays,
             await ReadHolderClaimHoldsAsync(session, tasks, now, cancellationToken),
             ownersByFingerprint,
-            gateSetUnaccepted);
+            gateSetUnaccepted,
+            projectMemberLabelsById);
     }
 
     /// <summary>
@@ -352,7 +368,7 @@ internal static class TaskStatusComposer
         // idea 202383dc: an owner can place a task on one of their own nodes — advisory to
         // dispatch only, so it rides beside the assignee's own name rather than replacing it.
         string assigneeDisplay = task.AssignedOwnerId is { } assigneeOwnerId
-            ? AssigneeDisplay(assigneeOwnerId, task.AssignedOwnerFingerprint, context)
+            ? AssigneeDisplay(assigneeOwnerId, task.AssignedOwnerFingerprint, context, task.ProjectId)
             : string.Empty;
         if (task.PlacedOnNodeId is { } placedOnNodeId)
         {
@@ -370,7 +386,9 @@ internal static class TaskStatusComposer
             phase,
             attention,
             group,
-            PublishedFacts.Compose(task, state, held, heldByTracker, now, heldByLedgerHolder, context.OwnersByFingerprint),
+            PublishedFacts.Compose(
+                task, state, held, heldByTracker, now, heldByLedgerHolder, context.OwnersByFingerprint,
+                context.ProjectMemberLabelsById?.GetValueOrDefault(task.ProjectId)),
             project,
             task.Objective,
             task.Type.Value,
@@ -411,23 +429,29 @@ internal static class TaskStatusComposer
     /// OwnerScoped and never replicate), while the fingerprint is the one fact every node of the
     /// same owner can recognize. The plain id lookup is used only when the assignment carries no
     /// fingerprint at all (an event written before the field existed) — once a fingerprint is
-    /// recorded, the id is never trusted on its own: a locally-resolvable id whose own owner
-    /// record's root fingerprint disagrees with the recorded one (an owner-root rewrite) falls
-    /// through to the fingerprint's own short prefix instead, the same truncation
-    /// <c>PublishedFacts.HeldElsewhereFact</c> already uses for a foreign root fingerprint in a
-    /// table column, rather than the full 64 hex characters — the same "known by fingerprint only"
-    /// shape <c>h9k task show</c>'s own <c>AssigneeMarkupAsync</c> reports for it, never a plain
-    /// name. "?" is reachable only on the no-fingerprint path, when the id resolves nothing either.
+    /// recorded, the id is never trusted on its own: a fingerprint matching this machine's own
+    /// owner keeps that owner's local name, exactly as before; any other fingerprint resolves to
+    /// this project's own member label (task 21c8f2f3) — the display name, else the declared
+    /// login, else the fingerprint's own short prefix — the same "known by fingerprint only" shape
+    /// <c>h9k task show</c>'s own <c>AssigneeMarkupAsync</c> reports for it, never a plain name.
+    /// "?" is reachable only on the no-fingerprint path, when the id resolves nothing either.
     /// </summary>
-    private static string AssigneeDisplay(Guid ownerId, string? ownerFingerprint, TaskStatusContext context)
+    private static string AssigneeDisplay(
+        Guid ownerId, string? ownerFingerprint, TaskStatusContext context, Guid projectId)
     {
         if (ownerFingerprint is not { } fingerprint)
         {
             return context.Owners.GetValueOrDefault(ownerId) ?? "?";
         }
 
-        return context.OwnersByFingerprint?.GetValueOrDefault(fingerprint)
-            ?? fingerprint[..Math.Min(12, fingerprint.Length)];
+        if (context.OwnersByFingerprint?.GetValueOrDefault(fingerprint) is { } localName)
+        {
+            return localName;
+        }
+
+        string label = MemberLabelResolver.LabelForFingerprint(
+            context.ProjectMemberLabelsById?.GetValueOrDefault(projectId), fingerprint);
+        return ExternalText.OneLine(RelayedText.Truncate(label, MemberLabelResolver.RenderLimit));
     }
 
     /// <summary>

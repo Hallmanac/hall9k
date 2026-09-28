@@ -1,7 +1,10 @@
+using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Trust;
 
 namespace Hall9k.Cli.Commands;
 
@@ -53,21 +56,25 @@ internal static class PublishedFacts
     /// actually sits on, shortened the same way a node id reads elsewhere on this board
     /// (<see cref="TaskListCommand.ShortId"/>). A foreign node's own friendly name never
     /// replicates (<c>NodeDetails</c> is node-scoped), so the fact says "node" plus the short id
-    /// rather than inventing a name for it. The owning login rides alongside, resolved by the
-    /// claiming owner's cross-node root fingerprint (<paramref name="ownersByFingerprint"/>) when
-    /// this install knows it, falling back to the fingerprint's own short prefix — the identical
-    /// "known by fingerprint only" shape <see cref="AssigneeDisplay"/> already reports — never
-    /// standing in for the node id itself the way the original rendering did (Windows field
-    /// report, 2026-09-19: "held by c8f5c85900da" named the owner root fingerprint as if it were
-    /// the node).
+    /// rather than inventing a name for it — this half never gains a second label (task 21c8f2f3):
+    /// the node-id labeling rule applies to the other surfaces that name a node by id, not to this
+    /// one, which already names the holder by its owning member in the very next clause. The owning
+    /// login rides alongside, resolved by the claiming owner's cross-node root fingerprint
+    /// (<paramref name="ownersByFingerprint"/>) when this install knows it — this machine's own
+    /// owner keeps that local name — falling back to this project's own member label (task
+    /// 21c8f2f3) for any other member, the identical "known by fingerprint only" shape
+    /// <see cref="AssigneeDisplay"/> already reports, never standing in for the node id itself the
+    /// way the original rendering did (Windows field report, 2026-09-19: "held by c8f5c85900da"
+    /// named the owner root fingerprint as if it were the node).
     /// </summary>
     private static string HeldElsewhereFact(
-        TaskListItem task, IReadOnlyDictionary<string, string>? ownersByFingerprint, DateTimeOffset now)
+        TaskListItem task, IReadOnlyDictionary<string, string>? ownersByFingerprint, DateTimeOffset now,
+        ProjectMemberLabels? projectMemberLabels)
     {
         string holderNode = task.ClaimedByNodeId is { } claimedByNodeId
             ? $"node {TaskListCommand.ShortId(claimedByNodeId)}"
             : "an unknown node";
-        string owner = OwnerDisplay(task.ClaimedByOwnerRootFingerprint, ownersByFingerprint);
+        string owner = OwnerDisplay(task.ClaimedByOwnerRootFingerprint, ownersByFingerprint, projectMemberLabels);
         string since = task.ClaimedAt is { } claimedAt
             ? TaskStatusComposer.RelativeAge(now - claimedAt)
             : "an unknown time";
@@ -76,20 +83,27 @@ internal static class PublishedFacts
 
     /// <summary>
     /// The owning login when this install can resolve the claiming owner's cross-node root
-    /// fingerprint, falling back to the fingerprint's own short prefix — the same truncation
-    /// <see cref="AssigneeDisplay"/> already uses for a foreign root fingerprint known by
-    /// fingerprint alone, never the full 64 hex characters.
+    /// fingerprint (this machine's own owner), falling back to this project's own member label
+    /// (task 21c8f2f3) — the display name, else the declared login, else the fingerprint's own
+    /// short prefix — the identical fallback <see cref="AssigneeDisplay"/> already uses for a
+    /// foreign root fingerprint known by fingerprint alone.
     /// </summary>
     private static string OwnerDisplay(
-        string? ownerRootFingerprint, IReadOnlyDictionary<string, string>? ownersByFingerprint)
+        string? ownerRootFingerprint, IReadOnlyDictionary<string, string>? ownersByFingerprint,
+        ProjectMemberLabels? projectMemberLabels)
     {
         if (ownerRootFingerprint.IsBlank())
         {
             return "an unknown owner";
         }
 
-        return ownersByFingerprint?.GetValueOrDefault(ownerRootFingerprint)
-            ?? ownerRootFingerprint[..Math.Min(12, ownerRootFingerprint.Length)];
+        if (ownersByFingerprint?.GetValueOrDefault(ownerRootFingerprint) is { } localName)
+        {
+            return localName;
+        }
+
+        string label = MemberLabelResolver.LabelForFingerprint(projectMemberLabels, ownerRootFingerprint);
+        return ExternalText.OneLine(RelayedText.Truncate(label, MemberLabelResolver.RenderLimit));
     }
 
     /// <summary>
@@ -126,6 +140,11 @@ internal static class PublishedFacts
     /// HeldElsewhere row's own held-by fact can name the claiming owner's login when this install
     /// knows it, rather than the bare fingerprint alone.
     /// </param>
+    /// <param name="projectMemberLabels">
+    /// This row's own project's current member labels (task 21c8f2f3) — what
+    /// <paramref name="ownersByFingerprint"/> falls back to for a claiming owner this install has
+    /// no local record of, rather than the fingerprint's own bare short prefix.
+    /// </param>
     public static IReadOnlyList<string> Compose(
         TaskListItem task,
         LifecycleState state,
@@ -133,7 +152,8 @@ internal static class PublishedFacts
         TrackerClaimDecision? heldByTracker = null,
         DateTimeOffset now = default,
         TaskHolderClaimHold? heldByLedgerHolder = null,
-        IReadOnlyDictionary<string, string>? ownersByFingerprint = null)
+        IReadOnlyDictionary<string, string>? ownersByFingerprint = null,
+        ProjectMemberLabels? projectMemberLabels = null)
     {
         if (state != LifecycleState.Published)
         {
@@ -165,7 +185,7 @@ internal static class PublishedFacts
             return
             [
                 .. state == LifecycleState.HeldElsewhere
-                    ? (string[])[HeldElsewhereFact(task, ownersByFingerprint, now)]
+                    ? (string[])[HeldElsewhereFact(task, ownersByFingerprint, now, projectMemberLabels)]
                     : [],
                 .. task.QueuePriorityMarked ? (string[])[QueuePriorityFact] : [],
                 .. task.EffectivePreApproval.MergesAutomatically
