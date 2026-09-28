@@ -23,9 +23,11 @@ public sealed record ReviewMentionOutcome
 
     /// <summary>
     /// A fresh pr-review task was minted and published for this mention, but deliberately never
-    /// assigned — the membership gate found the pull request's own author was not a declared hall9k
-    /// team member (or was a Bot) on a repository the gate covers (security review idea 6be68ee2,
-    /// finding 1). <c>h9k task assign</c> is the human go.
+    /// assigned — the membership gate found the pull request's own author, the mentioning comment's
+    /// own author, or both, was not a declared hall9k team member (or was a Bot) on a repository the
+    /// gate covers (security review idea 6be68ee2, finding 1; independent pre-PR review, cycle 3,
+    /// conformance lens, added the pull request's own author to a check that used to read the
+    /// comment's alone). <c>h9k task assign</c> is the human go.
     /// </summary>
     public static readonly ReviewMentionOutcome TaskCreatedParked = new("TaskCreatedParked");
 

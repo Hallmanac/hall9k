@@ -476,9 +476,13 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
     /// claim and no run ever launches. <see cref="RefusingWorktreeManager"/> and
     /// <see cref="RefusingExecutor"/> both prove that structurally: either one firing would fail
     /// this test outright (no git, no dispatch). The pull request's own author is a declared member
-    /// here (independent pre-PR review, cycle 1, both lenses) — proof that the gate no longer reads
-    /// their membership at all for a fresh mint from a mention; only the tagging comment's own
-    /// author decides.
+    /// here, proof that a member's own pull request still parks when a stranger's own comment tags
+    /// the install on it (independent pre-PR review, cycle 3, conformance lens: a stranger's comment
+    /// on a member's pull request is exactly as unattended-unsafe as a stranger's own pull request
+    /// is, and the gate now checks both authors, parking on either one failing). The park card names
+    /// the pull request's own author — GitHub's own reading of it, identical to a review-requested
+    /// park's own card — even though this particular park was actually caused by the tagging
+    /// comment's own author failing the gate, not the pull request's.
     /// </summary>
     [Fact]
     public async Task A_mention_from_a_non_member_on_a_public_repository_mints_published_and_unassigned()
@@ -515,8 +519,10 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         minted.State.Should().Be(TaskState.Published, "Add and Publish land, but the membership gate refuses Assign");
         minted.PrReviewGateParked.Should().BeTrue();
         minted.PrReviewGateParkedAuthorAccountId.Should().Be(
-            strangerAccountId, "the gate matched on the tagging COMMENT's own author, never the pull request's");
-        minted.PrReviewGateParkedAuthorLogin.Should().Be("ryan");
+            memberAccountId,
+            "the park card names the pull request's own author, GitHub's own reading of it, even though this "
+            + "park was actually caused by the tagging comment's own author (ryan) failing the gate");
+        minted.PrReviewGateParkedAuthorLogin.Should().Be("brian");
         minted.PrReviewGateParkedTitle.Should().Be(
             "Add rate limiting", "the card names the pull request's own title, never the platform-authored objective");
         minted.PrReviewGateParkedIsPrivate.Should().BeFalse();
@@ -530,6 +536,62 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
             ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
+        observed.Outcome.Should().Be(ReviewMentionOutcome.TaskCreatedParked);
+        observed.TaskId.Should().Be(minted.Id);
+    }
+
+    /// <summary>
+    /// The mirror image of the park above, and the scenario the membership gate used to miss
+    /// entirely (independent pre-PR review, cycle 3, conformance lens): a stranger opens the pull
+    /// request, and a declared hall9k team member tags the install in a comment on it. Before the
+    /// gate checked the pull request's own author too, this minted Published AND Assigned — an
+    /// unattended run dispatched straight into a checkout the stranger controls, on the strength of
+    /// who commented rather than what is actually under review. <see cref="RefusingWorktreeManager"/>
+    /// and <see cref="RefusingExecutor"/> prove structurally that no dispatch happens now.
+    /// </summary>
+    [Fact]
+    public async Task A_mention_from_a_member_on_a_non_members_public_pull_request_mints_published_and_unassigned()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-stranger-pr-test";
+        const int number = 4302;
+        const long memberAccountId = 111;
+        const long strangerAccountId = 888;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-stranger-pr", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_2", "carol", "@brian take a look", Now.AddMinutes(5))],
+            isPrivate: false, pullRequestAuthor: ("mallory", strangerAccountId, "NONE"),
+            commentAuthorAccountId: memberAccountId);
+        AutoPrReviewEngine engine = new(
+            store, node,
+            NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("a parked task is never launched"), gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
+            enrolledNodes: MemberSnapshot(projectId, node, memberAccountId), clock: new FixedClock(Now));
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem minted = (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token)).Single();
+        minted.State.Should().Be(
+            TaskState.Published,
+            "the pull request's own author is not a declared member, so the gate parks even though a "
+            + "member tagged the install");
+        minted.PrReviewGateParked.Should().BeTrue();
+        minted.PrReviewGateParkedAuthorAccountId.Should().Be(strangerAccountId, "the pull request's own author");
+        minted.PrReviewGateParkedAuthorLogin.Should().Be("mallory");
+
+        (await query.LoadAsync<TaskLease>(minted.Id, cts.Token)).Should().BeNull("an unassigned task was never claimed");
+
+        ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_2"), cts.Token))!;
         observed.Outcome.Should().Be(ReviewMentionOutcome.TaskCreatedParked);
         observed.TaskId.Should().Be(minted.Id);
     }
@@ -1019,7 +1081,8 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         CapturingExecutor executor = new();
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node, new StubWorktreeManager(), executor, gh),
-            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
+            clock: new FixedClock(Now));
 
         await engine.PollOnceAsync(cts.Token);
 
