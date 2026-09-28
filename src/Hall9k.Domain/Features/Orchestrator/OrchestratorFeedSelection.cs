@@ -65,8 +65,8 @@ public static class OrchestratorFeedSelection
         DateTimeOffset settledThrough,
         bool scanWasCapped,
         Func<OrchestratorFeedCandidate, CancellationToken, ValueTask<OrchestratorFeedScope?>> scopeOf,
-        CancellationToken cancellationToken,
-        MemberLabelLookup? labels = null)
+        MemberLabelLookup? labels,
+        CancellationToken cancellationToken)
     {
         List<OrchestratorFeedItem> items = [];
         long drainableThrough = startedFrom;
