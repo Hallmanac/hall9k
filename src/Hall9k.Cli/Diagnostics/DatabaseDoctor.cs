@@ -630,14 +630,16 @@ public static class DatabaseDoctor
     /// <para>
     /// The three-way failure story: a failed <c>ALTER ROLE</c> or a failed <c>config.json</c> write
     /// rolls the transaction back and reports nothing changed — the migration is simply retried on
-    /// the next <c>h9k doctor --yes</c>. A failed <c>COMMIT</c> is genuinely ambiguous (the server may
-    /// have applied it despite the client never seeing the acknowledgement), so the recovery restores
-    /// <c>config.json</c>'s own previous bytes, held in memory since before the write, back to what
-    /// they were; only when that restore itself also fails does this print a recovery command, and it
-    /// forces the role back to the already-public old password (<see cref="Hall9kDatabase.LegacyPassword"/>),
+    /// the next <c>h9k doctor --yes</c>. A failed or canceled <c>COMMIT</c> is genuinely ambiguous
+    /// (the server may have applied it despite the client never seeing the acknowledgement, and a
+    /// cancellation landing on that same await is no different), so this never claims nothing
+    /// changed there: the recovery restores <c>config.json</c>'s own previous bytes, held in memory
+    /// since before the write, back to what they were, and prints the recovery command regardless —
+    /// forcing the role back to the already-public old password (<see cref="Hall9kDatabase.LegacyPassword"/>),
     /// never the new one — a known, boring target reachable over the container's own trusted local
     /// socket regardless of whether the ambiguous commit actually landed, rather than a guess at
-    /// whatever the new password might now be.
+    /// whatever the new password might now be. Only when the restore itself also fails does the
+    /// message additionally warn that <c>config.json</c> may now disagree with the database.
     /// </para>
     /// <para>Returns the connection string and resolution the rest of this check should use —
     /// migrated, or unchanged when nothing here applied or nothing here could safely proceed — and
@@ -795,16 +797,31 @@ public static class DatabaseDoctor
         {
             await transaction.CommitAsync(cancellationToken);
         }
-        catch (NpgsqlException exception)
+        catch (Exception exception) when (exception is NpgsqlException or OperationCanceledException)
         {
+            // OperationCanceledException belongs here alongside NpgsqlException: a cancellation
+            // (Ctrl+C) landing right on this await is exactly as ambiguous about whether the server
+            // applied the commit as a dropped connection is (adversarial pre-PR review, cycle 1),
+            // and the recovery this branch already has to offer for that ambiguity is identical
+            // either way. The restore write below deliberately uses CancellationToken.None rather
+            // than the (possibly already-canceled) cancellationToken — a canceled token would make
+            // the restore itself throw immediately, leaving config.json holding a password the
+            // database may never have adopted with no attempt made to put it back.
+            string recoveryCommand =
+                $"docker exec -i {PostgresRuntime.ContainerName} psql -U postgres -c \"ALTER ROLE postgres WITH "
+                + $"PASSWORD '{Hall9kDatabase.LegacyPassword}'\"";
             try
             {
-                await AtomicFileWrite.WriteAllTextAsync(Hall9kDatabase.ConfigFile, previousConfigBytes, cancellationToken);
+                await AtomicFileWrite.WriteAllTextAsync(Hall9kDatabase.ConfigFile, previousConfigBytes, CancellationToken.None);
                 AnsiConsole.MarkupLine(
                     $"[red]Could not rotate {PostgresRuntime.ContainerName}'s password[/]: committing the change "
-                    + $"failed ({exception.Message.EscapeMarkup()}) — {Hall9kDatabase.ConfigFile.EscapeMarkup()} has "
-                    + "been restored to its previous contents, so nothing changed. Re-run h9k doctor --yes once "
-                    + "that is fixed.");
+                    + $"could not be confirmed ({exception.Message.EscapeMarkup()}) — the server may already have "
+                    + $"applied it, so this cannot claim nothing changed. {Hall9kDatabase.ConfigFile.EscapeMarkup()} "
+                    + "has been restored to its previous contents (the old password), but if the database already "
+                    + "adopted the new one, that old password will no longer authenticate. If h9k doctor --yes then "
+                    + $"fails with a wrong-password error, force the role back to the known, already-public old "
+                    + $"password over the container's own trusted local socket first: {recoveryCommand} — then "
+                    + "re-run h9k doctor --yes.");
                 return (connectionString, resolution, false);
             }
             catch (Exception restoreException) when (restoreException is IOException or UnauthorizedAccessException)
@@ -813,11 +830,9 @@ public static class DatabaseDoctor
                     $"[red]Could not rotate {PostgresRuntime.ContainerName}'s password, and could not restore "
                     + $"{Hall9kDatabase.ConfigFile.EscapeMarkup()} either[/] ({restoreException.Message.EscapeMarkup()}) "
                     + "— whether the database actually kept the new password is now uncertain, and this config "
-                    + "file no longer necessarily matches it. Recover by hand: force the role back to the known, "
-                    + $"already-public old password over the container's own trusted local socket — docker exec -i "
-                    + $"{PostgresRuntime.ContainerName} psql -U postgres -c \"ALTER ROLE postgres WITH PASSWORD "
-                    + $"'{Hall9kDatabase.LegacyPassword}'\" — then fix {Hall9kDatabase.ConfigFile.EscapeMarkup()} by "
-                    + "hand to match.");
+                    + $"file no longer necessarily matches it. Recover by hand: force the role back to the known, "
+                    + $"already-public old password over the container's own trusted local socket — {recoveryCommand} "
+                    + $"— then fix {Hall9kDatabase.ConfigFile.EscapeMarkup()} by hand to match.");
                 return (connectionString, resolution, true);
             }
         }
