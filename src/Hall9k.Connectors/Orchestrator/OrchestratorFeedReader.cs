@@ -162,8 +162,8 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
             settledThrough: now - OrchestratorFeedSelection.SettlingWindow,
             scanWasCapped: raw.Count >= MaxEventsPerRead,
             (candidate, token) => ScopeOfAsync(session, candidate, resolved, projectId, token),
-            cancellationToken,
-            labels);
+            labels,
+            cancellationToken);
     }
 
     /// <summary>
