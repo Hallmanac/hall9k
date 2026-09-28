@@ -351,11 +351,17 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             // inside an answer to a catch-up request THIS node minted, never on its own say-so — the
             // attack that otherwise needs no interaction at all, where one flush lets any sender
             // pre-empt any origin's dedupe with a huge OriginSequence and freeze that stream on every
-            // node. Looked up once per envelope, never per record, since IsForwardedRecordAdmitted's
-            // own verdict for every record in this batch depends on the identical matched request — and
+            // node. This blanket rule stands aside for a Task or Run act (TaskActClassificationRegistry
+            // has an entry for it) — idea 6be68ee2's own trust-ledger finding 5 gates those on the
+            // sender's own root against the task they target instead, in ApplyAsync below, and needs
+            // no catch-up exchange behind a relay's forwarded delivery to do it (the relayed-genesis
+            // and relay-dropped-hold scenarios EventReplicationTests covers). Looked up once per
+            // envelope, never per record, since IsForwardedRecordAdmitted's own verdict for every
+            // (non-task/run-act) record in this batch depends on the identical matched request — and
             // only when the batch actually needs it, since an ordinary flush (EventReplicationOutbox's
             // own doc: never ships anything but this sender's own native-origin events) never does.
-            bool batchHasForeignOrigin = batch.Any(record => record.OriginNodeId != senderNodeId);
+            bool batchHasForeignOrigin = batch.Any(
+                record => record.OriginNodeId != senderNodeId && !IsTaskOrRunActRecord(record));
             EventCatchUpRequest? matchedForeignOriginRequest =
                 batchHasForeignOrigin && answeredRequestId is { } requestIdForForeignOriginMatch
                     ? await session.Query<EventCatchUpRequest>()
@@ -374,9 +380,10 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             int appliedBeforeThisEnvelope = applied;
             foreach (EventReplicationCodec.ReplicatedEventRecord record in batch)
             {
-                if (!IsForwardedRecordAdmitted(
-                    record, senderNodeId, matchedForeignOriginRequest, trustChain, senderFingerprint,
-                    requestedStreamIdsForForeignOriginMatch, now))
+                if (!IsTaskOrRunActRecord(record)
+                    && !IsForwardedRecordAdmitted(
+                        record, senderNodeId, matchedForeignOriginRequest, trustChain, senderFingerprint,
+                        requestedStreamIdsForForeignOriginMatch, now))
                 {
                     // Never stored under the claimed OriginEventId: recording a ReplicatedEventRecord
                     // there would let a forger pre-empt the genuine event's own future dedupe the
@@ -1537,6 +1544,24 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     }
 
     /// <summary>
+    /// Whether <paramref name="record"/> is a Task or Run act — one of
+    /// <see cref="TaskActClassificationRegistry"/>'s own entries — rather than the kind of generic
+    /// project-scoped event <see cref="IsForwardedRecordAdmitted"/> was written to police (idea
+    /// 6be68ee2, trust-ledger finding 5 versus findings 4 and 7). A Task or Run act judges a forwarded
+    /// delivery against the task it targets and the sender's own root in <c>ApplyAsync</c> itself —
+    /// <see cref="EvaluateTaskActVerdict"/>'s own Allowed/Held/DroppedWithoutRecording/
+    /// DroppedAndRefusedPermanently verdicts — and must reach that gate even with no catch-up request
+    /// behind it: the ordinary shape of a relay simply forwarding a teammate's own draft or claim,
+    /// which <see cref="IsForwardedRecordAdmitted"/> alone would otherwise refuse outright for lack of
+    /// one, permanently losing a genuine act the classification gate would have held or admitted on
+    /// its own merits. An unresolvable event type name is never a Task or Run act — <c>ApplyAsync</c>
+    /// itself drops it with its own warning either way.
+    /// </summary>
+    private static bool IsTaskOrRunActRecord(EventReplicationCodec.ReplicatedEventRecord record) =>
+        ReplicationEventTypeCatalog.Resolve(record.EventTypeName) is { } eventType
+            && TaskActClassificationRegistry.TryClassificationOf(eventType) is not null;
+
+    /// <summary>
     /// A verified sender fingerprint (idea 6be68ee2, trust-ledger findings 1, 5, and 6), resolved
     /// once against the whole project trust chain — <see cref="RootFingerprint"/> and
     /// <see cref="Role"/> are the sender's own root's; <see cref="FleetNodeIds"/> is that root's
@@ -1944,8 +1969,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     /// <summary>
     /// Queues <paramref name="record"/> in <see cref="HeldTaskActRecord"/>, upsert-avoiding exactly
     /// as <see cref="HeldReplicatedEventRecord"/>'s own doc describes: a row already there for this
-    /// exact origin event id is left untouched (its original <see cref="HeldTaskActRecord.HeldAt"/>
-    /// is what the 24-hour expiry measures from) rather than stored over, whether this call arrives
+    /// exact origin event id keeps its original <see cref="HeldTaskActRecord.HeldAt"/> (what the
+    /// 24-hour expiry measures from) rather than being stored over, whether this call arrives
     /// because a peer redelivered the identical record or because <see cref="ReCheckHeldTaskActsAsync"/>
     /// re-evaluated it and found it still held. <paramref name="taskActCatchUpAskTaskIdsThisRead"/> is
     /// null for a record queued only because an EARLIER same-origin record already holds this stream
@@ -1957,14 +1982,41 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     /// <paramref name="projectId"/> across two real installs, and every reader of this table —
     /// <see cref="ApplyAsync"/>'s own "earlier held for this origin" check and
     /// <see cref="ReCheckHeldTaskActsAsync"/> alike — filters and re-applies by this node's own id.
+    /// <para>
+    /// An existing row's sender IS updated, though, when this call's own <paramref name="senderNodeId"/>
+    /// is the record's true origin delivering directly (<c>senderNodeId == record.OriginNodeId</c>) and
+    /// the stored row still cites some other, weaker sender — a relay's earlier forwarding of the
+    /// identical origin event, held under the relay's own node id because that was the only sender
+    /// known when it queued. Left un-updated, <see cref="ReCheckHeldTaskActsAsync"/> re-judges this
+    /// record only once every held record ahead of it in the same origin/stream queue has cleared, and
+    /// does so against the STORED sender, never the origin: a stale relay sender that was never
+    /// authorized for this task keeps re-evaluating to <see cref="TaskActVerdict.DroppedWithoutRecording"/>
+    /// forever, even though the true origin already proved its own legitimacy by delivering this exact
+    /// record directly — reaching the queue-losing outcome
+    /// <see cref="ApplyAsync"/>'s own stale-hold cleanup (just ahead of this method's own call sites)
+    /// exists to prevent, for a second or later queued act whose own direct redelivery races ahead of
+    /// the first's (independent pre-PR review, cycle 6, conformance lens, high). The reverse direction —
+    /// overwriting an already-direct sender with a later relay's weaker one — is deliberately never done:
+    /// a relay is never more authoritative than the origin it is relaying for.
+    /// </para>
     /// </summary>
     private static async Task HoldTaskActAsync(
         IDocumentSession session, EventReplicationCodec.ReplicatedEventRecord record, Guid streamId, Guid taskId,
         Guid projectId, Guid senderNodeId, string? senderFingerprint, string? originProjectKey, DateTimeOffset now,
         HashSet<Guid>? taskActCatchUpAskTaskIdsThisRead, CancellationToken cancellationToken)
     {
-        if (await session.LoadAsync<HeldTaskActRecord>(record.OriginEventId, cancellationToken) is not null)
+        HeldTaskActRecord? existing = await session.LoadAsync<HeldTaskActRecord>(record.OriginEventId, cancellationToken);
+        if (existing is not null)
         {
+            if (senderNodeId == record.OriginNodeId && existing.SenderNodeId != record.OriginNodeId)
+            {
+                existing.SenderNodeId = senderNodeId;
+                existing.SenderFingerprint = senderFingerprint;
+                existing.OriginProjectKey = originProjectKey;
+                session.Store(existing);
+                await session.SaveChangesAsync(cancellationToken);
+            }
+
             return;
         }
 
