@@ -26,6 +26,15 @@ public sealed record QaEndToEndOutcome
     /// <summary>This project has no end-to-end tests to run, so nothing was observed either way.</summary>
     public static readonly QaEndToEndOutcome Absent = new("absent");
 
+    /// <summary>
+    /// This project's verify gate set has changed and is not yet accepted on this node (security
+    /// review idea 6be68ee2, process-injection finding 1, the local half), so the QA review
+    /// prompt withheld the gate commands and told the session not to run them, or to invent a
+    /// substitute, itself — a different fact from <see cref="Absent"/>: the project has tests,
+    /// this node simply could not hand the session a vetted command to run them with.
+    /// </summary>
+    public static readonly QaEndToEndOutcome Unaccepted = new("unaccepted");
+
     /// <summary>The session never answered — no marker, or a word nobody could read. Serializes as the empty string.</summary>
     public static readonly QaEndToEndOutcome Unstated = new("");
 
@@ -42,6 +51,7 @@ public sealed record QaEndToEndOutcome
         "pass" or "passed" or "passing" => Pass,
         "fail" or "failed" or "failing" => Fail,
         "absent" or "none" => Absent,
+        "unaccepted" => Unaccepted,
         _ => Unstated,
     };
 
@@ -50,7 +60,10 @@ public sealed record QaEndToEndOutcome
         this == Pass ? "ran on the review worktree and passed"
         : this == Fail ? "ran on the review worktree and failed; the evidence is in the report below"
         : this == Absent ? "this project has none to run, so nothing was observed"
-        : "not reported by this session";
+        : this == Unaccepted
+            ? "not run — this project's verify gate set is unaccepted on this node, so no command "
+              + "could be handed to the session"
+            : "not reported by this session";
 
     public static implicit operator string(QaEndToEndOutcome? value) => value?.Value ?? string.Empty;
 

@@ -1,5 +1,13 @@
 ===tests-heading===
 ## Run the end-to-end tests
+===tests-unaccepted===
+This project's verify gate set has changed and has not yet been accepted on this node, so its commands are not listed here — do not run them yourself, and do not invent a substitute command of your own to stand in for them. The platform's own verification holds at gate entry until this node's operator accepts the current set (`h9k project accept-gates`).
+
+Report the end-to-end outcome on a line of exactly this shape, once, in the section your report puts the map's evidence in:
+
+    {{EndToEndMarker}} {{UnacceptedWord}}
+
+That is the honest answer here: nothing was run, and it is not the same claim as this project having no end-to-end tests at all — say so in prose next to the map's evidence rather than leaving the marker to speak for itself.
 ===tests-intro===
 Run this project's end-to-end tests in this worktree, for real. This is the one part of the review that is not reading, and it is the part a human cannot cheaply repeat.
 

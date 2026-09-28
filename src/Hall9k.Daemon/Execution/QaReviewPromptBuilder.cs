@@ -188,38 +188,55 @@ public static class QaReviewPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "tests-heading"));
         prompt.AppendLine();
-        AppendFragment(prompt, file, "tests-intro");
-        prompt.AppendLine();
-        if (project.VerifyCommands.Count > 0)
+        // A node runs a project's verify gates only after its own operator has accepted that
+        // exact gate set (security review idea 6be68ee2, process-injection finding 1, the local
+        // half) — this is the one review session told to run the suite for real, so handing it an
+        // unaccepted command would be the same leak AppendGateLines exists to close, and worse
+        // here: this session runs the command itself rather than only reading it (independent
+        // pre-PR review of 6edacfa3, this task's C1).
+        if (project.VerifyCommands.Count > 0
+            && !GateSetAcceptance.Decide(project.AcceptedVerifyCommands, project.VerifyCommands).Proceed)
         {
-            AppendFragment(prompt, file, "tests-gates");
-            prompt.AppendLine();
-            foreach (VerifyCommand gate in project.VerifyCommands)
-            {
-                AppendGateLine(prompt, file, gate);
-            }
+            AppendFragment(
+                prompt, file, "tests-unaccepted",
+                ("EndToEndMarker", ReviewResultParser.EndToEndMarker),
+                ("UnacceptedWord", QaEndToEndOutcome.Unaccepted.Value));
         }
         else
         {
-            AppendFragment(prompt, file, "tests-no-gates");
-        }
+            AppendFragment(prompt, file, "tests-intro");
+            prompt.AppendLine();
+            if (project.VerifyCommands.Count > 0)
+            {
+                AppendFragment(prompt, file, "tests-gates");
+                prompt.AppendLine();
+                foreach (VerifyCommand gate in project.VerifyCommands)
+                {
+                    AppendGateLine(prompt, file, gate);
+                }
+            }
+            else
+            {
+                AppendFragment(prompt, file, "tests-no-gates");
+            }
 
-        prompt.AppendLine();
-        AppendFragment(
-            prompt, file, "tests-report",
-            ("EndToEndMarker", ReviewResultParser.EndToEndMarker),
-            // A choice placeholder rather than the three real lines the drift question uses, and
-            // composed from the words themselves so it cannot drift from them: a session that
-            // quotes its instructions and then never answers would otherwise have the last of
-            // three echoed marker lines read as an observation nobody made — and the worst of
-            // the three to fabricate is "this project has no end-to-end tests".
-            ("OutcomeChoices",
-                $"<{QaEndToEndOutcome.Pass.Value}|{QaEndToEndOutcome.Fail.Value}|{QaEndToEndOutcome.Absent.Value}>"),
-            ("PassWord", QaEndToEndOutcome.Pass.Value),
-            ("FailWord", QaEndToEndOutcome.Fail.Value),
-            ("AbsentWord", QaEndToEndOutcome.Absent.Value));
-        prompt.AppendLine();
-        AppendFragment(prompt, file, "tests-evidence", ("BaseRef", baseBranch));
+            prompt.AppendLine();
+            AppendFragment(
+                prompt, file, "tests-report",
+                ("EndToEndMarker", ReviewResultParser.EndToEndMarker),
+                // A choice placeholder rather than the three real lines the drift question uses,
+                // and composed from the words themselves so it cannot drift from them: a session
+                // that quotes its instructions and then never answers would otherwise have the
+                // last of three echoed marker lines read as an observation nobody made — and the
+                // worst of the three to fabricate is "this project has no end-to-end tests".
+                ("OutcomeChoices",
+                    $"<{QaEndToEndOutcome.Pass.Value}|{QaEndToEndOutcome.Fail.Value}|{QaEndToEndOutcome.Absent.Value}>"),
+                ("PassWord", QaEndToEndOutcome.Pass.Value),
+                ("FailWord", QaEndToEndOutcome.Fail.Value),
+                ("AbsentWord", QaEndToEndOutcome.Absent.Value));
+            prompt.AppendLine();
+            AppendFragment(prompt, file, "tests-evidence", ("BaseRef", baseBranch));
+        }
 
         prompt.AppendLine();
         AppendDriveSection(prompt, file, drive, runSkill);
