@@ -206,6 +206,22 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
                     await AboutTaskAsync(session, received, projectId, cancellationToken));
         }
 
+        // A root-key rotation's own stream (idea 6be68ee2, PR B) belongs to no project either —
+        // it is keyed by owner root and promoted node id (RootRotationStreamId.For), never a
+        // project, task, idea, or epic stream ReplicationProjectResolver below could ever resolve.
+        // The event itself carries the project id directly, the identical shape MessageReceived's
+        // own arm above already uses, with no task to name.
+        if (candidate.Data is RootRotationObserved or RootRotationRevoked)
+        {
+            Guid rotationProjectId = candidate.Data switch
+            {
+                RootRotationObserved observed => observed.ProjectId,
+                RootRotationRevoked revoked => revoked.ProjectId,
+                _ => throw new InvalidOperationException("Unreachable: candidate.Data matched neither rotation type."),
+            };
+            return new OrchestratorFeedScope(rotationProjectId, null);
+        }
+
         if (!resolved.TryGetValue(candidate.StreamId, out ReplicationOwnership? owner))
         {
             owner = await ownership.ResolveAsync(session, candidate.StreamId, cancellationToken);

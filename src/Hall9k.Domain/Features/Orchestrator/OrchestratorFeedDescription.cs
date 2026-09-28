@@ -93,6 +93,14 @@ public static class OrchestratorFeedDescription
             // ─── A message from a person or another node's window ──────────────────────────────────
             MessageReceived received => MessageLine(received, labels),
 
+            // ─── A root-key rotation landed on, or was voided from, a project's own ledger ──────────
+            RootRotationObserved observed => $"root key rotated by {NodeLine(observed.PromotedNodeId, labels)}",
+            RootRotationRevoked revoked when revoked.RevokedByNodeId is { } revokedBy =>
+                $"rotation by {NodeLine(revoked.PromotedNodeId, labels)} revoked by an earlier root key "
+                + $"({NodeLine(revokedBy, labels)})",
+            RootRotationRevoked revoked =>
+                $"rotation by {NodeLine(revoked.PromotedNodeId, labels)} revoked by an earlier root key",
+
             // ─── Task state changes ────────────────────────────────────────────────────────────────
             TaskPublished => "published and ready to assign",
             // A claim a person made by hand (h9k task work, h9k task start) carries Guid.Empty as its
