@@ -289,9 +289,11 @@ public sealed class ProcessManagerParityTests : IDisposable
     /// snapshot ran at all), too generous a load and it could still lose. Operator retry note
     /// (2026-09-08): the gate saw exactly that — an empty lingering list either way. This test
     /// instead subscribes to <see cref="ProcessManagerBase.DescendantsSnapshotted"/>, a test-only
-    /// seam fired the instant <c>TerminateTree</c> finishes its own snapshot, and only kills the
-    /// root once that event has actually fired — synchronizing against the real ordering
-    /// <c>TerminateTree</c> guarantees internally rather than approximating it with a sleep.
+    /// seam fired the instant <c>TerminateTree</c> finishes its own snapshot, carrying that exact
+    /// snapshot, and only kills the root once that snapshot is confirmed to actually contain the
+    /// nested child — synchronizing against the real data <c>TerminateTree</c> captured
+    /// internally rather than approximating it with a sleep or with a separate, independent call
+    /// of its own (independent pre-PR review, cycle 4, both lenses).
     /// </para>
     /// </summary>
     [Fact]
@@ -307,9 +309,20 @@ public sealed class ProcessManagerParityTests : IDisposable
         _processManager.IsAlive(nestedChildProcessId, nestedChildStartedAt).Should().BeTrue(
             "the background child has to actually be running before this proves anything by finding and killing it");
 
+        // A separate, earlier call to SnapshotDescendants proves nothing about whether
+        // TerminateTree's OWN later enumeration also finds the nested child: each is an
+        // independent shell-out (pgrep -P on Unix, a fresh PowerShell Get-CimInstance
+        // Win32_Process query on Windows), and one succeeding is no guarantee the next, separate
+        // one will too (independent pre-PR review, cycle 4, both lenses). WindowsProcessManager
+        // retries that query once before giving up on it (independent pre-PR review, cycle 3,
+        // conformance lens), but this test still asserts on the snapshot TerminateTree itself
+        // actually captured, via DescendantsSnapshotted, rather than predicting it from a proxy
+        // call.
         ProcessManagerBase processManagerBase = (ProcessManagerBase)_processManager;
-        TaskCompletionSource descendantsSnapshotted = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        void OnDescendantsSnapshotted() => descendantsSnapshotted.TrySetResult();
+        TaskCompletionSource<IReadOnlyList<(int Id, DateTimeOffset StartedAt)>> descendantsSnapshotted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnDescendantsSnapshotted(IReadOnlyList<(int Id, DateTimeOffset StartedAt)> snapshot) =>
+            descendantsSnapshotted.TrySetResult(snapshot);
         processManagerBase.DescendantsSnapshotted += OnDescendantsSnapshotted;
 
         Task<IReadOnlyList<int>> terminateTreeTask;
@@ -320,6 +333,10 @@ public sealed class ProcessManagerParityTests : IDisposable
             Task completedTask = await Task.WhenAny(descendantsSnapshotted.Task, Task.Delay(ObservationDeadline));
             completedTask.Should().Be(descendantsSnapshotted.Task,
                 "TerminateTree has to actually reach its own descendant snapshot before this test can deterministically kill the root out from under it");
+
+            IReadOnlyList<(int Id, DateTimeOffset StartedAt)> snapshot = await descendantsSnapshotted.Task;
+            snapshot.Should().Contain(descendant => descendant.Id == nestedChildProcessId,
+                "TerminateTree can only individually kill a reparented descendant it actually captured in its own snapshot — proving the reparenting pathology needs THIS snapshot, not an earlier proxy call, to have found it before the race begins");
 
             using Process rootProcess = Process.GetProcessById(spawned.ProcessId);
             rootProcess.Kill(entireProcessTree: false);
