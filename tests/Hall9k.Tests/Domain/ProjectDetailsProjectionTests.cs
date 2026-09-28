@@ -102,6 +102,38 @@ public sealed class ProjectDetailsProjectionTests
             "Terse. British spelling.", "a change that says nothing about them leaves them alone");
     }
 
+    /// <summary>
+    /// AcceptedBrokenGate on <see cref="ProjectTeamSettingsChanged"/> answers a different question
+    /// entirely (task: a verify gate that cannot pass on clean main is caught before it costs a
+    /// run — whether the operator acknowledged a gate failing against a clean checkout) from this
+    /// node's own gate-set acceptance (security review idea 6be68ee2, process-injection finding
+    /// 1): a project set carrying VerifyCommands and AcceptedBrokenGate: true still leaves
+    /// AcceptedVerifyCommands untouched, so GateSetAcceptance.Decide still holds it until
+    /// h9k project accept-gates (or the same-call ProjectGateSetAccepted ProjectSetCommand
+    /// actually appends) records one.
+    /// </summary>
+    [Fact]
+    public void AcceptedBrokenGate_inside_team_settings_changed_is_not_gate_set_acceptance()
+    {
+        ProjectDetailsProjection projection = new();
+        Guid id = DomainId.New();
+
+        ProjectDetails view = projection.Create(new FakeEvent<ProjectRegistered>(new ProjectRegistered(
+            id, DomainId.New(), DomainId.New(), "hall9k", "/repos/hall9k.git", null, "main", Now)));
+
+        IReadOnlyList<VerifyCommand> gates = [new("build", "dotnet build"), new("test", "dotnet test")];
+        projection.Apply(new FakeEvent<ProjectTeamSettingsChanged>(new ProjectTeamSettingsChanged(
+            id, Now.AddMinutes(1), DomainId.New(),
+            VerifyCommands: Optional<IReadOnlyList<VerifyCommand>>.Of(gates),
+            AcceptedBrokenGate: true)), view);
+
+        view.VerifyCommands.Should().Equal(gates);
+        view.AcceptedVerifyCommands.Should().BeNull(
+            "AcceptedBrokenGate acknowledges a gate that fails against a clean checkout, not this "
+            + "node's own vetting of the gate set");
+        GateSetAcceptance.Decide(view.AcceptedVerifyCommands, view.VerifyCommands).Proceed.Should().BeFalse();
+    }
+
     [Fact]
     public void Commit_style_defaults_to_unknown_and_survives_updates_that_leave_it_absent()
     {

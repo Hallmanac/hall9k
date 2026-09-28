@@ -31,6 +31,15 @@ public sealed class NodeDetails
     public long? ReplicationSwitchOnSequence { get; set; }
 
     /// <summary>
+    /// When this node's own one-time gate-set-acceptance baseline ran (security review idea
+    /// 6be68ee2, process-injection finding 1); null before it ever has. The daemon's startup sweep
+    /// reads this, not per-project state, to decide whether the baseline is still owed — a project
+    /// with nothing accepted yet is ambiguous on its own between "here before the baseline ran"
+    /// and "joined afterward", and only this marker tells the two apart.
+    /// </summary>
+    public DateTimeOffset? GateAcceptanceBaselinedAt { get; set; }
+
+    /// <summary>
     /// Mirrors <see cref="NodeAggregate.LaunchHoldActive"/> (task: a session that exits at once
     /// with no work done is treated as the node failing to launch sessions) — read by the
     /// dispatcher's claim gate, the in-place session-error retries, and both CLI surfaces, all of
@@ -129,5 +138,10 @@ public sealed partial class NodeDetailsProjection : SingleStreamProjection<NodeD
     public void Apply(IEvent<ReplicationSwitchedOn> @event, NodeDetails view)
     {
         view.ReplicationSwitchOnSequence = @event.Data.SwitchOnGlobalSequence;
+    }
+
+    public void Apply(IEvent<ProjectGateAcceptanceBaselined> @event, NodeDetails view)
+    {
+        view.GateAcceptanceBaselinedAt = @event.Data.BaselinedAt;
     }
 }

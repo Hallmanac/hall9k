@@ -171,6 +171,22 @@ public sealed class ProjectDetails
     /// </summary>
     public ProjectHome HomeDirectory { get; set; } = ProjectHome.None;
     public List<VerifyCommand> VerifyCommands { get; set; } = [];
+    /// <summary>
+    /// The gate set this node's own operator last accepted (security review idea 6be68ee2,
+    /// process-injection finding 1, the local half) — null when nothing has ever been accepted
+    /// here, which is never the same as an accepted empty list:
+    /// <see cref="GateSetAcceptance.Decide"/> reads null as "nothing to compare against", so a
+    /// project's very first non-empty gate set still holds until it is accepted at least once, and
+    /// a genuinely accepted empty list (a project baselined or accepted while it had no gates
+    /// configured) compares equal to itself but never masks a later replicated gate arriving.
+    /// Node-scoped: <see cref="Events.ProjectGateSetAccepted"/> never replicates, so this field is
+    /// this install's own record and nothing else's.
+    /// </summary>
+    public List<VerifyCommand>? AcceptedVerifyCommands { get; set; }
+    /// <summary>The operator (by this node's own owner id) whose <c>h9k project accept-gates</c>, local <c>--verify</c> change, or startup baseline last recorded <see cref="AcceptedVerifyCommands"/>.</summary>
+    public Guid? GateSetAcceptedByOwnerId { get; set; }
+    /// <summary>When <see cref="AcceptedVerifyCommands"/> was last recorded.</summary>
+    public DateTimeOffset? GateSetAcceptedAt { get; set; }
     public List<ContextLink> ContextLinks { get; set; } = [];
     /// <summary>This project's launch text, one per agent CLI (task: an operator starts a lean orchestrator window).</summary>
     public List<LaunchText> LaunchTexts { get; set; } = [];
@@ -487,6 +503,19 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;
+    }
+
+    /// <summary>
+    /// This node's own record of a gate set it just vetted (security review idea 6be68ee2,
+    /// process-injection finding 1). No stamp gate: unlike the team-scoped fields above, this
+    /// event never replicates in — every append is this node's own, in this node's own stream
+    /// order, so the last one applied is simply the last one that happened.
+    /// </summary>
+    public void Apply(IEvent<ProjectGateSetAccepted> @event, ProjectDetails view)
+    {
+        view.AcceptedVerifyCommands = [.. @event.Data.VerifyCommands];
+        view.GateSetAcceptedByOwnerId = @event.Data.AcceptedByOwnerId;
+        view.GateSetAcceptedAt = @event.Data.AcceptedAt;
     }
 
     /// <summary>Mirrors <see cref="ProjectAggregate.Apply(Events.ProjectTeamSettingsChanged)"/>.</summary>

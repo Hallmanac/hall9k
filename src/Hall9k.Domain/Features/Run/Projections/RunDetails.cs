@@ -145,6 +145,17 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// <c>TaskPhaseComposer</c> can show the wait as this run's own phase rather than as silence.
     /// </summary>
     public DateTimeOffset? HostCoupledGateWaitStartedAt { get; set; }
+    /// <summary>
+    /// When this run started waiting because the fingerprint of the gates it captured at entry does
+    /// not match what this node has accepted for the project (security review idea 6be68ee2,
+    /// process-injection finding 1, the local half), or null when it is not waiting. Set by
+    /// <see cref="Events.RunGateSetAcceptanceWaitStarted"/>, cleared by
+    /// <see cref="Events.RunGateSetAcceptanceWaitEnded"/> — the identical start/clear shape
+    /// <see cref="HostCoupledGateWaitStartedAt"/> carries, so <c>TaskPhaseComposer</c> shows this
+    /// wait as the run's own phase too, and <c>AttentionComposer</c> shows it as needs-you, since
+    /// unlike the host-coupled-gate permit wait nothing here resolves it but an operator.
+    /// </summary>
+    public DateTimeOffset? GateSetAcceptanceWaitStartedAt { get; set; }
     public string? PullRequestUrl { get; set; }
     public int? PullRequestNumber { get; set; }
     /// <summary>
@@ -1232,6 +1243,12 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         // it here, in the projection, makes the fact permanent rather than a read-time bypass
         // that only holds as long as this exact gate is still active.
         view.HostCoupledGateWaitStartedAt = null;
+
+        // A gate cannot start spawning until a pending gate-set-acceptance wait for THIS run has
+        // already resolved either — VerificationRunner waits at gate entry, before any gate in the
+        // loop ever runs — so GateStarted is the identical concrete proof for this wait that it
+        // already is for HostCoupledGateWaitStartedAt just above, for the identical reason.
+        view.GateSetAcceptanceWaitStartedAt = null;
     }
 
     public void Apply(IEvent<GateEnded> @event, RunDetails view) => view.ActiveGate = null;
@@ -1241,6 +1258,12 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
 
     public void Apply(IEvent<RunHostCoupledGateWaitEnded> @event, RunDetails view) =>
         view.HostCoupledGateWaitStartedAt = null;
+
+    public void Apply(IEvent<RunGateSetAcceptanceWaitStarted> @event, RunDetails view) =>
+        view.GateSetAcceptanceWaitStartedAt = @event.Data.StartedAt;
+
+    public void Apply(IEvent<RunGateSetAcceptanceWaitEnded> @event, RunDetails view) =>
+        view.GateSetAcceptanceWaitStartedAt = null;
 
     public void Apply(IEvent<ReviewDispatched> @event, RunDetails view)
     {
