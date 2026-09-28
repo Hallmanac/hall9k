@@ -1018,8 +1018,20 @@ public sealed class RunSupervisor(
         TaskDetails? spikeTask = await LoadSpikeTaskAsync(taskId, cancellationToken);
         bool isSpikeTurnBudgetExhausted = result is { IsError: true, Subtype: StreamJsonParser.MaxTurnsResultSubtype }
             && spikeTask is not null;
-        bool isLaunchFailure = !isBudgetExhausted && !isSpikeTurnBudgetExhausted && result.IsError
-            && LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration);
+
+        // A mention follow-up's own hard turn cap (task 7ae690f5, PrReviewMentionFollowUpMaxTurns)
+        // read back the identical honest way the spike branch above already reads its own budget:
+        // off the terminal result's "error_max_turns" subtype, never inferred from Turns crossing
+        // the declared limit. Checked ahead of the ordinary error-result retry branch below
+        // (independent pre-PR review, cycle 1, both lenses): without this, the first max-turns
+        // result fell through to that branch exactly like an unrelated agent error, and
+        // PrimarySessionResumer.ResumeAsync resumed the session with Constraints?.MaxTurns — null
+        // for every mention-minted task — so the retried session ran with no turn limit at all,
+        // the cap doing nothing past its own first spend.
+        bool isMentionFollowUpTurnBudgetExhausted = result is { IsError: true, Subtype: StreamJsonParser.MaxTurnsResultSubtype }
+            && run is { PrReviewMentionCommentId: not null };
+        bool isLaunchFailure = !isBudgetExhausted && !isSpikeTurnBudgetExhausted && !isMentionFollowUpTurnBudgetExhausted
+            && result.IsError && LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration);
 
         // Node-stream bookkeeping, deliberately BEFORE the run-stream transaction below (a
         // different stream) rather than after it: a crash between the two must never leave
@@ -1063,8 +1075,8 @@ public sealed class RunSupervisor(
         // third attempt this leg was never supposed to get, misattributing its own genuine error
         // to the node.
         bool alreadyRetriedBuildLeg = run?.HasRetriedSessionError(RunSessionLeg.Build, cycle: null, lens: null) ?? false;
-        bool holdAlreadyStanding = !isBudgetExhausted && !isSpikeTurnBudgetExhausted && !isLaunchFailure
-            && result.IsError && !alreadyRetriedBuildLeg
+        bool holdAlreadyStanding = !isBudgetExhausted && !isSpikeTurnBudgetExhausted && !isMentionFollowUpTurnBudgetExhausted
+            && !isLaunchFailure && result.IsError && !alreadyRetriedBuildLeg
             && await launchHold.JoinIfActiveAsync(node.NodeId, runId, cancellationToken);
 
         bool willRetryBuildSession;
@@ -1140,6 +1152,18 @@ public sealed class RunSupervisor(
                 // DIFFERENT run's own launch failure already holds this node and resuming here
                 // would only strand this run's one retry on a resume that cannot work yet.
                 session.Events.Append(runId, new RunLaunchHeld(runId, result.Summary ?? "(no message)", now));
+            }
+            else if (isMentionFollowUpTurnBudgetExhausted)
+            {
+                // Ends the run outright rather than spending the ordinary error-result retry on
+                // it: that retry's own resume carries no turn cap of its own for a mention-minted
+                // task (Constraints is null), so letting this fall through would spend the cap
+                // once and then run the resumed session unbounded — the exact defect this branch
+                // exists to close. A capped run ending visibly, not a silent hang or an unbounded
+                // resume, is what RunLauncher's own follow-up dispatch promises.
+                session.Events.Append(runId, new RunFailed(runId, RunDetails.MentionFollowUpTurnBudgetExhausted, now));
+                await AppendFencedTaskFailureAsync(
+                    session, runId, taskId, RunDetails.MentionFollowUpTurnBudgetExhausted, now, cancellationToken);
             }
             else if (result.IsError && run is not null && !alreadyRetriedBuildLeg)
             {
