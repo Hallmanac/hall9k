@@ -226,6 +226,26 @@ public sealed class NodeVouchCommand : Hall9kAsyncCommand<NodeVouchCommand.Setti
                 cancellationToken);
             if (outcome.Verdict == LedgerWriteVerdict.Written)
             {
+                // Written unconditionally, whoever is doing the vouching (idea 6be68ee2): a
+                // successor record only counts on read when it is signed by a key that is already
+                // one of this root's own live keys, so writing it here regardless costs nothing when
+                // this node is merely an ordinary fleet member, and is exactly what lets the root
+                // itself vouch a successor into existence without a separate command. Best-effort:
+                // the vouch itself already landed, so a failure here is reported and swallowed rather
+                // than turning an already-successful vouch into a reported failure.
+                try
+                {
+                    await SuccessionLedgerWriter.WriteSuccessorAsync(
+                        ledger, repositoryPath, root, targetNodeId, targetPublicKey, now, committer, signingKey, cancellationToken);
+                }
+                catch (Exception exception)
+                    when (exception is LedgerPushRejectedException or InvalidOperationException or DomainConflictException)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]Vouched node {targetNodeId}, but could not also write its successor record in "
+                        + $"'{repositoryPath.EscapeMarkup()}' ({exception.Message.EscapeMarkup()}).[/]");
+                }
+
                 return targetFingerprint;
             }
         }

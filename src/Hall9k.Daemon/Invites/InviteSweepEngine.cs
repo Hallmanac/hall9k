@@ -382,6 +382,25 @@ public sealed class InviteSweepEngine(
                     await WriteNodeVouchAsync(
                         project.RepositoryPath, aggregate.MinterOwnerFingerprint, candidate.NodeId,
                         candidate.PublicKeyLine, candidate.KeyFingerprint, issuedAt, committer, signingKey, cancellationToken);
+
+                    // Written unconditionally, whoever holds the minting node's own key (idea
+                    // 6be68ee2): a successor record only counts on read when it is signed by a key
+                    // that is already one of this root's own live keys. Best-effort — the vouch
+                    // itself already landed above — so a failure here is logged and swallowed rather
+                    // than blocking this invite's own spend.
+                    try
+                    {
+                        await SuccessionLedgerWriter.WriteSuccessorAsync(
+                            ledger, project.RepositoryPath, aggregate.MinterOwnerFingerprint, candidate.NodeId, candidate.PublicKeyLine,
+                            issuedAt, committer, signingKey, cancellationToken);
+                    }
+                    catch (Exception exception)
+                        when (exception is LedgerPushRejectedException or InvalidOperationException or DomainConflictException)
+                    {
+                        logger.LogWarning(
+                            exception, "Invite {InviteId} vouched node {NodeId} but could not also write its successor "
+                            + "record in project {ProjectId}; will retry next sweep", aggregate.Id, candidate.NodeId, project.Id);
+                    }
                 }
                 else
                 {
