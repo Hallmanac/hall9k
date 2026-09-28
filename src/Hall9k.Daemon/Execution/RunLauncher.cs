@@ -381,6 +381,27 @@ public sealed class RunLauncher(
             // out between the reopen and this launch would record an un-replayed stacked child as
             // unstacked and disarm its retarget, its replay and the merge-bar guard for good).
             string runBaseBranch = resumedBase?.BaseBranch ?? stackedBase.BaseBranch;
+
+            // resumedBase.BaseBranch is already sanitized by StackedBaseResolver.ResumedBaseAsync,
+            // and a fresh cut's stackedBase.BaseBranch is checked again by
+            // GitWorktreeManager.CreateAsync before it becomes a git argument there — but
+            // runBaseBranch also flows onward into RunDispatched.BaseBranch, into every prompt
+            // this method builds below, and (for a stacked replay) into
+            // StackReplayOntoResolver's own fetch, none of which sit behind either of those two
+            // checks. Refused here, once, at the point this run's own combined answer exists,
+            // rather than trusted because some upstream resolver already looked at one of its two
+            // inputs (security review idea 6be68ee2, process-injection finding 2).
+            if (!GitArgumentValidation.IsLegalBranchName(runBaseBranch, out string? runBaseBranchRefusalReason))
+            {
+                await RecordLaunchFailureAsync(
+                    taskId, runId, leaseGeneration,
+                    $"This run's own base branch '{GitArgumentValidation.Printable(runBaseBranch)}' is not a "
+                    + $"legal branch name ({runBaseBranchRefusalReason}) — refusing to dispatch a session "
+                    + "against it.",
+                    cancellationToken);
+                return;
+            }
+
             if (resumedBase is not null && resumedBase.BaseBranch != stackedBase.BaseBranch)
             {
                 logger.LogInformation(

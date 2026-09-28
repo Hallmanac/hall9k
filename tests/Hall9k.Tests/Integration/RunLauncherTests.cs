@@ -575,6 +575,80 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// Security review idea 6be68ee2, process-injection finding 2: a stacked child's remote parent
+    /// state — <c>RemoteStackedParentObserved.HeadBranch</c> — replicates from another fleet
+    /// node's own closeout sweep, and <see cref="StackedBaseResolver.ResolveRemote"/> hands it
+    /// straight back as this run's own <c>runBaseBranch</c> with no check of its own. This proves
+    /// the check <see cref="RunLauncher.LaunchAsync"/> now runs on that combined value: dispatch is
+    /// refused before either the (fake, non-validating) worktree layer or the executor ever sees
+    /// it, so a hostile value can neither become a git argument nor reach a spawned session.
+    /// </summary>
+    [Theory]
+    [InlineData("+refs/heads/main:refs/heads/injected")]
+    [InlineData("--upload-pack=x")]
+    public async Task A_hostile_remote_stacked_parent_head_branch_never_reaches_the_checkout_or_a_session(
+        string hostileBranch)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const int parentPullRequestNumber = 264;
+        int leaseGeneration;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"hostile-remote-stack-{taskId:N}",
+                "/tmp/hostile-remote-stack-repo", null, "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Stacked on a hostile remote parent", ["done"], TaskType.Chore,
+                    null, null, null, Now, node.OwnerId, stackedOnPullRequestNumber: parentPullRequestNumber),
+                node.OwnerId, Now);
+
+            RemoteStackedParentObserved observed = new(
+                Guid.Empty, parentPullRequestNumber, RemoteParentState.Open, hostileBranch, "abc1234", "main",
+                $"https://github.com/x/y/pull/{parentPullRequestNumber}", null, "opened", Now);
+            task.Apply(observed);
+
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+            task.Apply(claimed);
+            leaseGeneration = task.LeaseGeneration;
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, observed, claimed]);
+
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = leaseGeneration, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        NotMergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, leaseGeneration, cts.Token);
+
+        executor.Request.Should().BeNull("an illegal base branch must never reach a spawned session");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        details.State.Value.Should().Be("Failed");
+        details.FailureReason.Should().Contain("is not a legal branch name",
+            "the checkout's own fake never validates a branch, so only RunLauncher's own explicit check explains this failure");
+    }
+
+    /// <summary>
     /// The seed for a follow-up run's own opening Discovery cycle (task: a lap reviews only what it
     /// changed): a ReviewFeedback reopen's own recorded pull request head lands on the follow-up
     /// run's own RunDispatched, forwarded verbatim from TaskAggregate.FollowUpPullRequestHeadSha —
