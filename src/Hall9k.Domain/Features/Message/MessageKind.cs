@@ -88,6 +88,26 @@ public sealed record MessageKind
     /// </summary>
     public static readonly MessageKind ClaimRefused = new("claim-refused");
 
+    /// <summary>
+    /// A non-root node's own mint asks the node holding its owner's highest-ranked live root key to
+    /// perform the one write idea 1bb803e1 restricts to a root key — a member's own
+    /// <c>members/&lt;fingerprint&gt;.yaml</c> vouch — rather than writing it locally (idea 6be68ee2,
+    /// companion 1bb803e1: "minting is a request, not a local capability"). The body is a JSON
+    /// <see cref="OwnerActEnvelopeCodec.OwnerActRequestRecord"/> naming the invite, the candidate
+    /// member, its role, and the <c>issued_at</c> the write must carry. Addressed to the holder's own
+    /// node (<see cref="MessageAudience.Node"/>) so only that node ever reacts to it.
+    /// </summary>
+    public static readonly MessageKind OwnerActRequest = new("owner-act-request");
+
+    /// <summary>
+    /// The root's own answer to an <see cref="OwnerActRequest"/> — the body is a JSON
+    /// <see cref="OwnerActEnvelopeCodec.OwnerActOutcomeRecord"/> naming the invite and one of four
+    /// verdicts: the write landed (naming the commit), a member-role write was auto-performed but an
+    /// owner-role one is held for the root's own human to approve, the request was refused, or it
+    /// expired before anyone acted on it.
+    /// </summary>
+    public static readonly MessageKind OwnerActOutcome = new("owner-act-outcome");
+
     public string Value { get; }
 
     private MessageKind(string value) => Value = value;
@@ -103,6 +123,8 @@ public sealed record MessageKind
         "claim-request" => ClaimRequest,
         "claim-granted" => ClaimGranted,
         "claim-refused" => ClaimRefused,
+        "owner-act-request" => OwnerActRequest,
+        "owner-act-outcome" => OwnerActOutcome,
         _ => new MessageKind(raw),
     };
 
@@ -111,7 +133,8 @@ public sealed record MessageKind
     public bool IsRecognized =>
         this == Note || this == Events || this == EventsRequest || this == EventsUnavailable
         || this == EventsAnswerComplete || this == Handoff
-        || this == ClaimRequest || this == ClaimGranted || this == ClaimRefused;
+        || this == ClaimRequest || this == ClaimGranted || this == ClaimRefused
+        || this == OwnerActRequest || this == OwnerActOutcome;
 
     /// <summary>
     /// Every kind the replication and catch-up readers own outright: read by
@@ -133,7 +156,8 @@ public sealed record MessageKind
     /// already skip a kind that is never stored at all. A plain string array, not a computed
     /// property, so a caller's own Marten query can push it down as a SQL <c>IN</c> list.
     /// </summary>
-    public static readonly IReadOnlyList<string> MechanicalKindValues = [ClaimRequest.Value, ClaimGranted.Value, ClaimRefused.Value];
+    public static readonly IReadOnlyList<string> MechanicalKindValues =
+        [ClaimRequest.Value, ClaimGranted.Value, ClaimRefused.Value, OwnerActRequest.Value, OwnerActOutcome.Value];
 
     public override string ToString() => Value;
 }
