@@ -5,6 +5,7 @@ using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Run;
@@ -907,39 +908,55 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // project LIFECYCLE event specifically (ProjectStreamReplicationRules.IsProjectLifecycleEvent
         // — the one family that keeps record.StreamId raw above and skips the genesis requirement
         // below, since a teammate's own archive/rename/purge decision about THEIR install is meant
-        // to phantom-stream under their own foreign coordinate) may never land on THIS node's own
-        // real, registered Project stream: without this, a member who has merely learned this node's
-        // own local project id from an earlier replicated lifecycle event could address a forged
-        // ProjectPurgeScheduled straight at it. Skipped for a stream this read already started
-        // itself — streamsStartedThisRead's own membership already means an earlier record in this
-        // same read passed this identical gate for it, so a later record for the SAME stream (two
-        // lifecycle events for one still-fresh phantom stream in one batch, say) counts as this
-        // project's own without paying for the query again — and skipped for
-        // mergesOntoLocalProjectStream, whose effectiveStreamId is always projectId by construction
-        // and is never what this guard is checking. Runs before the Task/Run act gate just below, so
-        // a record whose own target stream belongs to another project is refused on that ground
-        // alone, whatever its own event type — a foreign stream's act is never this gate's to judge.
+        // to phantom-stream under their own foreign coordinate) may never land on ANY Project stream
+        // this node itself registered (a ProjectRegistered genesis of its own) — not only the one
+        // this read happens to be scoped to: a member of two projects this node hosts could otherwise
+        // learn the sibling project's own local id from ITS replicated lifecycle events and forge a
+        // ProjectPurgeScheduled at that id instead, through the first project's own outbox
+        // (independent pre-PR review, cycle 1, both lenses, high — the earlier build here only
+        // compared against this read's own projectId). A NON-lifecycle event (Task, Idea, Epic, Run)
+        // whose stream resolves as a Project stream at all — this read's own, a sibling's, or a
+        // still-phantom one — is refused outright: none of those events ever legitimately belongs on
+        // a Project aggregate's own stream (independent pre-PR review, cycle 1, both lenses, medium).
+        // Skipped for a stream this read already started itself — streamsStartedThisRead's own
+        // membership already means an earlier record in this same read passed this identical gate for
+        // it, so a later record for the SAME stream (two lifecycle events for one still-fresh phantom
+        // stream in one batch, say) counts as cleared without paying for the query again — and
+        // skipped for mergesOntoLocalProjectStream, whose effectiveStreamId is always projectId by
+        // construction and is never what this guard is checking. Runs before the Task/Run act gate
+        // just below, so a record whose own target stream belongs to another project is refused on
+        // that ground alone, whatever its own event type — a foreign stream's act is never this
+        // gate's to judge.
         if (streamExists && !streamsStartedThisRead.Contains(effectiveStreamId) && !mergesOntoLocalProjectStream)
         {
             ReplicationOwnership existingOwnership =
                 await projectResolver.ResolveAsync(session, effectiveStreamId, cancellationToken);
-            bool targetsReceiversOwnProjectStream =
-                existingOwnership.IsProjectStreamItself && existingOwnership.ProjectId == projectId;
-            bool crossesIntoAnotherProject = !existingOwnership.IsProjectStreamItself
-                && existingOwnership.ProjectId is { } existingProjectId && existingProjectId != projectId;
-            bool refuseAsLifecycleOntoOwnProject =
-                targetsReceiversOwnProjectStream && ProjectStreamReplicationRules.IsProjectLifecycleEvent(eventType);
 
-            if (refuseAsLifecycleOntoOwnProject || crossesIntoAnotherProject)
+            // A null ProjectId (an owner-scoped Decision/Learning stream, or a Run whose own task
+            // no longer resolves) never equals this read's own project either — treated the same as
+            // any other foreign project rather than tolerated as a pass-through (independent pre-PR
+            // review, cycle 1, adversarial lens: the earlier `is { } existingProjectId` pattern only
+            // ever compared a non-null id, so a null one slipped past both branches unchecked).
+            bool crossesIntoAnotherProject =
+                !existingOwnership.IsProjectStreamItself && existingOwnership.ProjectId != projectId;
+            bool isLifecycleEvent = ProjectStreamReplicationRules.IsProjectLifecycleEvent(eventType);
+            bool refuseAsNonLifecycleOntoProjectStream =
+                existingOwnership.IsProjectStreamItself && !isLifecycleEvent;
+            bool refuseAsLifecycleOntoRegisteredProject = existingOwnership.IsProjectStreamItself && isLifecycleEvent
+                && await IsGenesisRegisteredProjectStreamAsync(session, effectiveStreamId, cancellationToken);
+
+            if (crossesIntoAnotherProject || refuseAsNonLifecycleOntoProjectStream || refuseAsLifecycleOntoRegisteredProject)
             {
                 logger?.LogWarning(
                     "Replicated event {OriginEventId} (origin {OriginNodeId}) of type {EventType} from sender "
                     + "{SenderNodeId} targets stream {StreamId}, which {Reason} — refused, never applied",
                     record.OriginEventId, record.OriginNodeId, record.EventTypeName, senderNodeId, effectiveStreamId,
-                    refuseAsLifecycleOntoOwnProject
-                        ? "resolves as this node's own registered project stream, never a legitimate target "
+                    refuseAsLifecycleOntoRegisteredProject
+                        ? "resolves as a Project stream this node itself registered, never a legitimate target "
                           + "for a project lifecycle event"
-                        : "belongs to a different project than the one this read is scoped to");
+                        : refuseAsNonLifecycleOntoProjectStream
+                            ? "resolves as a Project aggregate's own stream, never a legitimate target for this event type"
+                            : "belongs to a different project than the one this read is scoped to");
                 session.Store(new ReplicatedEventRecord
                 {
                     Id = record.OriginEventId,
@@ -2439,6 +2456,24 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         }
 
         return applied;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="streamId"/>'s own genesis event — the one at stream version 1 — is
+    /// <see cref="ProjectRegistered"/>, the only fact that tells a Project stream this node itself
+    /// registered (<c>ProjectAddCommand</c>) apart from a phantom row Marten happily creates for a
+    /// teammate's foreign lifecycle event with no <c>Create</c> handler of its own to match
+    /// (<see cref="ProjectDetailsProjection"/> only defines one for <see cref="ProjectRegistered"/>;
+    /// every other event on an unseen stream still gets a document via the parameterless constructor
+    /// and <c>Apply</c>). Fetches only that first event — <c>version: 1</c> — never the whole stream,
+    /// since a real project's own stream can run to thousands of events by the time this guard asks.
+    /// </summary>
+    private static async Task<bool> IsGenesisRegisteredProjectStreamAsync(
+        IQuerySession session, Guid streamId, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<IEvent> genesis =
+            await session.Events.FetchStreamAsync(streamId, version: 1, token: cancellationToken);
+        return genesis is [{ EventType: var eventType }] && eventType == typeof(ProjectRegistered);
     }
 
     /// <summary>
