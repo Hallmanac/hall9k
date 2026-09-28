@@ -14,6 +14,7 @@ using Hall9k.Domain.Features.Run.Queries;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -45,6 +46,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         TaskDetails details = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(details.ProjectId, cancellationToken);
+        MemberLabelLookup labels = await MemberLabelling.LoadAsync(session, details.ProjectId, cancellationToken);
 
         // One "now" for every still-open elapsed figure this command renders — the phase line's
         // own liveness and the passage section's own open phases below should never disagree
@@ -103,7 +105,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         header.AddRow("Id", $"[dim]{details.Id}[/]");
         header.AddRow("Scope", ScopeInput.Markup(details.Scope));
-        header.AddRow("Assigned to", await AssigneeMarkupAsync(session, details, cancellationToken));
+        header.AddRow("Assigned to", await AssigneeMarkupAsync(session, details, labels, cancellationToken));
         if (details.PlacedOnNodeId is { } placedOnNodeId)
         {
             // idea 202383dc: an owner can place a task on one of their own nodes — advisory to
@@ -512,7 +514,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 "\n[bold]Handoff note[/] [dim](left by the previous holder for whoever holds this task next)[/]");
             AnsiConsole.WriteLine(ExternalText.ForTerminal(details.HandoffNote));
             string author = details.HandoffNoteAuthorNodeId is { } authorNodeId
-                ? $"node {DomainId.Short(authorNodeId)}"
+                ? MemberLabelling.NodeText(authorNodeId, labels)
                 : "an unrecorded node";
             string when = details.HandoffNoteAt is { } notedAt ? notedAt.ToLocalTime().ToString("g") : "an unrecorded time";
             AnsiConsole.MarkupLine($"  [dim]— {author.EscapeMarkup()} at {when}[/]");
@@ -523,11 +525,9 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             // idea 202383dc, item 4: who, from whom, why, when — the whole point of the audit
             // trail a forced take leaves behind.
             string from = details.TakenOverFromNodeId is { } fromNodeId
-                ? $"node {DomainId.Short(fromNodeId)}"
+                ? MemberLabelling.NodeText(fromNodeId, labels)
                 : "no recorded previous holder";
-            string by = details.TakenOverByOwnerId is { } byOwnerId
-                ? DomainId.Short(byOwnerId)
-                : "an unrecorded owner";
+            string by = TakenOverByLabel(details.TakenOverByOwnerId, details.TakenOverByOwnerRootFingerprint, labels);
             AnsiConsole.MarkupLine(
                 $"\n[bold]Taken over[/] [dim](idea 202383dc, item 4 — a forced h9k task take --force)[/]");
             AnsiConsole.MarkupLine(
@@ -549,7 +549,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             bool overdue = CooperativeTakeAttention.IsOverdue(pendingAt, takeTimeoutMinutes, DateTimeOffset.UtcNow);
             AnsiConsole.MarkupLine("\n[bold]Take requested[/] [dim](idea 202383dc, item 5 — a cooperative h9k task take)[/]");
             AnsiConsole.MarkupLine(
-                $"  [yellow]By node {DomainId.Short(details.PendingTakeRequestedByNodeId!.Value)}, "
+                $"  [yellow]By {MemberLabelling.NodeMarkup(details.PendingTakeRequestedByNodeId!.Value, labels)}, "
                 + $"at {pendingAt.ToLocalTime():g}[/]");
             AnsiConsole.MarkupLine($"  [dim]Reason: {details.PendingTakeReason.EscapeMarkup()}[/]");
             AnsiConsole.MarkupLine(CooperativeTakeAttention.ComposeTaskShowLine(details.Id.ToString(), overdue, takeTimeoutMinutes));
@@ -585,9 +585,9 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         else if (details.LastGrantedAt is { } grantedAt
             && grantedAt >= (details.LastTakeRefusedAt ?? DateTimeOffset.MinValue))
         {
+            string to = GrantedToOwnerMarkup(details.LastGrantedToOwnerId, details.LastGrantedToOwnerFingerprint, labels);
             AnsiConsole.MarkupLine(
-                $"\n[dim]Take granted (idea 202383dc, item 5) to owner "
-                + $"{(details.LastGrantedToOwnerId is { } grantedOwnerId ? DomainId.Short(grantedOwnerId) : "an unrecorded owner")} "
+                $"\n[dim]Take granted (idea 202383dc, item 5) to owner {to} "
                 + $"at {grantedAt.ToLocalTime():g}.[/]");
         }
         else if (details.LastTakeRefusedAt is { } refusedAt)
@@ -2542,6 +2542,37 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     }
 
     /// <summary>
+    /// Who forced the takeover (task 21c8f2f3), pure so the fingerprint-then-short-id fallback is
+    /// a unit test: the project's own member label when the taker's own root fingerprint was
+    /// mirrored onto this projection, else the taking owner's short local id for a takeover
+    /// projected before that field existed, else "an unrecorded owner". Sanitised but not
+    /// markup-escaped — the caller applies <c>.EscapeMarkup()</c> to the whole "From ..., by ..."
+    /// clause at once.
+    /// </summary>
+    internal static string TakenOverByLabel(
+        Guid? takenOverByOwnerId, string? takenOverByOwnerRootFingerprint, MemberLabelLookup labels) =>
+        takenOverByOwnerRootFingerprint is { } takerFingerprint
+            ? ExternalText.OneLine(RelayedText.Truncate(
+                labels.LabelForFingerprint(takerFingerprint), MemberLabelResolver.RenderLimit))
+            : takenOverByOwnerId is { } byOwnerId
+                ? DomainId.Short(byOwnerId)
+                : "an unrecorded owner";
+
+    /// <summary>
+    /// Who a cooperative grant went to (task 21c8f2f3), the identical fallback
+    /// <see cref="TakenOverByLabel"/> gives the taker — markup-escaped, since the caller embeds
+    /// this directly into a literal markup string with nothing downstream to escape it.
+    /// </summary>
+    internal static string GrantedToOwnerMarkup(
+        Guid? lastGrantedToOwnerId, string? lastGrantedToOwnerFingerprint, MemberLabelLookup labels) =>
+        lastGrantedToOwnerFingerprint is { } granteeFingerprint
+            ? ExternalText.OneLineMarkup(RelayedText.Truncate(
+                labels.LabelForFingerprint(granteeFingerprint), MemberLabelResolver.RenderLimit))
+            : lastGrantedToOwnerId is { } grantedOwnerId
+                ? DomainId.Short(grantedOwnerId)
+                : "an unrecorded owner";
+
+    /// <summary>
     /// Whose nodes may claim this task. Unassigned is a fact, not a gap: nothing dispatches
     /// until a human assigns it (Decisions Log #34).
     /// <para>
@@ -2567,7 +2598,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// </para>
     /// </summary>
     private static async Task<string> AssigneeMarkupAsync(
-        IQuerySession session, TaskDetails details, CancellationToken cancellationToken)
+        IQuerySession session, TaskDetails details, MemberLabelLookup labels, CancellationToken cancellationToken)
     {
         if (details.AssignedOwnerId is not { } ownerId)
         {
@@ -2575,7 +2606,32 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         }
 
         OwnerDetails? owner = await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken);
-        if (details.AssignedOwnerFingerprint is not { } fingerprint)
+        string? fingerprint = details.AssignedOwnerFingerprint;
+        OwnerDetails? trueOwner = fingerprint is null || (owner is not null && owner.RootFingerprint == fingerprint)
+            ? null
+            : await session.Query<OwnerDetails>()
+                .Where(candidate => candidate.RootFingerprint == fingerprint)
+                .FirstOrDefaultAsync(cancellationToken);
+
+        return AssigneeMarkup(ownerId, owner, fingerprint, trueOwner, labels);
+    }
+
+    /// <summary>
+    /// The rendering half of <see cref="AssigneeMarkupAsync"/>, pure so the resolution rules
+    /// (task 21c8f2f3) are a unit test rather than only an integration one: given already-resolved
+    /// owner records, what the "Assigned to" row says.
+    /// </summary>
+    /// <param name="owner">The locally-resolved owner for <paramref name="ownerId"/>, if this install has one.</param>
+    /// <param name="fingerprint"><see cref="TaskDetails.AssignedOwnerFingerprint"/>, or null on an assignment recorded before that field existed.</param>
+    /// <param name="trueOwner">
+    /// A local owner whose own root fingerprint actually matches <paramref name="fingerprint"/>,
+    /// when <paramref name="owner"/> either does not exist or disagrees with it — null whenever
+    /// that reverse lookup was never needed or came up empty.
+    /// </param>
+    internal static string AssigneeMarkup(
+        Guid ownerId, OwnerDetails? owner, string? fingerprint, OwnerDetails? trueOwner, MemberLabelLookup labels)
+    {
+        if (fingerprint is null)
         {
             return owner is null ? $"[dim]{ownerId}[/]" : owner.Name.EscapeMarkup();
         }
@@ -2585,19 +2641,31 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             return owner.Name.EscapeMarkup();
         }
 
-        OwnerDetails? trueOwner = await session.Query<OwnerDetails>()
-            .Where(candidate => candidate.RootFingerprint == fingerprint)
-            .FirstOrDefaultAsync(cancellationToken);
-
         if (trueOwner is not null)
         {
             return trueOwner.Name.EscapeMarkup();
         }
 
-        return owner is null
-            ? $"[dim]known by fingerprint {fingerprint} only — this node has no local record of the declared owner id[/]"
-            : $"[dim]known by fingerprint {fingerprint} only — the declared owner id resolves locally to "
-                + $"{owner.Name.EscapeMarkup()}, whose own root fingerprint does not match this assignment's[/]";
+        // The ordinary foreign case (task 21c8f2f3): no local record for the declared owner id at
+        // all, which is the expected shape for an assignment to a node this reader has never
+        // itself joined a project with. Resolved to the project's own member label, with the short
+        // fingerprint kept beside it (the same "detail view keeps the fingerprint" rule this
+        // command's other surfaces already follow) — deduplicated when the projection knows no
+        // friendlier name, so the fallback never reads as "abc123 (abc123)".
+        if (owner is null)
+        {
+            string label = ExternalText.OneLineMarkup(
+                RelayedText.Truncate(labels.LabelForFingerprint(fingerprint), MemberLabelResolver.RenderLimit));
+            string shortFingerprint = fingerprint[..Math.Min(12, fingerprint.Length)];
+            string named = label == shortFingerprint ? label : $"{label} ({shortFingerprint})";
+            return $"[dim]{named} — this node has no local record of the declared owner id[/]";
+        }
+
+        // The owner-root-rewrite alarm (task 21c8f2f3: this branch stays verbatim, trust-bearing):
+        // a Guid that DOES resolve locally, to an owner whose own root fingerprint disagrees with
+        // the one this event recorded, is worth exactly this warning and nothing softer.
+        return $"[dim]known by fingerprint {fingerprint} only — the declared owner id resolves locally to "
+            + $"{owner.Name.EscapeMarkup()}, whose own root fingerprint does not match this assignment's[/]";
     }
 
     /// <summary>This node's own outstanding ask for <paramref name="taskId"/>, if it has one and no
