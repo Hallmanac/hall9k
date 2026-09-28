@@ -92,6 +92,23 @@ public static class LedgerAppendOnlyRefFetcher
     /// concurrent caller can never overwrite a ref a faster one already created or advanced.</summary>
     private const string NullObjectId = "0000000000000000000000000000000000000000";
 
+    /// <summary>
+    /// How many times a fetch that failed for a reason other than "no such remote ref" is retried
+    /// before <see cref="LedgerFetchFailedException"/>. The fix for the cross-process object-store
+    /// race that only ever showed up on windows-latest CI (evidence 2026-09-28,
+    /// FetchAsync_ConcurrentCalls_UseDistinctStagingNames_AndDoNotCollide): POSIX git treats EEXIST
+    /// on an object two processes both wrote as success, so two <c>git fetch</c> processes racing
+    /// the identical object into the one shared bare repository never collide there, but Windows
+    /// returns a sharing violation ("unable to write file .../objects/..: Permission denied /
+    /// unpack-objects failed") to whichever process loses the race. The daemon and every CLI read
+    /// fetch into that one bare repository, so this is a cross-process race no in-process lock
+    /// would fix; retrying is the smallest correct fix, since the winner's objects are already on
+    /// disk by the very next attempt. Bounded rather than unbounded for the same reason
+    /// <c>GitLedger.MaxPushAttempts</c> is: a fetch still losing after this many is fighting
+    /// something a retry loop cannot fix on its own.
+    /// </summary>
+    private const int MaxFetchAttempts = 3;
+
     /// <summary>Fetches one append-only ref fresh and decides whether to move the live and verified
     /// refs, refuse, or simply report nothing there yet.</summary>
     public static async Task<LedgerAppendOnlyFetchResult> FetchAsync(
@@ -104,21 +121,16 @@ public static class LedgerAppendOnlyRefFetcher
         string? fetchedTip;
         try
         {
-            ProcessResult fetch = await runner(
-                "git", ["fetch", "origin", "--no-write-fetch-head", $"+{refName}:{stagingRef}"],
-                repositoryPath, cancellationToken);
-            if (fetch.ExitCode == 0)
-            {
-                fetchedTip = await ResolveTipQuietAsync(runner, repositoryPath, stagingRef, cancellationToken);
-            }
-            else if (fetch.StandardError.Contains("couldn't find remote ref", StringComparison.OrdinalIgnoreCase))
-            {
-                fetchedTip = null;
-            }
-            else
-            {
-                throw new LedgerFetchFailedException(refName, fetch.StandardError);
-            }
+            ProcessResult fetch = await RunFetchWithRetryAsync(
+                runner, repositoryPath, ["fetch", "origin", "--no-write-fetch-head", $"+{refName}:{stagingRef}"],
+                refName, cancellationToken);
+
+            // RunFetchWithRetryAsync only ever returns with a non-zero exit code for the "nothing
+            // there yet" case (a missing remote ref) — anything else either succeeded or already
+            // threw LedgerFetchFailedException.
+            fetchedTip = fetch.ExitCode == 0
+                ? await ResolveTipQuietAsync(runner, repositoryPath, stagingRef, cancellationToken)
+                : null;
         }
         finally
         {
@@ -156,13 +168,13 @@ public static class LedgerAppendOnlyRefFetcher
         string stagingPrefix = $"{StagingNamespace}{Guid.NewGuid():N}/{path}";
         try
         {
-            ProcessResult fetch = await runner(
-                "git", ["fetch", "origin", "--no-write-fetch-head", $"+{prefix}*:{stagingPrefix}*"],
-                repositoryPath, cancellationToken);
-            if (fetch.ExitCode != 0)
-            {
-                throw new LedgerFetchFailedException(prefix, fetch.StandardError);
-            }
+            // A wildcard refspec matching nothing on origin is not a failure (git exits 0), so
+            // RunFetchWithRetryAsync's "missing remote ref" carve-out never applies here — every
+            // non-zero exit this fetch can produce is retried and, if it still fails after
+            // MaxFetchAttempts, throws.
+            await RunFetchWithRetryAsync(
+                runner, repositoryPath, ["fetch", "origin", "--no-write-fetch-head", $"+{prefix}*:{stagingPrefix}*"],
+                prefix, cancellationToken);
 
             Dictionary<string, LedgerAppendOnlyFetchResult> results = [];
             foreach (string suffix in suffixes)
@@ -226,6 +238,37 @@ public static class LedgerAppendOnlyRefFetcher
         string verifiedRefName = $"{VerifiedNamespace}{PathFor(refName)}";
         await UpdateRefBestEffortAsync(
             runner, repositoryPath, verifiedRefName, newTip, previousTip ?? NullObjectId, cancellationToken);
+    }
+
+    /// <summary>
+    /// Runs one <c>git fetch</c> with <paramref name="arguments"/>, retrying up to
+    /// <see cref="MaxFetchAttempts"/> times on any failure other than "no such remote ref" — the
+    /// one shape that is not a failure at all. The retry decision itself never matches git's own
+    /// stderr text for the failure (that text is localized on a non-English node); only the exit
+    /// code decides whether to retry. The pre-existing "couldn't find remote ref" check is the sole
+    /// exception, and it is unaffected by this change: it decided "nothing there yet" before this
+    /// retry loop existed and still does. Returns the last attempt's own <see cref="ProcessResult"/>
+    /// on success or on a confirmed-missing remote ref; throws <see cref="LedgerFetchFailedException"/>
+    /// once every attempt failed for any other reason.
+    /// </summary>
+    private static async Task<ProcessResult> RunFetchWithRetryAsync(
+        ProcessRunner runner, string repositoryPath, IReadOnlyList<string> arguments, string refNameForException,
+        CancellationToken cancellationToken)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            ProcessResult fetch = await runner("git", arguments, repositoryPath, cancellationToken);
+            if (fetch.ExitCode == 0
+                || fetch.StandardError.Contains("couldn't find remote ref", StringComparison.OrdinalIgnoreCase))
+            {
+                return fetch;
+            }
+
+            if (attempt >= MaxFetchAttempts)
+            {
+                throw new LedgerFetchFailedException(refNameForException, fetch.StandardError);
+            }
+        }
     }
 
     private static async Task<LedgerAppendOnlyFetchResult> DecideAndApplyAsync(

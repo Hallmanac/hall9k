@@ -160,6 +160,93 @@ public sealed class LedgerAppendOnlyRefFetcherTests : IDisposable
     }
 
     [Fact]
+    public async Task FetchAsync_AFetchThatFailsOnceThenSucceeds_RetriesAndReturnsTheTip()
+    {
+        string refName = UniqueTestRef();
+        string hub = _repo.CreateHub();
+        string reader = _repo.CloneNode(hub);
+        string commitA = await BuildCommitAsync(hub, "a.yaml", "v1\n", []);
+        await SetRefAsync(hub, refName, commitA);
+
+        // The first fetch fails exactly as the Windows object-store race does (evidence
+        // 2026-09-28: two ledger fetches of one ref racing into one repository); the second, a
+        // real fetch against the scripted runner's fallthrough, succeeds.
+        ScriptedFetchRunner scripted = new(
+            (1, "error: unable to write file ./objects/ab/cdefabcdef: Permission denied\nfatal: unpack-objects failed"));
+
+        LedgerAppendOnlyFetchResult result = await LedgerAppendOnlyRefFetcher.FetchAsync(scripted.RunAsync, reader, refName, CancellationToken.None);
+
+        result.WasRefused.Should().BeFalse();
+        result.Tip.Should().Be(commitA);
+        scripted.FetchInvocations.Should().Be(2, "the failed first attempt is retried once, and the retry succeeds");
+    }
+
+    [Fact]
+    public async Task FetchPrefixAsync_AFetchThatFailsOnceThenSucceeds_RetriesAndReturnsTheTip()
+    {
+        string prefix = LedgerRefRegistry.RegisterPrefix($"refs/hall9k/ledger/test-prefix-{Guid.NewGuid():N}/").RefspecSource;
+        string hub = _repo.CreateHub();
+        string reader = _repo.CloneNode(hub);
+        string suffix = Guid.NewGuid().ToString("N");
+        string commitA = await BuildCommitAsync(hub, "a.yaml", "v1\n", []);
+        await SetRefAsync(hub, $"{prefix}{suffix}", commitA);
+
+        ScriptedFetchRunner scripted = new(
+            (1, "error: unable to write file ./objects/ab/cdefabcdef: Permission denied\nfatal: unpack-objects failed"));
+
+        IReadOnlyDictionary<string, LedgerAppendOnlyFetchResult> results = await LedgerAppendOnlyRefFetcher.FetchPrefixAsync(
+            scripted.RunAsync, reader, prefix, [suffix], CancellationToken.None);
+
+        results[suffix].WasRefused.Should().BeFalse();
+        results[suffix].Tip.Should().Be(commitA);
+        scripted.FetchInvocations.Should().Be(2, "the failed first attempt is retried once, and the retry succeeds");
+    }
+
+    [Fact]
+    public async Task FetchAsync_AFetchThatSucceedsFirstTry_SpawnsExactlyOneGitFetch()
+    {
+        string refName = UniqueTestRef();
+        string hub = _repo.CreateHub();
+        string reader = _repo.CloneNode(hub);
+        string commitA = await BuildCommitAsync(hub, "a.yaml", "v1\n", []);
+        await SetRefAsync(hub, refName, commitA);
+
+        ScriptedFetchRunner scripted = new();
+
+        await LedgerAppendOnlyRefFetcher.FetchAsync(scripted.RunAsync, reader, refName, CancellationToken.None);
+
+        scripted.FetchInvocations.Should().Be(1, "an ordinary fetch that succeeds the first time never retries");
+    }
+
+    [Fact]
+    public async Task FetchAsync_AFetchThatKeepsFailing_ThrowsAfterTheBoundedAttempts()
+    {
+        string refName = UniqueTestRef();
+        string hub = _repo.CreateHub();
+        string reader = _repo.CloneNode(hub);
+        string commitA = await BuildCommitAsync(hub, "a.yaml", "v1\n", []);
+        await SetRefAsync(hub, refName, commitA);
+
+        // Every attempt fails the same way a genuine, non-transient fetch failure would (a broken
+        // remote, revoked credentials) — never the "couldn't find remote ref" text, so this must
+        // exhaust its bounded retries and throw rather than retry forever. Exactly as many scripted
+        // failures as LedgerAppendOnlyRefFetcher's own private MaxFetchAttempts (3, not exposed
+        // publicly so this literal must be kept in step with it by hand): a real implementation bug
+        // that retried even once more than the bound would fall through to a real fetch against the
+        // hub below, which would succeed and never throw at all, rather than being masked by a
+        // spare scripted failure.
+        ScriptedFetchRunner scripted = new(
+            (1, "fatal: unable to access origin: Could not resolve host"),
+            (1, "fatal: unable to access origin: Could not resolve host"),
+            (1, "fatal: unable to access origin: Could not resolve host"));
+
+        Func<Task> fetch = () => LedgerAppendOnlyRefFetcher.FetchAsync(scripted.RunAsync, reader, refName, CancellationToken.None);
+
+        await fetch.Should().ThrowAsync<LedgerFetchFailedException>();
+        scripted.FetchInvocations.Should().Be(3, "a fetch that never stops failing exhausts its bounded retries rather than looping forever");
+    }
+
+    [Fact]
     public async Task FetchAsync_OnTheMessagesPrefixRef_Throws()
     {
         string hub = _repo.CreateHub();
@@ -208,6 +295,42 @@ public sealed class LedgerAppendOnlyRefFetcherTests : IDisposable
         RevParse(reader, $"refs/hall9k-verified/{VerifiedPathFor(prefix)}{keptSuffix}").StandardOutput.Trim().Should().Be(verifiedBefore);
         RevParse(reader, $"{prefix}{newSuffix}").ExitCode.Should().NotBe(
             0, "the suffix that only ever existed on origin must never land locally when the whole prefix fetch failed");
+    }
+
+    /// <summary>
+    /// A <see cref="ProcessRunner"/> that intercepts only <c>git fetch</c> invocations against a
+    /// scripted queue of exit-code/stderr pairs: a queued non-zero entry is returned synthetically
+    /// (no real git process runs), a queued zero entry or an exhausted queue falls through to a
+    /// real <c>git fetch</c> against <see cref="LedgerTestRepo"/> — every other git command (the
+    /// staging-ref cleanup, tip resolution, and so on) always falls through to the real thing. This
+    /// is what lets a test reproduce the shape of the Windows object-store race (a fetch failing
+    /// for a reason that is not "couldn't find remote ref") deterministically, without ever
+    /// reproducing the real sharing violation itself or matching on its localized stderr text.
+    /// </summary>
+    private sealed class ScriptedFetchRunner
+    {
+        private readonly Queue<(int ExitCode, string StandardError)> _fetchScript;
+
+        public ScriptedFetchRunner(params (int ExitCode, string StandardError)[] fetchScript) =>
+            _fetchScript = new Queue<(int ExitCode, string StandardError)>(fetchScript);
+
+        public int FetchInvocations { get; private set; }
+
+        public Task<ProcessResult> RunAsync(
+            string fileName, IReadOnlyList<string> arguments, string workingDirectory, CancellationToken cancellationToken)
+        {
+            if (arguments.Count > 0 && arguments[0] == "fetch")
+            {
+                FetchInvocations++;
+                if (_fetchScript.TryDequeue(out (int ExitCode, string StandardError) scripted) && scripted.ExitCode != 0)
+                {
+                    return Task.FromResult(new ProcessResult(scripted.ExitCode, string.Empty, scripted.StandardError));
+                }
+            }
+
+            (int exitCode, string standardOutput, string standardError) = LedgerTestRepo.RunGit(workingDirectory, [.. arguments]);
+            return Task.FromResult(new ProcessResult(exitCode, standardOutput, standardError));
+        }
     }
 
     private static string VerifiedPathFor(string refName) => refName["refs/hall9k/".Length..];
