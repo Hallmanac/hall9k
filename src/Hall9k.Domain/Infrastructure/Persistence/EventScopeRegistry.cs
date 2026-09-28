@@ -382,6 +382,14 @@ public static class EventScopeRegistry
         // sweep reaches the identical conclusion by reading the ledger itself.
         [typeof(UnverifiedLedgerWriteObserved)] = EventScope.NodeScoped,
         [typeof(UnverifiedLedgerWriteResolved)] = EventScope.NodeScoped,
+        // idea 6be68ee2, PR B of the succession chain: this node's own message sweep's own
+        // sighting of a root-key rotation live in a project's own ledger, and of one no longer
+        // live once an earlier-ranked key voids it — the identical reasoning
+        // UnverifiedLedgerWriteObserved above already carries, never a team-visible fact
+        // replicated from here, since every other node's own sweep reaches the identical
+        // conclusion by reading the ledger itself.
+        [typeof(RootRotationObserved)] = EventScope.NodeScoped,
+        [typeof(RootRotationRevoked)] = EventScope.NodeScoped,
         // task b7d8222e: this node's own copy of one project's trust-chain labels, recomputed by
         // this node's own message sweep — the identical "this node's own local read" reasoning
         // UnverifiedLedgerWriteObserved above already carries, never a team fact another node's
