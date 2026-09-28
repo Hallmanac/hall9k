@@ -652,6 +652,10 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             // QaReviewPromptBuilder's own package, a literal for the same reason (piece 2 of the
             // same idea): every pr-review run whose assignee declared the QA persona needs it.
             "qa-review-prompt-builder",
+            // SecurityReviewPromptBuilder's own package, a literal for the identical reason (idea
+            // 6be68ee2, phase two): every pr-review run needs it, since the Security persona is
+            // appended to every plan by default rather than declared.
+            "security-review-prompt-builder",
             // h9k learn distill's own prose, which unlike the six above is a CLI command's rather
             // than a builder's, so the package name comes off the command itself. Named here for
             // the identical reason: without it the command fails at first use with "No prompt

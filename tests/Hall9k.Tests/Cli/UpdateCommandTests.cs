@@ -316,7 +316,8 @@ public sealed class UpdateCommandTests : IDisposable
             Directory.CreateDirectory(Path.Combine(payload, "skills", skillName));
             // ValidateReleasePayload requires the review-lap-prompt-builder, work-prompt-builder,
             // agent-prompt-builder, mention-followup-prompt-builder,
-            // design-review-prompt-builder, qa-review-prompt-builder and learn-distill templates
+            // design-review-prompt-builder, qa-review-prompt-builder,
+            // security-review-prompt-builder and learn-distill templates
             // packages in every payload it accepts (release.yml bundles templates/ beside
             // skills/) — a single file in each package is enough to satisfy the gate, since this
             // fixture is not exercising template publication itself.
@@ -326,6 +327,7 @@ public sealed class UpdateCommandTests : IDisposable
                 AgentPromptBuilder.TemplateDirectory, MentionFollowUpPromptBuilder.TemplateDirectory,
                 DesignReviewPromptBuilder.TemplateDirectory,
                 QaReviewPromptBuilder.TemplateDirectory,
+                SecurityReviewPromptBuilder.TemplateDirectory,
                 LearningDistillCommand.TemplatePackage,
             })
             {
