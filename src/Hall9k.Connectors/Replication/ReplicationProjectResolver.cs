@@ -11,6 +11,28 @@ using Marten;
 
 namespace Hall9k.Connectors.Replication;
 
+/// <summary>Which of <see cref="ReplicationProjectResolver"/>'s own document families actually
+/// resolved a stream (<see cref="ReplicationOwnership.Family"/>) — <see cref="Unknown"/> only for a
+/// stream no family resolved at all (brand new here). Used by
+/// <c>Hall9k.Connectors.Replication.EventReplicationInbox</c>'s own stream-ownership guard to catch
+/// an event from one family forged onto another family's already-existing, same-project stream
+/// (independent pre-PR review, cycle 4, adversarial lens, medium: a <c>TaskAbandoned</c> aimed at an
+/// existing idea stream materialises a phantom <c>TaskDetails</c> row there, and every later
+/// legitimate event on that idea is refused for good the moment
+/// <see cref="ReplicationProjectResolver"/> resolves the phantom instead) — the identical shape the
+/// guard's own lifecycle-vs-Project-stream check already closes for the Project family alone.</summary>
+public enum ReplicationStreamFamily
+{
+    Unknown,
+    Project,
+    Task,
+    Idea,
+    Epic,
+    Run,
+    Decision,
+    Learning,
+}
+
 /// <summary>One project-scoped event's own project (for the outbound flush), the current
 /// replication scope of the Task or Idea stream it lives on (directly, or by way of the Run that
 /// stream belongs to — idea 8c5993c5), and whether the stream IS the Project aggregate's own stream
@@ -22,11 +44,17 @@ namespace Hall9k.Connectors.Replication;
 /// it; the orchestrator feed (idea 89471598, piece 2) groups on it, and resolving it here rather
 /// than in a second resolver is what keeps one answer to "which stream is this".
 /// </param>
+/// <param name="Family">
+/// Which family actually resolved this stream, <see cref="ReplicationStreamFamily.Unknown"/> when
+/// none did. Replication's stream-ownership guard is the one caller that needs it; every other
+/// caller here predates it and keeps reading <see cref="ProjectId"/>/<see cref="TaskId"/> alone.
+/// </param>
 public sealed record ReplicationOwnership(
     Guid? ProjectId,
     ReplicationScope Scope,
     bool IsProjectStreamItself = false,
-    Guid? TaskId = null)
+    Guid? TaskId = null,
+    ReplicationStreamFamily Family = ReplicationStreamFamily.Unknown)
 {
     /// <summary>The pre-8c5993c5 two-valued read, kept for callers that only ever asked "private or not".</summary>
     public bool IsPrivate => Scope == ReplicationScope.Private;
@@ -64,29 +92,31 @@ public sealed class ReplicationProjectResolver
             // the RECEIVER's own Project stream on apply (ProjectStreamReplicationRules), never the
             // sender's (independent pre-PR review, cycle 1, adversarial lens: the earlier build here
             // wrongly excluded the whole stream, ProjectTeamSettingsChanged included).
-            return new ReplicationOwnership(project.Id, ReplicationScope.Team, IsProjectStreamItself: true);
+            return new ReplicationOwnership(
+                project.Id, ReplicationScope.Team, IsProjectStreamItself: true, Family: ReplicationStreamFamily.Project);
         }
 
         if (await session.LoadAsync<TaskDetails>(streamId, cancellationToken) is { } task)
         {
-            return new ReplicationOwnership(task.ProjectId, task.Scope, TaskId: task.Id);
+            return new ReplicationOwnership(task.ProjectId, task.Scope, TaskId: task.Id, Family: ReplicationStreamFamily.Task);
         }
 
         if (await session.LoadAsync<IdeaDetails>(streamId, cancellationToken) is { } idea)
         {
-            return new ReplicationOwnership(idea.ProjectId, idea.Scope);
+            return new ReplicationOwnership(idea.ProjectId, idea.Scope, Family: ReplicationStreamFamily.Idea);
         }
 
         if (await session.LoadAsync<EpicDetails>(streamId, cancellationToken) is { } epic)
         {
-            return new ReplicationOwnership(epic.ProjectId, ReplicationScope.Team);
+            return new ReplicationOwnership(epic.ProjectId, ReplicationScope.Team, Family: ReplicationStreamFamily.Epic);
         }
 
         if (await session.LoadAsync<RunDetails>(streamId, cancellationToken) is { } run)
         {
             TaskDetails? owningTask = await session.LoadAsync<TaskDetails>(run.TaskId, cancellationToken);
             return new ReplicationOwnership(
-                owningTask?.ProjectId, owningTask?.Scope ?? ReplicationScope.Team, TaskId: run.TaskId);
+                owningTask?.ProjectId, owningTask?.Scope ?? ReplicationScope.Team, TaskId: run.TaskId,
+                Family: ReplicationStreamFamily.Run);
         }
 
         // Idea d805fd8b, piece 1. The scope coordinate IS the project for a project-scoped
@@ -105,13 +135,15 @@ public sealed class ReplicationProjectResolver
         if (await session.LoadAsync<DecisionDetails>(streamId, cancellationToken) is { } decision)
         {
             return new ReplicationOwnership(
-                decision.Scope == KnowledgeScope.Project ? decision.ScopeId : null, ReplicationScope.Team);
+                decision.Scope == KnowledgeScope.Project ? decision.ScopeId : null, ReplicationScope.Team,
+                Family: ReplicationStreamFamily.Decision);
         }
 
         if (await session.LoadAsync<LearningDetails>(streamId, cancellationToken) is { } learning)
         {
             return new ReplicationOwnership(
-                learning.Scope == KnowledgeScope.Project ? learning.ScopeId : null, ReplicationScope.Team);
+                learning.Scope == KnowledgeScope.Project ? learning.ScopeId : null, ReplicationScope.Team,
+                Family: ReplicationStreamFamily.Learning);
         }
 
         return new ReplicationOwnership(null, ReplicationScope.Team);

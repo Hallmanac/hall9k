@@ -941,11 +941,83 @@ public sealed class EventReplicationInbox(
             ReplicationOwnership existingOwnership =
                 await projectResolver.ResolveAsync(session, effectiveStreamId, cancellationToken);
 
-            // A null ProjectId (an owner-scoped Decision/Learning stream, or a Run whose own task
-            // no longer resolves) never equals this read's own project either — treated the same as
-            // any other foreign project rather than tolerated as a pass-through (independent pre-PR
-            // review, cycle 1, adversarial lens: the earlier `is { } existingProjectId` pattern only
-            // ever compared a non-null id, so a null one slipped past both branches unchecked).
+            bool isLifecycleEvent = ProjectStreamReplicationRules.IsProjectLifecycleEvent(eventType);
+
+            // A project lifecycle event's own stream id stays record.StreamId raw (this method's
+            // own doc above) and is meant to land only on a stream that is either brand new here or
+            // already resolves as the Project aggregate's own — still-phantom or registered — stream:
+            // never onto an existing Task, Idea, Epic, or Run stream, same project or a different
+            // one, since appending a project-shaped event there materialises a phantom ProjectDetails
+            // doc at that stream's own id, and this guard's own refuseAsNonLifecycleOntoProjectStream
+            // arm then permanently refuses every later genuine event on it (independent pre-PR
+            // review, cycle 4, conformance lens, high — the earlier build here only ever refused a
+            // lifecycle event that resolved as a REGISTERED Project stream, leaving an ordinary
+            // same-project Task/Idea/Epic/Run stream, whose ownership check never fires for a
+            // lifecycle event's foreign coordinate the same way, unrefused).
+            if (isLifecycleEvent && !existingOwnership.IsProjectStreamItself)
+            {
+                logger?.LogWarning(
+                    "Replicated event {OriginEventId} (origin {OriginNodeId}) of type {EventType} from sender "
+                    + "{SenderNodeId} targets stream {StreamId}, which resolves as an existing Task, Idea, Epic, "
+                    + "or Run stream, never a legitimate target for a project lifecycle event — refused, never "
+                    + "applied", record.OriginEventId, record.OriginNodeId, record.EventTypeName, senderNodeId,
+                    effectiveStreamId);
+                session.Store(new ReplicatedEventRecord
+                {
+                    Id = record.OriginEventId,
+                    StreamId = effectiveStreamId,
+                    ProjectId = projectId,
+                    AppliedAt = now,
+                    Applied = false,
+                });
+                await session.SaveChangesAsync(cancellationToken);
+                return 0;
+            }
+
+            // A Run whose owning task has not replicated here yet resolves with no project at all
+            // (ReplicationProjectResolver's own doc: TaskId is set from the run itself, but ProjectId
+            // stays null when the owning task doesn't load) — recoverable, not foreign. This run's
+            // own genesis already landed through THIS project's own inbox read, unchallenged (a
+            // genesis bypasses this whole guard, since streamExists is false the moment it lands), so
+            // a later, NON-genesis event for the identical stream is held back only by a missing
+            // dependency, never by a different project's ownership. Treated the same as the
+            // cross-project idea case's own unreadable-ledger branch below: dropped without
+            // recording, so a request for this origin or stream stays open and the record applies
+            // the moment the task itself arrives, rather than burned for good the instant this
+            // node's own sweep happens to run first (independent pre-PR review, cycle 4, adversarial
+            // lens, high — the prior build read this null ProjectId as foreign, like any other, and
+            // refused it permanently). Excluded for a genesis-shaped event: that shape targeting an
+            // ALREADY existing stream is always a second, duplicate genesis regardless of whether
+            // the owning task ever resolves, and must still fall through to either
+            // crossesIntoAnotherProject below or the dedicated second-genesis discard further down —
+            // both of which burn it, exactly as a locally-dispatched run's own foreign
+            // RunRecordReconstructed duplicate must be (that test's own doc, and the second-genesis
+            // guard's own comment on "nothing about a second one ever resolves by holding it for
+            // later").
+            bool unresolvedRunOwningTask =
+                !existingOwnership.IsProjectStreamItself
+                && existingOwnership.ProjectId is null
+                && existingOwnership.TaskId is not null
+                && !AggregateGenesisEventTypes.IsGenesis(eventType);
+            if (unresolvedRunOwningTask)
+            {
+                logger?.LogWarning(
+                    "Replicated event {OriginEventId} (origin {OriginNodeId}) of type {EventType} from sender "
+                    + "{SenderNodeId} targets stream {StreamId}, whose owning task {TaskId} has not replicated "
+                    + "here yet — dropped, never applied, left for a later delivery once the task arrives",
+                    record.OriginEventId, record.OriginNodeId, record.EventTypeName, senderNodeId,
+                    effectiveStreamId, existingOwnership.TaskId);
+                gatedDropOriginNodeIdsThisRead.Add(record.OriginNodeId);
+                gatedDropStreamIdsThisRead.Add(effectiveStreamId);
+                return 0;
+            }
+
+            // A null ProjectId left here is an owner-scoped Decision/Learning stream (the one other
+            // family ReplicationProjectResolver ever returns one for) — never equals this read's own
+            // project either, treated the same as any other foreign project rather than tolerated as
+            // a pass-through (independent pre-PR review, cycle 1, adversarial lens: the earlier
+            // `is { } existingProjectId` pattern only ever compared a non-null id, so a null one
+            // slipped past both branches unchecked).
             bool crossesIntoAnotherProject =
                 !existingOwnership.IsProjectStreamItself && existingOwnership.ProjectId != projectId;
 
@@ -1006,13 +1078,31 @@ public sealed class EventReplicationInbox(
                 crossesIntoAnotherProject = ideaVerdict != GatedEventVerdict.Allowed;
             }
 
-            bool isLifecycleEvent = ProjectStreamReplicationRules.IsProjectLifecycleEvent(eventType);
             bool refuseAsNonLifecycleOntoProjectStream =
                 existingOwnership.IsProjectStreamItself && !isLifecycleEvent;
             bool refuseAsLifecycleOntoRegisteredProject = existingOwnership.IsProjectStreamItself && isLifecycleEvent
                 && await IsGenesisRegisteredProjectStreamAsync(session, effectiveStreamId, cancellationToken);
 
-            if (crossesIntoAnotherProject || refuseAsNonLifecycleOntoProjectStream || refuseAsLifecycleOntoRegisteredProject)
+            // A Task/Idea/Epic/Run/Decision/Learning event whose own family does not match the
+            // family already resolved for this SAME-project stream: none of the checks above catch
+            // it, since it crosses no project boundary and the target is not a Project stream at
+            // all. A TaskAbandoned aimed at an existing idea stream, say, materialises a phantom
+            // TaskDetails row there (Marten's own "starts a document even with no matching Create"),
+            // and refuseAsNonLifecycleOntoProjectStream then permanently refuses every later
+            // legitimate idea event once ReplicationProjectResolver resolves that phantom first
+            // (independent pre-PR review, cycle 4, adversarial lens, medium — the guard's own
+            // lifecycle-vs-Project-stream check already closes this identical shape for the Project
+            // family alone). Skipped when the resolved family is Unknown: a stream this resolver
+            // does not currently recognise at all says nothing about a mismatch, and refusing on
+            // that basis alone would be a new, unrelated regression this check must not cause.
+            bool refuseAsMismatchedFamilyOntoExistingStream =
+                !existingOwnership.IsProjectStreamItself
+                && !crossesIntoAnotherProject
+                && existingOwnership.Family != ReplicationStreamFamily.Unknown
+                && existingOwnership.Family != FamilyOf(eventType);
+
+            if (crossesIntoAnotherProject || refuseAsNonLifecycleOntoProjectStream
+                || refuseAsLifecycleOntoRegisteredProject || refuseAsMismatchedFamilyOntoExistingStream)
             {
                 logger?.LogWarning(
                     "Replicated event {OriginEventId} (origin {OriginNodeId}) of type {EventType} from sender "
@@ -1023,10 +1113,13 @@ public sealed class EventReplicationInbox(
                           + "for a project lifecycle event"
                         : refuseAsNonLifecycleOntoProjectStream
                             ? "resolves as a Project aggregate's own stream, never a legitimate target for this event type"
-                            : isIdeaStream
-                                ? "is an idea under a different project whose own ledger does not vouch this "
-                                  + "sender as a member"
-                                : "belongs to a different project than the one this read is scoped to");
+                            : refuseAsMismatchedFamilyOntoExistingStream
+                                ? $"already resolves as a {existingOwnership.Family} stream, never a legitimate target "
+                                  + $"for a {FamilyOf(eventType)} event"
+                                : isIdeaStream
+                                    ? "is an idea under a different project whose own ledger does not vouch this "
+                                      + "sender as a member"
+                                    : "belongs to a different project than the one this read is scoped to");
                 session.Store(new ReplicatedEventRecord
                 {
                     Id = record.OriginEventId,
@@ -2598,6 +2691,30 @@ public sealed class EventReplicationInbox(
             await session.Events.FetchStreamAsync(streamId, version: 1, token: cancellationToken);
         return genesis is [{ EventType: var eventType }] && eventType == typeof(ProjectRegistered);
     }
+
+    /// <summary>
+    /// Which <see cref="ReplicationStreamFamily"/> <paramref name="eventType"/> itself belongs to —
+    /// the stream-ownership guard's own mismatched-family check
+    /// (<c>refuseAsMismatchedFamilyOntoExistingStream</c>) needs this to compare against
+    /// <see cref="ReplicationOwnership.Family"/> without a second document lookup. Every type that
+    /// ever reaches this check already passed the earlier <c>EventScopeRegistry.ClassificationOf</c>
+    /// gate (<c>ProjectScoped</c>), so its own namespace is always one of exactly these seven feature
+    /// roots — <see cref="ReplicationStreamFamily.Unknown"/> is kept as the fallback anyway, rather
+    /// than throwing, so an event type this mapping has not been taught about yet is simply never
+    /// refused on this ground, the same "fail open on the enhancement, never regress the guard's own
+    /// prior coverage" choice <see cref="ReplicationOwnership.Family"/>'s own doc makes.
+    /// </summary>
+    private static ReplicationStreamFamily FamilyOf(Type eventType) => eventType.Namespace switch
+    {
+        { } ns when ns.StartsWith("Hall9k.Domain.Features.Tasks", StringComparison.Ordinal) => ReplicationStreamFamily.Task,
+        { } ns when ns.StartsWith("Hall9k.Domain.Features.Idea", StringComparison.Ordinal) => ReplicationStreamFamily.Idea,
+        { } ns when ns.StartsWith("Hall9k.Domain.Features.Epic", StringComparison.Ordinal) => ReplicationStreamFamily.Epic,
+        { } ns when ns.StartsWith("Hall9k.Domain.Features.Run", StringComparison.Ordinal) => ReplicationStreamFamily.Run,
+        { } ns when ns.StartsWith("Hall9k.Domain.Features.Decision", StringComparison.Ordinal) => ReplicationStreamFamily.Decision,
+        { } ns when ns.StartsWith("Hall9k.Domain.Features.Learning", StringComparison.Ordinal) => ReplicationStreamFamily.Learning,
+        { } ns when ns.StartsWith("Hall9k.Domain.Features.Project", StringComparison.Ordinal) => ReplicationStreamFamily.Project,
+        _ => ReplicationStreamFamily.Unknown,
+    };
 
     /// <summary>
     /// The highest origin sequence <paramref name="streamId"/> already holds from each origin node,
