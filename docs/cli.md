@@ -967,6 +967,11 @@ exists would be named in the report and in `task show` as skipped rather than si
 and a member who declared only unregistered personas would get the engineer's review in their
 place rather than an unreviewed pull request.
 
+A fourth persona, Security, cannot be declared at all — `--persona security` is refused by name —
+and instead reviews every pr-review task by default, gated only by the project's own
+`--security-review on|off` setting ([operations.md](operations.md#per-project-and-per-owner)). Its
+section joins the report in fixed order after the declared personas' own.
+
 `--display-name '<name>'` is the name teammates see for this member, set per project with
 `--project <project>` or, without it, as this machine's own default beneath every project that has
 no entry of its own, a machine's own setting because owner settings never leave the node that set
