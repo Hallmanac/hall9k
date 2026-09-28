@@ -1419,7 +1419,10 @@ for a single-owner project means starting a new ledger, since a project's own ge
 unconditionally an owner. An owner-role member may mint member invites, remove a member
 (`h9k project member remove <project> <fingerprint>`, which deletes the file rather than marking it),
 and can never remove the last owner. `h9k project members <project>` lists what the ledger shows
-right now, recomputed on every run rather than cached: each root fingerprint, the GitHub account
+right now, recomputed on every run rather than cached: each root fingerprint (with the newest
+display name declared across that root's own nodes underneath, when one is declared: a label
+only, set per project or as a machine's own default with `h9k owner set --display-name`, never
+part of any trust or cross-check decision), the GitHub account
 or accounts that root's nodes declare for themselves (`unknown` when none does), the role, that
 root's fleet, and how each declared account stands against the repository's collaborators
 (`declared, push confirmed`, `declared, read only`, `declared, not a collaborator`, or `declared,
