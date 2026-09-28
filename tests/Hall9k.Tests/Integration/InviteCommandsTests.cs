@@ -718,13 +718,16 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
     }
 
     [Fact]
-    public async Task Project_invite_refuses_before_any_push_when_this_nodes_key_is_not_a_live_root_key()
+    public async Task Project_invite_refuses_before_any_push_when_no_node_can_be_resolved_to_hold_a_live_root_key()
     {
-        // idea 6be68ee2, trust-ledger finding 2: this node's own owner DOES hold the owner role, but
-        // this node's own key is merely vouched into that owner's chain, never the owner's own live
-        // root key — the invite sweep's own member write would otherwise land from this node's key,
-        // so minting must refuse before any push. Never checked against the identity fingerprint or
-        // TrustChain.RootNodeId (null on an older ledger).
+        // idea 6be68ee2's own recut (companion 1bb803e1): this node's own owner DOES hold the owner
+        // role, and this node's own key is merely vouched into that owner's chain, never the owner's
+        // own live root key — but minting no longer refuses for that reason alone (the eventual
+        // member write is now a request InviteSweepEngine routes to whichever node holds the owner's
+        // own live root key, never something this node writes itself). It still refuses here because
+        // the chain this test builds cannot resolve ANY node holding one (no RootNodeId, no rotation)
+        // — there would be nobody for that request to ever reach, so minting refuses up front rather
+        // than stranding a joiner with a member write no sweep could ever deliver.
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         FakeLedger ledger = new();
 
@@ -928,6 +931,132 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         IReadOnlyList<JasperFx.Events.IEvent> projectEvents = await assertSession.Events.FetchStreamAsync(project.Id, token: cts.Token);
         projectEvents.Select(e => e.Data).OfType<Hall9k.Domain.Features.Project.Events.MemberVouched>()
             .Should().ContainSingle("only the first tick's own successful write may ever record a MemberVouched fact");
+    }
+
+    /// <summary>
+    /// The recut this task adds (idea 6be68ee2, companion 1bb803e1): on a node whose own key is
+    /// merely vouched into the owner's fleet, never the owner's own live root key, the sweep must
+    /// never write <c>members/&lt;fingerprint&gt;.yaml</c> itself — it sends the write as an
+    /// <see cref="MessageKind.OwnerActRequest"/> to whichever node the chain names as holding the
+    /// owner's own highest-ranked live root key, and leaves the invite outstanding until that node's
+    /// own outcome reply says done. Unlike every other test in this file, the engine's own chain
+    /// reader here must actually carry the same chain minting used — it is the one fact this
+    /// decision reads (<c>InviteSweepEngine.TryClaimAsync</c>'s own <c>iAmLiveRootKey</c>), so a
+    /// disconnected <see cref="TrustChain.Empty"/> stand-in (every sibling test's own idiom) would
+    /// leave <c>RequestMemberWriteAsync</c> with no <c>TrustedOwner</c> to resolve a target node from
+    /// at all.
+    /// </summary>
+    [Fact]
+    public async Task A_member_of_project_invite_minted_on_a_non_root_node_requests_the_member_write_instead_of_writing_it_directly()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        FakeLedger ledger = new();
+
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+
+        // This local identity is a fleet node of an owner it never established itself: the root's
+        // own key (rootKey) belongs to a different, unmodeled machine, named here only by its own
+        // fingerprint and a RootNodeId the chain can resolve a request to — the same shape
+        // Project_invite_refuses_before_any_push_when_no_node_can_be_resolved_to_hold_a_live_root_key
+        // uses, except this chain DOES resolve a target, so minting succeeds rather than refusing.
+        Guid nodeId;
+        NodeSigningKey myKey;
+        NodeSigningKey rootKey = await new NodeKeyStore().EnsureAsync(DomainId.New(), cts.Token);
+        Guid rootActingNodeId = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cts.Token);
+            await session.SaveChangesAsync(cts.Token);
+            nodeId = context.NodeId;
+            myKey = await new NodeKeyStore().EnsureAsync(context.NodeId, cts.Token);
+
+            OwnerAggregate owner = await session.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: cts.Token)
+                ?? throw new InvalidOperationException("Owner bootstrap did not create an owner stream.");
+            session.Events.Append(context.OwnerId, OwnerDecider.ClaimRoot(owner, rootKey.Fingerprint, verified: true, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner>
+            {
+                [rootKey.Fingerprint] = new(
+                    rootKey.Fingerprint, rootKey.PublicKeyLine,
+                    [new TrustedNode(nodeId.ToString(), myKey.PublicKeyLine, myKey.Fingerprint, Now)],
+                    RootNodeId: rootActingNodeId.ToString()),
+            },
+            [new ProjectMember(rootKey.Fingerprint, MembershipRole.Owner, Now)]));
+
+        string secret;
+        Guid inviteId;
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            int exitCode = await ProjectInviteCommand.RunAsync(
+                session, project, roleInput: "member", ledger, chainReader, new NodeKeyStore(), cts.Token);
+            exitCode.Should().Be(ExitCodes.Ok, "a node holding no live root key of its own may still mint, now that the eventual "
+                + "member write is a request rather than something this node writes itself");
+
+            InviteDetails minted = (await session.Query<InviteDetails>().ToListAsync(cts.Token)).Single();
+            inviteId = minted.Id;
+            InviteAggregate aggregate = (await session.Events.AggregateStreamAsync<InviteAggregate>(inviteId, token: cts.Token))!;
+            secret = aggregate.Secret;
+        }
+
+        Guid joinerNodeId = DomainId.New();
+        NodeSigningKey joinerKey = await new NodeKeyStore().EnsureAsync(joinerNodeId, cts.Token);
+        string proof = InviteSecret.ComputeProof(secret, joinerKey.Fingerprint);
+        await WriteSelfAnnouncedNodeFileAsync(ledger, joinerNodeId, joinerKey, ownerFingerprint: joinerKey.Fingerprint, inviteProof: proof, cts.Token);
+
+        // The sweep's own chain reader must be the identical chain minting used above — this
+        // decision (iAmLiveRootKey) is read from it directly, unlike every sibling test in this
+        // file, which hands the engine an unrelated TrustChain.Empty because nothing before this
+        // task ever consulted it for a member-of-project claim.
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
+        InviteSweepEngine engine = new(
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), chainReader, new NodeKeyStore(),
+                NullLogger<InviteSweepEngine>.Instance);
+
+        InviteSweepResult firstTick = await engine.SweepOnceAsync(cts.Token);
+        firstTick.InvitesSpent.Should().Be(0, "this node holds no live root key, so the member write is only requested, never spent here");
+
+        ledger.Writes.Should().NotContain(
+            w => w.Path == $"members/{joinerKey.Fingerprint}.yaml",
+            "a non-root node's own sweep must never write the member file itself (idea 6be68ee2, companion 1bb803e1)");
+
+        MessageDetails request;
+        await using (IDocumentSession assertSession = _postgres.Store.LightweightSession())
+        {
+            request = (await assertSession.Query<MessageDetails>()
+                .Where(m => m.Kind == MessageKind.OwnerActRequest.Value)
+                .ToListAsync(cts.Token)).Single();
+
+            InviteDetails after = (await assertSession.LoadAsync<InviteDetails>(inviteId, cts.Token))!;
+            after.Spent.Should().BeFalse("the invite stays outstanding until the root's own outcome reply says done");
+
+            InviteAggregate aggregate = (await assertSession.Events.AggregateStreamAsync<InviteAggregate>(inviteId, token: cts.Token))!;
+            aggregate.VouchedProjects.Should().ContainKey(project.Id, "this node's own local retry guard is recorded "
+                + "before the request is ever sent, the identical ordering the root-direct path already uses");
+        }
+
+        request.FromNodeId.Should().Be(node.NodeId);
+        request.About.Should().Be(inviteId.ToString());
+        request.To.Should().Be(MessageAudience.Node(rootActingNodeId).Value, "addressed to the node the chain names as "
+            + "holding the owner's own highest-ranked live root key, never this node's own key");
+
+        OwnerActEnvelopeCodec.OwnerActRequestRecord? decoded = OwnerActEnvelopeCodec.TryDecodeRequest(request.Body!);
+        decoded.Should().NotBeNull();
+        decoded!.InviteId.Should().Be(inviteId);
+        decoded.RequesterNodeId.Should().Be(node.NodeId);
+        decoded.CandidateOwnerFingerprint.Should().Be(joinerKey.Fingerprint);
+        decoded.Role.Should().Be(ProjectMemberRole.Member);
+
+        // A second tick must never queue a second, redundant request while the first one is still
+        // outstanding — InviteSweepEngine.RequestMemberWriteAsync's own "already requested" guard.
+        InviteSweepResult secondTick = await engine.SweepOnceAsync(cts.Token);
+        secondTick.InvitesSpent.Should().Be(0);
+
+        await using IDocumentSession finalSession = _postgres.Store.LightweightSession();
+        (await finalSession.Query<MessageDetails>().Where(m => m.Kind == MessageKind.OwnerActRequest.Value).ToListAsync(cts.Token))
+            .Should().ContainSingle("a resend must never queue a second envelope for the identical invite while one is still in flight");
     }
 
     [Fact]

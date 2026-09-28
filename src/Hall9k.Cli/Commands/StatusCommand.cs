@@ -6,6 +6,7 @@ using Hall9k.Connectors.Replication;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.Courier;
+using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Orchestrator;
@@ -206,6 +207,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
 
         await WriteAutoPrReviewAsync(session, rows, now, cancellationToken);
         await WriteCooperativeTakeAsync(session, now, cancellationToken);
+        await WriteOwnerActAsync(session, now, cancellationToken);
 
         int listed = 0;
         listed += Section(rows, AttentionBucket.NeedsYou, "needs-you", "[red bold]Needs you[/]", now);
@@ -1178,6 +1180,76 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             AnsiConsole.MarkupLine(CooperativeTakeAttention.ComposeStatusLine(
                 id, task.Objective.EscapeMarkup(), counterpart, ask.Reason.EscapeMarkup(), isHolder: false, overdue,
                 timeoutMinutes));
+        }
+    }
+
+    /// <summary>
+    /// Every owner-act request touching this node (idea 6be68ee2, companion 1bb803e1): an owner-role
+    /// member write this node itself is holding for its own human to approve
+    /// (<c>h9k project member approve</c>), and any owner-act request this node itself sent whose
+    /// invite sweep has not yet completed (<see cref="OwnerActAskLookup"/>, "a view copied from
+    /// PendingOwnAskLookup"). A standalone section, the same reasoning
+    /// <see cref="WriteCooperativeTakeAsync"/>'s own doc gives for not folding a message-layer ask
+    /// into <c>AttentionComposer</c>'s own six-armed classification.
+    /// </summary>
+    internal static async Task WriteOwnerActAsync(IQuerySession session, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await WriteOwnerActUnguardedAsync(session, now, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]owner-act requests: unavailable ({exception.Message})[/]");
+        }
+    }
+
+    private static async Task WriteOwnerActUnguardedAsync(IQuerySession session, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        string machineName = Environment.MachineName;
+        NodeDetails? myNode = (await session.Query<NodeDetails>()
+            .Where(n => n.MachineName == machineName)
+            .Take(1).ToListAsync(cancellationToken)).FirstOrDefault();
+        if (myNode is null)
+        {
+            return;
+        }
+
+        // The root's own side: every owner-role write this node is itself holding for its own human
+        // to approve. Every OwnerActHoldDetails row this node's own database holds was created by
+        // this same node acting as root (each node's own event store is local-first, never shared),
+        // so there is nothing here to filter by node id.
+        IReadOnlyList<OwnerActHoldDetails> holds = await session.Query<OwnerActHoldDetails>()
+            .Where(hold => !hold.Approved && !hold.Expired)
+            .ToListAsync(cancellationToken);
+        foreach (OwnerActHoldDetails hold in holds)
+        {
+            ProjectDetails? project = await session.LoadAsync<ProjectDetails>(hold.ProjectId, cancellationToken);
+            string projectLabel = (project?.Name ?? hold.ProjectId.ToString()).EscapeMarkup();
+            AnsiConsole.MarkupLine(
+                $"[red bold]Needs you[/] an owner-role member write is held for invite [dim]{hold.InviteId}[/] in "
+                + $"'{projectLabel}' — h9k project member approve {projectLabel} {hold.InviteId}");
+        }
+
+        // This node's own side: every owner-act request this node itself sent that has not yet
+        // resolved into the invite's own local spend.
+        IReadOnlyList<OwnerActAskLookup.PendingOwnerAct> ownAsks =
+            await OwnerActAskLookup.FindUnansweredAsync(session, myNode.Id, cancellationToken);
+        foreach (OwnerActAskLookup.PendingOwnerAct ask in ownAsks)
+        {
+            AnsiConsole.MarkupLine(ask.Verdict switch
+            {
+                OwnerActEnvelopeCodec.OwnerActVerdict.Held =>
+                    $"[yellow]Waiting[/] invite {ask.InviteId}'s own member write is held for approval on the root node.",
+                OwnerActEnvelopeCodec.OwnerActVerdict.Refused =>
+                    $"[red]Refused[/] invite {ask.InviteId}'s own member write: {(ask.Reason ?? string.Empty).EscapeMarkup()}",
+                OwnerActEnvelopeCodec.OwnerActVerdict.Expired =>
+                    $"[red]Expired[/] invite {ask.InviteId}'s own member write — re-mint the invite.",
+                _ =>
+                    $"[dim]Waiting[/] on invite {ask.InviteId}'s own member write, requested {ask.RequestedAt:u} — "
+                    + "if this sits for a while with no answer, the root node may need h9k update (an older "
+                    + "build stores the unknown kind unanswered).",
+            });
         }
     }
 
