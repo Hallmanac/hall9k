@@ -647,7 +647,14 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
 
             HeldTailSummary heldTail = await HeldTailStreams.SummarizeAsync(session, cancellationToken);
 
-            foreach (string line in EventCatchUpPane.ComposeLines(outstanding, closed, heldTail, now))
+            Guid[] projectIds = [.. outstanding.Concat(closed).Select(request => request.ProjectId).Distinct()];
+            Dictionary<Guid, MemberLabelLookup> labelsByProject = [];
+            foreach (Guid projectId in projectIds)
+            {
+                labelsByProject[projectId] = await MemberLabelling.LoadAsync(session, projectId, cancellationToken);
+            }
+
+            foreach (string line in EventCatchUpPane.ComposeLines(outstanding, closed, heldTail, now, labelsByProject))
             {
                 AnsiConsole.MarkupLineInterpolated($"[yellow]{line}[/]");
             }
@@ -1032,10 +1039,11 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             bool overdue = task.PendingTakeRequestedAt is { } requestedAt
                 && CooperativeTakeAttention.IsOverdue(requestedAt, timeoutMinutes, now);
             string id = TaskListCommand.ShortId(task.Id);
+            MemberLabelLookup labels = await MemberLabelling.LoadAsync(session, task.ProjectId, cancellationToken);
             string counterpart = isHolder
-                ? $"node {DomainId.Short(task.PendingTakeRequestedByNodeId!.Value)}"
+                ? MemberLabelling.NodeMarkup(task.PendingTakeRequestedByNodeId!.Value, labels)
                 : task.ClaimedByNodeId is { } holderNodeId
-                    ? $"node {DomainId.Short(holderNodeId)}"
+                    ? MemberLabelling.NodeMarkup(holderNodeId, labels)
                     : "the holder";
             AnsiConsole.MarkupLine(CooperativeTakeAttention.ComposeStatusLine(
                 id, task.Objective.EscapeMarkup(), counterpart, task.PendingTakeReason.EscapeMarkup(), isHolder,
@@ -1077,7 +1085,8 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             bool overdue = CooperativeTakeAttention.IsOverdue(ask.RequestedAt, timeoutMinutes, now);
             string id = TaskListCommand.ShortId(ask.TaskId);
             string counterpart = task.ClaimedByNodeId is { } holderNodeId
-                ? $"node {DomainId.Short(holderNodeId)}"
+                ? MemberLabelling.NodeMarkup(
+                    holderNodeId, await MemberLabelling.LoadAsync(session, task.ProjectId, cancellationToken))
                 : "the holder";
             AnsiConsole.MarkupLine(CooperativeTakeAttention.ComposeStatusLine(
                 id, task.Objective.EscapeMarkup(), counterpart, ask.Reason.EscapeMarkup(), isHolder: false, overdue,

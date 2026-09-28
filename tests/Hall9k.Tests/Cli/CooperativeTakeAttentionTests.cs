@@ -1,5 +1,8 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
+using Hall9k.Domain.Features.Trust;
+using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -76,6 +79,35 @@ public sealed class CooperativeTakeAttentionTests
         line.Should().NotContain("--force");
         line.Should().Contain("h9k task grant 28b19893");
         line.Should().Contain("h9k task refuse 28b19893");
+    }
+
+    /// <summary>
+    /// A cooperative-take status line naming this owner's own node (task 21c8f2f3's own test
+    /// coverage list) — the counterpart <c>StatusCommand.WriteCooperativeTakeUnguardedAsync</c>
+    /// composes through <see cref="MemberLabelling.NodeMarkup"/> reads as a bare id for a node of
+    /// this owner's own fleet, and that bare id is what actually reaches the line, with no
+    /// parenthetical label following it.
+    /// </summary>
+    [Fact]
+    public void ComposeStatusLine_names_this_owners_own_node_with_no_label_appended()
+    {
+        Guid nodeId = DomainId.New();
+        const string fingerprint = "abcdef0123456789";
+        MemberLabelLookup labels = new(
+            new ProjectMemberLabels
+            {
+                Id = DomainId.New(),
+                Labels = [new ProjectMemberLabel(fingerprint, [nodeId], DisplayName.Parse("Brian"), null)],
+            },
+            ownRootFingerprint: fingerprint);
+
+        string counterpart = MemberLabelling.NodeMarkup(nodeId, labels);
+        string line = CooperativeTakeAttention.ComposeStatusLine(
+            "28b19893", "Add rate limiting", counterpart, "Picking this back up.", isHolder: true,
+            overdue: false, timeoutMinutes: 30);
+
+        line.Should().Contain($"node {DomainId.Short(nodeId)} asks");
+        line.Should().NotContain("Brian");
     }
 
     [Fact]

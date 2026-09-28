@@ -1,5 +1,8 @@
+using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Replication;
+using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Replication;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
 
 namespace Hall9k.Cli.Commands;
@@ -43,26 +46,37 @@ internal static class EventCatchUpPane
     /// </param>
     /// <param name="heldTail">The node-wide held-tail counts (<see cref="HeldTailStreams.SummarizeAsync"/>).</param>
     /// <param name="now">This node's own clock, which the decline window is measured back from.</param>
+    /// <param name="labelsByProject">
+    /// Each request's own project's current member labels (task 21c8f2f3), keyed by
+    /// <see cref="EventCatchUpRequest.ProjectId"/> — defaults to <see cref="MemberLabelLookup.Empty"/>
+    /// for every project when null, so every existing caller and test compiles and reads exactly
+    /// as before, the same optional-lookup shape <c>OrchestratorFeedDescription.Of</c> already
+    /// gives its own caller.
+    /// </param>
     public static IReadOnlyList<string> ComposeLines(
         IReadOnlyList<EventCatchUpRequest> outstanding,
         IReadOnlyList<EventCatchUpRequest> closed,
         HeldTailSummary heldTail,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        IReadOnlyDictionary<Guid, MemberLabelLookup>? labelsByProject = null)
     {
         List<string> lines = [];
 
         foreach (EventCatchUpRequest request in outstanding.OrderBy(request => request.SentAt))
         {
+            MemberLabelLookup labels = LabelsFor(request.ProjectId, labelsByProject);
             // A fleet reconcile (task 252bc5cf) is addressed to one sibling by node id and ranks
             // no candidates at all, so without its own arm it reads as a broadcast to the whole
-            // project when it went to exactly one peer.
+            // project when it went to exactly one peer. That addressee is always a node of this
+            // owner's own fleet (a reconcile only ever runs between siblings), so the own-owner
+            // rule already leaves it unlabelled without any special-casing here.
             string candidate = request switch
             {
-                { CurrentCandidateNodeId: { } current } => $"asking {DomainId.Short(current)}",
-                { ToNodeId: { } addressee } => $"asking {DomainId.Short(addressee)}",
+                { CurrentCandidateNodeId: { } current } => $"asking {NodeText(current, labels)}",
+                { ToNodeId: { } addressee } => $"asking {NodeText(addressee, labels)}",
                 _ => "broadcast to the whole project",
             };
-            lines.Add($"catch-up outstanding for {Describe(request)} — {candidate} (sent {request.SentAt:u})");
+            lines.Add($"catch-up outstanding for {Describe(request, labels)} — {candidate} (sent {request.SentAt:u})");
         }
 
         DateTimeOffset declinedSince = now - DeclineWindow;
@@ -72,8 +86,9 @@ internal static class EventCatchUpPane
             .OrderByDescending(pair => pair.Decline.DeclinedAt);
         foreach ((EventCatchUpRequest request, EventCatchUpDecline decline) in recentDeclines)
         {
+            MemberLabelLookup labels = LabelsFor(request.ProjectId, labelsByProject);
             lines.Add(
-                $"catch-up for {Describe(request)} declined by {DomainId.Short(decline.DeclinedByNodeId)} "
+                $"catch-up for {Describe(request, labels)} declined by {NodeText(decline.DeclinedByNodeId, labels)} "
                 + $"at {decline.DeclinedAt:u} ({Printable(decline.Reason)}){OtherDeclinersClause(request, decline)}");
         }
 
@@ -89,16 +104,17 @@ internal static class EventCatchUpPane
 
     /// <summary>What a request is asking for — shared by the outstanding and the declined lines so
     /// the two can never describe the same ask in different words.</summary>
-    private static string Describe(EventCatchUpRequest request) => request switch
+    private static string Describe(EventCatchUpRequest request, MemberLabelLookup labels) => request switch
     {
         // A dependency ask nobody typed says whose dependency it is: the platform mints
         // it on its own when a pulled or adopted task names a blocked-by or stacked-on
         // id whose stream is not here (TaskDependencyCatchUp), and a bare stream id
-        // would read as an ask this node cannot account for.
+        // would read as an ask this node cannot account for. Neither id here is a node id.
         { ForStreamId: { } streamId, ForDependencyOfTaskId: { } dependentTaskId } =>
             $"stream {DomainId.Short(streamId)}, a dependency of task {DomainId.Short(dependentTaskId)}",
         { ForStreamId: { } streamId } => $"stream {DomainId.Short(streamId)}",
-        { ForOriginNodeId: { } originNodeId } => $"a gap from {DomainId.Short(originNodeId)} (since {request.SinceOriginSequence})",
+        { ForOriginNodeId: { } originNodeId } =>
+            $"a gap from {NodeText(originNodeId, labels)} (since {request.SinceOriginSequence})",
         // The fleet-reconcile shape carries the identical bound h9k project pull --since all does,
         // so it has to be matched on ToNodeId BEFORE the bound arms below or it reads as a hand
         // pull nobody typed, broadcast to every member, when it went to one sibling by node id
@@ -109,6 +125,30 @@ internal static class EventCatchUpPane
             $"this project's history from global sequence {sinceGlobalSequence} (h9k project pull --since)",
         _ => "a brand-new node's own bootstrap",
     };
+
+    /// <summary>This request's own project's current labels, or <see cref="MemberLabelLookup.Empty"/>
+    /// when the caller carried none — the same "no lookup" default the whole pane compiled and
+    /// read as before this feature existed.</summary>
+    private static MemberLabelLookup LabelsFor(
+        Guid projectId, IReadOnlyDictionary<Guid, MemberLabelLookup>? labelsByProject) =>
+        labelsByProject?.GetValueOrDefault(projectId) ?? MemberLabelLookup.Empty;
+
+    /// <summary>
+    /// A node named the bare way every line in this pane already names one — no "node" word, just
+    /// the short id (unlike <see cref="MemberLabelling.NodeText"/>'s own "node &lt;id&gt;" shape,
+    /// which would change every existing line's own wording) — with the owning member's own label
+    /// appended in parentheses when the lookup knows one. Sanitised but not markup-escaped, since
+    /// every line this pane composes reaches <c>AnsiConsole.MarkupLineInterpolated</c> through its
+    /// own auto-escaping interpolated hole (<c>StatusCommand.WriteEventCatchUpRequestsAsync</c>),
+    /// which would otherwise double-escape the label.
+    /// </summary>
+    private static string NodeText(Guid nodeId, MemberLabelLookup labels)
+    {
+        string id = DomainId.Short(nodeId);
+        return labels.LabelForNodeId(nodeId) is { } label
+            ? $"{id} ({ExternalText.OneLine(RelayedText.Truncate(label, MemberLabelResolver.RenderLimit))})"
+            : id;
+    }
 
     /// <summary>The other members that also said they hold nothing for this ask, counted rather
     /// than listed: on a broadcast every member answers, and a human reading one name would take
