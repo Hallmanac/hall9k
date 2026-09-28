@@ -905,54 +905,97 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 .FirstOrDefaultAsync(cancellationToken);
             if (earlierHeldForThisOrigin is not null)
             {
+                // This record itself is judged no further once it queues — the earlier held record
+                // is the only one ReCheckHeldTaskActsAsync ever re-judges — so if THIS record is the
+                // true origin's own direct delivery (record.OriginNodeId == senderNodeId), it is also
+                // the one proof that can ever backfill TaskCreatorRootRecord.CreatorRootFingerprint
+                // for a relayed genesis (ResolveCreatorRootFingerprintAsync's own doc). Run before
+                // queuing, not after, or a draft revised entirely through direct deliveries — with no
+                // held relayed act ever superseded by a later run event on a different stream — would
+                // queue forever behind a held head that can never itself resolve who the creator is
+                // (independent pre-PR review, cycle 4, adversarial lens, high).
+                SenderResolution? queuedSender = ResolveSender(trustChain, senderFingerprint, senderNodeId);
+                await ResolveCreatorRootFingerprintAsync(
+                    session, task: null, earlierHeldForThisOrigin.TaskId, record.OriginNodeId, senderNodeId,
+                    queuedSender, cancellationToken);
                 await HoldTaskActAsync(
                     session, record, effectiveStreamId, earlierHeldForThisOrigin.TaskId, projectId, senderNodeId,
                     senderFingerprint, originProjectKey, now, taskActCatchUpAskTaskIdsThisRead: null, cancellationToken);
                 return 0;
             }
 
-            TaskActTargetResolution target =
-                await ResolveTaskActTargetAsync(session, eventType, effectiveStreamId, cancellationToken);
-            SenderResolution? actSender = ResolveSender(trustChain, senderFingerprint, senderNodeId);
-            string? creatorRootFingerprint = await ResolveCreatorRootFingerprintAsync(
-                session, target.Task, target.TaskId, record.OriginNodeId, senderNodeId, actSender, cancellationToken);
-            TaskActVerdict verdict = EvaluateTaskActVerdict(
-                classification, eventType, data, target.Task, actSender,
-                record.OriginNodeId, senderNodeId, creatorRootFingerprint);
-
-            switch (verdict)
+            // Plain MemberSafe — every entry but TaskAssigned's own special rule — is always
+            // Allowed here, exactly as EvaluateTaskActVerdict's own first check decides, without
+            // ever consulting the sender, the task, or the creator root; an owner-role sender's act
+            // is Allowed too, whatever classification says, the moment the sender alone is known.
+            // Both skip the aggregate reads below entirely — a full replay of the task stream, the
+            // run stream too for a Run act, and (inside the creator-root backfill) a native task's
+            // own full stream fetch — none of which either verdict was ever going to consult
+            // (independent pre-PR review, cycle 4, both lenses, medium: on a bootstrap or repair
+            // applying a run's history one event at a time, that cost was quadratic in the run's
+            // own event count for every plain observation and every owner-sent act alike).
+            bool alwaysAllowed = classification == TaskActClassification.MemberSafe && eventType != typeof(TaskAssigned);
+            SenderResolution? actSender = alwaysAllowed ? null : ResolveSender(trustChain, senderFingerprint, senderNodeId);
+            if (!alwaysAllowed && actSender is not { Role: MembershipRole.Owner })
             {
-                case TaskActVerdict.Allowed:
-                    break;
+                TaskActTargetResolution target =
+                    await ResolveTaskActTargetAsync(session, eventType, effectiveStreamId, cancellationToken);
+                string? creatorRootFingerprint = await ResolveCreatorRootFingerprintAsync(
+                    session, target.Task, target.TaskId, record.OriginNodeId, senderNodeId, actSender, cancellationToken);
+                TaskActVerdict verdict = EvaluateTaskActVerdict(
+                    classification, eventType, data, target.Task, actSender,
+                    record.OriginNodeId, senderNodeId, creatorRootFingerprint);
 
-                case TaskActVerdict.Held:
-                    logger?.LogWarning(
-                        "Replicated task/run act {EventType} (origin {OriginEventId}) from sender {SenderNodeId} "
-                        + "(fingerprint {SenderFingerprint}) targets task {TaskId}, whose current assignment or "
-                        + "holder is not yet known here — held until it clears or 24 hours pass",
-                        record.EventTypeName, record.OriginEventId, senderNodeId, senderFingerprint ?? "(none)",
-                        target.TaskId);
-                    await HoldTaskActAsync(
-                        session, record, effectiveStreamId, target.TaskId, projectId, senderNodeId, senderFingerprint,
-                        originProjectKey, now, taskActCatchUpAskTaskIdsThisRead, cancellationToken);
-                    return 0;
+                switch (verdict)
+                {
+                    case TaskActVerdict.Allowed:
+                        break;
 
-                case TaskActVerdict.DroppedAndRefusedPermanently:
-                    LogTaskActDropped(record, senderNodeId, senderFingerprint, target.TaskId, permanent: true);
-                    session.Store(new ReplicatedEventRecord
-                    {
-                        Id = record.OriginEventId,
-                        StreamId = effectiveStreamId,
-                        ProjectId = projectId,
-                        AppliedAt = now,
-                        Applied = false,
-                    });
-                    await session.SaveChangesAsync(cancellationToken);
-                    return 0;
+                    case TaskActVerdict.Held:
+                        logger?.LogWarning(
+                            "Replicated task/run act {EventType} (origin {OriginEventId}) from sender {SenderNodeId} "
+                            + "(fingerprint {SenderFingerprint}) targets task {TaskId}, whose current assignment or "
+                            + "holder is not yet known here — held until it clears or 24 hours pass",
+                            record.EventTypeName, record.OriginEventId, senderNodeId, senderFingerprint ?? "(none)",
+                            target.TaskId);
+                        await HoldTaskActAsync(
+                            session, record, effectiveStreamId, target.TaskId, projectId, senderNodeId, senderFingerprint,
+                            originProjectKey, now, taskActCatchUpAskTaskIdsThisRead, cancellationToken);
+                        return 0;
 
-                case TaskActVerdict.DroppedWithoutRecording:
-                    LogTaskActDropped(record, senderNodeId, senderFingerprint, target.TaskId, permanent: false);
-                    return 0;
+                    case TaskActVerdict.DroppedAndRefusedPermanently:
+                        LogTaskActDropped(record, senderNodeId, senderFingerprint, target.TaskId, permanent: true);
+                        session.Store(new ReplicatedEventRecord
+                        {
+                            Id = record.OriginEventId,
+                            StreamId = effectiveStreamId,
+                            ProjectId = projectId,
+                            AppliedAt = now,
+                            Applied = false,
+                        });
+                        await session.SaveChangesAsync(cancellationToken);
+                        return 0;
+
+                    case TaskActVerdict.DroppedWithoutRecording:
+                        // This sender merely relayed somebody else's act (record.OriginNodeId !=
+                        // senderNodeId is exactly what earns this verdict over
+                        // DroppedAndRefusedPermanently) — the true origin may still deliver it directly.
+                        // Held, not discarded: appending anything else from this same origin on this same
+                        // stream first would let its own append push the per-origin high-water mark past
+                        // this record's own sequence, and the true origin's later direct delivery of the
+                        // identical act would then be refused as out of order for good, permanently
+                        // losing it (independent pre-PR review, cycle 4, conformance lens, high). Also
+                        // recorded as a gated drop, exactly like the sibling project-settings gate above,
+                        // so an outstanding catch-up request this exact answer would otherwise satisfy is
+                        // left standing for the true origin to answer instead.
+                        LogTaskActDropped(record, senderNodeId, senderFingerprint, target.TaskId, permanent: false);
+                        await HoldTaskActAsync(
+                            session, record, effectiveStreamId, target.TaskId, projectId, senderNodeId, senderFingerprint,
+                            originProjectKey, now, taskActCatchUpAskTaskIdsThisRead: null, cancellationToken);
+                        gatedDropOriginNodeIdsThisRead.Add(record.OriginNodeId);
+                        gatedDropStreamIdsThisRead.Add(effectiveStreamId);
+                        return 0;
+                }
             }
         }
 
@@ -1499,17 +1542,34 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             return null;
         }
 
+        // An Owner-role match wins over a Member-role match found earlier in Members order, rather
+        // than the first vouching chain found winning outright: a node's key can legitimately show
+        // up in more than one root's own chain — a Member root added before a second owner, say,
+        // that later signs a vouch for that same node's key under its own owners/ tree — and the
+        // gate this resolves for reads a Member-role result as unauthorized to do what an Owner may.
+        // Resolving to whichever chain happened to list the node first silently demoted that node
+        // to Member for every conditional or owner-only act it sent, and refused it permanently the
+        // moment it did (independent pre-PR review, cycle 4, conformance lens, medium).
         string senderNodeIdText = senderNodeId.ToString();
+        SenderResolution? firstMatch = null;
         foreach (ProjectMember member in trustChain.Members)
         {
-            if (trustChain.OwnerChains.TryGetValue(member.RootFingerprint, out TrustedOwner? owner)
-                && owner.ContainsForNode(senderFingerprint, senderNodeIdText))
+            if (!trustChain.OwnerChains.TryGetValue(member.RootFingerprint, out TrustedOwner? owner)
+                || !owner.ContainsForNode(senderFingerprint, senderNodeIdText))
             {
-                return new SenderResolution(member.RootFingerprint, member.Role, new HashSet<Guid>(owner.FleetNodeIds()));
+                continue;
             }
+
+            SenderResolution resolution = new(member.RootFingerprint, member.Role, new HashSet<Guid>(owner.FleetNodeIds()));
+            if (member.Role == MembershipRole.Owner)
+            {
+                return resolution;
+            }
+
+            firstMatch ??= resolution;
         }
 
-        return null;
+        return firstMatch;
     }
 
     /// <summary>
@@ -1994,27 +2054,46 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 // Judged fresh, not inferred from ApplyAsync's own side effects: this call's own
                 // verdict decides what happens next, so it must be known BEFORE anything is deleted
                 // or applied, never guessed at afterward from whether a row happens to remain.
-                TaskActTargetResolution target =
-                    await ResolveTaskActTargetAsync(session, eventType, current.StreamId, cancellationToken);
-                SenderResolution? sender = ResolveSender(trustChain, current.SenderFingerprint, current.SenderNodeId);
-                string? creatorRootFingerprint = await ResolveCreatorRootFingerprintAsync(
-                    session, target.Task, target.TaskId, current.OriginNodeId, current.SenderNodeId, sender,
-                    cancellationToken);
-                TaskActVerdict verdict = EvaluateTaskActVerdict(
-                    classification.Value, eventType, data, target.Task, sender, current.OriginNodeId,
-                    current.SenderNodeId, creatorRootFingerprint);
-
-                if (verdict == TaskActVerdict.Held)
+                // Plain MemberSafe (bar TaskAssigned) and an owner-role sender are both always
+                // Allowed without ever consulting the task or the creator root — skipped here the
+                // identical way ApplyAsync's own gate skips them, rather than paying for the same
+                // aggregate reads only to discard them (independent pre-PR review, cycle 4, both
+                // lenses, medium — the class sweep off that same finding).
+                bool alwaysAllowed = classification.Value == TaskActClassification.MemberSafe && eventType != typeof(TaskAssigned);
+                SenderResolution? sender = alwaysAllowed
+                    ? null
+                    : ResolveSender(trustChain, current.SenderFingerprint, current.SenderNodeId);
+                TaskActVerdict verdict = TaskActVerdict.Allowed;
+                if (!alwaysAllowed && sender is not { Role: MembershipRole.Owner })
                 {
-                    // Still held — this exact record's own verdict has not changed — so the rest of
-                    // this queue stays put behind it, in order, untouched.
+                    TaskActTargetResolution target =
+                        await ResolveTaskActTargetAsync(session, eventType, current.StreamId, cancellationToken);
+                    string? creatorRootFingerprint = await ResolveCreatorRootFingerprintAsync(
+                        session, target.Task, target.TaskId, current.OriginNodeId, current.SenderNodeId, sender,
+                        cancellationToken);
+                    verdict = EvaluateTaskActVerdict(
+                        classification.Value, eventType, data, target.Task, sender, current.OriginNodeId,
+                        current.SenderNodeId, creatorRootFingerprint);
+                }
+
+                if (verdict is TaskActVerdict.Held or TaskActVerdict.DroppedWithoutRecording)
+                {
+                    // Still held (the fact this record itself needs remains unknown), or held
+                    // because this exact relay still is not this act's own authorized sender — in
+                    // neither case has anything actually resolved, so the row stays exactly where it
+                    // is and the rest of this queue stays put behind it, in order, untouched. Deleting
+                    // it here and draining the queue behind it — the earlier shape of this branch —
+                    // would let the next-queued record's own append push the per-origin high-water
+                    // mark past this one, permanently refusing the true origin's own direct delivery
+                    // of it as out of order the moment it finally arrives (independent pre-PR review,
+                    // cycle 4, conformance lens, high).
                     break;
                 }
 
-                session.Delete<HeldTaskActRecord>(current.Id);
                 if (verdict == TaskActVerdict.DroppedAndRefusedPermanently)
                 {
-                    LogTaskActDropped(decoded, current.SenderNodeId, current.SenderFingerprint, target.TaskId, permanent: true);
+                    session.Delete<HeldTaskActRecord>(current.Id);
+                    LogTaskActDropped(decoded, current.SenderNodeId, current.SenderFingerprint, current.TaskId, permanent: true);
                     session.Store(new ReplicatedEventRecord
                     {
                         Id = decoded.OriginEventId,
@@ -2027,22 +2106,24 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                     continue;
                 }
 
-                if (verdict == TaskActVerdict.DroppedWithoutRecording)
-                {
-                    LogTaskActDropped(decoded, current.SenderNodeId, current.SenderFingerprint, target.TaskId, permanent: false);
-                    await session.SaveChangesAsync(cancellationToken);
-                    continue;
-                }
-
-                // Allowed: the delete above already cleared this record's own hold row, so
-                // ApplyAsync's identical "earlier held for this origin" check — re-run inside it,
-                // redundantly but harmlessly, since it re-derives the same verdict from the same
-                // session state — finds nothing smaller than this, the queue's own earliest, and
-                // proceeds to append it for real.
-                await session.SaveChangesAsync(cancellationToken);
+                // Allowed. The hold row is deleted only AFTER ApplyAsync's own save(s) below have
+                // already landed, whatever their outcome — staging the delete BEFORE calling
+                // ApplyAsync, and committing it in its own earlier save, would lose the record for
+                // good if this call then failed to ever reach ApplyAsync's own save: a dropped
+                // connection, a cancelled token, or the daemon stopping between the two (independent
+                // pre-PR review, cycle 4, adversarial lens, medium). It would also lose the delete
+                // itself to EjectAllPendingChanges on the poison-event path if staged beforehand and
+                // left pending — the identical reason ApplyHeldTailAsync's own doc gives for deleting
+                // its sibling table's row only after ApplyAsync returns. A stale row left behind by a
+                // crash between ApplyAsync's own save and this one is harmless either way: the next
+                // re-check decodes the identical record, ApplyAsync's own dedupe check finds it
+                // already applied (or already permanently refused) and returns 0, and this delete
+                // finally lands, exactly as ApplyHeldTailAsync's own held records already tolerate.
                 applied += await ApplyAsync(
                     session, decoded, current.SenderNodeId, current.ProjectId, current.OriginProjectKey,
                     [], [], [], [], [], [], [], [], [], trustChain, current.SenderFingerprint, now, cancellationToken);
+                session.Delete<HeldTaskActRecord>(current.Id);
+                await session.SaveChangesAsync(cancellationToken);
             }
         }
 

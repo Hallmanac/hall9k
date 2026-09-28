@@ -2123,7 +2123,12 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
 
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
-            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            // MachineName must be this real process's own Environment.MachineName: EventOriginStampingListener
+            // (the origin stamp every appended event carries) resolves "which node produced this" by
+            // matching NodeDetails.MachineName against the live process's own machine name, never the
+            // node's own id or a caller-supplied label — and both queued tasks below are Task/Run acts
+            // the classification gate judges by that exact stamp.
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, Environment.MachineName, "macOS", Now));
             await session.SaveChangesAsync(cts.Token);
         }
 
@@ -2669,7 +2674,12 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
 
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
-            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            // MachineName must be this real process's own Environment.MachineName: EventOriginStampingListener
+            // (the origin stamp every appended event carries) resolves "which node produced this" by
+            // matching NodeDetails.MachineName against the live process's own machine name, never the
+            // node's own id or a caller-supplied label — and this test's own queued task below is a
+            // Task/Run act the classification gate judges by that exact stamp.
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, Environment.MachineName, "macOS", Now));
             await session.SaveChangesAsync(cts.Token);
         }
 
