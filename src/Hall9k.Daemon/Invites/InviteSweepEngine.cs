@@ -106,6 +106,15 @@ public sealed class InviteSweepEngine(
         // scan was previously re-run from scratch per invite rather than once per project).
         Dictionary<string, IReadOnlyList<CandidateNode>> projectCandidates = [];
 
+        // Mirrors projectCandidates above, for the trust chain a node-of-owner claim's own
+        // successor-record gate reads (independent pre-PR review, cycle 2, adversarial lens,
+        // medium): GitLedgerChainReader.ComputeAsync's own doc comment already states the "once
+        // per project on every sweep tick" contract MessageSweepEngine holds to, and this cache is
+        // what keeps this sweep holding to the identical contract rather than recomputing a fresh
+        // chain — a full fetch/ls-remote/commit-replay against the ledger repository — for every
+        // outstanding node-of-owner invite that lands a claim in the same project this tick.
+        Dictionary<string, TrustChain> projectTrustChains = [];
+
         int spent = 0;
         foreach (InviteDetails invite in outstanding)
         {
@@ -117,7 +126,8 @@ public sealed class InviteSweepEngine(
                     continue;
                 }
 
-                if (await TryClaimAsync(invite, signingKey, key.Fingerprint, projectCandidates, now, cancellationToken))
+                if (await TryClaimAsync(
+                    invite, signingKey, key.Fingerprint, projectCandidates, projectTrustChains, now, cancellationToken))
                 {
                     spent++;
                 }
@@ -218,7 +228,8 @@ public sealed class InviteSweepEngine(
     /// </summary>
     private async Task<bool> TryClaimAsync(
         InviteDetails invite, LedgerSigningKey signingKey, string myFingerprint,
-        Dictionary<string, IReadOnlyList<CandidateNode>> projectCandidates, DateTimeOffset now, CancellationToken cancellationToken)
+        Dictionary<string, IReadOnlyList<CandidateNode>> projectCandidates, Dictionary<string, TrustChain> projectTrustChains,
+        DateTimeOffset now, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
 
@@ -397,7 +408,7 @@ public sealed class InviteSweepEngine(
                     // vouch flow already applies). Best-effort — the vouch itself already landed
                     // above — so a failure here is logged and swallowed rather than blocking this
                     // invite's own spend.
-                    TrustChain chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+                    TrustChain chain = await GetProjectTrustChainAsync(project.RepositoryPath, projectTrustChains, cancellationToken);
                     if (chain.OwnerChains.TryGetValue(aggregate.MinterOwnerFingerprint, out TrustedOwner? mintingOwner)
                         && mintingOwner.IsLiveRootKey(myFingerprint))
                     {
@@ -565,6 +576,26 @@ public sealed class InviteSweepEngine(
 
         cache[repositoryPath] = candidates;
         return candidates;
+    }
+
+    /// <summary>This tick's own trust chain for <paramref name="repositoryPath"/>, computed at most
+    /// once regardless of how many outstanding node-of-owner invites land a claim in this project
+    /// this tick — the same "once per project on every sweep tick" contract
+    /// <see cref="GitLedgerChainReader.ComputeAsync"/>'s own doc comment already states for
+    /// <c>MessageSweepEngine</c> (independent pre-PR review, cycle 2, adversarial lens, medium: an
+    /// uncached call here reintroduced the unbounded per-claim ledger fetch <c>StatusCommand</c>'s
+    /// own fix in this same cycle removed, just at a different call site).</summary>
+    private async Task<TrustChain> GetProjectTrustChainAsync(
+        string repositoryPath, Dictionary<string, TrustChain> cache, CancellationToken cancellationToken)
+    {
+        if (cache.TryGetValue(repositoryPath, out TrustChain? cached))
+        {
+            return cached;
+        }
+
+        TrustChain chain = await chainReader.ComputeAsync(repositoryPath, cancellationToken);
+        cache[repositoryPath] = chain;
+        return chain;
     }
 
     /// <summary>
