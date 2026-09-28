@@ -228,9 +228,17 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
         // rest on the ordinary revoke landing alone: the paired write failing must fail the whole
         // project rather than merely warn, or the target silently keeps a live root key — able to
         // revoke its own peers and rewrite membership — with nothing in `h9k status` ever saying so.
-        bool targetHoldsRootKeyStatus = chain.OwnerChains.TryGetValue(root, out TrustedOwner? ownerChain)
-            && ownerChain.Nodes.FirstOrDefault(node => node.NodeId == targetNodeId.ToString()) is { } targetNode
-            && ownerChain.IsLiveRootKey(targetNode.Fingerprint);
+        // Whether this node's own already-confirmed-live root key actually outranks the target's
+        // own root-key entry, when the target holds one. GitLedgerChainReader's own succession pass
+        // (the "chain.Take(chainIndex)" eligibility check for a revoked-successor record) never
+        // accepts that record merely because the signer is SOME live root key — it must be ranked
+        // strictly above the one it targets. SuccessionLedgerWriter writes the record unconditionally
+        // regardless (its own class doc: "write it, let the reader verify it"), so an outranked
+        // signer's write lands at the git level with no exception thrown, and the record is then
+        // silently refused on the next read — the target keeps live root-key status forever unless
+        // this is caught before it can report ordinary success (independent pre-PR review, cycle 5,
+        // adversarial lens, medium).
+        bool signerOutranksTarget = SignerOutranksTarget(chain, root, targetNodeId, myFingerprint, out bool targetHoldsRootKeyStatus);
 
         string refName = $"refs/hall9k/ledger/owners/{root}";
         string path = $"owners/{root}/revoked/{targetNodeId}.yaml";
@@ -245,6 +253,20 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
                 cancellationToken);
             if (outcome.Verdict == LedgerWriteVerdict.Written)
             {
+                // Never even attempted when it is already known to be doomed: this node is a live
+                // root key (the gate above), but not every live root key outranks the target's own
+                // — writing anyway would land at the git level and then be silently refused on the
+                // next read, reporting ordinary success while the target keeps live root-key status.
+                if (targetHoldsRootKeyStatus && !signerOutranksTarget)
+                {
+                    throw new DomainConflictException(
+                        $"Revoked node {targetNodeId}'s ordinary fleet record in '{repositoryPath}', but this "
+                        + $"node ({myFingerprint}) is not ranked above {targetNodeId}'s own root key, so its "
+                        + "revoked-successor record would be refused on read and this node currently holds a "
+                        + $"live root key, so it still would. Re-run h9k node revoke {targetNodeId} from a node "
+                        + "whose own root key outranks it.");
+                }
+
                 // Unconditional now (idea 6be68ee2, journal finding 5): the gate above already
                 // requires the revoking key to be a live root key before any push, so every
                 // revocation that lands here also revokes this node id's own successor candidacy or
@@ -282,6 +304,49 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
         throw new DomainConflictException(
             $"{path} kept changing out from under this revocation after {MaxConflictRetries} attempts — "
             + "something else is writing it at the same time. Re-run h9k node revoke once that settles.");
+    }
+
+    /// <summary>Whether <paramref name="signerFingerprint"/> is ranked above the target node's own
+    /// root-key entry, mirroring <c>GitLedgerChainReader</c>'s own <c>chain.Take(chainIndex)</c>
+    /// eligibility check for a revoked-successor record — never merely whether the signer is SOME
+    /// live root key. <paramref name="targetHoldsRootKeyStatus"/> is true only when the target
+    /// currently holds live root-key status at all; when it does not, rank is irrelevant and this
+    /// always returns true so the caller's own gate never fires.</summary>
+    private static bool SignerOutranksTarget(
+        TrustChain chain, string root, Guid targetNodeId, string signerFingerprint, out bool targetHoldsRootKeyStatus)
+    {
+        targetHoldsRootKeyStatus = false;
+        if (!chain.OwnerChains.TryGetValue(root, out TrustedOwner? ownerChain))
+        {
+            return true;
+        }
+
+        TrustedNode? targetNode = ownerChain.Nodes.FirstOrDefault(node => node.NodeId == targetNodeId.ToString());
+        if (targetNode is null || !ownerChain.IsLiveRootKey(targetNode.Fingerprint))
+        {
+            return true;
+        }
+
+        targetHoldsRootKeyStatus = true;
+        int targetRank = RankIndexOf(ownerChain.RootKeys, targetNode.Fingerprint);
+        int signerRank = RankIndexOf(ownerChain.RootKeys, signerFingerprint);
+        return signerRank >= 0 && targetRank >= 0 && signerRank < targetRank;
+    }
+
+    /// <summary>This root's own key rank: index 0 is K0, the highest rank, each later index a
+    /// rotation that landed after it — the identical order <c>TrustedOwner.RootKeys</c> itself
+    /// documents. -1 when <paramref name="fingerprint"/> is not one of this root's live keys.</summary>
+    private static int RankIndexOf(IReadOnlyList<LiveRootKey> rootKeys, string fingerprint)
+    {
+        for (int index = 0; index < rootKeys.Count; index++)
+        {
+            if (rootKeys[index].Fingerprint == fingerprint)
+            {
+                return index;
+            }
+        }
+
+        return -1;
     }
 
     private static string BuildYaml(params (string Key, string Value)[] fields)
