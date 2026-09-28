@@ -346,6 +346,19 @@ public static class CliCommandTree
                         + "trust-ledger finding 2).")
                     .WithExample("project", "member", "remove", "hall9k",
                         "3f9c2a7e1b5d84a6f0c3e2b1a9d8c7f6e5d4c3b2a1908f7e6d5c4b3a29180716");
+                member.AddCommand<ProjectMemberReaffirmCommand>("reaffirm")
+                    .WithDescription(
+                        "Rewrite a member's own members/<fingerprint>.yaml with a fresh, root-signed commit "
+                        + "that bumps issued_at while keeping role and root_fingerprint unchanged — a "
+                        + "content-changing rewrite, never a role or membership change (idea 6be68ee2). Use "
+                        + "this to re-land a member file whose last write was signed by a node that is now "
+                        + "merely vouched rather than a live root key, since the stricter members-write rule "
+                        + "judges authorization against the chain's own live state at read time, not the "
+                        + "signer's state when the write landed. Refused, before any push, unless this "
+                        + "node's own key is a live root key of an owner-role member in this project's own "
+                        + "chain.")
+                    .WithExample("project", "member", "reaffirm", "hall9k",
+                        "3f9c2a7e1b5d84a6f0c3e2b1a9d8c7f6e5d4c3b2a1908f7e6d5c4b3a29180716");
             });
             project.AddBranch("prompt-addendum", addendum =>
             {
