@@ -16,9 +16,14 @@ namespace Hall9k.Domain.Features.Message;
 /// envelope <see cref="MessageEnvelopeCodec"/> already encoded before M2 shipped still round-trips:
 /// an outbox ref written before this change carries no such field at all, and one written before
 /// this ruling may still carry the retired owner-fingerprint value — a reader on either must keep
-/// reading it rather than refuse it as malformed (<c>MessageInbox</c>/<c>EventReplicationInbox</c>
-/// resolve the local project by this key, and read null or an unrecognized value as "no opinion",
-/// never as a mismatch to refuse).
+/// reading it rather than refuse it as malformed (<c>MessageInbox</c>/<c>EventReplicationInbox</c>/
+/// <c>EventCatchUpInbox</c> resolve the local project by this key). A reader with no opinion of its
+/// own on this key yet — the receiving project has no key of its own recorded — still reads null or
+/// an unrecognized value as "no opinion" rather than a mismatch (idea 202383dc's original design).
+/// Once the receiving project DOES have a key of its own, idea 6be68ee2's trust-ledger review
+/// (finding 13) tightened this: a null or malformed key is refused the identical way a genuine
+/// mismatch is (<c>Hall9k.Connectors.Messaging.ProjectKeyMismatch</c>), since a build old enough to
+/// still send one is never honest content a keyed reader has any reason to trust.
 /// </para>
 /// </summary>
 public sealed record MessageEnvelopeV1(

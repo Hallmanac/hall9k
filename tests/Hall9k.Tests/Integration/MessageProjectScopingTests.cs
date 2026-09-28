@@ -949,6 +949,55 @@ public sealed class MessageProjectScopingTests : IClassFixture<PostgresFixture>,
         cursor.IgnoredReason.Should().Contain("project key");
     }
 
+    /// <summary>idea 6be68ee2, trust-ledger finding 13: once this project already knows its own key,
+    /// a null envelope key is refused the identical way a genuine mismatch is — the gap the shared
+    /// <see cref="ProjectKeyMismatch"/> predicate closes, since the old per-class check only ever ran
+    /// once an envelope's own key was already exactly 26 characters, waving a null key through as "no
+    /// opinion" even once this project had a key of its own. Built by hand rather than through
+    /// <see cref="MessageOutbox.FlushAsync"/>, since that call's own <c>projectKey</c> parameter is
+    /// non-nullable (MessageOutbox.cs's own doc: the current sender always stamps one) — a null wire
+    /// key is only reachable from a pre-M2 build or a hand-crafted envelope, never today's own
+    /// outbox.</summary>
+    [Fact]
+    public async Task A_null_project_key_is_refused_once_the_local_project_has_a_key_of_its_own()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        const string ownerB = "owner-b-fingerprint";
+        const string thisProjectsOwnKey = "01ARZ3NDEKTSV4RRFFQ69G5FGA";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, RepositoryX, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageInbox inbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        MessageEnvelopeV1 nullKeyEnvelope = new(
+            Seq: 1, Now, nodeA, "owner-a-fingerprint", MessageAudience.Project, About: null, MessageKind.Note,
+            "carries no project key at all", ProjectKey: null);
+        await transport.FlushAsync(
+            RepositoryX, nodeA, [new TransportEnvelope(1, MessageEnvelopeCodec.Encode(nullKeyEnvelope))], committerA,
+            signingKeyA, cts.Token);
+
+        Guid scopedProjectId = await RegisterEligibleProjectAsync("keyed-scoped", RepositoryX, cts.Token);
+        TrustChain liveTrustChain = new(new Dictionary<string, TrustedOwner>(), [], ProjectKey: thisProjectsOwnKey);
+
+        await using IDocumentSession readSession = _postgres.Store.LightweightSession();
+        MessageInboxSweepResult read = await inbox.ReadFromAsync(
+            readSession, RepositoryX, nodeA, scopedProjectId, nodeB, ownerB, Now.AddSeconds(1), trustChain: liveTrustChain,
+            cancellationToken: cts.Token);
+
+        read.EnvelopesStored.Should().Be(0, "a null project key is refused once this project already knows its own key");
+        read.SenderIgnored.Should().BeTrue();
+
+        MessageInboxDetails? cursor = await readSession.LoadAsync<MessageInboxDetails>(
+            MessageStreamId.ForInbox(nodeA, scopedProjectId), cts.Token);
+        cursor.Should().NotBeNull();
+        cursor!.SenderIgnored.Should().BeTrue();
+        cursor.IgnoredReason.Should().Contain("project key");
+    }
+
     /// <summary>idea 202383dc, M2's own compatibility rule: an envelope whose project key does not
     /// resolve to any local project at all — a legacy sender's null field, or a value this node has
     /// simply never recorded anywhere — is read normally rather than refused as malformed. This

@@ -83,7 +83,7 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
                 sendSession, nodeA, senderProjectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
                 MessageKind.Note, "only once", Now, cts.Token);
             await senderOutbox.FlushAsync(
-                sendSession, RepositoryPath, nodeA, senderProjectId, "shared-project-key", adoptUnassigned: false,
+                sendSession, RepositoryPath, nodeA, senderProjectId, "01ARZ3NDEKTSV4RRFFQ69G5FEA", adoptUnassigned: false,
                 committerA, signingKeyA, Now, cts.Token);
         }
 
@@ -117,7 +117,7 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
                     [new TrustedNode(nodeA.ToString(), $"ssh-ed25519 AAAAFAKE{nodeA:N} test", nodeAFingerprint, Now)]),
             },
             [],
-            ProjectKey: "shared-project-key");
+            ProjectKey: "01ARZ3NDEKTSV4RRFFQ69G5FEA");
 
         MessageSweepEngine engine = new(
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
@@ -258,7 +258,7 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         {
             await senderEventOutbox.QueuePendingAsync(session, nodeA, senderProjectId, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
             await senderOutbox.FlushAsync(
-                session, RepositoryPath, nodeA, senderProjectId, "shared-project-key", adoptUnassigned: false, committerA,
+                session, RepositoryPath, nodeA, senderProjectId, "01ARZ3NDEKTSV4RRFFQ69G5FEB", adoptUnassigned: false, committerA,
                 signingKeyA, Now.AddSeconds(2), cts.Token);
         }
 
@@ -274,7 +274,7 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
                     [new TrustedNode(nodeA.ToString(), "ssh-ed25519 AAAAFAKEnodea test", "node-a-fingerprint", Now)]),
             },
             [new ProjectMember("owner-a-root", MembershipRole.Owner, Now)],
-            ProjectKey: "shared-project-key");
+            ProjectKey: "01ARZ3NDEKTSV4RRFFQ69G5FEB");
 
         MessageSweepEngine engine = new(
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
@@ -351,7 +351,7 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
                     [new TrustedNode(fleet.B.Node.NodeId.ToString(), nodeBKeyLine, NodeKeyStore.Fingerprint(nodeBKeyLine), Now)]),
             },
             [new ProjectMember("owner-b-root", MembershipRole.Owner, Now)],
-            ProjectKey: "shared-project-key");
+            ProjectKey: ReplicatedFleet.ProjectKey);
         InMemoryMessageTransport transport = fleet.Transport;
         MessageSweepEngine engine = new(
             fleet.A.Store, fleet.A.Node, new MessageOutbox(transport), new MessageInbox(transport), transport,

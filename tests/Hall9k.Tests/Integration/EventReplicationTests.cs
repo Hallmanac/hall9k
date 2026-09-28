@@ -619,6 +619,66 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         }
     }
 
+    /// <summary>idea 6be68ee2, trust-ledger finding 13: once this project already knows its own key
+    /// (its live trust chain's own <see cref="TrustChain.ProjectKey"/>), a null envelope key is
+    /// refused the identical way a genuine mismatch is (<see cref="ProjectKeyMismatch"/>) — the old
+    /// per-class check only ever ran once an envelope's own key was already exactly 26 characters,
+    /// waving a null key through as "no opinion" regardless. The envelope carries an ordinary Note
+    /// kind, never an events batch: the project-key check runs before the events-kind filter, so this
+    /// alone is enough to prove the guard fires — no events envelope is required, and none was ever
+    /// built for this test.</summary>
+    [Fact]
+    public async Task A_null_project_key_is_refused_once_the_live_trust_chain_already_has_one()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        const string thisProjectsOwnKey = "01ARZ3NDEKTSV4RRFFQ69G5FHA";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        Guid scopedProjectId = DomainId.New();
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                scopedProjectId,
+                new ProjectRegistered(scopedProjectId, DomainId.New(), DomainId.New(), "Scoped", "/repo-scoped", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        MessageEnvelopeV1 nullKeyEnvelope = new(
+            Seq: 1, Now, nodeA, "owner-a-fingerprint", MessageAudience.Project, About: null, MessageKind.Note,
+            "carries no project key at all", ProjectKey: null);
+        await transport.FlushAsync(
+            RepositoryPath, nodeA, [new TransportEnvelope(1, MessageEnvelopeCodec.Encode(nullKeyEnvelope))], committer,
+            signingKey, cts.Token);
+
+        TrustChain liveTrustChain = new(new Dictionary<string, TrustedOwner>(), [], ProjectKey: thisProjectsOwnKey);
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, scopedProjectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(1),
+                trustChain: liveTrustChain, cts.Token);
+            read.SenderIgnored.Should().BeTrue("a null project key is refused once the live trust chain already has one");
+            read.EventsApplied.Should().Be(0);
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            EventReplicationInboxCursor? cursor = await session.LoadAsync<EventReplicationInboxCursor>(
+                EventReplicationStreamId.ForInboxCursor(nodeA, scopedProjectId), cts.Token);
+            cursor.Should().NotBeNull();
+            cursor!.SenderIgnored.Should().BeTrue();
+            cursor.IgnoredReason.Should().Contain("project key");
+        }
+    }
+
     /// <summary>
     /// The other half of the same disputed finding: excluding the whole Project stream from
     /// replication (the fix session's first attempt) was itself wrong, since criterion 1 makes team

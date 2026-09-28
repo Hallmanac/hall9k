@@ -3293,6 +3293,63 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await session.SaveChangesAsync(cancellationToken);
     }
 
+    /// <summary>idea 6be68ee2, trust-ledger finding 13: this class's own doc names the harm — a
+    /// foreign-keyed catch-up request answered with this project's whole event history, because the
+    /// old per-class check only ever ran once an envelope's own key was already exactly 26
+    /// characters, waving a null key through as "no opinion" regardless of what the receiving
+    /// project already knew about its own. This proves the shared <see cref="ProjectKeyMismatch"/>
+    /// predicate closes it here too: a brand-new-node bootstrap request (the broadest shape there
+    /// is — every project-scoped event this node holds) carrying no project key at all, addressed to
+    /// a node whose project already has a key of its own, is refused before it is ever answered.</summary>
+    [Fact]
+    public async Task A_null_project_key_on_a_bootstrap_request_is_refused_before_it_is_ever_answered()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const string thisProjectsOwnKey = "01ARZ3NDEKTSV4RRFFQ69G5FJA";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
+        EventCatchUpInbox catchUpInbox = new(transport, responder);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        // Node B genuinely holds real history for this project — exactly the content a foreign-keyed
+        // bootstrap request would otherwise leak in full.
+        await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now, cts.Token);
+
+        EventReplicationCodec.EventsRequestRecord bootstrapRequest = new(
+            DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, ForStreamId: null);
+        MessageEnvelopeV1 nullKeyEnvelope = new(
+            Seq: 1, Now, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), About: null, MessageKind.EventsRequest,
+            EventReplicationCodec.EncodeRequest(bootstrapRequest), ProjectKey: null);
+        await transport.FlushAsync(
+            RepositoryPath, nodeA, [new TransportEnvelope(1, MessageEnvelopeCodec.Encode(nullKeyEnvelope))], committerA,
+            signingKeyA, cts.Token);
+
+        TrustChain liveTrustChain = new(new Dictionary<string, TrustedOwner>(), [], ProjectKey: thisProjectsOwnKey);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventCatchUpInboxReadResult catchUpRead = await catchUpInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(1),
+                trustChain: liveTrustChain, cts.Token);
+            catchUpRead.RequestsAnswered.Should().Be(
+                0, "a null project key is refused before this bootstrap request is ever answered, once this "
+                + "project already knows its own key");
+        }
+
+        // Node B's own outbox never received anything at all — proof the refusal happened before
+        // EventCatchUpResponder.AnswerAsync ever queued a reply, not merely that this test never
+        // checked for one.
+        TransportReadResult fromB = await transport.ReadSinceAsync(RepositoryPath, nodeB, sinceSeq: 0, cts.Token);
+        fromB.Envelopes.Should().BeEmpty("no answer was ever queued for the refused request");
+    }
+
     private static async Task<Guid> SeedQueuedTaskAsync(
         IDocumentStore store, Guid projectId, Guid ownerId, DateTimeOffset now, CancellationToken cancellationToken)
     {

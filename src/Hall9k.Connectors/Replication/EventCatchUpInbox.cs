@@ -66,12 +66,14 @@ public sealed class EventCatchUpInbox(
 
         // This project's own ledger-derived key, resolved once — the identical resolution
         // MessageInbox.ReadFromAsync and EventReplicationInbox.ReadFromAsync both apply, so a
-        // request or decline carrying some OTHER local project's own key is refused here exactly as
-        // it already is on those two other readers of the identical outbox ref (independent pre-PR
-        // review, cycle 1, both lenses, medium/low: this was the one reader of the three that skipped
-        // the check, so a foreign-keyed bootstrap request was answered in full — this project's whole
-        // event history queued and pushed for nothing, since the requester's own EventReplicationInbox
-        // refuses the answer on the very key check this reader used to skip).
+        // request or decline carrying some OTHER local project's own key, or a null or malformed one
+        // once this project has a key of its own, is refused here exactly as it already is on those
+        // two other readers of the identical outbox ref (ProjectKeyMismatch.IsMismatchAsync, idea
+        // 6be68ee2, trust-ledger finding 13; independent pre-PR review, cycle 1, both lenses,
+        // medium/low: this was the one reader of the three that skipped the check, so a foreign-keyed
+        // bootstrap request was answered in full — this project's whole event history queued and
+        // pushed for nothing, since the requester's own EventReplicationInbox refuses the answer on
+        // the very key check this reader used to skip).
         string? localProjectKey = await ResolveLocalProjectKeyAsync(session, projectId, trustChain, cancellationToken);
 
         int answered = 0;
@@ -97,12 +99,13 @@ public sealed class EventCatchUpInbox(
 
             // Checked before the audience match below, the identical order MessageInbox.ReadFromAsync
             // and EventReplicationInbox.ReadFromAsync both apply.
-            if (envelope.ProjectKey is { Length: 26 } candidateKey
-                && await IsProjectKeyMismatchAsync(session, projectId, candidateKey, localProjectKey, cancellationToken))
+            if (await ProjectKeyMismatch.IsMismatchAsync(
+                session, projectId, envelope.ProjectKey, localProjectKey, cancellationToken))
             {
                 logger?.LogWarning(
                     "Sender {SenderNodeId}'s catch-up envelope {Seq} carries a project key that does not match "
-                    + "this project's own ledger-derived key, refused", senderNodeId, raw.Seq);
+                    + "this project's own ledger-derived key (or is missing or malformed), refused",
+                    senderNodeId, raw.Seq);
                 continue;
             }
 
@@ -337,24 +340,5 @@ public sealed class EventCatchUpInbox(
 
         ProjectDetails? localProject = await session.LoadAsync<ProjectDetails>(projectId, cancellationToken);
         return localProject?.ProjectKey;
-    }
-
-    /// <summary>Whether a genuinely 26-character <paramref name="candidateKey"/> fails to name this
-    /// project: a direct mismatch against <paramref name="localProjectKey"/> when this install
-    /// already knows it, or a hit against some OTHER local project's own recorded key when it does
-    /// not. The identical check <c>MessageInbox.ReadFromAsync</c>'s own
-    /// <c>IsProjectKeyMismatchAsync</c> applies.</summary>
-    private static async Task<bool> IsProjectKeyMismatchAsync(
-        IDocumentSession session, Guid projectId, string candidateKey, string? localProjectKey, CancellationToken cancellationToken)
-    {
-        if (localProjectKey is not null)
-        {
-            return candidateKey != localProjectKey;
-        }
-
-        ProjectDetails? resolvedByKey = await session.Query<ProjectDetails>()
-            .Where(candidate => candidate.ProjectKey == candidateKey)
-            .FirstOrDefaultAsync(cancellationToken);
-        return resolvedByKey is not null && resolvedByKey.Id != projectId;
     }
 }
