@@ -135,6 +135,14 @@ public sealed class TaskRunLocalCommand : Hall9kAsyncCommand<TaskRunLocalCommand
             return ExitCodes.Ok;
         }
 
+        // Reloaded rather than reusing the copy loaded before the prompt: an interactive approval
+        // can block on a person for as long as they take to answer, and a second invocation for the
+        // same task (another terminal, or the orchestrator window with a matching --approve) can
+        // start and record its own LocalLaunchStarted in that window. Judging the same-task
+        // admission check (RefuseOrClearExisting, below) against the stale copy would miss it and
+        // let this invocation start a second live launch alongside it.
+        run = await session.LoadAsync<RunDetails>(run.Id, cancellationToken)
+            ?? throw new DomainConflictException(LocalLaunchRefusal.NoRun(task.Id));
         RefuseOrClearExisting(session, task, run);
 
         Guid launchId = DomainId.New();

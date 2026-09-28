@@ -8,8 +8,15 @@ namespace Hall9k.Tests.Fakes;
 /// check and <c>AnsiConsole.Confirm</c>, neither of which a test can otherwise control without a
 /// real terminal (a pty fakes the former; nothing in this codebase drives the latter without
 /// blocking on real stdin).
+/// <para>
+/// <paramref name="onConfirm"/> is the seam for a test that needs to act as though the person being
+/// asked took a while to answer: it runs before <see cref="Confirm"/> returns, so a caller can use
+/// it to run something else against the same store first — standing in for a second invocation
+/// racing ahead while an interactive prompt here is still waiting on a real person.
+/// </para>
 /// </summary>
-internal sealed class FakeInteractiveConfirmation(bool isInteractive, bool confirmResult) : IInteractiveConfirmation
+internal sealed class FakeInteractiveConfirmation(bool isInteractive, bool confirmResult, Action? onConfirm = null)
+    : IInteractiveConfirmation
 {
     public bool IsInteractive { get; } = isInteractive;
 
@@ -18,6 +25,7 @@ internal sealed class FakeInteractiveConfirmation(bool isInteractive, bool confi
     public bool Confirm(string prompt, bool defaultValue)
     {
         ConfirmCalls++;
+        onConfirm?.Invoke();
         return confirmResult;
     }
 }

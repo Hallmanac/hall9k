@@ -142,6 +142,36 @@ public sealed class LocalLaunchCommandTests : IClassFixture<PostgresFixture>, IA
         await StopAsync(seeded.TaskId, cts.Token);
     }
 
+    /// <summary>
+    /// The same-task admission check has to judge the launch as it stands once the approval prompt
+    /// answers, not as it stood before the prompt was asked: an interactive <c>Confirm</c> can block
+    /// on a person for as long as they take, and a second invocation for the same task can start —
+    /// and record its own <c>LocalLaunchStarted</c> — while the first is still waiting on an answer.
+    /// This pins the fix (adversarial review, cycle 1) by having the first call's own approval
+    /// prompt start and finish that second launch before it answers yes, and checking the first call
+    /// is refused rather than starting a second live launch alongside it.
+    /// </summary>
+    [Fact]
+    public async Task A_launch_started_while_the_approval_prompt_was_waiting_is_refused_rather_than_doubled()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Seeded seeded = await SeedAsync(RunSkill(seconds: 120), cts.Token);
+
+        FakeInteractiveConfirmation racingIntoTheGap = new(
+            isInteractive: true,
+            confirmResult: true,
+            onConfirm: () => RunAsync(seeded.TaskId, cts.Token).GetAwaiter().GetResult());
+
+        Func<Task> first = () => RunAsync(seeded.TaskId, cts.Token, Mode.Start, racingIntoTheGap);
+
+        await first.Should().ThrowAsync<DomainConflictException>()
+            .Where(exception => exception.Message.Contains("is already up")
+                && exception.Message.Contains("waiting on you at step 1"));
+
+        await RunAsync(seeded.TaskId, cts.Token, Mode.Continue);
+        await StopAsync(seeded.TaskId, cts.Token);
+    }
+
     [Fact]
     public async Task Stop_ends_the_process_and_records_the_event()
     {
