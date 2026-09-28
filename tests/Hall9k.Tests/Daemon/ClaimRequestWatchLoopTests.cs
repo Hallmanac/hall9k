@@ -37,15 +37,16 @@ public sealed class ClaimRequestWatchLoopTests
     {
         // The device that establishes an owner's root never gets its own entry in Nodes (nothing
         // ever writes a owners/<root>/nodes/<id>.yaml vouch for it) — it is trusted purely because
-        // its own key self-certified the root. TrustedOwner.ContainsForNode already special-cases
-        // this (its own doc), so the root-establishing node's own genuine cooperative-take requests
-        // must still verify here.
-        TrustedOwner owner = new(OwnerRoot, "root-public-key", []);
+        // its own key self-certified the root, which GitLedgerChainReader records by attaching
+        // RootNodeId to that exact node id. TrustedOwner.ContainsForNode's own root special case
+        // (idea 6be68ee2, trust-ledger finding 7) binds on RootNodeId now, so the root-establishing
+        // node's own genuine cooperative-take requests must still verify here.
+        TrustedOwner owner = new(OwnerRoot, "root-public-key", [], RootNodeId: SenderNodeId.ToString());
         TrustChain chain = new(new Dictionary<string, TrustedOwner> { [OwnerRoot] = owner }, []);
 
         bool verified = ClaimRequestWatchLoop.IsRequesterOwnerVerified(chain, OwnerRoot, OwnerRoot, SenderNodeId);
 
-        verified.Should().BeTrue("the root's own key always qualifies for any node id, per TrustedOwner.ContainsForNode");
+        verified.Should().BeTrue("the root's own key qualifies for the exact node id the ledger attached as RootNodeId");
     }
 
     [Fact]

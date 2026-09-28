@@ -67,16 +67,22 @@ public sealed record TrustedOwner(
 
     /// <summary>
     /// Whether <paramref name="fingerprint"/> is currently vouched specifically for
-    /// <paramref name="nodeId"/> — the root's own key always qualifies regardless of
-    /// <paramref name="nodeId"/> (the root has no separate vouched-node entry of its own to bind
-    /// to), but a vouched node's key only counts here when it is bound to the exact node id it was
+    /// <paramref name="nodeId"/> — the root's own key qualifies only for <see cref="RootNodeId"/>
+    /// itself (never null-safe against an arbitrary node id: idea 6be68ee2, trust-ledger finding 7),
+    /// and a vouched node's key only counts here when it is bound to the exact node id it was
     /// vouched under. Reusing one vouched node's key to speak for a different node id is refused
     /// (independent pre-PR review, cycle 1, conformance and adversarial lenses, medium): a member
     /// who overwrites another node's own self-announced <c>node.yaml</c> to carry their own key
-    /// must never let that key answer as if it were the original node.
+    /// must never let that key answer as if it were the original node — and the identical rule now
+    /// applies to the root's own key: a node file that merely repeats the root's own public key
+    /// answers for it only when <see cref="GitLedgerChainReader"/> has actually attached that exact
+    /// node id as <see cref="RootNodeId"/> (that field's own doc: only when the node file's newest
+    /// commit is signed by the root key and still claims that root), never for a second node that
+    /// happens to declare the same key without ever having been established as the root's own device.
     /// </summary>
     public bool ContainsForNode(string fingerprint, string nodeId) =>
-        RootFingerprint == fingerprint || Nodes.Any(node => node.Fingerprint == fingerprint && node.NodeId == nodeId);
+        (RootFingerprint == fingerprint && RootNodeId == nodeId)
+        || Nodes.Any(node => node.Fingerprint == fingerprint && node.NodeId == nodeId);
 
     /// <summary>
     /// This owner's own fleet, as a de-duplicated set of node ids: <see cref="RootNodeId"/> (the
