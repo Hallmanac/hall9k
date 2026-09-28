@@ -1361,7 +1361,7 @@ another, an owner, or the whole project, over the same signed-ledger-write found
 half of identity is built too (idea 202383dc, T1): vouches and revocations
 (`owners/<root>/nodes/<node-id>.yaml`, `owners/<root>/revoked/<node-id>.yaml`) let one owner's
 already-enrolled node admit another of that owner's own nodes into the fleet (`h9k node vouch`),
-while revoking one (`h9k node revoke`) takes one of the owner's own live root keys — never merely
+while revoking one (`h9k node revoke`) takes one of the owner's own live root keys, never merely
 an already-enrolled node's, so a compromised fleet node can never revoke its own peers (idea
 6be68ee2, trust-ledger finding 2); project membership (`refs/hall9k/ledger/members`) is its own ledger ref, one
 `members/<root>.yaml` per member, genesis self-written by the first plain join (no `--owner`, no
@@ -1438,14 +1438,14 @@ gap.
 **A node revocation, a members-ref write, and a role change are each judged against the owner's own
 live root-key set at read time, not a point-in-time snapshot (idea 6be68ee2, trust-ledger finding
 2).** A member file whose last write was signed by a node that is later demoted from a live root
-key — the one active succession heir whose rank a root revokes, since no other write path signs
-membership with anything but K0 — stops being authorized the moment that is true, and only a fresh
+key (the one active succession heir whose rank a root revokes, since no other write path signs
+membership with anything but K0) stops being authorized the moment that is true, and only a fresh
 root-signed write (an ordinary same-role re-invite, if it happens to change nothing, or `h9k project
-member reaffirm`, if it does not) brings it current again — accepted as the correct behavior of the
-walked live-state model, not a design gap. `h9k node revoke`, `h9k project invite`, `h9k project
-member remove`, and `h9k project assign-key` all refuse before any push when this node's own key is
-not itself a live root key of the owner, naming the root and the command to re-run from a node that
-holds one.
+member reaffirm`, if it does not) brings it current again. This is accepted as the correct behavior
+of the walked live-state model, not a design gap. `h9k node revoke`, `h9k project invite`, `h9k
+project member remove`, and `h9k project assign-key` all refuse before any push when this node's own
+key is not itself a live root key of the owner, naming the root and the command to re-run from a
+node that holds one.
 
 The peer-to-peer branch's reachability half is still only a design (mDNS on the LAN, hole
 punching, a relay on 443, QUIC throughout), written down in
