@@ -1547,9 +1547,15 @@ public static class CliCommandTree
                     + "at the next one. It refuses when the worktree is gone, when the project has no run "
                     + "skill (nothing records how it is started, and this will not guess), or when a launch of "
                     + "the same task is already up. --stop ends it; so does the task closing out or the "
-                    + "worktree being removed, so nothing is left running.")
+                    + "worktree being removed, so nothing is left running. Before any step runs, this compares "
+                    + "the plan's own steps against the last ones this node approved for this project: an "
+                    + "unchanged plan runs immediately, and a changed or first-ever one prints every step and "
+                    + "asks — a y/n in an interactive terminal, or, non-interactively, a matching --approve "
+                    + "<fingerprint> or nothing runs. Refused for a dispatched session; run it from the "
+                    + "orchestrator window instead.")
                 .WithExample("task", "run-local", "28b19893")
                 .WithExample("task", "run-local", "28b19893", "--continue")
+                .WithExample("task", "run-local", "28b19893", "--approve", "a1b2c3d4e5f6")
                 .WithExample("task", "run-local", "28b19893", "--stop");
             task.AddCommand<TaskAbandonCommand>("abandon")
                 .WithDescription(

@@ -14,6 +14,7 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
+using Hall9k.Cli.Infrastructure;
 using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
 using Marten;
@@ -361,6 +362,111 @@ public sealed class LocalLaunchCommandTests : IClassFixture<PostgresFixture>, IA
             .WithMessage(LocalLaunchRefusal.NothingToContinue(seeded.TaskId));
     }
 
+    /// <summary>
+    /// The step-approval gate end to end (security review idea 6be68ee2, process-injection finding
+    /// 3): the first run on a node is a changed plan, a non-interactive caller with no matching
+    /// <c>--approve</c> refuses having started nothing, and the identical caller with the
+    /// fingerprint it was just refused over succeeds. <see cref="LocalLaunchStepApprovalTests"/> and
+    /// <see cref="Cli.TaskRunLocalCommandGateTests"/> cover the pure decisions this exercises end to
+    /// end against a real store.
+    /// </summary>
+    [Fact]
+    public async Task A_changed_run_skill_refuses_non_interactively_without_a_matching_approve_then_runs_with_one()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        string skill = RunSkill(seconds: 120);
+        Seeded seeded = await SeedAsync(skill, cts.Token);
+        RunSkillPlan plan = RunSkillSteps.Parse(skill);
+        string shortFingerprint =
+            LocalLaunchStepApproval.ShortFingerprint(LocalLaunchStepApproval.Fingerprint(plan.Steps));
+        FakeInteractiveConfirmation nonInteractive = new(isInteractive: false, confirmResult: true);
+
+        Func<Task> refused = () => RunAsync(seeded.TaskId, cts.Token, Mode.Start, nonInteractive);
+
+        await refused.Should().ThrowAsync<DomainBusinessRuleException>()
+            .Where(exception => exception.Message.Contains("--approve")
+                && exception.Message.Contains(shortFingerprint));
+        (await OptionalLaunchAsync(seeded.RunId, cts.Token)).Should().BeNull(
+            "a refused approval must record no LocalLaunchStarted");
+
+        string up = await RunAsync(seeded.TaskId, cts.Token, Mode.Start, nonInteractive, shortFingerprint);
+
+        up.Should().Contain(shortFingerprint);
+        (await LaunchAsync(seeded.RunId, cts.Token)).AwaitingHumanAtStep.Should().Be(1);
+
+        await StopAsync(seeded.TaskId, cts.Token);
+    }
+
+    /// <summary>
+    /// An unchanged plan never re-asks: after the run above already approved this project's run
+    /// skill on this node, a fresh task standing the identical project up again runs straight
+    /// through a non-interactive caller with no <c>--approve</c> at all — if it tried to ask, it
+    /// would refuse, so reaching the human step proves it never asked.
+    /// </summary>
+    [Fact]
+    public async Task An_unchanged_run_skill_runs_without_asking()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        string skill = RunSkill(seconds: 120);
+        Seeded first = await SeedAsync(skill, cts.Token);
+        await RunAsync(first.TaskId, cts.Token);
+        await StopAsync(first.TaskId, cts.Token);
+
+        Seeded second = await SeedSecondTaskAsync(first, cts.Token);
+        FakeInteractiveConfirmation nonInteractiveNeverConfirmed = new(isInteractive: false, confirmResult: false);
+
+        string up = await RunAsync(second.TaskId, cts.Token, Mode.Start, nonInteractiveNeverConfirmed);
+
+        up.Should().NotContain("Fingerprint:", "an unchanged plan is never printed for approval");
+        (await LaunchAsync(second.RunId, cts.Token)).AwaitingHumanAtStep.Should().Be(1);
+
+        await StopAsync(second.TaskId, cts.Token);
+    }
+
+    /// <summary>
+    /// Never executed, whatever this node has approved before (security review idea 6be68ee2,
+    /// process-injection finding 3): a control character in a step's own command would let a
+    /// terminal echo something other than what the string actually contains, so it is refused
+    /// outright rather than printed and asked about.
+    /// </summary>
+    [Fact]
+    public async Task A_step_with_a_control_character_is_refused()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        string skill = $"""
+            ## Prerequisites
+
+            None.
+
+            ## One-time setup
+
+            None.
+
+            ## Launch
+
+            - Start it: `echo hi{(char)0x1b}[2J`
+
+            ## How to know it is up
+
+            The log prints `ready`.
+
+            ## Address or entry point
+
+            http://localhost:5000/app
+
+            ## Human steps
+
+            None.
+            """;
+        Seeded seeded = await SeedAsync(skill, cts.Token);
+
+        Func<Task> launch = () => RunAsync(seeded.TaskId, cts.Token);
+
+        await launch.Should().ThrowAsync<DomainBusinessRuleException>()
+            .Where(exception => exception.Message.Contains("Step 1"));
+        (await OptionalLaunchAsync(seeded.RunId, cts.Token)).Should().BeNull();
+    }
+
     private LocalLaunchSweepEngine Sweep(NodeContext node) =>
         new(_postgres.Store, node, NullLogger<LocalLaunchSweepEngine>.Instance);
 
@@ -374,16 +480,29 @@ public sealed class LocalLaunchCommandTests : IClassFixture<PostgresFixture>, IA
 
     private async Task<string> RunAsync(Guid taskId, CancellationToken cancellationToken, Mode mode = Mode.Start)
     {
+        // Always answers yes to the step-approval gate: these tests are about the launch's own
+        // mechanics, not the gate (LocalLaunchStepApprovalTests, TaskRunLocalCommandGateTests, and
+        // the dedicated gate cases in this class cover that), so every Start call here is treated
+        // as an attended operator who has already read and approved the plan.
+        return await RunAsync(
+            taskId, cancellationToken, mode, new FakeInteractiveConfirmation(isInteractive: true, confirmResult: true));
+    }
+
+    private async Task<string> RunAsync(
+        Guid taskId, CancellationToken cancellationToken, Mode mode, IInteractiveConfirmation confirmation,
+        string? approve = null)
+    {
         TaskRunLocalCommand.Settings settings = new()
         {
             Task = taskId.ToString(),
             Continue = mode == Mode.Continue,
             Stop = mode == Mode.Stop,
+            Approve = approve,
         };
         return await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
         {
             await using IDocumentSession session = _postgres.Store.LightweightSession();
-            await TaskRunLocalCommand.RunAsync(session, settings, cancellationToken);
+            await TaskRunLocalCommand.RunAsync(session, settings, confirmation, cancellationToken);
         });
     }
 
@@ -396,6 +515,15 @@ public sealed class LocalLaunchCommandTests : IClassFixture<PostgresFixture>, IA
         RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
             ?? throw new InvalidOperationException($"No run {runId}.");
         return run.LocalLaunch ?? throw new InvalidOperationException($"Run {runId} recorded no local launch.");
+    }
+
+    /// <summary>The same read as <see cref="LaunchAsync"/>, but null rather than a throw when nothing was ever recorded — a refusal proving it started nothing.</summary>
+    private async Task<LocalLaunchState?> OptionalLaunchAsync(Guid runId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession session = _postgres.Store.QuerySession();
+        RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
+            ?? throw new InvalidOperationException($"No run {runId}.");
+        return run.LocalLaunch;
     }
 
     /// <summary>
@@ -477,7 +605,45 @@ public sealed class LocalLaunchCommandTests : IClassFixture<PostgresFixture>, IA
                 Now, RunDirectory: Path.Combine(projectHome, "runs", runId.ToString())));
         await session.SaveChangesAsync(cancellationToken);
 
-        return new Seeded(node, taskId, runId, worktree);
+        return new Seeded(node, projectId, taskId, runId, worktree);
+    }
+
+    /// <summary>
+    /// A second task and run over the SAME project as <paramref name="existing"/> — never a second
+    /// <c>ProjectAggregate</c> registration, since the step-approval fingerprint this exercises is
+    /// scoped per project on this node (<see cref="ProjectDetails.LastApprovedRunSkillStepFingerprint"/>),
+    /// not per task, so a fresh project of the identical name would carry no approval history at all.
+    /// </summary>
+    private async Task<Seeded> SeedSecondTaskAsync(Seeded existing, CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        string projectHome = Path.Combine(_scopedHome.Home, "projects", ProjectName);
+        string worktree = Path.Combine(projectHome, "repo", $"wt-{DomainId.Short(taskId)}");
+        Directory.CreateDirectory(worktree);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        TaskAdded added = TaskDecider.Add(
+            taskId, existing.ProjectId, "Review another change", ["The findings report is walked."],
+            TaskType.PrReview, null, null, null, Now, existing.Node.OwnerId);
+        TaskAggregate task = new();
+        task.Apply(added);
+        TaskPublished published = TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now, existing.Node.OwnerId);
+        task.Apply(published);
+        TaskAssigned assigned = TaskDecider.Assign(task, existing.Node.OwnerId, [], Now, existing.Node.OwnerId);
+        task.Apply(assigned);
+        TaskClaimed claimed = TaskDecider.Claim(task, existing.Node.NodeId, existing.Node.OwnerId, runId, Now);
+        task.Apply(claimed);
+        session.Events.StartStream<TaskAggregate>(taskId, [added, published, assigned, claimed]);
+        session.Events.StartStream<RunAggregate>(
+            runId,
+            new RunDispatched(
+                runId, taskId, existing.Node.NodeId, existing.Node.OwnerId, LeaseGeneration: 1,
+                SessionId: DomainId.New(), WorktreePath: worktree, Branch: "pr/43", ExecutorMode.Subscription,
+                Now, RunDirectory: Path.Combine(projectHome, "runs", runId.ToString())));
+        await session.SaveChangesAsync(cancellationToken);
+
+        return new Seeded(existing.Node, existing.ProjectId, taskId, runId, worktree);
     }
 
     /// <summary>A command that prints and exits, on whichever shell this machine runs.</summary>
@@ -505,5 +671,5 @@ public sealed class LocalLaunchCommandTests : IClassFixture<PostgresFixture>, IA
             ? $"set PORT=5000 && ping -n {seconds + 1} 127.0.0.1"
             : $"PORT=5000 sleep {seconds}";
 
-    private sealed record Seeded(NodeContext Node, Guid TaskId, Guid RunId, string Worktree);
+    private sealed record Seeded(NodeContext Node, Guid ProjectId, Guid TaskId, Guid RunId, string Worktree);
 }

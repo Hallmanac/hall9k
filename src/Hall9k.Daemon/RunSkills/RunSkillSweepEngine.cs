@@ -12,6 +12,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -428,7 +429,11 @@ public sealed class RunSkillSweepEngine(
         }
 
         await using IDocumentSession session = store.LightweightSession();
-        session.Events.Append(project.Id, recorded);
+        StreamAction stream = session.Events.Append(project.Id, recorded);
+        // The ProjectDetails projection reading the recording node off this event is Inline, so
+        // the node has to be on the event before the save reaches EventOriginStampingListener —
+        // the same ordering EventRecordingNode's own doc requires (LearnCommand's identical stamp).
+        EventRecordingNode.StampAtAppend(stream, node.NodeId);
         await session.SaveChangesAsync(cancellationToken);
     }
 

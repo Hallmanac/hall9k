@@ -2,7 +2,9 @@ using System.ComponentModel;
 using System.Globalization;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -59,6 +61,16 @@ public sealed class TaskRunLocalCommand : Hall9kAsyncCommand<TaskRunLocalCommand
             + "down on its own when the task closes out or the worktree is removed, so this is for "
             + "finishing early rather than for cleaning up after yourself.")]
         public bool Stop { get; init; }
+
+        [CommandOption("--approve <FINGERPRINT>")]
+        [Description(
+            "Approve a changed or first-time run skill plan for a non-interactive session (the "
+            + "orchestrator window through Bash, this command's designed caller): the short "
+            + "fingerprint printed above the steps, copied back verbatim once a person has read them "
+            + "and said yes to exactly those steps. Ignored in an interactive terminal, which asks "
+            + "y/n instead. There is no --yes: a bare skip-the-prompt flag cannot bind approval to "
+            + "the exact steps shown, and an unchanged plan already runs without asking either way.")]
+        public string? Approve { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -72,12 +84,18 @@ public sealed class TaskRunLocalCommand : Hall9kAsyncCommand<TaskRunLocalCommand
 
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
-        return await RunAsync(session, settings, cancellationToken);
+        return await RunAsync(session, settings, new ConsoleInteractiveConfirmation(), cancellationToken);
     }
 
-    /// <summary>Internal so the integration tier can drive the whole command against a real store rather than only its parts.</summary>
+    /// <summary>
+    /// Internal so the integration tier can drive the whole command against a real store rather
+    /// than only its parts. <paramref name="confirmation"/> seams the house interactive-confirm
+    /// check (<see cref="IInteractiveConfirmation"/>, the same pattern <c>OwnerPromoteCommand</c>
+    /// uses) so a test drives the step-approval gate against a fake rather than a real terminal.
+    /// </summary>
     internal static async Task<int> RunAsync(
-        IDocumentSession session, Settings settings, CancellationToken cancellationToken)
+        IDocumentSession session, Settings settings, IInteractiveConfirmation confirmation,
+        CancellationToken cancellationToken)
     {
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Task, cancellationToken);
         TaskDetails task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
@@ -86,11 +104,12 @@ public sealed class TaskRunLocalCommand : Hall9kAsyncCommand<TaskRunLocalCommand
 
         return settings.Stop ? await StopAsync(session, task, run, cancellationToken)
             : settings.Continue ? await ContinueAsync(session, task, run, cancellationToken)
-            : await StartAsync(session, task, run, cancellationToken);
+            : await StartAsync(session, task, run, settings, confirmation, cancellationToken);
     }
 
     private static async Task<int> StartAsync(
-        IDocumentSession session, TaskDetails task, RunDetails run, CancellationToken cancellationToken)
+        IDocumentSession session, TaskDetails task, RunDetails run, Settings settings,
+        IInteractiveConfirmation confirmation, CancellationToken cancellationToken)
     {
         string worktree = RequireWorktree(task, run);
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
@@ -104,10 +123,21 @@ public sealed class TaskRunLocalCommand : Hall9kAsyncCommand<TaskRunLocalCommand
             throw new DomainBusinessRuleException(LocalLaunchRefusal.RunSkillHasNoSteps(project.Name));
         }
 
+        RefuseUnsafeSteps(plan, project.Name);
+
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        StepApprovalOutcome approval = await ConfirmStepsAsync(
+            session, project, plan, settings, confirmation, task.Id, context.OwnerId, context.NodeId,
+            cancellationToken);
+        if (approval == StepApprovalOutcome.Declined)
+        {
+            AnsiConsole.MarkupLine("[dim]Declined — nothing was run.[/]");
+            return ExitCodes.Ok;
+        }
+
         RefuseOrClearExisting(session, task, run);
 
         Guid launchId = DomainId.New();
-        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         session.Events.Append(
             run.Id,
             new LocalLaunchStarted(
@@ -128,6 +158,143 @@ public sealed class TaskRunLocalCommand : Hall9kAsyncCommand<TaskRunLocalCommand
             Path.GetDirectoryName(log) is { Length: > 0 } directory ? directory : worktree);
         File.WriteAllText(log, string.Empty);
         return await WalkAndRecordAsync(session, task, run, launchId, plan, worktree, log, 1, cancellationToken);
+    }
+
+    /// <summary>
+    /// Refuses outright, before a single step runs, whenever any step's own command carries a
+    /// character a terminal or a shell would obey rather than treat as plain text (security review
+    /// idea 6be68ee2, process-injection finding 3) — regardless of whether this plan is otherwise
+    /// unchanged from one this node already approved: an earlier approval was given to a string
+    /// that could not have carried this character and printed safely at the same time, so nothing
+    /// here is ever entitled to run just because its fingerprint happens to match.
+    /// </summary>
+    private static void RefuseUnsafeSteps(RunSkillPlan plan, string projectName)
+    {
+        RunSkillStep? unsafeStep = plan.Steps.FirstOrDefault(
+            step => step.Command.IsNotBlank() && RelayedText.HasUnsafeCharacter(step.Command));
+        if (unsafeStep is { } step)
+        {
+            throw new DomainBusinessRuleException(
+                LocalLaunchRefusal.UnsafeStepCommand(projectName, step.Number, step.Section));
+        }
+    }
+
+    /// <summary>Which of the three shapes a plan's own approval took, so <see cref="StartAsync"/> knows whether to keep going.</summary>
+    private enum StepApprovalOutcome
+    {
+        /// <summary>The plan matches what this node last approved — nothing new to show or record.</summary>
+        Unchanged,
+
+        /// <summary>The plan changed (or this is the first run on this node) and an operator approved exactly it, just now.</summary>
+        ApprovedNow,
+
+        /// <summary>An interactive operator was shown the plan and said no.</summary>
+        Declined,
+    }
+
+    /// <summary>What a changed plan's own approval question resolved to, once it was asked.</summary>
+    internal enum StepApprovalDecision
+    {
+        /// <summary>Approved, either by an interactive y or a matching non-interactive --approve.</summary>
+        Approve,
+
+        /// <summary>An interactive operator said no.</summary>
+        Decline,
+
+        /// <summary>Non-interactive, with no --approve matching the plan just shown.</summary>
+        Refuse,
+    }
+
+    /// <summary>
+    /// Interactive versus non-interactive, and what each accepts as a yes — deliberately pure, and
+    /// deliberately the ONLY thing about the gate that is: everything else in
+    /// <see cref="ConfirmStepsAsync"/> is printing or a store append, neither of which this decision
+    /// needs, so a test drives every combination (interactive y/n, matching/stale/absent --approve)
+    /// against <see cref="IInteractiveConfirmation"/>'s own fake with no session and no console
+    /// (security review idea 6be68ee2, process-injection finding 3). <c>internal</c> for that test.
+    /// </summary>
+    internal static StepApprovalDecision ResolveApproval(
+        IInteractiveConfirmation confirmation, string? approveFlag, string fingerprint) =>
+        confirmation.IsInteractive
+            ? confirmation.Confirm("Run these steps?", defaultValue: false)
+                ? StepApprovalDecision.Approve
+                : StepApprovalDecision.Decline
+            : LocalLaunchStepApproval.Matches(approveFlag, fingerprint)
+                ? StepApprovalDecision.Approve
+                : StepApprovalDecision.Refuse;
+
+    /// <summary>
+    /// Before any step runs: compares the current plan's own fingerprint
+    /// (<see cref="LocalLaunchStepApproval"/>) against the last one this node approved for this
+    /// project and, when they differ, prints every step and asks — interactively with a y/n, or
+    /// non-interactively by requiring a matching <c>--approve</c> — refusing rather than running on
+    /// a bare <c>--yes</c>-style skip, which this command deliberately never offers, since approval
+    /// has to be bound to the exact steps just shown, not merely to "don't ask" (security review
+    /// idea 6be68ee2, process-injection finding 3).
+    /// </summary>
+    private static async Task<StepApprovalOutcome> ConfirmStepsAsync(
+        IDocumentSession session, ProjectDetails project, RunSkillPlan plan, Settings settings,
+        IInteractiveConfirmation confirmation, Guid taskId, Guid ownerId, Guid thisNodeId,
+        CancellationToken cancellationToken)
+    {
+        string fingerprint = LocalLaunchStepApproval.Fingerprint(plan.Steps);
+        if (!LocalLaunchStepApproval.Changed(project.LastApprovedRunSkillStepFingerprint, plan.Steps))
+        {
+            return StepApprovalOutcome.Unchanged;
+        }
+
+        await PrintStepsForApprovalAsync(session, project, plan, fingerprint, thisNodeId, cancellationToken);
+
+        switch (ResolveApproval(confirmation, settings.Approve, fingerprint))
+        {
+            case StepApprovalDecision.Decline:
+                return StepApprovalOutcome.Declined;
+            case StepApprovalDecision.Refuse:
+                throw new DomainBusinessRuleException(
+                    LocalLaunchRefusal.StepsNeedApproval(
+                        taskId, LocalLaunchStepApproval.ShortFingerprint(fingerprint)));
+        }
+
+        session.Events.Append(
+            project.Id,
+            new ProjectRunSkillStepsApproved(project.Id, fingerprint, ownerId, DateTimeOffset.UtcNow));
+        return StepApprovalOutcome.ApprovedNow;
+    }
+
+    /// <summary>
+    /// Every step of a changed (or first-ever) plan, in order, its command passed through
+    /// <see cref="ExternalText.ForTerminalMarkup"/> rather than plain markup escaping — the same
+    /// character stripping <see cref="RefuseUnsafeSteps"/> would already have refused any actual
+    /// control or layout-override character over, but the belt this command wears alongside that
+    /// braces regardless — plus who recorded the run skill being approved, so an operator can judge
+    /// it before saying yes.
+    /// </summary>
+    private static async Task PrintStepsForApprovalAsync(
+        IDocumentSession session, ProjectDetails project, RunSkillPlan plan, string fingerprint, Guid thisNodeId,
+        CancellationToken cancellationToken)
+    {
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine(project.LastApprovedRunSkillStepFingerprint is null
+            ? "[yellow]This is the first time this node has run this project's run skill.[/]"
+            : "[yellow]This project's run skill's steps have changed since this node last ran them here.[/]");
+        string provenance = await RunSkillProvenanceDisplay.LineAsync(session, project, thisNodeId, cancellationToken);
+        if (provenance.IsNotBlank())
+        {
+            AnsiConsole.MarkupLine($"[dim]{provenance}[/]");
+        }
+
+        AnsiConsole.WriteLine();
+        foreach (RunSkillStep step in plan.Steps)
+        {
+            string text = step.Kind == RunSkillStepKind.Command
+                ? ExternalText.ForTerminalMarkup(step.Command)
+                : $"(human step) {ExternalText.ForTerminalMarkup(step.Text)}";
+            AnsiConsole.MarkupLine($"[dim]{step.Number}. ({step.Section.EscapeMarkup()})[/] {text}");
+        }
+
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine(
+            $"[dim]Fingerprint:[/] {LocalLaunchStepApproval.ShortFingerprint(fingerprint).EscapeMarkup()}");
     }
 
     private static async Task<int> ContinueAsync(

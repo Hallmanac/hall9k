@@ -44,7 +44,7 @@ internal enum DispatchedSessionAccess
 /// Allowed verbs (<c>learn record</c>/<c>retire</c>/<c>distill</c>, <c>decide record</c> — which already
 /// carries its own attendance refusal (Decisions Log, <c>DecisionDecider</c>) — the task-lifecycle reporting verbs
 /// <c>register-session</c>, <c>verify</c>, <c>deliver</c>, <c>handback</c>, <c>release</c>,
-/// <c>log-interaction</c>, <c>write-jira</c>, <c>run-local</c>, <c>pr reply</c>, <c>pr reply-guard</c>,
+/// <c>log-interaction</c>, <c>write-jira</c>, <c>pr reply</c>, <c>pr reply-guard</c>,
 /// <c>pr review-git-guard</c>, <c>orchestrator feed</c>, and <c>idea add</c>) are exactly what a dispatched session legitimately
 /// does with its own run — <c>pr reply</c> posts no lifecycle state of its own and is the only route a
 /// review-feedback follow-up has into a review thread at all (<c>PullRequestReplyCommand</c>'s own
@@ -59,6 +59,15 @@ internal enum DispatchedSessionAccess
 /// exception to that rule, not evidence the rule does not apply elsewhere — an idea is a raw,
 /// non-committal note with no dispatch of its own, never itself an addition to the task or epic
 /// backlog the way <c>task add</c> and <c>epic add</c> are.
+/// </para>
+/// <para>
+/// <c>task run-local</c> moved from allowed to refused (security review idea 6be68ee2,
+/// process-injection finding 3): unlike every verb the carve-out above actually names, no
+/// dispatched session's own prompt ever calls it — the two skills that do (walk-pr-review-findings,
+/// orchestrator-recipe-generator) both run in the orchestrator window, never inside a dispatched
+/// run's own worktree — and its own step-approval gate refuses a non-interactive caller outright
+/// with no <c>--approve</c> match regardless of this classification, so the refusal here is
+/// belt-and-suspenders against a dispatched session finding some other way to invoke it.
 /// </para>
 /// </summary>
 internal static class DispatchedSessionCommandClassification
@@ -96,7 +105,7 @@ internal static class DispatchedSessionCommandClassification
             [typeof(TaskWriteJiraCommand.Settings)] = (DispatchedSessionAccess.Allowed, "task write-jira"),
             [typeof(TaskLinkIssueCommand.Settings)] = (DispatchedSessionAccess.Refused, "task link-issue"),
             [typeof(TaskLogInteractionCommand.Settings)] = (DispatchedSessionAccess.Allowed, "task log-interaction"),
-            [typeof(TaskRunLocalCommand.Settings)] = (DispatchedSessionAccess.Allowed, "task run-local"),
+            [typeof(TaskRunLocalCommand.Settings)] = (DispatchedSessionAccess.Refused, "task run-local"),
             [typeof(TaskAbandonCommand.Settings)] = (DispatchedSessionAccess.Refused, "task abandon"),
             [typeof(TaskRetryCommand.Settings)] = (DispatchedSessionAccess.Refused, "task retry"),
             [typeof(TaskResolveCommand.Settings)] = (DispatchedSessionAccess.Refused, "task resolve"),

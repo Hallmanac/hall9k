@@ -5,7 +5,9 @@ using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.Exceptions;
+using JasperFx.Events;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -86,7 +88,11 @@ public sealed class ProjectRunSkillSetCommand : Hall9kAsyncCommand<ProjectRunSki
         ProjectRunSkillRecorded recorded = ProjectDecider.RecordRunSkill(
             project.Id, RunSkillDocument.Compose(shape, body), shape, RunSkillAuthor.Hand, settings.AgainstCommit,
             context.OwnerId, DateTimeOffset.UtcNow);
-        session.Events.Append(project.Id, recorded);
+        StreamAction stream = session.Events.Append(project.Id, recorded);
+        // The ProjectDetails projection reading the recording node off this event is Inline, so the
+        // node has to be on the event before the save reaches EventOriginStampingListener — the
+        // same ordering EventRecordingNode's own doc requires (LearnCommand's identical stamp).
+        EventRecordingNode.StampAtAppend(stream, context.NodeId);
         await session.SaveChangesAsync(cancellationToken);
 
         AnsiConsole.MarkupLine(
