@@ -212,15 +212,23 @@ public sealed class ClaimRequestWatchLoop(
         // node's own declared login from its node.yaml (the 37749bc6 declaration, TrustChain
         // .NodeDeclarations) before TaskTakeRequested is ever appended, so both the auto-grant below
         // and the manual h9k task grant path (which reads the stored PendingTakeRequesterTrackerIdentity)
-        // see the declared value. A Jira-gated request is untouched: the declaration carries no Jira
-        // identity, and the carried accountId is already recorded on TaskTakeRequested as an audit
-        // fact.
+        // see the declared value. Replaced whenever the task is not already known to be Jira-linked —
+        // never gated on the project's own ClaimGate or on whether the task is linked to a GitHub item
+        // yet, because both can change between this request landing and the eventual grant (a later
+        // --claim-gate change, or a later link), and GrantTrackerAssigneeBestEffortAsync re-reads both
+        // fresh at grant time; gating this replacement on their state as of the request only would let
+        // a stale unreplaced value survive to that later grant (independent pre-PR review, cycle 1,
+        // conformance and adversarial lenses, both medium). Substituting costs nothing for an
+        // ungated or unlinked task: GrantTrackerAssigneeBestEffortAsync only ever reads this value once
+        // ClaimGate and ExternalReference are both non-null at grant time anyway. A Jira-linked request
+        // is untouched: the declaration carries no Jira identity, and the carried accountId is already
+        // recorded on TaskTakeRequested as an audit fact.
         TaskDetails? taskForGate = await session.LoadAsync<TaskDetails>(request.TaskId, cancellationToken);
         WorkItemProvider? externalReferenceProvider = taskForGate?.ExternalReference is { } rawReference
             ? ExternalReference.Parse(rawReference).Provider
             : null;
         (ClaimEnvelopeCodec.ClaimRequestRecord effectiveRequest, bool trackerIdentityReplaced) =
-            ApplyDeclaredTrackerIdentity(project.ClaimGate, externalReferenceProvider, chain, request, message.FromNodeId);
+            ApplyDeclaredTrackerIdentity(externalReferenceProvider, chain, request, message.FromNodeId);
         if (trackerIdentityReplaced)
         {
             logger.LogInformation(
@@ -329,27 +337,29 @@ public sealed class ClaimRequestWatchLoop(
         chain.VouchesOwnerForNode(claimedRequesterOwnerFingerprint, senderFingerprint, senderNodeId);
 
     /// <summary>
-    /// idea 6be68ee2, trust-ledger finding 13: for a GitHub-gated request — <paramref name="claimGate"/>
-    /// is <see cref="ClaimGate.TrackerAssignee"/> and <paramref name="externalReferenceProvider"/>
-    /// names a GitHub item, never Jira — <paramref name="request"/>'s own carried
+    /// idea 6be68ee2, trust-ledger finding 13: unless <paramref name="externalReferenceProvider"/>
+    /// already names a Jira item, <paramref name="request"/>'s own carried
     /// <see cref="ClaimEnvelopeCodec.ClaimRequestRecord.RequesterTrackerIdentity"/> is replaced with
     /// <paramref name="fromNodeId"/>'s own declared GitHub login from <paramref name="chain"/>'s
     /// <see cref="TrustChain.NodeDeclarations"/> (the 37749bc6 declaration) — null when that node
     /// declared none, deliberately never falling back to the untrusted carried value: a node with no
     /// declaration never blocks the grant (<see cref="ClaimRequestEngine"/>'s own best-effort tracker
     /// move already carries the existing hand-assign warning for a null identity, decision 229), the
-    /// same fail-closed outcome as today's no-identity case. Every other shape — not gated, no
-    /// external reference yet, or a Jira item, whose declaration carries no Jira identity at all — is
-    /// returned unchanged. Pure and side-effect-free, the same reason
-    /// <see cref="IsRequesterOwnerVerified"/> is its own static method: unit-testable without a
-    /// document store, a ledger, or a daemon loop.
+    /// same fail-closed outcome as today's no-identity case. Deliberately not gated on the project's
+    /// own <see cref="ClaimGate"/> or on whether an external reference exists yet — both can still
+    /// change before the eventual grant, and <c>ClaimRequestEngine.GrantTrackerAssigneeBestEffortAsync</c>
+    /// only ever reads this value once both are resolved at grant time, so replacing it unconditionally
+    /// here (short of a confirmed Jira item, whose declaration carries no Jira identity at all) costs
+    /// nothing for an ungated or not-yet-linked task and closes the gap a request-time-only gate would
+    /// leave open (independent pre-PR review, cycle 1, conformance and adversarial lenses, both
+    /// medium). Pure and side-effect-free, the same reason <see cref="IsRequesterOwnerVerified"/> is
+    /// its own static method: unit-testable without a document store, a ledger, or a daemon loop.
     /// </summary>
     internal static (ClaimEnvelopeCodec.ClaimRequestRecord Request, bool Replaced) ApplyDeclaredTrackerIdentity(
-        ClaimGate claimGate, WorkItemProvider? externalReferenceProvider, TrustChain chain,
+        WorkItemProvider? externalReferenceProvider, TrustChain chain,
         ClaimEnvelopeCodec.ClaimRequestRecord request, Guid fromNodeId)
     {
-        if (claimGate != ClaimGate.TrackerAssignee || externalReferenceProvider is null
-            || externalReferenceProvider == WorkItemProvider.Jira)
+        if (externalReferenceProvider == WorkItemProvider.Jira)
         {
             return (request, false);
         }
