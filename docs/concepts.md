@@ -842,7 +842,18 @@ is fixed, because each persona maps to its own prompt and criteria in the platfo
   request; when none is named, the conformance lens reports `no reference supplied` rather than
   judging against imagination.
 
-**Whether a review may run the product is a per-project consent.** Both personas can launch the
+**A fourth persona, Security, is never declared — it reviews every pr-review task by default.**
+Unlike the three above, it is not a member's own choice of lens: `h9k owner set --persona` refuses
+`security` outright, since there is nothing for a member to declare. It is a standing project
+setting instead, `h9k project set <project> --security-review on|off`, **on** by default, and it
+checks the diff for injection, secrets handling, authentication and authorization, unsafe process,
+file, or network use, dependency changes, and CI or release workflow changes. It never launches
+the product — it only reads the diff — and its section joins the findings report alongside
+whatever the assignee declared. A pull request whose every changed path matches the project's own
+non-executable-path set skips it for that reason, named in the report; a CI or release workflow
+file never matches that set, so a change to one still runs the review.
+
+**Whether a review may run the product is a per-project consent.** Both of the declarable personas above (QA and the designer) can launch the
 running product on the review worktree, walk the changed flows through browser automation, and put a
 screenshot beside each finding it supports in a `Driven` section of the report, on an ephemeral port
 the session reports and then tears down. That starts a real process on this machine, so it is a

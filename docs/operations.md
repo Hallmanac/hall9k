@@ -1271,6 +1271,7 @@ h9k project set myproject --take-timeout 60                 # minutes a take req
 h9k project set myproject --non-executable-path "assets/**/*.png"   # add a glob to the paths whose diffs skip the verification gates; 'default' clears your additions
 h9k project set myproject --design-review-drive off         # the designer persona reads the diff only; on is the default
 h9k project set myproject --qa-review-drive on              # the QA persona may drive the running product; off is the default
+h9k project set myproject --security-review off             # the Security persona's own review; on is the default
 h9k project set myproject --discover-run-skill              # ask the daemon to rediscover how to stand the project up locally
 h9k project set myproject --orchestrator-feed actionable    # how much history the orchestrator feed carries; transitions is the default
 h9k project set myproject --courier-max-wait 120            # ceiling in seconds on the feed courier's batching wait; the default is 60
@@ -1300,6 +1301,19 @@ one review session per declared persona on its single worktree and branch, and i
 carries one section per persona. All three prompts are registered, so a declaration always runs
 the review it asked for; a persona added to the set before its own prompt exists is named in the
 report and in `h9k task show` as skipped rather than silently ignored.
+
+A fourth persona, Security, reviews every pr-review task regardless of what the assignee
+declared — it is not a member's own choice of lens, it is a standing project setting,
+`h9k project set <project> --security-review on|off` (**on** by default), and `h9k owner set
+--persona` refuses it outright since there is nothing for a member to declare. Its own session
+checks the diff for injection, secrets handling, authentication and authorization, unsafe process,
+file, or network use, dependency changes, and CI or release workflow changes, and its section
+lands in the findings report alongside the declared personas' own. It never drives the product, so
+neither `--design-review-drive` nor `--qa-review-drive` has an equivalent for it. A pull request
+whose every changed path matches the project's own non-executable-path set skips it for that
+reason — a diff that touches nothing buildable or testable cannot introduce the classes of defect
+it hunts for — but a change to a CI or release workflow file never matches that set, so it is
+never skipped on that account.
 
 `h9k owner set --display-name '<name>' [--project <project>]` names what teammates see for this
 member: a label only, never part of any trust or cross-check decision. With `--project`, it sets

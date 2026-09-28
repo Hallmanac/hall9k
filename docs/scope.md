@@ -973,7 +973,10 @@ the prose. They also declare zero or more review personas from the fixed set eng
 designer — `h9k owner set --persona <name>` (repeatable), cleared with `--clear-personas` — which
 decide how a pull request assigned to them is reviewed: one review session per persona on the
 pr-review task's single worktree, reported in one report sectioned in that fixed order. Declaring
-none reads as the engineer's review, which is what every member gets today. The QA review
+none reads as the engineer's review, which is what every member gets today. A fourth persona,
+Security, is never declared this way at all — it reviews every pr-review task by default,
+gated only by the project's own `--security-review on|off` setting, and its section joins the
+report regardless of what the member declared. The QA review
 reads a pull request through a blast-radius map, a covered / new-test / walk-through verdict on
 every entry, and the project's end-to-end tests run on the review worktree. The designer's own
 review answers seven lenses in a fixed order (user experience, conformance to the proposed
