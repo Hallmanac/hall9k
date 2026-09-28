@@ -789,7 +789,15 @@ public sealed class TaskAggregate
     /// <summary>GitHub's own reading of the pull request author's login at park time — the gate never matches on this, only <see cref="PrReviewGateParkedAuthorAccountId"/>.</summary>
     public string? PrReviewGateParkedAuthorLogin { get; private set; }
 
-    /// <summary>The numeric account id the membership gate actually matched against the project's own declared member ids.</summary>
+    /// <summary>
+    /// The pull request's own author account id, matched against the project's own declared
+    /// member ids. For a review-requested park this is the only signal the gate reads, so it is
+    /// always what the gate actually matched against; for a mention-triggered park it is one of
+    /// two signals the gate combines with the mentioning comment's own author (never recorded on
+    /// this card — see <c>PullRequestReviewMentionObserved</c> and <c>h9k task show</c>'s own
+    /// "Tagged by" row), so a park this field reads as a declared member can still have been
+    /// caused by the comment's own author failing the gate instead.
+    /// </summary>
     public long? PrReviewGateParkedAuthorAccountId { get; private set; }
 
     /// <summary>GitHub's own <c>authorAssociation</c> for the pull request at park time.</summary>

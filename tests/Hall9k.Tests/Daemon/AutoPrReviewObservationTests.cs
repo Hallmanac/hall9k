@@ -335,7 +335,6 @@ public sealed class AutoPrReviewObservationTests
     // internal one keeps today's collaborator behaviour and needs no membership at all.
 
     private const long Member = 111;
-    private const long OtherMember = 222;
     private const long Stranger = 999;
 
     [Fact]
@@ -434,15 +433,49 @@ public sealed class AutoPrReviewObservationTests
             .Should().Be(MembershipGateDecision.Park);
     }
 
-    [Fact]
-    public void Two_accounts_declared_across_one_members_own_nodes_both_count()
-    {
-        AutoPrReviewObservation.DecideMembershipGate(
-            isPrivate: false, explicitSetting: null, authorAccountId: Member, memberAccountIds: [Member, OtherMember])
-            .Should().Be(MembershipGateDecision.Run);
+    // A fresh mention mint's own combined gate (independent pre-PR review, cycle 3, conformance
+    // lens): the comment's own author and the pull request's own author each answer the identical
+    // pure DecideMembershipGate above, and CombineMembershipGates decides what the pair of answers
+    // means together.
 
-        AutoPrReviewObservation.DecideMembershipGate(
-            isPrivate: false, explicitSetting: null, authorAccountId: OtherMember, memberAccountIds: [Member, OtherMember])
+    [Fact]
+    public void Both_gates_running_combine_to_run()
+    {
+        AutoPrReviewObservation.CombineMembershipGates(MembershipGateDecision.Run, MembershipGateDecision.Run)
             .Should().Be(MembershipGateDecision.Run);
+    }
+
+    [Fact]
+    public void A_parked_pull_request_author_parks_the_combination_even_when_the_comment_author_runs()
+    {
+        AutoPrReviewObservation.CombineMembershipGates(MembershipGateDecision.Run, MembershipGateDecision.Park)
+            .Should().Be(MembershipGateDecision.Park,
+                "a member's own comment on a stranger's pull request must not dispatch unattended against a "
+                + "checkout the stranger controls");
+    }
+
+    [Fact]
+    public void A_parked_comment_author_parks_the_combination_even_when_the_pull_request_author_runs()
+    {
+        AutoPrReviewObservation.CombineMembershipGates(MembershipGateDecision.Park, MembershipGateDecision.Run)
+            .Should().Be(MembershipGateDecision.Park,
+                "a stranger's own comment on a member's pull request is exactly as unattended-unsafe as a "
+                + "stranger's own pull request is");
+    }
+
+    [Fact]
+    public void An_unknown_half_holds_the_combination_when_neither_half_has_already_parked()
+    {
+        AutoPrReviewObservation.CombineMembershipGates(MembershipGateDecision.Run, MembershipGateDecision.Unknown)
+            .Should().Be(MembershipGateDecision.Unknown,
+                "a combined answer is never more confident than its least certain half");
+    }
+
+    [Fact]
+    public void A_parked_half_outranks_an_unknown_half()
+    {
+        AutoPrReviewObservation.CombineMembershipGates(MembershipGateDecision.Unknown, MembershipGateDecision.Park)
+            .Should().Be(MembershipGateDecision.Park,
+                "a settled park is never softened back to a retry by the other half being unproven");
     }
 }

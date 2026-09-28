@@ -188,6 +188,29 @@ internal static class AutoPrReviewObservation
     }
 
     /// <summary>
+    /// A fresh mention mint answers two separate "who is this task unattended against" questions
+    /// the identical gate has to combine (independent pre-PR review, cycle 3, conformance lens):
+    /// the comment's own author, since the mint dispatches unattended in answer to that comment,
+    /// and the pull request's own author, since the checkout the run reviews is the pull request's
+    /// regardless of who asked for a look at it. A review-requested mint only ever has the second
+    /// question; a mention's own follow-up (<c>AttachMentionAsync</c>) only ever has the first,
+    /// because the task it attaches to already answered the second at its own mint. <see
+    /// cref="MembershipGateDecision.Park"/> wins over both other answers: a stranger's own pull
+    /// request stays parked even when a member asked about it, and a stranger's own comment stays
+    /// parked even on a member's pull request, exactly as each gate already decides alone.
+    /// <see cref="MembershipGateDecision.Unknown"/> wins over <see cref="MembershipGateDecision.Run"/>
+    /// otherwise, so a combined answer is never more confident than its least certain half.
+    /// </summary>
+    public static MembershipGateDecision CombineMembershipGates(
+        MembershipGateDecision commentGate, MembershipGateDecision authorGate) =>
+        (commentGate, authorGate) switch
+        {
+            (MembershipGateDecision.Park, _) or (_, MembershipGateDecision.Park) => MembershipGateDecision.Park,
+            (MembershipGateDecision.Unknown, _) or (_, MembershipGateDecision.Unknown) => MembershipGateDecision.Unknown,
+            _ => MembershipGateDecision.Run,
+        };
+
+    /// <summary>
     /// The outcome to record now, given whatever was recorded before. A request this install
     /// minted a task for keeps <see cref="ReviewRequestOutcome.TaskCreated"/> when a later sweep
     /// merely rediscovers that same task through the already-covered fast path: it is the same
@@ -1736,7 +1759,7 @@ public sealed class AutoPrReviewEngine(
                 try
                 {
                     if (await ProcessMentionAsync(
-                        project, setting, repository, login, cutoff, candidate, comment,
+                        project, setting, repository, login, cutoff, candidate, comment, search.Author,
                         isPrivate, membershipSetting, cancellationToken))
                     {
                         created++;
@@ -1773,7 +1796,7 @@ public sealed class AutoPrReviewEngine(
     private async Task<bool> ProcessMentionAsync(
         ProjectDetails project, AutoPrReviewSetting setting, string repository, string login,
         DateTimeOffset cutoff, ReviewRequestedPullRequest candidate, PullRequestMentionComment comment,
-        bool? isPrivate, ReviewMembershipGateSetting membershipSetting,
+        PullRequestAuthor? prAuthor, bool? isPrivate, ReviewMembershipGateSetting membershipSetting,
         CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
@@ -1785,7 +1808,7 @@ public sealed class AutoPrReviewEngine(
         }
 
         (ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)? decided = await DecideMentionAsync(
-            session, project, setting, repository, login, cutoff, candidate, comment, isPrivate,
+            session, project, setting, repository, login, cutoff, candidate, comment, prAuthor, isPrivate,
             membershipSetting, cancellationToken);
         if (decided is not { } decision)
         {
@@ -1887,7 +1910,7 @@ public sealed class AutoPrReviewEngine(
     private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)?> DecideMentionAsync(
         IDocumentSession session, ProjectDetails project, AutoPrReviewSetting setting, string repository,
         string login, DateTimeOffset cutoff, ReviewRequestedPullRequest candidate, PullRequestMentionComment comment,
-        bool? isPrivate, ReviewMembershipGateSetting membershipSetting,
+        PullRequestAuthor? prAuthor, bool? isPrivate, ReviewMembershipGateSetting membershipSetting,
         CancellationToken cancellationToken)
     {
         // The identical guessed-reference fast path DecideAsync's own comment explains at length:
@@ -1921,21 +1944,27 @@ public sealed class AutoPrReviewEngine(
             return (ReviewMentionOutcome.HeldSettingOff, null, null);
         }
 
-        // The membership gate (security review idea 6be68ee2, finding 1), applied to the COMMENT's
-        // own author for a fresh mint — never the pull request's own (independent pre-PR review,
-        // cycle 1, both lenses): the report this mint dispatches unattended answers THIS comment
-        // (CreateFromMentionAsync's own "You were asked" criterion), so a stranger's comment on a
-        // member's own pull request is exactly as unattended-unsafe as a stranger's own pull
-        // request is — the identical reasoning AttachMentionAsync's own dispatch gate already
-        // applies to a follow-up comment, and docs/cli.md's own "a review request or mention must
-        // come from a declared hall9k team member" already promised. Unknown answers null here so
-        // ProcessMentionAsync records nothing at all for this comment and reconsiders it on the
-        // next sweep: a mention comment id is otherwise decided once (ObservedReviewMention's own
-        // permanent dedup), so mint-and-park on a guess would be irreversible in a way the
-        // review-request side's retry never is.
-        MembershipGateDecision gate = AutoPrReviewObservation.DecideMembershipGate(
+        // The membership gate (security review idea 6be68ee2, finding 1), applied to BOTH the
+        // comment's own author and the pull request's own author for a fresh mint (independent
+        // pre-PR review, cycle 3, conformance lens — correcting cycle 1's "never the pull request's
+        // own" ruling, which left a stranger's own pull request dispatched unattended the moment
+        // any member mentioned the install on it): the report this mint dispatches unattended
+        // answers THIS comment (CreateFromMentionAsync's own "You were asked" criterion), so a
+        // stranger's comment on a member's own pull request is exactly as unattended-unsafe as a
+        // stranger's own pull request is — but the checkout the run actually reviews is the pull
+        // request's, regardless of who asked for a look at it, exactly as a review-requested mint's
+        // own gate already requires. CombineMembershipGates parks on either half failing and holds
+        // as Unknown when neither fails but either is unproven, so ProcessMentionAsync records
+        // nothing at all for this comment and reconsiders it on the next sweep: a mention comment id
+        // is otherwise decided once (ObservedReviewMention's own permanent dedup), so mint-and-park
+        // on a guess would be irreversible in a way the review-request side's retry never is.
+        MembershipGateDecision commentGate = AutoPrReviewObservation.DecideMembershipGate(
             isPrivate, membershipSetting.ExplicitValue, comment.AuthorAccountId,
             enrolledNodes?.TryGet(project.Id)?.MemberAccountIds);
+        MembershipGateDecision authorGate = AutoPrReviewObservation.DecideMembershipGate(
+            isPrivate, membershipSetting.ExplicitValue, prAuthor?.AccountId,
+            enrolledNodes?.TryGet(project.Id)?.MemberAccountIds);
+        MembershipGateDecision gate = AutoPrReviewObservation.CombineMembershipGates(commentGate, authorGate);
         if (gate == MembershipGateDecision.Unknown)
         {
             return null;
@@ -1944,7 +1973,7 @@ public sealed class AutoPrReviewEngine(
         try
         {
             return await CreateFromMentionAsync(
-                session, project, setting, repository, candidate, login, comment, pastCutoff,
+                session, project, setting, repository, candidate, login, comment, prAuthor, pastCutoff,
                 parked: gate == MembershipGateDecision.Park, isPrivate, membershipSetting,
                 cancellationToken);
         }
@@ -2179,9 +2208,9 @@ public sealed class AutoPrReviewEngine(
     /// </summary>
     private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)?> CreateFromMentionAsync(
         IDocumentSession session, ProjectDetails project, AutoPrReviewSetting setting, string repository,
-        ReviewRequestedPullRequest candidate, string login, PullRequestMentionComment comment, bool pastCutoff,
-        bool parked, bool? isPrivate, ReviewMembershipGateSetting membershipSetting,
-        CancellationToken cancellationToken)
+        ReviewRequestedPullRequest candidate, string login, PullRequestMentionComment comment,
+        PullRequestAuthor? prAuthor, bool pastCutoff, bool parked, bool? isPrivate,
+        ReviewMembershipGateSetting membershipSetting, CancellationToken cancellationToken)
     {
         WorkItemImporter importer = await WorkItemConnections.ImporterAsync(session, cancellationToken, processRunner: processRunner);
         ImportedWorkItem imported = await importer.ImportAsync(
@@ -2250,19 +2279,21 @@ public sealed class AutoPrReviewEngine(
         // The membership gate's own park (security review idea 6be68ee2, finding 1) — the
         // identical shape CreateOneAsync's own review-requested path follows: Add and Publish
         // land, Assign never runs, and h9k task assign is the human go. The author named here is
-        // the COMMENT's own (independent pre-PR review, cycle 1, both lenses), never the pull
-        // request's — PullRequestReviewGateParked.AuthorAccountId promises "what the gate actually
-        // matched on", and DecideMentionAsync's own gate above now matches on comment.AuthorAccountId.
-        // No association: GitHub's authorAssociation is read off the pull request's own author
-        // query, never a comment's, so it is honestly left unrecorded here rather than guessed at
-        // (AGENTS.md, never guess at unobserved facts).
+        // the pull request's own (independent pre-PR review, cycle 3, conformance lens — the gate
+        // above now matches on both the comment's own author and the pull request's, so this card
+        // carries the same "GitHub's own reading of the pull request's author" its own doc always
+        // promised, identically to CreateOneAsync's review-requested park); a park this gate reached
+        // through the comment's own author failing, rather than the pull request's, still shows a
+        // pull request author who reads as a declared member here — the comment author's own login
+        // is already on the task's PullRequestReviewMentionObserved event and this outcome's own log
+        // line, so it is not lost, only not repeated on this card.
         if (parked)
         {
             PullRequestGateParkFacts parkFacts = await ReadGateParkFactsAsync(
                 repository, candidate.Number, project.RepositoryPath, cancellationToken);
             EnrolledFleetSnapshot? fleet = enrolledNodes?.TryGet(project.Id);
             PullRequestReviewGateParked gateParked = new(
-                taskId, comment.AuthorLogin, comment.AuthorAccountId, null,
+                taskId, prAuthor?.Login, prAuthor?.AccountId, prAuthor?.Association,
                 parkFacts.HeadOwner, parkFacts.IsCrossRepository, isPrivate, parkFacts.ChangedFileCount,
                 fleet?.MemberAccountIds is { } memberIds ? [.. memberIds] : [],
                 fleet?.MembersWithoutDeclaredAccount is { } withoutDeclaration ? [.. withoutDeclaration] : [], now,

@@ -2,21 +2,26 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 
 /// <summary>
 /// This pr-review task was minted and published, but deliberately never assigned, because the
-/// membership gate found its pull request's own author was not a declared hall9k team member (or
-/// was a Bot) on a repository the gate covers (security review idea 6be68ee2, finding 1). An
-/// unassigned task never dispatches — no worktree, branch, or session exists — so this is the
-/// pre-checkout park: the human go is the existing <c>h9k task assign</c>, nothing new.
+/// membership gate found its pull request's own author, the mentioning comment's own author (a
+/// mention-triggered mint only), or both, was not a declared hall9k team member (or was a Bot) on
+/// a repository the gate covers (security review idea 6be68ee2, finding 1; independent pre-PR
+/// review, cycle 3, conformance lens, added the pull request's own author to the mention trigger's
+/// own check). An unassigned task never dispatches — no worktree, branch, or session exists — so
+/// this is the pre-checkout park: the human go is the existing <c>h9k task assign</c>, nothing new.
 /// <para>
 /// Every field here is a deterministic fact carried at mint time, never a model session's own
 /// summary (tools before tokens): <see cref="AuthorLogin"/>, <see cref="AuthorAccountId"/> and
-/// <see cref="AuthorAssociation"/> are GitHub's own reading of the pull request's author, read at
-/// zero new calls off the same timeline or mention query the mint itself already paid for.
-/// <see cref="AuthorAccountId"/> is what the gate actually matched on — never the login, which a
-/// renamed or recreated account would silently disagree with — carried beside
-/// <see cref="MemberAccountIds"/>, the project's own declared member ids as the gate read them at
-/// this exact mint, so a deleted-and-recreated account is diagnosable from the card alone: an
-/// operator can see whether the author's id is simply missing from the list, or whether it once
-/// was one of these and the underlying account no longer exists.
+/// <see cref="AuthorAssociation"/> are GitHub's own reading of the pull request's own author, read
+/// at zero new calls off the same timeline or mention query the mint itself already paid for —
+/// never the mentioning comment's own author, which is already on the task's own
+/// <c>PullRequestReviewMentionObserved</c> event and this outcome's own log line.
+/// <see cref="AuthorAccountId"/> is what the gate actually matched on for a review-requested mint;
+/// for a mention-triggered mint it is one of two signals the gate combined, so a card whose author
+/// reads as a declared member can still be parked here, by the comment's own author instead —
+/// carried beside <see cref="MemberAccountIds"/>, the project's own declared member ids as the gate
+/// read them at this exact mint, so a deleted-and-recreated account is diagnosable from the card
+/// alone: an operator can see whether the author's id is simply missing from the list, or whether
+/// it once was one of these and the underlying account no longer exists.
 /// <see cref="HeadOwner"/> and <see cref="IsCrossRepository"/> say whether the pull request's own
 /// head is a fork; <see cref="IsPrivate"/> is the repository's own visibility this sweep read —
 /// null when that read itself failed, which is what made the gate fail closed in the first place,
