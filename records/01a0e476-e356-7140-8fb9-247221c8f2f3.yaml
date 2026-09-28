@@ -28,7 +28,3 @@ context: |-
   Left alone. The ignored-sender lines (StatusCommand.cs:543 and :573; operations.md:1467) are alarms: an otherwise vouched sender whose envelope failed verification or carried a mismatched project key would print a real member's name beside traffic that likely came from someone forging that node, so they join the trust list. h9k project join's "already has an owner" line (ProjectJoinCommand.cs:818-822, ResolveOwnerDisplayAsync at :866-873) stays as it prints today: at join time the label projection does not yet hold the project, and the members ledger it reads there is deliberately unverified raw content (:836-845). Not person-facing: WorkPromptBuilder.cs:210, TaskDecider.cs:1604, AutoPrReviewEngine.cs:58. Trust-bearing: OwnerShowCommand.cs:46 and :100, StatusCommand.cs:337, :341, :543, :573, :784, ProjectMemberRemoveCommand.cs:57-141, NodeInviteCommand.cs:94, NodeVouchCommand.cs:154-156 and :178, NodeRevokeCommand.cs:146-148 and :164, TaskTakeCommand.cs:166, ProjectJoinCommand.cs:818-822, and ProjectMembersCommand's columns.
 
   Boundaries. A criterion never drives the lifecycle of another task (decision 13f11af2). Dispatched sessions must not run install, update, join, or reconcile against the live install. No em dashes in anything authored.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-09-28 07:18:39Z
