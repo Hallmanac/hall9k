@@ -1824,6 +1824,49 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task A_self_revoke_landing_before_its_own_successor_record_never_oscillates_the_fixed_point_loop()
+    {
+        // Independent pre-PR review, cycle 4, adversarial lens, medium: unlike the two scenarios
+        // above, this self-revoke lands BEFORE the successor and rotation records that would
+        // eventually promote the very same node — a shape only a hand-crafted history a compromised
+        // node pushes directly can produce, never an ordinary command flow. With rootKeys=[K0], the
+        // self-revoke is unauthorized (heir is not yet a root key), so it is refused and the
+        // successor/rotation validate, making heir a root key. But with rootKeys=[K0, heir], the
+        // self-revoke IS now authorized, at a commit index earlier than the successor record — the
+        // order-aware carve-out (5a593790a) does not protect it (revokedIndex is not > the
+        // successor's own commit index) — so the successor and rotation are refused, collapsing
+        // rootKeys back to [K0], which then makes the self-revoke unauthorized again: the two
+        // candidate sets alternate forever rather than converging. The reader must still terminate
+        // (never hang) and answer deterministically — never a result that depends on incidental
+        // history length — rather than whichever of the two states the iteration cap happened to
+        // land on.
+        string hub = _repo.CreateHub();
+        (string repositoryPath, GeneratedIdentity root) = await EstablishGenesisRootAsync(hub);
+
+        GeneratedIdentity heir = GenerateIdentity();
+        await WriteNodeFileAsync(repositoryPath, heir, heir);
+        await VouchAsync(repositoryPath, root.Fingerprint, heir, root);
+        await RevokeAsync(repositoryPath, root.Fingerprint, heir.NodeId, heir);
+        await WriteSuccessorAsync(repositoryPath, root.Fingerprint, heir, root);
+        await WriteRotationAsync(repositoryPath, root.Fingerprint, 1, heir, root.PublicKeyLine);
+
+        string readerRepo = _repo.CloneNode(hub);
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, cts.Token);
+
+        TrustedOwner owner = chain.OwnerChains[root.Fingerprint];
+        owner.RootKeys.Should().ContainSingle(key => key.Fingerprint == root.Fingerprint,
+            "the self-contradictory history never resolves the heir's own promotion, so the smaller, "
+            + "more conservative candidate root-key set the cycle ever produced wins rather than "
+            + "granting root trust to a disputed key");
+
+        // Deterministic regardless of how many times the reader is asked: the cycle-detection
+        // resolution never depends on anything but the two candidate states themselves.
+        TrustChain secondRead = await _chainReader.ComputeAsync(readerRepo, cts.Token);
+        secondRead.OwnerChains[root.Fingerprint].RootKeys.Should().BeEquivalentTo(owner.RootKeys);
+    }
+
+    [Fact]
     public async Task A_one_owner_fleet_with_no_rotation_reads_exactly_as_before()
     {
         string hub = _repo.CreateHub();
