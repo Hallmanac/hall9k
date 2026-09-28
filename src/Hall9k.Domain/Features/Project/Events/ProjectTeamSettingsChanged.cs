@@ -82,7 +82,15 @@ public sealed record ProjectTeamSettingsChanged(
     /// <see cref="ProjectSettingsChanged.SecurityReview"/>'s own doc for the default and why
     /// <see cref="Project.SecurityReviewSetting"/> and not the projection resolves it.
     /// </summary>
-    Optional<bool> SecurityReview = default)
+    Optional<bool> SecurityReview = default,
+    /// <summary>
+    /// Whether the pre-approved merge gate may trust an empty check rollup as "this project has
+    /// no CI" (security review idea 6be68ee2, daemon-consumers finding A) — a team field, because
+    /// every node closing out this project's pre-approved tasks has to read the same declaration
+    /// rather than parking on one node and merging on another. See
+    /// <see cref="ProjectSettingsChanged.CiPolicy"/>'s own doc.
+    /// </summary>
+    Optional<CiPolicy> CiPolicy = default)
 {
     /// <summary>
     /// Builds the team companion from whatever <see cref="ProjectDecider.ChangeSettings"/> just
@@ -115,7 +123,8 @@ public sealed record ProjectTeamSettingsChanged(
             || changed.DesignReviewDrive.HasValue
             || changed.QaReviewDrive.HasValue
             || changed.NonExecutablePaths.HasValue
-            || changed.SecurityReview.HasValue;
+            || changed.SecurityReview.HasValue
+            || changed.CiPolicy.HasValue;
 
         return anyTeamField
             ? new ProjectTeamSettingsChanged(
@@ -147,7 +156,8 @@ public sealed record ProjectTeamSettingsChanged(
                 changed.DesignReviewDrive,
                 changed.QaReviewDrive,
                 changed.NonExecutablePaths,
-                changed.SecurityReview)
+                changed.SecurityReview,
+                changed.CiPolicy)
             : null;
     }
 }
