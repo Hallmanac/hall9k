@@ -94,6 +94,12 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
                 // origin's tip. Moving it any earlier is what let a lost race or a rejected push
                 // leave the local ref pointing at a commit that never left this machine.
                 await SetLocalRefAsync(request.RepositoryPath, request.RefName, commitId, cancellationToken);
+
+                // And the verified tip moves right along with it: the fetch-side check alone
+                // leaves this node's own writer blind to a rewind of the very commit it just
+                // pushed, since it never re-fetches before building the next thing on top of what
+                // it wrote (independent pre-PR review, cycle 2, both lenses, high).
+                await AdvanceVerifiedRefAfterOwnWriteAsync(request.RepositoryPath, request.RefName, tip, commitId, cancellationToken);
                 return LedgerWriteOutcome.Written(commitId);
             }
 
@@ -146,6 +152,7 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
             if (pushExit == 0)
             {
                 await SetLocalRefAsync(request.RepositoryPath, request.RefName, commitId, cancellationToken);
+                await AdvanceVerifiedRefAfterOwnWriteAsync(request.RepositoryPath, request.RefName, tip, commitId, cancellationToken);
                 return LedgerWriteOutcome.Written(commitId);
             }
 
@@ -186,6 +193,7 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
             if (pushExit == 0)
             {
                 await SetLocalRefAsync(request.RepositoryPath, request.RefName, commitId, cancellationToken);
+                await AdvanceVerifiedRefAfterOwnWriteAsync(request.RepositoryPath, request.RefName, tip, commitId, cancellationToken);
                 return LedgerWriteOutcome.Written(commitId);
             }
 
@@ -346,6 +354,27 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
                 + "with whatever this node last had locally for that ref",
                 refName, repositoryPath, exception.GitError.Trim());
             return (await ResolveTipAsync(repositoryPath, refName, cancellationToken), true);
+        }
+    }
+
+    /// <summary>
+    /// Advances the verified tip to a commit this node's own write just landed on origin,
+    /// compare-and-swapped from the tip that write was built on — the one move the fetch-side
+    /// check alone can never make on this node's own behalf, since the node that just wrote a
+    /// commit is the one node that never re-fetches before building the next thing on top of it.
+    /// Without this, a rewind of this node's own last write reads back as an ordinary no-change
+    /// fetch the next time anything on this node touches the ref (independent pre-PR review,
+    /// cycle 2, both lenses, high). Skipped entirely for a registered but non-append-only ref
+    /// (<see cref="LedgerRefRegistry.MessagesPrefix"/>): that ref shape has no verified tip to
+    /// advance at all — <see cref="LedgerAppendOnlyRefFetcher"/> refuses outright to be asked.
+    /// </summary>
+    private static async Task AdvanceVerifiedRefAfterOwnWriteAsync(
+        string repositoryPath, string refName, string? previousTip, string newCommit, CancellationToken cancellationToken)
+    {
+        if (LedgerRefRegistry.TryGetEntry(refName) is { AppendOnly: true })
+        {
+            await LedgerAppendOnlyRefFetcher.AdvanceVerifiedRefAfterOwnWriteAsync(
+                GitProcessRunner, repositoryPath, refName, previousTip, newCommit, cancellationToken);
         }
     }
 

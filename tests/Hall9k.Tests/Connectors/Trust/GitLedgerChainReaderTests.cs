@@ -1693,6 +1693,18 @@ public sealed class GitLedgerChainReaderTests : IDisposable
             "the refusal is named so it reaches h9k status rather than silently healing with nothing recorded, "
             + "under its own \"ref\" kind rather than \"root\" so it never collides with a self-certification "
             + "or signature failure sharing the identical (kind, identifier, root) stream key");
+
+        // The revoker's own repository, not just a third reader: RevokeAsync's own WriteAsync call
+        // above is the only thing that ever touched ownerRepo's verified tip for this rewind, with
+        // no ComputeAsync of its own read in between to move it. Before GitLedger.WriteAsync itself
+        // advanced the verified ref on a successful push, this exact node — the one that just wrote
+        // the revocation — was the one node blind to a rewind of that same write (independent pre-PR
+        // review, cycle 2, both lenses, high).
+        TrustChain ownerAfterRewind = await _chainReader.ComputeAsync(ownerRepo, CancellationToken.None);
+
+        ownerAfterRewind.OwnerChains[owner.Fingerprint].Nodes.Should().NotContain(
+            node => node.NodeId == nodeB.NodeId.ToString(),
+            "the node that wrote the revocation must not reinstate it just because origin rewound behind it");
     }
 
     /// <summary>

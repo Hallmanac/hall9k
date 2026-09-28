@@ -789,18 +789,22 @@ public sealed class GitLedgerTests : IDisposable
             CancellationToken.None);
         second.Verdict.Should().Be(LedgerWriteVerdict.Written);
 
-        // Reading the ref moves the verified tip on to the second commit — the trust anchor this
-        // node will heal back to below.
-        LedgerFile afterSecond = await _ledger.ReadAsync(node, refName, "a.yaml", CancellationToken.None);
-        afterSecond.Content.Should().Be("v2\n");
+        // This node's own successful write moves the verified tip on to the second commit by
+        // itself, with no intervening read: the exact gap an independent review found this node
+        // blind to before that fix (independent pre-PR review, cycle 2, both lenses, high) — a
+        // rewind of this node's own last write, discovered without ever reading the ref again.
+        (int blobExit, string blobOutput, string blobError) =
+            LedgerTestRepo.RunGit(node, "rev-parse", $"{second.CommitId}:a.yaml");
+        blobExit.Should().Be(0, blobError);
+        string secondBlobId = blobOutput.Trim();
 
         // The rewind: origin (the hub) is forced straight back to the first commit, discarding the
-        // second one this node already verified.
+        // second one this node just wrote and verified.
         (int rewindExit, _, string rewindError) = LedgerTestRepo.RunGit(hub, "update-ref", refName, commit1);
         rewindExit.Should().Be(0, rewindError);
 
         LedgerWriteOutcome third = await _ledger.WriteAsync(
-            new LedgerWriteRequest(node, refName, "a.yaml", "v3\n", afterSecond.BlobId, "v3", _committer, _signingKey),
+            new LedgerWriteRequest(node, refName, "a.yaml", "v3\n", secondBlobId, "v3", _committer, _signingKey),
             CancellationToken.None);
 
         third.Verdict.Should().Be(
