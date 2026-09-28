@@ -427,8 +427,11 @@ public static class ClaudeSettingsFile
             // no allow rule for it the write is refused under dontAsk and the whole "You were
             // asked" section silently disappears from every mention-minted review (independent
             // pre-PR review, cycle 1, adversarial lens). Harmless for every other pr-review
-            // session, which never asks to write here at all.
-            $"Write(/{EscapeJsonString($"{runDirectory}/mention-answer.md")})",
+            // session, which never asks to write here at all. Built from the POSIX-normalised
+            // run directory (see AbsolutePathRule's own doc) so this rule matches on a Windows
+            // node too, not only the /tmp paths every test uses (independent pre-PR review,
+            // cycle 1, both lenses).
+            $"Write(/{EscapeJsonString($"{NormalizeForPermissionRule(runDirectory)}/mention-answer.md")})",
             .. PrReviewAllowedTools,
             .. (qaGateCommands ?? []).Select(gate => $"Bash({EscapeJsonString(gate.Command)}:*)"),
         ];
@@ -450,7 +453,25 @@ public static class ClaudeSettingsFile
     /// filesystem-root form.
     /// </summary>
     private static string AbsolutePathRule(string tool, string path) =>
-        $"{tool}(/{EscapeJsonString(path)}/**)";
+        $"{tool}(/{EscapeJsonString(NormalizeForPermissionRule(path))}/**)";
+
+    /// <summary>
+    /// A path rule spliced into this file's hand-built JSON is only ever matched by Claude Code in
+    /// forward-slash form (lesson ccc37c9c) — on a Windows node it POSIX-normalises the path it is
+    /// actually checking (<c>C:\Users\x</c> becomes <c>/c/Users/x</c>) before comparing it against
+    /// a rule, and a rule built from the native backslash path therefore never matches there. This
+    /// mirrors that normalisation so a rule built here matches on every node this platform
+    /// dispatches to, not only the POSIX ones every existing test exercises (independent pre-PR
+    /// review, cycle 1, both lenses; decisions.md lists Windows as a supported daemon host).
+    /// A path with no drive letter and no backslash — every POSIX path — passes through unchanged.
+    /// </summary>
+    private static string NormalizeForPermissionRule(string path)
+    {
+        string normalized = path.Replace('\\', '/');
+        return normalized.Length >= 2 && normalized[1] == ':' && char.IsLetter(normalized[0])
+            ? $"/{char.ToLowerInvariant(normalized[0])}{normalized[2..]}"
+            : normalized;
+    }
 
     /// <summary>
     /// The tool rules <see cref="BuildForPrReview"/> allows on every pr-review session, beside the
