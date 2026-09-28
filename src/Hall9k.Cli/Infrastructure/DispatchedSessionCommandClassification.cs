@@ -176,6 +176,7 @@ internal static class DispatchedSessionCommandClassification
             [typeof(ProjectListCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "project list"),
             [typeof(ProjectShowCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "project show"),
             [typeof(ProjectSetCommand.Settings)] = (DispatchedSessionAccess.Refused, "project set"),
+            [typeof(ProjectAcceptGatesCommand.Settings)] = (DispatchedSessionAccess.Refused, "project accept-gates"),
             [typeof(ProjectRemoveCommand.Settings)] = (DispatchedSessionAccess.Refused, "project remove"),
             [typeof(ProjectReactivateCommand.Settings)] = (DispatchedSessionAccess.Refused, "project reactivate"),
             [typeof(ProjectCancelPurgeCommand.Settings)] = (DispatchedSessionAccess.Refused, "project cancel-purge"),

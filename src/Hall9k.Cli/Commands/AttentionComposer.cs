@@ -51,7 +51,9 @@ internal static class AttentionComposer
         DateTimeOffset now,
         int budgetParkedRuns = 0,
         int interactiveClaimStaleAfterDays = Domain.Infrastructure.Persistence.OperatingSettings.DefaultInteractiveClaimStaleAfterDays,
-        string? machineName = null)
+        string? machineName = null,
+        QueueHold? held = null,
+        string? project = null)
     {
         machineName ??= Environment.MachineName;
         string id = TaskListCommand.ShortId(task.Id);
@@ -81,6 +83,44 @@ internal static class AttentionComposer
         if (state == LifecycleState.HeldElsewhere)
         {
             return TaskAttention.None;
+        }
+
+        // A Queued row this node refuses to claim because the project's own current verify gate
+        // set has not been accepted here (security review idea 6be68ee2, process-injection
+        // finding 1, the local half) — ahead of every other arm, since none of them can be true of
+        // a Queued task with no run of its own, and this is the one condition h9k status must
+        // never let read as an ordinary, self-clearing queue wait.
+        if (held?.Kind == QueueHoldKind.GateSetUnaccepted)
+        {
+            return new TaskAttention(
+                AttentionLevel.NeedsYou,
+                $"project '{project}'s verify gate set has changed and has not been accepted on this node",
+                $"h9k project accept-gates {project}");
+        }
+
+        // A live run waiting because the gates it captured at entry no longer match what this
+        // node has accepted (the identical finding, its runner-side half): the run's own gate
+        // loop is genuinely paused, not stalled, and only an operator running
+        // h9k project accept-gates ends it — checked ahead of the stall arm further down so a
+        // long wait is never misread as a dead process instead.
+        // Scoped to Verifying/UnderReview, the only two states a gate can actually be entering or
+        // running under (task: a run whose verification gate is executing is reported as live work
+        // in progress) — the identical scope TaskPhaseComposer's own GateSetAcceptanceWaitPhase
+        // reads under (VerifyingPhase, Review), never reached once a run has moved past either.
+        // Without this a daemon that dies mid-wait and never appends RunGateSetAcceptanceWaitEnded
+        // (AcquireHostCoupledGatePermitAsync's own doc names the identical stranding for its wait)
+        // could leave this field stuck set on a run that has since resumed and moved on entirely —
+        // GateStarted clears it in fact, but only once a gate this run resumes actually spawns one,
+        // which an all-host-coupled gate list skipped on a later scoped pass never does.
+        if (run is not null
+            && (run.State == RunState.Verifying || run.State == RunState.UnderReview)
+            && run.GateSetAcceptanceWaitStartedAt is { } gateWaitStartedAt)
+        {
+            return new TaskAttention(
+                AttentionLevel.NeedsYou,
+                $"waiting since {TaskStatusComposer.RelativeAge(now - gateWaitStartedAt)}: the gates this run "
+                + $"captured no longer match what this node has accepted for project '{project}'",
+                $"h9k project accept-gates {project}");
         }
 
         // The pull request answered a review this node posted (task: a pr-review task stays open while

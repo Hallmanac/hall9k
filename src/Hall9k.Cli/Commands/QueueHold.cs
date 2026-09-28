@@ -1,3 +1,4 @@
+using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -47,9 +48,32 @@ internal sealed record QueueHold(QueueHoldKind Kind, string ReasonLine, string P
     /// closeout follow-up the monitor reopened, which the display groups under Delivered.
     /// </para>
     /// </summary>
-    public static QueueHold? For(TaskListItem task, string project, DispatchPressure? pressure)
+    public static QueueHold? For(
+        TaskListItem task, string project, DispatchPressure? pressure, bool gateSetUnaccepted = false)
     {
-        if (task.State != TaskState.Queued || pressure is null)
+        if (task.State != TaskState.Queued)
+        {
+            return null;
+        }
+
+        // Ahead of both the ceiling and the cap, and independent of whether this node has swept
+        // recently (security review idea 6be68ee2, process-injection finding 1, the local half):
+        // the dispatcher's own refusal to claim reads directly off the project's current and
+        // accepted gate sets, never off a published measurement, so the pane must answer the
+        // identical way with no sweep in between — a task held on this ground is never merely
+        // "waiting for a slot" once a slot frees, and saying so would be wrong regardless of
+        // capacity.
+        if (gateSetUnaccepted)
+        {
+            return new QueueHold(
+                QueueHoldKind.GateSetUnaccepted,
+                RelayedText.Printable(
+                    $"held — project '{project}'s verify gate set has changed and has not been accepted "
+                    + $"on this node: h9k project accept-gates {project}"),
+                project);
+        }
+
+        if (pressure is null)
         {
             return null;
         }
@@ -92,4 +116,12 @@ internal enum QueueHoldKind
 
     /// <summary>The row's project is capped at 0: deliberately paused, and nothing raises it on its own.</summary>
     ProjectPaused,
+
+    /// <summary>
+    /// The row's project's current verify gate set has not been accepted on this node (security
+    /// review idea 6be68ee2, process-injection finding 1, the local half) — rendered under
+    /// needs-you, not the queued section, since nothing but an operator running
+    /// <c>h9k project accept-gates</c> ever releases it.
+    /// </summary>
+    GateSetUnaccepted,
 }

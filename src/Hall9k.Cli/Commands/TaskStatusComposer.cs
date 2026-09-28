@@ -1,6 +1,7 @@
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Documents;
@@ -68,6 +69,16 @@ namespace Hall9k.Cli.Commands;
 /// every construction that never bothered to compute one, the same optional-and-absent shape
 /// <paramref name="BudgetParkedRuns"/> and the two hold dictionaries already use.
 /// </param>
+/// <param name="GateSetUnaccepted">
+/// Whether each project's current verify gate set differs from what this node has accepted
+/// (security review idea 6be68ee2, process-injection finding 1, the local half) —
+/// <see cref="Hall9k.Domain.Features.Project.GateSetAcceptance.Decide"/> against that project's own
+/// <c>VerifyCommands</c>/<c>AcceptedVerifyCommands</c>, computed once for every project rather than
+/// per row. A project absent from it (or the whole dictionary being null, on a construction that
+/// never bothered) reads as accepted — false, never a guessed hold — which is always the safe
+/// direction to default: an absent entry never grants a claim the dispatcher's own check would
+/// refuse.
+/// </param>
 internal sealed record TaskStatusContext(
     IReadOnlyDictionary<Guid, RunDetails> Runs,
     IReadOnlyDictionary<Guid, RunActivity> Activity,
@@ -81,7 +92,8 @@ internal sealed record TaskStatusContext(
     IReadOnlyDictionary<Guid, TrackerClaimHold>? TrackerHolds = null,
     int InteractiveClaimStaleAfterDays = OperatingSettings.DefaultInteractiveClaimStaleAfterDays,
     IReadOnlyDictionary<Guid, TaskHolderClaimHold>? HolderClaimHolds = null,
-    IReadOnlyDictionary<string, string>? OwnersByFingerprint = null);
+    IReadOnlyDictionary<string, string>? OwnersByFingerprint = null,
+    IReadOnlyDictionary<Guid, bool>? GateSetUnaccepted = null);
 
 /// <summary>
 /// The one truth about how a task reads. Every surface that shows a task — h9k status,
@@ -175,8 +187,13 @@ internal static class TaskStatusComposer
         CancellationToken cancellationToken)
     {
         Guid[] runIds = [.. tasks.Select(task => task.CurrentRunId).OfType<Guid>().Distinct()];
-        Dictionary<Guid, string> projects = (await session.Query<ProjectDetails>().ToListAsync(cancellationToken))
-            .ToDictionary(p => p.Id, p => p.Name);
+        IReadOnlyList<ProjectDetails> projectDetails = await session.Query<ProjectDetails>().ToListAsync(cancellationToken);
+        Dictionary<Guid, string> projects = projectDetails.ToDictionary(p => p.Id, p => p.Name);
+        // security review idea 6be68ee2, process-injection finding 1: computed for every project
+        // from the same read, never per row — the identical "one measurement, every reader" shape
+        // the other reference tables in this method already follow.
+        Dictionary<Guid, bool> gateSetUnaccepted = projectDetails.ToDictionary(
+            p => p.Id, p => !GateSetAcceptance.Decide(p.AcceptedVerifyCommands, p.VerifyCommands).Proceed);
         IReadOnlyList<OwnerDetails> ownerDetails = await session.Query<OwnerDetails>().ToListAsync(cancellationToken);
         Dictionary<Guid, string> owners = ownerDetails.ToDictionary(o => o.Id, o => o.Name);
         Dictionary<string, string> ownersByFingerprint = ownerDetails
@@ -215,7 +232,8 @@ internal static class TaskStatusComposer
             await ReadTrackerHoldsAsync(session, tasks, now, cancellationToken),
             operatingSettings.InteractiveClaimStaleAfterDays ?? OperatingSettings.DefaultInteractiveClaimStaleAfterDays,
             await ReadHolderClaimHoldsAsync(session, tasks, now, cancellationToken),
-            ownersByFingerprint);
+            ownersByFingerprint,
+            gateSetUnaccepted);
     }
 
     /// <summary>
@@ -311,7 +329,12 @@ internal static class TaskStatusComposer
         // Null covers "the node and the project both have room" and "nothing current was
         // measured" alike, and every surface reading it then says nothing about slots rather
         // than inventing a contention nobody observed (AGENTS.md, the never-guess rule).
-        QueueHold? held = QueueHold.For(task, project, context.Pressure);
+        // gateSetUnaccepted (security review idea 6be68ee2, process-injection finding 1) is read
+        // straight off the project's own current and accepted gate sets, never off a published
+        // sweep measurement, so it applies to a Queued row whether or not this node has swept
+        // recently.
+        QueueHold? held = QueueHold.For(
+            task, project, context.Pressure, context.GateSetUnaccepted?.GetValueOrDefault(task.ProjectId) ?? false);
         TrackerClaimDecision? heldByTracker = HeldByTracker(task, context);
         TaskHolderClaimHold? heldByLedgerHolder = HeldByLedgerHolder(task, context);
 
@@ -321,7 +344,9 @@ internal static class TaskStatusComposer
             task, run, state, phase, stalled, now,
             context.BudgetParkedRuns?.GetValueOrDefault(task.ProjectId) ?? 0,
             context.InteractiveClaimStaleAfterDays,
-            context.MachineName);
+            context.MachineName,
+            held,
+            project);
         AttentionBucket group = Group(task, run, state, attention, stalled);
 
         // idea 202383dc: an owner can place a task on one of their own nodes — advisory to

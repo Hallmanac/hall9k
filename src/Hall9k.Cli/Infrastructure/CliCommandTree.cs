@@ -215,6 +215,18 @@ public static class CliCommandTree
                 .WithExample("project", "set", "hall9k", "--discover-run-skill")
                 .WithExample(
                     "project", "set", "hall9k", "--review-stage-composition", "none", "--accept-reduced-review");
+            project.AddCommand<ProjectAcceptGatesCommand>("accept-gates")
+                .WithDescription(
+                    "Vet this project's current verify gate set on this node (security review idea 6be68ee2, "
+                    + "process-injection finding 1): prints every gate's name, command, and host-coupled "
+                    + "filter, plus a line-by-line diff against whatever this node last accepted, then "
+                    + "records the fingerprint of exactly what it printed. A node runs a project's verify "
+                    + "gates only after its own operator has accepted that exact set here — a set that "
+                    + "arrived by replication, or changed on this owner's own other node, holds every task "
+                    + "and pauses every in-flight run's next gate entry on this node until this is run. "
+                    + "h9k project set --verify or --verify-gate-filter accepts what it just recorded in the "
+                    + "same call, so changing gates locally never holds this node on its own change.")
+                .WithExample("project", "accept-gates", "hall9k");
             project.AddCommand<ProjectRemoveCommand>("remove")
                 .WithDescription(
                     "Archive a project on this install: reversible, and nothing is deleted. The "

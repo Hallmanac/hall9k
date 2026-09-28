@@ -854,6 +854,18 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             settingsEvents.Add(ProjectDecider.RequestRunSkillDiscovery(details.Id, context.OwnerId, changedAt));
         }
 
+        // A node runs a project's verify gates only after its own operator has accepted that exact
+        // gate set (security review idea 6be68ee2, process-injection finding 1, the local half).
+        // --verify and --verify-gate-filter are the only flags that feed VerifyCommand.Fingerprint,
+        // and verifyCommands.HasValue is exactly "one of them was passed this invocation" — the
+        // operator who just typed the gates into this command IS the accepting operator, so
+        // acceptance rides the same SaveChangesAsync as the settings event rather than a second
+        // command: a node can never hold itself on its own local change.
+        if (verifyCommands is { HasValue: true, Value: { } acceptedGates })
+        {
+            settingsEvents.Add(new ProjectGateSetAccepted(details.Id, acceptedGates, context.OwnerId, changedAt));
+        }
+
         session.Events.Append(details.Id, settingsEvents);
         await session.SaveChangesAsync(cancellationToken);
         await Doorbell.RingAsync($"project-changed:{details.Id}", cancellationToken);
