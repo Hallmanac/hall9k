@@ -226,4 +226,53 @@ public sealed class TrustChainTests
         // The root node lists first in the fleet and has the lower id, so a tie resolved by fleet order would pick it.
         chain.DeclaredAccountsOf("root-fingerprint").Should().Equal(new DeclaredGitHubAccount(42, "declared-by-higher-id"));
     }
+
+    [Fact]
+    public void NewestDeclaredAccountOf_PicksTheSingleNewestDeclarationAcrossTwoDistinctAccounts()
+    {
+        // Unlike DeclaredAccountsOf, which keeps one entry per account, a member's own label
+        // carries at most one login — the newest declaration wins even when it names a different
+        // account than an older one this same fleet also declared (task b7d8222e).
+        Guid rootNodeId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+        TrustedNode node = new(VouchedNodeId.ToString(), "ssh-ed25519 AAAAnode node", "node-fingerprint", DateTimeOffset.UnixEpoch);
+        TrustedOwner owner = new("root-fingerprint", "ssh-ed25519 AAAAroot root", [node], RootNodeId: rootNodeId.ToString());
+        TrustChain chain = new(
+            new Dictionary<string, TrustedOwner> { ["root-fingerprint"] = owner },
+            [new ProjectMember("root-fingerprint", MembershipRole.Owner, DateTimeOffset.UnixEpoch)])
+        {
+            NodeDeclarations = new[]
+            {
+                Declaration(rootNodeId, "root-fingerprint", 42, "work-account", 1),
+                Declaration(VouchedNodeId, "node-fingerprint", 77, "personal-account", 5),
+            }.ToDictionary(declaration => declaration.NodeId),
+        };
+
+        chain.NewestDeclaredAccountOf("root-fingerprint").Should().Be(new DeclaredGitHubAccount(77, "personal-account"));
+    }
+
+    [Fact]
+    public void NewestDeclaredAccountOf_BreaksATieOnDeclarationTimeByTheHigherNodeId()
+    {
+        Guid rootNodeId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        TrustedNode node = new(VouchedNodeId.ToString(), "ssh-ed25519 AAAAnode node", "node-fingerprint", DateTimeOffset.UnixEpoch);
+        TrustedOwner owner = new("root-fingerprint", "ssh-ed25519 AAAAroot root", [node], RootNodeId: rootNodeId.ToString());
+        TrustChain chain = new(
+            new Dictionary<string, TrustedOwner> { ["root-fingerprint"] = owner },
+            [new ProjectMember("root-fingerprint", MembershipRole.Owner, DateTimeOffset.UnixEpoch)])
+        {
+            NodeDeclarations = new[]
+            {
+                Declaration(rootNodeId, "root-fingerprint", 42, "declared-by-lower-id", 1),
+                Declaration(VouchedNodeId, "node-fingerprint", 77, "declared-by-higher-id", 1),
+            }.ToDictionary(declaration => declaration.NodeId),
+        };
+
+        chain.NewestDeclaredAccountOf("root-fingerprint").Should().Be(new DeclaredGitHubAccount(77, "declared-by-higher-id"));
+    }
+
+    [Fact]
+    public void NewestDeclaredAccountOf_IsNullWhenNobodyInTheFleetDeclaresOne()
+    {
+        BuildChain().NewestDeclaredAccountOf("root-fingerprint").Should().BeNull();
+    }
 }
