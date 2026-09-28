@@ -4033,14 +4033,57 @@ public sealed class ReviewEngine(
                 + $"evidence: {verdict.Evidence}");
         }
 
+        // The same trusted candidate set backs both checks below: a replay verdict's own ONTO must
+        // be reachable from one of these before it is ever trusted as a rebase target, and — once
+        // trusted — this is also the set ResolveOntoBranchNameAsync checks to name which one it
+        // actually is. context.BaseBranch (this run's own recorded base, which already falls back to
+        // the project's own when this run is not stacked) is included alongside the project's base
+        // outright, since a run already stacked on a resolved parent branch from an earlier
+        // assessment is a legitimate trust root of its own, not just the project's.
+        IReadOnlyList<string> trustedOntoCandidateBranches =
+            [context.BaseBranch, context.Project.BaseBranch, parentBranch, pullRequestBase, .. additionalCandidateBranches ?? []];
+
+        // A replay verdict's own BOUNDARY becomes this run's recorded fork point the moment this
+        // verdict is appended (Apply(StackAssessmentCompleted), RunAggregate), before any mechanical
+        // rebase ever runs — so it earns the identical ancestor-of-HEAD confirmation the aligned
+        // verdict's own ONTO gets above, here rather than at the rebase site, which would already be
+        // too late to stop the fork point from moving. A boundary outside this branch's own history
+        // would poison that fork point for every later reviewer, steered session or not (security
+        // review idea 6be68ee2, daemon-consumers finding A).
+        if (verdict.Kind == StackAssessmentVerdictKind.Replay
+            && !await CommitIsAncestorOfHeadAsync(context.Run.WorktreePath, verdict.BoundaryCommit, cancellationToken))
+        {
+            verdict = StackAssessmentVerdict.Undecidable(
+                $"the assessment declared replay with BOUNDARY {verdict.BoundaryCommit} and ONTO {verdict.OntoCommit}, "
+                + $"but BOUNDARY is not an ancestor of this branch's own HEAD (git merge-base --is-ancestor "
+                + $"{verdict.BoundaryCommit} HEAD failed), so it is not trusted as this run's own fork point. Its "
+                + $"own evidence: {verdict.Evidence}");
+        }
+
+        // A replay verdict's own ONTO is handed to a later `git rebase --onto <onto> <boundary>` —
+        // reachability from one of this run's own trusted base branches, confirmed here before that
+        // rebase ever runs, is what stands between that call and an arbitrary commit a steered
+        // assessment session could otherwise name. Reachability rather than a tip match: a
+        // candidate's own tip can move between this check and ResolveOntoBranchNameAsync's own tip
+        // comparison below, which answers a different question (which branch, if any, this commit
+        // names) than this one (is it safe to rebase onto at all).
+        if (verdict.Kind == StackAssessmentVerdictKind.Replay
+            && !await CommitIsAncestorOfAnyOriginBranchAsync(
+                context.Run.WorktreePath, verdict.OntoCommit, trustedOntoCandidateBranches, cancellationToken))
+        {
+            verdict = StackAssessmentVerdict.Undecidable(
+                $"the assessment declared replay with BOUNDARY {verdict.BoundaryCommit} and ONTO {verdict.OntoCommit}, "
+                + "but ONTO is not reachable from any of this run's trusted base branches (git merge-base "
+                + $"--is-ancestor {verdict.OntoCommit} origin/<candidate> failed for every candidate), so it is "
+                + $"not trusted as a rebase target. Its own evidence: {verdict.Evidence}");
+        }
+
         string resolvedBaseBranchName = string.Empty;
         bool ontoIsProjectBaseBranch = false;
         if (verdict.Kind != StackAssessmentVerdictKind.Undecidable && verdict.OntoCommit.IsNotBlank())
         {
             resolvedBaseBranchName = await ResolveOntoBranchNameAsync(
-                context.Run.WorktreePath, verdict.OntoCommit,
-                [context.Project.BaseBranch, parentBranch, pullRequestBase, .. additionalCandidateBranches ?? []],
-                cancellationToken);
+                context.Run.WorktreePath, verdict.OntoCommit, trustedOntoCandidateBranches, cancellationToken);
 
             // Blank, not the project's own base branch spelled out: BaseBranch's own invariant
             // (RunDetails.StackedOnBranch's doc) is that blank means "the project's own base
@@ -4112,14 +4155,16 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
-    /// Whether this branch's own checked-out HEAD already contains <paramref name="commit"/> — the
-    /// one check that tells an aligned verdict's own claim ("nothing needs to move") apart from a
-    /// resolvable-but-not-yet-merged commit, which <see cref="CommitResolvesAsync"/> alone cannot:
-    /// a commit can exist in this repository's object store without HEAD having merged it, and every
-    /// caller of <see cref="RecordStackAssessmentCompletedAsync"/> reaches an aligned verdict already
-    /// knowing HEAD does not (an aligned dispatch only ever follows a park or a conflict). A read
-    /// failure resolves to false, the same "never guess at unobserved facts" stance
-    /// <see cref="CommitResolvesAsync"/> already takes.
+    /// Whether this branch's own checked-out HEAD already contains <paramref name="commit"/> — for
+    /// an aligned verdict's own ONTO, the one check that tells its claim ("nothing needs to move")
+    /// apart from a resolvable-but-not-yet-merged commit, which <see cref="CommitResolvesAsync"/>
+    /// alone cannot; for a replay verdict's own BOUNDARY, the identical confirmation before it is
+    /// ever trusted as this run's recorded fork point (<see cref="RecordStackAssessmentCompletedAsync"/>'s
+    /// own doc). A commit can exist in this repository's object store without HEAD having merged it,
+    /// and every caller of <see cref="RecordStackAssessmentCompletedAsync"/> reaches an aligned
+    /// verdict already knowing HEAD does not (an aligned dispatch only ever follows a park or a
+    /// conflict). A read failure resolves to false, the same "never guess at unobserved facts"
+    /// stance <see cref="CommitResolvesAsync"/> already takes.
     /// </summary>
     private async Task<bool> CommitIsAncestorOfHeadAsync(string worktreePath, string commit, CancellationToken cancellationToken)
     {
@@ -4137,9 +4182,51 @@ public sealed class ReviewEngine(
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogWarning(
-                exception, "Could not verify whether the stack assessment's onto commit {Commit} is contained in this branch's own HEAD", commit);
+                exception, "Could not verify whether the stack assessment's commit {Commit} is contained in this branch's own HEAD", commit);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="commit"/> is reachable from the current tip of any branch in
+    /// <paramref name="candidateBranches"/> — the confirmation a replay verdict's own ONTO earns
+    /// before it is ever handed to a later `git rebase --onto`, so a steered assessment session
+    /// cannot point that rebase at an arbitrary commit (<see cref="RecordStackAssessmentCompletedAsync"/>'s
+    /// own doc). Every candidate is tried; one match is enough. No fetch runs here — the checkpoint
+    /// watch, the pre-final-pass path, and a session's own git calls all already keep this
+    /// repository's <c>origin/*</c> current before this check ever runs, so a stale ref causes an
+    /// honest refusal rather than a silent extra fetch. A read failure on any one candidate is not
+    /// itself a refusal; only every candidate failing is.
+    /// </summary>
+    private async Task<bool> CommitIsAncestorOfAnyOriginBranchAsync(
+        string worktreePath, string commit, IReadOnlyList<string> candidateBranches, CancellationToken cancellationToken)
+    {
+        if (commit.IsBlank())
+        {
+            return false;
+        }
+
+        foreach (string candidate in candidateBranches.Where(branch => branch.IsNotBlank()).Distinct())
+        {
+            try
+            {
+                ProcessResult result = await processRunner(
+                    "git", ["merge-base", "--is-ancestor", commit, $"origin/{candidate}"], worktreePath, cancellationToken);
+                if (result.ExitCode == 0)
+                {
+                    return true;
+                }
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(
+                    exception,
+                    "Could not verify whether the stack assessment's commit {Commit} is reachable from origin/{Candidate}",
+                    commit, candidate);
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
