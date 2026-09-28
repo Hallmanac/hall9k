@@ -79,6 +79,35 @@ public sealed class EventReplicationInboxTaskActGateTests
         verdict.Should().Be(EventReplicationInbox.TaskActVerdict.DroppedAndRefusedPermanently);
     }
 
+    /// <summary>TaskHolderTakenOver's own Apply clears AssignedOwnerFingerprint to null the moment
+    /// it sets HolderOwnerRootFingerprint (idea 202383dc's own "reassigned to the taker" doc), so a
+    /// forged TaskAssigned naming no placement cannot read the null assignment fingerprint alone as
+    /// "free to reassign" — the holder lock has to be checked too, or the task is hijacked away
+    /// from its own current holder the moment a takeover has run (independent pre-PR review,
+    /// cycle 1, conformance lens, medium).</summary>
+    [Fact]
+    public void A_members_forged_reassignment_of_a_task_the_owner_took_over_as_holder_is_dropped()
+    {
+        Guid taskId = DomainId.New();
+        Guid memberNodeId = DomainId.New();
+        Guid ownerNodeId = DomainId.New();
+        TaskAggregate task = PublishedUnassignedTask(taskId);
+        task.Apply(new TaskHolderTakenOver(
+            taskId, PreviousHolderNodeId: null, ownerNodeId, Guid.NewGuid(), OwnerRoot, "absent holder", Guid.NewGuid(),
+            Now));
+        task.AssignedOwnerFingerprint.Should().BeNull();
+        task.HolderOwnerRootFingerprint.Should().Be(OwnerRoot);
+        EventReplicationInbox.SenderResolution sender = MemberSender(memberNodeId);
+
+        TaskAssigned assigned = new(
+            taskId, Guid.NewGuid(), UnmetDependencies: [], Now, Guid.NewGuid(), AssignedOwnerRootFingerprint: MemberRoot);
+
+        EventReplicationInbox.TaskActVerdict verdict = EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassification.MemberSafe, typeof(TaskAssigned), assigned, task, sender, memberNodeId, memberNodeId);
+
+        verdict.Should().Be(EventReplicationInbox.TaskActVerdict.DroppedAndRefusedPermanently);
+    }
+
     [Fact]
     public void A_members_task_claimed_for_an_owners_task_is_dropped()
     {
@@ -268,12 +297,14 @@ public sealed class EventReplicationInboxTaskActGateTests
         verdict.Should().Be(EventReplicationInbox.TaskActVerdict.DroppedAndRefusedPermanently);
     }
 
-    /// <summary>A pre-assignment-capable conditional act (TaskPublished's own bucket) on a task
-    /// with no assignment or holder at all yet applies even from a sender this read cannot
-    /// resolve — a member publishing their own never-assigned draft must not stall on a chain this
-    /// node cannot currently fully resolve.</summary>
+    /// <summary>An unassigned, unheld task is still its own creator's — a pre-assignment-capable
+    /// conditional act (TaskPublished's own bucket) from a sender this read cannot resolve at all
+    /// is refused, never blanket-allowed just because nobody has been assigned or has claimed the
+    /// task yet (independent pre-PR review, cycle 1, both lenses, high: the earlier version of this
+    /// gate let even an unresolved sender revise, scope, pre-approve, publish, or return to draft an
+    /// owner's own unassigned task).</summary>
     [Fact]
-    public void A_task_published_on_a_genuinely_unassigned_task_applies_even_from_an_unresolved_sender()
+    public void A_task_published_on_a_genuinely_unassigned_task_is_refused_from_an_unresolved_sender()
     {
         Guid taskId = DomainId.New();
         Guid senderNodeId = DomainId.New();
@@ -281,7 +312,82 @@ public sealed class EventReplicationInboxTaskActGateTests
 
         EventReplicationInbox.TaskActVerdict verdict = EventReplicationInbox.EvaluateTaskActVerdict(
             TaskActClassification.Conditional, typeof(TaskPublished), published, PublishedUnassignedTask(taskId),
-            sender: null, senderNodeId, senderNodeId);
+            sender: null, senderNodeId, senderNodeId, creatorRootFingerprint: MemberRoot);
+
+        verdict.Should().Be(EventReplicationInbox.TaskActVerdict.DroppedAndRefusedPermanently);
+    }
+
+    /// <summary>The task's own creator root, once known, is exactly who a pre-assignment-capable
+    /// act on their own still-unassigned, still-unheld task is judged against — the member who
+    /// created it may publish, scope, pre-approve, revise, return to draft, or abandon it before
+    /// anyone is ever assigned.</summary>
+    [Fact]
+    public void A_creators_own_publish_of_their_own_genuinely_unassigned_task_applies()
+    {
+        Guid taskId = DomainId.New();
+        Guid memberNodeId = DomainId.New();
+        EventReplicationInbox.SenderResolution sender = MemberSender(memberNodeId);
+        TaskPublished published = new(taskId, Now, Guid.NewGuid());
+
+        EventReplicationInbox.TaskActVerdict verdict = EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassification.Conditional, typeof(TaskPublished), published, PublishedUnassignedTask(taskId),
+            sender, memberNodeId, memberNodeId, creatorRootFingerprint: MemberRoot);
+
+        verdict.Should().Be(EventReplicationInbox.TaskActVerdict.Allowed);
+    }
+
+    /// <summary>A member forging one of these acts onto a genuinely unassigned task they did not
+    /// create — the owner's own published draft, say — is refused rather than allowed just because
+    /// nobody has claimed it yet: unassigned never means ownerless.</summary>
+    [Fact]
+    public void A_members_forged_act_on_the_owners_genuinely_unassigned_task_is_dropped()
+    {
+        Guid taskId = DomainId.New();
+        Guid memberNodeId = DomainId.New();
+        EventReplicationInbox.SenderResolution sender = MemberSender(memberNodeId);
+        TaskPublished published = new(taskId, Now, Guid.NewGuid());
+
+        EventReplicationInbox.TaskActVerdict verdict = EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassification.Conditional, typeof(TaskPublished), published, PublishedUnassignedTask(taskId),
+            sender, memberNodeId, memberNodeId, creatorRootFingerprint: OwnerRoot);
+
+        verdict.Should().Be(EventReplicationInbox.TaskActVerdict.DroppedAndRefusedPermanently);
+    }
+
+    /// <summary>When this node never verified who created a genuinely unassigned, unheld task
+    /// (<see cref="Hall9k.Domain.Features.Replication.TaskCreatorRootRecord"/>'s own doc on why a
+    /// forwarded genesis leaves the creator root unset), a pre-assignment-capable act on it is held
+    /// rather than trusted either way — the identical treatment every other not-yet-arrived fact
+    /// gets in this gate.</summary>
+    [Fact]
+    public void A_pre_assignment_capable_act_with_no_known_creator_root_is_held()
+    {
+        Guid taskId = DomainId.New();
+        Guid memberNodeId = DomainId.New();
+        EventReplicationInbox.SenderResolution sender = MemberSender(memberNodeId);
+        TaskPublished published = new(taskId, Now, Guid.NewGuid());
+
+        EventReplicationInbox.TaskActVerdict verdict = EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassification.Conditional, typeof(TaskPublished), published, PublishedUnassignedTask(taskId),
+            sender, memberNodeId, memberNodeId, creatorRootFingerprint: null);
+
+        verdict.Should().Be(EventReplicationInbox.TaskActVerdict.Held);
+    }
+
+    /// <summary>The owner's own role bypasses the creator-root check entirely, exactly as it
+    /// bypasses every other conditional check in this gate.</summary>
+    [Fact]
+    public void An_owners_publish_of_a_members_genuinely_unassigned_task_applies_regardless_of_creator_root()
+    {
+        Guid taskId = DomainId.New();
+        Guid ownerNodeId = DomainId.New();
+        EventReplicationInbox.SenderResolution owner =
+            new(OwnerRoot, MembershipRole.Owner, new HashSet<Guid> { ownerNodeId });
+        TaskPublished published = new(taskId, Now, Guid.NewGuid());
+
+        EventReplicationInbox.TaskActVerdict verdict = EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassification.Conditional, typeof(TaskPublished), published, PublishedUnassignedTask(taskId),
+            owner, ownerNodeId, ownerNodeId, creatorRootFingerprint: MemberRoot);
 
         verdict.Should().Be(EventReplicationInbox.TaskActVerdict.Allowed);
     }

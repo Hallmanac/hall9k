@@ -138,7 +138,8 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeC.LightweightSession())
         {
             EventReplicationReadResult firstRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(3), trustChain: TrustChain.Empty, cts.Token);
+                session, RepositoryPath, nodeA, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(3),
+                trustChain: OwnerChainFor(nodeA), cts.Token);
             firstRead.EventsApplied.Should().BeGreaterThan(0);
         }
 
@@ -156,7 +157,8 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeC.LightweightSession())
         {
             EventReplicationReadResult secondRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(6), trustChain: TrustChain.Empty, cts.Token);
+                session, RepositoryPath, nodeA, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(6),
+                trustChain: OwnerChainFor(nodeA), cts.Token);
             secondRead.EventsApplied.Should().BeGreaterThan(0);
         }
 
@@ -184,7 +186,8 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(9), trustChain: TrustChain.Empty, cts.Token);
+                session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(9),
+                trustChain: OwnerChainFor(nodeA), cts.Token);
             read.EventsApplied.Should().BeGreaterThan(0, "task1's own envelope at seq 1 still applies cleanly");
             read.StalledAtSeq.Should().Be(3, "task2's own envelope is gone, so the read stops short of task3's own, later one");
         }
@@ -236,7 +239,8 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult fillRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(13), trustChain: TrustChain.Empty, cts.Token);
+                session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(13),
+                trustChain: OwnerChainFor(nodeA, nodeC), cts.Token);
             fillRead.EventsApplied.Should().BeGreaterThan(0, "task2's own events, forwarded by node C, now apply");
         }
 
@@ -1271,7 +1275,8 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeC.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(3), trustChain: TrustChain.Empty, cts.Token);
+                session, RepositoryPath, nodeA, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(3),
+                trustChain: OwnerChainFor(nodeA), cts.Token);
             read.EventsApplied.Should().BeGreaterThan(0);
         }
 
@@ -1313,25 +1318,17 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         // Idea 6be68ee2, trust-ledger findings 4 and 7: node C forwards node A's own task genesis
         // under its true origin, so admitting it here — a broadcast request, which names no single
         // candidate up front — needs node B's own trust chain to actually vouch node C as a project
-        // member, never TrustChain.Empty.
-        const string broadcastRoot = "broadcast-root-fingerprint";
-        TrustChain broadcastMemberChain = new(
-            new Dictionary<string, TrustedOwner>
-            {
-                [broadcastRoot] = new TrustedOwner(
-                    broadcastRoot, "ssh-ed25519 AAAAFAKEbroadcastroot test",
-                    [
-                        new TrustedNode(
-                            nodeC.ToString(), $"ssh-ed25519 AAAAFAKE{nodeC:N} test", SeededFingerprintOf(nodeC), Now),
-                    ]),
-            },
-            [new ProjectMember(broadcastRoot, MembershipRole.Member, Now)]);
-
+        // member, never TrustChain.Empty. OwnerChainFor also resolves node C to the task's own
+        // owner root (idea 6be68ee2, trust-ledger finding 5), so the forwarded TaskAssigned itself
+        // still applies rather than being refused for a root mismatch a plain member-role chain
+        // would trip; the member-role broadcast admission this line once exercised standalone is
+        // covered directly by
+        // EventReplicationInboxForwardedRecordAdmissionTests.A_broadcast_answer_from_a_vouched_member_carrying_the_requested_stream_is_admitted.
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult fillRead = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(7),
-                trustChain: broadcastMemberChain, cts.Token);
+                trustChain: OwnerChainFor(nodeA, nodeC), cts.Token);
             fillRead.EventsApplied.Should().BeGreaterThan(0, "node C's answer brings the broadcast stream in");
         }
 

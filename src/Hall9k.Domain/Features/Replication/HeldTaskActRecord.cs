@@ -44,10 +44,10 @@ public sealed class HeldTaskActRecord
 
     public Guid SenderNodeId { get; set; }
 
-    /// <summary>The verified key fingerprint this record's own sender read carried — stored here
-    /// (unlike <see cref="HeldReplicatedEventRecord.SenderFingerprint"/>'s own doc, which is never
-    /// actually consulted on replay) because the conditional verdict this record is held FOR runs
-    /// again at replay, against this exact value.</summary>
+    /// <summary>The verified key fingerprint this record's own sender read carried — stored here,
+    /// exactly as <see cref="HeldReplicatedEventRecord.SenderFingerprint"/> is, because the
+    /// conditional verdict this record is held FOR runs again at replay, against this exact
+    /// value.</summary>
     public string? SenderFingerprint { get; set; }
 
     public string? OriginProjectKey { get; set; }

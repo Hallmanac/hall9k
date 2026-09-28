@@ -605,10 +605,17 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     }
 
     /// <summary>How long a Task/Run act's own held-stream ask holds off a fresh one for the
-    /// identical task — the same re-mint shape <see cref="TaskDependencyCatchUp.ReMintCooldown"/>
-    /// exists for, scaled down: a hold expires after 24 hours (<see cref="MaxTaskActHoldAge"/>), so
-    /// an ask that only re-mints every 6 hours would have asked at most three times before the
-    /// whole queue is dropped.</summary>
+    /// identical task, should one ever be minted again — the same re-mint shape
+    /// <see cref="TaskDependencyCatchUp.ReMintCooldown"/> exists for, scaled down. Not a periodic
+    /// re-ask timer of its own: the ask is queued only once, the moment a task's own hold is FIRST
+    /// created (<see cref="HoldTaskActAsync"/>'s own doc on <c>taskActCatchUpAskTaskIdsThisRead"</c>);
+    /// <see cref="ReCheckHeldTaskActsAsync"/> re-judges an already-held record on every later read
+    /// that applies anything for the project, but never asks again on its own. This cooldown only
+    /// matters the rarer time a SECOND, distinct record for the identical task lands here while the
+    /// first ask is already closed (independent pre-PR review, cycle 1, conformance lens, low: an
+    /// earlier version of this doc read as though the ask itself re-fired on a schedule, which would
+    /// have asked at most three times inside the 24-hour hold age in <see cref="MaxTaskActHoldAge"/>).
+    /// </summary>
     private static readonly TimeSpan TaskActHoldCatchUpCooldown = TimeSpan.FromHours(1);
 
     /// <summary>
@@ -898,16 +905,18 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             if (earlierHeldForThisOrigin is not null)
             {
                 await HoldTaskActAsync(
-                    session, record, effectiveStreamId, earlierHeldForThisOrigin.TaskId, senderNodeId, senderFingerprint,
-                    originProjectKey, now, taskActCatchUpAskTaskIdsThisRead: null, cancellationToken);
+                    session, record, effectiveStreamId, earlierHeldForThisOrigin.TaskId, projectId, senderNodeId,
+                    senderFingerprint, originProjectKey, now, taskActCatchUpAskTaskIdsThisRead: null, cancellationToken);
                 return 0;
             }
 
             TaskActTargetResolution target =
                 await ResolveTaskActTargetAsync(session, eventType, effectiveStreamId, cancellationToken);
+            TaskCreatorRootRecord? creatorRoot =
+                await session.LoadAsync<TaskCreatorRootRecord>(target.TaskId, cancellationToken);
             TaskActVerdict verdict = EvaluateTaskActVerdict(
                 classification, eventType, data, target.Task, ResolveSender(trustChain, senderFingerprint, senderNodeId),
-                record.OriginNodeId, senderNodeId);
+                record.OriginNodeId, senderNodeId, creatorRoot?.CreatorRootFingerprint);
 
             switch (verdict)
             {
@@ -922,7 +931,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                         record.EventTypeName, record.OriginEventId, senderNodeId, senderFingerprint ?? "(none)",
                         target.TaskId);
                     await HoldTaskActAsync(
-                        session, record, effectiveStreamId, target.TaskId, senderNodeId, senderFingerprint,
+                        session, record, effectiveStreamId, target.TaskId, projectId, senderNodeId, senderFingerprint,
                         originProjectKey, now, taskActCatchUpAskTaskIdsThisRead, cancellationToken);
                     return 0;
 
@@ -1146,6 +1155,27 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             ProjectId = projectId,
             AppliedAt = now,
         });
+
+        // TaskCreatorRootRecord's own doc: recorded once, the moment a task's own genesis
+        // (TaskAdded) starts its stream fresh here, and only from a DIRECT delivery — this node's
+        // own transport verified senderFingerprint against senderNodeId specifically, which is
+        // worth nothing about the true author the moment a relay (senderNodeId != OriginNodeId)
+        // is what actually delivered it. Staged in this same save so a poison-event rollback below
+        // takes it down with everything else this record staged, never leaving an orphaned creator
+        // root for a stream that never actually started.
+        if (!streamExists && eventType == typeof(TaskAdded) && senderNodeId == record.OriginNodeId)
+        {
+            SenderResolution? genesisSender = ResolveSender(trustChain, senderFingerprint, senderNodeId);
+            if (genesisSender is not null)
+            {
+                session.Store(new TaskCreatorRootRecord
+                {
+                    Id = effectiveStreamId,
+                    ProjectId = projectId,
+                    CreatorRootFingerprint = genesisSender.RootFingerprint,
+                });
+            }
+        }
 
         // idea 202383dc, M2b: the coarse "since" bound a future gap-fill events-request for this
         // origin is built from — never regressed, and refreshed lazily from the persisted value the
@@ -1495,7 +1525,14 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     /// see <see cref="EvaluateTaskActVerdict"/>'s own <c>PreAssignmentCapableConditionalTypes</c>
     /// case for why a null pair means something different for these than it does for the general
     /// conditional case (<see cref="TaskUnassigned"/> and its siblings) or for
-    /// <see cref="TaskClaimed"/>/<see cref="TaskHolderReleased"/>'s own special cases.
+    /// <see cref="TaskClaimed"/>/<see cref="TaskHolderReleased"/>'s own special cases. A null pair
+    /// here never means "no root to protect": it means the task is still its own CREATOR's
+    /// (<see cref="TaskCreatorRootRecord"/>), and every member of this set is judged against that
+    /// root rather than blanket-allowed (independent pre-PR review, cycle 1, both lenses, high —
+    /// the earlier version of this set allowed any sender, resolved or not, to revise, scope,
+    /// pre-approve, publish, or return to draft an owner's own unassigned task).
+    /// <see cref="TaskAbandoned"/> belongs here for the identical reason: a member's own abandon of
+    /// their own never-assigned draft is exactly as legitimate as their own publish of it.
     /// </summary>
     private static readonly IReadOnlySet<Type> PreAssignmentCapableConditionalTypes = new HashSet<Type>
     {
@@ -1505,6 +1542,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         typeof(TaskScopeSet),
         typeof(TaskPrivacySet),
         typeof(TaskRevised),
+        typeof(TaskAbandoned),
     };
 
     /// <summary>
@@ -1533,17 +1571,29 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     /// <see cref="TaskAssigned"/> carries its own rule even though its coarse bucket is
     /// <see cref="TaskActClassification.MemberSafe"/> (idea f72138e1: a member may self-assign an
     /// owner's published, unassigned task, exactly as <c>h9k task start</c> does locally, but never
-    /// reassign a task already assigned or held elsewhere) — every one of its own failure branches
-    /// is a definite mismatch the sender's own event data or this node's own trust chain already
-    /// answers, so it is the one <see cref="TaskActClassification.MemberSafe"/> shape that can also
-    /// drop, and it never holds. <see cref="TaskClaimed"/> checks assignment alone (the fact it is
-    /// itself about to set is the holder, which does not exist yet); <see cref="TaskHolderReleased"/>
-    /// checks the current holder alone, per its own doc ("only from the current holder").
+    /// reassign a task already assigned to, or held by, some other root) — every one of its own
+    /// failure branches is a definite mismatch the sender's own event data or this node's own trust
+    /// chain already answers, so it is the one <see cref="TaskActClassification.MemberSafe"/> shape
+    /// that can also drop, and it never holds. <see cref="TaskClaimed"/> checks assignment alone
+    /// (the fact it is itself about to set is the holder, which does not exist yet);
+    /// <see cref="TaskHolderReleased"/> checks the current holder alone, per its own doc ("only
+    /// from the current holder").
+    /// </para>
+    /// <para>
+    /// <paramref name="creatorRootFingerprint"/> is <see cref="TaskCreatorRootRecord.CreatorRootFingerprint"/>
+    /// for <paramref name="task"/>'s own id, resolved by the caller — the "root to protect" a
+    /// <see cref="PreAssignmentCapableConditionalTypes"/> member is judged against when
+    /// <paramref name="task"/> has no assignment or holder yet, since a null pair there never means
+    /// nothing is at stake: it means the task is still its own creator's. Null when this node never
+    /// verified who that creator was (<see cref="TaskCreatorRootRecord"/>'s own doc on why a
+    /// forwarded genesis leaves it unset) — read as "not yet known" and held, the identical
+    /// treatment every other not-yet-arrived fact gets in this method, never as "no creator" and
+    /// never blanket-allowed.
     /// </para>
     /// </summary>
     internal static TaskActVerdict EvaluateTaskActVerdict(
         TaskActClassification classification, Type eventType, object eventData, TaskAggregate? task,
-        SenderResolution? sender, Guid originNodeId, Guid senderNodeId)
+        SenderResolution? sender, Guid originNodeId, Guid senderNodeId, string? creatorRootFingerprint = null)
     {
         // Plain MemberSafe — every entry in that bucket except TaskAssigned's own special rule —
         // was never gated at all before this PR, and stays that way: nothing about the sender's
@@ -1554,20 +1604,6 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // TrustChain.Empty, the degenerate case with no chain data at all) never halts the
         // ordinary run of task and run lifecycle events every install already relied on.
         if (classification == TaskActClassification.MemberSafe && eventType != typeof(TaskAssigned))
-        {
-            return TaskActVerdict.Allowed;
-        }
-
-        // A pre-assignment-capable conditional act (TaskPublished and its siblings —
-        // PreAssignmentCapableConditionalTypes' own doc) on a task genuinely unassigned and unheld
-        // has no root to protect yet, so it is allowed the identical way a plain MemberSafe act is
-        // just above — whether or not this read's own trust chain currently resolves the sender at
-        // all. Checked before sender resolution for the identical reason: a member publishing,
-        // scoping, or draft-revising their own never-assigned work must not stall on a chain this
-        // node cannot currently fully resolve.
-        if (classification == TaskActClassification.Conditional
-            && PreAssignmentCapableConditionalTypes.Contains(eventType)
-            && task is { AssignedOwnerFingerprint: null, HolderOwnerRootFingerprint: null })
         {
             return TaskActVerdict.Allowed;
         }
@@ -1595,13 +1631,22 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 }
 
                 TaskAssigned assigned = (TaskAssigned)eventData;
-                bool unassignedOrOwnRoot = task.AssignedOwnerFingerprint is null
-                    || task.AssignedOwnerFingerprint == sender.RootFingerprint;
+                // A holder is a separate lock from assignment (TaskHolderTakenOver's own Apply
+                // clears AssignedOwnerFingerprint to null the moment it sets one), so a null
+                // assignment fingerprint alone never means "free to reassign" — it also means
+                // "currently held by someone else" whenever a holder is recorded (independent
+                // pre-PR review, cycle 1, conformance lens, medium: the earlier version of this
+                // check let a forged TaskAssigned with no placement hijack an owner-held task the
+                // moment TaskHolderTakenOver had cleared its assignment).
+                bool freeToReassign = (task.AssignedOwnerFingerprint is null
+                        || task.AssignedOwnerFingerprint == sender.RootFingerprint)
+                    && (task.HolderOwnerRootFingerprint is null
+                        || task.HolderOwnerRootFingerprint == sender.RootFingerprint);
                 bool targetsOwnRoot = assigned.AssignedOwnerRootFingerprint == sender.RootFingerprint;
                 bool placementInFleet = assigned.PlacedOnNodeId is not { HasValue: true, Value: { } placedNodeId }
                     || sender.FleetNodeIds.Contains(placedNodeId);
 
-                return unassignedOrOwnRoot && targetsOwnRoot && placementInFleet
+                return freeToReassign && targetsOwnRoot && placementInFleet
                     ? TaskActVerdict.Allowed
                     : Refuse(originNodeId, senderNodeId);
             }
@@ -1644,23 +1689,29 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             }
 
             case TaskActClassification.Conditional when PreAssignmentCapableConditionalTypes.Contains(eventType):
-                // The "genuinely unassigned and unheld" case already returned Allowed above,
-                // before sender resolution even mattered — TaskPublished and TaskReturnedToDraft
-                // only ever fire on an unassigned task by construction (Draft and Published are
-                // both pre-assignment states); TaskPreApprovedSet, TaskScopeSet, and
-                // TaskPrivacySet are explicitly settable "on any live non-terminal task, a draft
-                // included" (their own docs); TaskRevised is Draft-only except for the
-                // queue-priority carve-out (AutoPrReviewEngine's own queue-first revise), the one
-                // shape that reaches this case with a real assignment already recorded. What is
-                // left here is only the case a null pair genuinely CANNOT mean for these types: the
-                // task IS known to be someone else's — treated exactly as the general conditional
-                // case below treats it. task is null only defensively (every one of these targets
-                // its own Task stream directly, which this gate already required to exist).
+                // TaskPublished and TaskReturnedToDraft only ever fire on an unassigned task by
+                // construction (Draft and Published are both pre-assignment states);
+                // TaskPreApprovedSet, TaskScopeSet, and TaskPrivacySet are explicitly settable "on
+                // any live non-terminal task, a draft included" (their own docs); TaskRevised is
+                // Draft-only except for the queue-priority carve-out (AutoPrReviewEngine's own
+                // queue-first revise); TaskAbandoned covers a member's own never-assigned draft.
+                // task is null only defensively (every one of these targets its own Task stream
+                // directly, which this gate already required to exist). A null assignment/holder
+                // pair is judged against creatorRootFingerprint rather than blanket-allowed
+                // (PreAssignmentCapableConditionalTypes' own doc): unknown, it holds, exactly like
+                // every other not-yet-arrived fact this method defers on; known, it is the sender's
+                // own root or it is not, and there is nothing further to wait for either way.
                 return task switch
                 {
                     null => TaskActVerdict.Held,
                     _ when task.AssignedOwnerFingerprint == sender.RootFingerprint
                         || task.HolderOwnerRootFingerprint == sender.RootFingerprint => TaskActVerdict.Allowed,
+                    { AssignedOwnerFingerprint: null, HolderOwnerRootFingerprint: null } => creatorRootFingerprint switch
+                    {
+                        null => TaskActVerdict.Held,
+                        _ when creatorRootFingerprint == sender.RootFingerprint => TaskActVerdict.Allowed,
+                        _ => Refuse(originNodeId, senderNodeId),
+                    },
                     _ => Refuse(originNodeId, senderNodeId),
                 };
 
@@ -1739,10 +1790,16 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     /// null for a record queued only because an EARLIER same-origin record already holds this stream
     /// (nothing new to ask about — the earlier one's own hold already asked); non-null, and added to
     /// on first creation only, for the record whose own verdict is what created the hold.
+    /// <paramref name="projectId"/> is this RECEIVER's own local project id, stored on the row rather
+    /// than <c>record.OriginProjectId</c> (independent pre-PR review, cycle 1, both lenses, high): the
+    /// origin id is the SENDER's own per-install coordinate, which never matches this node's own
+    /// <paramref name="projectId"/> across two real installs, and every reader of this table —
+    /// <see cref="ApplyAsync"/>'s own "earlier held for this origin" check and
+    /// <see cref="ReCheckHeldTaskActsAsync"/> alike — filters and re-applies by this node's own id.
     /// </summary>
     private static async Task HoldTaskActAsync(
         IDocumentSession session, EventReplicationCodec.ReplicatedEventRecord record, Guid streamId, Guid taskId,
-        Guid senderNodeId, string? senderFingerprint, string? originProjectKey, DateTimeOffset now,
+        Guid projectId, Guid senderNodeId, string? senderFingerprint, string? originProjectKey, DateTimeOffset now,
         HashSet<Guid>? taskActCatchUpAskTaskIdsThisRead, CancellationToken cancellationToken)
     {
         if (await session.LoadAsync<HeldTaskActRecord>(record.OriginEventId, cancellationToken) is not null)
@@ -1755,7 +1812,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             Id = record.OriginEventId,
             StreamId = streamId,
             TaskId = taskId,
-            ProjectId = record.OriginProjectId,
+            ProjectId = projectId,
             SenderNodeId = senderNodeId,
             SenderFingerprint = senderFingerprint,
             OriginProjectKey = originProjectKey,
@@ -1859,8 +1916,11 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 TaskActTargetResolution target =
                     await ResolveTaskActTargetAsync(session, eventType, current.StreamId, cancellationToken);
                 SenderResolution? sender = ResolveSender(trustChain, current.SenderFingerprint, current.SenderNodeId);
+                TaskCreatorRootRecord? creatorRoot =
+                    await session.LoadAsync<TaskCreatorRootRecord>(target.TaskId, cancellationToken);
                 TaskActVerdict verdict = EvaluateTaskActVerdict(
-                    classification.Value, eventType, data, target.Task, sender, current.OriginNodeId, current.SenderNodeId);
+                    classification.Value, eventType, data, target.Task, sender, current.OriginNodeId,
+                    current.SenderNodeId, creatorRoot?.CreatorRootFingerprint);
 
                 if (verdict == TaskActVerdict.Held)
                 {
