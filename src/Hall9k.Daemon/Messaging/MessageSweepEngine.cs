@@ -165,8 +165,9 @@ public sealed class MessageSweepEngine(
                 await successorBackfill.ReconcileAsync(project, identity, trustChain, cancellationToken);
             }
 
-            TrustChain chainWithRefIntegrity = await WithAppendOnlyExactRefIntegrityAsync(project, trustChain, cancellationToken);
-            await PersistUnverifiedWritesAsync(project, chainWithRefIntegrity, now, cancellationToken);
+            (TrustChain chainWithRefIntegrity, IReadOnlyList<string> unresolvedRefNames) =
+                await WithAppendOnlyExactRefIntegrityAsync(project, trustChain, cancellationToken);
+            await PersistUnverifiedWritesAsync(project, chainWithRefIntegrity, unresolvedRefNames, now, cancellationToken);
             await PersistMemberLabelsAsync(project, trustChain, now, cancellationToken);
             await ReconcileRootVerificationAsync(project.Id, trustChain, now, cancellationToken);
             await ReconcileSuccessionStateAsync(project.Id, nodeId, identity.OwnerRootFingerprint, trustChain, now, cancellationToken);
@@ -643,12 +644,19 @@ public sealed class MessageSweepEngine(
     /// <see cref="GitLedger"/> or <see cref="GitLedgerCommitReader"/> refusal on one of them would
     /// never reach <c>h9k status</c> at all. Best-effort per ref, the same as
     /// every other per-project step in this sweep: a failure checking one ref is logged and retried
-    /// next tick, and never blocks the rest.
+    /// next tick, and never blocks the rest — and, critically, never itself resolves a standing
+    /// refusal this tick simply failed to re-observe: <see cref="UnresolvedRefNames"/> names every ref
+    /// this tick could not check at all, so <see cref="PersistUnverifiedWritesAsync"/> can tell "this
+    /// tick observed the ref was fine" apart from "this tick never actually looked" (independent
+    /// pre-PR review, cycle 1, adversarial lens, medium — a failed check used to fall out of the
+    /// returned chain exactly like a genuinely resolved ref, so a transient blip here appended a
+    /// false <c>UnverifiedLedgerWriteResolved</c> for a rewind that was still standing).
     /// </summary>
-    private async Task<TrustChain> WithAppendOnlyExactRefIntegrityAsync(
+    private async Task<(TrustChain Chain, IReadOnlyList<string> UnresolvedRefNames)> WithAppendOnlyExactRefIntegrityAsync(
         ProjectDetails project, TrustChain trustChain, CancellationToken cancellationToken)
     {
         List<UnverifiedLedgerWrite> extraRefusals = [];
+        List<string> unresolvedRefNames = [];
         foreach (LedgerRefEntry entry in LedgerRefRegistry.AppendOnlyExactRefs)
         {
             try
@@ -662,13 +670,17 @@ public sealed class MessageSweepEngine(
             }
             catch (Exception exception)
             {
+                unresolvedRefNames.Add(entry.RefspecSource);
                 logger.LogWarning(
                     exception, "Checking {RefName} for an append-only integrity refusal failed for project "
                     + "{ProjectId}; will retry next sweep", entry.RefspecSource, project.Id);
             }
         }
 
-        return extraRefusals.Count == 0 ? trustChain : trustChain with { UnverifiedWrites = [.. trustChain.UnverifiedWrites, .. extraRefusals] };
+        TrustChain chain = extraRefusals.Count == 0
+            ? trustChain
+            : trustChain with { UnverifiedWrites = [.. trustChain.UnverifiedWrites, .. extraRefusals] };
+        return (chain, unresolvedRefNames);
     }
 
     /// <summary>
@@ -704,11 +716,15 @@ public sealed class MessageSweepEngine(
     /// (<see cref="Hall9k.Domain.Features.Message.InboxSenderVouched"/>) — without this, a resolved
     /// writer (the offending node re-vouched, or a later commit correcting the bad write) would
     /// stay in <c>h9k status</c> forever with no way to clear (independent pre-PR review, cycle 3,
-    /// conformance lens, medium).
+    /// conformance lens, medium). <paramref name="unresolvedRefNames"/> is the exact-ref sweep's own
+    /// list of refs it could not check at all this tick: a standing record for one of those never
+    /// clears here either, since "not observed among this tick's writes" only ever means "resolved"
+    /// when this tick actually looked (independent pre-PR review, cycle 1, adversarial lens, medium).
     /// </para>
     /// </summary>
     private async Task PersistUnverifiedWritesAsync(
-        ProjectDetails project, TrustChain trustChain, DateTimeOffset now, CancellationToken cancellationToken)
+        ProjectDetails project, TrustChain trustChain, IReadOnlyList<string> unresolvedRefNames, DateTimeOffset now,
+        CancellationToken cancellationToken)
     {
         Dictionary<Guid, UnverifiedLedgerWrite> distinctWrites = [];
         foreach (UnverifiedLedgerWrite write in trustChain.UnverifiedWrites)
@@ -716,6 +732,9 @@ public sealed class MessageSweepEngine(
             Guid streamId = UnverifiedLedgerWriteStreamId.For(project.Id, write.Kind, write.Identifier, write.RootFingerprint);
             distinctWrites[streamId] = write;
         }
+
+        HashSet<Guid> unresolvedStreamIds = [.. unresolvedRefNames.Select(
+            refName => UnverifiedLedgerWriteStreamId.For(project.Id, "ref", refName, string.Empty))];
 
         try
         {
@@ -726,7 +745,7 @@ public sealed class MessageSweepEngine(
                 .ToListAsync(cancellationToken);
             foreach (UnverifiedLedgerWriteDetails record in standing)
             {
-                if (!distinctWrites.ContainsKey(record.Id))
+                if (!distinctWrites.ContainsKey(record.Id) && !unresolvedStreamIds.Contains(record.Id))
                 {
                     session.Events.Append(record.Id, UnverifiedLedgerWriteDecider.Resolve(now));
                 }
