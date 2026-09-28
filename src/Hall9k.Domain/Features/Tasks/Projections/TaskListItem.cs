@@ -169,6 +169,23 @@ public sealed class TaskListItem
     /// </summary>
     public bool WasAutoPrReviewCreated { get; set; }
     /// <summary>
+    /// Mirrors <see cref="TaskAggregate.PrReviewGateParked"/> and its sibling deterministic-fact
+    /// fields (security review idea 6be68ee2, finding 1): whether this pr-review task's own mint
+    /// was parked by the membership gate rather than assigned, and the pull request facts the
+    /// park card names. <c>AttentionComposer</c> reads these to render the needs-you row; never
+    /// cleared once set, since <c>h9k task assign</c> is the human go that ends the park.
+    /// </summary>
+    public bool PrReviewGateParked { get; set; }
+    public string? PrReviewGateParkedAuthorLogin { get; set; }
+    public long? PrReviewGateParkedAuthorAccountId { get; set; }
+    public string? PrReviewGateParkedAuthorAssociation { get; set; }
+    public string? PrReviewGateParkedHeadOwner { get; set; }
+    public bool PrReviewGateParkedIsCrossRepository { get; set; }
+    public bool? PrReviewGateParkedIsPrivate { get; set; }
+    public int? PrReviewGateParkedChangedFileCount { get; set; }
+    public IReadOnlyList<long> PrReviewGateParkedMemberAccountIds { get; set; } = [];
+    public IReadOnlyList<string> PrReviewGateParkedMembersWithoutDeclaredAccount { get; set; } = [];
+    /// <summary>
     /// Mirrors <see cref="TaskAggregate.PrReviewFollowThroughOpen"/>: whether this pr-review
     /// task's posted review is still being followed through (task: a pr-review task stays open
     /// while the pull request's review threads are unresolved). The closeout watcher's own
@@ -957,6 +974,20 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
 
     public void Apply(IEvent<PullRequestReviewAssignmentRecalled> @event, TaskListItem view) =>
         view.AutoPrReviewAssigneeLogin = null;
+
+    public void Apply(IEvent<PullRequestReviewGateParked> @event, TaskListItem view)
+    {
+        view.PrReviewGateParked = true;
+        view.PrReviewGateParkedAuthorLogin = @event.Data.AuthorLogin;
+        view.PrReviewGateParkedAuthorAccountId = @event.Data.AuthorAccountId;
+        view.PrReviewGateParkedAuthorAssociation = @event.Data.AuthorAssociation;
+        view.PrReviewGateParkedHeadOwner = @event.Data.HeadOwner;
+        view.PrReviewGateParkedIsCrossRepository = @event.Data.IsCrossRepository;
+        view.PrReviewGateParkedIsPrivate = @event.Data.IsPrivate;
+        view.PrReviewGateParkedChangedFileCount = @event.Data.ChangedFileCount;
+        view.PrReviewGateParkedMemberAccountIds = @event.Data.MemberAccountIds;
+        view.PrReviewGateParkedMembersWithoutDeclaredAccount = @event.Data.MembersWithoutDeclaredAccount;
+    }
 
     // Mirrors TaskAggregate.Apply(PullRequestReviewFollowThroughOpened): the pr-review task's own
     // ending is now a wait rather than Done, and this is the row the follow-through sweep and

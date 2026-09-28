@@ -78,6 +78,7 @@ public static class TaskActClassificationRegistry
         [typeof(PullRequestReviewAuthorResponded)] = TaskActClassification.MemberSafe,
         [typeof(PullRequestReviewFollowThroughObserved)] = TaskActClassification.MemberSafe,
         [typeof(PullRequestReviewFollowThroughOpened)] = TaskActClassification.MemberSafe,
+        [typeof(PullRequestReviewGateParked)] = TaskActClassification.MemberSafe,
         [typeof(PullRequestReviewLapOpened)] = TaskActClassification.MemberSafe,
         [typeof(PullRequestReviewMentionObserved)] = TaskActClassification.MemberSafe,
         [typeof(PullRequestReviewVerdictDelivered)] = TaskActClassification.MemberSafe,

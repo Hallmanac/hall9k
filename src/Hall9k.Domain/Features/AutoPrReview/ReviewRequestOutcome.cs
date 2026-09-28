@@ -24,6 +24,14 @@ public sealed record ReviewRequestOutcome
     /// <summary>A pr-review task was minted, published and assigned for this request.</summary>
     public static readonly ReviewRequestOutcome TaskCreated = new("TaskCreated");
 
+    /// <summary>
+    /// A pr-review task was minted and published, but deliberately never assigned — the membership
+    /// gate found the pull request's own author was not a declared hall9k team member (or was a
+    /// Bot) on a repository the gate covers (security review idea 6be68ee2, finding 1). An
+    /// unassigned task never dispatches; <c>h9k task assign</c> is the human go.
+    /// </summary>
+    public static readonly ReviewRequestOutcome TaskCreatedParked = new("TaskCreatedParked");
+
     /// <summary>A task already covered this pull request — auto-created earlier, or a human's own <c>h9k task add --from-pr</c>.</summary>
     public static readonly ReviewRequestOutcome AlreadyCovered = new("AlreadyCovered");
 
@@ -68,6 +76,7 @@ public sealed record ReviewRequestOutcome
     public static ReviewRequestOutcome FromInput(string? value) => value?.Trim().ToLowerInvariant() switch
     {
         "taskcreated" => TaskCreated,
+        "taskcreatedparked" => TaskCreatedParked,
         "alreadycovered" => AlreadyCovered,
         "heldsettingoff" => HeldSettingOff,
         "heldbeforecutoff" => HeldBeforeCutoff,
