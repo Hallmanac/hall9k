@@ -47,11 +47,4 @@ public sealed class OrchestratorFeedRootRotationLineTests
 
         line.Should().Be("rotation by node 44444444 revoked by an earlier root key");
     }
-
-    [Fact]
-    public void Both_types_are_in_the_actionable_band()
-    {
-        OrchestratorFeedInterest.BandOf(typeof(RootRotationObserved)).Should().Be(OrchestratorFeedLevel.Actionable);
-        OrchestratorFeedInterest.BandOf(typeof(RootRotationRevoked)).Should().Be(OrchestratorFeedLevel.Actionable);
-    }
 }

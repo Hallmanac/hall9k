@@ -678,7 +678,7 @@ means vouching in a replacement node, and a copy elsewhere lets whoever holds it
 as this node (revoke the node with `h9k node revoke <node-id>` from another node of the fleet). Losing
 the **root** node's own key is a different recovery, because that key is the owner's whole identity:
 a surviving node holding a live successor record promotes itself instead, with `h9k owner promote`
-(see [concepts.md](concepts.md#identity-fleet-and-team)) — vouching in a replacement fixes nothing
+(see [concepts.md](concepts.md#identity-fleet-and-team)); vouching in a replacement fixes nothing
 here, since a replacement node has no root authority to inherit. `credentials/` holds the
 rest of what a connection needs. A registered connection records a
 *reference* rather than a value, and a `file:` reference names a file in that directory, which is
@@ -696,11 +696,11 @@ the root node:
   From a surviving node that already holds a live successor record: `h9k owner promote`. Then either
   re-vouch a replacement Mac (`h9k node vouch <node-id>`, once it has joined) to restore the fleet's
   original shape, or simply carry on with the promoted node as the new root.
-- **The root Mac is stolen, not destroyed** — the private key file may still be readable by whoever
+- **The root Mac is stolen, not destroyed**: the private key file may still be readable by whoever
   has it. This is the compromised-K0 case, and succession cannot recover it: nothing revokes K0 (see
   [concepts.md](concepts.md#identity-fleet-and-team)). The floor is a member re-inviting you in with
   a fresh root, which for a single-owner project means starting a new ledger.
-- **A hijacked promotion** — a heir node you did not intend to promote (or one whose key is no longer
+- **A hijacked promotion**: a heir node you did not intend to promote (or one whose key is no longer
   trustworthy) ran `h9k owner promote` and its rotation landed. From a node still holding an earlier
   root key: `h9k node revoke <heir-node-id>`. Under idea 6be68ee2's own succession rule, a revoke from
   a key ranked above the hijacking node's own key also writes its revoked-successor record, which
@@ -1552,7 +1552,7 @@ answers them. Read them the way you read a cause line.
 | `<project> not joined yet`, with `h9k project join <project>` named | The project is registered here but this node has never joined its ledger, so nothing about it can be sent or trusted yet | `h9k project join <project>`, with `--invite <secret>` when someone else owns it |
 | `root key rotated by <node>` | `h9k owner promote` landed a rotation in this project's own ledger, promoting `<node>`'s own vouched key onto its owner's ranked root-key set | Nothing required; this is informational. `h9k node revoke <heir-node-id>` from a node holding an earlier root key undoes a hijacked one |
 | `rotation by <node> revoked by an earlier root key (<node>)` | An earlier-ranked root key voided the named rotation and everything built on top of it, the identical trust rule an ordinary fleet revoke already follows | Nothing required; a later re-promotion of the same node restores it, the same as a re-vouch |
-| `rotation missing in <project>` | This node's own key holds a live root key somewhere else, but this project's own copy of the ledger has not caught up — a partial `h9k owner promote` fan-out | `h9k owner promote` again; the retry is idempotent and only writes to projects still missing it |
+| `rotation missing in <project>` | This node's own key holds a live root key somewhere else, but this project's own copy of the ledger has not caught up; a partial `h9k owner promote` fan-out | `h9k owner promote` again; the retry is idempotent and only writes to projects still missing it |
 
 A task another node holds also says so on its own row in `h9k task show` ("held by node `<short-id>`
 (owner `<who>`) since `<age>`"), where `<who>` is that member's own label with the short fingerprint
