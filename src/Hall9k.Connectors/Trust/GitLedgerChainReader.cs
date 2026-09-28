@@ -268,7 +268,17 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             }
 
             commits ??= await CommitsTouchingPathAsync(repositoryPath, tip, path, cancellationToken);
-            if (commits.Count > 0 && await IsSignedByAsync(repositoryPath, commits[0], owner.RootPublicKeyLine, cancellationToken))
+            bool signedByALiveRootKey = false;
+            foreach (LiveRootKey rootKey in owner.RootKeys)
+            {
+                if (commits.Count > 0 && await IsSignedByAsync(repositoryPath, commits[0], rootKey.PublicKeyLine, cancellationToken))
+                {
+                    signedByALiveRootKey = true;
+                    break;
+                }
+            }
+
+            if (signedByALiveRootKey)
             {
                 // Self-certification holds — but only actually attach when this node's own current
                 // claim still names this exact root: `h9k project join --owner` rewrites a node's
@@ -413,9 +423,17 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         HashSet<string> carriedPathsEstablished = [];
 
         IReadOnlyList<string> allCommits = await CommitsOldestFirstAsync(repositoryPath, tip, cancellationToken);
+        // Cached here, once per commit, rather than re-run inside ComputeSuccessionAsync below: that
+        // second pass walks this identical commit list a second time, and a `git diff-tree` per
+        // commit is not free — this reader's own cost already scales with ref history length, and
+        // succession would otherwise double it for every root regardless of whether that root has
+        // ever written a single successor, rotation, or revoked-successor record.
+        Dictionary<string, IReadOnlyList<string>> changedPathsByCommit = [];
         foreach (string commit in allCommits)
         {
-            foreach (string path in await ChangedPathsAsync(repositoryPath, commit, cancellationToken))
+            IReadOnlyList<string> changedPaths = await ChangedPathsAsync(repositoryPath, commit, cancellationToken);
+            changedPathsByCommit[commit] = changedPaths;
+            foreach (string path in changedPaths)
             {
                 if (path.StartsWith(carriedPrefix, StringComparison.Ordinal) && path.EndsWith(".yaml", StringComparison.Ordinal))
                 {
@@ -573,11 +591,247 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 + $"owners/{root}/carried/*.yaml bundle verifies it either"), .. unverified]);
         }
 
+        // Pass 1 of the succession model (idea 6be68ee2): a second walk of this identical root ref,
+        // over successors/, rotations/, and revoked-successors/ alone, now that `nodes` above is
+        // final — "a successor record counts only while its node is in Nodes" reads the fleet as it
+        // stands now, the same live-state rule every other write in this reader already follows,
+        // never a snapshot pinned to wherever the replay happened to be when it saw that record.
+        (IReadOnlyList<LiveRootKey> rootKeys, IReadOnlyList<string> successorNodeIds, IReadOnlyList<UnverifiedLedgerWrite> successionUnverified) =
+            await ComputeSuccessionAsync(repositoryPath, root, publicKeyLine, allCommits, changedPathsByCommit, nodes, cancellationToken);
+
         return (
             new TrustedOwner(
                 root, publicKeyLine, [.. nodes.Values], RevokedNodeIds: revokedNodeIds,
-                EverEnrolledNodes: [.. everEnrolledNodes.Values]),
-            unverified);
+                EverEnrolledNodes: [.. everEnrolledNodes.Values], RootKeys: rootKeys, SuccessorNodeIds: successorNodeIds),
+            [.. unverified, .. successionUnverified]);
+    }
+
+    /// <summary>
+    /// Pass 1 of the succession model (idea 6be68ee2, HALL9K-P2P-DESIGN.md §6, decision 29):
+    /// replays <paramref name="allCommits"/> oldest first, a second time, over
+    /// <c>owners/&lt;root&gt;/successors/</c>, <c>owners/&lt;root&gt;/rotations/</c>, and
+    /// <c>owners/&lt;root&gt;/revoked-successors/</c> alone, and derives the final ranked root-key
+    /// set: K0 (<paramref name="rootPublicKeyLine"/>) first, then every rotation that actually
+    /// validated, in the order it landed.
+    /// <list type="bullet">
+    /// <item><b>A successor record</b> (<c>successors/&lt;node-id&gt;.yaml</c>: the node id and the
+    /// key already vouched for it) counts only when it is signed by a key already live in the chain
+    /// at that point, and only when the named node is, right now — this walk's own final
+    /// <paramref name="nodes"/>, not a snapshot — actually vouched under the identical key it
+    /// declares; a node-signed one, or one naming a node that never vouched that key, is refused and
+    /// named.</item>
+    /// <item><b>A rotation</b> (<c>rotations/&lt;n&gt;.yaml</c>: the promoting node id, its key, and
+    /// the exact key it supersedes) counts only when its promoter is currently a listed successor
+    /// under that identical key, currently vouched under it, signed the commit itself with that same
+    /// key, and names the CURRENT top of the chain being built as the key it supersedes — never an
+    /// earlier one. Since a write here can only ever move that top forward by exactly one step, the
+    /// first rotation to land always wins: whichever one lands second, however validly signed, now
+    /// names a key that is no longer current and is refused as stale.</item>
+    /// <item><b>A revoked-successor record</b> (<c>revoked-successors/&lt;node-id&gt;.yaml</c>)
+    /// removes a node's current candidacy, or — when that node's own rotation already landed — that
+    /// key and everything the chain built on top of it, but only when signed by a key ranked ABOVE
+    /// the node it targets: any key currently in the chain when the target is still only a candidate
+    /// (no rank of its own yet to be "above"), or specifically one of the keys ranked before the
+    /// target's own position once it has rotated in. K0 itself can never be a target — nothing names
+    /// K0 by node id, since it is <c>root.yaml</c>'s own key, not a promotion.</item>
+    /// </list>
+    /// A revocation that lands before the rotation it names simply means that rotation's own
+    /// "current top" check fails once it is reached — it never validates, exactly as if it had never
+    /// been written. Every rejection is recorded rather than silently dropped, the identical
+    /// "name the writer" contract every other check in this class already keeps.
+    /// </summary>
+    private async Task<(IReadOnlyList<LiveRootKey> RootKeys, IReadOnlyList<string> SuccessorNodeIds, IReadOnlyList<UnverifiedLedgerWrite> Unverified)>
+        ComputeSuccessionAsync(
+            string repositoryPath, string root, string rootPublicKeyLine, IReadOnlyList<string> allCommits,
+            IReadOnlyDictionary<string, IReadOnlyList<string>> changedPathsByCommit,
+            IReadOnlyDictionary<string, TrustedNode> nodes, CancellationToken cancellationToken)
+    {
+        string successorsPrefix = $"owners/{root}/successors/";
+        string rotationsPrefix = $"owners/{root}/rotations/";
+        string revokedSuccessorsPrefix = $"owners/{root}/revoked-successors/";
+        const string suffix = ".yaml";
+
+        List<LiveRootKey> chain = [new LiveRootKey(rootPublicKeyLine, root, null)];
+        Dictionary<string, string> successorCandidates = [];
+        List<UnverifiedLedgerWrite> unverified = [];
+
+        foreach (string commit in allCommits)
+        {
+            foreach (string path in changedPathsByCommit[commit])
+            {
+                if (path.StartsWith(successorsPrefix, StringComparison.Ordinal) && path.EndsWith(suffix, StringComparison.Ordinal))
+                {
+                    string nodeId = path[successorsPrefix.Length..^suffix.Length];
+                    if (nodeId.IsBlank())
+                    {
+                        continue;
+                    }
+
+                    string? content = await ReadAtCommitAsync(repositoryPath, commit, path, cancellationToken);
+                    if (content is null)
+                    {
+                        // A deletion — nothing this task ever writes, but nothing to apply either way.
+                        continue;
+                    }
+
+                    string? declaredKey = ExtractQuotedYamlValue(content, "public_key");
+                    if (declaredKey is null)
+                    {
+                        continue;
+                    }
+
+                    bool signedByALiveRootKey = false;
+                    foreach (LiveRootKey rootKey in chain)
+                    {
+                        if (await IsSignedByAsync(repositoryPath, commit, rootKey.PublicKeyLine, cancellationToken))
+                        {
+                            signedByALiveRootKey = true;
+                            break;
+                        }
+                    }
+
+                    if (!signedByALiveRootKey)
+                    {
+                        unverified.Add(new UnverifiedLedgerWrite(
+                            "successor", nodeId, root,
+                            $"commit {commit} for {path} is not signed by any of root {root}'s own live keys"));
+                        continue;
+                    }
+
+                    if (!nodes.TryGetValue(nodeId, out TrustedNode? vouchedNode) || vouchedNode.PublicKeyLine != declaredKey)
+                    {
+                        unverified.Add(new UnverifiedLedgerWrite(
+                            "successor", nodeId, root,
+                            $"commit {commit} for {path} names a node that is not currently vouched into root {root}'s own "
+                            + "fleet under this exact key"));
+                        continue;
+                    }
+
+                    successorCandidates[nodeId] = declaredKey;
+                    continue;
+                }
+
+                if (path.StartsWith(rotationsPrefix, StringComparison.Ordinal) && path.EndsWith(suffix, StringComparison.Ordinal))
+                {
+                    string sequence = path[rotationsPrefix.Length..^suffix.Length];
+                    if (sequence.IsBlank())
+                    {
+                        continue;
+                    }
+
+                    string? content = await ReadAtCommitAsync(repositoryPath, commit, path, cancellationToken);
+                    if (content is null)
+                    {
+                        continue;
+                    }
+
+                    string? promotingNodeId = ExtractQuotedYamlValue(content, "node_id");
+                    string? promotingKey = ExtractQuotedYamlValue(content, "public_key");
+                    string? supersededKey = ExtractQuotedYamlValue(content, "supersedes_public_key");
+                    if (promotingNodeId is null || promotingKey is null || supersededKey is null)
+                    {
+                        continue;
+                    }
+
+                    if (!successorCandidates.TryGetValue(promotingNodeId, out string? listedKey) || listedKey != promotingKey)
+                    {
+                        unverified.Add(new UnverifiedLedgerWrite(
+                            "rotation", promotingNodeId, root,
+                            $"commit {commit} for {path} promotes a node that is not currently a listed successor under "
+                            + "this exact key"));
+                        continue;
+                    }
+
+                    if (!nodes.TryGetValue(promotingNodeId, out TrustedNode? vouchedNode) || vouchedNode.PublicKeyLine != promotingKey)
+                    {
+                        unverified.Add(new UnverifiedLedgerWrite(
+                            "rotation", promotingNodeId, root,
+                            $"commit {commit} for {path} promotes a node that is not currently vouched into root {root}'s "
+                            + "own fleet under this exact key"));
+                        continue;
+                    }
+
+                    if (!await IsSignedByAsync(repositoryPath, commit, promotingKey, cancellationToken))
+                    {
+                        unverified.Add(new UnverifiedLedgerWrite(
+                            "rotation", promotingNodeId, root,
+                            $"commit {commit} for {path} is not signed by the promoting node's own vouched key"));
+                        continue;
+                    }
+
+                    if (supersededKey != chain[^1].PublicKeyLine)
+                    {
+                        unverified.Add(new UnverifiedLedgerWrite(
+                            "rotation", promotingNodeId, root,
+                            $"commit {commit} for {path} supersedes a key that is no longer the current top of root "
+                            + $"{root}'s own root-key chain — stale, ignored"));
+                        continue;
+                    }
+
+                    chain.Add(new LiveRootKey(promotingKey, vouchedNode.Fingerprint, promotingNodeId));
+                    successorCandidates.Remove(promotingNodeId);
+                    continue;
+                }
+
+                if (path.StartsWith(revokedSuccessorsPrefix, StringComparison.Ordinal) && path.EndsWith(suffix, StringComparison.Ordinal))
+                {
+                    string nodeId = path[revokedSuccessorsPrefix.Length..^suffix.Length];
+                    if (nodeId.IsBlank())
+                    {
+                        continue;
+                    }
+
+                    string? content = await ReadAtCommitAsync(repositoryPath, commit, path, cancellationToken);
+                    if (content is null)
+                    {
+                        continue;
+                    }
+
+                    int chainIndex = chain.FindIndex(key => key.IntroducedByNodeId == nodeId);
+                    bool isPendingCandidate = chainIndex < 0 && successorCandidates.ContainsKey(nodeId);
+                    if (chainIndex < 0 && !isPendingCandidate)
+                    {
+                        unverified.Add(new UnverifiedLedgerWrite(
+                            "revoked-successor", nodeId, root,
+                            $"commit {commit} for {path} names a node with no live successor candidacy or rotation to revoke"));
+                        continue;
+                    }
+
+                    // A pending candidate has no rank of its own yet, so every currently live root
+                    // key ranks "above" it; a already-rotated-in key only yields to a strictly
+                    // higher-ranked one — nothing revokes K0 itself, since chainIndex is never 0 for
+                    // any node id (K0's own IntroducedByNodeId is always null).
+                    IEnumerable<LiveRootKey> eligibleRevokers = chainIndex >= 0 ? chain.Take(chainIndex) : chain;
+                    bool signedByAHigherRankedKey = false;
+                    foreach (LiveRootKey candidate in eligibleRevokers)
+                    {
+                        if (await IsSignedByAsync(repositoryPath, commit, candidate.PublicKeyLine, cancellationToken))
+                        {
+                            signedByAHigherRankedKey = true;
+                            break;
+                        }
+                    }
+
+                    if (!signedByAHigherRankedKey)
+                    {
+                        unverified.Add(new UnverifiedLedgerWrite(
+                            "revoked-successor", nodeId, root,
+                            $"commit {commit} for {path} is not signed by a root key ranked above the successor it targets"));
+                        continue;
+                    }
+
+                    successorCandidates.Remove(nodeId);
+                    if (chainIndex >= 0)
+                    {
+                        chain.RemoveRange(chainIndex, chain.Count - chainIndex);
+                    }
+
+                    continue;
+                }
+            }
+        }
+
+        return (chain, [.. successorCandidates.Keys], unverified);
     }
 
     /// <summary>
@@ -1008,9 +1262,12 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     private async Task<bool> IsAuthorizedForGenesisAsync(
         string repositoryPath, string commit, TrustedOwner owner, CancellationToken cancellationToken)
     {
-        if (await IsSignedByAsync(repositoryPath, commit, owner.RootPublicKeyLine, cancellationToken))
+        foreach (LiveRootKey rootKey in owner.RootKeys)
         {
-            return true;
+            if (await IsSignedByAsync(repositoryPath, commit, rootKey.PublicKeyLine, cancellationToken))
+            {
+                return true;
+            }
         }
 
         foreach (TrustedNode node in owner.EverEnrolledNodes)

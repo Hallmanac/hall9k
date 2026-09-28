@@ -13,15 +13,19 @@ namespace Hall9k.Connectors.Trust;
 /// </summary>
 public static class OwnerChainAuthorization
 {
-    /// <summary>Whether a commit is authorized by exactly one owner's own chain: signed by that
-    /// root's own key, or by any node currently vouched into it.</summary>
+    /// <summary>Whether a commit is authorized by exactly one owner's own chain: signed by any of
+    /// that root's own live keys (idea 6be68ee2's ranked root-key set — K0 or a validated rotation,
+    /// never only whichever key is "current"), or by any node currently vouched into it.</summary>
     public static async Task<bool> IsAuthorizedByOwnerAsync(
         TrustedOwner owner, Func<string, CancellationToken, Task<bool>> isSignedByKeyAsync,
         CancellationToken cancellationToken)
     {
-        if (await isSignedByKeyAsync(owner.RootPublicKeyLine, cancellationToken))
+        foreach (LiveRootKey rootKey in owner.RootKeys)
         {
-            return true;
+            if (await isSignedByKeyAsync(rootKey.PublicKeyLine, cancellationToken))
+            {
+                return true;
+            }
         }
 
         foreach (TrustedNode node in owner.Nodes)

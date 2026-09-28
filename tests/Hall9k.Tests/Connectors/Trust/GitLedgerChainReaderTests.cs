@@ -1306,6 +1306,176 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         chain.UnverifiedWrites.Should().Contain(write => write.Kind == "carried" && write.Identifier == carrier.NodeId.ToString());
     }
 
+    // ---- succession (idea 6be68ee2: an owner's root authority is a ranked set of root keys) -----
+
+    [Fact]
+    public async Task A_root_signed_successor_attaches_and_a_node_signed_one_does_not()
+    {
+        string hub = _repo.CreateHub();
+        (string repositoryPath, GeneratedIdentity root) = await EstablishGenesisRootAsync(hub);
+
+        GeneratedIdentity rootSignedHeir = GenerateIdentity();
+        await WriteNodeFileAsync(repositoryPath, rootSignedHeir, rootSignedHeir);
+        await VouchAsync(repositoryPath, root.Fingerprint, rootSignedHeir, root);
+        await WriteSuccessorAsync(repositoryPath, root.Fingerprint, rootSignedHeir, root);
+
+        GeneratedIdentity nodeSignedHeir = GenerateIdentity();
+        await WriteNodeFileAsync(repositoryPath, nodeSignedHeir, nodeSignedHeir);
+        await VouchAsync(repositoryPath, root.Fingerprint, nodeSignedHeir, root);
+        await WriteSuccessorAsync(repositoryPath, root.Fingerprint, nodeSignedHeir, nodeSignedHeir);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains[root.Fingerprint].SuccessorNodeIds.Should().Contain(rootSignedHeir.NodeId.ToString());
+        chain.OwnerChains[root.Fingerprint].SuccessorNodeIds.Should().NotContain(nodeSignedHeir.NodeId.ToString());
+        chain.UnverifiedWrites.Should().Contain(write => write.Kind == "successor" && write.Identifier == nodeSignedHeir.NodeId.ToString());
+    }
+
+    [Fact]
+    public async Task A_rotation_by_a_listed_successor_is_accepted_and_a_k0_members_write_still_verifies_afterwards()
+    {
+        string hub = _repo.CreateHub();
+        (string repositoryPath, GeneratedIdentity root) = await EstablishGenesisRootAsync(hub);
+        GeneratedIdentity heir = GenerateIdentity();
+        await WriteNodeFileAsync(repositoryPath, heir, heir);
+        await VouchAsync(repositoryPath, root.Fingerprint, heir, root);
+        await WriteSuccessorAsync(repositoryPath, root.Fingerprint, heir, root);
+        await WriteRotationAsync(repositoryPath, root.Fingerprint, 1, heir, root.PublicKeyLine);
+
+        // K0 signs a fresh, ordinary (non-genesis) membership write AFTER the rotation.
+        GeneratedIdentity newMember = GenerateIdentity();
+        await WriteMemberFileAsync(repositoryPath, newMember.Fingerprint, "member", root);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains[root.Fingerprint].RootKeys.Should().Contain(
+            key => key.Fingerprint == heir.Fingerprint && key.IntroducedByNodeId == heir.NodeId.ToString());
+        chain.RoleOf(newMember.Fingerprint).Should().Be(
+            MembershipRole.Member, "K0 still verifies every members write it signs after a later rotation");
+    }
+
+    [Fact]
+    public async Task A_rotation_by_an_unlisted_key_is_ignored()
+    {
+        string hub = _repo.CreateHub();
+        (string repositoryPath, GeneratedIdentity root) = await EstablishGenesisRootAsync(hub);
+        GeneratedIdentity node = GenerateIdentity();
+        await WriteNodeFileAsync(repositoryPath, node, node);
+        await VouchAsync(repositoryPath, root.Fingerprint, node, root);
+        // Never listed as a successor.
+        await WriteRotationAsync(repositoryPath, root.Fingerprint, 1, node, root.PublicKeyLine);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains[root.Fingerprint].RootKeys.Should().ContainSingle(key => key.Fingerprint == root.Fingerprint);
+        chain.UnverifiedWrites.Should().Contain(write => write.Kind == "rotation" && write.Identifier == node.NodeId.ToString());
+    }
+
+    [Fact]
+    public async Task A_stale_rotation_superseding_a_non_current_key_is_ignored()
+    {
+        string hub = _repo.CreateHub();
+        (string repositoryPath, GeneratedIdentity root) = await EstablishGenesisRootAsync(hub);
+
+        GeneratedIdentity firstHeir = GenerateIdentity();
+        await WriteNodeFileAsync(repositoryPath, firstHeir, firstHeir);
+        await VouchAsync(repositoryPath, root.Fingerprint, firstHeir, root);
+        await WriteSuccessorAsync(repositoryPath, root.Fingerprint, firstHeir, root);
+        await WriteRotationAsync(repositoryPath, root.Fingerprint, 1, firstHeir, root.PublicKeyLine);
+
+        // Names root's own key (K0) as what it supersedes, but the first rotation already moved the
+        // chain's own top forward to K1 — stale by the time this one is reached.
+        GeneratedIdentity secondHeir = GenerateIdentity();
+        await WriteNodeFileAsync(repositoryPath, secondHeir, secondHeir);
+        await VouchAsync(repositoryPath, root.Fingerprint, secondHeir, root);
+        await WriteSuccessorAsync(repositoryPath, root.Fingerprint, secondHeir, root);
+        await WriteRotationAsync(repositoryPath, root.Fingerprint, 2, secondHeir, root.PublicKeyLine);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        IReadOnlyList<LiveRootKey> rootKeys = chain.OwnerChains[root.Fingerprint].RootKeys;
+        rootKeys.Should().HaveCount(2, "only the first rotation to land actually moved the chain's own top");
+        rootKeys.Should().Contain(key => key.IntroducedByNodeId == firstHeir.NodeId.ToString());
+        rootKeys.Should().NotContain(key => key.IntroducedByNodeId == secondHeir.NodeId.ToString());
+        chain.UnverifiedWrites.Should().Contain(write => write.Kind == "rotation" && write.Identifier == secondHeir.NodeId.ToString());
+    }
+
+    [Fact]
+    public async Task A_revoked_node_cannot_promote()
+    {
+        string hub = _repo.CreateHub();
+        (string repositoryPath, GeneratedIdentity root) = await EstablishGenesisRootAsync(hub);
+        GeneratedIdentity heir = GenerateIdentity();
+        await WriteNodeFileAsync(repositoryPath, heir, heir);
+        await VouchAsync(repositoryPath, root.Fingerprint, heir, root);
+        await WriteSuccessorAsync(repositoryPath, root.Fingerprint, heir, root);
+        await RevokeAsync(repositoryPath, root.Fingerprint, heir.NodeId, root);
+        // The revoked node still holds its own private key and can still sign a rotation commit —
+        // it just no longer counts, since it is not currently vouched into the fleet.
+        await WriteRotationAsync(repositoryPath, root.Fingerprint, 1, heir, root.PublicKeyLine);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains[root.Fingerprint].RootKeys.Should().ContainSingle(key => key.Fingerprint == root.Fingerprint);
+        chain.UnverifiedWrites.Should().Contain(write => write.Kind == "rotation" && write.Identifier == heir.NodeId.ToString());
+    }
+
+    [Fact]
+    public async Task K1s_writes_disappear_after_k0_revokes_it()
+    {
+        string hub = _repo.CreateHub();
+        (string repositoryPath, GeneratedIdentity root) = await EstablishGenesisRootAsync(hub);
+        GeneratedIdentity heir = GenerateIdentity();
+        await WriteNodeFileAsync(repositoryPath, heir, heir);
+        await VouchAsync(repositoryPath, root.Fingerprint, heir, root);
+        await WriteSuccessorAsync(repositoryPath, root.Fingerprint, heir, root);
+        await WriteRotationAsync(repositoryPath, root.Fingerprint, 1, heir, root.PublicKeyLine);
+
+        // K1 (the promoted heir) signs a membership write of its own, and it verifies.
+        GeneratedIdentity newMember = GenerateIdentity();
+        await WriteMemberFileAsync(repositoryPath, newMember.Fingerprint, "member", heir);
+
+        string beforeReaderRepo = _repo.CloneNode(hub);
+        TrustChain beforeRevocation = await _chainReader.ComputeAsync(beforeReaderRepo, CancellationToken.None);
+        beforeRevocation.RoleOf(newMember.Fingerprint).Should().Be(MembershipRole.Member, "K1 is currently a live root key");
+
+        // K0 revokes the heir outright — the identical pairing h9k node revoke performs when the
+        // revoking key is itself a live root key: the ordinary fleet revoke, plus the
+        // revoked-successor record that actually strips K1's own root-key rank.
+        await RevokeAsync(repositoryPath, root.Fingerprint, heir.NodeId, root);
+        await WriteRevokedSuccessorAsync(repositoryPath, root.Fingerprint, heir.NodeId, root);
+
+        string afterReaderRepo = _repo.CloneNode(hub);
+        TrustChain afterRevocation = await _chainReader.ComputeAsync(afterReaderRepo, CancellationToken.None);
+
+        afterRevocation.OwnerChains[root.Fingerprint].RootKeys.Should().ContainSingle(key => key.Fingerprint == root.Fingerprint);
+        afterRevocation.RoleOf(newMember.Fingerprint).Should().BeNull("K1's own earlier membership write disappears once K0 revokes it");
+    }
+
+    [Fact]
+    public async Task A_one_owner_fleet_with_no_rotation_reads_exactly_as_before()
+    {
+        string hub = _repo.CreateHub();
+        (string repositoryPath, GeneratedIdentity root) = await EstablishGenesisRootAsync(hub);
+        await WriteNodeFileAsync(repositoryPath, root, root);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        TrustedOwner owner = chain.OwnerChains[root.Fingerprint];
+        owner.RootKeys.Should().ContainSingle();
+        owner.RootKeys[0].PublicKeyLine.Should().Be(root.PublicKeyLine);
+        owner.RootKeys[0].Fingerprint.Should().Be(root.Fingerprint);
+        owner.RootKeys[0].IntroducedByNodeId.Should().BeNull();
+        owner.SuccessorNodeIds.Should().BeEmpty();
+        chain.IsAllowedSigner(root.Fingerprint).Should().BeTrue();
+    }
+
     /// <summary>Shared setup every carried-record test above needs: a genesis root on its own
     /// source project ledger, and a node genuinely vouched into it there — the source half of the
     /// evidence a carrying join reads and embeds. Each test builds its own separate TARGET ledger
@@ -1448,6 +1618,46 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         // shape a genuine root-signed revocation commit actually has in production, rather than a
         // message that never named the node id at all.
         await WriteAsync(repositoryPath, refName, path, content, signer, $"Revoke node {targetNodeId}");
+    }
+
+    /// <summary>Mirrors <c>SuccessionLedgerWriter.WriteSuccessorAsync</c>'s own real content and
+    /// path exactly: the node id and the key already vouched for it, signed by whichever key the
+    /// caller passes — a root key for the "attaches" cases, a node's own key for the "does not"
+    /// one.</summary>
+    private async Task WriteSuccessorAsync(string repositoryPath, string ownerRoot, GeneratedIdentity target, GeneratedIdentity signer)
+    {
+        string refName = $"refs/hall9k/ledger/owners/{ownerRoot}";
+        string path = $"owners/{ownerRoot}/successors/{target.NodeId}.yaml";
+        string content = BuildYaml(
+            ("node_id", target.NodeId.ToString()), ("public_key", target.PublicKeyLine), ("issued_at", Now()));
+        await WriteAsync(repositoryPath, refName, path, content, signer, $"Successor {target.NodeId}");
+    }
+
+    /// <summary>Mirrors this task's own <c>owners/&lt;root&gt;/rotations/&lt;n&gt;.yaml</c> shape:
+    /// the promoting node's own id and key, and the exact key it supersedes — signed by the
+    /// promoting node's own key, never a root key, since a rotation is what a listed successor signs
+    /// for itself.</summary>
+    private async Task WriteRotationAsync(
+        string repositoryPath, string ownerRoot, int sequence, GeneratedIdentity promoter, string supersedesPublicKeyLine)
+    {
+        string refName = $"refs/hall9k/ledger/owners/{ownerRoot}";
+        string path = $"owners/{ownerRoot}/rotations/{sequence}.yaml";
+        string content = BuildYaml(
+            ("node_id", promoter.NodeId.ToString()),
+            ("public_key", promoter.PublicKeyLine),
+            ("supersedes_public_key", supersedesPublicKeyLine),
+            ("issued_at", Now()));
+        await WriteAsync(repositoryPath, refName, path, content, promoter, $"Rotate to node {promoter.NodeId}");
+    }
+
+    /// <summary>Mirrors <c>SuccessionLedgerWriter.WriteRevokedSuccessorAsync</c>'s own real content
+    /// and path exactly.</summary>
+    private async Task WriteRevokedSuccessorAsync(string repositoryPath, string ownerRoot, Guid targetNodeId, GeneratedIdentity signer)
+    {
+        string refName = $"refs/hall9k/ledger/owners/{ownerRoot}";
+        string path = $"owners/{ownerRoot}/revoked-successors/{targetNodeId}.yaml";
+        string content = BuildYaml(("node_id", targetNodeId.ToString()), ("revoked_at", Now()));
+        await WriteAsync(repositoryPath, refName, path, content, signer, $"Revoke successor {targetNodeId}");
     }
 
     /// <summary>
