@@ -58,6 +58,46 @@ public sealed class GitHubPullRequestProviderTests
         gh.Calls.Single().Arguments.Should().ContainInOrder("pr", "view", "42");
     }
 
+    /// <summary>
+    /// Security review idea 6be68ee2, process-injection finding 1: a fork's own head, read from
+    /// gh's <c>isCrossRepository</c> field, is what tells <c>ReviewPersonaRegistry.Plan</c> to
+    /// skip every persona that can drive the product rather than run against a fork's own code.
+    /// </summary>
+    [Fact]
+    public async Task FetchFactsAsync_reads_whether_the_head_sits_on_a_fork()
+    {
+        const string forkJson = """
+            {
+              "number": 42,
+              "title": "Add rate limiting to auth endpoints",
+              "body": "Fixes #17.",
+              "state": "OPEN",
+              "url": "https://github.com/Hallmanac/hall9k/pull/42",
+              "baseRefName": "main",
+              "isCrossRepository": true
+            }
+            """;
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(forkJson);
+
+        PullRequestFacts facts = await new GitHubPullRequestProvider(gh.Runner, new FixedClock(ObservedAt))
+            .FetchFactsAsync("42", "/repos/hall9k", CancellationToken.None);
+
+        facts.IsCrossRepository.Should().BeTrue();
+        gh.Calls.Single().Arguments.Should().Contain(argument => argument.Contains("isCrossRepository", StringComparison.Ordinal));
+    }
+
+    /// <summary>Never guessed true from an absent field — a member's own PR, the ordinary case, reads false.</summary>
+    [Fact]
+    public async Task FetchFactsAsync_reads_a_member_s_own_head_as_not_a_fork()
+    {
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(PullRequestJson);
+
+        PullRequestFacts facts = await new GitHubPullRequestProvider(gh.Runner, new FixedClock(ObservedAt))
+            .FetchFactsAsync("42", "/repos/hall9k", CancellationToken.None);
+
+        facts.IsCrossRepository.Should().BeFalse();
+    }
+
     [Theory]
     [InlineData("42")]
     [InlineData("#42")]
