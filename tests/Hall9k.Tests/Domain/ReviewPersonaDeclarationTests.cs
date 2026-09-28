@@ -30,6 +30,21 @@ public sealed class ReviewPersonaDeclarationTests
             .WithMessage("*engineer, qa, designer*");
     }
 
+    /// <summary>
+    /// Security (idea 6be68ee2, phase two) is never something a member declares: it runs on
+    /// every pull-request review by default and is a project's own on/off call
+    /// (<c>h9k project set --security-review</c>), so <c>h9k owner set --persona security</c> is
+    /// refused by name, distinctly from a plain unrecognized word, and the set it names as
+    /// declarable does not include it.
+    /// </summary>
+    [Fact]
+    public void Security_is_refused_as_a_member_declaration_because_it_is_never_declared()
+    {
+        Action act = () => ReviewPersona.Parse("security");
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*cannot be declared*engineer, qa, designer*");
+    }
+
     [Fact]
     public void Declaring_none_reads_as_the_engineer_so_nothing_changes_for_anyone_who_never_declares_one()
     {

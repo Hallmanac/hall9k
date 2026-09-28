@@ -44,6 +44,18 @@ public sealed record AgentModel
     /// </summary>
     public const string CourierDefault = "claude-sonnet-5";
 
+    /// <summary>
+    /// The Security persona's own bottom-of-chain floor (idea 6be68ee2, phase two): an exact
+    /// model id for the identical drift reason <see cref="PlatformFallback"/> is one, and its own
+    /// value rather than <see cref="PlatformFallback"/> because this persona hunts for real
+    /// vulnerabilities in the project's own code and must never silently run on a cheaper model
+    /// than the platform's strongest available reasoning. Read by
+    /// <c>DaemonOptions.ResolveSecurityReviewModel</c> and named in
+    /// <c>h9k config set --model-security-review</c>'s own description, so the two surfaces state
+    /// the identical number rather than each holding their own copy of it.
+    /// </summary>
+    public const string SecurityReviewDefault = "claude-opus-5-5";
+
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly AgentModel Unknown = new("");
 
