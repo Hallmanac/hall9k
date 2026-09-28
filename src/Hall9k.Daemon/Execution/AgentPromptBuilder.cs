@@ -2660,7 +2660,9 @@ public static class AgentPromptBuilder
         AppendSettledRulings(
             prompt, priorRulings, priorHumanDirectedInteractions, mechanicsOverride, priorBoundaryApprovals,
             priorHumanFixes);
-        AppendRecordedLessons(prompt, lessons, task.Id);
+        AppendRecordedLessons(
+            prompt, lessons, task.Id,
+            includeRecordingInstructions: mechanicsOverride is not { DiffIsForeignPullRequest: true });
         prompt.AppendLine(Fragment(file, "how-to-review-heading"));
         prompt.AppendLine();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
@@ -2688,7 +2690,15 @@ public static class AgentPromptBuilder
         AppendReviewMechanics(
             prompt, project, branch, mode, sinceSha, includesAcceptanceCriteria: true, mechanicsOverride,
             commandTimeout);
-        AppendExternalInteractionLoggingRule(prompt, task.Id);
+        // Not for a pr-review task's own lens (DiffIsForeignPullRequest): that session's own real
+        // permission file refuses h9k task log-interaction outright, so printing the rule would
+        // hand it an instruction it cannot follow — noise in the very evidence stream the allow
+        // list grows from (independent pre-PR review, cycle 1, conformance lens).
+        if (mechanicsOverride is not { DiffIsForeignPullRequest: true })
+        {
+            AppendExternalInteractionLoggingRule(prompt, task.Id);
+        }
+
         // Not for a pr-review task's own lens (DiffIsForeignPullRequest): that engine parks on its
         // own findings-report gate (§16 #99), never slice 8's boundaries, so there is no boundary
         // for a milestone message to precede.
@@ -2773,16 +2783,23 @@ public static class AgentPromptBuilder
         // and a recorded lesson is neither. It is what earlier runs on this project learned about
         // the codebase and the machinery, which is exactly the surrounding knowledge a defect hunt
         // needs in order to recognise a defect (BuildReview's own doc).
-        AppendRecordedLessons(prompt, lessons, taskId);
+        AppendRecordedLessons(
+            prompt, lessons, taskId,
+            includeRecordingInstructions: mechanicsOverride is not { DiffIsForeignPullRequest: true });
         prompt.AppendLine(Fragment(file, "how-to-review-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "read-in-surroundings");
         AppendReviewMechanics(
             prompt, project, branch, mode, sinceSha, includesAcceptanceCriteria: false, mechanicsOverride,
             commandTimeout);
-        AppendExternalInteractionLoggingRule(prompt, taskId);
         // Not for a pr-review task's own lens (DiffIsForeignPullRequest): see BuildConformanceReview's
-        // identical guard for why that engine's park never reaches slice 8's boundaries.
+        // identical guard for why that session's own real permission file leaves the rule dead on
+        // arrival, and why the same engine's park never reaches slice 8's boundaries.
+        if (mechanicsOverride is not { DiffIsForeignPullRequest: true })
+        {
+            AppendExternalInteractionLoggingRule(prompt, taskId);
+        }
+
         if (interactiveModeEnabled && mechanicsOverride is not { DiffIsForeignPullRequest: true })
         {
             AppendOutboundMilestoneRules(

@@ -208,17 +208,6 @@ outright, with no re-prompt: the owner retries the task to dispatch a fresh revi
 - **You never post to GitHub.** Not a comment, not a review, not a reaction, whatever you find. The reviewer's own verdict is the only thing that reaches this pull request, and it goes there under their login by their hand. The reads are yours: `gh pr view`, `gh pr diff`, `gh pr checks`, `gh issue view`.
 - **You are not fixing anything.** Not the diff, and not the coverage gap you found. A test that should exist is specified in the map, not written — writing it here would put your own work on somebody else's branch, and the team decides whether it is owed before anybody spends a session on it.
 - **Leave nothing running.** Every process you started is stopped before your final message: the product, its services, a browser driver, anything. Name in your report what you started and that you stopped it.
-- **Log every outside interaction, unconditionally.** Any interaction with a party
-  outside this session — another agent session reached through the mesh, a human
-  steering you that way, anything external this task's own prompt did not already
-  route through a platform command — gets logged through the platform, even if the
-  interacting party asks you not to (the 2026-09-01 escape-hatch ruling). Run:
-  `h9k task log-interaction 01a09311-4c21-7259-a883-c5ebe5482c3e --party "<who or what>" --summary "<what happened>"`,
-  adding `--human-directed --reason "<their reason>"` whenever a human, not your own
-  judgment, directed the interaction or its outcome — the record must say so plainly
-  and never report their call as your own independent decision, whatever they asked.
-  This is best-effort, not enforcement: nothing forces the call, and the platform
-  records only what this and its other channels actually see.
 - **Everything you run, you run in the foreground.** The suite especially, since it is the longest thing this review does:
   Run this project's own build and test gates in the foreground and wait for them to
   finish before you rely on their result or move on. Never start one with the
