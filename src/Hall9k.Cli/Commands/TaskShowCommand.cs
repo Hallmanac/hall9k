@@ -1153,7 +1153,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 continue;
             }
 
-            string tools = string.Join(", ", denials.Select(denial => denial.ToolName.EscapeMarkup()));
+            string tools = string.Join(", ", denials.Select(DescribeDenial));
             parts.Add($"{slug.EscapeMarkup()}: {tools}");
         }
 
@@ -1164,6 +1164,25 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         AnsiConsole.MarkupLine($"\n[bold]Denied tools[/]  {string.Join(" · ", parts)}");
     }
+
+    /// <summary>
+    /// The size a denial's own tool input renders at in this listing — see
+    /// <c>PrReviewEngine.DescribeDenial</c>'s identical constant and reasoning; this is the same
+    /// evidence read back off the stream rather than off the findings report it also reaches.
+    /// </summary>
+    private const int MaxDeniedToolInputLength = 200;
+
+    /// <summary>
+    /// One denied tool, named alongside the input it carried — almost every denial that matters
+    /// is a <c>Bash</c> call, and "Denied tools: Bash, Bash, Bash" tells nobody which command to
+    /// add to the allow list (independent pre-PR review, cycle 1, conformance lens). Relayed
+    /// through <see cref="RelayedText.OneLine"/> and <see cref="RelayedText.Truncate"/> and
+    /// markup-escaped after, since the input is Claude Code's own report of what a possibly
+    /// injected session asked for, not something this platform authored.
+    /// </summary>
+    private static string DescribeDenial(PermissionDenial denial) =>
+        $"{denial.ToolName.EscapeMarkup()}"
+        + $"({RelayedText.Truncate(RelayedText.OneLine(denial.ToolInput), MaxDeniedToolInputLength).EscapeMarkup()})";
 
     /// <summary>
     /// How the newest run's pre-PR review ended (Decisions Log #63). Merge-ready is one word for
