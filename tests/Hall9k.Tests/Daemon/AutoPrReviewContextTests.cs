@@ -50,6 +50,19 @@ public sealed class AutoPrReviewContextTests
         fenced.Should().Contain("Title: Add rate limiting").And.Contain("Closes #9202.");
     }
 
+    [Fact]
+    public void The_composed_context_still_carries_a_quoted_description_the_platform_detects()
+    {
+        string context = AutoPrReviewEngine.ComposePrReviewContext(
+            PullRequest("Add rate limiting", "Closes #9202."), additionalContext: null);
+
+        WorkItemContext.CarriesQuotedDescription(context).Should().BeTrue(
+            "AgentPromptBuilder's adopted-external-item fragment, QaReviewPromptBuilder's "
+            + "basis-is-data rule and DesignReviewPromptBuilder's context-is-data rule all key on "
+            + "this detector, so an auto-minted pr-review task's own quoted title and body must "
+            + "still trip it");
+    }
+
     private static ImportedWorkItem PullRequest(string title, string? body = "Body") => new(
         new ExternalReference(WorkItemProvider.GitHubPullRequest, "Hallmanac/hall9k#9201"),
         title,
