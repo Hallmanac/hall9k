@@ -1377,13 +1377,14 @@ what vouches for everything else, so it counts as a member of the fleet without 
 **The fleet is the root node plus every node vouched into it.** Adding a second machine of your own
 is a **vouch**: `h9k node vouch <node-id>`, run on a node already in the fleet, writes the new
 node's id and public key into `owners/<root>/nodes/<node-id>.yaml` on every non-archived project you
-are registered to. `h9k node revoke <node-id>` writes `owners/<root>/revoked/<node-id>.yaml`
-instead, and whichever of the two came latest, in the order of the ref's own commits, wins, so
-vouching again undoes a revocation made by mistake. Only a node that is itself currently in the
-fleet may vouch or revoke, and the command refuses before it pushes anything when this one is not.
-Because trust is recomputed at every read rather than remembered, a revocation reaches every other
-node the next time it reads the ledger, and it also voids every membership write the revoked node
-ever signed, until a later vouch of the same node restores them.
+are registered to, and any node already in the fleet may still do this — peer vouching keeps
+working. `h9k node revoke <node-id>` writes `owners/<root>/revoked/<node-id>.yaml` instead, and
+whichever of the two came latest, in the order of the ref's own commits, wins, so vouching again
+undoes a revocation made by mistake. Revoking, unlike vouching, is root-only: it takes one of the
+owner's own live root keys, never merely a node the fleet already trusts, so a compromised fleet
+node can never revoke its own peers — the command refuses before it pushes anything when this
+node's own key is not one. Because trust is recomputed at every read rather than remembered, a
+revocation reaches every other node the next time it reads the ledger.
 
 **An owner's root authority is a ranked set of keys, recoverable by succession, not by backup.**
 Losing the one machine that holds the root key does not have to mean losing the project: a vouched
@@ -1416,10 +1417,17 @@ for a single-owner project means starting a new ledger, since a project's own ge
 **A project's members have one of two roles.** Membership is one file per person, at
 `members/<root-fingerprint>.yaml` on `refs/hall9k/ledger/members`, and the role in it is `owner` or
 `member`, with nothing in between. The first join on a project writes the genesis entry, and it is
-unconditionally an owner. An owner-role member may mint member invites, remove a member
-(`h9k project member remove <project> <fingerprint>`, which deletes the file rather than marking it),
-and can never remove the last owner. `h9k project members <project>` lists what the ledger shows
-right now, recomputed on every run rather than cached: each root fingerprint (with the newest
+unconditionally an owner. An owner-role member's own live root key — never merely a node vouched
+into that owner's fleet — may mint member invites, remove a member (`h9k project member remove
+<project> <fingerprint>`, which deletes the file rather than marking it) and can never remove the
+last owner, or reaffirm one (`h9k project member reaffirm <project> <fingerprint>`, a root-signed
+rewrite of the same file that bumps `issued_at` without changing role, for re-landing a member file
+whose last write was signed by a node that is now merely vouched). A members-ref write is judged
+against the owner's own live root-key set at read time, never a snapshot of who signed it or when,
+so a member file a now-merely-vouched node once wrote stops being authorized the moment that is
+true, and only a fresh root-signed write (an ordinary same-role re-invite, if it changes nothing,
+or `member reaffirm`, if it does not) brings it current again. `h9k project members <project>`
+lists what the ledger shows right now, recomputed on every run rather than cached: each root fingerprint (with the newest
 display name declared across that root's own nodes underneath, when one is declared: a label
 only, set per project or as a machine's own default with `h9k owner set --display-name` — a
 per-machine setting, since owner settings never leave the node that set them, written from there
