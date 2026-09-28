@@ -1234,7 +1234,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         // This node's own side: every owner-act request this node itself sent that has not yet
         // resolved into the invite's own local spend.
         IReadOnlyList<OwnerActAskLookup.PendingOwnerAct> ownAsks =
-            await OwnerActAskLookup.FindUnansweredAsync(session, myNode.Id, cancellationToken);
+            await OwnerActAskLookup.FindUnansweredAsync(session, myNode.Id, now, cancellationToken);
         foreach (OwnerActAskLookup.PendingOwnerAct ask in ownAsks)
         {
             AnsiConsole.MarkupLine(ask.Verdict switch
