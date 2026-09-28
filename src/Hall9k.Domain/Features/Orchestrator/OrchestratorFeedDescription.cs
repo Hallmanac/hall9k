@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -63,6 +64,9 @@ public static class OrchestratorFeedDescription
                 $"a {routed.Severity.Value} review finding at {Field(routed.Location, 60)} was routed onto a draft "
                 + "task nobody has published",
             QuestionAsked asked => $"an agent asked and stopped: {Quote(asked.Question)}",
+            OwnerActHeld held =>
+                $"{NodeLine(held.RequesterNodeId, labels)}'s own invite match asked this root for an owner-role "
+                + $"member write; it is held for approval (h9k project member approve … {held.InviteId})",
 
             // ─── Gate and run failures ─────────────────────────────────────────────────────────────
             VerificationFailed failed => $"the verification gates failed: {Join(failed.FailedGates)}",

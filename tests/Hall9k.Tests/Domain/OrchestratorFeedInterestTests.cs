@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Run;
@@ -53,6 +54,8 @@ public sealed class OrchestratorFeedInterestTests
     [InlineData(typeof(ReviewThreadReplyRefused))]
     [InlineData(typeof(ReviewFindingRouted))]
     [InlineData(typeof(QuestionAsked))]
+    // An owner-role member write held on the root for its own human to approve.
+    [InlineData(typeof(OwnerActHeld))]
     // Gate and run failures.
     [InlineData(typeof(VerificationFailed))]
     [InlineData(typeof(SettlingGateRepairCapReached))]

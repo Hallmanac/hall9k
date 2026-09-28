@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks.Events;
@@ -58,6 +59,13 @@ public static class OrchestratorFeedInterest
         [typeof(ReviewFindingRouted)] = OrchestratorFeedLevel.Actionable,
         // The ask-and-exit park (Decisions Log #5): an agent asked and stopped.
         [typeof(QuestionAsked)] = OrchestratorFeedLevel.Actionable,
+
+        // idea 6be68ee2, companion 1bb803e1: an owner-role member write a non-root node's own
+        // invite match asked for, parked on this root for its own human to approve
+        // (h9k project member approve) — the acceptance criterion's own "needs-you item on the
+        // root (h9k status and the feed)" names both surfaces, and only h9k status had one
+        // (independent pre-PR review, cycle 1, conformance lens, medium).
+        [typeof(OwnerActHeld)] = OrchestratorFeedLevel.Actionable,
 
         // Gate and run failures.
         [typeof(VerificationFailed)] = OrchestratorFeedLevel.Actionable,
