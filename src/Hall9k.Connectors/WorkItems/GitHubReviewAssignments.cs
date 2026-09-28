@@ -10,6 +10,19 @@ namespace Hall9k.Connectors.WorkItems;
 public sealed record ReviewRequestedPullRequest(int Number, string Url, string Title, string? Body);
 
 /// <summary>
+/// A pull request's own author, read off the identical <c>pullRequest</c> node the timeline and
+/// mention queries already fetch — zero new <c>gh</c> calls (security review idea 6be68ee2,
+/// finding 1). <see cref="AccountId"/> is GitHub's numeric <c>databaseId</c>, read through the
+/// <c>User</c>/<c>Bot</c> inline fragments <c>Actor</c> itself does not carry the field on — the
+/// membership gate matches on this alone, never <see cref="Login"/>, so a renamed account still
+/// matches and a same-named impostor never does. Null when GitHub reports no author at all (a
+/// deleted account), which the gate reads the identical way it reads a member with no declared
+/// account: nothing proves the request is theirs. <see cref="Association"/> is GitHub's own
+/// <c>authorAssociation</c> — carried for the park card, never consulted by the gate itself.
+/// </summary>
+public sealed record PullRequestAuthor(string? Login, long? AccountId, string? Association);
+
+/// <summary>
 /// The login <c>gh</c> is authenticated as right now, or why it could not be read —
 /// <see cref="GitHubReviewAssignments.ReadCurrentLoginAsync"/>'s answer. Exactly one of
 /// <see cref="Login"/> and <see cref="Error"/> is ever set. <see cref="AuthenticationRefusal"/>
@@ -30,8 +43,14 @@ public sealed record GitHubLoginRead(string? Login, string? Error, bool Authenti
 /// withdrawal genuinely happened needs this, not the attribution — a removal event with no
 /// readable actor is still a removal, and a gh failure or a genuinely absent event must never be
 /// read as one.
+/// <para>
+/// <see cref="Author"/> is the pull request's own author, read off the same timeline query
+/// response at zero extra cost (security review idea 6be68ee2, finding 1) — set whenever the
+/// pull request itself resolved, whether or not a matching timeline event was ever found.
+/// </para>
 /// </summary>
-public sealed record ReviewRequestActor(bool Found, string? Login, DateTimeOffset? RequestedAt);
+public sealed record ReviewRequestActor(
+    bool Found, string? Login, DateTimeOffset? RequestedAt, PullRequestAuthor? Author = null);
 
 /// <summary>
 /// One comment <see cref="GitHubReviewAssignments.FindMentionCommentsAsync"/> found mentioning the
@@ -48,10 +67,23 @@ public sealed record ReviewRequestActor(bool Found, string? Login, DateTimeOffse
 /// REST endpoint 404s"). Null for an issue comment, a review body, or the pull request's own
 /// description — none of those is a thread the REST endpoint can reply into, so a caller reading
 /// null already knows to post an ordinary comment instead of attempting <c>in_reply_to</c>.
+/// <see cref="AuthorAccountId"/> is the comment author's numeric GitHub id, at zero extra cost off
+/// the identical query — <c>AttachMentionAsync</c>'s own membership gate on a follow-up comment
+/// matches on this alone, never <see cref="AuthorLogin"/> (security review idea 6be68ee2, finding
+/// 1). Null when GitHub reports no author at all — a deleted account.
 /// </summary>
 public sealed record PullRequestMentionComment(
     string CommentId, string AuthorLogin, string Body, string Url, DateTimeOffset CreatedAt,
-    long? DatabaseId = null);
+    long? DatabaseId = null, long? AuthorAccountId = null);
+
+/// <summary>
+/// <see cref="GitHubReviewAssignments.FindMentionCommentsAsync"/>'s full answer: the mentioning
+/// comments themselves, and the pull request's own author — read off the identical response, so a
+/// fresh mint triggered by a mention gates on the pull request's author exactly as a
+/// review-requested mint does, at no extra <c>gh</c> call.
+/// </summary>
+public sealed record PullRequestMentionSearch(
+    IReadOnlyList<PullRequestMentionComment> Comments, PullRequestAuthor? Author);
 
 /// <summary>
 /// Which half of a login's reviewer-request history <see cref="GitHubReviewAssignments.FindMostRecentRequestActorAsync"/>
@@ -95,6 +127,8 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
         query($owner: String!, $name: String!, $number: Int!) {
           repository(owner: $owner, name: $name) {
             pullRequest(number: $number) {
+              author { login ... on User { databaseId } ... on Bot { databaseId } }
+              authorAssociation
               timelineItems(last: 20, itemTypes: [REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT]) {
                 nodes {
                   __typename
@@ -256,19 +290,22 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
         query($owner: String!, $name: String!, $number: Int!) {
           repository(owner: $owner, name: $name) {
             pullRequest(number: $number) {
-              id author { login } body url createdAt
+              id
+              author { login ... on User { databaseId } ... on Bot { databaseId } }
+              authorAssociation
+              body url createdAt
               comments(last: 100) {
-                nodes { id author { login } body url createdAt }
+                nodes { id author { login ... on User { databaseId } ... on Bot { databaseId } } body url createdAt }
               }
               reviewThreads(last: 100) {
                 nodes {
                   comments(last: 20) {
-                    nodes { id databaseId author { login } body url createdAt }
+                    nodes { id databaseId author { login ... on User { databaseId } ... on Bot { databaseId } } body url createdAt }
                   }
                 }
               }
               reviews(last: 100) {
-                nodes { id author { login } body url submittedAt }
+                nodes { id author { login ... on User { databaseId } ... on Bot { databaseId } } body url submittedAt }
               }
             }
           }
@@ -307,9 +344,11 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
     /// <summary>
     /// Every comment on one pull request whose text actually names <paramref name="login"/> as an
     /// <c>@mention</c> — issue comments, review-comment thread replies, and a review's own
-    /// top-level body, all three read in one query and merged, oldest first. The
-    /// <c>mentions:</c> search above says a pull request carries one somewhere; this is what finds
-    /// which comment it actually is, since the search itself names no comment id.
+    /// top-level body, all three read in one query and merged, oldest first — alongside the pull
+    /// request's own author, read off the identical response at zero extra cost (security review
+    /// idea 6be68ee2, finding 1). The <c>mentions:</c> search above says a pull request carries a
+    /// mention somewhere; this is what finds which comment it actually is, since the search itself
+    /// names no comment id.
     /// <para>
     /// A comment authored by <paramref name="login"/> itself is excluded here, at the source,
     /// rather than left to the caller: the install's own comments never count as a trigger (idea
@@ -317,7 +356,7 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
     /// replies as fresh mentions forever.
     /// </para>
     /// </summary>
-    public async Task<IReadOnlyList<PullRequestMentionComment>> FindMentionCommentsAsync(
+    public async Task<PullRequestMentionSearch> FindMentionCommentsAsync(
         string owner, string name, int number, string login, string workingDirectory, CancellationToken cancellationToken)
     {
         ProcessResult result = await runner(
@@ -338,18 +377,15 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
                 + $"{result.StandardError.Trim()}");
         }
 
-        return ParseMentionComments(result.StandardOutput, login);
+        return new PullRequestMentionSearch(
+            ParseMentionComments(result.StandardOutput, login), ParseMentionPullRequestAuthor(result.StandardOutput));
     }
 
     /// <summary>Split from the gh call so the mapping is testable against recorded gh output.</summary>
     internal static IReadOnlyList<PullRequestMentionComment> ParseMentionComments(string json, string login)
     {
         using JsonDocument document = JsonDocument.Parse(json);
-        if (!document.RootElement.TryGetProperty("data", out JsonElement data)
-            || !data.TryGetProperty("repository", out JsonElement repository)
-            || repository.ValueKind != JsonValueKind.Object
-            || !repository.TryGetProperty("pullRequest", out JsonElement pullRequest)
-            || pullRequest.ValueKind != JsonValueKind.Object)
+        if (!TryGetMentionPullRequest(document, out JsonElement pullRequest))
         {
             // "pullRequest": null — a stale number in a repository that has moved or renamed.
             // Honestly nothing found rather than a guess (AGENTS.md).
@@ -437,9 +473,12 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
     {
         string? id = ReadString(node, "id");
         string? body = ReadString(node, "body");
-        string? authorLogin = node.TryGetProperty("author", out JsonElement author) && author.ValueKind == JsonValueKind.Object
-            ? ReadString(author, "login")
-            : null;
+        bool hasAuthor = node.TryGetProperty("author", out JsonElement author) && author.ValueKind == JsonValueKind.Object;
+        string? authorLogin = hasAuthor ? ReadString(author, "login") : null;
+        long? authorAccountId = hasAuthor && author.TryGetProperty("databaseId", out JsonElement authorIdElement)
+            && authorIdElement.ValueKind == JsonValueKind.Number && authorIdElement.TryGetInt64(out long parsedAuthorId)
+                ? parsedAuthorId
+                : null;
         if (id.IsBlank() || body.IsBlank() || authorLogin.IsBlank()
             || string.Equals(authorLogin, login, StringComparison.OrdinalIgnoreCase)
             || !mentionPattern.IsMatch(body))
@@ -458,7 +497,33 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
             && databaseIdElement.ValueKind == JsonValueKind.Number && databaseIdElement.TryGetInt64(out long parsedDatabaseId)
                 ? parsedDatabaseId
                 : null;
-        return new PullRequestMentionComment(id, authorLogin, body, url, createdAt, databaseId);
+        return new PullRequestMentionComment(id, authorLogin, body, url, createdAt, databaseId, authorAccountId);
+    }
+
+    /// <summary>Shared with <see cref="ParseMentionComments"/> so both readers of the identical
+    /// response agree on what "no pull request resolved" means.</summary>
+    private static bool TryGetMentionPullRequest(JsonDocument document, out JsonElement pullRequest)
+    {
+        if (document.RootElement.TryGetProperty("data", out JsonElement data)
+            && data.TryGetProperty("repository", out JsonElement repository)
+            && repository.ValueKind == JsonValueKind.Object
+            && repository.TryGetProperty("pullRequest", out JsonElement found)
+            && found.ValueKind == JsonValueKind.Object)
+        {
+            pullRequest = found;
+            return true;
+        }
+
+        pullRequest = default;
+        return false;
+    }
+
+    /// <summary>Split from the gh call so the mapping is testable against recorded gh output — the
+    /// pull request's own author, read off <see cref="MentionQuery"/>'s identical response.</summary>
+    internal static PullRequestAuthor? ParseMentionPullRequestAuthor(string json)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        return TryGetMentionPullRequest(document, out JsonElement pullRequest) ? ReadAuthor(pullRequest) : null;
     }
 
     /// <summary>
@@ -532,6 +597,8 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
             return new ReviewRequestActor(Found: false, null, null);
         }
 
+        PullRequestAuthor? author = ReadAuthor(pullRequest);
+
         string expectedTypeName = kind == ReviewTimelineEventKind.Requested
             ? "ReviewRequestedEvent"
             : "ReviewRequestRemovedEvent";
@@ -559,10 +626,32 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
                     stamp, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out DateTimeOffset parsed)
                     ? parsed
                     : null;
-            return new ReviewRequestActor(Found: true, actorLogin, requestedAt);
+            return new ReviewRequestActor(Found: true, actorLogin, requestedAt, author);
         }
 
-        return new ReviewRequestActor(Found: false, null, null);
+        return new ReviewRequestActor(Found: false, null, null, author);
+    }
+
+    /// <summary>
+    /// The pull request's own author and association, read off a <c>pullRequest</c> node that
+    /// already carries <c>author { login ... on User { databaseId } ... on Bot { databaseId } }</c>
+    /// and <c>authorAssociation</c> as siblings of whatever else the caller's own query asked for.
+    /// Null when GitHub reports no author at all — a deleted account.
+    /// </summary>
+    private static PullRequestAuthor? ReadAuthor(JsonElement pullRequest)
+    {
+        if (!pullRequest.TryGetProperty("author", out JsonElement author) || author.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        string? login = ReadString(author, "login");
+        long? accountId = author.TryGetProperty("databaseId", out JsonElement idElement)
+            && idElement.ValueKind == JsonValueKind.Number && idElement.TryGetInt64(out long parsedId)
+                ? parsedId
+                : null;
+        string? association = ReadString(pullRequest, "authorAssociation");
+        return new PullRequestAuthor(login, accountId, association);
     }
 
     private static string? ReadString(JsonElement element, string property) =>
