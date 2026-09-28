@@ -2679,7 +2679,8 @@ public static class AgentPromptBuilder
             AppendFragment(prompt, file, "adopted-external-item");
         }
 
-        if (project.VerifyCommands.Count > 0 && mechanicsOverride is not { GatesObserved: false })
+        if (project.VerifyCommands.Count > 0 && mechanicsOverride is not { GatesObserved: false }
+            && GateSetAcceptance.Decide(project.AcceptedVerifyCommands, project.VerifyCommands).Proceed)
         {
             AppendFragment(prompt, file, "gates-already-answer-criterion");
         }

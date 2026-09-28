@@ -34,10 +34,16 @@ A failure is reported with its evidence, never summarized away: quote the failin
 {{WhyNotDriven}}, so you are not launching it. Do not start the application, do not open a browser against it, do not bring up its services. Read the code, run the tests, and stop there.
 
 That is a real constraint and it has a cost, which you handle rather than work around: any verdict that genuinely needs the running product in front of somebody becomes a human walk-through on the map — the `{{WalkThroughWord}}` verdict above — written out step by step so a person can do in five minutes what you were not allowed to do. Do not let that constraint quietly turn into a `{{CoveredWord}}` you cannot support, and do not suggest the setting be changed as a finding; it is the owner's call and `h9k project set <project> --qa-review-drive on` is how they make it.
+===drive-off-tests-withheld===
+{{WhyNotDriven}}, so you are not launching it. Do not start the application, do not open a browser against it, do not bring up its services. Read the code and stop there — this project's end-to-end tests are withheld above, and driving the product is not a way around that; do not look for one.
+
+That is a real constraint and it has a cost, which you handle rather than work around: any verdict that genuinely needs the running product in front of somebody becomes a human walk-through on the map — the `{{WalkThroughWord}}` verdict above — written out step by step so a person can do in five minutes what you were not allowed to do. Do not let that constraint quietly turn into a `{{CoveredWord}}` you cannot support, and do not suggest the setting be changed as a finding; it is the owner's call and `h9k project set <project> --qa-review-drive on` is how they make it.
 ===drive-on-heading===
 ## Driving the product
 ===drive-on-intro===
 This project's `qa-review-drive` setting is on and it has a run skill on its ledger, so you may start the product on this worktree and drive it. Do it after the tests, not instead of them.
+===drive-on-intro-tests-withheld===
+This project's `qa-review-drive` setting is on and it has a run skill on its ledger, so you may start the product on this worktree and drive it. This project's end-to-end tests are withheld above, and driving the product is not a substitute for them: do it in addition to the walk-through the map records for what you could not test, never as a way to satisfy testing that was held back.
 ===drive-on-skill===
 Start it from the project's own run skill, below — follow what it says rather than inferring a command from the repository. It is the project's own record of how this thing runs, and if it turns out to be wrong, that is itself a finding worth reporting (the standing question at the end of this prompt is exactly about that).
 ===drive-on-skill-missing===

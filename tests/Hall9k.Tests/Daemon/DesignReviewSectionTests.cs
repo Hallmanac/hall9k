@@ -447,6 +447,7 @@ public sealed class DesignReviewSectionTests
                     [ReviewPersona.Designer], [ReviewPersona.Designer], null, fellBackToEngineer: false,
                     [new ReviewDriveDecision(ReviewPersona.Designer, SettingOn: false, ProjectHasRunSkill: true)]),
                 new Dictionary<string, ReviewPersonaSessionFailure>(),
+                gateSetAccepted: true,
                 CancellationToken.None);
 
             body.Should().Contain("## Design review");
@@ -481,6 +482,7 @@ public sealed class DesignReviewSectionTests
                 ReviewPersonaRegistry.Recorded(
                     [ReviewPersona.Designer], [ReviewPersona.Designer], null, fellBackToEngineer: false),
                 new Dictionary<string, ReviewPersonaSessionFailure>(),
+                gateSetAccepted: true,
                 CancellationToken.None);
 
             body.Should().Contain("## Design review");

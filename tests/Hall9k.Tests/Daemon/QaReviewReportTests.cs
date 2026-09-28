@@ -152,9 +152,28 @@ public sealed class QaReviewReportTests
     [Fact]
     public void An_unaccepted_end_to_end_outcome_describes_itself_as_not_run_rather_than_absent()
     {
-        QaEndToEndOutcome.Unaccepted.Describe().Should().Contain("not run");
-        QaEndToEndOutcome.Unaccepted.Describe().Should().Contain("unaccepted on this node");
-        QaEndToEndOutcome.Unaccepted.Describe().Should().NotBe(QaEndToEndOutcome.Absent.Describe());
+        QaEndToEndOutcome.Unaccepted.Describe(gateSetAccepted: false).Should().Contain("not run");
+        QaEndToEndOutcome.Unaccepted.Describe(gateSetAccepted: false).Should().Contain("unaccepted on this node");
+        QaEndToEndOutcome.Unaccepted.Describe(gateSetAccepted: false)
+            .Should().NotBe(QaEndToEndOutcome.Absent.Describe(gateSetAccepted: false));
+    }
+
+    /// <summary>
+    /// The session's own "unaccepted" word is read back off its findings file, not off this
+    /// node's own acceptance state, so a session can write it for a reason that has nothing to
+    /// do with acceptance (independent pre-PR review, cycle 1, adversarial finding). When this
+    /// node's own gate set is in fact accepted, the summary must not repeat that word as though
+    /// it were a platform fact about this node.
+    /// </summary>
+    [Fact]
+    public void An_unaccepted_outcome_that_disagrees_with_this_nodes_own_acceptance_is_not_stated_as_fact()
+    {
+        string described = QaEndToEndOutcome.Unaccepted.Describe(gateSetAccepted: true);
+
+        described.Should().Contain("unreliable");
+        described.Should().NotContain(
+            "this project's verify gate set is unaccepted on this node",
+            "the platform's own acceptance check says otherwise, so this line must not assert it");
     }
 
     [Fact]
@@ -265,7 +284,7 @@ public sealed class QaReviewReportTests
     [Fact]
     public void A_report_with_no_readable_map_says_so_rather_than_reporting_nothing()
     {
-        string lines = PrReviewEngine.QaSummaryLines("I read the diff and it looked fine.", NoDrive);
+        string lines = PrReviewEngine.QaSummaryLines("I read the diff and it looked fine.", NoDrive, gateSetAccepted: true);
 
         lines.Should().Contain("Blast radius: no entries this report could be read for");
         lines.Should().Contain("End-to-end tests: not reported by this session.");
@@ -308,7 +327,8 @@ public sealed class QaReviewReportTests
     {
         string lines = PrReviewEngine.QaSummaryLines(
             "END-TO-END TESTS: pass",
-            new ReviewDriveDecision(ReviewPersona.Qa, SettingOn: true, ProjectHasRunSkill: false));
+            new ReviewDriveDecision(ReviewPersona.Qa, SettingOn: true, ProjectHasRunSkill: false),
+            gateSetAccepted: true);
 
         lines.Should().Contain(
             "Driven: nothing — the product was not launched, because this project has no run skill on "
@@ -331,7 +351,7 @@ public sealed class QaReviewReportTests
                 RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewPersonaRegistry.QaSlug), qaReport);
             return await PrReviewEngine.ComposePersonaSectionsAsync(
                 runDirectory, ReviewPersonaRegistry.Plan([ReviewPersona.Qa], drive is null ? null : [drive]),
-                new Dictionary<string, ReviewPersonaSessionFailure>(), CancellationToken.None);
+                new Dictionary<string, ReviewPersonaSessionFailure>(), gateSetAccepted: true, CancellationToken.None);
         }
         finally
         {
