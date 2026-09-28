@@ -158,6 +158,53 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         }
     }
 
+    /// <summary>Covers the "write" branch of the successor-record gate <c>TryClaimAsync</c> added
+    /// (idea 6be68ee2) that every other node-of-owner test in this file leaves untouched by
+    /// construction: each of those hands the engine a <see cref="FakeLedgerChainReader"/> built on
+    /// <see cref="TrustChain.Empty"/>, so the minting node's own key never counts as a live root key
+    /// and the gate always takes its "no successor record" branch, whoever is minting (independent
+    /// pre-PR review, cycle 2, conformance lens, low). Here the minting node genuinely is the root
+    /// (<see cref="MintNodeOfOwnerInviteAsSelfAsync"/>'s own shape), and the chain reader handed to
+    /// the engine actually says so — the same live-root <see cref="TrustedOwner"/> shape
+    /// <c>NodeVouchAndRevokeCommandTests</c> already uses for the identical gate on the
+    /// <c>h9k node vouch</c> side — so a regression that flips or misreads
+    /// <see cref="TrustedOwner.IsLiveRootKey(string)"/> here would fail this test instead of passing
+    /// the whole suite silently.</summary>
+    [Fact]
+    public async Task A_node_of_owner_invite_minted_by_a_live_root_key_also_writes_the_joiners_successor_record()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        FakeLedger ledger = new();
+        (string root, Guid inviteId, string secret, NodeSigningKey rootKey) =
+            await MintNodeOfOwnerInviteAsSelfAsync(ledger, cts.Token);
+
+        Guid joinerNodeId = DomainId.New();
+        NodeSigningKey joinerKey = await new NodeKeyStore().EnsureAsync(joinerNodeId, cts.Token);
+        string proof = InviteSecret.ComputeProof(secret, joinerKey.Fingerprint);
+        await WriteSelfAnnouncedNodeFileAsync(ledger, joinerNodeId, joinerKey, ownerFingerprint: root, inviteProof: proof, cts.Token);
+
+        // The minting node's own key IS this owner's root, so its own chain reports it as a live
+        // root key exactly the way NodeVouchAndRevokeCommandTests' own "enrolled" chain does.
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner> { [root] = new(root, rootKey.PublicKeyLine, []) }, []));
+
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
+        InviteSweepEngine engine = new(
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), chainReader, new NodeKeyStore(),
+                NullLogger<InviteSweepEngine>.Instance);
+
+        InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
+        sweep.InvitesSpent.Should().Be(1, "the joiner's own proof matches the one outstanding invite");
+
+        LedgerWriteRequest successorWrite = ledger.Writes.Single(
+            w => w.RefName == $"refs/hall9k/ledger/owners/{root}" && w.Path == $"owners/{root}/successors/{joinerNodeId}.yaml");
+        successorWrite.Content.Should().Contain(joinerKey.PublicKeyLine);
+
+        await using IDocumentSession assertSession = _postgres.Store.LightweightSession();
+        InviteDetails after = (await assertSession.LoadAsync<InviteDetails>(inviteId, cts.Token))!;
+        after.Spent.Should().BeTrue();
+    }
+
     [Fact]
     public async Task A_wrong_proof_never_vouches()
     {
