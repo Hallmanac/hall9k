@@ -3,6 +3,7 @@ using Hall9k.Connectors.Ledger;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Messaging;
 using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
@@ -66,6 +67,33 @@ public sealed class NodeGitHubDeclarationOneShotTests : IClassFixture<PostgresFi
     }
 
     [Fact]
+    public async Task A_stale_display_name_is_brought_up_to_the_effective_value_alongside_the_github_declaration()
+    {
+        (NodeContext node, ProjectDetails project) = await SeedAsync(connectionHasIdentity: true);
+        await SeedDefaultDisplayNameAsync(node, "New Name");
+        string stale = OldFile.Replace("invite_proof", "display_name: \"Old Name\"\ninvite_proof");
+        FakeLedger ledger = await LedgerWithNodeFileAsync(node, stale);
+
+        await OneShot(node, ledger).RunOnceAsync(project, Identity(), CancellationToken.None);
+
+        LedgerWriteRequest write = ledger.Writes[^1];
+        write.CommitMessage.Should().Be("Update node facts");
+        write.Content.Should().Contain("display_name: \"New Name\"").And.Contain("github_login: \"test-user\"");
+    }
+
+    [Fact]
+    public async Task A_node_with_no_effective_display_name_leaves_an_undeclared_file_untouched_on_that_field()
+    {
+        (NodeContext node, ProjectDetails project) = await SeedAsync(connectionHasIdentity: false);
+        FakeLedger ledger = await LedgerWithNodeFileAsync(node, OldFile);
+        int writesBefore = ledger.Writes.Count;
+
+        await OneShot(node, ledger).RunOnceAsync(project, Identity(), CancellationToken.None);
+
+        ledger.Writes.Should().HaveCount(writesBefore, "no GitHub account and no display name means nothing to write");
+    }
+
+    [Fact]
     public async Task A_failed_push_is_swallowed_and_not_retried_within_the_same_process()
     {
         (NodeContext node, ProjectDetails project) = await SeedAsync(connectionHasIdentity: true);
@@ -117,6 +145,19 @@ public sealed class NodeGitHubDeclarationOneShotTests : IClassFixture<PostgresFi
             ProjectDecider.Register(projectId, node.OwnerId, connectionId, "smoke", RepositoryPath, null, null, Now));
         await session.SaveChangesAsync();
         return (node, (await session.LoadAsync<ProjectDetails>(projectId))!);
+    }
+
+    private async Task SeedDefaultDisplayNameAsync(NodeContext node, string name)
+    {
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        OwnerAggregate owner = await session.Events.AggregateStreamAsync<OwnerAggregate>(node.OwnerId, token: CancellationToken.None)
+            ?? throw new InvalidOperationException("Owner bootstrap did not create an owner stream.");
+        session.Events.Append(
+            node.OwnerId,
+            OwnerDecider.ChangeSettings(
+                owner, Optional<ReviewRerequestPolicy>.None, Now,
+                defaultDisplayName: Optional<DisplayName>.Of(DisplayName.Parse(name))));
+        await session.SaveChangesAsync();
     }
 
     /// <summary>Wraps a ledger and refuses every write the way a push that keeps losing does.</summary>
