@@ -695,9 +695,7 @@ public static class AgentPromptBuilder
             {
                 if (totalFindingBodyLength >= MaxChangesRequestedTotalFindingBodyLength)
                 {
-                    prompt.AppendLine(
-                        "[remaining findings omitted, over this prompt's total budget for review text — "
-                        + $"read the rest at {review.ReviewUrl}]");
+                    prompt.AppendLine(Fragment(file, "findings-omitted-over-budget", ("ReviewUrl", review.ReviewUrl)));
                     prompt.AppendLine();
                     break;
                 }
@@ -778,7 +776,7 @@ public static class AgentPromptBuilder
             : printable;
         string fenced = RelayedText.Fenced(bounded);
         return wasTruncated
-            ? $"{fenced}\n\n[truncated, read the rest at {reviewUrl}]"
+            ? $"{fenced}\n\n{Fragment($"{TemplateDirectory}/review-requested-changes.md", "finding-truncated", ("ReviewUrl", reviewUrl))}"
             : fenced;
     }
 

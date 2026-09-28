@@ -64,6 +64,10 @@ Open the review above and read it yourself (`gh pr view --json reviews`, or
 `gh api` for its comments) before concluding which. If the reviewer genuinely
 stated nothing, say so in your summary rather than guessing at what they meant:
 there is then nothing to fix and nothing to dispute.
+===findings-omitted-over-budget===
+[remaining findings omitted, over this prompt's total budget for review text — read the rest at {{ReviewUrl}}]
+===finding-truncated===
+[truncated, read the rest at {{ReviewUrl}}]
 ===handling-heading===
 ## How to handle each finding
 ===handling-intro===
