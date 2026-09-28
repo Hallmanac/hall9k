@@ -11,6 +11,7 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
@@ -383,6 +384,16 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
         // same reason: project-id-keyed, never a stream, lazily created on this project's
         // first-ever run-skill push.
         session.Delete<RunSkillSyncPosition>(project.Id);
+
+        // ProjectMemberLabels (task b7d8222e) is that same shape again: it reads as a
+        // single-stream projection keyed on the project's own id, but this purge tears the stream
+        // down with raw SQL against mt_events/mt_streams rather than through the projection
+        // daemon, which never touches its own mt_doc_projectmemberlabels row — lazily created on
+        // this project's first-ever message sweep, left behind the same way ProjectGitHubMembers
+        // would be otherwise, keeping every observed member's fingerprint, fleet node ids, display
+        // name, and declared login on file for a project id that no longer exists (independent
+        // pre-PR review, cycle 1, both lenses, medium).
+        session.Delete<ProjectMemberLabels>(project.Id);
 
         if (taskIds.Length > 0)
         {

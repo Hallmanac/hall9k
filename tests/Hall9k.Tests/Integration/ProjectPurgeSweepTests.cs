@@ -17,6 +17,7 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
@@ -68,6 +69,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         await SeedGitHubAccessAsync(store, purgedProjectId, cts.Token);
         await SeedPromptAddendaSyncPositionAsync(store, purgedProjectId, cts.Token);
         await SeedCourierDocumentsAsync(store, purgedProjectId, cts.Token);
+        await SeedMemberLabelsAsync(store, purgedProjectId, cts.Token);
         Guid nodeId = DomainId.New();
         Guid purgedPresenceId = await SeedOrchestratorPresenceAsync(store, nodeId, purgedProjectId, cts.Token);
         Guid purgedCourierRunId = await SeedCourierRunAsync(store, purgedProjectId, nodeId, cts.Token);
@@ -85,6 +87,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         await SeedGitHubAccessAsync(store, survivingProjectId, cts.Token);
         await SeedPromptAddendaSyncPositionAsync(store, survivingProjectId, cts.Token);
         await SeedCourierDocumentsAsync(store, survivingProjectId, cts.Token);
+        await SeedMemberLabelsAsync(store, survivingProjectId, cts.Token);
         Guid survivingPresenceId = await SeedOrchestratorPresenceAsync(store, nodeId, survivingProjectId, cts.Token);
         Guid survivingCourierRunId = await SeedCourierRunAsync(store, survivingProjectId, nodeId, cts.Token);
 
@@ -113,6 +116,11 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
                 + "shape again: project-id-keyed but never a stream of its own");
             (await query.LoadAsync<CourierDaySpawnCounter>(purgedProjectId, cts.Token)).Should().BeNull(
                 "the feed courier's own per-day spawn counter is the identical shape a third time");
+            (await query.LoadAsync<ProjectMemberLabels>(purgedProjectId, cts.Token)).Should().BeNull(
+                "ProjectMemberLabels (task b7d8222e) is the identical shape once more: it reads as a "
+                + "single-stream projection keyed on the project's own id, but this purge tears the "
+                + "stream down with raw SQL rather than through the projection daemon, which never "
+                + "reaches its own mt_doc_projectmemberlabels row on its own");
             foreach (Guid taskId in purgedTaskIds)
             {
                 (await query.LoadAsync<TaskDetails>(taskId, cts.Token)).Should().BeNull();
@@ -156,6 +164,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
             (await query.LoadAsync<PromptAddendaSyncPosition>(survivingProjectId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<OrchestratorFeedDrainLease>(survivingProjectId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<CourierDaySpawnCounter>(survivingProjectId, cts.Token)).Should().NotBeNull();
+            (await query.LoadAsync<ProjectMemberLabels>(survivingProjectId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<TaskDetails>(survivingTaskIds[0], cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<RunDetails>(survivingRunId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<IdeaDetails>(survivingIdeaId, cts.Token)).Should().NotBeNull();
@@ -450,6 +459,25 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
     {
         await using IDocumentSession session = store.LightweightSession();
         session.Store(new PromptAddendaSyncPosition { Id = projectId, LastScannedGlobalSequence = 1 });
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Appends a <see cref="ProjectMemberLabelsObserved"/> to the project's own stream, the
+    /// identical way the daemon's own message sweep would — a purge must delete the
+    /// <see cref="ProjectMemberLabels"/> row it materialises too, not only <c>ProjectDetails</c>
+    /// (independent pre-PR review, cycle 1, both lenses, medium: it is project-id-keyed but the
+    /// purge tears its stream down with raw SQL, which never reaches the projection's own row).
+    /// </summary>
+    private static async Task SeedMemberLabelsAsync(IDocumentStore store, Guid projectId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(
+            projectId,
+            new ProjectMemberLabelsObserved(
+                projectId,
+                [new ProjectMemberLabel("root-fingerprint", [DomainId.New()], DisplayName.Parse("Brian"), "brianhallmanac")],
+                Now));
         await session.SaveChangesAsync(cancellationToken);
     }
 
