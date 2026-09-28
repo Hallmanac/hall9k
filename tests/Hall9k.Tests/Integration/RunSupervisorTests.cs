@@ -1485,6 +1485,46 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// A pr-review mention follow-up's own hard turn cap (task 7ae690f5,
+    /// <c>PrReviewMentionFollowUpMaxTurns</c>) must end the run outright rather than spend the
+    /// ordinary one-shot error-result retry on it: that retry resumes through
+    /// <c>PrimarySessionResumer</c> with <c>task.Constraints?.MaxTurns</c>, which is null for
+    /// every mention-minted task, so letting this fall through to the generic retry branch would
+    /// spend the cap once and then run the resumed session with no turn limit at all (independent
+    /// pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    [Fact]
+    public async Task A_mention_follow_ups_own_max_turns_cutoff_fails_the_task_outright_never_retried_unbounded()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedPrReviewMentionFollowUpAsync(store, cts.Token);
+
+        const string maxTurnsResultLine =
+            """{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":40,"usage":{"input_tokens":500,"output_tokens":200}}""";
+        int processId = SpawnFakeAgent(runId,
+            FakeAgentScript.New().Emit(AssistantLine).Emit(maxTurnsResultLine));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "Failed", cts.Token);
+        details.FailureReason.Should().Be(RunDetails.MentionFollowUpTurnBudgetExhausted);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Value.Should().Be("Failed", "a follow-up that never gets to finish must not be left claimed forever");
+
+        List<object> runEvents = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        runEvents.OfType<RunSessionErrorRetried>().Should().BeEmpty(
+            "the ordinary one-shot in-place retry must never be spent on a capped follow-up: its own resume "
+            + "carries no turn cap of its own for a mention-minted task");
+        runEvents.OfType<RunFailed>().Should().ContainSingle().Which.Reason.Should().Be(
+            RunDetails.MentionFollowUpTurnBudgetExhausted);
+    }
+
+    /// <summary>
     /// The zero-work shape (task: a session that exits at once with no work done is treated as
     /// the node failing to launch sessions) — one turn, zero tokens, sub-second, exactly the
     /// 2026-09-07 outage's own signature — holds the run and raises the node-wide launch hold,
@@ -3423,6 +3463,47 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
             runId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
             worktreePath, "task/test", ExecutorMode.Subscription, Now, RunDirectory: RunPaths.GlobalDirectory(runId)));
+        await session.SaveChangesAsync(cancellationToken);
+
+        return (node, taskId, runId);
+    }
+
+    /// <summary>
+    /// A pr-review task's own bounded mention follow-up lap (task 7ae690f5): a claimed pr-review
+    /// task, with the run's own <see cref="RunDispatched.PrReviewMentionCommentId"/> set exactly as
+    /// <c>RunLauncher.LaunchPrReviewMentionFollowUpAsync</c> sets it, and <c>Constraints</c> left
+    /// null — every mention-minted task's own real shape (<c>TaskDecider.Add</c> is always called
+    /// with <c>constraints: null</c> from <c>AutoPrReviewEngine.CreateFromMentionAsync</c>), so a
+    /// resumed session reading <c>task.Constraints?.MaxTurns</c> finds nothing to bound it with —
+    /// the exact gap the mention follow-up's own hard turn cap must never fall through to.
+    /// </summary>
+    private async Task<(NodeContext Node, Guid TaskId, Guid RunId)> SeedClaimedPrReviewMentionFollowUpAsync(
+        DocumentStore store, CancellationToken cancellationToken)
+    {
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+
+        TaskAggregate task = new();
+        (task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(
+                taskId, DomainId.New(), "Review pull request acme/web#7", ["the verdict is submitted"],
+                TaskType.PrReview, null, constraints: null,
+                new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#7"), Now, node.OwnerId),
+            node.OwnerId, Now);
+        var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+        session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+
+        // "/tmp/wt-test" is deliberately never created, the same reason SeedClaimedTaskAsync's own
+        // is: this task's project id is never registered, so nothing here ever needs a real
+        // worktree or spawns a real review pipeline.
+        session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+            runId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+            "/tmp/wt-test", "task/test", ExecutorMode.Subscription, Now,
+            PrReviewMentionCommentId: "IC_1"));
         await session.SaveChangesAsync(cancellationToken);
 
         return (node, taskId, runId);

@@ -989,8 +989,11 @@ public sealed class RunLauncher(
                     // a follow-up reads the prior report, the thread, and parts of the diff, writes
                     // an addendum, and never posts, so it needs bounded turns rather than the
                     // unbounded budget an ordinary build session gets (task 7ae690f5). A run that
-                    // hits the limit ends visibly through whatever the supervisor already does for
-                    // an exhausted turn budget, never a silent hang.
+                    // hits the limit ends visibly: RunSupervisor.CompleteRunAsync reads the
+                    // terminal result's own "error_max_turns" subtype against this run's
+                    // PrReviewMentionCommentId and fails the task outright, rather than spending
+                    // the ordinary error-result retry on a resume that would carry no turn cap of
+                    // its own — never a silent hang, and never an unbounded second attempt.
                     MaxTurns: options.Value.PrReviewMentionFollowUpMaxTurns)
                 {
                     TaskId = taskId,

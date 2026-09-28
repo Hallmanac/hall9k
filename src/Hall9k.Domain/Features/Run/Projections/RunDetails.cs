@@ -671,6 +671,18 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// </summary>
     public const string ErrorResultRetryCouldNotResume = "The error-result retry could not be resumed.";
 
+    /// <summary>
+    /// The reason recorded when a pull request mention's own follow-up session crossed its hard
+    /// turn cap (<c>PrReviewMentionFollowUpMaxTurns</c>) before finishing — named apart from the
+    /// plain <c>"Agent reported an error result."</c> a genuine agent error still uses, and
+    /// recorded directly rather than through the ordinary error-result retry, because that
+    /// retry's own resume carries no turn cap for a mention-minted task (its
+    /// <c>TaskConstraints</c> is always null), so letting it fall through would spend the cap
+    /// once and then run the resumed session with no limit at all.
+    /// </summary>
+    public const string MentionFollowUpTurnBudgetExhausted =
+        "The mention follow-up's own turn budget was crossed before it could finish. Retry the task to dispatch a fresh follow-up.";
+
     /// <summary>Why closeout was handed to the human — parked is a waiting state, not a failure.</summary>
     public string? ParkedReason { get; set; }
     /// <summary>
