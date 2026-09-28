@@ -410,8 +410,13 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         string refName = $"{OwnersRefPrefix}{root}";
         LedgerAppendOnlyFetchResult rootRefFetch = await FetchRefAsync(repositoryPath, refName, cancellationToken);
         string? tip = rootRefFetch.Tip;
+        // Kind "ref", never "root": a self-certification or signature failure below also uses
+        // ("root", root, root) as its own stream key, and folding a rewind refusal into that same
+        // stream would let the last one observed each tick silently overwrite the other, hiding
+        // whichever defect lost the race (independent pre-PR review, cycle 1, conformance and
+        // adversarial lenses, both low).
         IReadOnlyList<UnverifiedLedgerWrite> refFetchUnverified = rootRefFetch.WasRefused
-            ? [new UnverifiedLedgerWrite("root", root, root, rootRefFetch.RefusalReason!)]
+            ? [new UnverifiedLedgerWrite("ref", refName, root, rootRefFetch.RefusalReason!)]
             : [];
         if (tip is null)
         {
@@ -561,8 +566,13 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                         }
                     }
 
-                    (TrustedNode? carriedNode, UnverifiedLedgerWrite? failure) = await VerifyCarriedRecordAsync(
-                        repositoryPath, commit, path, carriedNodeId, root, publicKeyLine, cancellationToken);
+                    (TrustedNode? carriedNode, UnverifiedLedgerWrite? failure, UnverifiedLedgerWrite? refRefusal) =
+                        await VerifyCarriedRecordAsync(repositoryPath, commit, path, carriedNodeId, root, publicKeyLine, cancellationToken);
+                    if (refRefusal is not null)
+                    {
+                        unverified.Add(refRefusal);
+                    }
+
                     if (failure is not null)
                     {
                         unverified.Add(failure);
@@ -988,7 +998,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// established by a vouched node, not by the root key") is recorded in the Decisions Log rather
     /// than engineered around here.
     /// </summary>
-    private async Task<(TrustedNode? Node, UnverifiedLedgerWrite? Failure)> VerifyCarriedRecordAsync(
+    private async Task<(TrustedNode? Node, UnverifiedLedgerWrite? Failure, UnverifiedLedgerWrite? RefRefusal)> VerifyCarriedRecordAsync(
         string repositoryPath, string commit, string path, string nodeId, string root, string rootPublicKeyLine,
         CancellationToken cancellationToken)
     {
@@ -997,7 +1007,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         {
             // A deletion (or, on the pre-check's own replay, simply not the content this commit
             // happens to hold) — nothing to verify or complain about.
-            return (null, null);
+            return (null, null, null);
         }
 
         string? nodePublicKey = ExtractQuotedYamlValue(content, "node_public_key");
@@ -1006,32 +1016,32 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         string? vouchCommitBase64 = ExtractQuotedYamlValue(content, "vouch_commit_base64");
         if (nodePublicKey is null || rootYamlBase64 is null || rootCommitBase64 is null || vouchCommitBase64 is null)
         {
-            return (null, Unverified("is missing a required field"));
+            return (null, Unverified("is missing a required field"), null);
         }
 
         // Check 1: the embedded root.yaml's own declared public key fingerprints to `root`.
         if (!TryDecodeBase64(rootYamlBase64, out string embeddedRootYaml))
         {
-            return (null, Unverified("carries an embedded root.yaml that is not valid base64"));
+            return (null, Unverified("carries an embedded root.yaml that is not valid base64"), null);
         }
 
         string? embeddedRootPublicKey = ExtractQuotedYamlValue(embeddedRootYaml, "public_key");
         if (embeddedRootPublicKey is null || !TryFingerprint(embeddedRootPublicKey, out string embeddedFingerprint)
             || embeddedFingerprint != root)
         {
-            return (null, Unverified("carries an embedded root.yaml that does not self-certify to this root"));
+            return (null, Unverified("carries an embedded root.yaml that does not self-certify to this root"), null);
         }
 
         // Check 2: the embedded root commit is SSH-signed by that key.
         if (!TryDecodeBase64(rootCommitBase64, out string rootCommitBytes)
             || !await IsSignedByRawBytesAsync(repositoryPath, rootCommitBytes, embeddedRootPublicKey, cancellationToken))
         {
-            return (null, Unverified("carries an embedded root commit that is not signed by the root's own key"));
+            return (null, Unverified("carries an embedded root commit that is not signed by the root's own key"), null);
         }
 
         if (!TryFingerprint(nodePublicKey, out string nodeFingerprint))
         {
-            return (null, Unverified("declares a node public key that is malformed"));
+            return (null, Unverified("declares a node public key that is malformed"), null);
         }
 
         // Check 3: the embedded vouch commit is signed by the root key (single-hop, see the doc
@@ -1055,7 +1065,8 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             || !vouchCommitBytes.Contains(vouchMarker, StringComparison.OrdinalIgnoreCase))
         {
             return (null, Unverified(
-                "carries an embedded vouch commit that is not signed by the root's own key, or is signed but never names both this node and this exact key"));
+                "carries an embedded vouch commit that is not signed by the root's own key, or is signed but never names both this node and this exact key"),
+                null);
         }
 
         // Check 4: some commit in this ledger's own nodes/<id>/node.yaml HISTORY — never only its
@@ -1071,13 +1082,16 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         string nodeRefName = $"{NodesRefPrefix}{nodeId}";
         string nodePath = $"nodes/{nodeId}/node.yaml";
         LedgerAppendOnlyFetchResult nodeRefFetch = await FetchRefAsync(repositoryPath, nodeRefName, cancellationToken);
-        if (nodeRefFetch.WasRefused)
-        {
-            // This bundle's own check 4 needs the node's own ledger history to be trustworthy; a
-            // rewind or a side merge on that ref means this verification cannot actually clear it,
-            // fail-closed rather than silently falling back to whatever the verified tip still holds.
-            return (null, Unverified($"cites node {nodeId}, whose own ledger ref failed an append-only integrity check: {nodeRefFetch.RefusalReason}"));
-        }
+
+        // A rewind or side merge on the node's own ledger ref is recorded, never fail-closed: the
+        // verified tip nodeRefFetch.Tip carries on a refusal is exactly what this node already
+        // trusted, so check 4 walks it the same as any ordinary fetch would (independent pre-PR
+        // review, cycle 1, conformance lens, medium — the previous fail-closed reading let anyone who
+        // can force-push that ref revoke a carry this node had already established, by rewinding past
+        // the very commit that established it).
+        UnverifiedLedgerWrite? refRefusal = nodeRefFetch.WasRefused
+            ? new UnverifiedLedgerWrite("ref", nodeRefName, root, nodeRefFetch.RefusalReason!)
+            : null;
 
         string? localTip = nodeRefFetch.Tip;
         IReadOnlyList<string> localNodeCommits = localTip is null
@@ -1100,10 +1114,11 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         if (!matchedAnyHistoricalCommit)
         {
             return (null, Unverified(
-                $"declares a node public key that no commit in this ledger's own {nodePath} history self-signs"));
+                $"declares a node public key that no commit in this ledger's own {nodePath} history self-signs"),
+                refRefusal);
         }
 
-        return (new TrustedNode(nodeId, nodePublicKey, nodeFingerprint, ParseIssuedAt(content)), null);
+        return (new TrustedNode(nodeId, nodePublicKey, nodeFingerprint, ParseIssuedAt(content)), null, refRefusal);
 
         UnverifiedLedgerWrite Unverified(string reason) => new("carried", nodeId, root, $"commit {commit} for {path} {reason}");
     }
