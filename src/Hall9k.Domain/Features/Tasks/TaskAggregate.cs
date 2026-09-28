@@ -776,6 +776,44 @@ public sealed class TaskAggregate
     public string? AutoPrReviewAssigneeLogin { get; private set; }
 
     /// <summary>
+    /// Whether this pr-review task's own mint was parked by the membership gate rather than
+    /// assigned (security review idea 6be68ee2, finding 1): true the moment
+    /// <see cref="Apply(Events.PullRequestReviewGateParked)"/> lands, alongside the deterministic
+    /// facts <see cref="PrReviewGateParkedAuthorLogin"/> through <see cref="PrReviewGateParkedChangedFileCount"/>
+    /// the park card names — never cleared afterward, since <c>h9k task assign</c> is the human go
+    /// that ends the park and the fact that it once was one still explains why the task sat
+    /// unassigned in the meantime.
+    /// </summary>
+    public bool PrReviewGateParked { get; private set; }
+
+    /// <summary>GitHub's own reading of the pull request author's login at park time — the gate never matches on this, only <see cref="PrReviewGateParkedAuthorAccountId"/>.</summary>
+    public string? PrReviewGateParkedAuthorLogin { get; private set; }
+
+    /// <summary>The numeric account id the membership gate actually matched against the project's own declared member ids.</summary>
+    public long? PrReviewGateParkedAuthorAccountId { get; private set; }
+
+    /// <summary>GitHub's own <c>authorAssociation</c> for the pull request at park time.</summary>
+    public string? PrReviewGateParkedAuthorAssociation { get; private set; }
+
+    /// <summary>The pull request's own head repository owner at park time.</summary>
+    public string? PrReviewGateParkedHeadOwner { get; private set; }
+
+    /// <summary>Whether the pull request's head is a fork of the base repository.</summary>
+    public bool PrReviewGateParkedIsCrossRepository { get; private set; }
+
+    /// <summary>Whether the repository read as private (or internal) at park time, or null when that read itself failed.</summary>
+    public bool? PrReviewGateParkedIsPrivate { get; private set; }
+
+    /// <summary>The pull request's own changed-file count at park time, when it was readable.</summary>
+    public int? PrReviewGateParkedChangedFileCount { get; private set; }
+
+    /// <summary>The project's own declared member account ids exactly as the gate read them at park time, beside <see cref="PrReviewGateParkedAuthorAccountId"/> for diagnosing a deleted-and-recreated account.</summary>
+    public IReadOnlyList<long> PrReviewGateParkedMemberAccountIds { get; private set; } = [];
+
+    /// <summary>Every current project member none of whose nodes had declared a GitHub account at park time.</summary>
+    public IReadOnlyList<string> PrReviewGateParkedMembersWithoutDeclaredAccount { get; private set; } = [];
+
+    /// <summary>
     /// The most recent GitHub comment that mentioned the install's login on this task's own pull
     /// request (idea 2f079bcd: a mention is auto-pr-review's second trigger), or null when none
     /// has ever been observed. Set by <see cref="Apply(Events.PullRequestReviewMentionObserved)"/>
@@ -2154,6 +2192,20 @@ public sealed class TaskAggregate
     public void Apply(JiraMergeNoticeAttempted @event) => HasQueuedJiraMergeNotice = false;
 
     public void Apply(PullRequestReviewAssignmentObserved @event) => AutoPrReviewAssigneeLogin = @event.AssigneeLogin;
+
+    public void Apply(PullRequestReviewGateParked @event)
+    {
+        PrReviewGateParked = true;
+        PrReviewGateParkedAuthorLogin = @event.AuthorLogin;
+        PrReviewGateParkedAuthorAccountId = @event.AuthorAccountId;
+        PrReviewGateParkedAuthorAssociation = @event.AuthorAssociation;
+        PrReviewGateParkedHeadOwner = @event.HeadOwner;
+        PrReviewGateParkedIsCrossRepository = @event.IsCrossRepository;
+        PrReviewGateParkedIsPrivate = @event.IsPrivate;
+        PrReviewGateParkedChangedFileCount = @event.ChangedFileCount;
+        PrReviewGateParkedMemberAccountIds = @event.MemberAccountIds;
+        PrReviewGateParkedMembersWithoutDeclaredAccount = @event.MembersWithoutDeclaredAccount;
+    }
 
     // State is never touched here (see the event's own doc comment): the caller that appends
     // this decides Concluded from the state it read before appending, and a following

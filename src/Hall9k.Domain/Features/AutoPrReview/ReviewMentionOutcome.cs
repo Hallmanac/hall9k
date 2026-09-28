@@ -21,6 +21,14 @@ public sealed record ReviewMentionOutcome
     /// <summary>No live task covered this pull request (or its only task was Done): a fresh pr-review task was minted, published and assigned for this mention.</summary>
     public static readonly ReviewMentionOutcome TaskCreated = new("TaskCreated");
 
+    /// <summary>
+    /// A fresh pr-review task was minted and published for this mention, but deliberately never
+    /// assigned — the membership gate found the pull request's own author was not a declared hall9k
+    /// team member (or was a Bot) on a repository the gate covers (security review idea 6be68ee2,
+    /// finding 1). <c>h9k task assign</c> is the human go.
+    /// </summary>
+    public static readonly ReviewMentionOutcome TaskCreatedParked = new("TaskCreatedParked");
+
     /// <summary>A live pr-review task already covered this pull request, and a bounded follow-up lap was dispatched to answer this exact comment.</summary>
     public static readonly ReviewMentionOutcome Attached = new("Attached");
 
@@ -58,6 +66,7 @@ public sealed record ReviewMentionOutcome
     public static ReviewMentionOutcome FromInput(string? value) => value?.Trim().ToLowerInvariant() switch
     {
         "taskcreated" => TaskCreated,
+        "taskcreatedparked" => TaskCreatedParked,
         "attached" => Attached,
         "attachednofollowup" => AttachedNoFollowUp,
         "heldsettingoff" => HeldSettingOff,
