@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Hall9k.Domain.Features.Courier;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -26,6 +27,15 @@ namespace Hall9k.Daemon.Execution;
 /// from <see cref="Turns"/> crossing a task's own declared limit, which a session that simply
 /// ran long for an unrelated reason could also do.
 /// </param>
+/// <param name="PermissionDenials">
+/// Every tool call this session's own real permission file refused, as the terminal result line
+/// itself reported them (security review idea 6be68ee2, process-injection finding 1) — null when
+/// the payload carried no <c>permission_denials</c> field at all, or an empty one, never guessed
+/// at as "nothing was denied" for a payload this parser could not read. Only ever populated for a
+/// session launched under a real file (<see cref="Hall9k.Connectors.Prompts.ClaudeSettingsFile.BuildForPrReview"/>);
+/// <c>--dangerously-skip-permissions</c> voids the permission engine outright, so a session
+/// launched under it can never carry one.
+/// </param>
 public sealed record AgentResult(
     bool IsError,
     long InputTokens,
@@ -36,7 +46,8 @@ public sealed record AgentResult(
     int? Turns,
     string? Summary = null,
     int? DurationMs = null,
-    string? Subtype = null)
+    string? Subtype = null,
+    IReadOnlyList<PermissionDenial>? PermissionDenials = null)
 {
     public TokensRecorded ToTokensRecorded(Guid runId, DateTimeOffset recordedAt, AgentModel model) =>
         new(runId, InputTokens, OutputTokens, CostUsd, recordedAt, CacheReadInputTokens, CacheCreationInputTokens, model);
@@ -127,6 +138,31 @@ public static class StreamJsonParser
                 ? subtypeElement.GetString()
                 : null;
 
+            // Alongside subtype on the result payload (security review idea 6be68ee2,
+            // process-injection finding 1): every tool a real permission file refused, so a
+            // session that carried on past a denial rather than stalling still leaves an honest
+            // record of what it reached for and could not do. Absent, non-array, or empty all
+            // read the same — null, never a guessed empty list standing in for "nothing was
+            // denied" when this parser genuinely could not tell.
+            List<PermissionDenial>? permissionDenials = null;
+            if (root.TryGetProperty("permission_denials", out JsonElement denialsElement)
+                && denialsElement.ValueKind == JsonValueKind.Array
+                && denialsElement.GetArrayLength() > 0)
+            {
+                permissionDenials = [];
+                foreach (JsonElement denial in denialsElement.EnumerateArray())
+                {
+                    string toolName = denial.TryGetProperty("tool_name", out JsonElement toolNameElement)
+                        && toolNameElement.ValueKind == JsonValueKind.String
+                        ? toolNameElement.GetString() ?? string.Empty
+                        : string.Empty;
+                    string toolInput = denial.TryGetProperty("tool_input", out JsonElement toolInputElement)
+                        ? toolInputElement.GetRawText()
+                        : string.Empty;
+                    permissionDenials.Add(new PermissionDenial(toolName, toolInput));
+                }
+            }
+
             // Alongside num_turns on the result payload, not under usage — and the same
             // never-guess discipline: absent or unparseable is null, never zero, so a session
             // this parser could not time never reads as one that finished instantly (task: a
@@ -141,7 +177,7 @@ public static class StreamJsonParser
 
             result = new AgentResult(
                 isError, inputTokens, cacheReadInputTokens, cacheCreationInputTokens, outputTokens, costUsd, turns,
-                summary, durationMs, subtype);
+                summary, durationMs, subtype, permissionDenials);
             return true;
         }
         catch (JsonException)

@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Daemon.Execution;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
@@ -185,4 +186,52 @@ public sealed class StreamJsonParserTests
     [InlineData("")]
     public void A_line_with_no_usage_contributes_nothing_to_a_live_token_spend_sum(string line) =>
         StreamJsonParser.ReadLineTokenSpend(line).Should().Be(0);
+
+    /// <summary>
+    /// Security review idea 6be68ee2, process-injection finding 1: an empty
+    /// <c>permission_denials</c> array — the real shape a session under a real permission file
+    /// reports when nothing was denied (verified against Claude Code 2.1.283) — reads as null,
+    /// never a guessed-empty list standing in for one this parser could not read at all.
+    /// </summary>
+    [Fact]
+    public void An_empty_permission_denials_array_reads_as_null()
+    {
+        StreamJsonParser.TryParseResult(CachedSessionResult, out AgentResult result).Should().BeTrue();
+
+        result.PermissionDenials.Should().BeNull();
+    }
+
+    /// <summary>
+    /// Verified against Claude Code 2.1.283 (this task's own journal.md, verdict C3): under
+    /// <c>-p</c> with <c>dontAsk</c>, a disallowed tool call returns an error tool result and the
+    /// session carries on — it ends with <c>subtype: success</c> and this list names every tool it
+    /// was refused, tool_name and tool_input both.
+    /// </summary>
+    [Fact]
+    public void A_populated_permission_denials_array_is_parsed()
+    {
+        const string denied =
+            """
+            {"type":"result","subtype":"success","is_error":false,"result":"done",
+             "permission_denials":[{"tool_name":"Bash","tool_input":{"command":"npm start"}},
+                                    {"tool_name":"WebFetch","tool_input":{"url":"https://example.com"}}]}
+            """;
+
+        StreamJsonParser.TryParseResult(denied, out AgentResult result).Should().BeTrue();
+
+        result.IsError.Should().BeFalse("a permission denial does not stall or error the session");
+        result.PermissionDenials.Should().HaveCount(2);
+        result.PermissionDenials!.Should().Contain(new PermissionDenial("Bash", """{"command":"npm start"}"""));
+        result.PermissionDenials!.Select(denial => denial.ToolName).Should().Contain("WebFetch");
+    }
+
+    [Fact]
+    public void An_absent_permission_denials_field_reads_as_null()
+    {
+        const string noField = """{"type":"result","subtype":"success","is_error":false,"result":"done"}""";
+
+        StreamJsonParser.TryParseResult(noField, out AgentResult result).Should().BeTrue();
+
+        result.PermissionDenials.Should().BeNull();
+    }
 }
