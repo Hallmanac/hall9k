@@ -388,6 +388,23 @@ public sealed record TrustChain(
     public bool IsEnrolledInOwner(string fingerprint, string root) =>
         OwnerChains.TryGetValue(root, out TrustedOwner? owner) && owner.Contains(fingerprint);
 
+    /// <summary>
+    /// Whether <paramref name="fingerprint"/> is currently one of <paramref name="root"/>'s own LIVE
+    /// ROOT KEYS — K0 or a validated rotation (idea 6be68ee2's ranked root-key set) — never merely a
+    /// node vouched into that root's own fleet. The gate a node revocation, a members-ref write, or a
+    /// role change requires (idea 6be68ee2, trust-ledger finding 2): a compromised fleet node must
+    /// never revoke its own peers or rewrite membership on its own say-so, so
+    /// <c>NodeRevokeCommand</c>, <c>ProjectInviteCommand</c>, <c>ProjectMemberRemoveCommand</c>,
+    /// <c>ProjectAssignKeyCommand</c>, and <c>ProjectMemberReaffirmCommand</c> all refuse before any
+    /// push on this, never on <see cref="IsEnrolledInOwner(string,string)"/> (which
+    /// <c>NodeVouchCommand</c> and <c>NodeInviteCommand</c> still correctly use — a vouch stays
+    /// unaffected) and never by comparing against this node's own identity fingerprint (a promoted
+    /// successor's key can never equal it) or <see cref="TrustedOwner.RootNodeId"/> (null on an older
+    /// ledger that never resolved a root node id).
+    /// </summary>
+    public bool IsLiveRootKeyOfOwner(string fingerprint, string root) =>
+        OwnerChains.TryGetValue(root, out TrustedOwner? owner) && owner.IsLiveRootKey(fingerprint);
+
     public MembershipRole? RoleOf(string root) =>
         Members.FirstOrDefault(member => member.RootFingerprint == root) is { } found ? found.Role : null;
 }
