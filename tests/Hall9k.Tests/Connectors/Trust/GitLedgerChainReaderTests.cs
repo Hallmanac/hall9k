@@ -1648,6 +1648,77 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         chain.IsAllowedSigner(root.Fingerprint).Should().BeTrue();
     }
 
+    /// <summary>
+    /// idea 6be68ee2, trust finding 8: a rewind of the owners ref back to before a revocation must
+    /// not resurrect the revoked node, even though origin itself now shows the pre-revocation state.
+    /// The chain reader's own append-only integrity check refuses the rewound fetch and keeps
+    /// replaying from the verified (post-revocation) tip instead.
+    /// </summary>
+    [Fact]
+    public async Task A_rewind_of_the_owners_ref_after_a_revocation_does_not_reinstate_the_node()
+    {
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        GeneratedIdentity nodeB = GenerateIdentity();
+        string nodeBRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(nodeBRepo, nodeB, nodeB);
+        await VouchAsync(ownerRepo, owner.Fingerprint, nodeB, owner);
+
+        string ownersRefName = $"refs/hall9k/ledger/owners/{owner.Fingerprint}";
+        string readerRepo = _repo.CloneNode(hub);
+
+        TrustChain vouched = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+        vouched.OwnerChains[owner.Fingerprint].Nodes.Should().Contain(node => node.NodeId == nodeB.NodeId.ToString());
+
+        (int vouchExit, string vouchTipOutput, string vouchError) = LedgerTestRepo.RevParseQuiet(ownerRepo, ownersRefName);
+        vouchExit.Should().Be(0, vouchError);
+        string vouchTip = vouchTipOutput.Trim();
+
+        await RevokeAsync(ownerRepo, owner.Fingerprint, nodeB.NodeId, owner);
+
+        TrustChain revoked = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+        revoked.OwnerChains[owner.Fingerprint].Nodes.Should().NotContain(node => node.NodeId == nodeB.NodeId.ToString());
+
+        // The rewind: origin is forced straight back to the vouch commit, discarding the
+        // revocation this reader already verified past.
+        (int rewindExit, _, string rewindError) = LedgerTestRepo.RunGit(hub, "update-ref", ownersRefName, vouchTip);
+        rewindExit.Should().Be(0, rewindError);
+
+        TrustChain afterRewind = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        afterRewind.OwnerChains[owner.Fingerprint].Nodes.Should().NotContain(
+            node => node.NodeId == nodeB.NodeId.ToString(), "the revocation must not vanish just because origin rewound behind it");
+        afterRewind.UnverifiedWrites.Should().Contain(
+            write => write.Kind == "root" && write.Identifier == owner.Fingerprint,
+            "the refusal is named so it reaches h9k status rather than silently healing with nothing recorded");
+    }
+
+    /// <summary>
+    /// idea 6be68ee2, trust finding 8: an owners ref origin has since deleted is discovered by the
+    /// union of ls-remote and this node's own locally verified suffixes, refused as a
+    /// missing-remote-ref rather than silently dropped, and its local content is kept and read.
+    /// </summary>
+    [Fact]
+    public async Task A_deleted_owners_prefix_ref_is_reported_as_missing_and_kept()
+    {
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        string readerRepo = _repo.CloneNode(hub);
+
+        TrustChain established = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+        established.OwnerChains.Should().ContainKey(owner.Fingerprint);
+
+        LedgerTestRepo.RunGit(hub, "update-ref", "-d", $"refs/hall9k/ledger/owners/{owner.Fingerprint}");
+
+        TrustChain afterDeletion = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        afterDeletion.OwnerChains.Should().ContainKey(
+            owner.Fingerprint, "the local copy is kept and read rather than the root silently vanishing");
+        afterDeletion.UnverifiedWrites.Should().Contain(
+            write => write.Kind == "root" && write.Identifier == owner.Fingerprint,
+            "a ref origin has since deleted is reported rather than silently dropped from discovery");
+    }
+
     /// <summary>Shared setup every carried-record test above needs: a genesis root on its own
     /// source project ledger, and a node genuinely vouched into it there — the source half of the
     /// evidence a carrying join reads and embeds. Each test builds its own separate TARGET ledger

@@ -1,5 +1,6 @@
 using System.Globalization;
 using Hall9k.Connectors.Identity;
+using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Processes;
 using Hall9k.Domain.Shared.Exceptions;
 
@@ -134,7 +135,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 + $"(exit {result.ExitCode}): {result.StandardError.Trim()}");
         }
 
-        List<string> suffixes = [];
+        HashSet<string> suffixes = [];
         foreach (string line in result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             string[] parts = line.Split('\t', 2);
@@ -150,7 +151,15 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             }
         }
 
-        return suffixes;
+        // Unioned with whatever this node's own local refs/hall9k-verified/ tree already holds under
+        // this prefix, so a ref origin has since deleted (a removed owners/<fp> or nodes/<id>) is
+        // still discovered as the missing-remote-ref refusal it is, rather than silently dropped from
+        // discovery the moment ls-remote no longer lists it (idea 6be68ee2, trust finding 8).
+        IReadOnlyList<string> verifiedSuffixes =
+            await LedgerAppendOnlyRefFetcher.DiscoverLocallyVerifiedSuffixesAsync(runner, repositoryPath, prefix, cancellationToken);
+        suffixes.UnionWith(verifiedSuffixes);
+
+        return [.. suffixes];
     }
 
     /// <summary>
@@ -216,7 +225,8 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             return ([], new Dictionary<string, NodeGitHubDeclaration>(), new Dictionary<string, NodeDisplayNameDeclaration>());
         }
 
-        await FetchRefsAsync(repositoryPath, NodesRefPrefix, cancellationToken);
+        IReadOnlyDictionary<string, LedgerAppendOnlyFetchResult> fetchResults =
+            await LedgerAppendOnlyRefFetcher.FetchPrefixAsync(runner, repositoryPath, NodesRefPrefix, nodeIds, cancellationToken);
 
         List<UnverifiedLedgerWrite> unverified = [];
         Dictionary<string, NodeGitHubDeclaration> declarations = [];
@@ -224,7 +234,13 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         foreach (string nodeId in nodeIds)
         {
             string refName = $"{NodesRefPrefix}{nodeId}";
-            string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
+            LedgerAppendOnlyFetchResult fetchResult = fetchResults[nodeId];
+            if (fetchResult.WasRefused)
+            {
+                unverified.Add(new UnverifiedLedgerWrite("node", nodeId, nodeId, fetchResult.RefusalReason!));
+            }
+
+            string? tip = fetchResult.Tip;
             if (tip is null)
             {
                 continue;
@@ -392,14 +408,16 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         string repositoryPath, string root, CancellationToken cancellationToken)
     {
         string refName = $"{OwnersRefPrefix}{root}";
-        await FetchRefAsync(repositoryPath, refName, cancellationToken);
-
-        string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
+        LedgerAppendOnlyFetchResult rootRefFetch = await FetchRefAsync(repositoryPath, refName, cancellationToken);
+        string? tip = rootRefFetch.Tip;
+        IReadOnlyList<UnverifiedLedgerWrite> refFetchUnverified = rootRefFetch.WasRefused
+            ? [new UnverifiedLedgerWrite("root", root, root, rootRefFetch.RefusalReason!)]
+            : [];
         if (tip is null)
         {
             // No ref, nothing pushed under this root's own namespace yet — there is no commit here
             // to name as an offending write.
-            return (null, []);
+            return (null, refFetchUnverified);
         }
 
         string rootPath = $"owners/{root}/root.yaml";
@@ -408,7 +426,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         {
             // The ref exists (the namespace was at least touched) but root.yaml itself never landed
             // or was deleted — genuinely nothing here yet, not a write that failed verification.
-            return (null, []);
+            return (null, refFetchUnverified);
         }
 
         // [0], the newest commit reachable from tip that touched root.yaml — the one that actually
@@ -427,10 +445,12 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         {
             // Either malformed, or someone else's public key declared under this fingerprint's own
             // namespace — self-certification fails either way, so nothing here is trusted.
-            return (null, [new UnverifiedLedgerWrite(
-                "root", root, root,
-                $"commit {culpritCommit} for {rootPath} does not self-certify: its own declared public key "
-                + "does not fingerprint back to this root")]);
+            return (null, [
+                new UnverifiedLedgerWrite(
+                    "root", root, root,
+                    $"commit {culpritCommit} for {rootPath} does not self-certify: its own declared public key "
+                    + "does not fingerprint back to this root"),
+                .. refFetchUnverified]);
         }
 
         bool rootSelfSigned = rootCommits.Count > 0 && await IsSignedByAsync(repositoryPath, rootCommits[0], publicKeyLine, cancellationToken);
@@ -643,10 +663,12 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         // discarded pre-check.
         if (!rootSelfSigned && !establishedByCarry)
         {
-            return (null, [new UnverifiedLedgerWrite(
-                "root", root, root,
-                $"commit {culpritCommit} for {rootPath} is not signed by that root's own key, and no "
-                + $"owners/{root}/carried/*.yaml bundle verifies it either"), .. unverified]);
+            return (null, [
+                new UnverifiedLedgerWrite(
+                    "root", root, root,
+                    $"commit {culpritCommit} for {rootPath} is not signed by that root's own key, and no "
+                    + $"owners/{root}/carried/*.yaml bundle verifies it either"),
+                .. unverified, .. refFetchUnverified]);
         }
 
         // Pass 1 of the succession model (idea 6be68ee2): a second walk of this identical root ref,
@@ -663,7 +685,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             new TrustedOwner(
                 root, publicKeyLine, [.. nodes.Values], RevokedNodeIds: revokedNodeIds,
                 EverEnrolledNodes: [.. everEnrolledNodes.Values], RootKeys: rootKeys, SuccessorNodeIds: successorNodeIds),
-            [.. unverified, .. successionUnverified]);
+            [.. unverified, .. successionUnverified, .. refFetchUnverified]);
     }
 
     /// <summary>
@@ -1048,8 +1070,16 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         // medium — origin: the previous check compared only against node.yaml's current content).
         string nodeRefName = $"{NodesRefPrefix}{nodeId}";
         string nodePath = $"nodes/{nodeId}/node.yaml";
-        await FetchRefAsync(repositoryPath, nodeRefName, cancellationToken);
-        string? localTip = await ResolveTipAsync(repositoryPath, nodeRefName, cancellationToken);
+        LedgerAppendOnlyFetchResult nodeRefFetch = await FetchRefAsync(repositoryPath, nodeRefName, cancellationToken);
+        if (nodeRefFetch.WasRefused)
+        {
+            // This bundle's own check 4 needs the node's own ledger history to be trustworthy; a
+            // rewind or a side merge on that ref means this verification cannot actually clear it,
+            // fail-closed rather than silently falling back to whatever the verified tip still holds.
+            return (null, Unverified($"cites node {nodeId}, whose own ledger ref failed an append-only integrity check: {nodeRefFetch.RefusalReason}"));
+        }
+
+        string? localTip = nodeRefFetch.Tip;
         IReadOnlyList<string> localNodeCommits = localTip is null
             ? []
             : await CommitsTouchingPathAsync(repositoryPath, localTip, nodePath, cancellationToken);
@@ -1165,18 +1195,22 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         string? GenesisRootFingerprint, string? ProjectKey)> ComputeMembersAsync(
         string repositoryPath, IReadOnlyDictionary<string, TrustedOwner> ownerChains, CancellationToken cancellationToken)
     {
-        await FetchRefAsync(repositoryPath, MembersRefName, cancellationToken);
+        LedgerAppendOnlyFetchResult membersRefFetch = await FetchRefAsync(repositoryPath, MembersRefName, cancellationToken);
+        List<UnverifiedLedgerWrite> unverified = [];
+        if (membersRefFetch.WasRefused)
+        {
+            unverified.Add(new UnverifiedLedgerWrite("ref", MembersRefName, string.Empty, membersRefFetch.RefusalReason!));
+        }
 
-        string? tip = await ResolveTipAsync(repositoryPath, MembersRefName, cancellationToken);
+        string? tip = membersRefFetch.Tip;
         if (tip is null)
         {
-            return ([], [], null, null);
+            return ([], unverified, null, null);
         }
 
         const string prefix = "members/";
         const string suffix = ".yaml";
         Dictionary<string, ProjectMember> current = [];
-        List<UnverifiedLedgerWrite> unverified = [];
         bool genesisDecided = false;
         string? genesisRootFingerprint = null;
         // The project's own key (idea 202383dc, M2), tracked live during this same replay rather
@@ -1414,64 +1448,24 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         };
     }
 
-    /// <summary>Fetches <paramref name="refName"/> fresh. A missing remote ref is not a failure —
-    /// git's exit code for it is indistinguishable from a genuine one, so the distinction is read
-    /// from git's own message, the identical reasoning <c>GitLedgerMessageTransport</c>'s own
-    /// <c>FetchRefAsync</c> applies. A genuine failure (network, credentials) is thrown rather than
-    /// swallowed into "proceed as though this ref were simply absent": that would let an
-    /// unreachable ledger compute as an empty or partial chain instead of surfacing the read as
-    /// having failed at all (independent pre-PR review, cycle 1, adversarial lens, medium). A
-    /// confirmed-missing remote ref also clears any local copy an earlier fetch left behind —
-    /// otherwise <see cref="ResolveTipAsync"/> would keep reading that stale local tip as though
-    /// origin still held it, letting a ref origin has since deleted go on granting whatever it
-    /// last granted (independent review finding).</summary>
-    private async Task FetchRefAsync(string repositoryPath, string refName, CancellationToken cancellationToken)
-    {
-        ProcessResult result = await runner("git", ["fetch", "origin", $"+{refName}:{refName}"], repositoryPath, cancellationToken);
-        if (result.ExitCode == 0)
-        {
-            return;
-        }
-
-        if (!result.StandardError.Contains("couldn't find remote ref", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException(
-                $"git fetch of {refName} from origin in {repositoryPath} failed (exit {result.ExitCode}): "
-                + $"{result.StandardError.Trim()} — refusing to compute trust from a possibly stale or "
-                + "incomplete read.");
-        }
-
-        // Best-effort: if no local copy exists either, this is simply a no-op.
-        await runner("git", ["update-ref", "-d", refName], repositoryPath, cancellationToken);
-    }
-
-    /// <summary>Fetches every ref under <paramref name="prefix"/> in one round trip, by a single
-    /// wildcard refspec — the batched counterpart to <see cref="FetchRefAsync"/>'s one-ref-at-a-time
-    /// shape, for a caller (<see cref="AttachRootNodeIdsAsync"/>) that already knows, from its own
-    /// prior <c>ls-remote</c>, every suffix under this prefix it is about to read. A wildcard
-    /// refspec matching zero remote refs is not a failure the way a missing single named ref is
-    /// (git simply fetches nothing), so unlike <see cref="FetchRefAsync"/> there is no
-    /// "couldn't find remote ref" case to special-case here, and no local-ref cleanup: a caller
-    /// that already enumerated the current suffixes from origin never reads a stale local ref for a
-    /// suffix origin no longer lists, because it never asks for it by name.</summary>
-    private async Task FetchRefsAsync(string repositoryPath, string prefix, CancellationToken cancellationToken)
-    {
-        ProcessResult result = await runner("git", ["fetch", "origin", $"+{prefix}*:{prefix}*"], repositoryPath, cancellationToken);
-        if (result.ExitCode != 0)
-        {
-            throw new InvalidOperationException(
-                $"git fetch of {prefix}* from origin in {repositoryPath} failed (exit {result.ExitCode}): "
-                + $"{result.StandardError.Trim()} — refusing to compute trust from a possibly stale or "
-                + "incomplete read.");
-        }
-    }
-
-    private async Task<string?> ResolveTipAsync(string repositoryPath, string refName, CancellationToken cancellationToken)
-    {
-        string? tip = (await RunGitCaptureAsync(
-            repositoryPath, ["rev-parse", "--verify", "--quiet", $"{refName}^{{commit}}"], cancellationToken))?.Trim();
-        return tip.IsBlank() ? null : tip;
-    }
+    /// <summary>
+    /// The one place this class fetches a single append-only ref, through
+    /// <see cref="LedgerAppendOnlyRefFetcher"/> — a private staging name, checked against the last
+    /// verified tip before either the live or the verified ref ever moves (idea 6be68ee2, trust
+    /// finding 8), rather than the plain <c>+refName:refName</c> fetch this method used to run
+    /// directly against the shared local ref (and, on a confirmed-missing remote ref, used to delete
+    /// outright — the bug this task's own review named: a ref origin has since deleted must be kept
+    /// and read locally, never dropped). A genuine fetch failure is thrown rather than swallowed into
+    /// "proceed as though this ref were simply absent": that would let an unreachable ledger compute
+    /// as an empty or partial chain instead of surfacing the read as having failed at all
+    /// (independent pre-PR review, cycle 1, adversarial lens, medium). A refusal (a rewind, a side
+    /// merge, or a confirmed-gone remote ref this node still holds a verified tip for) never throws:
+    /// <see cref="LedgerAppendOnlyFetchResult.WasRefused"/> and
+    /// <see cref="LedgerAppendOnlyFetchResult.RefusalReason"/> are what each of this class' own three
+    /// call sites turns into its own contextual <see cref="UnverifiedLedgerWrite"/>.
+    /// </summary>
+    private Task<LedgerAppendOnlyFetchResult> FetchRefAsync(string repositoryPath, string refName, CancellationToken cancellationToken) =>
+        LedgerAppendOnlyRefFetcher.FetchAsync(runner, repositoryPath, refName, cancellationToken);
 
     /// <summary>Every commit reachable from <paramref name="tip"/>, oldest first —
     /// <c>--topo-order --first-parent</c> so replay follows the actual mainline commit graph rather

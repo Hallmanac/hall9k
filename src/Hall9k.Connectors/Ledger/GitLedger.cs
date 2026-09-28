@@ -36,8 +36,7 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
         string repositoryPath, string refName, string path, CancellationToken cancellationToken)
     {
         RequireRegistered(refName);
-        bool fetchFailed = await FetchRefAsync(repositoryPath, refName, cancellationToken);
-        string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
+        (string? tip, bool fetchFailed) = await FetchAppendOnlyRefAsync(repositoryPath, refName, cancellationToken);
         LedgerFile file = await ReadAtTipAsync(repositoryPath, tip, path, cancellationToken);
         return fetchFailed ? file with { FetchFailed = true } : file;
     }
@@ -46,12 +45,11 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
     {
         RequireRegistered(request.RefName);
         RequireSigningKey(request.SigningKey);
-        await FetchRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
+        (string? tip, _) = await FetchAppendOnlyRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
 
         string lastError = string.Empty;
         for (int attempt = 1; attempt <= MaxPushAttempts; attempt++)
         {
-            string? tip = await ResolveTipAsync(request.RepositoryPath, request.RefName, cancellationToken);
             LedgerFile current = await ReadAtTipAsync(request.RepositoryPath, tip, request.Path, cancellationToken);
             if (current.BlobId != request.ExpectedBlobId)
             {
@@ -106,7 +104,7 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
 
             // The local ref was never moved by this attempt, so this fetch only ever advances it
             // toward origin's real tip — it cannot lose or corrupt anything this call itself owns.
-            await FetchRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
+            (tip, _) = await FetchAppendOnlyRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
         }
 
         throw new LedgerPushRejectedException(request.RefName, MaxPushAttempts, lastError);
@@ -116,13 +114,11 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
     {
         RequireRegistered(request.RefName);
         RequireSigningKey(request.SigningKey);
-        await FetchRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
+        (string? tip, _) = await FetchAppendOnlyRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
 
         string lastError = string.Empty;
         for (int attempt = 1; attempt <= MaxPushAttempts; attempt++)
         {
-            string? tip = await ResolveTipAsync(request.RepositoryPath, request.RefName, cancellationToken);
-
             LedgerFile? conflicting = null;
             foreach (LedgerFileWrite file in request.Files)
             {
@@ -158,7 +154,7 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
                 "Push to {RefName} was rejected on attempt {Attempt}/{MaxAttempts} ({Error}); re-fetching to retry",
                 request.RefName, attempt, MaxPushAttempts, pushError.Trim());
 
-            await FetchRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
+            (tip, _) = await FetchAppendOnlyRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
         }
 
         throw new LedgerPushRejectedException(request.RefName, MaxPushAttempts, lastError);
@@ -168,12 +164,11 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
     {
         RequireRegistered(request.RefName);
         RequireSigningKey(request.SigningKey);
-        await FetchRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
+        (string? tip, _) = await FetchAppendOnlyRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
 
         string lastError = string.Empty;
         for (int attempt = 1; attempt <= MaxPushAttempts; attempt++)
         {
-            string? tip = await ResolveTipAsync(request.RepositoryPath, request.RefName, cancellationToken);
             LedgerFile current = await ReadAtTipAsync(request.RepositoryPath, tip, request.Path, cancellationToken);
             if (current.BlobId != request.ExpectedBlobId)
             {
@@ -199,7 +194,7 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
                 "Push to {RefName} was rejected on attempt {Attempt}/{MaxAttempts} ({Error}); re-fetching to retry",
                 request.RefName, attempt, MaxPushAttempts, pushError.Trim());
 
-            await FetchRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
+            (tip, _) = await FetchAppendOnlyRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
         }
 
         throw new LedgerPushRejectedException(request.RefName, MaxPushAttempts, lastError);
@@ -208,8 +203,7 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
     public async Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken)
     {
         RequireRegistered(refName);
-        await FetchRefAsync(repositoryPath, refName, cancellationToken);
-        string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
+        (string? tip, _) = await FetchAppendOnlyRefAsync(repositoryPath, refName, cancellationToken);
         return tip is not null && await HasAnyAtTipAsync(repositoryPath, tip, pathPrefix, cancellationToken);
     }
 
@@ -259,8 +253,7 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
         string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken)
     {
         RequireRegistered(refName);
-        await FetchRefAsync(repositoryPath, refName, cancellationToken);
-        string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
+        (string? tip, _) = await FetchAppendOnlyRefAsync(repositoryPath, refName, cancellationToken);
         if (tip is null)
         {
             return [];
@@ -316,43 +309,56 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
     }
 
     /// <summary>
-    /// Fetches <paramref name="refName"/> fresh, and reports whether that genuinely failed — never
-    /// true for the expected "nothing to bring down yet" outcome, since a caller that already
-    /// treats an empty ref as absent must not also read it as a failure. <see cref="LedgerFile.FetchFailed"/>
-    /// is what carries this answer back to <see cref="ReadAsync"/>'s own caller (idea 202383dc,
-    /// A3b): a claim's own existence guard has to tell "confirmed nothing here" apart from
-    /// "could not confirm either way", which a bare <see cref="LedgerFile.Absent"/> cannot.
+    /// The one place <see cref="GitLedger"/> fetches an append-only ref, through
+    /// <see cref="LedgerAppendOnlyRefFetcher"/> — a private staging name, checked against the last
+    /// verified tip before either the live or the verified ref ever moves (idea 6be68ee2, trust
+    /// finding 8), rather than the plain <c>+refName:refName</c> fetch every method here used to run
+    /// directly against the shared local ref. A genuine fetch failure (never the expected "nothing
+    /// to bring down yet") is caught here and reported through <see cref="LedgerFile.FetchFailed"/>
+    /// exactly as before (idea 202383dc, A3b): a claim's own existence guard has to tell "confirmed
+    /// nothing here" apart from "could not confirm either way", which a bare
+    /// <see cref="LedgerFile.Absent"/> cannot. A refusal (a rewind, a side merge, or a confirmed-gone
+    /// remote ref this node still holds a verified tip for) never throws either — the returned tip is
+    /// simply the verified one, which every caller here already builds reads and writes on without
+    /// having to know a refusal happened at all; <c>MessageSweepEngine</c> is what actually surfaces
+    /// it, by running this identical check against every append-only exact ref once a tick.
     /// </summary>
-    private async Task<bool> FetchRefAsync(string repositoryPath, string refName, CancellationToken cancellationToken)
+    private async Task<(string? Tip, bool FetchFailed)> FetchAppendOnlyRefAsync(
+        string repositoryPath, string refName, CancellationToken cancellationToken)
     {
-        (int exitCode, _, string error) = await RunGitAsync(
-            repositoryPath, ["fetch", "origin", $"+{refName}:{refName}"], null, null, cancellationToken);
-        if (exitCode != 0)
+        try
         {
-            // "Couldn't find remote ref" is expected the first time anything writes to a ref
-            // nobody has pushed yet, and is logged quietly. Anything else — a network problem, a
-            // credential failure — is logged at Warning instead, so it is still visible at
-            // default log levels rather than only when Debug logging happens to be enabled; a
-            // caller that keeps reading stale local data through a standing outage otherwise
-            // leaves no trace of why.
-            if (error.Contains("couldn't find remote ref", StringComparison.OrdinalIgnoreCase))
+            LedgerAppendOnlyFetchResult result = await LedgerAppendOnlyRefFetcher.FetchAsync(
+                GitProcessRunner, repositoryPath, refName, cancellationToken);
+            if (result.WasRefused)
             {
-                logger.LogDebug(
-                    "Fetch of {RefName} from origin in {Repository} found nothing to bring down ({Error}) "
-                    + "— proceeding as though the ref does not exist there yet",
-                    refName, repositoryPath, error.Trim());
-                return false;
+                logger.LogWarning(
+                    "Fetch of {RefName} from origin in {Repository} was refused: {Reason}",
+                    refName, repositoryPath, result.RefusalReason);
             }
 
+            return (result.Tip, false);
+        }
+        catch (LedgerFetchFailedException exception)
+        {
             logger.LogWarning(
                 "Fetch of {RefName} from origin in {Repository} failed ({Error}) — proceeding "
                 + "with whatever this node last had locally for that ref",
-                refName, repositoryPath, error.Trim());
-            return true;
+                refName, repositoryPath, exception.GitError.Trim());
+            return (await ResolveTipAsync(repositoryPath, refName, cancellationToken), true);
         }
-
-        return false;
     }
+
+    /// <summary>Adapts <see cref="RunGitAsync"/>'s own environment/stdin-capable signature down to
+    /// the plain <see cref="ProcessRunner"/> shape <see cref="LedgerAppendOnlyRefFetcher"/> takes —
+    /// every call that class makes on this repository's behalf is a bare fetch, rev-parse, rev-list,
+    /// show-ref, for-each-ref, or update-ref, none of which ever need either.</summary>
+    private static readonly ProcessRunner GitProcessRunner = async (_, arguments, workingDirectory, cancellationToken) =>
+    {
+        (int exitCode, string standardOutput, string standardError) =
+            await RunGitAsync(workingDirectory, arguments, environment: null, standardInput: null, cancellationToken);
+        return new ProcessResult(exitCode, standardOutput, standardError);
+    };
 
     private static async Task<string?> ResolveTipAsync(
         string repositoryPath, string refName, CancellationToken cancellationToken)
