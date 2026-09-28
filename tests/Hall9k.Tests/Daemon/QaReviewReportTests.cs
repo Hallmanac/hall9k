@@ -139,8 +139,23 @@ public sealed class QaReviewReportTests
     [InlineData("END-TO-END TESTS: pass", "pass")]
     [InlineData("END-TO-END TESTS: failed", "fail")]
     [InlineData("END-TO-END TESTS: absent", "absent")]
+    [InlineData("END-TO-END TESTS: unaccepted", "unaccepted")]
     public void The_end_to_end_outcome_is_read_off_its_own_line(string line, string expected) =>
         ReviewResultParser.ParseEndToEndOutcome($"Some prose.\n{line}\n").Value.Should().Be(expected);
+
+    /// <summary>
+    /// The unaccepted outcome is a different fact from <see cref="QaEndToEndOutcome.Absent"/>
+    /// (security review idea 6be68ee2, process-injection finding 1, the local half): the project
+    /// has tests, this node simply could not hand the session a vetted gate command to run them
+    /// with, and the summary a human reads must say that rather than claim there is no suite.
+    /// </summary>
+    [Fact]
+    public void An_unaccepted_end_to_end_outcome_describes_itself_as_not_run_rather_than_absent()
+    {
+        QaEndToEndOutcome.Unaccepted.Describe().Should().Contain("not run");
+        QaEndToEndOutcome.Unaccepted.Describe().Should().Contain("unaccepted on this node");
+        QaEndToEndOutcome.Unaccepted.Describe().Should().NotBe(QaEndToEndOutcome.Absent.Describe());
+    }
 
     [Fact]
     public void An_unreported_end_to_end_run_is_unstated_rather_than_a_pass() =>

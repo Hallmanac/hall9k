@@ -269,12 +269,36 @@ public sealed class QaReviewPromptTests : IDisposable
             new VerifyCommand("test", "dotnet test", HostCoupledFilter: "Category!=RequiresDocker"),
             new VerifyCommand("build", "dotnet build"),
         ];
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
 
         string prompt = QaReviewPromptBuilder.Build(Request(NoRunSkill, project: project));
 
         prompt.Should().NotContain("`dotnet test`", "a host-coupled gate's command is redacted");
         prompt.Should().Contain("`test`: a host-coupled gate, which runs only in the daemon's own serialized host gate");
         prompt.Should().Contain("`build`: `dotnet build`", "an ordinary gate still prints its command");
+    }
+
+    /// <summary>
+    /// A node runs a project's verify gates only after its own operator has accepted that exact
+    /// gate set (security review idea 6be68ee2, process-injection finding 1, the local half) —
+    /// this is the one review session told to run the suite for real, so an unaccepted command
+    /// must never reach it, and it is told to report the outcome as not run rather than invent a
+    /// substitute command of its own (independent challenge, 2026-09-28).
+    /// </summary>
+    [Fact]
+    public void An_unaccepted_gate_set_is_withheld_and_the_session_is_told_to_report_it_as_not_run()
+    {
+        ProjectDetails project = SomeProject();
+        project.AcceptedVerifyCommands = null;
+
+        string prompt = QaReviewPromptBuilder.Build(Request(NoRunSkill, project: project));
+
+        prompt.Should().NotContain("npm run test:e2e", "an unaccepted gate's command is never printed");
+        prompt.Should().Contain(
+            "has changed and has not yet been accepted on this node, so its commands are not listed here");
+        prompt.Should().Contain("do not run them yourself");
+        prompt.Should().Contain("do not invent a substitute command of your own");
+        prompt.Should().Contain("END-TO-END TESTS: unaccepted");
     }
 
     /// <summary>
@@ -392,11 +416,16 @@ public sealed class QaReviewPromptTests : IDisposable
         AgentContext = "PR #412: \"Let a coupon be removed from a cart\". Closes acme/web#388.",
     };
 
-    internal static ProjectDetails SomeProject() => new()
+    internal static ProjectDetails SomeProject()
     {
-        Id = FixedProjectId,
-        Name = "acme",
-        BaseBranch = "main",
-        VerifyCommands = [new VerifyCommand("test", "npm run test:e2e")],
-    };
+        List<VerifyCommand> verifyCommands = [new VerifyCommand("test", "npm run test:e2e")];
+        return new()
+        {
+            Id = FixedProjectId,
+            Name = "acme",
+            BaseBranch = "main",
+            VerifyCommands = verifyCommands,
+            AcceptedVerifyCommands = [.. verifyCommands],
+        };
+    }
 }
