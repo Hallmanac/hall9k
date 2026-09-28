@@ -766,7 +766,7 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
 
         AnsiConsole.MarkupLine(
             $"[dim]Set the name teammates see for this project: h9k owner set --display-name '<name>' "
-            + $"--project {project.Name.EscapeMarkup()}[/]");
+            + $"--project '{project.Name.EscapeMarkup()}'[/]");
     }
 
     /// <summary>The prefix every owner root's own ref lives under — the new-shape invite lookup

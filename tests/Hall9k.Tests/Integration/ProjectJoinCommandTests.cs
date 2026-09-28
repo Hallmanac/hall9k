@@ -205,7 +205,7 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         using ScopedAnsiConsoleCapture capture = ScopedAnsiConsoleCapture.Begin();
         ProjectJoinCommand.Report(project, outcome);
 
-        capture.Text.Should().Contain("h9k owner set --display-name '<name>' --project hall9k");
+        capture.Text.Should().Contain("h9k owner set --display-name '<name>' --project 'hall9k'");
     }
 
     /// <summary>idea 202383dc, M2 (Brian's ruling 2026-09-17): the genesis members commit mints a
