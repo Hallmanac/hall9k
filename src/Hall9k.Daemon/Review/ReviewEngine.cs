@@ -2864,41 +2864,27 @@ public sealed class ReviewEngine(
     /// A fetch or read failure is logged and treated as <see cref="RebaseGateOutcome.Proceed"/>
     /// rather than failing or parking the run: a transient network blip is not this run's fault,
     /// and the ordinary post-push closeout mechanical rebase (<see cref="Events.PullRequestMechanicalRebaseAttempted"/>)
-    /// still covers whatever residual staleness the REBASE itself could not observe.
+    /// still covers whatever residual staleness the REBASE itself could not observe. An illegal
+    /// base-branch name on the unstacked leg is not treated the same way: it is not transient, no
+    /// closeout rebase makes handing it to git safe, and a <see cref="RebaseGateOutcome.Proceed"/>
+    /// here would let it reach a dispatched session's own prompt — so that case fails the run and
+    /// returns <see cref="RebaseGateOutcome.Stop"/> instead (independent pre-PR review, cycle 1,
+    /// conformance lens).
     /// </para>
     /// </summary>
     internal async Task<RebaseGateOutcome> EnsureRebasedBeforeFinalPassAsync(
-        ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
+        ReviewContext context, RunAggregate run, CancellationToken cancellationToken,
+        ProcessRunner? gitOverride = null)
     {
-        // Ahead of the base-branch legality check below, not behind it: a stale generation must
-        // still stop this iteration with RebaseGateOutcome.Stop regardless of what this run's own
-        // base branch looks like — swapping the order would let a superseded run's own illegal
-        // base branch read as RebaseGateOutcome.Proceed instead (self-review finding).
+        // Ahead of the stacked-child hand-off and the base-branch legality check below, not
+        // behind them: a stale generation must still stop this iteration with
+        // RebaseGateOutcome.Stop regardless of what this run's own base branch looks like or
+        // whether it is still a stacked child — swapping the order would let a superseded run's
+        // own illegal base branch read as RebaseGateOutcome.Proceed instead (self-review finding).
         if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
         {
             return RebaseGateOutcome.Stop;
         }
-
-        string baseBranch = context.BaseBranch;
-
-        // context.BaseBranch replicates from another fleet node exactly the way
-        // CaptureStrandedDeltaAsync's own identical comment documents, and this is the other
-        // place within this run's own review loop that turns it into a fetch argument (the
-        // mandatory final pass's unstacked leg) — checked here, before this method touches the
-        // worktree or the fetch below, for the same reason CaptureStrandedDeltaAsync checks it
-        // rather than trusting that call already checked it once on a different path (security
-        // review idea 6be68ee2, process-injection finding 2).
-        if (!GitArgumentValidation.IsLegalBranchName(baseBranch, out string? baseBranchRefusalReason))
-        {
-            logger.LogWarning(
-                "Run {RunId}: this run's own base branch '{Branch}' is not a legal branch name ({Reason}); " +
-                "proceeding unrebased rather than handing it to git",
-                context.RunId, GitArgumentValidation.Printable(baseBranch), baseBranchRefusalReason);
-            return RebaseGateOutcome.Proceed;
-        }
-
-        string worktreePath = context.Run.WorktreePath;
-        ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
 
         // A stacked child's base is its PARENT's branch, and the operation it needs is not this
         // method's own `git rebase origin/<base>` — that plain merge-base rebase is the one thing
@@ -2933,11 +2919,49 @@ public sealed class ReviewEngine(
         // unstacked rebase path a few lines below entirely, for however many iterations pass before
         // something else notices the mismatch (Settling's "nothing owed, no review left" path
         // notices nothing).
+        //
+        // Checked before context.BaseBranch is even read, not after: that held snapshot is exactly
+        // as stale as the "still stacked" read this comment already warns about, and a stacked
+        // child whose snapshot carries a since-retargeted (or since-illegal) parent branch must be
+        // decided by THIS fresh check, not by validating the stale value first — the stacked leg
+        // below reads its own operative branch fresh, off the current run document, and validates
+        // that copy itself (RebaseOntoStackedParentAsync -> StackedParentWatch.ReadRemoteBranchHeadAsync)
+        // rather than trusting context.BaseBranch at all (independent pre-PR review, cycle 1,
+        // adversarial lens).
         if (await IsCurrentlyStackedChildAsync(context, cancellationToken))
         {
             return await RebaseOntoStackedParentAsync(
                 context, StackedCheckpoint.BeforeFinalPass, cancellationToken);
         }
+
+        string baseBranch = context.BaseBranch;
+
+        // context.BaseBranch replicates from another fleet node exactly the way
+        // CaptureStrandedDeltaAsync's own identical comment documents, and this is the other
+        // place within this run's own review loop that turns it into a fetch argument (the
+        // mandatory final pass's unstacked leg — the stacked leg above has already returned by
+        // this point, so this check only ever runs the unstacked leg) — checked here, before this
+        // method touches the worktree or the fetch below, for the same reason CaptureStrandedDeltaAsync
+        // checks it rather than trusting that call already checked it once on a different path
+        // (security review idea 6be68ee2, process-injection finding 2).
+        if (!GitArgumentValidation.IsLegalBranchName(baseBranch, out string? baseBranchRefusalReason))
+        {
+            await FailAsync(
+                context.RunId, context.TaskId,
+                $"This run's own base branch '{GitArgumentValidation.Printable(baseBranch)}' is not a "
+                + $"legal branch name ({baseBranchRefusalReason}), so the mandatory final pass cannot "
+                + "rebase onto it or dispatch a session carrying it.",
+                cancellationToken);
+            return RebaseGateOutcome.Stop;
+        }
+
+        string worktreePath = context.Run.WorktreePath;
+        // gitOverride is a test-only seam (default null in every production call site): the
+        // fetch below is the second of the three sites this task guards, and a test injecting a
+        // throwing fake here proves the illegal-branch check above returns before this line is
+        // ever reached, not merely that the refusal text was logged (independent pre-PR review,
+        // cycle 1, conformance lens).
+        ProcessRunner git = gitOverride ?? ExternalProcess.RunnerWithDeadline(GitDeadline);
 
         if (await RebasePreflightAsync(context, baseBranch, "the mandatory final pass", cancellationToken)
             is { } refused)
@@ -4667,11 +4691,29 @@ public sealed class ReviewEngine(
     /// identically named parameter — only <see cref="ActOnStackAssessmentAsync"/>'s own Replay
     /// branch ever passes false, when its mechanical retry never actually ran a rebase.
     /// </param>
+    /// <param name="gitOverride">
+    /// A test-only seam, null in every production call site: a test can inject a throwing fake
+    /// here to prove the base-branch legality check above returns before this method's own fetch
+    /// is ever reached, the same shape <see cref="EnsureRebasedBeforeFinalPassAsync"/>'s own
+    /// identically named parameter uses.
+    /// </param>
     internal async Task<bool> DispatchRebaseRecoverySessionAsync(
         ReviewContext context, RunAggregate run, string? humanGuidance, string? assessmentGuidance,
         string? baseCommit, bool precedesFirstReviewCycle, CancellationToken cancellationToken,
-        bool mechanicalRetryAttempted = true)
+        bool mechanicalRetryAttempted = true, ProcessRunner? gitOverride = null)
     {
+        // Ahead of the worktree-missing check and the base-branch legality check below, not
+        // behind them, the same ordering EnsureRebasedBeforeFinalPassAsync's own identical fence
+        // keeps ahead of its own base-branch check: a stale generation means a newer run already
+        // owns this task, and retiring it as RunSuperseded here is the honest terminal state for
+        // that — failing it instead, the way either check below would, records a misleading
+        // reason on a run this loop no longer has any business continuing to drive (independent
+        // pre-PR review, cycle 1, both lenses).
+        if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
+        {
+            return false;
+        }
+
         string worktreePath = context.Run.WorktreePath;
 
         // Reachable with no prior worktree check when a human's own `h9k review resolve
@@ -4716,7 +4758,11 @@ public sealed class ReviewEngine(
             return false;
         }
 
-        ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
+        // gitOverride is a test-only seam (default null in every production call site) — the same
+        // shape EnsureRebasedBeforeFinalPassAsync's own identical fetch below uses, so a test can
+        // inject a throwing fake here and prove the illegal-branch check above returns before this
+        // line is reached (independent pre-PR review, cycle 1, conformance lens).
+        ProcessRunner git = gitOverride ?? ExternalProcess.RunnerWithDeadline(GitDeadline);
         string rebasedFromCommit = RunRebasedOntoBase.UnreadableCommit;
         string rebasedOntoCommit = RunRebasedOntoBase.UnreadableCommit;
         try
