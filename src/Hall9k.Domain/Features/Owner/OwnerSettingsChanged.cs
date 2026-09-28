@@ -24,9 +24,30 @@ namespace Hall9k.Domain.Features.Owner;
 /// <paramref name="ChangedAt"/>: an Owner stream written before this field deserializes into
 /// <see cref="Optional{T}.None"/> rather than shifting a positional argument.
 /// </param>
+/// <param name="DefaultDisplayName">
+/// The name teammates see for this member, as this machine's own default beneath every project
+/// with no entry of its own (task e6744304). <see cref="DisplayName.None"/> is a legal explicit
+/// value: it clears the default, which is what <c>--display-name ''</c> with no <c>--project</c>
+/// records. Already well-formed by the time it reaches here (<see cref="DisplayName.Parse"/>'s own
+/// rule, enforced where the string was typed), so nothing is re-checked. Appended after
+/// <paramref name="ReviewPersonas"/> for the same replay reason every sibling setting above states.
+/// </param>
+/// <param name="ProjectDisplayName">
+/// One project's own display-name entry changing, or being removed, never the whole per-project
+/// map, which the aggregate rebuilds one entry at a time as these events replay. Appended last for
+/// the same replay reason every sibling setting above states.
+/// </param>
 public sealed record OwnerSettingsChanged(
     Guid Id,
     Optional<ReviewRerequestPolicy> ReviewRerequest,
     DateTimeOffset ChangedAt,
     Optional<VoiceSkillName> VoiceSkill = default,
-    Optional<IReadOnlyList<ReviewPersona>> ReviewPersonas = default);
+    Optional<IReadOnlyList<ReviewPersona>> ReviewPersonas = default,
+    Optional<DisplayName> DefaultDisplayName = default,
+    Optional<OwnerProjectDisplayName> ProjectDisplayName = default);
+
+/// <summary>
+/// One project's own display-name entry: <paramref name="Name"/> set (a per-project override) or
+/// <see cref="DisplayName.None"/> (removing the entry so the default applies again).
+/// </summary>
+public sealed record OwnerProjectDisplayName(Guid ProjectId, DisplayName Name);

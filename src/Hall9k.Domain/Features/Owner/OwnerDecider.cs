@@ -34,12 +34,27 @@ public static class OwnerDecider
     /// than silently dropped — an owner who typed <c>--persona qaa</c> must not walk away believing
     /// they declared a QA review.
     /// </param>
+    /// <param name="defaultDisplayName">
+    /// This machine's own default display name (task e6744304). <see cref="DisplayName.None"/> is a
+    /// legal explicit value on the same terms every sibling setting's clearing value is above: it
+    /// clears the default, which is what <c>--display-name ''</c> with no <c>--project</c> records.
+    /// Already well-formed by the time it reaches here (<see cref="DisplayName.Parse"/>'s own rule,
+    /// enforced where the string was typed), so nothing is re-checked, the same reasoning
+    /// <paramref name="voiceSkill"/>'s own doc gives.
+    /// </param>
+    /// <param name="projectDisplayName">
+    /// One project's own display-name entry changing or being removed. Which project this node has
+    /// actually joined is a database question the CLI answers where the human names it, not
+    /// something this decider re-checks.
+    /// </param>
     public static OwnerSettingsChanged ChangeSettings(
         OwnerAggregate owner,
         Optional<ReviewRerequestPolicy> reviewRerequest,
         DateTimeOffset changedAt,
         Optional<VoiceSkillName> voiceSkill = default,
-        Optional<IReadOnlyList<ReviewPersona>> reviewPersonas = default)
+        Optional<IReadOnlyList<ReviewPersona>> reviewPersonas = default,
+        Optional<DisplayName> defaultDisplayName = default,
+        Optional<OwnerProjectDisplayName> projectDisplayName = default)
     {
         // Unknown is a legal explicit value: it clears the owner's preference so the
         // project setting or the node default decides again (the CommitStyle convention).
@@ -80,7 +95,9 @@ public static class OwnerDecider
             voiceSkill,
             reviewPersonas.HasValue
                 ? Optional<IReadOnlyList<ReviewPersona>>.Of(ReviewPersona.Declared(reviewPersonas.Value))
-                : Optional<IReadOnlyList<ReviewPersona>>.None);
+                : Optional<IReadOnlyList<ReviewPersona>>.None,
+            defaultDisplayName,
+            projectDisplayName);
     }
 
     public static OwnerRootClaimed ClaimRoot(OwnerAggregate owner, string rootFingerprint, bool verified, DateTimeOffset claimedAt)

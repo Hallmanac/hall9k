@@ -32,6 +32,27 @@ public sealed class OwnerAggregate
     /// </summary>
     public IReadOnlyList<ReviewPersona> ReviewPersonas { get; private set; } = [];
 
+    /// <summary>
+    /// This machine's own default display name (task e6744304), beneath every project's own
+    /// entry, above nothing: a member with neither sees no name at all.
+    /// <see cref="DisplayName.None"/> until they set one.
+    /// </summary>
+    public DisplayName DefaultDisplayName { get; private set; } = DisplayName.None;
+
+    /// <summary>
+    /// Per-project display-name overrides, keyed by project id, set on this machine alone
+    /// (task e6744304). A project with no entry here falls back to <see cref="DefaultDisplayName"/>;
+    /// see <see cref="EffectiveDisplayName"/>.
+    /// </summary>
+    public IReadOnlyDictionary<Guid, DisplayName> ProjectDisplayNames => _projectDisplayNames;
+
+    private readonly Dictionary<Guid, DisplayName> _projectDisplayNames = [];
+
+    /// <summary>The name teammates should see for this member in <paramref name="projectId"/>: that
+    /// project's own entry, else this machine's default, else <see cref="DisplayName.None"/>.</summary>
+    public DisplayName EffectiveDisplayName(Guid projectId) =>
+        _projectDisplayNames.TryGetValue(projectId, out DisplayName? projectName) ? projectName : DefaultDisplayName;
+
     public DateTimeOffset RegisteredAt { get; private set; }
 
     /// <summary>
@@ -81,6 +102,23 @@ public sealed class OwnerAggregate
         if (@event.ReviewPersonas.HasValue)
         {
             ReviewPersonas = ReviewPersona.Declared(@event.ReviewPersonas.Value);
+        }
+
+        if (@event.DefaultDisplayName.HasValue)
+        {
+            DefaultDisplayName = @event.DefaultDisplayName.Value ?? DisplayName.None;
+        }
+
+        if (@event.ProjectDisplayName.HasValue && @event.ProjectDisplayName.Value is { } change)
+        {
+            if (change.Name.HasValue)
+            {
+                _projectDisplayNames[change.ProjectId] = change.Name;
+            }
+            else
+            {
+                _projectDisplayNames.Remove(change.ProjectId);
+            }
         }
     }
 
