@@ -4312,6 +4312,160 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 5, conformance lens, high: the fix holding a relay-dropped
+    /// Task/Run act (rather than losing it, <see cref="HeldTaskActRecord"/>'s own doc) keyed the
+    /// resulting hold row by the relay's own sender identity. Nothing cleared that row once the
+    /// identical act — same <see cref="EventReplicationCodec.ReplicatedEventRecord.OriginEventId"/> —
+    /// later succeeded through a DIRECT delivery from the true origin, so the stale row kept
+    /// outranking every later same-origin/same-stream record under the "earlier held for this
+    /// origin" check forever, and the re-check kept re-judging it against the relay's own
+    /// (now-irrelevant) root. This proves the fix: the direct delivery both applies the act for real
+    /// and clears its own stale hold, letting whatever queued behind it drain in the same read.
+    /// </summary>
+    [Fact]
+    public async Task A_relay_dropped_acts_stale_hold_clears_once_the_true_origin_delivers_it_directly()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid memberNode = DomainId.New();
+        Guid relayNode = DomainId.New();
+        Guid creatorOwnerId = DomainId.New();
+        Guid memberOwnerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+
+        const string memberRoot = "member-root-f";
+        const string relayRoot = "relay-root-f";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, memberNode, cts.Token);
+        await SeedNodeFileAsync(ledger, relayNode, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("relay");
+
+        // Two member roots, neither an owner — the relay's own root must never match the
+        // assignment below, or its forward would resolve Allowed outright rather than
+        // DroppedWithoutRecording.
+        string memberKeyLine = $"ssh-ed25519 AAAAFAKE{memberNode:N} test";
+        string relayKeyLine = $"ssh-ed25519 AAAAFAKE{relayNode:N} test";
+        TrustChain chain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                [memberRoot] = new TrustedOwner(
+                    memberRoot, $"ssh-ed25519 AAAAFAKE{memberRoot} test",
+                    [new TrustedNode(memberNode.ToString(), memberKeyLine, NodeKeyStore.Fingerprint(memberKeyLine), Now)]),
+                [relayRoot] = new TrustedOwner(
+                    relayRoot, $"ssh-ed25519 AAAAFAKE{relayRoot} test",
+                    [new TrustedNode(relayNode.ToString(), relayKeyLine, NodeKeyStore.Fingerprint(relayKeyLine), Now)]),
+            },
+            [
+                new ProjectMember(memberRoot, MembershipRole.Member, Now),
+                new ProjectMember(relayRoot, MembershipRole.Member, Now),
+            ]);
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        // The task is already assigned to the true origin's own root — the fact TaskClaimed's own
+        // conditional check reads.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Ship the thing", ["it ships"], TaskType.Feature, null, null, null, Now,
+                creatorOwnerId);
+            session.Events.StartStream<TaskAggregate>(taskId, added);
+            session.Events.Append(taskId, new TaskPublished(taskId, Now, creatorOwnerId));
+            session.Events.Append(
+                taskId,
+                new TaskAssigned(
+                    taskId, memberOwnerId, UnmetDependencies: [], Now, creatorOwnerId,
+                    AssignedOwnerRootFingerprint: memberRoot));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+
+        // Origin sequence 1: the true origin's own claim, forwarded here by a fellow member relay
+        // whose own root does not match the assignment — refused as DroppedWithoutRecording rather
+        // than lost, since record.OriginNodeId (the member) differs from senderNodeId (the relay).
+        TaskClaimed claimed = new(
+            taskId, memberNode, memberOwnerId, LeaseGeneration: 1, runId, Now.AddSeconds(1),
+            OwnerRootFingerprint: memberRoot);
+        EventReplicationCodec.ReplicatedEventRecord claimRecord = new(
+            taskId, typeof(TaskClaimed).FullName!, JsonSerializer.Serialize(claimed, jsonOptions),
+            DomainId.New(), OriginSequence: 1, memberNode, memberRoot, Now.AddSeconds(1), projectId);
+
+        // Origin sequence 2: a plain MemberSafe fact from the identical origin, forwarded by the
+        // same relay — queued behind the claim above regardless of its own classification, since
+        // nothing has appended for this origin on this stream yet.
+        TaskCompleted completed = new(taskId, runId, PullRequestUrl: null, Now.AddSeconds(2));
+        EventReplicationCodec.ReplicatedEventRecord completedRecord = new(
+            taskId, typeof(TaskCompleted).FullName!, JsonSerializer.Serialize(completed, jsonOptions),
+            DomainId.New(), OriginSequence: 2, memberNode, memberRoot, Now.AddSeconds(2), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, relayNode, projectId, relayRoot, MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([claimRecord, completedRecord]), Now.AddSeconds(3),
+                cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, relayNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(3), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, relayNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4),
+                trustChain: chain, cts.Token);
+            read.EventsApplied.Should().Be(
+                0, "the relay's own root does not match the assignment, so the claim is held and the record "
+                    + "queued behind it holds too");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.Query<HeldTaskActRecord>().Where(record => record.TaskId == taskId).ToListAsync(cts.Token))
+                .Should().HaveCount(2, "both the relay-dropped claim and the record queued behind it are held");
+        }
+
+        // The true origin now answers directly — the identical claim, same origin event id, this
+        // time with a verified sender whose root matches the assignment.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, memberNode, projectId, memberRoot, MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([claimRecord]), Now.AddSeconds(5), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, memberNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(5), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, memberNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(6),
+                trustChain: chain, cts.Token);
+            read.EventsApplied.Should().Be(
+                2, "the direct claim applies for real, clearing its own stale relay hold, and the completion "
+                    + "queued behind it drains in the same read rather than staying stuck behind a superseded "
+                    + "verdict");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.Query<HeldTaskActRecord>().Where(record => record.TaskId == taskId).ToListAsync(cts.Token))
+                .Should().BeEmpty("neither the claim nor the completion is left held once the true origin answered");
+
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            task.State.Should().Be(TaskState.Done, "the claim and the completion both actually applied, in order");
+            task.HolderNodeId.Should().Be(memberNode);
+        }
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 2, adversarial lens, high: the earlier version of
     /// <see cref="TaskCreatorRootRecord"/> only ever recorded the creator's own root at the instant a
     /// task's genesis started its stream fresh, direct delivery only — a relayed genesis (the
