@@ -643,8 +643,9 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
               + $"setting existed. Declare CI instead:[/] h9k project set {name} --ci required"
             : $"[dim]required ({OriginNote(recorded)}) — past the settle window, an empty check "
               + "rollup is never trusted as \"no CI\" on its own: a pre-approved task parks instead, "
-              + $"naming this command. If this project genuinely runs no CI:[/] h9k project set {name} "
-              + "--ci none";
+              + "naming this command. Setting it does not by itself unpark an already-parked task; "
+              + "merge that pull request by hand, or grant it another attempt with h9k pr resolve. If "
+              + $"this project genuinely runs no CI:[/] h9k project set {name} --ci none";
     }
 
     /// <summary>

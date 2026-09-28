@@ -65,10 +65,10 @@ public sealed class PrReviewEngine(
     /// <summary>
     /// Writes the primary session's own result to disk under the same naming convention
     /// <see cref="RunPaths.ReviewLensFindingsFile"/> already uses, before
-    /// <see cref="ReviewAsync"/> is ever entered. Idempotent: a resumed call finds the file
-    /// already there and this is a no-op, which is what lets <see cref="ReviewAsync"/> assume it
-    /// unconditionally rather than re-deriving it from the (by then long exited) primary
-    /// session's process.
+    /// <see cref="ReviewAsync"/> is ever entered. Always writes this session's own stdout, even
+    /// over a file already there (see <see cref="WritePrimarySessionResultAsync"/>), which is
+    /// what lets <see cref="ReviewAsync"/> assume the file holds it unconditionally rather than
+    /// re-deriving it from the (by then long exited) primary session's process.
     /// <para>
     /// Which session the primary one IS comes from the persona plan this run recorded at dispatch
     /// (idea b9b09779, piece 1) — the engineer's adversarial lens for an assignee who declared no
@@ -96,8 +96,9 @@ public sealed class PrReviewEngine(
     /// pre-spawn deletion. This result file is now always this session's own stdout, verbatim, and
     /// a warning names the file whenever what was already there differed from it — the honest,
     /// visible version of the residual risk this result file always carried, rather than a silent
-    /// one. The recovery path above keeps its own absent check unchanged: it only ever calls this
-    /// once the file is confirmed missing, so it never has anything to diff against.
+    /// one. <see cref="EnsurePrimarySessionResultRecordedAsync"/>'s own recovery path below keeps
+    /// its own absent check unchanged: it only ever calls this once the file is confirmed
+    /// missing, so it never has anything to diff against.
     /// <para>Internal for the unit test exercising the overwrite-and-warn path directly, the <see cref="EnsurePrimarySessionResultRecordedAsync"/> convention — pure file I/O and a logger, no store needed.</para>
     /// </summary>
     internal async Task WritePrimarySessionResultAsync(
@@ -283,8 +284,9 @@ public sealed class PrReviewEngine(
         // time ReviewAsync is ever entered — true of the live-monitor path (RunSupervisor calls
         // it immediately after AgentSessionCompleted commits), but a daemon restart landing in
         // the gap between that commit and the file write reaches here instead through the
-        // Verifying-adoption sweep, with nothing written yet. Idempotent the same way the direct
-        // call is, so this is a no-op once the file is actually there.
+        // Verifying-adoption sweep, with nothing written yet. This recovery call keeps its own
+        // absent check, so it is a no-op once the file is actually there, unlike the direct call
+        // it recovers for, which now always overwrites.
         await EnsurePrimarySessionResultRecordedAsync(runDirectory, primary.Slug, cancellationToken);
 
         // Every other review pass gets this check (ReviewEngine.RecordReviewPassAsync); this
