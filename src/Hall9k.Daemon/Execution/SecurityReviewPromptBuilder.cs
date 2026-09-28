@@ -8,10 +8,13 @@ namespace Hall9k.Daemon.Execution;
 
 /// <summary>
 /// The Security persona's review of somebody else's already-open pull request (idea 6be68ee2,
-/// phase two): the second of the two-phase security review, asking whether this change introduces
-/// a vulnerability into the project rather than whether it attacks the host — the pre-flight
-/// (f72ba499) and the membership gate have already answered that question before this session ever
-/// starts. Its own builder and its own template directory beside
+/// phase two): asking whether this change introduces a vulnerability into the project rather than
+/// whether it attacks the host running this review — a narrower, later question this session
+/// answers on its own. The pre-flight (f72ba499) and a membership gate are still design only
+/// (independent pre-PR review, cycle 1, conformance lens, medium): neither exists in code today,
+/// so nothing has separately judged this pull request's own code safe to pull down onto this
+/// machine or its author trusted, and this builder's own prompt says so rather than asserting
+/// either check already ran. Its own builder and its own template directory beside
 /// <c>.claude/templates/qa-review-prompt-builder</c>, never the vendor's own built-in
 /// <c>/security-review</c> slash command, whose content this platform does not control and cannot
 /// version, audit, or override the way it can its own prose.

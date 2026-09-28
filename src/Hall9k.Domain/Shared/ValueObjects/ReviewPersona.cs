@@ -37,10 +37,11 @@ public sealed record ReviewPersona
     /// <summary>
     /// Injection, secrets handling, authentication and authorization, unsafe process, file or
     /// network use, dependency changes, and CI or release workflow changes (idea 6be68ee2, phase
-    /// two) — the second of the two-phase security review: by the time this persona runs, a
-    /// pre-flight has already judged the code safe to pull down and the membership gate has
-    /// already judged the author trusted, so this lap asks whether the code introduces a
-    /// vulnerability in the project, not whether it attacks the host.
+    /// two): asks whether the code introduces a vulnerability in the project, not whether it
+    /// attacks the host running this review. The pre-flight and the membership gate this persona's
+    /// own narrower question was meant to sit alongside (f72ba499) are still design only —
+    /// independent pre-PR review, cycle 1, conformance lens, medium: neither exists in code today,
+    /// so nothing has separately judged the code safe to pull down or the author trusted.
     /// <para>
     /// Unlike <see cref="Engineer"/>, <see cref="Qa"/> and <see cref="Designer"/>, this persona is
     /// always on rather than declared: it is not a member's own choice of lens, it is a standing
