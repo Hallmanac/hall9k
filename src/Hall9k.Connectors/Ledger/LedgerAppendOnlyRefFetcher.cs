@@ -206,6 +206,28 @@ public static class LedgerAppendOnlyRefFetcher
             .Select(name => name[verifiedPrefix.Length..])];
     }
 
+    /// <summary>
+    /// Advances the verified ref to <paramref name="newTip"/>, a commit the caller's own write just
+    /// got origin to accept, compare-and-swapped from <paramref name="previousTip"/> — the tip that
+    /// write was built on. This is the one move a write itself has to make on its own behalf: every
+    /// other caller here only ever fetches, so <see cref="DecideAndApplyAsync"/>'s own compare-and-
+    /// swap covers it, but a writer never re-fetches before building the next thing on top of what
+    /// it just pushed, and without this call a rewind of that write reads back as an ordinary
+    /// no-change fetch the next time anything on this node touches the ref (independent pre-PR
+    /// review, cycle 2, both lenses, high). Best-effort, the same as every other verified-ref move
+    /// in this class: losing the compare-and-swap only ever means a concurrent caller on this same
+    /// node already advanced the verified ref at least this far forward.
+    /// </summary>
+    public static async Task AdvanceVerifiedRefAfterOwnWriteAsync(
+        ProcessRunner runner, string repositoryPath, string refName, string? previousTip, string newTip,
+        CancellationToken cancellationToken)
+    {
+        RequireAppendOnly(refName);
+        string verifiedRefName = $"{VerifiedNamespace}{PathFor(refName)}";
+        await UpdateRefBestEffortAsync(
+            runner, repositoryPath, verifiedRefName, newTip, previousTip ?? NullObjectId, cancellationToken);
+    }
+
     private static async Task<LedgerAppendOnlyFetchResult> DecideAndApplyAsync(
         ProcessRunner runner, string repositoryPath, string refName, string path, string? fetchedTip,
         CancellationToken cancellationToken)
