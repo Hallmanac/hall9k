@@ -134,7 +134,7 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         // NodeContext resolves back to the identical owner/node this invite was minted under.
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
         InviteSweepEngine engine = new(
-                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new FakeLedgerChainReader(TrustChain.Empty), new NodeKeyStore(),
                 NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
@@ -175,7 +175,7 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
         InviteSweepEngine engine = new(
-                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new FakeLedgerChainReader(TrustChain.Empty), new NodeKeyStore(),
                 NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
@@ -212,7 +212,7 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         // per sweep.
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
         InviteSweepEngine engine = new(
-                _postgres.Store, node, flakyLedger, new AlwaysSignedLedgerCommitReader(flakyLedger), new NodeKeyStore(),
+                _postgres.Store, node, flakyLedger, new AlwaysSignedLedgerCommitReader(flakyLedger), new FakeLedgerChainReader(TrustChain.Empty), new NodeKeyStore(),
                 NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult firstTick = await engine.SweepOnceAsync(cts.Token);
@@ -258,7 +258,7 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
         InviteSweepEngine engine = new(
-                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new FakeLedgerChainReader(TrustChain.Empty), new NodeKeyStore(),
                 NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
@@ -294,7 +294,7 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
         InviteSweepEngine engine = new(
-                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new FakeLedgerChainReader(TrustChain.Empty), new NodeKeyStore(),
                 NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult firstTick = await engine.SweepOnceAsync(cts.Token);
@@ -372,7 +372,7 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
         InviteSweepEngine engine = new(
-                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new FakeLedgerChainReader(TrustChain.Empty), new NodeKeyStore(),
                 NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
@@ -405,7 +405,7 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
         InviteSweepEngine engine = new(
-                _postgres.Store, node, brokenLedger, new AlwaysSignedLedgerCommitReader(brokenLedger), new NodeKeyStore(),
+                _postgres.Store, node, brokenLedger, new AlwaysSignedLedgerCommitReader(brokenLedger), new FakeLedgerChainReader(TrustChain.Empty), new NodeKeyStore(),
                 NullLogger<InviteSweepEngine>.Instance);
 
         (await engine.SweepOnceAsync(cts.Token)).InvitesSpent.Should().Be(
@@ -440,7 +440,7 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         {
             NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
             InviteSweepEngine engine = new(
-                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new FakeLedgerChainReader(TrustChain.Empty), new NodeKeyStore(),
                 NullLogger<InviteSweepEngine>.Instance);
             (await engine.SweepOnceAsync(cts.Token)).InvitesSpent.Should().Be(1);
         }
@@ -468,7 +468,7 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         {
             NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
             InviteSweepEngine engine = new(
-                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new FakeLedgerChainReader(TrustChain.Empty), new NodeKeyStore(),
                 NullLogger<InviteSweepEngine>.Instance);
             (await engine.SweepOnceAsync(cts.Token)).InvitesSpent.Should().Be(
                 0, "the invite already has its one winner — a second, later-matching candidate is never vouched too");
@@ -535,7 +535,7 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
         InviteSweepEngine engine = new(
-                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new FakeLedgerChainReader(TrustChain.Empty), new NodeKeyStore(),
                 NullLogger<InviteSweepEngine>.Instance);
         (await engine.SweepOnceAsync(cts.Token)).InvitesSpent.Should().Be(0, "an expired invite is filtered out of the outstanding query before any candidate is read");
     }
@@ -638,7 +638,7 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
         InviteSweepEngine engine = new(
-                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new FakeLedgerChainReader(TrustChain.Empty), new NodeKeyStore(),
                 NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
@@ -739,7 +739,7 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         // The minting node's own daemon sweep — same local identity as the mint phase above.
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
         InviteSweepEngine engine = new(
-                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new FakeLedgerChainReader(TrustChain.Empty), new NodeKeyStore(),
                 NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
@@ -803,7 +803,7 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
         InviteSweepEngine engine = new(
-                _postgres.Store, node, flakyLedger, new AlwaysSignedLedgerCommitReader(flakyLedger), new NodeKeyStore(),
+                _postgres.Store, node, flakyLedger, new AlwaysSignedLedgerCommitReader(flakyLedger), new FakeLedgerChainReader(TrustChain.Empty), new NodeKeyStore(),
                 NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult firstTick = await engine.SweepOnceAsync(cts.Token);
@@ -881,7 +881,7 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
         InviteSweepEngine engine = new(
-                _postgres.Store, node, brokenLedger, new AlwaysSignedLedgerCommitReader(brokenLedger), new NodeKeyStore(),
+                _postgres.Store, node, brokenLedger, new AlwaysSignedLedgerCommitReader(brokenLedger), new FakeLedgerChainReader(TrustChain.Empty), new NodeKeyStore(),
                 NullLogger<InviteSweepEngine>.Instance);
 
         (await engine.SweepOnceAsync(cts.Token)).InvitesSpent.Should().Be(0, "the member write itself never lands, however many times it is retried");
@@ -941,7 +941,7 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
         InviteSweepEngine engine = new(
-                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new NodeKeyStore(),
+                _postgres.Store, node, ledger, new AlwaysSignedLedgerCommitReader(ledger), new FakeLedgerChainReader(TrustChain.Empty), new NodeKeyStore(),
                 NullLogger<InviteSweepEngine>.Instance);
 
         InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);

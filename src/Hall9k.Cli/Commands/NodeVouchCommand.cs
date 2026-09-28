@@ -226,24 +226,28 @@ public sealed class NodeVouchCommand : Hall9kAsyncCommand<NodeVouchCommand.Setti
                 cancellationToken);
             if (outcome.Verdict == LedgerWriteVerdict.Written)
             {
-                // Written unconditionally, whoever is doing the vouching (idea 6be68ee2): a
-                // successor record only counts on read when it is signed by a key that is already
-                // one of this root's own live keys, so writing it here regardless costs nothing when
-                // this node is merely an ordinary fleet member, and is exactly what lets the root
-                // itself vouch a successor into existence without a separate command. Best-effort:
+                // Only when this vouching node's own key is itself currently a live root key of
+                // `root` (idea 6be68ee2): a successor record only ever counts on read when it is
+                // signed by one of the root's own live keys, so an ordinary fleet member's own vouch
+                // has nothing to write here — writing it anyway landed a permanent, unresolvable
+                // "unverifiable successor" line in h9k status for every vouch an ordinary node ever
+                // performed (independent pre-PR review, cycle 1, both lenses, medium). Best-effort:
                 // the vouch itself already landed, so a failure here is reported and swallowed rather
                 // than turning an already-successful vouch into a reported failure.
-                try
+                if (chain.OwnerChains.TryGetValue(root, out TrustedOwner? owner) && owner.IsLiveRootKey(myFingerprint))
                 {
-                    await SuccessionLedgerWriter.WriteSuccessorAsync(
-                        ledger, repositoryPath, root, targetNodeId, targetPublicKey, now, committer, signingKey, cancellationToken);
-                }
-                catch (Exception exception)
-                    when (exception is LedgerPushRejectedException or InvalidOperationException or DomainConflictException)
-                {
-                    AnsiConsole.MarkupLine(
-                        $"[yellow]Vouched node {targetNodeId}, but could not also write its successor record in "
-                        + $"'{repositoryPath.EscapeMarkup()}' ({exception.Message.EscapeMarkup()}).[/]");
+                    try
+                    {
+                        await SuccessionLedgerWriter.WriteSuccessorAsync(
+                            ledger, repositoryPath, root, targetNodeId, targetPublicKey, now, committer, signingKey, cancellationToken);
+                    }
+                    catch (Exception exception)
+                        when (exception is LedgerPushRejectedException or InvalidOperationException or DomainConflictException)
+                    {
+                        AnsiConsole.MarkupLine(
+                            $"[yellow]Vouched node {targetNodeId}, but could not also write its successor record in "
+                            + $"'{repositoryPath.EscapeMarkup()}' ({exception.Message.EscapeMarkup()}).[/]");
+                    }
                 }
 
                 return targetFingerprint;

@@ -42,13 +42,17 @@ public sealed record InviteSweepResult(int InvitesSpent);
 /// this sweep's own outstanding set until it expires: it keeps being scanned for any OTHER candidate
 /// whose proof also matches (a second holder of the identical leaked secret, racing the first inside
 /// one sweep interval), and every such loser is told, once, via a node-addressed note — see
-/// <see cref="NotifySpentInviteLosersAsync"/>. Needs no <see cref="ILedgerChainReader"/> at all: HMAC
-/// possession of the secret is the whole proof, prior to and independent of any chain trust — the
-/// vouch this sweep writes is what BEGINS that trust, not something checked against it first.
+/// <see cref="NotifySpentInviteLosersAsync"/>. The vouch and slot checks below need no
+/// <see cref="ILedgerChainReader"/> at all: HMAC possession of the secret is the whole proof, prior
+/// to and independent of any chain trust — the vouch this sweep writes is what BEGINS that trust,
+/// not something checked against it first. The successor record a node-of-owner claim also writes
+/// is the one exception (idea 6be68ee2): whether THAT counts on read depends on whether this
+/// sweep's own minting node is currently a live root key, so it is the one place this class reads
+/// the chain at all.
 /// </summary>
 public sealed class InviteSweepEngine(
-    IDocumentStore store, NodeContext node, ILedger ledger, ILedgerCommitReader commitReader, NodeKeyStore keyStore,
-    ILogger<InviteSweepEngine> logger)
+    IDocumentStore store, NodeContext node, ILedger ledger, ILedgerCommitReader commitReader,
+    ILedgerChainReader chainReader, NodeKeyStore keyStore, ILogger<InviteSweepEngine> logger)
 {
     private const string NodesRefPrefix = "refs/hall9k/ledger/nodes/";
     private const string MembersRefName = "refs/hall9k/ledger/members";
@@ -113,7 +117,7 @@ public sealed class InviteSweepEngine(
                     continue;
                 }
 
-                if (await TryClaimAsync(invite, signingKey, projectCandidates, now, cancellationToken))
+                if (await TryClaimAsync(invite, signingKey, key.Fingerprint, projectCandidates, now, cancellationToken))
                 {
                     spent++;
                 }
@@ -213,8 +217,8 @@ public sealed class InviteSweepEngine(
     /// conformance lens, low).
     /// </summary>
     private async Task<bool> TryClaimAsync(
-        InviteDetails invite, LedgerSigningKey signingKey, Dictionary<string, IReadOnlyList<CandidateNode>> projectCandidates,
-        DateTimeOffset now, CancellationToken cancellationToken)
+        InviteDetails invite, LedgerSigningKey signingKey, string myFingerprint,
+        Dictionary<string, IReadOnlyList<CandidateNode>> projectCandidates, DateTimeOffset now, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
 
@@ -383,23 +387,33 @@ public sealed class InviteSweepEngine(
                         project.RepositoryPath, aggregate.MinterOwnerFingerprint, candidate.NodeId,
                         candidate.PublicKeyLine, candidate.KeyFingerprint, issuedAt, committer, signingKey, cancellationToken);
 
-                    // Written unconditionally, whoever holds the minting node's own key (idea
-                    // 6be68ee2): a successor record only counts on read when it is signed by a key
-                    // that is already one of this root's own live keys. Best-effort — the vouch
-                    // itself already landed above — so a failure here is logged and swallowed rather
-                    // than blocking this invite's own spend.
-                    try
+                    // Only when this sweep's own minting node key is itself currently a live root
+                    // key of the owner it minted for (idea 6be68ee2): a successor record only ever
+                    // counts on read when it is signed by one of the root's own live keys, so an
+                    // ordinary fleet node's own invite has nothing to write here — writing it anyway
+                    // landed a permanent, unresolvable "unverifiable successor" line in h9k status
+                    // for every node-of-owner invite an ordinary node ever minted (independent pre-PR
+                    // review, cycle 1, both lenses, medium — the identical gate NodeVouchCommand's own
+                    // vouch flow already applies). Best-effort — the vouch itself already landed
+                    // above — so a failure here is logged and swallowed rather than blocking this
+                    // invite's own spend.
+                    TrustChain chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+                    if (chain.OwnerChains.TryGetValue(aggregate.MinterOwnerFingerprint, out TrustedOwner? mintingOwner)
+                        && mintingOwner.IsLiveRootKey(myFingerprint))
                     {
-                        await SuccessionLedgerWriter.WriteSuccessorAsync(
-                            ledger, project.RepositoryPath, aggregate.MinterOwnerFingerprint, candidate.NodeId, candidate.PublicKeyLine,
-                            issuedAt, committer, signingKey, cancellationToken);
-                    }
-                    catch (Exception exception)
-                        when (exception is LedgerPushRejectedException or InvalidOperationException or DomainConflictException)
-                    {
-                        logger.LogWarning(
-                            exception, "Invite {InviteId} vouched node {NodeId} but could not also write its successor "
-                            + "record in project {ProjectId}; will retry next sweep", aggregate.Id, candidate.NodeId, project.Id);
+                        try
+                        {
+                            await SuccessionLedgerWriter.WriteSuccessorAsync(
+                                ledger, project.RepositoryPath, aggregate.MinterOwnerFingerprint, candidate.NodeId, candidate.PublicKeyLine,
+                                issuedAt, committer, signingKey, cancellationToken);
+                        }
+                        catch (Exception exception)
+                            when (exception is LedgerPushRejectedException or InvalidOperationException or DomainConflictException)
+                        {
+                            logger.LogWarning(
+                                exception, "Invite {InviteId} vouched node {NodeId} but could not also write its successor "
+                                + "record in project {ProjectId}; will retry next sweep", aggregate.Id, candidate.NodeId, project.Id);
+                        }
                     }
                 }
                 else
