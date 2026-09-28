@@ -495,13 +495,23 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         // gated the identical strict way (signed by one of the CURRENT iteration's own guessed live
         // root keys) — there is no broader-rule pass anywhere in this method any more. Each iteration
         // either leaves the root-key chain exactly as the previous one found it (a fixed point) or
-        // resolves one more link of it for good: a rotation's own validity depends only on commits
-        // signed by keys already ranked strictly above it, so once a link is resolved from a given
-        // iteration's own root-key guess, a later, larger guess can only ever confirm or correctly
-        // retract it based on genuinely root-signed evidence, never on an unauthorized signer's own
-        // say-so — so the loop converges in at most as many iterations as the chain has links, capped
-        // here at the commit count purely as a defensive bound the chain's own rank structure can
-        // never actually reach.
+        // resolves one more link of it for good — for the ordinary case a legitimate chain's own
+        // commands ever produce. A hand-crafted history a compromised node pushes directly can still
+        // make the sequence OSCILLATE rather than settle: a key that becomes live on one iteration
+        // can authorize a revocation that lands earlier than the very successor record that made it
+        // live, which un-authorizes that successor record next iteration, which makes the key not
+        // live again, which un-authorizes the revocation, which re-authorizes the successor record —
+        // repeating forever rather than converging, with whichever state the loop happened to be on
+        // when it hit the `iterations > allCommits.Count` cap below becoming the answer purely
+        // because of allCommits.Count's own parity (independent pre-PR review, cycle 4, adversarial
+        // lens, medium). `seenRootKeySets` below detects the cycle directly — a candidate this loop
+        // has already produced once before — rather than waiting for the cap, and resolves it
+        // deterministically: the SMALLEST root-key set any state in the cycle ever held wins, tied
+        // broken by fingerprint so the choice never depends on iteration order. Smaller, never
+        // larger, because granting a disputed key root trust is the failure mode this task exists to
+        // prevent; a key this ambiguous simply never earns it, and the operator can resolve the
+        // ambiguity another way (a fresh, unambiguous rotation or revoked-successor record) if the
+        // promotion was genuine.
         IReadOnlyList<LiveRootKey> rootKeys = [new LiveRootKey(publicKeyLine, root, null)];
         IReadOnlyList<string> successorNodeIds = [];
         List<UnverifiedLedgerWrite> successionUnverified = [];
@@ -513,6 +523,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         Dictionary<string, int> revokedAtCommitIndex;
         int iterations = 0;
         bool converged;
+        Dictionary<string, IReadOnlyList<LiveRootKey>> seenRootKeySets = [];
         while (true)
         {
             IReadOnlyList<string> liveRootKeyLines = [.. rootKeys.Select(key => key.PublicKeyLine)];
@@ -533,22 +544,40 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             rootKeys = candidateRootKeys;
             iterations++;
 
-            if (converged || iterations > allCommits.Count)
+            if (converged)
+            {
+                break;
+            }
+
+            string signature = RootKeySetSignature(rootKeys);
+            if (seenRootKeySets.ContainsKey(signature))
+            {
+                rootKeys = seenRootKeySets.Values
+                    .Append(rootKeys)
+                    .OrderBy(set => set.Count)
+                    .ThenBy(RootKeySetSignature, StringComparer.Ordinal)
+                    .First();
+                break;
+            }
+
+            seenRootKeySets[signature] = rootKeys;
+
+            if (iterations > allCommits.Count)
             {
                 break;
             }
         }
 
-        // Defensive only — the chain's own rank structure means this loop converges in at most as
-        // many iterations as the chain has links, so this never actually fires. But `nodes` above
-        // was replayed against the PREVIOUS iteration's rootKeys, one step behind the final
-        // `rootKeys` reassigned just above whenever the cap, not convergence, is what ended the
-        // loop: publishing that pairing as-is would let `TrustedOwner.RootKeys` and
+        // For a legitimate chain, defensive only: the chain's own rank structure means the loop
+        // converges in at most as many iterations as the chain has links, so this never fires there.
+        // It DOES fire on the cycle-detected and cap-reached paths above — both leave `nodes` above
+        // replayed against a PREVIOUS iteration's rootKeys, one step behind the final `rootKeys`
+        // resolved just above: publishing that pairing as-is would let `TrustedOwner.RootKeys` and
         // `TrustedOwner.Nodes`/`Unverified` each reflect a different phase of an unresolved
         // computation, internally inconsistent in a way no caller could detect from either field
         // alone (independent pre-PR review, cycle 2, adversarial lens, high). One extra replay
         // against the actual final `rootKeys` guarantees whatever this method returns is at least
-        // self-consistent, even on the cap path this comment already says should be unreachable.
+        // self-consistent on every path, converged or not.
         if (!converged)
         {
             IReadOnlyList<string> finalRootKeyLines = [.. rootKeys.Select(key => key.PublicKeyLine)];
@@ -786,6 +815,13 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
 
         return (nodes, everEnrolledNodes, revokedNodeIds, establishedByCarry, unverified, revokedAtCommitIndex);
     }
+
+    /// <summary>The order-independent identity of a candidate root-key set, for the fixed-point
+    /// loop's own cycle detection in <see cref="ComputeOwnerChainAsync"/>: two sets holding the
+    /// identical fingerprints always produce the identical signature, whatever order either list
+    /// happens to enumerate them in.</summary>
+    private static string RootKeySetSignature(IReadOnlyList<LiveRootKey> rootKeys) =>
+        string.Join('|', rootKeys.Select(key => key.Fingerprint).OrderBy(fingerprint => fingerprint, StringComparer.Ordinal));
 
     /// <summary>Whether <paramref name="commit"/> is signed by any one of <paramref name="candidateKeys"/>.</summary>
     private async Task<bool> IsSignedByAnyAsync(

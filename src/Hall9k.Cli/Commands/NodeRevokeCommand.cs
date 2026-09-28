@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Globalization;
+using System.Linq;
 using System.Text;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Identity;
@@ -216,6 +217,21 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
                 + $"key for {root}{RootNodeDescription.Of(chain, root)}.");
         }
 
+        // Whether the target currently holds LIVE ROOT KEY status via a validated rotation — never
+        // merely an ordinary fleet node. The order-aware carve-out ComputeSuccessionAsync applies to
+        // a rotation record (independent pre-PR review, cycle 4, adversarial lens, medium) means an
+        // ordinary owners/<root>/revoked/<node-id>.yaml write like the one below no longer strips a
+        // rotated-in node's own root-key status by itself, on purpose — that is what the paired
+        // revoked-successor write just below actually does, checked as "signed by a key ranked
+        // above the target," which this node's own confirmed-live-root-key gate above always
+        // satisfies. So when the target holds that status, this method's own success can no longer
+        // rest on the ordinary revoke landing alone: the paired write failing must fail the whole
+        // project rather than merely warn, or the target silently keeps a live root key — able to
+        // revoke its own peers and rewrite membership — with nothing in `h9k status` ever saying so.
+        bool targetHoldsRootKeyStatus = chain.OwnerChains.TryGetValue(root, out TrustedOwner? ownerChain)
+            && ownerChain.Nodes.FirstOrDefault(node => node.NodeId == targetNodeId.ToString()) is { } targetNode
+            && ownerChain.IsLiveRootKey(targetNode.Fingerprint);
+
         string refName = $"refs/hall9k/ledger/owners/{root}";
         string path = $"owners/{root}/revoked/{targetNodeId}.yaml";
         string content = BuildYaml(("node_id", targetNodeId.ToString()), ("revoked_at", now.ToString("o", CultureInfo.InvariantCulture)));
@@ -234,8 +250,9 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
                 // revocation that lands here also revokes this node id's own successor candidacy or
                 // rotation, if it has one — a revoked-successor record only counts on read when it
                 // is signed by a root key ranked above the successor it targets, which this write
-                // always is. Best-effort, same reasoning as the vouch side: the revocation itself
-                // already landed.
+                // always is. Best-effort ONLY when the target never held root-key status in the
+                // first place, the same reasoning as the vouch side: the revocation itself already
+                // landed, and there is no root-key trust left dangling behind a swallowed exception.
                 try
                 {
                     await SuccessionLedgerWriter.WriteRevokedSuccessorAsync(
@@ -244,6 +261,15 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
                 catch (Exception exception)
                     when (exception is LedgerPushRejectedException or InvalidOperationException or DomainConflictException)
                 {
+                    if (targetHoldsRootKeyStatus)
+                    {
+                        throw new DomainConflictException(
+                            $"Revoked node {targetNodeId}'s ordinary fleet record in '{repositoryPath}', but "
+                            + $"could not also write its revoked-successor record ({exception.Message}) — this "
+                            + "node currently holds a live root key, so it still does until that record lands. "
+                            + $"Re-run h9k node revoke {targetNodeId} once fixed.");
+                    }
+
                     AnsiConsole.MarkupLine(
                         $"[yellow]Revoked node {targetNodeId}, but could not also write its revoked-successor record "
                         + $"in '{repositoryPath.EscapeMarkup()}' ({exception.Message.EscapeMarkup()}).[/]");
