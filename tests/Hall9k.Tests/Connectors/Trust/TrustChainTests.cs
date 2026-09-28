@@ -275,4 +275,54 @@ public sealed class TrustChainTests
     {
         BuildChain().NewestDeclaredAccountOf("root-fingerprint").Should().BeNull();
     }
+
+    [Fact]
+    public void ResolveRootActingNodeId_ResolvesK0sOwnRootNodeIdWhenNoRotationHasEverLanded()
+    {
+        Guid rootNodeId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+        TrustedOwner owner = new("root-fingerprint", "ssh-ed25519 AAAAroot root", [], RootNodeId: rootNodeId.ToString());
+
+        owner.ResolveRootActingNodeId().Should().Be(rootNodeId);
+    }
+
+    [Fact]
+    public void ResolveRootActingNodeId_IsNullWhenK0sOwnNodeCannotBeResolvedAndNoRotationExists()
+    {
+        TrustedOwner owner = new("root-fingerprint", "ssh-ed25519 AAAAroot root", []);
+
+        owner.ResolveRootActingNodeId().Should().BeNull(
+            "an older ledger with no RootNodeId resolved and no rotation ever landed has nobody this can name");
+    }
+
+    [Fact]
+    public void ResolveRootActingNodeId_FallsThroughToARotationsOwnNodeWhenK0sOwnCannotBeResolved()
+    {
+        Guid rotatedInNodeId = Guid.Parse("44444444-4444-4444-4444-444444444444");
+        TrustedOwner owner = new(
+            "root-fingerprint", "ssh-ed25519 AAAAroot root", [],
+            RootKeys:
+            [
+                new LiveRootKey("ssh-ed25519 AAAAroot root", "root-fingerprint", IntroducedByNodeId: null),
+                new LiveRootKey("ssh-ed25519 AAAAk1 k1", "k1-fingerprint", rotatedInNodeId.ToString()),
+            ]);
+
+        owner.ResolveRootActingNodeId().Should().Be(
+            rotatedInNodeId, "K0's own node cannot be named on this ledger, so the next-highest-ranked live key's own node is used instead");
+    }
+
+    [Fact]
+    public void ResolveRootActingNodeId_PrefersK0sOwnNodeOverARotationWhenBothResolve()
+    {
+        Guid rootNodeId = Guid.Parse("55555555-5555-5555-5555-555555555555");
+        Guid rotatedInNodeId = Guid.Parse("66666666-6666-6666-6666-666666666666");
+        TrustedOwner owner = new(
+            "root-fingerprint", "ssh-ed25519 AAAAroot root", [], RootNodeId: rootNodeId.ToString(),
+            RootKeys:
+            [
+                new LiveRootKey("ssh-ed25519 AAAAroot root", "root-fingerprint", IntroducedByNodeId: null),
+                new LiveRootKey("ssh-ed25519 AAAAk1 k1", "k1-fingerprint", rotatedInNodeId.ToString()),
+            ]);
+
+        owner.ResolveRootActingNodeId().Should().Be(rootNodeId, "K0 is always the highest-ranked live root key");
+    }
 }

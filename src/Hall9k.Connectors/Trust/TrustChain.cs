@@ -163,6 +163,34 @@ public sealed record TrustedOwner(
             }
         }
     }
+
+    /// <summary>
+    /// The node id holding this root's own highest-ranked live root key (idea 6be68ee2, companion
+    /// 1bb803e1: "addressed to the node holding the highest-ranked live root key") - the node an
+    /// owner-act request routes a root-only write to when the asking node's own key is not itself
+    /// one. Walks <see cref="RootKeys"/> in rank order (K0 first): K0's own holder is
+    /// <see cref="RootNodeId"/> (<see cref="LiveRootKey.IntroducedByNodeId"/> is always null for K0),
+    /// which can be null on an older ledger that never resolved one, and every rotation's own holder
+    /// is named directly by its own <see cref="LiveRootKey.IntroducedByNodeId"/> - never null once a
+    /// rotation has actually landed. Returns the first one that resolves to an actual node id, so a
+    /// K0 whose own node the ledger cannot name still falls through to a validated rotation's node
+    /// rather than reporting nothing when a perfectly good target exists. Null only when nothing in
+    /// this root's own live-key chain can be named at all - the caller's own cue that nobody could
+    /// ever receive the write.
+    /// </summary>
+    public Guid? ResolveRootActingNodeId()
+    {
+        foreach (LiveRootKey rootKey in RootKeys)
+        {
+            string? nodeId = rootKey.IntroducedByNodeId ?? RootNodeId;
+            if (nodeId is not null && Guid.TryParse(nodeId, out Guid parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return null;
+    }
 }
 
 /// <summary>One project member, chain-validated: the write that established or last changed this
