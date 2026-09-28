@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.Json;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
@@ -46,6 +48,19 @@ public sealed record AutoPrReviewSweepResult(
 internal sealed record MintAttempt(
     ReviewRequestOutcome Outcome, Guid? TaskId, string? Detail, ReviewRequestActor? Actor = null,
     PeerHold? Hold = null);
+
+/// <summary>
+/// <see cref="AutoPrReviewObservation.DecideMembershipGate"/>'s own answer: whether a candidate's
+/// mint proceeds exactly as it does today (<see cref="Run"/>), still mints but leaves the
+/// dispatch for a human (<see cref="Park"/>), or is not this sweep's to decide at all
+/// (<see cref="Unknown"/>) because this node has not yet computed who the project's members are.
+/// </summary>
+internal enum MembershipGateDecision
+{
+    Run,
+    Park,
+    Unknown,
+}
 
 /// <summary>
 /// The fleet peer a review request is being held for and the moment this node stops waiting for it
@@ -120,6 +135,58 @@ internal static class AutoPrReviewObservation
     }
 
     /// <summary>
+    /// Whether hall9k team membership gates this pull request's own review request or mention
+    /// before it runs unattended (security review idea 6be68ee2, finding 1): a private or
+    /// internal repository already required an owner's own grant to see it at all, so it keeps
+    /// today's collaborator behaviour; a public one does not, and GitHub's own reviewer-request
+    /// or @mention surface can be worked by anyone who can open a pull request against it. The
+    /// identical function also gates a mention follow-up's own dispatch, with the comment's
+    /// author in place of the pull request's.
+    /// <para>
+    /// <paramref name="isPrivate"/> is this sweep's own fresh <c>gh repo view --json isPrivate</c>
+    /// read — true for both PRIVATE and INTERNAL, GitHub's own reading of the field — or null
+    /// when that read failed. <paramref name="explicitSetting"/> is
+    /// <c>h9k project set --review-requires-membership</c>'s own recorded value: true for on,
+    /// false for off, null for unset (nothing recorded, or explicitly reset to <c>default</c>) —
+    /// and it always overrides the visibility read when it is not null, an explicit choice being
+    /// more specific than a computed one. A gate that ends up off needs no membership at all: a
+    /// private repository, or an explicit off, runs exactly as it does today whatever
+    /// <paramref name="memberAccountIds"/> holds.
+    /// </para>
+    /// <para>
+    /// <paramref name="memberAccountIds"/> is null when this node has not yet computed the
+    /// project's members' declared GitHub account ids at all (the first sweep after a restart, or
+    /// a chain read that has not named this owner) — genuinely unknown, not "no members declared
+    /// anything" — and answers <see cref="MembershipGateDecision.Unknown"/> rather than guessing
+    /// either way: the caller skips this candidate without recording anything and asks again next
+    /// sweep, since nothing here is the one-shot decision a mention comment id already is
+    /// (<c>ProcessMentionAsync</c> stores <see cref="ObservedReviewMention"/> once and never
+    /// revisits it). Matched against <paramref name="authorAccountId"/> by the numeric id alone,
+    /// never a login, so a renamed account still matches and a same-named impostor never does — a
+    /// Bot's own numeric id runs through the identical check and parks exactly like any other
+    /// account this project's members never declared.
+    /// </para>
+    /// </summary>
+    public static MembershipGateDecision DecideMembershipGate(
+        bool? isPrivate, bool? explicitSetting, long? authorAccountId, IReadOnlyCollection<long>? memberAccountIds)
+    {
+        bool gateOn = explicitSetting ?? isPrivate != true;
+        if (!gateOn)
+        {
+            return MembershipGateDecision.Run;
+        }
+
+        if (memberAccountIds is null)
+        {
+            return MembershipGateDecision.Unknown;
+        }
+
+        return authorAccountId is { } id && memberAccountIds.Contains(id)
+            ? MembershipGateDecision.Run
+            : MembershipGateDecision.Park;
+    }
+
+    /// <summary>
     /// The outcome to record now, given whatever was recorded before. A request this install
     /// minted a task for keeps <see cref="ReviewRequestOutcome.TaskCreated"/> when a later sweep
     /// merely rediscovers that same task through the already-covered fast path: it is the same
@@ -165,6 +232,10 @@ internal static class AutoPrReviewObservation
         {
             { } known when known == ReviewRequestOutcome.TaskCreated =>
                 $"task {task} is created and reviewing",
+            { } known when known == ReviewRequestOutcome.TaskCreatedParked =>
+                $"task {task} is created but not assigned: its author is not a declared hall9k team member "
+                + "on a repository the membership gate covers — h9k task assign is the human go "
+                + "(security review idea 6be68ee2, finding 1)",
             { } known when known == ReviewRequestOutcome.AlreadyCovered =>
                 $"task {task} already covers it; nothing new was created",
             { } known when known == ReviewRequestOutcome.HeldSettingOff =>
@@ -462,9 +533,22 @@ public sealed class AutoPrReviewEngine(
         IReadOnlyList<ReviewRequestedPullRequest> currentlyRequested =
             await reviewAssignments.ListReviewRequestedAsync(repository, login, project.RepositoryPath, cancellationToken);
 
+        // The membership gate's own two inputs (security review idea 6be68ee2, finding 1), both
+        // read once per project per sweep, never cached across ticks: a fresh
+        // gh repo view --json isPrivate, and this project's own explicit override, if any. A
+        // failed visibility read is fail-closed (null feeds the gate as "gate on") rather than
+        // reusing a stale value — the last SUCCESSFULLY observed visibility still stands in
+        // ProjectRepositoryVisibility for h9k project show, but never as this sweep's own answer.
+        bool? isPrivate = await ReadAndRecordRepositoryVisibilityAsync(project, repository, cancellationToken);
+        ReviewMembershipGateSetting membershipSetting;
+        await using (IQuerySession query = store.QuerySession())
+        {
+            membershipSetting = await ReviewMembershipGateSetting.ResolveAsync(query, project.Id, cancellationToken);
+        }
+
         DateTimeOffset cutoff = AutoPrReviewCutoff.For(project.RegisteredAt, adoptedAt);
         int created = await ObserveRequestsAsync(
-            project, setting, repository, login, cutoff, currentlyRequested, cancellationToken);
+            project, setting, repository, login, cutoff, currentlyRequested, isPrivate, membershipSetting, cancellationToken);
         int recalled = await ConcludeWithdrawnAsync(project, repository, login, currentlyRequested, cancellationToken);
         await ForgetWithdrawnObservationsAsync(repository, login, currentlyRequested, cancellationToken);
         // The second search (idea 2f079bcd, decision 1): every open pull request in this
@@ -473,8 +557,69 @@ public sealed class AutoPrReviewEngine(
         // registered project, whatever its setting says" scope, for the identical reason: the
         // needs-you row an operator has to act on is only possible if the mention was observed at
         // all, even when the project's own setting refuses to act on it.
-        created += await ObserveMentionsAsync(project, setting, repository, login, cutoff, cancellationToken);
+        created += await ObserveMentionsAsync(
+            project, setting, repository, login, cutoff, isPrivate, membershipSetting, cancellationToken);
         return (created, recalled);
+    }
+
+    /// <summary>
+    /// The membership gate's own visibility half (security review idea 6be68ee2, finding 1): a
+    /// fresh <c>gh repo view --json isPrivate</c>, once per project per sweep, no cache — GitHub's
+    /// own reading of the field, true for both PRIVATE and INTERNAL, false only for PUBLIC. Written
+    /// to <see cref="ProjectRepositoryVisibility"/> only on success, so <c>h9k project show</c>
+    /// always names the last visibility this daemon actually observed rather than erasing it on a
+    /// transient failure; the gate itself is handed null on failure regardless (fail closed — see
+    /// <see cref="AutoPrReviewObservation.DecideMembershipGate"/>), never the stale stored value,
+    /// since nothing proved the repository is still whatever it last read as.
+    /// </summary>
+    private async Task<bool?> ReadAndRecordRepositoryVisibilityAsync(
+        ProjectDetails project, string repository, CancellationToken cancellationToken)
+    {
+        ProcessResult result;
+        try
+        {
+            result = await processRunner(
+                "gh", ["repo", "view", repository, "--json", "isPrivate"], project.RepositoryPath, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogDebug(exception, "Auto-pr-review could not read {Repository}'s own visibility this tick", repository);
+            return null;
+        }
+
+        if (result.ExitCode != 0)
+        {
+            logger.LogDebug(
+                "Auto-pr-review's gh repo view --json isPrivate exited {ExitCode} for {Repository}; the "
+                + "membership gate fails closed (on) this tick", result.ExitCode, repository);
+            return null;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(result.StandardOutput);
+            if (!document.RootElement.TryGetProperty("isPrivate", out JsonElement element)
+                || (element.ValueKind != JsonValueKind.True && element.ValueKind != JsonValueKind.False))
+            {
+                return null;
+            }
+
+            bool isPrivate = element.GetBoolean();
+            await using IDocumentSession session = store.LightweightSession();
+            session.Store(new ProjectRepositoryVisibility
+            {
+                Id = project.Id,
+                IsPrivate = isPrivate,
+                ObservedAt = DateTimeOffset.UtcNow,
+            });
+            await session.SaveChangesAsync(cancellationToken);
+            return isPrivate;
+        }
+        catch (JsonException exception)
+        {
+            logger.LogDebug(exception, "Auto-pr-review could not parse {Repository}'s own visibility this tick", repository);
+            return null;
+        }
     }
 
     /// <summary>
@@ -495,7 +640,7 @@ public sealed class AutoPrReviewEngine(
     private async Task<int> ObserveRequestsAsync(
         ProjectDetails project, AutoPrReviewSetting setting, string repository, string login,
         DateTimeOffset cutoff, IReadOnlyList<ReviewRequestedPullRequest> currentlyRequested,
-        CancellationToken cancellationToken)
+        bool? isPrivate, ReviewMembershipGateSetting membershipSetting, CancellationToken cancellationToken)
     {
         int created = 0;
         foreach (ReviewRequestedPullRequest candidate in currentlyRequested)
@@ -511,9 +656,21 @@ public sealed class AutoPrReviewEngine(
                 node.NodeId, project.Id, repository, candidate.Number, login);
             ObservedReviewRequest? recorded = await session.LoadAsync<ObservedReviewRequest>(id, cancellationToken);
 
-            MintAttempt attempt = await DecideAsync(
-                session, project, setting, repository, login, cutoff, candidate, cancellationToken);
-            if (attempt.Outcome == ReviewRequestOutcome.TaskCreated)
+            MintAttempt? attempt = await DecideAsync(
+                session, project, setting, repository, login, cutoff, candidate, isPrivate, membershipSetting,
+                cancellationToken);
+            if (attempt is null)
+            {
+                // Membership unknown (security review idea 6be68ee2, finding 1): this node has not
+                // yet computed the project's declared member accounts at all — the first sweep
+                // after a restart. Never mint-and-park on a guess: skip this candidate entirely,
+                // recording nothing, so the very next sweep decides fresh once the message sweep's
+                // own chain read has caught up (unlike a mention's one-shot comment id, a standing
+                // review request is safe to reconsider every tick).
+                continue;
+            }
+
+            if (attempt.Outcome == ReviewRequestOutcome.TaskCreated || attempt.Outcome == ReviewRequestOutcome.TaskCreatedParked)
             {
                 created++;
             }
@@ -525,10 +682,10 @@ public sealed class AutoPrReviewEngine(
         return created;
     }
 
-    private async Task<MintAttempt> DecideAsync(
+    private async Task<MintAttempt?> DecideAsync(
         IDocumentSession session, ProjectDetails project, AutoPrReviewSetting setting, string repository,
         string login, DateTimeOffset cutoff, ReviewRequestedPullRequest candidate,
-        CancellationToken cancellationToken)
+        bool? isPrivate, ReviewMembershipGateSetting membershipSetting, CancellationToken cancellationToken)
     {
         // A cheap fast path in front of the gh pr view subprocess the import below always pays
         // (independent pre-PR review, cycle 1, conformance lens, low): the overwhelmingly common
@@ -596,19 +753,35 @@ public sealed class AutoPrReviewEngine(
             return new MintAttempt(ReviewRequestOutcome.HeldSettingOff, null, null, actor);
         }
 
+        // The membership gate (security review idea 6be68ee2, finding 1): matched on the pull
+        // request author's own numeric id, read at zero new calls off the identical timeline query
+        // actor above already paid for — never the login, so a renamed account still matches.
+        // Unknown (this node has not yet computed the project's declared member accounts at all)
+        // answers null here so ObserveRequestsAsync skips the candidate without recording anything,
+        // rather than mint-and-park on a guess.
+        MembershipGateDecision gate = AutoPrReviewObservation.DecideMembershipGate(
+            isPrivate, membershipSetting.ExplicitValue, actor.Author?.AccountId,
+            enrolledNodes?.TryGet(project.Id)?.MemberAccountIds);
+        if (gate == MembershipGateDecision.Unknown)
+        {
+            return null;
+        }
+
         // After the four questions above and before CreateOneAsync, so the gh pr view import is
         // never paid while held. Speed (First, Now, Normal) is decided inside CreateOneAsync and
         // stays blind to this. The fleet is the message sweep's own last chain read, never a fetch
         // here.
         if (AutoPrReviewObservation.DecideMintHold(
-            node.NodeId, enrolledNodes?.TryGet(project.Id), requestedAt, DateTimeOffset.UtcNow, MintHold) is { } peerHold)
+            node.NodeId, enrolledNodes?.TryGet(project.Id)?.FleetNodeIds, requestedAt, DateTimeOffset.UtcNow, MintHold) is { } peerHold)
         {
             return new MintAttempt(ReviewRequestOutcome.HeldForPeer, null, peerHold.Describe(), actor, peerHold);
         }
 
         try
         {
-            return await CreateOneAsync(session, project, setting, repository, candidate, login, actor, cancellationToken);
+            return await CreateOneAsync(
+                session, project, setting, repository, candidate, login, actor,
+                parked: gate == MembershipGateDecision.Park, isPrivate, cancellationToken);
         }
         catch (DomainException exception)
         {
@@ -792,7 +965,7 @@ public sealed class AutoPrReviewEngine(
     private async Task<MintAttempt> CreateOneAsync(
         IDocumentSession session, ProjectDetails project, AutoPrReviewSetting setting, string repository,
         ReviewRequestedPullRequest candidate, string login, ReviewRequestActor actor,
-        CancellationToken cancellationToken)
+        bool parked, bool? isPrivate, CancellationToken cancellationToken)
     {
         // processRunner threaded through explicitly (independent pre-PR review, cycle 1,
         // adversarial lens): ImporterAsync's own default construction ignores whatever runner it
@@ -862,9 +1035,12 @@ public sealed class AutoPrReviewEngine(
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
-        string objective = RelayedText.WithoutClosingKeywords(RelayedText.OneLine(imported.Title)).Trim() is { Length: > 0 } seed
-            ? seed
-            : $"Review pull request {imported.Reference.Key}";
+        // Platform-authored, never the pull request's own title (security review idea 6be68ee2,
+        // finding 1): the objective is the one field an auto-mint prints everywhere — h9k status,
+        // h9k task list, every needs-you row — with no fence and no caveat around it, unlike the
+        // body WorkItemContext.Compose already quotes. A stranger's title landing there verbatim
+        // was this platform's widest unfenced surface for text a pull request's own author wrote.
+        string objective = $"Review pull request {imported.Reference.Key}";
 
         string provenance = actor.Login is { } assigner
             ? $"GitHub reviewer assignment observed: {assigner} requested {login} as a reviewer"
@@ -941,6 +1117,38 @@ public sealed class AutoPrReviewEngine(
             task, TaskDependencyGraph.Empty, now, node.OwnerId, project.BacklogPolicy);
         task.Apply(published);
         events.Add(published);
+
+        // The membership gate's own park (security review idea 6be68ee2, finding 1): Add and
+        // Publish land exactly as they do for a member's request, but Assign never runs — an
+        // unassigned task never dispatches (no worktree, branch, or session exists), so this is
+        // the pre-checkout park and h9k task assign is the human go. Speed is meaningless to a
+        // task nothing will claim, so the speed handling below is skipped outright, not merely
+        // downgraded.
+        if (parked)
+        {
+            PullRequestGateParkFacts parkFacts = await ReadGateParkFactsAsync(
+                repository, candidate.Number, project.RepositoryPath, cancellationToken);
+            EnrolledFleetSnapshot? fleet = enrolledNodes?.TryGet(project.Id);
+            PullRequestReviewGateParked gateParked = new(
+                taskId, actor.Author?.Login, actor.Author?.AccountId, actor.Author?.Association,
+                parkFacts.HeadOwner, parkFacts.IsCrossRepository, isPrivate, parkFacts.ChangedFileCount,
+                fleet?.MemberAccountIds is { } memberIds ? [.. memberIds] : [],
+                fleet?.MembersWithoutDeclaredAccount is { } withoutDeclaration ? [.. withoutDeclaration] : [], now);
+            task.Apply(gateParked);
+            events.Add(gateParked);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. events]);
+            await session.SaveChangesAsync(cancellationToken);
+
+            logger.LogDebug(
+                "Auto-created pr-review task {TaskId} for {Repository}#{Number}, parked by the membership "
+                + "gate (security review idea 6be68ee2, finding 1) — published but unassigned",
+                taskId, repository, candidate.Number);
+
+            return new MintAttempt(
+                ReviewRequestOutcome.TaskCreatedParked, taskId,
+                "published but unassigned by the membership gate — h9k task assign to run it", actor);
+        }
 
         string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
             session, node.OwnerId, cancellationToken);
@@ -1048,6 +1256,74 @@ public sealed class AutoPrReviewEngine(
         return new MintAttempt(
             ReviewRequestOutcome.TaskCreated, taskId,
             deferral ?? (launchImmediately ? "started immediately, ceiling-exempt" : null), actor);
+    }
+
+    /// <summary>
+    /// The deterministic pull request facts a parked card names, beyond the author (security
+    /// review idea 6be68ee2, finding 1): whether the head is a fork, the head's own owner, and the
+    /// changed-file count — never a model session's own summary (tools before tokens). Read only
+    /// when a candidate is actually being parked, never on the ordinary member-request path, since
+    /// no other reader of this sweep needs them: one small, targeted <c>gh pr view</c> beside the
+    /// import <see cref="CreateOneAsync"/> already pays for every mint, member and non-member
+    /// alike. Best-effort — a failed or unreadable read leaves every field null/false rather than
+    /// failing the park itself, since the park's own go (<c>h9k task assign</c>) does not depend on
+    /// any of them.
+    /// </summary>
+    private sealed record PullRequestGateParkFacts(string? HeadOwner, bool IsCrossRepository, int? ChangedFileCount)
+    {
+        public static readonly PullRequestGateParkFacts Unread = new(null, false, null);
+    }
+
+    private async Task<PullRequestGateParkFacts> ReadGateParkFactsAsync(
+        string repository, int number, string workingDirectory, CancellationToken cancellationToken)
+    {
+        ProcessResult result;
+        try
+        {
+            result = await processRunner(
+                "gh",
+                ["pr", "view", number.ToString(CultureInfo.InvariantCulture), "--repo", repository,
+                    "--json", "headRepositoryOwner,isCrossRepository,files"],
+                workingDirectory, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogDebug(
+                exception, "Auto-pr-review could not read the fork/head/changed-file facts for a parked "
+                + "{Repository}#{Number}; the card names what could be observed", repository, number);
+            return PullRequestGateParkFacts.Unread;
+        }
+
+        if (result.ExitCode != 0)
+        {
+            return PullRequestGateParkFacts.Unread;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(result.StandardOutput);
+            JsonElement root = document.RootElement;
+            string? headOwner = root.TryGetProperty("headRepositoryOwner", out JsonElement ownerElement)
+                && ownerElement.ValueKind == JsonValueKind.Object
+                && ownerElement.TryGetProperty("login", out JsonElement loginElement)
+                && loginElement.ValueKind == JsonValueKind.String
+                    ? loginElement.GetString()
+                    : null;
+            bool isCrossRepository = root.TryGetProperty("isCrossRepository", out JsonElement crossElement)
+                && crossElement.ValueKind == JsonValueKind.True;
+            int? changedFileCount = root.TryGetProperty("files", out JsonElement filesElement)
+                && filesElement.ValueKind == JsonValueKind.Array
+                    ? filesElement.GetArrayLength()
+                    : null;
+            return new PullRequestGateParkFacts(headOwner, isCrossRepository, changedFileCount);
+        }
+        catch (JsonException exception)
+        {
+            logger.LogDebug(
+                exception, "Auto-pr-review could not parse the fork/head/changed-file facts for a parked "
+                + "{Repository}#{Number}; the card names what could be observed", repository, number);
+            return PullRequestGateParkFacts.Unread;
+        }
     }
 
     /// <summary>
@@ -1325,7 +1601,8 @@ public sealed class AutoPrReviewEngine(
     /// </summary>
     private async Task<int> ObserveMentionsAsync(
         ProjectDetails project, AutoPrReviewSetting setting, string repository, string login,
-        DateTimeOffset cutoff, CancellationToken cancellationToken)
+        DateTimeOffset cutoff, bool? isPrivate, ReviewMembershipGateSetting membershipSetting,
+        CancellationToken cancellationToken)
     {
         IReadOnlyList<ReviewRequestedPullRequest> mentioned =
             await reviewAssignments.ListMentionedAsync(repository, login, project.RepositoryPath, cancellationToken);
@@ -1335,10 +1612,10 @@ public sealed class AutoPrReviewEngine(
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            IReadOnlyList<PullRequestMentionComment> comments;
+            PullRequestMentionSearch search;
             try
             {
-                comments = await reviewAssignments.FindMentionCommentsAsync(
+                search = await reviewAssignments.FindMentionCommentsAsync(
                     OwnerFrom(repository), NameFrom(repository), candidate.Number, login, project.RepositoryPath,
                     cancellationToken);
             }
@@ -1359,12 +1636,14 @@ public sealed class AutoPrReviewEngine(
                 continue;
             }
 
-            foreach (PullRequestMentionComment comment in comments)
+            foreach (PullRequestMentionComment comment in search.Comments)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
-                    if (await ProcessMentionAsync(project, setting, repository, login, cutoff, candidate, comment, cancellationToken))
+                    if (await ProcessMentionAsync(
+                        project, setting, repository, login, cutoff, candidate, comment, search.Author,
+                        isPrivate, membershipSetting, cancellationToken))
                     {
                         created++;
                     }
@@ -1400,6 +1679,7 @@ public sealed class AutoPrReviewEngine(
     private async Task<bool> ProcessMentionAsync(
         ProjectDetails project, AutoPrReviewSetting setting, string repository, string login,
         DateTimeOffset cutoff, ReviewRequestedPullRequest candidate, PullRequestMentionComment comment,
+        PullRequestAuthor? pullRequestAuthor, bool? isPrivate, ReviewMembershipGateSetting membershipSetting,
         CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
@@ -1410,8 +1690,17 @@ public sealed class AutoPrReviewEngine(
             return false;
         }
 
-        (ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail) decision = await DecideMentionAsync(
-            session, project, setting, repository, login, cutoff, candidate, comment, cancellationToken);
+        (ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)? decided = await DecideMentionAsync(
+            session, project, setting, repository, login, cutoff, candidate, comment, pullRequestAuthor, isPrivate,
+            membershipSetting, cancellationToken);
+        if (decided is not { } decision)
+        {
+            // Membership unknown (security review idea 6be68ee2, finding 1): nothing is recorded at
+            // all, so the identical comment id is still fresh next sweep — the one shape that keeps
+            // "never mint-and-park on a guess" true even though a mention's own dedup is otherwise
+            // permanent.
+            return false;
+        }
 
         ObservedReviewMention observed = new()
         {
@@ -1442,7 +1731,8 @@ public sealed class AutoPrReviewEngine(
             repository, candidate.Number, comment.CommentId, comment.AuthorLogin, project.Name,
             DescribeMentionOutcome(decision.Outcome, decision.Detail, decision.TaskId));
 
-        return decision.Outcome == ReviewMentionOutcome.TaskCreated;
+        return decision.Outcome == ReviewMentionOutcome.TaskCreated
+            || decision.Outcome == ReviewMentionOutcome.TaskCreatedParked;
     }
 
     private static string DescribeMentionOutcome(ReviewMentionOutcome outcome, string? detail, Guid? taskId)
@@ -1452,6 +1742,10 @@ public sealed class AutoPrReviewEngine(
         {
             { } known when known == ReviewMentionOutcome.TaskCreated =>
                 $"task {task} is created and reviewing",
+            { } known when known == ReviewMentionOutcome.TaskCreatedParked =>
+                $"task {task} is created but not assigned: its author is not a declared hall9k team member "
+                + "on a repository the membership gate covers — h9k task assign is the human go "
+                + "(security review idea 6be68ee2, finding 1)",
             { } known when known == ReviewMentionOutcome.Attached =>
                 $"attached to task {task}",
             { } known when known == ReviewMentionOutcome.AttachedNoFollowUp =>
@@ -1486,9 +1780,10 @@ public sealed class AutoPrReviewEngine(
     /// <item>Mint.</item>
     /// </list>
     /// </summary>
-    private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)> DecideMentionAsync(
+    private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)?> DecideMentionAsync(
         IDocumentSession session, ProjectDetails project, AutoPrReviewSetting setting, string repository,
         string login, DateTimeOffset cutoff, ReviewRequestedPullRequest candidate, PullRequestMentionComment comment,
+        PullRequestAuthor? pullRequestAuthor, bool? isPrivate, ReviewMembershipGateSetting membershipSetting,
         CancellationToken cancellationToken)
     {
         // The identical guessed-reference fast path DecideAsync's own comment explains at length:
@@ -1507,7 +1802,9 @@ public sealed class AutoPrReviewEngine(
         bool pastCutoff = AutoPrReviewCutoff.StartsOnItsOwn(comment.CreatedAt, cutoff);
         if (likelyCovering is not null)
         {
-            return await AttachMentionAsync(session, likelyCovering, setting, pastCutoff, candidate, comment, cancellationToken);
+            return await AttachMentionAsync(
+                session, likelyCovering, setting, pastCutoff, candidate, comment, isPrivate, membershipSetting,
+                cancellationToken);
         }
 
         if (!pastCutoff)
@@ -1520,10 +1817,26 @@ public sealed class AutoPrReviewEngine(
             return (ReviewMentionOutcome.HeldSettingOff, null, null);
         }
 
+        // The membership gate (security review idea 6be68ee2, finding 1), applied to the pull
+        // request's own author for a fresh mint — the identical pure function DecideAsync's own
+        // review-requested path uses. Unknown answers null here so ProcessMentionAsync records
+        // nothing at all for this comment and reconsiders it on the next sweep: a mention comment
+        // id is otherwise decided once (ObservedReviewMention's own permanent dedup), so mint-and-
+        // park on a guess would be irreversible in a way the review-request side's retry never is.
+        MembershipGateDecision gate = AutoPrReviewObservation.DecideMembershipGate(
+            isPrivate, membershipSetting.ExplicitValue, pullRequestAuthor?.AccountId,
+            enrolledNodes?.TryGet(project.Id)?.MemberAccountIds);
+        if (gate == MembershipGateDecision.Unknown)
+        {
+            return null;
+        }
+
         try
         {
             return await CreateFromMentionAsync(
-                session, project, setting, repository, candidate, login, comment, pastCutoff, cancellationToken);
+                session, project, setting, repository, candidate, login, comment, pastCutoff,
+                parked: gate == MembershipGateDecision.Park, isPrivate, pullRequestAuthor, membershipSetting,
+                cancellationToken);
         }
         catch (DomainException exception)
         {
@@ -1563,7 +1876,8 @@ public sealed class AutoPrReviewEngine(
     /// </summary>
     private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)> AttachMentionAsync(
         IDocumentSession session, TaskListItem existing, AutoPrReviewSetting setting, bool pastCutoff,
-        ReviewRequestedPullRequest candidate, PullRequestMentionComment comment, CancellationToken cancellationToken)
+        ReviewRequestedPullRequest candidate, PullRequestMentionComment comment, bool? isPrivate,
+        ReviewMembershipGateSetting membershipSetting, CancellationToken cancellationToken)
     {
         StreamState? fence = await session.Events.FetchStreamStateAsync(existing.Id, cancellationToken);
         if (fence is null)
@@ -1611,6 +1925,27 @@ public sealed class AutoPrReviewEngine(
             return (
                 ReviewMentionOutcome.AttachedNoFollowUp, existing.Id,
                 "recorded; auto-pr-review is off here, so no follow-up was dispatched — yours to take by hand");
+        }
+
+        // The membership gate, applied to the COMMENT's own author rather than the pull request's
+        // (security review idea 6be68ee2, finding 1) — the identical pure function, since a
+        // stranger's own comment on a member's pull request is exactly as unattended-unsafe as a
+        // stranger's own pull request is. The attach above already happened unconditionally: only
+        // the dispatch is gated here. Unknown membership answers the same as a non-member rather
+        // than skipping — unlike a fresh mint, this observation is already permanently recorded
+        // (ObservedReviewMention's own one-shot dedup), so there is nothing left to retry later;
+        // the safe answer is not to dispatch on a guess, never to dispatch on one.
+        if (AutoPrReviewObservation.DecideMembershipGate(
+            isPrivate, membershipSetting.ExplicitValue, comment.AuthorAccountId,
+            enrolledNodes?.TryGet(existing.ProjectId)?.MemberAccountIds) != MembershipGateDecision.Run)
+        {
+            session.Events.Append(existing.Id, expectedVersion: fence.Version + 1, observed);
+            await session.SaveChangesAsync(cancellationToken);
+            return (
+                ReviewMentionOutcome.AttachedNoFollowUp, existing.Id,
+                "recorded; the comment's own author is not a declared hall9k team member on a repository "
+                + "the membership gate covers, so no follow-up was dispatched — yours to take by hand "
+                + "(security review idea 6be68ee2, finding 1)");
         }
 
         // Unconditional on setting.Speed, unlike a mint's own Now-only check: a follow-up has no
@@ -1712,6 +2047,7 @@ public sealed class AutoPrReviewEngine(
     private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)> CreateFromMentionAsync(
         IDocumentSession session, ProjectDetails project, AutoPrReviewSetting setting, string repository,
         ReviewRequestedPullRequest candidate, string login, PullRequestMentionComment comment, bool pastCutoff,
+        bool parked, bool? isPrivate, PullRequestAuthor? pullRequestAuthor, ReviewMembershipGateSetting membershipSetting,
         CancellationToken cancellationToken)
     {
         WorkItemImporter importer = await WorkItemConnections.ImporterAsync(session, cancellationToken, processRunner: processRunner);
@@ -1735,13 +2071,15 @@ public sealed class AutoPrReviewEngine(
             // CreateOneAsync's own identical canonical re-check follows. pastCutoff is already
             // known true and setting.IsOn already known on here — DecideMentionAsync only reaches
             // this method after both gates passed.
-            return await AttachMentionAsync(session, existing, setting, pastCutoff, candidate, comment, cancellationToken);
+            return await AttachMentionAsync(
+                session, existing, setting, pastCutoff, candidate, comment, isPrivate, membershipSetting,
+                cancellationToken);
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
-        string objective = RelayedText.WithoutClosingKeywords(RelayedText.OneLine(imported.Title)).Trim() is { Length: > 0 } seed
-            ? seed
-            : $"Review pull request {imported.Reference.Key}";
+        // Platform-authored, never the pull request's own title — see CreateOneAsync's identical
+        // comment (security review idea 6be68ee2, finding 1).
+        string objective = $"Review pull request {imported.Reference.Key}";
 
         string provenance = $"GitHub mention observed: {comment.AuthorLogin} tagged {login} in a comment on "
             + $"this pull request at {comment.CreatedAt:yyyy-MM-dd HH:mm:ss}Z.";
@@ -1775,6 +2113,35 @@ public sealed class AutoPrReviewEngine(
             task, TaskDependencyGraph.Empty, now, node.OwnerId, project.BacklogPolicy);
         task.Apply(published);
         events.Add(published);
+
+        // The membership gate's own park (security review idea 6be68ee2, finding 1) — the
+        // identical shape CreateOneAsync's own review-requested path follows: Add and Publish
+        // land, Assign never runs, and h9k task assign is the human go.
+        if (parked)
+        {
+            PullRequestGateParkFacts parkFacts = await ReadGateParkFactsAsync(
+                repository, candidate.Number, project.RepositoryPath, cancellationToken);
+            EnrolledFleetSnapshot? fleet = enrolledNodes?.TryGet(project.Id);
+            PullRequestReviewGateParked gateParked = new(
+                taskId, pullRequestAuthor?.Login, pullRequestAuthor?.AccountId, pullRequestAuthor?.Association,
+                parkFacts.HeadOwner, parkFacts.IsCrossRepository, isPrivate, parkFacts.ChangedFileCount,
+                fleet?.MemberAccountIds is { } memberIds ? [.. memberIds] : [],
+                fleet?.MembersWithoutDeclaredAccount is { } withoutDeclaration ? [.. withoutDeclaration] : [], now);
+            task.Apply(gateParked);
+            events.Add(gateParked);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. events]);
+            await session.SaveChangesAsync(cancellationToken);
+
+            logger.LogDebug(
+                "Auto-created pr-review task {TaskId} for {Repository}#{Number} from a mention, parked by "
+                + "the membership gate (security review idea 6be68ee2, finding 1) — published but unassigned",
+                taskId, repository, candidate.Number);
+
+            return (
+                ReviewMentionOutcome.TaskCreatedParked, taskId,
+                "published but unassigned by the membership gate — h9k task assign to run it");
+        }
 
         string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
             session, node.OwnerId, cancellationToken);

@@ -373,6 +373,18 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         arguments.Count > 1 && arguments[0] == "repo" && arguments[1] == "view";
 
     /// <summary>
+    /// The membership gate's own visibility read (security review idea 6be68ee2, finding 1):
+    /// <c>gh repo view &lt;repo&gt; --json isPrivate</c>, once per project per sweep. Also shaped
+    /// like <see cref="IsRepositoryHostRead"/>'s own <c>repo view</c>, so every scripted runner
+    /// below answers it before that refusal ever sees it — a safe, constant "private" answer for
+    /// every project this shared database sweeps in one tick (unlike the URL-resolution refusal,
+    /// the answer does not depend on which repository asked), which keeps every review-requested
+    /// mint test's own behaviour exactly what it was before this gate existed: a private
+    /// repository needs no membership at all.
+    /// </summary>
+    private static bool IsVisibilityRead(IReadOnlyList<string> arguments) => arguments.Contains("isPrivate");
+
+    /// <summary>
     /// Whether this gh invocation is asking about <paramref name="repository"/>, read off its own
     /// <c>--repo</c> argument. Every scripted <c>gh pr list</c> below needs the guard now that a
     /// sweep reads every registered project rather than only the opted-in ones (Decisions Log
@@ -391,6 +403,11 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
     private static ProcessRunner ScriptedGh(string login, string timelineJson) => (fileName, arguments, _, _) =>
     {
+        if (IsVisibilityRead(arguments))
+        {
+            return Task.FromResult(new ProcessResult(0, """{"isPrivate":true}""", string.Empty));
+        }
+
         if (IsRepositoryHostRead(arguments))
         {
             return Task.FromResult(new ProcessResult(1, string.Empty, "no repository this test knows"));
@@ -654,6 +671,11 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         ProcessRunner gh = (fileName, arguments, _, _) =>
         {
+            if (IsVisibilityRead(arguments))
+            {
+                return Task.FromResult(new ProcessResult(0, """{"isPrivate":true}""", string.Empty));
+            }
+
             if (IsRepositoryHostRead(arguments))
             {
                 return Task.FromResult(new ProcessResult(1, string.Empty, "no repository this test knows"));
@@ -789,6 +811,11 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         ProcessRunner gh = (fileName, arguments, _, _) =>
         {
+            if (IsVisibilityRead(arguments))
+            {
+                return Task.FromResult(new ProcessResult(0, """{"isPrivate":true}""", string.Empty));
+            }
+
             if (IsRepositoryHostRead(arguments))
             {
                 return Task.FromResult(new ProcessResult(1, string.Empty, "no repository this test knows"));
@@ -896,6 +923,11 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         ProcessRunner gh = async (fileName, arguments, _, _) =>
         {
+            if (IsVisibilityRead(arguments))
+            {
+                return new ProcessResult(0, """{"isPrivate":true}""", string.Empty);
+            }
+
             if (IsRepositoryHostRead(arguments))
             {
                 return new ProcessResult(1, string.Empty, "no repository this test knows");
@@ -1021,6 +1053,11 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         ProcessRunner gh = (fileName, arguments, _, _) =>
         {
+            if (IsVisibilityRead(arguments))
+            {
+                return Task.FromResult(new ProcessResult(0, """{"isPrivate":true}""", string.Empty));
+            }
+
             if (IsRepositoryHostRead(arguments))
             {
                 return Task.FromResult(new ProcessResult(1, string.Empty, "no repository this test knows"));
@@ -1236,6 +1273,11 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         List<IReadOnlyList<string>> unexpectedCalls = [];
         ProcessRunner gh = (fileName, arguments, _, _) =>
         {
+            if (IsVisibilityRead(arguments))
+            {
+                return Task.FromResult(new ProcessResult(0, """{"isPrivate":true}""", string.Empty));
+            }
+
             if (IsRepositoryHostRead(arguments))
             {
                 return Task.FromResult(new ProcessResult(1, string.Empty, "no repository this test knows"));
@@ -1375,6 +1417,11 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         ProcessRunner gh = (fileName, arguments, _, _) =>
         {
+            if (IsVisibilityRead(arguments))
+            {
+                return Task.FromResult(new ProcessResult(0, """{"isPrivate":true}""", string.Empty));
+            }
+
             if (IsRepositoryHostRead(arguments))
             {
                 return Task.FromResult(new ProcessResult(1, string.Empty, "no repository this test knows"));
@@ -2662,6 +2709,11 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         string repository, int number, DateTimeOffset requestedAt, string login = "brian") =>
         (fileName, arguments, _, _) =>
         {
+            if (IsVisibilityRead(arguments))
+            {
+                return Task.FromResult(new ProcessResult(0, """{"isPrivate":true}""", string.Empty));
+            }
+
             if (IsRepositoryHostRead(arguments))
             {
                 return Task.FromResult(new ProcessResult(1, string.Empty, "no repository this test knows"));
