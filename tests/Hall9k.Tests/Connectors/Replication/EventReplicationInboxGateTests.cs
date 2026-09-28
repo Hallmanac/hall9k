@@ -139,6 +139,25 @@ public sealed class EventReplicationInboxGateTests
         verdict.Should().Be(EventReplicationInbox.GatedEventVerdict.Allowed);
     }
 
+    /// <summary>
+    /// <see cref="EventReplicationInbox.EvaluateCrossProjectIdeaEvent"/>'s catch-up shape: a peer
+    /// the source project's own ledger does not vouch forwards somebody else's event on an idea that
+    /// still resolves to that source project. Dropped, but never burned, so the true origin can still
+    /// deliver it. The native-sender outcomes (admitted, refused and burned) are proven end to end in
+    /// <c>EventReplicationTests</c>.
+    /// </summary>
+    [Fact]
+    public void An_idea_event_forwarded_by_a_peer_the_source_project_does_not_vouch_is_dropped_without_recording()
+    {
+        Guid forwardingSenderNodeId = DomainId.New();
+        Guid trueOriginNodeId = DomainId.New();
+
+        EventReplicationInbox.GatedEventVerdict verdict = EventReplicationInbox.EvaluateCrossProjectIdeaEvent(
+            TrustChain.Empty, "forwarder-node-fingerprint", forwardingSenderNodeId, trueOriginNodeId);
+
+        verdict.Should().Be(EventReplicationInbox.GatedEventVerdict.DroppedWithoutRecording);
+    }
+
     /// <summary>A stand-in type — any type outside <c>IsProjectAggregateStreamEvent</c>'s own six
     /// answers identically, so a real domain event type is not needed to prove the branch.</summary>
     private sealed record TaskAddedStandIn;

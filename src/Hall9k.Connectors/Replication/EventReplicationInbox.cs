@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
+using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Events;
@@ -82,7 +83,15 @@ public sealed record EventReplicationReadResult(bool SenderIgnored, int EventsAp
 /// applied — so a poison event can cost this node that one fact, never a sender's whole future.
 /// </para>
 /// </summary>
-public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<EventReplicationInbox>? logger = null)
+/// <param name="chainReader">
+/// Reads the SOURCE project's own ledger trust chain for the one cross-project append the
+/// stream-ownership guard admits: an event on an idea this node holds under one of its projects,
+/// arriving through the outbox of the project the idea was moved to (<see cref="IdeaAssignedToProject"/>,
+/// <see cref="EvaluateCrossProjectIdeaEvent"/>). Null refuses every such event, the same as any
+/// other cross-project append; the daemon always supplies one.
+/// </param>
+public sealed class EventReplicationInbox(
+    IMessageTransport transport, ILogger<EventReplicationInbox>? logger = null, ILedgerChainReader? chainReader = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -939,6 +948,64 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             // ever compared a non-null id, so a null one slipped past both branches unchecked).
             bool crossesIntoAnotherProject =
                 !existingOwnership.IsProjectStreamItself && existingOwnership.ProjectId != projectId;
+
+            // The one legitimate cross-project append: an idea moved from one shared project to
+            // another (h9k idea assign). The outbound flush resolves each event's project live, so the
+            // move, and any of the idea's own earlier events not yet flushed when it happened, travel
+            // through the DESTINATION project's outbox while the idea still resolves to the source
+            // project here until the move itself applies. Refusing them left the idea under the source
+            // project on every peer forever (independent pre-PR review, cycle 2, adversarial lens,
+            // medium). Admitted only when the target stream is an idea and the sender is a current
+            // member of the source project by that project's OWN ledger: such a sender could append
+            // the identical event through the source project's own outbox anyway, while a member of
+            // this project alone still cannot pull another project's idea across or write into it.
+            bool isIdeaStream = crossesIntoAnotherProject
+                && await session.LoadAsync<IdeaDetails>(effectiveStreamId, cancellationToken) is not null;
+            if (isIdeaStream)
+            {
+                GatedEventVerdict ideaVerdict;
+                try
+                {
+                    TrustChain? sourceChain =
+                        await ComputeSourceProjectChainAsync(session, existingOwnership.ProjectId, cancellationToken);
+                    ideaVerdict = EvaluateCrossProjectIdeaEvent(
+                        sourceChain, senderFingerprint, senderNodeId, record.OriginNodeId);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    // The source ledger could not be read this sweep, which says nothing about the
+                    // sender either way: refusing would burn a possibly legitimate event for good, and
+                    // letting the exception fail the whole read would stall every other record this
+                    // sender carries for as long as that ledger stays unreadable. Left recoverable
+                    // instead, the same as a forwarded record the source ledger does not vouch for.
+                    logger?.LogWarning(
+                        exception, "Reading project {SourceProjectId}'s own ledger failed while checking replicated "
+                        + "event {OriginEventId} on idea stream {StreamId}", existingOwnership.ProjectId,
+                        record.OriginEventId, effectiveStreamId);
+                    ideaVerdict = GatedEventVerdict.DroppedWithoutRecording;
+                }
+
+                if (ideaVerdict == GatedEventVerdict.DroppedWithoutRecording)
+                {
+                    // A forwarded record whose forwarder the source project does not vouch for (or an
+                    // unreadable source ledger, above): the true origin, or a forwarder it does vouch
+                    // for, may still deliver it, so it is neither applied nor burned, and a request
+                    // for its origin or stream stays open (the identical shape the settings gate
+                    // above leaves recoverable).
+                    logger?.LogWarning(
+                        "Replicated event {OriginEventId} (origin {OriginNodeId}) of type {EventType} from sender "
+                        + "{SenderNodeId} targets idea stream {StreamId} under project {SourceProjectId}, whose own "
+                        + "ledger could not vouch this sender — dropped, never applied, left for a later delivery",
+                        record.OriginEventId, record.OriginNodeId, record.EventTypeName, senderNodeId,
+                        effectiveStreamId, existingOwnership.ProjectId);
+                    gatedDropOriginNodeIdsThisRead.Add(record.OriginNodeId);
+                    gatedDropStreamIdsThisRead.Add(effectiveStreamId);
+                    return 0;
+                }
+
+                crossesIntoAnotherProject = ideaVerdict != GatedEventVerdict.Allowed;
+            }
+
             bool isLifecycleEvent = ProjectStreamReplicationRules.IsProjectLifecycleEvent(eventType);
             bool refuseAsNonLifecycleOntoProjectStream =
                 existingOwnership.IsProjectStreamItself && !isLifecycleEvent;
@@ -956,7 +1023,10 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                           + "for a project lifecycle event"
                         : refuseAsNonLifecycleOntoProjectStream
                             ? "resolves as a Project aggregate's own stream, never a legitimate target for this event type"
-                            : "belongs to a different project than the one this read is scoped to");
+                            : isIdeaStream
+                                ? "is an idea under a different project whose own ledger does not vouch this "
+                                  + "sender as a member"
+                                : "belongs to a different project than the one this read is scoped to");
                 session.Store(new ReplicatedEventRecord
                 {
                     Id = record.OriginEventId,
@@ -1536,6 +1606,59 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         return originNodeId == senderNodeId
             ? GatedEventVerdict.DroppedAndRefusedPermanently
             : GatedEventVerdict.DroppedWithoutRecording;
+    }
+
+    /// <summary>
+    /// The pure verdict behind the stream-ownership guard's one admitted cross-project append: an
+    /// event on an idea stream that still resolves here to a different project than the one this
+    /// read is scoped to, which is what an idea moved between projects (<see cref="IdeaAssignedToProject"/>)
+    /// looks like until the move itself applies. <paramref name="sourceProjectChain"/> is the
+    /// project the idea resolves to now, by that project's OWN ledger. Allowed only when
+    /// <paramref name="senderFingerprint"/> is vouched, for <paramref name="senderNodeId"/>
+    /// specifically, by a current member of the source project, whatever that member's role: an
+    /// owner who belongs to both projects is exactly who runs <c>h9k idea assign</c> across them, and
+    /// could send the identical event through the source project's own outbox anyway, while a member
+    /// of the destination alone must never be able to pull another project's idea into it or write
+    /// into it. A null chain (no chain reader, no source project to read, or an idea with no project
+    /// at all) vouches nobody. A refusal burns the origin event id only when the sender is that
+    /// record's own claimed origin, on the identical terms <see cref="EvaluateGatedEvent"/> uses, so
+    /// a forwarded copy never stands in the way of a later delivery by a sender the source project
+    /// does vouch for.
+    /// </summary>
+    internal static GatedEventVerdict EvaluateCrossProjectIdeaEvent(
+        TrustChain? sourceProjectChain, string? senderFingerprint, Guid senderNodeId, Guid originNodeId)
+    {
+        bool allowed = senderFingerprint is not null
+            && sourceProjectChain is not null
+            && sourceProjectChain.IsAllowedSigner(senderFingerprint, senderNodeId);
+        if (allowed)
+        {
+            return GatedEventVerdict.Allowed;
+        }
+
+        return originNodeId == senderNodeId
+            ? GatedEventVerdict.DroppedAndRefusedPermanently
+            : GatedEventVerdict.DroppedWithoutRecording;
+    }
+
+    /// <summary>
+    /// <paramref name="sourceProjectId"/>'s own ledger trust chain, read fresh through
+    /// <c>chainReader</c> from that project's own repository: an idea moved between projects is rare
+    /// enough that one ledger read per event it carries costs little next to trusting a stale copy.
+    /// Null when there is no chain reader, no source project, or no project here by that id.
+    /// </summary>
+    private async Task<TrustChain?> ComputeSourceProjectChainAsync(
+        IQuerySession session, Guid? sourceProjectId, CancellationToken cancellationToken)
+    {
+        if (chainReader is null || sourceProjectId is not { } projectId)
+        {
+            return null;
+        }
+
+        ProjectDetails? sourceProject = await session.LoadAsync<ProjectDetails>(projectId, cancellationToken);
+        return sourceProject is null || string.IsNullOrWhiteSpace(sourceProject.RepositoryPath)
+            ? null
+            : await chainReader.ComputeAsync(sourceProject.RepositoryPath, cancellationToken);
     }
 
     /// <summary>
