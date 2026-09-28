@@ -344,6 +344,7 @@ public sealed class WorkPromptBuilderTests
     {
         ProjectDetails project = SomeProject();
         project.VerifyCommands.Add(new VerifyCommand("test", "dotnet test"));
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
 
         string prompt = WorkPromptBuilder.Build(
             SomeTask(), project, "task/1-slug", _worktreePath, resumesPreviousWork: true,

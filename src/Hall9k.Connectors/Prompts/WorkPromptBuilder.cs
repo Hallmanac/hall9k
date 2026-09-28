@@ -834,10 +834,27 @@ public static class WorkPromptBuilder
     /// serialized host gate). A session that ran the bare command here is exactly what raced the
     /// daemon's own serialized host gate for the same permits in the origin incident this task
     /// answers.
+    /// <para>
+    /// A node runs a project's verify gates only after its own operator has accepted that exact
+    /// gate set (security review idea 6be68ee2, process-injection finding 1, the local half) — the
+    /// dispatcher and the daemon's own gate entry both enforce this, but this session runs with
+    /// skip-permissions and would otherwise execute whatever shell command lands here regardless
+    /// of acceptance, reaching it through neither path (independent pre-PR review, cycle 1,
+    /// adversarial lens, medium). Never lists a real command when the project's own current gate
+    /// set has not been accepted on this node — the platform's own post-session verification
+    /// still holds at gate entry until it is, so this session has nothing to lose by leaving them
+    /// unlisted and finishing normally.
+    /// </para>
     /// </summary>
     private static void AppendGateLines(StringBuilder prompt, ProjectDetails project)
     {
         const string file = $"{TemplateDirectory}/gate-line.md";
+        if (!GateSetAcceptance.Decide(project.AcceptedVerifyCommands, project.VerifyCommands).Proceed)
+        {
+            AppendFragment(prompt, file, "unaccepted");
+            return;
+        }
+
         foreach (VerifyCommand gate in project.VerifyCommands)
         {
             if (gate.IsHostCoupled)

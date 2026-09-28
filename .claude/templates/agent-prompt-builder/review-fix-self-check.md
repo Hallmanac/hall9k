@@ -77,6 +77,13 @@
   3. **No tests to run.** This project configures no
      verification gates, so there is no suite to run here — move on
      rather than inventing a command to satisfy this sub-rule.
+===unaccepted-tests===
+  3. **No tests to run here.** This project's verify gate set has changed and has
+     not yet been accepted on this node, so its commands are not listed here — do
+     not run them yourself. The platform's own verification holds at gate entry
+     until this node's operator accepts the current set
+     (`h9k project accept-gates`); move on rather than inventing a command to
+     satisfy this sub-rule.
 ===run-touched-tests-lead===
   3. **Run the touched tests, in the foreground.** Run the tests that touch the
      code you changed and wait for them to finish before you conclude; do not

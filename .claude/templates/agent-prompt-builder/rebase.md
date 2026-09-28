@@ -142,6 +142,12 @@ undecidable.
   - **Required before you finish**: re-run the project's verification gates against
     the rebased tree and fix whatever they surface. A clean-looking rebase can still
     break the build — each side compiled alone; combined is what you are testing now:
+===unaccepted-gate-set===
+    This project's verify gate set has changed and has not yet been accepted on this
+    node, so its commands are not listed here — do not run them yourself. The
+    platform's own verification holds at gate entry until this node's operator
+    accepts the current set (`h9k project accept-gates`); commit your work and
+    finish normally, and let that verification run once it is accepted.
 ===commit-fix-note===
   - **Commit any such fix — never leave it uncommitted.** The platform pushes only
     what is committed, so a gate fix left in the working tree ships neither committed
