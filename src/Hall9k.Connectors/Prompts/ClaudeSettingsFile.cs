@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Connectors.Prompts;
@@ -332,4 +333,124 @@ public static class ClaudeSettingsFile
         "Bash(h9k pr approve:*)",
         "Bash(h9k pr request-changes:*)",
     ];
+
+    /// <summary>
+    /// Every pr-review session's own settings (security review idea 6be68ee2, process-injection
+    /// finding 1): the real permission file every pr-review session, mention follow-up, and
+    /// follow-on persona session now launches under, in place of
+    /// <c>--dangerously-skip-permissions</c> — Brian's ruling 2026-09-27, no pr-review session
+    /// ever runs with permissions skipped, member or not.
+    /// <para>
+    /// <b>Why <c>defaultMode: dontAsk</c>.</b> The owner's own <c>~/.claude/settings.json</c>
+    /// carries <c>defaultMode: acceptEdits</c>, and every pr-review session's own
+    /// <c>--setting-sources user</c> (<see cref="Hall9k.Daemon.Execution.ClaudeExecutor"/>'s own
+    /// untrusted-checkout isolation) still loads that file — verified empirically (four throwaway
+    /// <c>claude -p</c> probes, Claude Code 2.1.283): with no mode stated in this file, a session
+    /// ran under the owner's own <c>acceptEdits</c> and a <c>Write</c> call created a file neither
+    /// list allowed. <c>dontAsk</c> in this file wins over the owner's own mode, and under it a
+    /// headless session cannot be asked, so a tool this file's own lists do not name is refused
+    /// outright rather than silently accepted.
+    /// </para>
+    /// <para>
+    /// <b>The allow list</b> is exactly what a pr-review lens actually runs: the diff and its
+    /// history (<c>git diff origin/&lt;base&gt;...HEAD</c>, <c>git log</c> —
+    /// <c>review-mechanics.md</c>'s own ordinary-diff-range), the pull request itself
+    /// (<c>gh pr view</c>, <c>gh pr diff</c>, <c>gh pr checks</c>), the issues it cites
+    /// (<c>gh issue view</c> — all four named in the QA rules' own never-post line), and ordinary
+    /// reading (<c>Read</c>, scoped to the checkout and the run directory so an injected session
+    /// cannot read outside them — an unscoped <c>Read</c> can reach
+    /// <c>~/.config/gh/hosts.yml</c> — plus <c>Grep</c> and <c>Glob</c>, unscoped, since neither
+    /// reads file contents on its own). <c>gh api</c> is deliberately NOT allowed — the reused
+    /// deny list below holds <c>Bash(gh api:*)</c> and deny beats allow, verified — so even a
+    /// read-only <c>gh api GET</c> is refused; the lenses read through <c>gh pr view</c>/<c>gh pr
+    /// diff</c> instead.
+    /// </para>
+    /// <para>
+    /// <b>The deny list</b> is <see cref="ReviewLapDeniedTools"/> — the identical write-surface
+    /// refusal a reviewer's own local lap already carries — plus <c>Bash(claude:*)</c>: the
+    /// owner's own user settings allow it, and under <c>dontAsk</c> a user-level allow still wins
+    /// unless this file denies it too (verified: without this line, <c>claude --version</c> ran
+    /// under the flag file alone), which would otherwise let an injected session launch its own
+    /// nested <c>claude --dangerously-skip-permissions</c> and step around every rule above it.
+    /// </para>
+    /// <para>
+    /// <b>Driving is refused everywhere by construction.</b> Nothing in this file's allow list
+    /// reaches a way to start the product or run its end-to-end tests — <paramref
+    /// name="qaGateCommands"/> is the one earned exception, added only for a QA session on a
+    /// non-fork head (idea b9b09779; QA's own job is to build and run this project's tests, `qa
+    /// checks.md`), and only ever as the project's own recorded gate commands, never a run-skill
+    /// or drive command. A QA or designer session told by its prompt that driving is authorised
+    /// still has every such attempt refused here; the denial is what lets the allow list grow by
+    /// evidence instead of by guess.
+    /// </para>
+    /// <para>
+    /// The reply-guard hook is installed unconditionally, defense in depth alongside the deny
+    /// list above, on the same terms <see cref="ReviewThreadReplyGuardHook"/>'s own doc states:
+    /// a pr-review session never posts to GitHub at all, but the hook costs nothing to carry and
+    /// nothing here should depend on the deny list alone.
+    /// </para>
+    /// </summary>
+    /// <param name="worktreePath">The checkout this session reads — the one directory, besides the run directory, its own <c>Read</c> may reach.</param>
+    /// <param name="runDirectory">This run's own directory, where a session's prompt, settings and findings files live.</param>
+    /// <param name="qaGateCommands">
+    /// The project's own recorded verify gate commands, allowed verbatim as additional
+    /// <c>Bash(&lt;command&gt;:*)</c> rules — set only for a QA persona session, and only on a
+    /// non-fork head (a fork head skips the QA persona outright, so this never actually
+    /// co-occurs with a fork checkout). Null or empty for every other session.
+    /// </param>
+    public static string BuildForPrReview(
+        TimeSpan commandTimeout, string worktreePath, string runDirectory,
+        IReadOnlyList<VerifyCommand>? qaGateCommands = null)
+    {
+        long defaultMilliseconds = (long)commandTimeout.TotalMilliseconds;
+        long maxMilliseconds = defaultMilliseconds * 2;
+        List<string> allow =
+        [
+            $"Read({EscapeJsonString(worktreePath)}/**)",
+            $"Read({EscapeJsonString(runDirectory)}/**)",
+            .. PrReviewAllowedTools,
+            .. (qaGateCommands ?? []).Select(gate => $"Bash({EscapeJsonString(gate.Command)}:*)"),
+        ];
+        string allowJson = string.Join(", ", allow.Select(rule => $"\"{rule}\""));
+        string denyJson = string.Join(", ", PrReviewDeniedTools.Select(tool => $"\"{tool}\""));
+        return $$$"""{"includeCoAuthoredBy": false, "defaultMode": "dontAsk", "env": {"BASH_DEFAULT_TIMEOUT_MS": "{{{defaultMilliseconds}}}", "BASH_MAX_TIMEOUT_MS": "{{{maxMilliseconds}}}"}, "permissions": {"allow": [{{{allowJson}}}], "deny": [{{{denyJson}}}]}, {{{ReviewThreadReplyGuardHook}}}}""";
+    }
+
+    /// <summary>
+    /// The tool rules <see cref="BuildForPrReview"/> allows on every pr-review session, beside the
+    /// two <c>Read</c> rules it scopes itself (worktree and run directory) and whatever
+    /// <paramref name="qaGateCommands"/> a QA session earns on top. What the lenses actually run:
+    /// <c>review-mechanics.md</c>'s own ordinary-diff-range for <c>git diff</c>/<c>git log</c>,
+    /// and the QA rules' own never-post line for the four <c>gh</c> reads.
+    /// </summary>
+    public static readonly IReadOnlyList<string> PrReviewAllowedTools =
+    [
+        "Grep",
+        "Glob",
+        "Bash(git diff:*)",
+        "Bash(git log:*)",
+        "Bash(gh pr view:*)",
+        "Bash(gh pr diff:*)",
+        "Bash(gh pr checks:*)",
+        "Bash(gh issue view:*)",
+    ];
+
+    /// <summary>
+    /// <see cref="ReviewLapDeniedTools"/> plus <c>Bash(claude:*)</c> — see
+    /// <see cref="BuildForPrReview"/>'s own doc for why the addition is load-bearing rather than
+    /// belt-and-suspenders.
+    /// </summary>
+    public static readonly IReadOnlyList<string> PrReviewDeniedTools =
+    [
+        .. ReviewLapDeniedTools,
+        "Bash(claude:*)",
+    ];
+
+    /// <summary>
+    /// Minimal JSON string escaping for a value spliced into this file's own hand-built JSON
+    /// (a worktree or run-directory path, or a project's own gate command) — never trusted to be
+    /// free of the two characters that would otherwise break the surrounding string literal.
+    /// </summary>
+    private static string EscapeJsonString(string value) =>
+        value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
 }

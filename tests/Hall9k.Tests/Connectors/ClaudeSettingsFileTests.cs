@@ -3,6 +3,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Daemon;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
@@ -133,5 +134,126 @@ public sealed class ClaudeSettingsFileTests
             "Claude Code parses a settings file's env values as strings");
 
         return TimeSpan.FromMilliseconds(int.Parse(value.ToString(), CultureInfo.InvariantCulture));
+    }
+}
+
+/// <summary>
+/// Pins <see cref="ClaudeSettingsFile.BuildForPrReview"/>'s own shape (security review idea
+/// 6be68ee2, process-injection finding 1): the real permission file every pr-review session, its
+/// mention follow-up, and every follow-on persona session now launches under, in place of
+/// <c>--dangerously-skip-permissions</c>. Every claim pinned here was verified empirically against
+/// Claude Code 2.1.283 during the 2026-09-27 challenge (this task's own journal.md, verdict C1).
+/// </summary>
+public sealed class ClaudeSettingsFileBuildForPrReviewTests
+{
+    [Fact]
+    public void The_built_content_is_well_formed_json()
+    {
+        JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run")).Dispose();
+    }
+
+    [Fact]
+    public void The_default_mode_is_dont_ask()
+    {
+        using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run"));
+
+        document.RootElement.GetProperty("defaultMode").GetString().Should().Be("dontAsk",
+            "the owner's own user settings carry defaultMode: acceptEdits, and --setting-sources " +
+            "user still loads them — with no mode stated here, a session ran under acceptEdits and " +
+            "a Write call created a file (verified: four throwaway claude -p probes)");
+    }
+
+    [Fact]
+    public void Read_is_scoped_to_the_checkout_and_the_run_directory()
+    {
+        using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), "/tmp/pr-review-checkout", "/tmp/pr-review-run"));
+
+        string[] allow = [.. document.RootElement.GetProperty("permissions").GetProperty("allow")
+            .EnumerateArray().Select(element => element.GetString()!)];
+
+        allow.Should().Contain("Read(/tmp/pr-review-checkout/**)",
+            "an unscoped Read can otherwise reach ~/.config/gh/hosts.yml (fold-in fix, this task's journal.md)");
+        allow.Should().Contain("Read(/tmp/pr-review-run/**)");
+    }
+
+    [Fact]
+    public void The_allow_list_carries_exactly_what_the_lenses_actually_run()
+    {
+        using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run"));
+
+        string[] allow = [.. document.RootElement.GetProperty("permissions").GetProperty("allow")
+            .EnumerateArray().Select(element => element.GetString()!)];
+
+        allow.Should().Contain(["Grep", "Glob", "Bash(git diff:*)", "Bash(git log:*)", "Bash(gh pr view:*)",
+            "Bash(gh pr diff:*)", "Bash(gh pr checks:*)", "Bash(gh issue view:*)"]);
+        allow.Should().NotContain(rule => rule.Contains("gh api", StringComparison.Ordinal),
+            "gh api is refused by the deny list even for a read; deny beats allow");
+    }
+
+    [Fact]
+    public void The_deny_list_keeps_the_review_laps_own_list_and_adds_a_claude_denial()
+    {
+        using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run"));
+
+        string[] deny = [.. document.RootElement.GetProperty("permissions").GetProperty("deny")
+            .EnumerateArray().Select(element => element.GetString()!)];
+
+        deny.Should().Contain(ClaudeSettingsFile.ReviewLapDeniedTools);
+        deny.Should().Contain("Bash(gh api:*)");
+        deny.Should().Contain("Bash(claude:*)",
+            "the owner's own user settings allow claude:*, and a flag-file deny is the only thing " +
+            "that beats a user-level allow under dontAsk (verified: claude --version ran without it)");
+    }
+
+    [Fact]
+    public void The_reply_guard_hook_is_installed()
+    {
+        using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run"));
+
+        document.RootElement.TryGetProperty("hooks", out _).Should().BeTrue();
+    }
+
+    [Fact]
+    public void With_no_qa_gate_commands_the_allow_list_carries_none()
+    {
+        using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run"));
+
+        string[] allow = [.. document.RootElement.GetProperty("permissions").GetProperty("allow")
+            .EnumerateArray().Select(element => element.GetString()!)];
+
+        allow.Should().HaveCount(2 + ClaudeSettingsFile.PrReviewAllowedTools.Count,
+            "the two Read rules plus the fixed tool list, and nothing else — QA's own gate " +
+            "commands are the one earned exception, and nothing was supplied here");
+    }
+
+    [Fact]
+    public void Qa_gate_commands_are_allowed_verbatim_on_top_of_the_fixed_list()
+    {
+        using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run",
+            [new VerifyCommand("test", "dotnet test"), new VerifyCommand("build", "dotnet build")]));
+
+        string[] allow = [.. document.RootElement.GetProperty("permissions").GetProperty("allow")
+            .EnumerateArray().Select(element => element.GetString()!)];
+
+        allow.Should().Contain("Bash(dotnet test:*)").And.Contain("Bash(dotnet build:*)",
+            "QA's own job is to build and run this project's tests (qa checks.md)");
+    }
+
+    [Fact]
+    public void The_command_timeout_env_still_carries_through()
+    {
+        using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(45), "/tmp/checkout", "/tmp/run"));
+
+        document.RootElement.GetProperty("env").GetProperty("BASH_DEFAULT_TIMEOUT_MS").GetString()
+            .Should().Be(TimeSpan.FromMinutes(45).TotalMilliseconds.ToString("F0", CultureInfo.InvariantCulture));
     }
 }
