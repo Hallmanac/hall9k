@@ -997,6 +997,26 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                         return 0;
                 }
             }
+
+            // Reaching here means this exact origin event has just been judged fresh and is about
+            // to apply for real (Allowed, or alwaysAllowed) — every other verdict above already
+            // returned. HeldTaskActRecord's own Id IS record.OriginEventId, so a row still sitting
+            // here under that id is a hold this same event earned earlier, from an earlier read,
+            // under whichever sender answered it then: a relay's own DroppedWithoutRecording
+            // verdict (idea 6be68ee2), or this act simply queuing behind an earlier-held record
+            // from the same origin that has since cleared. Left in place, that stale row would
+            // out-rank every later same-origin/same-stream act forever under the "earlier held for
+            // this origin" check above — this event is now applying for real, so the row's own
+            // verdict no longer describes anything, yet ReCheckHeldTaskActsAsync would keep
+            // re-judging it against its own stale sender until it expires, taking every legitimate
+            // record queued behind it with it (independent pre-PR review, cycle 5, conformance
+            // lens, high). Cleared in its own save, ahead of the append below, so it is gone
+            // whether or not that append itself goes on to succeed.
+            if (await session.LoadAsync<HeldTaskActRecord>(record.OriginEventId, cancellationToken) is not null)
+            {
+                session.Delete<HeldTaskActRecord>(record.OriginEventId);
+                await session.SaveChangesAsync(cancellationToken);
+            }
         }
 
         // A record for a stream this read already tried, and failed, to START
