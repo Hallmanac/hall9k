@@ -26,7 +26,17 @@ namespace Hall9k.Cli.Commands;
 /// <c>--from-pr</c> task, so one of those closed while the request still stands holds nothing
 /// back at all (independent pre-PR review, cycle 1, conformance lens).
 /// </param>
-internal sealed record CoveringReview(Guid TaskId, bool Live, string StateWord, bool AutoCreated);
+/// <param name="GateParked">
+/// Whether the covering task itself is still the membership gate's own park — published but never
+/// assigned (security review idea 6be68ee2, finding 1) — read off
+/// <see cref="TaskListItem.PrReviewGateParked"/> together with its still-Published state, the
+/// identical pair <c>AttentionComposer</c>'s own needs-you row already gates on. A mention row
+/// checks this ahead of the ordinary "already covers it" case (independent pre-PR review, cycle 1,
+/// conformance lens): a task that merely exists is not the same fact as a task an operator still
+/// has to run <c>h9k task assign</c> on, and a still-parked task's own mint mention must not read
+/// as already handled.
+/// </param>
+internal sealed record CoveringReview(Guid TaskId, bool Live, string StateWord, bool AutoCreated, bool GateParked);
 
 /// <summary>One observed review request as <c>h9k status</c> renders it.</summary>
 /// <param name="NeedsYou">
@@ -260,8 +270,12 @@ internal static class ReviewRequestPane
         string stateWord = rowsByTask.TryGetValue(covering.Id, out TaskStatusRow? row)
             ? row.Group.ToString()
             : covering.State.Value;
+        // The identical pair AttentionComposer's own needs-you row gates the membership gate's park
+        // on: PrReviewGateParked never clears once set, so State == Published is what tells "still
+        // parked, never assigned" apart from "parked once, long since assigned and gone Done".
+        bool gateParked = covering.PrReviewGateParked && covering.State == TaskState.Published;
         return new CoveringReview(
-            covering.Id, live is not null, stateWord, matching.Any(task => task.WasAutoPrReviewCreated));
+            covering.Id, live is not null, stateWord, matching.Any(task => task.WasAutoPrReviewCreated), gateParked);
     }
 
     /// <summary>
@@ -428,6 +442,22 @@ internal static class ReviewRequestPane
                 mention.Repository, mention.Number,
                 $"{opening}; attached to task {taskRef}, but no follow-up was dispatched to answer it{detail}",
                 $"h9k pr review {pullRequest} --since-my-review");
+        }
+
+        // Checked ahead of the ordinary covering-task branch below (independent pre-PR review,
+        // cycle 1, conformance lens): a still-parked task genuinely does exist for this pull
+        // request, but the membership gate never assigned it, so telling the reader "already
+        // covers it" would bury the one thing the row exists to say — h9k task assign is still
+        // theirs to run. AttentionComposer's own needs-you row already names the park's own facts
+        // in full; this row only has to point at the task and the lever.
+        if (covering is { GateParked: true } parkedTask)
+        {
+            string parkedId = DomainId.Short(parkedTask.TaskId);
+            return NeedsYou(
+                mention.Repository, mention.Number,
+                $"{opening}; task {parkedId} was minted but not assigned by the membership gate "
+                + "(security review idea 6be68ee2, finding 1)",
+                $"h9k task assign {parkedId}");
         }
 
         if (covering is { } task)

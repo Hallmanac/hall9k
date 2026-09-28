@@ -813,6 +813,9 @@ public sealed class TaskAggregate
     /// <summary>Every current project member none of whose nodes had declared a GitHub account at park time.</summary>
     public IReadOnlyList<string> PrReviewGateParkedMembersWithoutDeclaredAccount { get; private set; } = [];
 
+    /// <summary>The pull request's own title at park time, never the task's platform-authored <see cref="Objective"/> — see <see cref="Events.PullRequestReviewGateParked.Title"/>.</summary>
+    public string? PrReviewGateParkedTitle { get; private set; }
+
     /// <summary>
     /// The most recent GitHub comment that mentioned the install's login on this task's own pull
     /// request (idea 2f079bcd: a mention is auto-pr-review's second trigger), or null when none
@@ -2205,6 +2208,7 @@ public sealed class TaskAggregate
         PrReviewGateParkedChangedFileCount = @event.ChangedFileCount;
         PrReviewGateParkedMemberAccountIds = @event.MemberAccountIds;
         PrReviewGateParkedMembersWithoutDeclaredAccount = @event.MembersWithoutDeclaredAccount;
+        PrReviewGateParkedTitle = @event.Title;
     }
 
     // State is never touched here (see the event's own doc comment): the caller that appends

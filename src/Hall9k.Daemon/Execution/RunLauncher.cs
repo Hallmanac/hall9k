@@ -595,17 +595,22 @@ public sealed class RunLauncher(
                 // from PrReviewEngine.DriveMentionFollowUpAsync's own bounded lap.
                 //
                 // Read off the ObservedReviewMention row this task was actually MINTED from
-                // (Outcome == TaskCreated) — the same stable marker PrReviewEngine's own park line
-                // uses — rather than task.LatestMention*, which a second mention landing on this
-                // same task before its first ("first"/"normal" speed) dispatch can move to a
-                // comment this addendum never answered (independent pre-PR review, cycle 1, both
-                // lenses). Falls back to task.LatestMention* only when that row is not there yet:
-                // at "now" speed this dispatch happens before ProcessMentionAsync's own
-                // session.Store(observed) has committed, so a query-based read finds nothing on
-                // that path, but nothing else could have raced the fields in that window either.
+                // (Outcome == TaskCreated or TaskCreatedParked — a parked mint's own mention row
+                // (independent pre-PR review, cycle 1, conformance lens) carries the identical
+                // marker under the outcome the membership gate actually settled it with) — the same
+                // stable marker PrReviewEngine's own park line uses — rather than task.LatestMention*,
+                // which a second mention landing on this same task before its first ("first"/"normal"
+                // speed) dispatch can move to a comment this addendum never answered (independent
+                // pre-PR review, cycle 1, both lenses). Falls back to task.LatestMention* only when
+                // that row is not there yet: at "now" speed this dispatch happens before
+                // ProcessMentionAsync's own session.Store(observed) has committed, so a query-based
+                // read finds nothing on that path, but nothing else could have raced the fields in
+                // that window either.
                 ObservedReviewMention? mintingMention = await session.Query<ObservedReviewMention>()
                     .Where(mention => mention.TaskId == taskId)
-                    .Where(mention => mention.MatchesSql("d.data ->> 'outcome' = ?", ReviewMentionOutcome.TaskCreated.Value))
+                    .Where(mention => mention.MatchesSql(
+                        "d.data ->> 'outcome' IN (?, ?)",
+                        ReviewMentionOutcome.TaskCreated.Value, ReviewMentionOutcome.TaskCreatedParked.Value))
                     .FirstOrDefaultAsync(cancellationToken);
                 string? mentionAuthorLogin = mintingMention?.CommentAuthorLogin ?? task.LatestMentionAuthorLogin;
                 string? mentionBody = mintingMention?.CommentBody ?? task.LatestMentionBody;

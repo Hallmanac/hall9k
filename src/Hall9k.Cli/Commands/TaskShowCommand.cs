@@ -2790,9 +2790,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             return null;
         }
 
+        // TaskCreated or TaskCreatedParked (independent pre-PR review, cycle 1, conformance lens):
+        // a parked mint's own mention row carries the identical marker under whichever outcome the
+        // membership gate actually settled it with, once the operator's own h9k task assign lets
+        // this first run happen at all.
         return await session.Query<ObservedReviewMention>()
             .Where(mention => mention.TaskId == details.Id)
-            .Where(mention => mention.MatchesSql("d.data ->> 'outcome' = ?", ReviewMentionOutcome.TaskCreated.Value))
+            .Where(mention => mention.MatchesSql(
+                "d.data ->> 'outcome' IN (?, ?)",
+                ReviewMentionOutcome.TaskCreated.Value, ReviewMentionOutcome.TaskCreatedParked.Value))
             .FirstOrDefaultAsync(cancellationToken);
     }
 

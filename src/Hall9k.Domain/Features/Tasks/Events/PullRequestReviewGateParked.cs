@@ -30,6 +30,16 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// suspecting the wrong thing: nothing here claims the pull request's own author IS one of these
 /// members, only that these members could never have matched at all, declaration or not.
 /// </param>
+/// <param name="Title">
+/// The pull request's own title at mint time (independent pre-PR review, cycle 1, conformance
+/// lens) — read straight off the identical import <c>CreateOneAsync</c>/<c>CreateFromMentionAsync</c>
+/// already pays for, never the task's own <c>Objective</c>, which this same security review made
+/// platform-authored ("Review pull request owner/repo#N") for exactly the reason this field exists:
+/// the objective is the one place an auto-mint prints everywhere with no fence around it, and the
+/// park card is the one place that still owes the operator the pull request's own title. Optional,
+/// defaulting to null, so a row an earlier build minted before this field existed still deserializes
+/// — the card then says what could be observed, same as every other unread park fact.
+/// </param>
 public sealed record PullRequestReviewGateParked(
     Guid Id,
     string? AuthorLogin,
@@ -41,4 +51,5 @@ public sealed record PullRequestReviewGateParked(
     int? ChangedFileCount,
     IReadOnlyList<long> MemberAccountIds,
     IReadOnlyList<string> MembersWithoutDeclaredAccount,
-    DateTimeOffset ParkedAt);
+    DateTimeOffset ParkedAt,
+    string? Title = null);

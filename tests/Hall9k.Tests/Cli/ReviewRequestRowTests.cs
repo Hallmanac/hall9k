@@ -81,7 +81,7 @@ public sealed class ReviewRequestRowTests
 
         ReviewRequestRow row = ReviewRequestPane.Compose(
             held, "arx-platform", AutoPrReviewSetting.Unrecorded,
-            new CoveringReview(taskId, Live: true, "Queued", AutoCreated: true), Now);
+            new CoveringReview(taskId, Live: true, "Queued", AutoCreated: true, GateParked: false), Now);
 
         row.Markup.Should().Contain($"task {DomainId.Short(taskId)} is created and reviewing").And.NotContain("held for");
     }
@@ -95,7 +95,7 @@ public sealed class ReviewRequestRowTests
             Observed(ReviewRequestOutcome.TaskCreated, Now.AddMinutes(-5), taskId),
             "arx-platform",
             AutoPrReviewSetting.Unrecorded,
-            new CoveringReview(taskId, Live: true, "Working", AutoCreated: true),
+            new CoveringReview(taskId, Live: true, "Working", AutoCreated: true, GateParked: false),
             Now);
 
         row.NeedsYou.Should().BeFalse("a busy login is not nagged for work the daemon is already doing");
@@ -114,7 +114,7 @@ public sealed class ReviewRequestRowTests
             Observed(ReviewRequestOutcome.TaskCreated, Now.AddMinutes(-5), taskId),
             "arx-platform",
             AutoPrReviewSetting.Unrecorded,
-            new CoveringReview(taskId, Live: stateWord != "Done", stateWord, AutoCreated: true),
+            new CoveringReview(taskId, Live: stateWord != "Done", stateWord, AutoCreated: true, GateParked: false),
             Now);
 
         row.NeedsYou.Should().BeFalse();
@@ -130,7 +130,7 @@ public sealed class ReviewRequestRowTests
             Observed(ReviewRequestOutcome.HeldSettingOff, Now.AddMinutes(-5)),
             "arx-platform",
             new AutoPrReviewSetting(AutoPrReviewSpeed.Off, Recorded: true),
-            new CoveringReview(taskId, Live: true, "Working", AutoCreated: false),
+            new CoveringReview(taskId, Live: true, "Working", AutoCreated: false, GateParked: false),
             Now);
 
         row.NeedsYou.Should().BeFalse("a task adopting the request is one of the four ways the row clears");
@@ -160,7 +160,7 @@ public sealed class ReviewRequestRowTests
             settingOn
                 ? AutoPrReviewSetting.Unrecorded
                 : new AutoPrReviewSetting(AutoPrReviewSpeed.Off, Recorded: true),
-            new CoveringReview(taskId, Live: false, "Done", autoCreated),
+            new CoveringReview(taskId, Live: false, "Done", autoCreated, GateParked: false),
             Now);
 
         row.NeedsYou.Should().BeFalse("nothing is being asked of the operator either way");
@@ -328,10 +328,30 @@ public sealed class ReviewRequestRowTests
 
         ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
             ObservedMention("HeldSettingOff"), "arx-platform",
-            new CoveringReview(taskId, Live: true, "Working", AutoCreated: true));
+            new CoveringReview(taskId, Live: true, "Working", AutoCreated: true, GateParked: false));
 
         row.NeedsYou.Should().BeFalse("a task already covering the pull request is nothing to ask the operator");
         row.Markup.Should().Contain($"task {DomainId.Short(taskId)} already covers it (Working)");
+    }
+
+    /// <summary>
+    /// A parked mint's own mention must not read as already resolved (independent pre-PR review,
+    /// cycle 1, conformance lens): the task genuinely exists for this pull request, but the
+    /// membership gate never assigned it, so the row still has to send the operator to
+    /// h9k task assign rather than the "already covers it" line every other covering task gets.
+    /// </summary>
+    [Fact]
+    public void A_mention_covered_by_a_still_parked_task_asks_the_operator_to_assign_it()
+    {
+        Guid taskId = DomainId.New();
+
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
+            ObservedMention("TaskCreatedParked"), "arx-platform",
+            new CoveringReview(taskId, Live: true, "Working", AutoCreated: true, GateParked: true));
+
+        row.NeedsYou.Should().BeTrue("the membership gate parked it; nothing has run yet");
+        row.Markup.Should().Contain($"task {DomainId.Short(taskId)} was minted but not assigned");
+        row.Markup.Should().Contain($"h9k task assign {DomainId.Short(taskId)}");
     }
 
     [Fact]
@@ -376,7 +396,7 @@ public sealed class ReviewRequestRowTests
         mention.OutcomeDetail = "recorded; auto-pr-review is off here, so no follow-up was dispatched";
 
         ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
-            mention, "arx-platform", new CoveringReview(taskId, Live: true, "Working", AutoCreated: true));
+            mention, "arx-platform", new CoveringReview(taskId, Live: true, "Working", AutoCreated: true, GateParked: false));
 
         row.NeedsYou.Should().BeTrue(
             "the task covers the pull request in general, but nothing ever answered this exact comment");
@@ -490,16 +510,16 @@ public sealed class ReviewRequestRowTests
             (failed, AutoPrReviewSetting.Unrecorded, null),
             (Observed(ReviewRequestOutcome.TaskCreated, Now.AddMinutes(-5)),
                 AutoPrReviewSetting.Unrecorded,
-                new CoveringReview(DomainId.New(), Live: true, "Working", AutoCreated: true)),
+                new CoveringReview(DomainId.New(), Live: true, "Working", AutoCreated: true, GateParked: false)),
             (Observed(ReviewRequestOutcome.AlreadyCovered, Now.AddMinutes(-5)),
                 AutoPrReviewSetting.Unrecorded,
-                new CoveringReview(DomainId.New(), Live: false, "Done", AutoCreated: true)),
+                new CoveringReview(DomainId.New(), Live: false, "Done", AutoCreated: true, GateParked: false)),
             (Observed(ReviewRequestOutcome.AlreadyCovered, Now.AddMinutes(-5)),
                 AutoPrReviewSetting.Unrecorded,
-                new CoveringReview(DomainId.New(), Live: false, "Done", AutoCreated: false)),
+                new CoveringReview(DomainId.New(), Live: false, "Done", AutoCreated: false, GateParked: false)),
             (Observed(ReviewRequestOutcome.AlreadyCovered, Now.AddMinutes(-5)),
                 new AutoPrReviewSetting(AutoPrReviewSpeed.Off, Recorded: true),
-                new CoveringReview(DomainId.New(), Live: false, "Abandoned", AutoCreated: false)),
+                new CoveringReview(DomainId.New(), Live: false, "Abandoned", AutoCreated: false, GateParked: false)),
             (Observed(ReviewRequestOutcome.TaskCreated, Now.AddMinutes(-5)),
                 AutoPrReviewSetting.Unrecorded, null),
         ];
