@@ -62,6 +62,10 @@ public sealed class RunDetails : IJsonOnDeserialized
     public List<ReviewPersona> PrReviewForkSkippedPersonas { get; set; } = [];
     /// <summary>Mirrors <see cref="RunAggregate.PrReviewForkSkipReason"/>.</summary>
     public string? PrReviewForkSkipReason { get; set; }
+    /// <summary>Mirrors <see cref="RunAggregate.PrReviewDocsOnlySkippedPersonas"/>.</summary>
+    public List<ReviewPersona> PrReviewDocsOnlySkippedPersonas { get; set; } = [];
+    /// <summary>Mirrors <see cref="RunAggregate.PrReviewDocsOnlySkipReason"/>.</summary>
+    public string? PrReviewDocsOnlySkipReason { get; set; }
     /// <summary>Mirrors <see cref="RunAggregate.PrReviewPermissionDenials"/>, keyed by session slug.</summary>
     public Dictionary<string, List<PermissionDenial>> PrReviewPermissionDenials { get; set; } = [];
     /// <summary>
@@ -1415,6 +1419,8 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         view.PrReviewPersonasFellBackToEngineer = @event.Data.FellBackToEngineer;
         view.PrReviewForkSkippedPersonas = [.. ReviewPersona.Declared(@event.Data.ForkSkipped)];
         view.PrReviewForkSkipReason = @event.Data.ForkSkipReason;
+        view.PrReviewDocsOnlySkippedPersonas = [.. ReviewPersona.Declared(@event.Data.DocsOnlySkipped)];
+        view.PrReviewDocsOnlySkipReason = @event.Data.DocsOnlySkipReason;
     }
 
     /// <summary>Accumulates rather than replaces — mirrors <see cref="RunAggregate.Apply(RunPermissionDenialsRecorded)"/>'s own doc and for the identical reason.</summary>

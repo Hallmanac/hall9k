@@ -61,7 +61,7 @@ public sealed class LocalLaunchOfferTests
     [Fact]
     public void An_engineer_only_report_gets_no_identity_block()
     {
-        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan([ReviewPersona.Engineer]);
+        ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan([ReviewPersona.Engineer], securityReviewEnabled: false);
 
         LocalLaunchOffer.Compose(plan, TaskId, RunId, Worktree, Branch).Should().BeEmpty();
     }
@@ -76,7 +76,8 @@ public sealed class LocalLaunchOfferTests
     public void A_review_with_no_checkout_says_the_offer_cannot_be_taken_up()
     {
         ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(
-            [ReviewPersona.Qa], [new ReviewDriveDecision(ReviewPersona.Qa, false, true)]);
+            [ReviewPersona.Qa], [new ReviewDriveDecision(ReviewPersona.Qa, false, true)],
+            securityReviewEnabled: false);
 
         string block = LocalLaunchOffer.Compose(plan, TaskId, RunId, string.Empty, Branch);
 
@@ -88,7 +89,7 @@ public sealed class LocalLaunchOfferTests
     private static string Compose(ReviewPersona persona, bool settingOn, bool hasRunSkill)
     {
         ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan(
-            [persona], [new ReviewDriveDecision(persona, settingOn, hasRunSkill)]);
+            [persona], [new ReviewDriveDecision(persona, settingOn, hasRunSkill)], securityReviewEnabled: false);
         return LocalLaunchOffer.Compose(plan, TaskId, RunId, Worktree, Branch);
     }
 }

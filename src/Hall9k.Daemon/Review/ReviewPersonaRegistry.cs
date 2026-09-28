@@ -129,6 +129,15 @@ public sealed record ReviewPersonaEntry(
 /// parameter. Empty for a plan built for a non-fork head.
 /// </param>
 /// <param name="ForkSkipReason">Why every persona in <paramref name="ForkSkipped"/> was skipped, verbatim. Null exactly when that list is empty.</param>
+/// <param name="DocsOnlySkipped">
+/// The subset of <paramref name="Skipped"/> skipped specifically because every path this pull
+/// request changed matched this project's own non-executable-path set (idea 6be68ee2, phase two)
+/// — never because the persona has no review prompt registered. Today this can only ever hold
+/// <see cref="ReviewPersona.Security"/>: a diff that touches nothing buildable or testable cannot
+/// introduce the classes of defect that persona hunts for. Empty for a run whose diff touched
+/// anything outside that set, and for one whose stream predates this skip existing.
+/// </param>
+/// <param name="DocsOnlySkipReason">Why every persona in <paramref name="DocsOnlySkipped"/> was skipped, verbatim. Null exactly when that list is empty.</param>
 public sealed record ReviewPersonaPlan(
     IReadOnlyList<ReviewPersona> Requested,
     IReadOnlyList<ReviewPersona> Ran,
@@ -137,7 +146,9 @@ public sealed record ReviewPersonaPlan(
     IReadOnlyList<ReviewPersonaSession> Sessions,
     IReadOnlyList<ReviewDriveDecision> DriveDecisions,
     IReadOnlyList<ReviewPersona> ForkSkipped,
-    string? ForkSkipReason)
+    string? ForkSkipReason,
+    IReadOnlyList<ReviewPersona> DocsOnlySkipped,
+    string? DocsOnlySkipReason)
 {
     /// <summary>
     /// What this run decided about <paramref name="persona"/> driving. A persona with nothing
@@ -155,10 +166,13 @@ public sealed record ReviewPersonaPlan(
 /// prompt and its criteria. A pr-review run reads the assignee's declared personas, asks this for
 /// a plan, and dispatches exactly what the plan names — so the QA persona's review (piece 2) was
 /// an entry here plus its prompt, the designer's (piece 3) was the same, and nothing in the
-/// dispatch, the report, or the CLI had to learn about either.
+/// dispatch, the report, or the CLI had to learn about either. The Security persona (idea 6be68ee2,
+/// phase two) is the odd one of the four: it is never declared at all, it is folded into
+/// <see cref="Plan"/> on top of whatever the assignee declared, gated only by a project's own
+/// on/off setting rather than by <see cref="ReviewPersona.Declarable"/>.
 /// <para>
-/// All three personas have an entry and all three now have sessions, so nothing a member can
-/// declare from <see cref="ReviewPersona.All"/> is skipped today. The machinery that says
+/// Every persona in <see cref="ReviewPersona.All"/> has an entry and every one now has sessions, so
+/// nothing a member can declare is skipped today. The machinery that says
 /// otherwise stays: <see cref="ReviewPersonaEntry.IsRegistered"/>, the plan's own
 /// <see cref="ReviewPersonaPlan.Skipped"/> list, and its fall back to the engineer are what make
 /// the next persona added to the vocabulary visible rather than silent between the moment it can
@@ -243,6 +257,37 @@ public static class ReviewPersonaRegistry
         CanDriveTheProduct: true);
 
     /// <summary>
+    /// The Security review's session slug — a plain persona name, the same reason
+    /// <see cref="QaSlug"/> is one: Security is one session and has no second lens to be
+    /// distinguished from.
+    /// </summary>
+    public const string SecuritySlug = "security";
+
+    private static readonly ReviewPersonaEntry SecurityEntry = new(
+        ReviewPersona.Security,
+        "Injection, secrets handling, authentication and authorization, unsafe process, file, or "
+        + "network use, dependency changes, and CI or release workflow changes — whether this "
+        + "change introduces a vulnerability into the project, not whether it attacks the host "
+        + "(idea 6be68ee2, phase two).",
+        FailureFailsTheRun: false,
+        [
+            new ReviewPersonaSession(
+                ReviewPersona.Security,
+                SecuritySlug,
+                "Security (injection, secrets, auth, unsafe I/O, dependencies, CI/release)",
+                SessionRoleName.ReviewSecurity(PrReviewCycle),
+                // Unlike QA's and the designer's own sessions, this one is never handed the
+                // task's own objective, acceptance criteria, or agent context: it hunts classes
+                // of defect over the diff itself and must not be steered by an outsider's own
+                // description of what the change is for (security review idea 6be68ee2).
+                SeesTaskContext: false,
+                SecurityReviewPromptBuilder.Build),
+        ],
+        // Never drives the product: this lens reads the diff and the files it touches, and has
+        // no more reason to stand the project up than the engineer's own two lenses do.
+        CanDriveTheProduct: false);
+
+    /// <summary>
     /// A pr-review run never re-reviews — one pass per persona session, no cycle loop — so every
     /// session name and findings file this registry produces reads as cycle 1 always, exactly as
     /// <c>PrReviewEngine</c>'s own dispatch already did before personas existed.
@@ -253,6 +298,7 @@ public static class ReviewPersonaRegistry
     public static ReviewPersonaEntry For(ReviewPersona persona) =>
         persona == ReviewPersona.Qa ? QaEntry
         : persona == ReviewPersona.Designer ? DesignerEntry
+        : persona == ReviewPersona.Security ? SecurityEntry
         : EngineerEntry;
 
     /// <summary>
@@ -264,6 +310,15 @@ public static class ReviewPersonaRegistry
         "this pull request's head sits on a fork, so nothing this platform runs against it may "
         + "build, test, or drive the product it belongs to — only the engineer's two read-only "
         + "lenses run against the diff";
+
+    /// <summary>
+    /// The reason the Security persona is named with when every path this pull request changed
+    /// matched this project's own non-executable-path set (idea 6be68ee2, phase two, Decisions Log
+    /// #252) — see <see cref="Plan"/>'s own <c>everyChangedPathIsNonExecutable</c> parameter.
+    /// </summary>
+    public const string DocsOnlySkipReason =
+        "every path this pull request changed matched this project's own non-executable-path set, "
+        + "so nothing in this diff can introduce the classes of defect this review hunts for";
 
     /// <summary>
     /// What a run assigned to a member holding <paramref name="declared"/> will do. Declaring
@@ -279,34 +334,77 @@ public static class ReviewPersonaRegistry
     /// than running a session against the fork's own code with this project's build or test
     /// tools, or anything else that could execute it. A declaration holding nothing but
     /// fork-skipped personas falls back to the engineer's review below, the same fallback an
-    /// unregistered persona already gets, so a fork head is never left unreviewed.
+    /// unregistered persona already gets, so a fork head is never left unreviewed. The Security
+    /// persona is never fork-skipped: it never drives the product
+    /// (<see cref="ReviewPersonaEntry.CanDriveTheProduct"/> is false on its entry), so a fork head
+    /// leaves it running against the diff exactly as the engineer's two lenses do.
+    /// </param>
+    /// <param name="securityReviewEnabled">
+    /// This project's own security-review setting (<c>h9k project set --security-review</c>,
+    /// default on, resolved the <see cref="Hall9k.Domain.Features.Project.AutoPrReviewSetting"/>
+    /// way) — whether the Security persona is appended to this plan at all, on top of whatever
+    /// the assignee declared. Unlike every other persona, Security is never something a member declares
+    /// (<see cref="ReviewPersona.Parse"/> refuses it), so it is folded in here rather than read out
+    /// of <paramref name="declared"/>; a <paramref name="declared"/> list that somehow does carry
+    /// it is de-duplicated rather than doubled.
+    /// </param>
+    /// <param name="everyChangedPathIsNonExecutable">
+    /// Whether every path this pull request changed matched this project's own non-executable-path
+    /// set (idea 6be68ee2, phase two, Decisions Log #252) — a diff that touches nothing buildable
+    /// or testable cannot introduce the classes of defect this review hunts for. Has no effect
+    /// when <paramref name="securityReviewEnabled"/> is false, since there is nothing to skip
+    /// either way.
     /// </param>
     public static ReviewPersonaPlan Plan(
         IEnumerable<ReviewPersona>? declared, IEnumerable<ReviewDriveDecision>? driveDecisions = null,
-        bool isForkHead = false)
+        bool isForkHead = false, bool securityReviewEnabled = true, bool everyChangedPathIsNonExecutable = false)
     {
-        IReadOnlyList<ReviewPersona> requested = ReviewPersona.ForReview(declared);
+        IReadOnlyList<ReviewPersona> declaredRequested =
+            ReviewPersona.ForReview(declared?.Where(persona => persona != ReviewPersona.Security));
+
+        // Appended after ForReview's own no-declaration fallback runs, never woven into it: an
+        // assignee who declared nothing still reads as "the engineer, plus Security" rather than
+        // Security alone masking the ordinary fallback.
+        IReadOnlyList<ReviewPersona> requested = securityReviewEnabled
+            ? [.. declaredRequested, ReviewPersona.Security]
+            : declaredRequested;
+
         IReadOnlyList<ReviewPersona> forkSkipped = isForkHead
             ? [.. requested.Where(persona => For(persona).IsRegistered && For(persona).CanDriveTheProduct)]
             : [];
-        IReadOnlyList<ReviewPersona> ran =
-            [.. requested.Where(persona => For(persona).IsRegistered && !forkSkipped.Contains(persona))];
-        IReadOnlyList<ReviewPersona> skipped = [.. requested.Where(persona => !ran.Contains(persona))];
+        IReadOnlyList<ReviewPersona> docsOnlySkipped = securityReviewEnabled && everyChangedPathIsNonExecutable
+            ? [ReviewPersona.Security]
+            : [];
+
+        // What the assignee's OWN declared personas actually produced — never Security's own
+        // addition, which is not something they declared and must never stand in for it. This is
+        // the "did the review they asked for happen" question the fall-back below answers; if
+        // Security's own presence in the combined Ran list decided it instead, a fork head
+        // declaring only drive-capable personas would read as reviewed (Security ran) while the
+        // review the assignee actually asked for silently never happened and nothing ever said so.
+        IReadOnlyList<ReviewPersona> declaredRan =
+            [.. declaredRequested.Where(persona =>
+                For(persona).IsRegistered && !forkSkipped.Contains(persona) && !docsOnlySkipped.Contains(persona))];
 
         // Nothing the assignee declared can be run yet. Leaving the pull request entirely
-        // unreviewed would be the literal reading and the worse outcome: the review they asked for
-        // does not exist, but the review that has always run does, and the report says plainly
-        // that it stood in. Never silent — Skipped still names every persona that did not run, and
-        // FellBackToEngineer is recorded on the run stream.
-        bool fellBack = ran.Count == 0;
-        if (fellBack)
-        {
-            ran = [ReviewPersona.Engineer];
-        }
+        // unreviewed (of the review they asked for) would be the worse outcome: the review that
+        // has always run stands in — added alongside Security's own run, never replacing it,
+        // since Security running successfully is not itself a reason to skip the engineer's
+        // review of the same diff. Never silent — Skipped still names every persona that did not
+        // run, and FellBackToEngineer is recorded on the run stream.
+        bool fellBack = declaredRan.Count == 0;
+        IReadOnlyList<ReviewPersona> coreRan = fellBack ? [ReviewPersona.Engineer] : declaredRan;
+        IReadOnlyList<ReviewPersona> securityRan =
+            securityReviewEnabled && !docsOnlySkipped.Contains(ReviewPersona.Security)
+                ? [ReviewPersona.Security]
+                : [];
+        IReadOnlyList<ReviewPersona> ran = [.. coreRan, .. securityRan];
+        IReadOnlyList<ReviewPersona> skipped = [.. requested.Where(persona => !ran.Contains(persona))];
 
         return new ReviewPersonaPlan(
             requested, ran, skipped, fellBack, [.. ran.SelectMany(persona => For(persona).Sessions)],
-            DrivesOf(ran, driveDecisions), forkSkipped, forkSkipped.Count > 0 ? ForkSkipReason : null);
+            DrivesOf(ran, driveDecisions), forkSkipped, forkSkipped.Count > 0 ? ForkSkipReason : null,
+            docsOnlySkipped, docsOnlySkipped.Count > 0 ? DocsOnlySkipReason : null);
     }
 
     /// <summary>
@@ -344,7 +442,8 @@ public static class ReviewPersonaRegistry
     public static ReviewPersonaPlan Recorded(
         IEnumerable<ReviewPersona>? requested, IEnumerable<ReviewPersona>? ran, IEnumerable<ReviewPersona>? skipped,
         bool fellBackToEngineer, IEnumerable<ReviewDriveDecision>? driveDecisions = null,
-        IEnumerable<ReviewPersona>? forkSkipped = null, string? forkSkipReason = null)
+        IEnumerable<ReviewPersona>? forkSkipped = null, string? forkSkipReason = null,
+        IEnumerable<ReviewPersona>? docsOnlySkipped = null, string? docsOnlySkipReason = null)
     {
         IReadOnlyList<ReviewPersona> recordedRan = ReviewPersona.Declared(ran);
         IReadOnlyList<ReviewPersonaSession> sessions = [.. recordedRan.SelectMany(persona => For(persona).Sessions)];
@@ -352,10 +451,15 @@ public static class ReviewPersonaRegistry
         // No sessions to rebuild: either the run predates review personas, or every persona it
         // ran has since lost its registration. Both plan as the engineer's review, which is the
         // one entry this registry can never be without, so Sessions is never empty and no caller
-        // has to guard a plan with no primary session in it.
+        // has to guard a plan with no primary session in it. securityReviewEnabled: false here,
+        // deliberately, even though a project's own setting defaults on today: a run whose stream
+        // predates review personas entirely did not run the Security persona either, and rebuilding
+        // it from the registry's CURRENT defaults would misrepresent a run that already completed
+        // — the exact drift this whole method exists to avoid (its own class doc, "never a fresh
+        // Plan call").
         if (sessions.Count == 0)
         {
-            return Plan(null);
+            return Plan(null, securityReviewEnabled: false);
         }
 
         IReadOnlyList<ReviewPersona> recordedRequested = ReviewPersona.Declared(requested);
@@ -367,7 +471,9 @@ public static class ReviewPersonaRegistry
             sessions,
             DrivesOf(recordedRan, driveDecisions),
             ReviewPersona.Declared(forkSkipped),
-            forkSkipReason);
+            forkSkipReason,
+            ReviewPersona.Declared(docsOnlySkipped),
+            docsOnlySkipReason);
     }
 
     private static string BuildLens(ReviewPersonaPromptRequest request, ReviewLens lens) =>

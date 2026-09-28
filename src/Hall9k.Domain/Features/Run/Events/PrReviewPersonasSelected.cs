@@ -37,6 +37,14 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// whose stream predates the fork skip existing.
 /// </param>
 /// <param name="ForkSkipReason">Why every persona in <paramref name="ForkSkipped"/> was skipped, verbatim. Null exactly when that list is empty.</param>
+/// <param name="DocsOnlySkipped">
+/// The subset of <paramref name="Skipped"/> skipped specifically because every path this pull
+/// request changed matched this project's own non-executable-path set (idea 6be68ee2, phase two,
+/// Decisions Log #252), never because the persona has no review prompt registered. Today this can
+/// only ever hold <see cref="ReviewPersona.Security"/>. Null, or a value disjoint from
+/// <paramref name="Skipped"/>, reads as empty.
+/// </param>
+/// <param name="DocsOnlySkipReason">Why every persona in <paramref name="DocsOnlySkipped"/> was skipped, verbatim. Null exactly when that list is empty.</param>
 public sealed record PrReviewPersonasSelected(
     Guid Id,
     IReadOnlyList<ReviewPersona> Requested,
@@ -46,4 +54,6 @@ public sealed record PrReviewPersonasSelected(
     DateTimeOffset SelectedAt,
     IReadOnlyList<ReviewDriveDecision>? DriveDecisions = null,
     IReadOnlyList<ReviewPersona>? ForkSkipped = null,
-    string? ForkSkipReason = null);
+    string? ForkSkipReason = null,
+    IReadOnlyList<ReviewPersona>? DocsOnlySkipped = null,
+    string? DocsOnlySkipReason = null);

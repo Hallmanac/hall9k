@@ -324,11 +324,24 @@ public sealed class RunLauncher(
             // this dispatch's own PullRequestFacts, fetched fresh above: a pull request's head
             // repository can never change once opened (only its base can move, on a retarget),
             // so this is the one, permanent read and never re-checked on a later dispatch.
+            // Whether the Security persona is appended to this plan at all (idea 6be68ee2, phase
+            // two), and whether every path this pull request changed matched this project's own
+            // non-executable-path set — both resolved once, here, and folded into the plan below,
+            // so the run's own recorded plan and every session's dispatch agree with what h9k
+            // project show would print for this project right now.
+            bool securityReviewEnabled = !isPrReview
+                || (await SecurityReviewSetting.ResolveAsync(session, project.Id, cancellationToken)).IsOn;
+            bool securityReviewDocsOnlySkip = isPrReview && securityReviewEnabled
+                && await EveryChangedPathIsNonExecutableAsync(
+                    worktree.Path, prReviewFacts!.BaseRefName.IsNotBlank() ? prReviewFacts.BaseRefName : project.BaseBranch,
+                    project.EffectiveNonExecutablePaths, cancellationToken);
+
             ReviewPersonaPlan? personaPlan = isPrReview
                 ? ReviewPersonaRegistry.Plan(
                     (await session.LoadAsync<OwnerDetails>(task.AssignedOwnerId ?? ownerId, cancellationToken))
                         ?.ReviewPersonas,
-                    isForkHead: prReviewFacts!.IsCrossRepository)
+                    isForkHead: prReviewFacts!.IsCrossRepository, securityReviewEnabled: securityReviewEnabled,
+                    everyChangedPathIsNonExecutable: securityReviewDocsOnlySkip)
                 : null;
 
             // Then, for whichever of those personas can stand the product up, what this run will
@@ -344,7 +357,19 @@ public sealed class RunLauncher(
                     personaPlan.Requested,
                     await ReviewDriveResolver.ResolveAllAsync(
                         personaPlan.Ran, session, project, cancellationToken),
-                    isForkHead: prReviewFacts!.IsCrossRepository);
+                    isForkHead: prReviewFacts!.IsCrossRepository, securityReviewEnabled: securityReviewEnabled,
+                    everyChangedPathIsNonExecutable: securityReviewDocsOnlySkip);
+            }
+
+            // The primary session is ordinarily the engineer's adversarial lens — Security's own
+            // session never leads a plan today, since ReviewPersonaRegistry.Plan always appends
+            // it after whatever the assignee declared — but a future persona-ordering change must
+            // not silently spawn this slot on the ordinary Review chain instead of this persona's
+            // own floor (idea 6be68ee2, phase two, the courier precedent).
+            if (isPrReview && personaPlan!.Sessions[0].Persona == ReviewPersona.Security)
+            {
+                model = options.Value.ResolveSecurityReviewModel(task.Model, project.Model);
+                effort = options.Value.ResolveSecurityReviewEffort(task.Effort, project.Effort);
             }
 
             // The primary session's own name (task: every dispatched agent session launches
@@ -546,7 +571,8 @@ public sealed class RunLauncher(
                 session.Events.Append(runId, new PrReviewPersonasSelected(
                     runId, personaPlan.Requested, personaPlan.Ran, personaPlan.Skipped,
                     personaPlan.FellBackToEngineer, DateTimeOffset.UtcNow, personaPlan.DriveDecisions,
-                    personaPlan.ForkSkipped, personaPlan.ForkSkipReason));
+                    personaPlan.ForkSkipped, personaPlan.ForkSkipReason,
+                    personaPlan.DocsOnlySkipped, personaPlan.DocsOnlySkipReason));
             }
 
             // Appended right behind the dispatch, in the same commit, so the run record can never
@@ -1443,6 +1469,41 @@ public sealed class RunLauncher(
     /// comparison and falls back to the ordinary dispatch — the safe direction when origin cannot be
     /// read is dispatching the full pipeline, never assuming the tip still matches.
     /// </summary>
+    /// <summary>
+    /// Whether every path this pull request's checkout changed against <paramref name="baseRef"/>
+    /// matched this project's own non-executable-path set (idea 6be68ee2, phase two, Decisions Log
+    /// #252) — the same question <c>NonExecutablePathClassifier</c> answers for the ordinary build
+    /// and test gates, asked here over the identical diff range every persona's own prompt already
+    /// tells its session to read (<c>git diff origin/&lt;BaseRef&gt;...HEAD</c>). False for any
+    /// diff this could not read, the safe direction: a pull request whose changed paths are
+    /// unobservable is never guessed as content-only, so the Security persona still runs against
+    /// it rather than being silently skipped on a fact nobody actually observed.
+    /// </summary>
+    private async Task<bool> EveryChangedPathIsNonExecutableAsync(
+        string worktreePath, string baseRef, IReadOnlyList<string> nonExecutablePathRules,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            ProcessResult diff = await processRunner(
+                "git", ["diff", "--name-only", "-z", $"origin/{baseRef}...HEAD"], worktreePath, cancellationToken);
+            if (diff.ExitCode != 0)
+            {
+                return false;
+            }
+
+            string[] changedPaths = diff.StandardOutput.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+            return changedPaths.Length > 0
+                && NonExecutablePathClassifier.Classify(changedPaths, nonExecutablePathRules).AllMatched;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception, "Could not classify changed paths in {Worktree} against {BaseRef}", worktreePath, baseRef);
+            return false;
+        }
+    }
+
     private async Task<string?> ReadRemoteBranchTipAsync(
         string worktreePath, string branch, CancellationToken cancellationToken)
     {
