@@ -1,9 +1,9 @@
-using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Domain.Features.Project;
 
@@ -85,9 +85,6 @@ public sealed record BranchNameTemplate
     private const int CollisionSuffixLength = 6;
 
     private const int MaximumRenderedBaseLength = MaximumRenderedLength - CollisionSuffixLength;
-
-    /// <summary>How much of a refused template <see cref="Legible"/> is willing to echo back.</summary>
-    private const int MaximumRelayedLength = 80;
 
     /// <summary>
     /// Every token <see cref="Render"/> recognizes, keyed to the renderer it dispatches to — the
@@ -260,17 +257,15 @@ public sealed record BranchNameTemplate
 
     /// <summary>
     /// The subset of <c>git check-ref-format --branch</c> that a rendered name can actually
-    /// violate. Implemented here rather than shelled out to git because the domain runs nowhere
-    /// near a repository and this has to answer at <c>h9k project set</c> time, on a machine whose
-    /// project may not even be materialised yet.
+    /// violate, plus this type's own length ceiling — every other rule lives in
+    /// <see cref="GitArgumentValidation.IsLegalBranchName"/>, shared with every OTHER carrier of a
+    /// branch string this platform ever hands to git (security review idea 6be68ee2). Implemented
+    /// there rather than shelled out to git because the domain runs nowhere near a repository and
+    /// this has to answer at <c>h9k project set</c> time, on a machine whose project may not even
+    /// be materialised yet.
     /// </summary>
     private void EnsureLegalBranchName(string branch)
     {
-        if (branch.Length == 0)
-        {
-            throw Refuse("it renders an empty name.");
-        }
-
         if (branch.Length > MaximumRenderedBaseLength)
         {
             throw Refuse(
@@ -279,97 +274,9 @@ public sealed record BranchNameTemplate
                 + "retried task's branch gets is reserved.");
         }
 
-        // Enumerated as Rune, not char: a foreach over a string yields UTF-16 code units, and a
-        // non-BMP Unicode formatting character (a TAG character such as U+E0041, category Cf) is
-        // a surrogate pair whose two halves each categorise as Surrogate rather than Format —
-        // invisible to a per-char check of char.GetUnicodeCategory even though the whole
-        // character is exactly what that check exists to catch (independent pre-PR review,
-        // cycle 3, adversarial).
-        foreach (Rune rune in branch.EnumerateRunes())
+        if (!GitArgumentValidation.IsLegalBranchName(branch, out string? refusalReason))
         {
-            // Every character these two rules bar is ASCII, so a rune outside the BMP can never
-            // match either — the cast is exact whenever it can possibly matter.
-            if (rune.Value <= char.MaxValue)
-            {
-                char character = (char)rune.Value;
-
-                // char.IsControl covers DEL as well as the C0 range, so both ends of git's own
-                // "no control characters" rule are here.
-                if (char.IsControl(character) || character is ' ' or '~' or '^' or ':' or '?' or '*' or '[' or '\\')
-                {
-                    throw Refuse($"{Describe(character)} is a character git does not allow in a ref name.");
-                }
-
-                // git allows '"' in a ref name, but GitWorktreeManager interpolates the rendered
-                // branch straight into a single ProcessStartInfo.Arguments string, where '"' is
-                // the quoting character itself — a name carrying one parses into the wrong argv,
-                // breaking every git invocation this branch is used in, exactly the failure this
-                // validation exists to catch at project-set time instead of at dispatch.
-                if (character == '"')
-                {
-                    throw Refuse(
-                        $"{Describe(character)} is a character git allows in a ref name, but this platform "
-                        + "passes the rendered name through a single quoted command-line argument, which a "
-                        + "'\"' would break out of.");
-                }
-            }
-
-            // The one rule here that is stricter than git's own, and deliberately: git takes a
-            // Unicode formatting character in a ref name quite happily, but a branch name is
-            // printed into terminals, logs, pull-request bodies and this platform's own board, and
-            // a bidirectional override makes one name read on screen as another. It is the same
-            // concern the Legible relay below exists for, applied to the value rather than to the
-            // refusal explaining it. No branch convention anybody has asked for needs one.
-            if (Rune.GetUnicodeCategory(rune) == UnicodeCategory.Format)
-            {
-                throw Refuse(
-                    $"{Describe(rune)} is a Unicode formatting character. git would take it, but "
-                    + "a branch name is printed wherever this platform reports work, and a "
-                    + "bidirectional override there makes one name read as another.");
-            }
-        }
-
-        if (branch.Contains("..", StringComparison.Ordinal))
-        {
-            throw Refuse("git does not allow '..' in a ref name.");
-        }
-
-        if (branch.Contains("@{", StringComparison.Ordinal))
-        {
-            throw Refuse("git does not allow '@{' in a ref name.");
-        }
-
-        if (branch is "@")
-        {
-            throw Refuse("'@' on its own is not a ref name git accepts.");
-        }
-
-        if (branch[0] == '-')
-        {
-            throw Refuse("a branch name cannot begin with '-' — git reads it as an option.");
-        }
-
-        if (branch[^1] == '.')
-        {
-            throw Refuse("a ref name cannot end with '.'.");
-        }
-
-        foreach (string component in branch.Split('/'))
-        {
-            if (component.Length == 0)
-            {
-                throw Refuse("a ref name has no empty path components — it cannot start or end with '/', or contain '//'.");
-            }
-
-            if (component[0] == '.')
-            {
-                throw Refuse($"'{Legible(component)}' begins with '.', which git does not allow in a ref path component.");
-            }
-
-            if (component.EndsWith(".lock", StringComparison.Ordinal))
-            {
-                throw Refuse($"'{Legible(component)}' ends with '.lock', which git reserves for its own lock files.");
-            }
+            throw Refuse(refusalReason!);
         }
     }
 
@@ -450,54 +357,12 @@ public sealed record BranchNameTemplate
     /// What a refused template is safe to be quoted as, the <see cref="BacklogPolicy"/> convention
     /// (<c>RelayedPolicy</c>): the value came off a command line and the refusal is printed to a
     /// terminal, so a control character or a bidirectional override cannot reach the refusal it is
-    /// explaining, and an unbounded argument cannot be echoed whole.
-    /// <para>
-    /// The line it draws is printable ASCII rather than a hand-picked allowlist, which is wider
-    /// than the sibling relays deliberately. Origin incident (2026-09-01, this branch's own
-    /// self-review, running the procedure the docs describe): a narrow allowlist rewrote the
-    /// <c>:</c> in <c>feature/{slug}:{shortid}</c> to <c>?</c>, and the very next clause named
-    /// <c>'?'</c> as the illegal character — a refusal that told the operator their template
-    /// contained a character it did not. Every character git objects to is printable ASCII, so
-    /// showing that range is what makes the message true; the sanitizing still catches everything
-    /// a terminal can actually be attacked with, all of which is outside it.
-    /// </para>
+    /// explaining, and an unbounded argument cannot be echoed whole. Delegates to
+    /// <see cref="GitArgumentValidation.Printable"/>, the same relay every other refused branch
+    /// value in this platform now goes through — see that type's own doc for why a narrow allowlist
+    /// is the wrong shape for it (origin incident 2026-09-01, this branch's own self-review).
     /// </summary>
-    private static string Legible(string value)
-    {
-        // Rune, not char, for the same reason EnsureLegalBranchName enumerates runes: a non-BMP
-        // character is a surrogate pair, and reading it as two chars would render it as two '?'s
-        // rather than by its own code point.
-        StringBuilder visible = new();
-        int runeCount = 0;
-        bool truncated = false;
-        foreach (Rune rune in value.EnumerateRunes())
-        {
-            if (runeCount >= MaximumRelayedLength)
-            {
-                truncated = true;
-                break;
-            }
-
-            visible.Append(Readable(rune));
-            runeCount++;
-        }
-
-        return truncated ? visible.Append('…').ToString() : visible.ToString();
-    }
-
-    private static string Readable(Rune rune) => Printable(rune) ? rune.ToString() : "?";
-
-    /// <summary>
-    /// One offending character, named so the operator can find it: itself when it is printable,
-    /// and its code point when it is not, since <c>'?'</c> for an unprintable character reads as a
-    /// claim about a character the template does not contain.
-    /// </summary>
-    private static string Describe(char character) => Describe(new Rune(character));
-
-    private static string Describe(Rune rune) =>
-        Printable(rune) ? $"'{rune}'" : $"U+{rune.Value:X4}";
-
-    private static bool Printable(Rune rune) => rune.IsAscii && rune.Value is >= ' ' and <= '~';
+    private static string Legible(string value) => GitArgumentValidation.Printable(value);
 
     public bool Equals(BranchNameTemplate? other) => other is not null && Value == other.Value;
 

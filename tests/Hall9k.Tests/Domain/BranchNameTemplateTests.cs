@@ -139,7 +139,7 @@ public sealed class BranchNameTemplateTests
     [InlineData("task/{slug}@{x", "never closed")]
     [InlineData("task/{slug} {shortid}", "git does not allow")]
     [InlineData("task/{slug}?", "git does not allow")]
-    [InlineData("task/{slug}\"", "passes the rendered name through")]
+    [InlineData("task/{slug}\"", "single quoted command-line argument")]
     [InlineData("-{slug}", "cannot begin with '-'")]
     [InlineData("{slug}.", "cannot end with '.'")]
     public void An_illegal_template_is_refused_at_set_time_with_the_rule_quoted(string template, string rule)
