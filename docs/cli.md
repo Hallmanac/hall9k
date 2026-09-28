@@ -737,6 +737,7 @@ also appear elsewhere on this page stays where it is.
 | `h9k node invite` | Mints a single-use invite secret, printed once, that lets a new machine of yours join your fleet on every non-archived project you are registered to. |
 | `h9k node vouch <node-id>` | Vouches a node into your fleet by writing its id and public key into every non-archived project you are registered to, and prints its key fingerprint. |
 | `h9k node revoke <node-id>` | Revokes a node from your fleet, effective at the next ledger read on any machine, and undone by vouching for the same node id again. |
+| `h9k owner promote [--yes]` | Promotes this node's own vouched key onto the owner's ranked root-key set, once it holds a live successor record: writes a rotation into every non-archived project you are registered to, computing the key it supersedes separately in each. Prints every project it will write to and the key each write supersedes before asking to confirm; refused outright without `--yes` in a session with no terminal to ask on. A re-run only writes to projects still missing the rotation. |
 | `h9k owner show [owner]` | Prints an owner's id, which is their root fingerprint and the value `--owner` and `--to owner:` take, along with their projects, linked GitHub accounts, this node's key path and public key, and every preference their work runs by. |
 | `h9k owner set [owner]` | Changes an owner's standing preferences; its `--rerequest-review`, `--voice-skill`, `--clear-voice-skill`, `--persona`, `--clear-personas`, `--display-name`, and `--project` options are described under [Projects, owners, connections](#projects-owners-connections). |
 
@@ -838,7 +839,7 @@ Failed task, and `--pr` records where the work landed.
 ### Projects, owners, connections
 
 `h9k project add | init | join | assign-key | list | show | set | remove | cancel-purge | reactivate | rename | invite | pull | reconcile | members | member remove | prompt-addendum | run-skill` ·
-`h9k owner show | set` · `h9k node invite | vouch | revoke` · `h9k connection add jira | list`
+`h9k owner show | set | promote` · `h9k node invite | vouch | revoke` · `h9k connection add jira | list`
 
 `project add` registers a project **and creates its home directory**; `project init` is the same
 recipe for a project that has none yet, and the repair path for one that is incomplete. `project

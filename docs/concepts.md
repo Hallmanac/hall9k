@@ -1392,8 +1392,9 @@ node can be promoted to stand in for the root, deliberately and loudly, never au
 because the original went quiet. The root writes a **successor** record for a vouched node,
 `owners/<root>/successors/<node-id>.yaml`, naming the exact key already vouched for it, since in
 Hall9k the root key already is the root node's own signing key and a separate heir keypair would just
-sit next to it, exposed by the identical compromise. A listed successor promotes itself with a
-**rotation**, `owners/<root>/rotations/<n>.yaml`, naming the key it supersedes; once that record
+sit next to it, exposed by the identical compromise. A listed successor promotes itself with
+**`h9k owner promote`**, run on the surviving node, which writes a **rotation**,
+`owners/<root>/rotations/<n>.yaml`, naming the key it supersedes; once that record
 lands, the promoted key (**K1**) is live alongside the original (**K0**) rather than replacing it, and
 an earlier key always outranks a later one, so K0 can revoke K1's succession
 (`owners/<root>/revoked-successors/<node-id>.yaml`) but K1 can never revoke K0's. Every write K0 ever
@@ -1413,6 +1414,23 @@ recovered by succession, since it outranks everything under it by design; an own
 no heir until a second one is vouched and listed; and an owner whose only surviving heir is itself
 compromised stays hijacked. The floor there is a member re-inviting you in with a fresh root, which
 for a single-owner project means starting a new ledger, since a project's own genesis is spent once.
+
+`h9k owner promote` writes the rotation into every non-archived project the owner is registered to,
+computing the key it supersedes separately in each — a re-run is idempotent, writing only to
+whichever project has not caught up yet and reporting the rest as already rotated. Before any of
+that it prints exactly which projects it will write to, the key each write supersedes, and that an
+earlier key still outranks the new one and can undo it, then asks to confirm; it refuses outright
+when the session has no terminal to ask on and `--yes` was not given. Read that refusal as friction,
+not protection: a pty (`script -q /dev/null`, `expect`) fakes a terminal just as easily as a real
+one, and any process running as this account can already sign a rotation by hand with `ssh-keygen`
+and `git`, no `h9k` involved at all. The private key file's own `0600` permission — readable only by
+this account — is the actual boundary; the confirmation exists so a human does not promote a node by
+accident, not to stop one who already controls the account. The rotation is loud everywhere it
+lands: every node reading that project's ledger names it on its next sweep, both in `h9k status`
+("root key rotated by node `<id>`", or "rotation by node `<id>` revoked by an earlier root key (node
+`<id>`)" once an earlier key undoes it) and in the orchestrator feed. A fan-out stuck partway prints
+"rotation missing in `<project>`" on the promoting node's own `h9k status`, with the exact command
+to re-run.
 
 **A project's members have one of two roles.** Membership is one file per person, at
 `members/<root-fingerprint>.yaml` on `refs/hall9k/ledger/members`, and the role in it is `owner` or

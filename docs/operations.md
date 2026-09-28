@@ -673,9 +673,13 @@ trust is recomputed from, because git gives push access no finer lock than the r
 ([concepts.md](concepts.md#identity-fleet-and-team)).
 
 `keys/` and `credentials/` are the two directories here that hold a secret. `keys/` is the one you
-cannot regenerate: the ledger names this node by that key, so losing it means vouching in a
-replacement node, and a copy elsewhere lets whoever holds it write to the ledger as this node (revoke
-the node with `h9k node revoke <node-id>` from another node of the fleet). `credentials/` holds the
+cannot regenerate: the ledger names this node by that key, so losing an ordinary fleet node's key
+means vouching in a replacement node, and a copy elsewhere lets whoever holds it write to the ledger
+as this node (revoke the node with `h9k node revoke <node-id>` from another node of the fleet). Losing
+the **root** node's own key is a different recovery, because that key is the owner's whole identity:
+a surviving node holding a live successor record promotes itself instead, with `h9k owner promote`
+(see [concepts.md](concepts.md#identity-fleet-and-team)) — vouching in a replacement fixes nothing
+here, since a replacement node has no root authority to inherit. `credentials/` holds the
 rest of what a connection needs. A registered connection records a
 *reference* rather than a value, and a `file:` reference names a file in that directory, which is
 where `h9k connection add` puts a token you supply at the prompt or with `--token` (an `env:` or
@@ -684,6 +688,23 @@ reads or writes it, so it is what you carry to a new machine along with the rest
 you exclude from anything you would not put a token in. Do not carry `keys/` the same way: each
 machine is its own node with its own key, and a second machine of yours joins the fleet by invite
 (`h9k node invite`), never by copying a key.
+
+**Recovering a lost or hijacked root key.** Three shapes, told apart by what actually happened to
+the root node:
+
+- **The root Mac is destroyed** (drive failure, the machine is gone, nothing to recover from it).
+  From a surviving node that already holds a live successor record: `h9k owner promote`. Then either
+  re-vouch a replacement Mac (`h9k node vouch <node-id>`, once it has joined) to restore the fleet's
+  original shape, or simply carry on with the promoted node as the new root.
+- **The root Mac is stolen, not destroyed** — the private key file may still be readable by whoever
+  has it. This is the compromised-K0 case, and succession cannot recover it: nothing revokes K0 (see
+  [concepts.md](concepts.md#identity-fleet-and-team)). The floor is a member re-inviting you in with
+  a fresh root, which for a single-owner project means starting a new ledger.
+- **A hijacked promotion** — a heir node you did not intend to promote (or one whose key is no longer
+  trustworthy) ran `h9k owner promote` and its rotation landed. From a node still holding an earlier
+  root key: `h9k node revoke <heir-node-id>`. Under idea 6be68ee2's own succession rule, a revoke from
+  a key ranked above the hijacking node's own key also writes its revoked-successor record, which
+  voids the rotation and everything built on top of it.
 
 Transcripts are artifacts, not events. Event streams carry milestones only, and the bulky
 material lives on disk and is referenced from the stream. When a review parks, the findings and
@@ -1529,6 +1550,9 @@ answers them. Read them the way you read a cause line.
 | `fleet reconcile with <peer> for <project> STALLED`, with when it was asked and that it was re-asked once | A node of your own fleet was asked for everything it holds of the project, twice, and no answer has completed | `h9k project reconcile <project>` runs the exchange again |
 | `unverifiable <kind> by <id> in project <p>`, followed by the owner root it was written under and the reason | A vouch, revocation, or membership write is in the ledger and was signed by a key the chain does not trust, so it was ignored and recorded. It never took effect | `h9k project members <project>` prints the same block. A stranger's write needs nothing; a teammate's that should have counted needs an invite or `h9k node vouch` |
 | `<project> not joined yet`, with `h9k project join <project>` named | The project is registered here but this node has never joined its ledger, so nothing about it can be sent or trusted yet | `h9k project join <project>`, with `--invite <secret>` when someone else owns it |
+| `root key rotated by <node>` | `h9k owner promote` landed a rotation in this project's own ledger, promoting `<node>`'s own vouched key onto its owner's ranked root-key set | Nothing required; this is informational. `h9k node revoke <heir-node-id>` from a node holding an earlier root key undoes a hijacked one |
+| `rotation by <node> revoked by an earlier root key (<node>)` | An earlier-ranked root key voided the named rotation and everything built on top of it, the identical trust rule an ordinary fleet revoke already follows | Nothing required; a later re-promotion of the same node restores it, the same as a re-vouch |
+| `rotation missing in <project>` | This node's own key holds a live root key somewhere else, but this project's own copy of the ledger has not caught up — a partial `h9k owner promote` fan-out | `h9k owner promote` again; the retry is idempotent and only writes to projects still missing it |
 
 A task another node holds also says so on its own row in `h9k task show` ("held by node `<short-id>`
 (owner `<who>`) since `<age>`"), where `<who>` is that member's own label with the short fingerprint
