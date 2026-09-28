@@ -12,7 +12,15 @@ namespace Hall9k.Tests.Connectors.Ledger;
 /// up a "hub" (the project's remote) and one or more "node" clones of it (the project's own bare
 /// repository, `repo/&lt;name&gt;.git`), and drives <see cref="GitLedger"/> only against a node —
 /// never the hub directly, and never a worktree.
+/// <para>
+/// <c>[Collection("RealProcessSpawn")]</c> (README.md, "<c>[Collection("RealProcessSpawn")]</c>"),
+/// the same fence <see cref="Hall9k.Tests.Connectors.Trust.GitLedgerChainReaderTests"/> already
+/// carries: every scenario here spawns several real <c>git</c> subprocesses (independent pre-PR
+/// review, cycle 1, conformance lens, low).
+/// </para>
 /// </summary>
+[Collection("RealProcessSpawn")]
+[Trait("Category", "RealProcessSpawn")]
 public sealed class GitLedgerTests : IDisposable
 {
     private readonly LedgerTestRepo _repo = new();

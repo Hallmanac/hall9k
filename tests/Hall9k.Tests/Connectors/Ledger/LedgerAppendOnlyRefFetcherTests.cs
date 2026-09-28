@@ -12,7 +12,15 @@ namespace Hall9k.Tests.Connectors.Ledger;
 /// Every scenario below builds the hub's own history directly with raw git plumbing (never a
 /// "writer" clone, never a branch, never GitHub): what this class actually cares about is what
 /// origin's ref currently names and what this node last verified, not how either commit got there.
+/// <para>
+/// <c>[Collection("RealProcessSpawn")]</c> (README.md, "<c>[Collection("RealProcessSpawn")]</c>"),
+/// the same fence <see cref="Hall9k.Tests.Connectors.Ledger.GitLedgerTests"/> already carries: every
+/// scenario here spawns several real <c>git</c> subprocesses (independent pre-PR review, cycle 1,
+/// conformance lens, low).
+/// </para>
 /// </summary>
+[Collection("RealProcessSpawn")]
+[Trait("Category", "RealProcessSpawn")]
 public sealed class LedgerAppendOnlyRefFetcherTests : IDisposable
 {
     private readonly LedgerTestRepo _repo = new();
@@ -127,10 +135,25 @@ public sealed class LedgerAppendOnlyRefFetcherTests : IDisposable
         string commitA = await BuildCommitAsync(hub, "a.yaml", "v1\n", []);
         await SetRefAsync(hub, refName, commitA);
 
+        // A genuinely asynchronous runner (each git invocation actually yields to the thread pool,
+        // rather than completing synchronously via Task.FromResult) — without this, the three
+        // FetchAsync calls below run one after another regardless of Task.WhenAll, proving nothing
+        // about concurrent staging names ever colliding (independent pre-PR review, cycle 1,
+        // adversarial lens, low).
+        ProcessRunner concurrentGitRunner = (_, arguments, workingDirectory, cancellationToken) =>
+            Task.Run(
+                () =>
+                {
+                    (int exitCode, string standardOutput, string standardError) =
+                        LedgerTestRepo.RunGit(workingDirectory, [.. arguments]);
+                    return new ProcessResult(exitCode, standardOutput, standardError);
+                },
+                cancellationToken);
+
         LedgerAppendOnlyFetchResult[] results = await Task.WhenAll(
-            LedgerAppendOnlyRefFetcher.FetchAsync(GitRunner, reader, refName, CancellationToken.None),
-            LedgerAppendOnlyRefFetcher.FetchAsync(GitRunner, reader, refName, CancellationToken.None),
-            LedgerAppendOnlyRefFetcher.FetchAsync(GitRunner, reader, refName, CancellationToken.None));
+            LedgerAppendOnlyRefFetcher.FetchAsync(concurrentGitRunner, reader, refName, CancellationToken.None),
+            LedgerAppendOnlyRefFetcher.FetchAsync(concurrentGitRunner, reader, refName, CancellationToken.None),
+            LedgerAppendOnlyRefFetcher.FetchAsync(concurrentGitRunner, reader, refName, CancellationToken.None));
 
         results.Should().OnlyContain(result => !result.WasRefused && result.Tip == commitA);
         ListRefs(reader, "refs/hall9k-staging/").StandardOutput.Should().BeEmpty("every staging ref is removed once its own call finishes");
@@ -150,24 +173,41 @@ public sealed class LedgerAppendOnlyRefFetcherTests : IDisposable
     }
 
     [Fact]
-    public async Task FetchPrefixAsync_APartialFetchFailure_ThrowsWithNothingLiveMoved()
+    public async Task FetchPrefixAsync_AGenuineFetchFailure_ThrowsWithNothingLiveMoved()
     {
         string prefix = LedgerRefRegistry.RegisterPrefix($"refs/hall9k/ledger/test-prefix-{Guid.NewGuid():N}/").RefspecSource;
         string hub = _repo.CreateHub();
         string reader = _repo.CloneNode(hub);
-        string suffix = Guid.NewGuid().ToString("N");
+        string keptSuffix = Guid.NewGuid().ToString("N");
 
+        // Established first, through a real, successful FetchPrefixAsync call — the standing state
+        // the genuine failure below must leave completely untouched.
         string commitA = await BuildCommitAsync(hub, "a.yaml", "v1\n", []);
-        await SetRefAsync(hub, $"{prefix}{suffix}", commitA);
+        await SetRefAsync(hub, $"{prefix}{keptSuffix}", commitA);
+        await LedgerAppendOnlyRefFetcher.FetchPrefixAsync(GitRunner, reader, prefix, [keptSuffix], CancellationToken.None);
+        string liveBefore = RevParse(reader, $"{prefix}{keptSuffix}").StandardOutput.Trim();
+        string verifiedBefore = RevParse(reader, $"refs/hall9k-verified/{VerifiedPathFor(prefix)}{keptSuffix}").StandardOutput.Trim();
 
-        // A repository path that does not exist makes the whole wildcard fetch fail outright, before
-        // any per-suffix decision runs — the partial-failure shape this method must never leave a
-        // live or verified ref moved from.
-        string missingRepository = Path.Combine(Path.GetTempPath(), $"hall9k-missing-{Guid.NewGuid():N}");
+        // Breaks this reader's own remote so the NEXT fetch fails for real (an unreachable path,
+        // never "nothing to fetch") — a genuine failure fetching the whole prefix must throw before
+        // any per-suffix decision runs, so a partial failure never leaves one live or verified ref
+        // moved while a sibling's own fetch never even landed (independent pre-PR review, cycle 1,
+        // adversarial lens, low: the original version of this test pointed at a repository path that
+        // did not exist at all, which never reaches a real fetch attempt and proves nothing about a
+        // partial failure).
+        LedgerTestRepo.RunGit(reader, "remote", "set-url", "origin", Path.Combine(Path.GetTempPath(), $"hall9k-unreachable-{Guid.NewGuid():N}"));
+
+        string newSuffix = Guid.NewGuid().ToString("N");
+        await SetRefAsync(hub, $"{prefix}{newSuffix}", commitA);
         Func<Task> fetch = () => LedgerAppendOnlyRefFetcher.FetchPrefixAsync(
-            GitRunner, missingRepository, prefix, [suffix], CancellationToken.None);
+            GitRunner, reader, prefix, [keptSuffix, newSuffix], CancellationToken.None);
 
-        await fetch.Should().ThrowAsync<Exception>();
+        await fetch.Should().ThrowAsync<LedgerFetchFailedException>();
+        RevParse(reader, $"{prefix}{keptSuffix}").StandardOutput.Trim().Should().Be(
+            liveBefore, "the live ref an earlier, successful fetch already established must survive a later, unrelated failure untouched");
+        RevParse(reader, $"refs/hall9k-verified/{VerifiedPathFor(prefix)}{keptSuffix}").StandardOutput.Trim().Should().Be(verifiedBefore);
+        RevParse(reader, $"{prefix}{newSuffix}").ExitCode.Should().NotBe(
+            0, "the suffix that only ever existed on origin must never land locally when the whole prefix fetch failed");
     }
 
     private static string VerifiedPathFor(string refName) => refName["refs/hall9k/".Length..];

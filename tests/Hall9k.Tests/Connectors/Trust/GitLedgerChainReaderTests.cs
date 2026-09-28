@@ -1689,8 +1689,10 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         afterRewind.OwnerChains[owner.Fingerprint].Nodes.Should().NotContain(
             node => node.NodeId == nodeB.NodeId.ToString(), "the revocation must not vanish just because origin rewound behind it");
         afterRewind.UnverifiedWrites.Should().Contain(
-            write => write.Kind == "root" && write.Identifier == owner.Fingerprint,
-            "the refusal is named so it reaches h9k status rather than silently healing with nothing recorded");
+            write => write.Kind == "ref" && write.Identifier == ownersRefName && write.RootFingerprint == owner.Fingerprint,
+            "the refusal is named so it reaches h9k status rather than silently healing with nothing recorded, "
+            + "under its own \"ref\" kind rather than \"root\" so it never collides with a self-certification "
+            + "or signature failure sharing the identical (kind, identifier, root) stream key");
     }
 
     /// <summary>
@@ -1715,8 +1717,12 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         afterDeletion.OwnerChains.Should().ContainKey(
             owner.Fingerprint, "the local copy is kept and read rather than the root silently vanishing");
         afterDeletion.UnverifiedWrites.Should().Contain(
-            write => write.Kind == "root" && write.Identifier == owner.Fingerprint,
-            "a ref origin has since deleted is reported rather than silently dropped from discovery");
+            write => write.Kind == "ref"
+                && write.Identifier == $"refs/hall9k/ledger/owners/{owner.Fingerprint}"
+                && write.RootFingerprint == owner.Fingerprint,
+            "a ref origin has since deleted is reported rather than silently dropped from discovery, under its "
+            + "own \"ref\" kind rather than \"root\" so it never collides with a self-certification or "
+            + "signature failure sharing the identical (kind, identifier, root) stream key");
     }
 
     /// <summary>Shared setup every carried-record test above needs: a genesis root on its own
