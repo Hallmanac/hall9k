@@ -879,6 +879,13 @@ gone, when the project has no run skill, or when a launch of the same task is al
 ends it, and so does the daemon when the task closes out or the worktree is removed, so a launch is
 never left running.
 
+Before any step runs, it checks whether the plan's own commands match the last ones this node
+approved for this project. An unchanged plan runs without asking; a changed one, or the first ever
+run on this node, prints every step and a short fingerprint first. An interactive terminal is asked
+y/n; a non-interactive caller — this command's designed caller is the orchestrator window, and it
+is refused outright for a dispatched session — has to pass `--approve <fingerprint>` naming exactly
+the steps just printed, or nothing runs. There is no `--yes`.
+
 The option lists are in [cli.md](cli.md#projects-owners-connections).
 
 ## Closeout

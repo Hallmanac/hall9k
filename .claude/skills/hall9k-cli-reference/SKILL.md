@@ -1553,8 +1553,18 @@ say yes in their orchestrator window, and the window runs `h9k task run-local <t
 ```bash
 h9k task run-local 28b19893              # stand the branch up in the review's own worktree
 h9k task run-local 28b19893 --continue   # resume after doing a step only you could do
+h9k task run-local 28b19893 --approve a1b2c3d4e5f6   # approve exactly the steps just printed
 h9k task run-local 28b19893 --stop       # end it
 ```
+
+Before any step runs, it compares the current plan's own commands against the last ones this node
+approved for this project (security review idea 6be68ee2, process-injection finding 3): an
+unchanged plan runs immediately, and a changed one — or the first ever run of it on this node —
+prints every step plus a short fingerprint and asks. An interactive terminal is asked y/n. A
+non-interactive caller — the orchestrator window through Bash, this command's designed caller — is
+refused with no `--approve` matching exactly that fingerprint; there is no `--yes`, because
+approval has to be bound to the steps just shown, not to skipping the question. It is refused
+outright for a dispatched session, since no dispatched prompt ever calls it.
 
 It reads the project's run skill (the one on the ledger, above) as an ordered plan and follows it
 on that worktree: the `Human steps` section first, hoisted there because every entry in it is by
