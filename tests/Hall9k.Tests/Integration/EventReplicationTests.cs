@@ -1695,6 +1695,411 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 4, conformance lens, high: the stream-ownership guard's own
+    /// lifecycle-event arm only ever refused a lifecycle event that resolved as a Project stream
+    /// this node itself REGISTERED — leaving an ordinary Task, Idea, Epic, or Run stream this node
+    /// already holds in the SAME project unrefused, since that shape trips neither
+    /// <c>crossesIntoAnotherProject</c> (same project) nor <c>IsProjectStreamItself</c> (not a
+    /// Project stream at all). A forged lifecycle event aimed at a real task materialises a phantom
+    /// <see cref="ProjectDetails"/> row at the task's own id, and every later genuine event on that
+    /// task is then refused for good by this same guard's non-lifecycle arm.
+    /// </summary>
+    [Fact]
+    public async Task A_forged_lifecycle_event_aimed_at_an_existing_task_in_the_same_project_is_refused()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The receiver already holds this task under its own real, registered project.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "A task already replicated from a teammate",
+                ["done"], TaskType.Feature, null, null, null, Now, ownerId);
+            session.Events.StartStream<TaskAggregate>(taskId, added);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Node A's own outbox carries a project lifecycle event whose own StreamId is forged to be
+        // the receiver's existing task id, in the SAME project, rather than node A's own foreign
+        // per-install coordinate.
+        Guid originEventId = DomainId.New();
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+        ProjectArchived forgedLifecycleEvent = new(taskId, "cleanup", Now.AddSeconds(1), ownerId);
+        EventReplicationCodec.ReplicatedEventRecord forgedRecord = new(
+            taskId, typeof(ProjectArchived).FullName!, JsonSerializer.Serialize(forgedLifecycleEvent, jsonOptions),
+            originEventId, OriginSequence: 1, nodeA, "owner-a-fingerprint", Now.AddSeconds(1), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([forgedRecord]), Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false,
+                committer, signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        EventReplicationReadResult read;
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: TrustChain.Empty, cts.Token);
+        }
+
+        read.EventsApplied.Should().Be(
+            0, "a project lifecycle event must never land on an existing Task, Idea, Epic, or Run stream");
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            ProjectDetails? phantom = await session.LoadAsync<ProjectDetails>(taskId, cts.Token);
+            phantom.Should().BeNull("the forged event must never materialise a phantom Project row at the task's own id");
+
+            TaskDetails task = (await session.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            task.State.Should().Be(TaskState.Draft, "the task itself must never be touched by the forged lifecycle event");
+        }
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 4, adversarial lens, medium (the ride-along half of the
+    /// finding above): the guard's own family checks stop at "lifecycle vs Project stream" — an
+    /// ordinary Task event forged onto an existing Idea stream in the SAME project trips neither
+    /// <c>crossesIntoAnotherProject</c> nor <c>IsProjectStreamItself</c>, so nothing before the new
+    /// <c>refuseAsMismatchedFamilyOntoExistingStream</c> check would have caught it.
+    /// </summary>
+    [Fact]
+    public async Task A_forged_task_event_aimed_at_an_existing_idea_in_the_same_project_is_refused()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid ideaId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The receiver already holds this idea under its own real project.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<IdeaAggregate>(
+                ideaId, new IdeaCaptured(ideaId, ownerId, "An idea already replicated from a teammate", projectId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Node A's own outbox carries a Task event whose own StreamId is forged to be the
+        // receiver's existing idea id, in the SAME project — a different family entirely, never a
+        // cross-project append the existing guard already checked for.
+        Guid originEventId = DomainId.New();
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+        TaskAbandoned forgedTaskEvent = new(ideaId, "cleanup", Now.AddSeconds(1), ownerId);
+        EventReplicationCodec.ReplicatedEventRecord forgedRecord = new(
+            ideaId, typeof(TaskAbandoned).FullName!, JsonSerializer.Serialize(forgedTaskEvent, jsonOptions),
+            originEventId, OriginSequence: 1, nodeA, "owner-a-fingerprint", Now.AddSeconds(1), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([forgedRecord]), Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false,
+                committer, signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        EventReplicationReadResult read;
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: TrustChain.Empty, cts.Token);
+        }
+
+        read.EventsApplied.Should().Be(0, "a Task event must never land on an existing Idea stream");
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            TaskDetails? phantom = await session.LoadAsync<TaskDetails>(ideaId, cts.Token);
+            phantom.Should().BeNull("the forged event must never materialise a phantom Task row at the idea's own id");
+
+            IdeaDetails idea = (await session.LoadAsync<IdeaDetails>(ideaId, cts.Token))!;
+            idea.Text.Should().Be(
+                "An idea already replicated from a teammate", "the idea itself must never be touched by the forged event");
+        }
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 4, conformance lens, medium (the test-coverage gap
+    /// alongside the finding above): <see cref="A_teammates_project_archived_never_touches_the_receivers_own_project"/>
+    /// sends both of its own lifecycle events in one batch, so the guard's own
+    /// <c>streamsStartedThisRead</c> short-circuit — "an earlier record in this same read already
+    /// passed this identical gate for it" — is what actually lets the second event through, never
+    /// the phantom-row resolution this guard is meant to check fresh. A second lifecycle event
+    /// arriving in a genuinely LATER, separate read has to resolve the already-materialised phantom
+    /// row from a cold start and recognise it as still not a stream this node itself registered.
+    /// </summary>
+    [Fact]
+    public async Task A_teammates_second_lifecycle_event_in_a_later_read_still_lands_on_the_same_phantom_stream()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectIdA = DomainId.New();
+        Guid projectIdB = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            session.Events.StartStream<ProjectAggregate>(
+                projectIdA,
+                new ProjectRegistered(projectIdA, ownerId, DomainId.New(), "Shared Project", "/repo-a", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                projectIdB,
+                new ProjectRegistered(projectIdB, ownerId, DomainId.New(), "Shared Project", "/repo-b", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(1), cts.Token);
+        }
+
+        // First lifecycle decision, flushed and read entirely on its own.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.Append(projectIdA, new ProjectArchived(projectIdA, "cleanup", Now.AddSeconds(2), ownerId));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectIdA, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult firstRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectIdB, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: TrustChain.Empty, cts.Token);
+            firstRead.EventsApplied.Should().Be(1, "the archive lands as a fact on its own foreign, still-phantom stream");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            ProjectDetails? phantom = await session.LoadAsync<ProjectDetails>(projectIdA, cts.Token);
+            phantom.Should().NotBeNull("Marten auto-materialises a document for the archive with no Create of its own");
+        }
+
+        // Second lifecycle decision, its own genuinely LATER read.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.Append(
+                projectIdA, new ProjectPurgeScheduled(projectIdA, Now.AddSeconds(4), Now.AddSeconds(4).AddHours(24), ownerId));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(4), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectIdA, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(4), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult secondRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectIdB, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(5),
+                trustChain: TrustChain.Empty, cts.Token);
+            secondRead.EventsApplied.Should().Be(
+                1, "a second teammate lifecycle event arriving in a LATER read must still land on the same phantom "
+                + "stream, never be refused as though it targeted a genesis-registered project");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            ProjectDetails phantom = (await session.LoadAsync<ProjectDetails>(projectIdA, cts.Token))!;
+            phantom.PurgeAt.Should().NotBeNull("the second lifecycle event must have actually applied to the phantom row");
+        }
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 4, adversarial lens, high: <see cref="ReplicationProjectResolver"/>
+    /// resolves a Run's own project through its owning task, so a Run whose parent task has not
+    /// replicated here yet resolves with <c>ProjectId: null</c> — the identical shape a genuinely
+    /// foreign stream resolves with. The run's own genesis bypasses the stream-ownership guard
+    /// entirely (it lands through the ordinary <c>!streamExists</c> path), so this receiver already
+    /// implicitly trusts the run belongs to this project; a later event on the same stream, read
+    /// later once the genesis already committed, must be held back as recoverable rather than
+    /// burned as though it crossed into a different project.
+    /// </summary>
+    [Fact]
+    public async Task A_later_read_never_burns_a_run_event_whose_owning_task_has_not_replicated_here_yet()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+
+        // The run's own genesis replicates first — the receiver never holds the parent task at
+        // all, the ordinary shape when the task predates the sender's own outbox switch-on.
+        Guid genesisEventId = DomainId.New();
+        RunDispatched dispatched = new(
+            runId, taskId, nodeA, ownerId, 1, DomainId.New(), "/wt/orphan-run", "task/orphan-run",
+            ExecutorMode.Subscription, Now.AddSeconds(1));
+        EventReplicationCodec.ReplicatedEventRecord genesisRecord = new(
+            runId, typeof(RunDispatched).FullName!, JsonSerializer.Serialize(dispatched, jsonOptions),
+            genesisEventId, OriginSequence: 1, nodeA, "owner-a-fingerprint", Now.AddSeconds(1), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([genesisRecord]), Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false,
+                committer, signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult firstRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: TrustChain.Empty, cts.Token);
+            firstRead.EventsApplied.Should().Be(1, "a run's own genesis applies even before its parent task ever arrives");
+        }
+
+        // A LATER, separate read carries the run's next event, with the parent task still missing.
+        Guid followUpEventId = DomainId.New();
+        RunCompleted completed = new(runId, Now.AddSeconds(4));
+        EventReplicationCodec.ReplicatedEventRecord followUpRecord = new(
+            runId, typeof(RunCompleted).FullName!, JsonSerializer.Serialize(completed, jsonOptions),
+            followUpEventId, OriginSequence: 2, nodeA, "owner-a-fingerprint", Now.AddSeconds(4), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([followUpRecord]), Now.AddSeconds(5), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false,
+                committer, signingKey, Now.AddSeconds(5), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult secondRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(6),
+                trustChain: TrustChain.Empty, cts.Token);
+            secondRead.EventsApplied.Should().Be(
+                0, "the run's own next event is held back by the missing task, not refused as though it belonged "
+                + "to a different project");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            ReplicatedEventRecord? burned = await session.LoadAsync<ReplicatedEventRecord>(followUpEventId, cts.Token);
+            burned.Should().BeNull("a recoverable drop must never be burned as a permanently-refused record");
+        }
+
+        // The parent task itself finally arrives, and the same follow-up is delivered again —
+        // nothing burned it, so it must actually apply now that the run's project resolves.
+        Guid taskAddedEventId = DomainId.New();
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, "The run's own parent task, arriving late",
+            ["done"], TaskType.Feature, null, null, null, Now.AddSeconds(7), ownerId);
+        EventReplicationCodec.ReplicatedEventRecord taskAddedRecord = new(
+            taskId, typeof(TaskAdded).FullName!, JsonSerializer.Serialize(added, jsonOptions),
+            taskAddedEventId, OriginSequence: 3, nodeA, "owner-a-fingerprint", Now.AddSeconds(7), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([taskAddedRecord, followUpRecord]), Now.AddSeconds(8),
+                cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false,
+                committer, signingKey, Now.AddSeconds(8), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult thirdRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(9),
+                trustChain: TrustChain.Empty, cts.Token);
+            thirdRead.EventsApplied.Should().Be(
+                2, "both the late-arriving task and the previously-dropped run event now apply");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            RunDetails run = (await session.LoadAsync<RunDetails>(runId, cts.Token))!;
+            run.State.Should().Be(RunState.Completed, "the previously-dropped event actually landed once the task resolved");
+        }
+    }
+
+    /// <summary>
     /// Idea 6be68ee2, trust findings 10/12, stream-ownership item: a replicated event may only
     /// append to a stream its own project owns, never onto a stream a DIFFERENT project this same
     /// node also hosts already resolves to. The idea's own <c>ProjectId</c> field is rewritten by
