@@ -14,16 +14,17 @@ namespace Hall9k.Connectors.Trust;
 /// </summary>
 public sealed record DeclaredGitHubAccount(long AccountId, string Login);
 
-/// <summary>What <see cref="NodeFileWriter.RefreshGitHubDeclarationAsync"/> did.</summary>
+/// <summary>What <see cref="NodeFileWriter.RefreshGitHubDeclarationAsync"/> or
+/// <see cref="NodeFileWriter.RefreshDisplayNameAsync"/> did.</summary>
 public enum NodeFileRefreshOutcome
 {
     /// <summary>The node has no <c>node.yaml</c> in this project, so nothing was written; the refresh never creates one.</summary>
     NoNodeFile,
 
-    /// <summary>The file already carries exactly the account observed, so nothing was written.</summary>
+    /// <summary>The file already carried exactly the field or fields this refresh targets, so nothing was written.</summary>
     Unchanged,
 
-    /// <summary>The two declaration fields were added or changed and the commit landed.</summary>
+    /// <summary>The targeted field or fields (the two GitHub declaration fields, or the single display-name field) were added, changed, or removed, and the commit landed.</summary>
     Written,
 
     /// <summary>
