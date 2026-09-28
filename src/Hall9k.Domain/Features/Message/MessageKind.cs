@@ -159,5 +159,20 @@ public sealed record MessageKind
     public static readonly IReadOnlyList<string> MechanicalKindValues =
         [ClaimRequest.Value, ClaimGranted.Value, ClaimRefused.Value, OwnerActRequest.Value, OwnerActOutcome.Value];
 
+    /// <summary>
+    /// <see cref="ClaimRequest"/>, <see cref="ClaimGranted"/>, and <see cref="ClaimRefused"/> alone —
+    /// the three kinds <c>ClaimRequestWatchLoop</c>'s own poll actually owns, never the owner-act pair
+    /// (independent pre-PR review, cycle 1, both lenses, high): that loop's query used to read
+    /// <see cref="MechanicalKindValues"/> directly, so adding the owner-act pair to that shared list
+    /// silently handed it every <see cref="OwnerActRequest"/> and <see cref="OwnerActOutcome"/> too —
+    /// a kind <c>ClaimEnvelopeCodec.TryDecodeRequest</c> decodes without error (the missing fields
+    /// simply default), so the claim loop could mark an owner-act message handled before
+    /// <c>OwnerActRequestWatchLoop</c> ever got to react to it, whichever hosted service happened to
+    /// poll first. A plain string array for the identical reason <see cref="MechanicalKindValues"/>
+    /// is one: a caller's own Marten query can push it down as a SQL <c>IN</c> list.
+    /// </summary>
+    public static readonly IReadOnlyList<string> ClaimKindValues =
+        [ClaimRequest.Value, ClaimGranted.Value, ClaimRefused.Value];
+
     public override string ToString() => Value;
 }
