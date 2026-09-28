@@ -188,6 +188,7 @@ internal static class DispatchedSessionCommandClassification
             [typeof(ProjectMembersCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "project members"),
             [typeof(ProjectMemberRemoveCommand.Settings)] = (DispatchedSessionAccess.Refused, "project member remove"),
             [typeof(ProjectMemberReaffirmCommand.Settings)] = (DispatchedSessionAccess.Refused, "project member reaffirm"),
+            [typeof(ProjectMemberApproveCommand.Settings)] = (DispatchedSessionAccess.Refused, "project member approve"),
             [typeof(ProjectPromptAddendumSetCommand.Settings)] =
                 (DispatchedSessionAccess.Refused, "project prompt-addendum set"),
             [typeof(ProjectPromptAddendumShowCommand.Settings)] =

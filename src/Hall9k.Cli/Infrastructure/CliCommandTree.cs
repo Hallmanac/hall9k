@@ -359,6 +359,14 @@ public static class CliCommandTree
                         + "chain.")
                     .WithExample("project", "member", "reaffirm", "hall9k",
                         "3f9c2a7e1b5d84a6f0c3e2b1a9d8c7f6e5d4c3b2a1908f7e6d5c4b3a29180716");
+                member.AddCommand<ProjectMemberApproveCommand>("approve")
+                    .WithDescription(
+                        "Approve an owner-role member write a non-root node's own invite match asked this root "
+                        + "to make (idea 6be68ee2, companion 1bb803e1) — a member-role write is performed "
+                        + "automatically, but an owner-role one always waits here first, since it grants the "
+                        + "new member the identical write access this node's own root key carries. h9k status "
+                        + "prints the invite id to pass.")
+                    .WithExample("project", "member", "approve", "hall9k", "3f9c2a7e-1b5d-84a6-f0c3-e2b1a9d8c7f6");
             });
             project.AddBranch("prompt-addendum", addendum =>
             {

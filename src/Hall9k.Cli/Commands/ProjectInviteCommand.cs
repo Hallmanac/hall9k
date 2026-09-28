@@ -96,18 +96,25 @@ public sealed class ProjectInviteCommand : Hall9kAsyncCommand<ProjectInviteComma
                 + "hold the owner role here and h9k project invite succeed.");
         }
 
-        // Refused before any push (idea 6be68ee2, trust-ledger finding 2): the invite sweep's own
-        // member write lands from THIS node's key, so a compromised, merely-vouched fleet node must
-        // never mint an invite that would later write membership on its own say-so — only the root
-        // itself, never a promoted successor's identity fingerprint (which can never equal a root
-        // key) and never TrustChain.RootNodeId (null on an older ledger).
-        if (!chain.IsLiveRootKeyOfOwner(key.Fingerprint, myRoot))
+        // idea 6be68ee2's own recut (companion 1bb803e1): minting no longer requires this node's own
+        // key to BE a live root key. 1bb803e1's own restriction is narrower than "who may mint" - it
+        // is the one write InviteSweepEngine.WriteMemberVouchAsync makes once a candidate matches,
+        // members/<fingerprint>.yaml, and that write is now a request the sweep routes to whichever
+        // node holds the owner's own highest-ranked live root key, rather than something this node
+        // ever has to write itself. What still must be true before any push here: SOME node in this
+        // project's own ledger can be resolved to receive that eventual request - refusing here,
+        // before anything is minted, is what keeps a joiner from ever being stranded with a member
+        // write no sweep could ever deliver anywhere (the note this task's own handoff left for
+        // whichever run picks this up).
+        if (!chain.IsLiveRootKeyOfOwner(key.Fingerprint, myRoot)
+            && (!chain.OwnerChains.TryGetValue(myRoot, out TrustedOwner? owningChain)
+                || owningChain.ResolveRootActingNodeId() is null))
         {
             throw new DomainValidationException(
-                $"This node ({key.Fingerprint}) does not currently hold a live root key for owner {myRoot} — "
-                + "only the root itself may mint a member-of-project invite (idea 6be68ee2, trust-ledger "
-                + $"finding 2: a vouched node key can no longer write membership). Re-run h9k project invite "
-                + $"{project.Name} from a node holding a root key for {myRoot}{RootNodeDescription.Of(chain, myRoot)}."
+                $"This node ({key.Fingerprint}) does not currently hold a live root key for owner {myRoot}, and "
+                + "this project's own ledger cannot resolve any node that does either — there would be nobody "
+                + "for the eventual member-write request to reach (idea 6be68ee2). Re-run h9k project join from "
+                + $"a node holding a root key for {myRoot} so this ledger can name one again."
                 + RootNodeDescription.PromotionHint);
         }
 
