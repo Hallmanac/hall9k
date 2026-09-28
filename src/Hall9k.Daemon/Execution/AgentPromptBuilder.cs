@@ -104,6 +104,13 @@ public static class AgentPromptBuilder
         PromptTemplates.AppendTemplate(prompt, file, name, values.ToDictionary(value => value.Key, value => value.Value));
 
     /// <summary>
+    /// Relayed text on one line — a reviewer's own login, quoted rather than this platform's.
+    /// Layout characters become spaces, and anything a sink would obey rather than display is
+    /// dropped, the same defusal <c>ReviewLapPromptBuilder</c> applies to everything it quotes.
+    /// </summary>
+    private static string OneLine(string text) => RelayedText.OneLine(text).Trim();
+
+    /// <summary>
     /// Forwards to the shared implementation — see the type doc above. <paramref name="baseBranch"/>
     /// is the branch this run's work sits on top of, which the caller resolved once at dispatch
     /// (<c>RunDispatched.BaseBranch</c>): the project's own for every ordinary run, a stacked
@@ -147,7 +154,7 @@ public static class AgentPromptBuilder
         SpikeKind kind = task.SpikeKind;
         TimeSpan effectiveTimeout = commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout;
         StringBuilder prompt = new();
-        prompt.AppendLine($"# Spike: {task.Objective}");
+        prompt.AppendLine($"# Spike: {SpikeHeadingObjective(task.Objective)}");
         prompt.AppendLine();
         prompt.AppendLine(kind.Value switch
         {
@@ -234,6 +241,21 @@ public static class AgentPromptBuilder
     /// <summary>The reason line right after <see cref="SpikeVerdictMarker"/>.</summary>
     public const string SpikeReasonMarker = "REASON:";
 
+    /// <summary>How much of a spike's own objective may ride into a heading — the same one-sentence bound <c>ReviewDraftBugTask.ObjectiveExcerptLength</c> uses for the same reason.</summary>
+    private const int MaxSpikeHeadingObjectiveLength = 140;
+
+    /// <summary>
+    /// A spike's own objective, one-lined and bounded before it lands in a Markdown heading
+    /// (<see cref="BuildSpike"/>, <see cref="BuildSpikeReview"/>, <see cref="BuildSpikeFix"/>). A
+    /// spike's task can be minted from a discovery workspace an earlier, unattended run wrote, so
+    /// the objective reaching a heading here is relayed text like any other: a bare newline would
+    /// let it open a second, unauthored heading of its own underneath this one, and
+    /// <see cref="RelayedText.Truncate"/> keeps a runaway paste from dominating the session's very
+    /// first line.
+    /// </summary>
+    private static string SpikeHeadingObjective(string objective) =>
+        RelayedText.Truncate(OneLine(objective), MaxSpikeHeadingObjectiveLength);
+
     /// <summary>
     /// A spike's own judge session (task: a spike is a run, not a walk) — SpikeEngine's one review
     /// cycle, dispatched on the review model, outside the spike's own budget (PLAN.md §16
@@ -248,7 +270,7 @@ public static class AgentPromptBuilder
         bool isFixLap, TimeSpan? commandTimeout = null)
     {
         StringBuilder prompt = new();
-        prompt.AppendLine($"# Judge a spike: {task.Objective}");
+        prompt.AppendLine($"# Judge a spike: {SpikeHeadingObjective(task.Objective)}");
         prompt.AppendLine();
         prompt.AppendLine(
             $"You are judging a {task.SpikeKind.Value.ToLowerInvariant()} spike against its own exit "
@@ -300,7 +322,7 @@ public static class AgentPromptBuilder
         TaskDetails task, string reviewerReason, TimeSpan? commandTimeout = null)
     {
         StringBuilder prompt = new();
-        prompt.AppendLine($"# Spike fix lap: {task.Objective}");
+        prompt.AppendLine($"# Spike fix lap: {SpikeHeadingObjective(task.Objective)}");
         prompt.AppendLine();
         prompt.AppendLine(
             "The reviewer judged this spike's exit criterion not yet met. This is the spike's one "
@@ -627,7 +649,7 @@ public static class AgentPromptBuilder
             string submitted = review.SubmittedAt is { } at
                 ? at.ToString("u", CultureInfo.InvariantCulture)
                 : Fragment(file, "time-not-reported");
-            prompt.AppendLine(Fragment(file, "review-heading", ("Reviewer", review.Reviewer), ("Submitted", submitted)));
+            prompt.AppendLine(Fragment(file, "review-heading", ("Reviewer", OneLine(review.Reviewer)), ("Submitted", submitted)));
             prompt.AppendLine();
             prompt.AppendLine(Fragment(file, "review-url", ("ReviewUrl", review.ReviewUrl)));
             prompt.AppendLine();
@@ -660,10 +682,43 @@ public static class AgentPromptBuilder
                 prompt.AppendLine(tags.Count > 0
                     ? $"{ReviewResultParser.FindingMarker} {string.Join("; ", tags)}"
                     : Fragment(file, "no-location-finding", ("FindingMarker", ReviewResultParser.FindingMarker)));
-                prompt.AppendLine(finding.Body);
+                prompt.AppendLine(FencedFindingBody(finding.Body, review.ReviewUrl));
                 prompt.AppendLine();
             }
         }
+    }
+
+    /// <summary>
+    /// How much of a single review body or inline comment rides into the prompt whole, before
+    /// this session is pointed at the review itself for the rest. Well above anything a human
+    /// writes by hand reviewing a diff, because this is the one site in this builder a non-member
+    /// reaches at all — <c>GitHubPullRequestInspector.ReadChangesRequestedReviews</c> admits a
+    /// CHANGES_REQUESTED review from any human who is not the pull request's own author, with no
+    /// association filter — so the bound exists to cap a deliberately oversized paste, not to fit
+    /// an honest review.
+    /// </summary>
+    private const int MaxChangesRequestedFindingBodyLength = 20_000;
+
+    /// <summary>
+    /// A human reviewer's own text — the review's body, or a single inline comment — fenced and
+    /// bounded before it reaches the prompt. Fenced the same way
+    /// <c>MentionFollowUpPromptBuilder.Block</c> fences a mention comment:
+    /// <see cref="RelayedText.FenceFor"/> picks a backtick run the text itself cannot close
+    /// early, so a forged closing fence inside the finding cannot make the platform's own
+    /// following prose read as part of it. Bounded to
+    /// <see cref="MaxChangesRequestedFindingBodyLength"/>, with a labelled line pointing back at
+    /// the review itself rather than silently dropping the rest — the same honesty
+    /// <c>PullRequestBody.BoundedBlock</c> observes when it clips the platform's own authored
+    /// prose.
+    /// </summary>
+    private static string FencedFindingBody(string text, string reviewUrl)
+    {
+        string printable = RelayedText.Printable(text);
+        string bounded = printable.Length <= MaxChangesRequestedFindingBodyLength
+            ? printable
+            : printable[..RelayedText.CutLength(printable, MaxChangesRequestedFindingBodyLength)].TrimEnd()
+                + $"\n\n[truncated, read the rest at {reviewUrl}]";
+        return RelayedText.Fenced(bounded);
     }
 
     /// <summary>

@@ -171,10 +171,5 @@ public static class MentionFollowUpPromptBuilder
     /// draws around an imported item's body (independent pre-PR review, cycle 1, adversarial
     /// lens).
     /// </summary>
-    private static string Block(string text)
-    {
-        string printable = RelayedText.Printable(text);
-        string fence = RelayedText.FenceFor(printable);
-        return printable.EndsWith('\n') ? $"{fence}\n{printable}{fence}" : $"{fence}\n{printable}\n{fence}";
-    }
+    private static string Block(string text) => RelayedText.Fenced(RelayedText.Printable(text));
 }
