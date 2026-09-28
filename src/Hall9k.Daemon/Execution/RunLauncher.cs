@@ -320,10 +320,15 @@ public sealed class RunLauncher(
             // An unassigned pr-review task falls back to the owner this run is dispatched under,
             // which on a single-owner install is the same person. An owner record that cannot be
             // read at all plans exactly as an owner who declared nothing does.
+            // isForkHead (security review idea 6be68ee2, process-injection finding 1) is read off
+            // this dispatch's own PullRequestFacts, fetched fresh above: a pull request's head
+            // repository can never change once opened (only its base can move, on a retarget),
+            // so this is the one, permanent read and never re-checked on a later dispatch.
             ReviewPersonaPlan? personaPlan = isPrReview
                 ? ReviewPersonaRegistry.Plan(
                     (await session.LoadAsync<OwnerDetails>(task.AssignedOwnerId ?? ownerId, cancellationToken))
-                        ?.ReviewPersonas)
+                        ?.ReviewPersonas,
+                    isForkHead: prReviewFacts!.IsCrossRepository)
                 : null;
 
             // Then, for whichever of those personas can stand the product up, what this run will
@@ -338,7 +343,8 @@ public sealed class RunLauncher(
                 personaPlan = ReviewPersonaRegistry.Plan(
                     personaPlan.Requested,
                     await ReviewDriveResolver.ResolveAllAsync(
-                        personaPlan.Ran, session, project, cancellationToken));
+                        personaPlan.Ran, session, project, cancellationToken),
+                    isForkHead: prReviewFacts!.IsCrossRepository);
             }
 
             // The primary session's own name (task: every dispatched agent session launches
@@ -539,7 +545,8 @@ public sealed class RunLauncher(
             {
                 session.Events.Append(runId, new PrReviewPersonasSelected(
                     runId, personaPlan.Requested, personaPlan.Ran, personaPlan.Skipped,
-                    personaPlan.FellBackToEngineer, DateTimeOffset.UtcNow, personaPlan.DriveDecisions));
+                    personaPlan.FellBackToEngineer, DateTimeOffset.UtcNow, personaPlan.DriveDecisions,
+                    personaPlan.ForkSkipped, personaPlan.ForkSkipReason));
             }
 
             // Appended right behind the dispatch, in the same commit, so the run record can never
@@ -766,9 +773,25 @@ public sealed class RunLauncher(
                 return;
             }
 
+            // The primary pr-review session's own QA exception (security review idea 6be68ee2,
+            // process-injection finding 1): only when this run's assignee holds no other persona
+            // ahead of QA in the fixed order, so QA's own session is the run's primary one — the
+            // ordinary case is the engineer's adversarial lens instead, which never earns this.
+            // By construction this never co-occurs with a fork head, since ReviewPersonaRegistry
+            // .Plan skips QA outright there.
+            IReadOnlyList<VerifyCommand>? primaryQaGateCommands = isPrReview
+                && personaPlan!.Sessions[0].Persona == ReviewPersona.Qa
+                ? (IReadOnlyList<VerifyCommand>?)(project.AcceptedVerifyCommands ?? project.VerifyCommands)
+                : null;
+
             SpawnedAgent agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(
-                    runId, sessionId, worktree.Path, runDirectory, prompt, mode, model, effort, project.SkipPermissions,
+                    runId, sessionId, worktree.Path, runDirectory, prompt, mode, model, effort,
+                    // Hardcoded false for a pr-review primary session, never project.SkipPermissions
+                    // (Brian's ruling 2026-09-27: no pr-review session ever runs with permissions
+                    // skipped, member or not) — the project's own setting is consulted only for an
+                    // ordinary build session, which this same call site also spawns.
+                    SkipPermissions: isPrReview ? false : project.SkipPermissions,
                     UntrustedWorkingDirectory: isPrReview,
                     // Every follow-up kind, not only the review-feedback one (task: a
                     // review-feedback follow-up never answers a human reviewer in the owner's
@@ -784,6 +807,8 @@ public sealed class RunLauncher(
                 {
                     TaskId = task.Id,
                     SessionName = sessionName,
+                    UsesReviewPermissions = isPrReview,
+                    QaGateCommands = primaryQaGateCommands,
                 },
                 cancellationToken);
 
@@ -945,13 +970,20 @@ public sealed class RunLauncher(
                 return;
             }
 
+            // SkipPermissions is hardcoded false, never project.SkipPermissions, and
+            // UsesReviewPermissions is unconditionally true: a mention follow-up is one of the
+            // three real spawn sites this security review moved off
+            // --dangerously-skip-permissions (Brian's ruling 2026-09-27, no pr-review session
+            // ever runs with permissions skipped) — the project's own setting is never consulted
+            // here.
             SpawnedAgent agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(
                     runId, sessionId, worktree.Path, runDirectory, prompt, ExecutorMode.Subscription, model,
-                    effort, project.SkipPermissions, UntrustedWorkingDirectory: true)
+                    effort, SkipPermissions: false, UntrustedWorkingDirectory: true)
                 {
                     TaskId = taskId,
                     SessionName = sessionName,
+                    UsesReviewPermissions = true,
                 },
                 cancellationToken);
 

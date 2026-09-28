@@ -2061,6 +2061,11 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         executor.Request.Should().NotBeNull("the adversarial result is recorded, so the conformance lens must dispatch next");
         executor.Request!.UntrustedWorkingDirectory.Should().BeTrue(
             "the conformance lens reads the same foreign pull-request checkout the adversarial lens did");
+        // Security review idea 6be68ee2, process-injection finding 1, Brian's ruling 2026-09-27:
+        // every follow-on persona session is one of the three real spawn sites that never skips
+        // permissions, whatever the project's own SkipPermissions setting says.
+        executor.Request.SkipPermissions.Should().BeFalse();
+        executor.Request.UsesReviewPermissions.Should().BeTrue();
     }
 
     /// <summary>

@@ -918,6 +918,23 @@ public sealed class RunSupervisor(
     }
 
     /// <summary>
+    /// Which session slug a completing primary session's own permission denials (security review
+    /// idea 6be68ee2, process-injection finding 1) are recorded under — this run's persona plan's
+    /// own primary slug for a pr-review run, the mention follow-up's own constant slug for a
+    /// mention follow-up, or a plain fallback for every other primary session (an ordinary
+    /// build's, which never launches under a real permission file and so never actually reports
+    /// one). Read from the same run aggregate this method already loaded, never re-queried.
+    /// </summary>
+    private static string PrimarySessionSlugFor(RunAggregate? run) =>
+        run is { PrReviewMentionCommentId: not null } ? PrReviewEngine.MentionFollowUpSlug
+        : run is { PrReviewPersonasRequested.Count: > 0 }
+            ? ReviewPersonaRegistry.Recorded(
+                run.PrReviewPersonasRequested, run.PrReviewPersonasRan, run.PrReviewPersonasSkipped,
+                run.PrReviewPersonasFellBackToEngineer, run.PrReviewDriveDecisions,
+                run.PrReviewForkSkippedPersonas, run.PrReviewForkSkipReason).Sessions[0].Slug
+        : "primary";
+
+    /// <summary>
     /// Non-null means the primary session's own error result was retried in place (task: a
     /// session that reports an error result is retried once in place) — the new process
     /// <see cref="MonitorAsync"/> should keep tailing instead of treating this as the run's
@@ -967,6 +984,12 @@ public sealed class RunSupervisor(
             // stream.jsonl back once the run has retired.
             await using IDocumentSession tokenSession = store.LightweightSession();
             tokenSession.Events.Append(runId, result.ToTokensRecorded(runId, now, run.Model));
+            if (result.PermissionDenials is { Count: > 0 } lateDenials)
+            {
+                tokenSession.Events.Append(
+                    runId, new RunPermissionDenialsRecorded(runId, PrimarySessionSlugFor(run), lateDenials, now));
+            }
+
             await tokenSession.SaveChangesAsync(cancellationToken);
             return null;
         }
@@ -1056,6 +1079,10 @@ public sealed class RunSupervisor(
 
             session.Events.Append(runId, new AgentSessionCompleted(runId, now));
             session.Events.Append(runId, result.ToTokensRecorded(runId, now, model));
+            if (result.PermissionDenials is { Count: > 0 } denials)
+            {
+                session.Events.Append(runId, new RunPermissionDenialsRecorded(runId, PrimarySessionSlugFor(run), denials, now));
+            }
 
             // Checked here, immediately after the tokens this session actually spent are
             // recorded above like any other completion, rather than before either append the

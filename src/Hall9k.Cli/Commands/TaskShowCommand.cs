@@ -664,6 +664,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             RunDetails? newestRun = runDetailsById.GetValueOrDefault(runs[^1].Id);
             WriteStartedCleanAfterBranchGone(newestRun);
             WriteReviewPersonas(newestRun);
+            WritePermissionDenials(newestRun);
             WriteReviewScopeSeed(newestRun);
             WriteReviewOutcome(newestRun);
             WriteReviewEndedByMerge(newestRun);
@@ -1094,7 +1095,10 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 .Where(entry => entry.Persona == persona)
                 .Select(entry => entry.Reason)
                 .FirstOrDefault();
-            string state = skipped ? "[yellow]skipped — no review prompt registered yet[/]"
+            string state = skipped
+                ? run.PrReviewForkSkippedPersonas.Contains(persona)
+                    ? "[yellow]skipped — fork head[/]"
+                    : "[yellow]skipped — no review prompt registered yet[/]"
                 : failure is not null ? $"[red]failed[/] [dim]— {ExternalText.OneLineMarkup(failure)}[/]"
                 : run.PrReviewPersonasReported.Contains(persona) ? "[green]report in[/]"
                 : run.State.IsTerminal ? "[red]no report[/] [dim]— the run ended first[/]"
@@ -1116,6 +1120,41 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 "[dim]  None of the declared personas has a review prompt registered yet, so the "
                 + "engineer's review ran in their place rather than leaving the pull request unreviewed.[/]");
         }
+    }
+
+    /// <summary>
+    /// Every tool a pr-review session's own real permission file refused (security review idea
+    /// 6be68ee2, process-injection finding 1) — named so a reader can tell the allow list is
+    /// missing something a session genuinely reached for, which is also how it grows by evidence.
+    /// Silent for a run that recorded none, which is nearly every run: an ordinary build session
+    /// never launches under this file, and a pr-review session whose allow list already covered
+    /// everything it needed reports nothing here either.
+    /// </summary>
+    private static void WritePermissionDenials(RunDetails? run)
+    {
+        if (run is null || run.PrReviewPermissionDenials.Count == 0)
+        {
+            return;
+        }
+
+        List<string> parts = [];
+        foreach ((string slug, List<PermissionDenial> denials) in run.PrReviewPermissionDenials)
+        {
+            if (denials.Count == 0)
+            {
+                continue;
+            }
+
+            string tools = string.Join(", ", denials.Select(denial => denial.ToolName.EscapeMarkup()));
+            parts.Add($"{slug.EscapeMarkup()}: {tools}");
+        }
+
+        if (parts.Count == 0)
+        {
+            return;
+        }
+
+        AnsiConsole.MarkupLine($"\n[bold]Denied tools[/]  {string.Join(" · ", parts)}");
     }
 
     /// <summary>

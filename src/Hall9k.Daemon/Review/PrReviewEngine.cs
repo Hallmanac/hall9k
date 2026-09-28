@@ -97,12 +97,22 @@ public sealed class PrReviewEngine(
     }
 
     /// <summary>
+    /// This run's own primary session slug when it is a bounded mention follow-up (idea 2f079bcd)
+    /// — the one pr-review-shaped session that has no persona plan of its own to take its slug
+    /// from. Public so <c>RunSupervisor</c>'s own generic completion path, which cannot tell one
+    /// run type from another without reading this run's own recorded shape, can key a mention
+    /// follow-up's denials under the same slug the findings side would look for.
+    /// </summary>
+    public const string MentionFollowUpSlug = "mention-follow-up";
+
+    /// <summary>
     /// The plan this run recorded at dispatch, or the engineer's plan for a run whose stream
     /// predates review personas — see <c>ReviewPersonaRegistry.Recorded</c>.
     /// </summary>
     private static ReviewPersonaPlan PlanOf(RunAggregate? run) => ReviewPersonaRegistry.Recorded(
         run?.PrReviewPersonasRequested, run?.PrReviewPersonasRan, run?.PrReviewPersonasSkipped,
-        run?.PrReviewPersonasFellBackToEngineer ?? false, run?.PrReviewDriveDecisions);
+        run?.PrReviewPersonasFellBackToEngineer ?? false, run?.PrReviewDriveDecisions,
+        run?.PrReviewForkSkippedPersonas, run?.PrReviewForkSkipReason);
 
     private static string PrimarySlugOf(RunAggregate? run) => PlanOf(run).Sessions[0].Slug;
 
@@ -326,7 +336,7 @@ public sealed class PrReviewEngine(
         await ComposeReportAndParkAsync(
             runId, taskId, runDirectory, run.LeaseGeneration, run.WorktreePath, run.Branch, task, plan,
             aggregate.PrReviewPersonaSessionFailures, PersonasReported(plan, aggregate), gateSetAccepted,
-            cancellationToken);
+            aggregate.PrReviewPermissionDenials, cancellationToken);
     }
 
     /// <summary>
@@ -341,7 +351,8 @@ public sealed class PrReviewEngine(
     internal static async Task<string> ComposePersonaSectionsAsync(
         string runDirectory, ReviewPersonaPlan plan,
         IReadOnlyDictionary<string, ReviewPersonaSessionFailure> sessionFailures, bool gateSetAccepted,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, IReadOnlyList<PermissionDenial>>? permissionDenials = null)
     {
         StringBuilder body = new();
         if (plan.FellBackToEngineer)
@@ -363,10 +374,11 @@ public sealed class PrReviewEngine(
 
             if (!plan.Ran.Contains(persona))
             {
-                body.Append(
-                    $"\nSkipped: no review prompt is registered for the {persona.Value} persona yet, so "
-                    + "nothing read this pull request through it. Named here rather than left out, so "
-                    + "this report is not read as a review that happened.\n");
+                body.Append(plan.ForkSkipped.Contains(persona)
+                    ? $"\nSkipped: {plan.ForkSkipReason}\n"
+                    : $"\nSkipped: no review prompt is registered for the {persona.Value} persona yet, so "
+                      + "nothing read this pull request through it. Named here rather than left out, so "
+                      + "this report is not read as a review that happened.\n");
                 continue;
             }
 
@@ -385,6 +397,17 @@ public sealed class PrReviewEngine(
                     : null;
                 body.Append(
                     $"\nRun-skill drift: {ReviewResultParser.ParseRunSkillDrift(written ?? string.Empty).Describe()}.\n");
+
+                // Every tool this session reached for and its own real permission file refused
+                // (security review idea 6be68ee2, process-injection finding 1) — named here so a
+                // reader can tell "the allow list is missing something this persona genuinely
+                // needed" from a session that simply had nothing to report, and so the allow list
+                // can grow by evidence.
+                if (permissionDenials?.TryGetValue(session.Slug, out IReadOnlyList<PermissionDenial>? denials) == true
+                    && denials.Count > 0)
+                {
+                    body.Append($"\nDenied tools: {string.Join(", ", denials.Select(denial => denial.ToolName))}.\n");
+                }
 
                 // No findings file at all. Said in one line and nothing else — never handed to a
                 // composer, which would lay out a full, confident section over a file that does
@@ -608,6 +631,20 @@ public sealed class PrReviewEngine(
         string? runSkill = drive.Drives ? ProjectRunSkillReader.Read(project) : null;
         string prompt = personaSession.BuildPrompt(new ReviewPersonaPromptRequest(
             task, project, run.Branch, baseBranch, _options.VerifyGateTimeout, drive, runSkill));
+
+        // The QA session's own earned exception (security review idea 6be68ee2,
+        // process-injection finding 1; Brian's ruling 2026-09-27): the project's own recorded
+        // gate commands, allowed verbatim on top of the otherwise-identical read-only file every
+        // pr-review session now launches under, so QA can still build and run the tests its job
+        // is (qa checks.md). Never for another persona, and — by construction — only ever
+        // resolved for a QA session that is actually running: a fork head skips the QA persona
+        // outright (ReviewPersonaRegistry.Plan's own isForkHead parameter), so this never reaches
+        // a QA session reviewing a fork's own head. The accepted set (GateSetAcceptance, security
+        // review idea 6be68ee2, finding 1's own local half) wins when this node has ever recorded
+        // one; the project's plain, currently-configured list otherwise.
+        IReadOnlyList<VerifyCommand>? qaGateCommands = personaSession.Persona == ReviewPersona.Qa
+            ? (IReadOnlyList<VerifyCommand>?)(project.AcceptedVerifyCommands ?? project.VerifyCommands)
+            : null;
         AgentModel model = _options.ResolveModel(AgentRole.Review, task.Model, project.Model);
         AgentEffort effort = _options.ResolveEffort(AgentRole.Review, task.Effort, project.Effort);
         // pr-review has no cycle loop — one pass per persona session — so every session name the
@@ -634,12 +671,19 @@ public sealed class PrReviewEngine(
             }
         }
 
+        // SkipPermissions is hardcoded false, never project.SkipPermissions, and
+        // UsesReviewPermissions is unconditionally true: every follow-on persona session is one
+        // of the three real spawn sites this security review moved off
+        // --dangerously-skip-permissions (Brian's ruling 2026-09-27, no pr-review session ever
+        // runs with permissions skipped) — the project's own setting is never consulted here.
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             runId, sessionId, run.WorktreePath, runDirectory, prompt, (ExecutorMode)run.ExecutorMode, model,
-            effort, project.SkipPermissions, ConformanceArtifactName(sessionId), UntrustedWorkingDirectory: true)
+            effort, SkipPermissions: false, ConformanceArtifactName(sessionId), UntrustedWorkingDirectory: true)
         {
             TaskId = taskId,
             SessionName = sessionName,
+            UsesReviewPermissions = true,
+            QaGateCommands = qaGateCommands,
         },
             cancellationToken);
 
@@ -761,6 +805,12 @@ public sealed class PrReviewEngine(
         await using (IDocumentSession tokensSession = store.LightweightSession())
         {
             tokensSession.Events.Append(runId, result.ToTokensRecorded(runId, DateTimeOffset.UtcNow, run.PrReviewConformanceModel));
+            if (result.PermissionDenials is { Count: > 0 } denials)
+            {
+                tokensSession.Events.Append(
+                    runId, new RunPermissionDenialsRecorded(runId, personaSession.Slug, denials, DateTimeOffset.UtcNow));
+            }
+
             await tokensSession.SaveChangesAsync(cancellationToken);
         }
 
@@ -1010,7 +1060,9 @@ public sealed class PrReviewEngine(
         Guid runId, Guid taskId, string runDirectory, int leaseGeneration, string worktreePath, string branch,
         TaskDetails task, ReviewPersonaPlan plan,
         IReadOnlyDictionary<string, ReviewPersonaSessionFailure> sessionFailures,
-        IReadOnlyList<ReviewPersona> personasReported, bool gateSetAccepted, CancellationToken cancellationToken)
+        IReadOnlyList<ReviewPersona> personasReported, bool gateSetAccepted,
+        IReadOnlyDictionary<string, IReadOnlyList<PermissionDenial>> permissionDenials,
+        CancellationToken cancellationToken)
     {
         string report =
             "# Pull request review findings\n\n"
@@ -1019,7 +1071,8 @@ public sealed class PrReviewEngine(
             + "or have the session post on your behalf. Resolve with h9k review resolve --merge-ready "
             + "when you are done; it opens or merges nothing of its own, and parks the task waiting on "
             + "the pull request until it merges or closes.\n"
-            + await ComposePersonaSectionsAsync(runDirectory, plan, sessionFailures, gateSetAccepted, cancellationToken)
+            + await ComposePersonaSectionsAsync(
+                runDirectory, plan, sessionFailures, gateSetAccepted, cancellationToken, permissionDenials)
             + LocalLaunchOffer.Compose(plan, taskId, runId, worktreePath, branch);
 
         // A mint whose own trigger was a mention (idea 2f079bcd, decision 2 and 3): the primary
