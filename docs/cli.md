@@ -428,6 +428,20 @@ it only on the owner's explicit go, under their own login, in the exact thread t
 from. A comment id already handled never fires again, and a comment the install's own login wrote
 never counts. `--auto-pr-review off` silences mentions too; there is no separate switch.
 
+On a public repository, a review request or mention must come from a declared hall9k team member
+before it mints and starts a task unattended — the bar is team membership, never GitHub collaborator
+status, and it is matched on the author's numeric GitHub id, never their login. A private or
+internal repository keeps the collaborator behaviour above by default: no membership check at all.
+`h9k project set <name> --review-requires-membership on|off|default` overrides that default in
+either direction; `default` clears the override so the daemon decides fresh every sweep from a live
+`gh repo view --json isPrivate` read, which `h9k project show` also reports alongside its own read
+time. A non-member's (or a bot's) request still mints the `pr-review` task — it is published but
+left unassigned, so no worktree, branch, or session exists yet, and `h9k task assign` is the human
+go that starts it; `h9k status` shows it as a needs-you row naming the author and why. The first
+sweep after a daemon restart, before this node has recomputed the project's declared member
+accounts, skips a candidate that would otherwise need the check rather than guessing either way, and
+retries it on the very next sweep.
+
 On a fleet, exactly one node mints the task for a review request. The node whose id sorts lowest
 among the owner's currently enrolled, unrevoked nodes mints on the first sweep that sees a request
 no live task covers, exactly as a single-node install always has. Every other node records the

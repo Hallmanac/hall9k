@@ -713,6 +713,16 @@ fires again, and a comment the install's own login wrote never counts. `--auto-p
 silences mentions exactly as it silences review requests, with no separate switch for either
 trigger.
 
+On a public repository, unattended minting requires the request's or mention's own author to be a
+declared hall9k team member — matched on their numeric GitHub id, never their login — while a
+private or internal one keeps the collaborator behaviour above with no membership check at all
+(security review idea 6be68ee2, finding 1). `h9k project set <name> --review-requires-membership
+on|off|default` overrides the visibility-computed default either way; `default` has the daemon read
+the repository's own visibility fresh every sweep. A non-member's (or a bot's) request still mints
+the task, published but left unassigned — `h9k task assign` is the human go — and this node's first
+sweep after a restart, before it has recomputed the project's declared members, skips rather than
+guesses and retries next sweep.
+
 One pr-review task per pull request per install stays waiting on it until it merges or closes,
 whether or not anything was ever posted to it (Decisions Log #178, amending #160):
 every review thread being resolved no longer ends the wait by itself, because a task that closed
