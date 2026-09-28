@@ -184,8 +184,13 @@ public sealed record NodeGitHubDeclaration(string NodeId, string KeyFingerprint,
 /// taken only from a file whose newest commit is signed by that file's own public key
 /// (<see cref="KeyFingerprint"/>), the identical rule <see cref="NodeGitHubDeclaration"/> already
 /// carries. A label only: nothing here ever feeds a trust or cross-check decision.
-/// <see cref="DeclaredAt"/> is the committing time, used only to pick the newest name when a
-/// member's own nodes disagree.
+/// <see cref="DeclaredAt"/> is the time this exact name was last set — the oldest commit,
+/// contiguous from the file's own newest, that already carried it (<c>GitLedgerChainReader</c>'s own
+/// <c>FieldSettledAtAsync</c>) — used only to pick the newest name when a member's own nodes
+/// disagree. Deliberately not simply the file's own newest commit time: the GitHub declaration
+/// shares this same file and is refreshed on its own schedule, so a GitHub-only rewrite must never
+/// make an unrelated, unchanged name look newer than a different name set more recently elsewhere
+/// (independent pre-PR review, cycle 1, adversarial lens, medium).
 /// </summary>
 public sealed record NodeDisplayNameDeclaration(string NodeId, string KeyFingerprint, DisplayName Name, DateTimeOffset DeclaredAt);
 
@@ -282,9 +287,10 @@ public sealed record TrustChain(
     /// The newest display name declared across <paramref name="root"/>'s own nodes (task e6744304),
     /// or <see cref="DisplayName.None"/> when none of them declares one. A label only: this is never
     /// consulted by <see cref="IsAllowedSigner(string)"/> or any other trust or cross-check decision
-    /// here, unlike <see cref="DeclaredAccountsOf"/>'s own accounts. The same tie-break
-    /// <see cref="DeclaredAccountsOf"/> uses (newest commit time, then the higher node id) applies
-    /// when two nodes disagree in the same second, so the answer never depends on fleet list order.
+    /// here, unlike <see cref="DeclaredAccountsOf"/>'s own accounts. Ordered by
+    /// <see cref="NodeDisplayNameDeclaration.DeclaredAt"/> (the time each name was actually last set,
+    /// not merely the newest commit touching that node's file), then by the higher node id when two
+    /// nodes' own values tie in the same second, so the answer never depends on fleet list order.
     /// A declaration counts only for a node in this root's fleet whose file carries the very key the
     /// chain vouched for that node id, the same <see cref="TrustedOwner.ContainsForNode"/> gate
     /// <see cref="DeclaredAccountsOf"/> applies.

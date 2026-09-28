@@ -275,7 +275,15 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 commits ??= await CommitsTouchingPathAsync(repositoryPath, tip, path, cancellationToken);
                 if (commits.Count > 0 && await IsSignedByAsync(repositoryPath, commits[0], publicKeyLine, cancellationToken))
                 {
-                    DateTimeOffset declaredAt = await CommitTimeAsync(repositoryPath, commits[0], cancellationToken);
+                    // The time this exact name was last set, not simply the newest commit that
+                    // touched node.yaml (independent pre-PR review, cycle 1, adversarial lens,
+                    // medium): the GitHub declaration shares this same file and is refreshed on its
+                    // own schedule, so a GitHub-only rewrite must never make an unrelated, unchanged
+                    // display name look newer than a different name set more recently on another node.
+                    DateTimeOffset declaredAt = await FieldSettledAtAsync(
+                        repositoryPath, path, commits, declaredName.Value,
+                        fileContent => NodeFileWriter.ReadDisplayName(fileContent) is { HasValue: true } name ? name.Value : null,
+                        cancellationToken);
                     displayNames[nodeId] = new NodeDisplayNameDeclaration(nodeId, fingerprint, declaredName, declaredAt);
                 }
             }
@@ -334,6 +342,37 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         return DateTimeOffset.TryParse(output.Trim(), CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset parsed)
             ? parsed
             : DateTimeOffset.MinValue;
+    }
+
+    /// <summary>
+    /// Among <paramref name="commits"/> (newest first, every commit <see cref="CommitsTouchingPathAsync"/>
+    /// found touching <paramref name="path"/>), the committer time of the oldest one, contiguous from
+    /// the newest, that already read as <paramref name="currentValue"/> through <paramref name="extractValue"/> —
+    /// the moment this specific field actually last changed to what it reads as now, rather than
+    /// simply the newest commit that happened to touch the file for some unrelated reason. Needed
+    /// because more than one field can share a single node file (the GitHub declaration and the
+    /// display name, task e6744304): a commit that only refreshes one of them still counts as
+    /// "touching the path", and <see cref="CommitTimeAsync"/> alone cannot tell that apart from an
+    /// actual change to the field being asked about.
+    /// </summary>
+    private async Task<DateTimeOffset> FieldSettledAtAsync(
+        string repositoryPath, string path, IReadOnlyList<string> commits, string? currentValue,
+        Func<string, string?> extractValue, CancellationToken cancellationToken)
+    {
+        string settledCommit = commits[0];
+        for (int index = 1; index < commits.Count; index++)
+        {
+            string? olderContent = await ReadAtCommitAsync(repositoryPath, commits[index], path, cancellationToken);
+            string? olderValue = olderContent is null ? null : extractValue(olderContent);
+            if (!string.Equals(olderValue, currentValue, StringComparison.Ordinal))
+            {
+                break;
+            }
+
+            settledCommit = commits[index];
+        }
+
+        return await CommitTimeAsync(repositoryPath, settledCommit, cancellationToken);
     }
 
     /// <summary>
