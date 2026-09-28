@@ -45,6 +45,41 @@ public sealed class LedgerRefRegistryTests
         LedgerRefRegistry.FetchRefspecs.Should().Contain("+refs/hall9k/messages/*:refs/hall9k/messages/*");
     }
 
+    /// <summary>
+    /// idea 6be68ee2, trust finding 8: every registered entry is append-only except a node's own
+    /// outbox, which is squashed and force-pushed with a lease by design and must never be checked
+    /// for a rewind or a side merge.
+    /// </summary>
+    [Fact]
+    public void MessagesPrefix_IsTheOnlyRegisteredEntryThatIsNotAppendOnly()
+    {
+        LedgerRefRegistry.MessagesPrefix.AppendOnly.Should().BeFalse();
+        LedgerRefRegistry.Records.AppendOnly.Should().BeTrue();
+        LedgerRefRegistry.MembersRef.AppendOnly.Should().BeTrue();
+        LedgerRefRegistry.OwnersPrefix.AppendOnly.Should().BeTrue();
+        LedgerRefRegistry.NodesPrefix.AppendOnly.Should().BeTrue();
+        LedgerRefRegistry.PromptAddenda.AppendOnly.Should().BeTrue();
+        LedgerRefRegistry.RunSkill.AppendOnly.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// What <see cref="Hall9k.Daemon.Messaging.MessageSweepEngine"/> walks once per tick
+    /// (<see cref="LedgerRefRegistry.AppendOnlyExactRefs"/>): every append-only exact ref, and never
+    /// a prefix (owners and nodes already get this check every tick as part of
+    /// <c>ILedgerChainReader.ComputeAsync</c> itself) or the one non-append-only entry.
+    /// </summary>
+    [Fact]
+    public void AppendOnlyExactRefs_ContainsEveryExactEntry_AndNeitherPrefixNorMessages()
+    {
+        LedgerRefRegistry.AppendOnlyExactRefs.Should().Contain(LedgerRefRegistry.Records);
+        LedgerRefRegistry.AppendOnlyExactRefs.Should().Contain(LedgerRefRegistry.MembersRef);
+        LedgerRefRegistry.AppendOnlyExactRefs.Should().Contain(LedgerRefRegistry.PromptAddenda);
+        LedgerRefRegistry.AppendOnlyExactRefs.Should().Contain(LedgerRefRegistry.RunSkill);
+        LedgerRefRegistry.AppendOnlyExactRefs.Should().NotContain(LedgerRefRegistry.OwnersPrefix);
+        LedgerRefRegistry.AppendOnlyExactRefs.Should().NotContain(LedgerRefRegistry.NodesPrefix);
+        LedgerRefRegistry.AppendOnlyExactRefs.Should().NotContain(LedgerRefRegistry.MessagesPrefix);
+    }
+
     [Fact]
     public void MembersRef_IsRegisteredAsAnExactEntry_FromTheChainReadersFirstCommit()
     {
