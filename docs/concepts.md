@@ -1434,12 +1434,16 @@ team. A project also has its own generated **project key** (a twenty-six-charact
 the genesis entry, deliberately not derived from anyone's fingerprint), and a project whose ledger
 predates that key gets one, once, from `h9k project assign-key`.
 
-**The display name also carries into the orchestrator feed, the feed courier, and the message
-commands.** A line that names another member (the feed's received-message line and its claim,
-takeover, take-request, refusal, and released-to-node lines; the courier's own delivered text,
-which is the identical feed lines verbatim; `h9k message show`'s From line; `h9k message handle`'s
-confirmation; and the Sender column of `h9k messages`) names them by this label rather than by a
-bare fingerprint or node id. It is the name this node currently knows: a change a member makes
+**The display name also carries into the orchestrator feed, the feed courier, the message
+commands, `h9k status`, the task commands, and `h9k learning show`.** A line that names another
+member (the feed's received-message line and its claim, takeover, take-request, refusal, and
+released-to-node lines; the courier's own delivered text, which is the identical feed lines
+verbatim; `h9k message show`'s From line; `h9k message handle`'s confirmation; the Sender column of
+`h9k messages`; `h9k status`'s cooperative-take and catch-up lines; `h9k task show`'s holder,
+assignee, handoff-note author, taken-over, take-request, and take-granted lines; `h9k task take`,
+`h9k task grant`, and `h9k task refuse`'s own output; and `h9k learning show`'s recorder for a
+lesson scoped to a project) names them by this label rather than by a bare fingerprint or node id.
+It is the name this node currently knows: a change a member makes
 reaches every other node's own copy within one message sweep of it landing on this node's own
 ledger read, and only while that node's own daemon is running: a CLI reading it with the daemon
 stopped keeps the last name the daemon last swept. A node of this machine's own owner is never
@@ -1447,8 +1451,10 @@ labelled this way; a line about your own node shows its id alone, since it alrea
 node the projection does not currently know a member for — one revoked out of every fleet, or a
 member removed from the project — falls back the same way these lines always have, to the bare id
 or the fingerprint's own short form. Trust-bearing output is unaffected by any of this: `h9k project
-members`, `h9k owner show`, `h9k status`, `h9k node vouch`/`revoke`, and `h9k project member remove`
-keep printing the fingerprint exactly as they always have, never a name in its place.
+members`, `h9k owner show`, `h9k status`'s own identity, unverifiable-write, and ignored-sender
+lines, `h9k node vouch`/`revoke`, `h9k project member remove`, and `h9k task take`'s own
+ledger-override verdict keep printing the fingerprint exactly as they always have, never a name in
+its place.
 
 **Invites are how anyone new is admitted, and the secret never touches the ledger.** There are two.
 `h9k node invite` is for another machine of yours: it prints a secret once and records only the
