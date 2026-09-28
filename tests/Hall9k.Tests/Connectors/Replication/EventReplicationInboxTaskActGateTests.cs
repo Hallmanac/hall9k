@@ -275,17 +275,18 @@ public sealed class EventReplicationInboxTaskActGateTests
         verdict.Should().Be(EventReplicationInbox.TaskActVerdict.Allowed);
     }
 
-    /// <summary>Independent pre-PR review, cycle 8, conformance and adversarial lenses, high: a
-    /// plain MemberSafe act's own unconditional-Allowed shortcut is native only
-    /// (<c>originNodeId == senderNodeId</c>) — nothing else in this bucket ever checks who the true
-    /// origin actually is, so a FORWARDED claim (a relay, never the origin itself, delivering it)
-    /// must not blanket-apply: a forger could otherwise stamp any origin and any
-    /// <c>OriginSequence</c> onto a plain observation and freeze that origin's own future writes on
-    /// the target stream for good. Held instead — the identical <see cref="EventReplicationInbox.TaskActVerdict.DroppedWithoutRecording"/>
-    /// a Conditional or OwnerOnly act already gets from an unauthorized relay — so the true origin
-    /// can still clear it with a genuine direct delivery.</summary>
+    /// <summary>Independent pre-PR review, cycle 8, terminal lap: a plain MemberSafe act's own
+    /// unconditional-Allowed shortcut applies whether <c>originNodeId</c> names the sender itself or
+    /// a forwarded claim, because this method never runs on a forwarded record until
+    /// <see cref="EventReplicationInbox.IsForwardedRecordAdmitted"/> has already refused it unless
+    /// the relay is speaking inside a catch-up answer this node itself minted for that exact origin
+    /// and stream. A cycle-8 narrowing once made this shortcut native-only, on the theory that
+    /// nothing else in this bucket ever checked who the true origin actually was — but that
+    /// narrowing then held every forwarded TaskCompleted or run event a LEGITIMATE relay served
+    /// inside an admitted answer, until the true origin re-sent it directly, undercutting the
+    /// catch-up ask the held-act queue relies on to clear.</summary>
     [Fact]
-    public void A_forwarded_plain_member_safe_act_is_held_rather_than_applied()
+    public void A_forwarded_plain_member_safe_act_is_allowed_the_same_as_a_native_one()
     {
         Guid taskId = DomainId.New();
         Guid originNodeId = DomainId.New();
@@ -296,7 +297,7 @@ public sealed class EventReplicationInboxTaskActGateTests
             TaskActClassification.MemberSafe, typeof(TaskCompleted), completed, task: null, sender: null,
             originNodeId, relayNodeId);
 
-        verdict.Should().Be(EventReplicationInbox.TaskActVerdict.DroppedWithoutRecording);
+        verdict.Should().Be(EventReplicationInbox.TaskActVerdict.Allowed);
     }
 
     /// <summary>Only the current holder may release the holder lock — checked alone, never

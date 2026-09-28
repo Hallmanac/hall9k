@@ -1295,6 +1295,316 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     /// <summary>
+    /// The forged-forward shape proved above, repeated with a plain
+    /// <see cref="TaskActClassification.MemberSafe"/> Task/Run act (<see cref="TaskCompleted"/>)
+    /// rather than a Conditional one (independent pre-PR review, cycle 8, terminal lap): before the
+    /// cycle-8 exemption was removed from <see cref="EventReplicationInbox.IsForwardedRecordAdmitted"/>,
+    /// a plain MemberSafe act skipped that gate entirely and relied instead on
+    /// <see cref="EventReplicationInbox.EvaluateTaskActVerdict"/>'s own native-only narrowing to
+    /// catch an unsolicited forge — which held it (a <see cref="HeldTaskActRecord"/> row, keyed by
+    /// the forger's own sender identity) rather than dropping it clean. Now that a Task or Run act
+    /// passes the identical forwarded-record admission gate as every other project-scoped event,
+    /// this forgery is refused before <c>ApplyAsync</c> ever runs, exactly like the Conditional
+    /// case: no held row, no burned origin id, and the claimed origin's own later genuine history is
+    /// never at risk of being frozen behind an inflated
+    /// <see cref="EventReplicationCodec.ReplicatedEventRecord.OriginSequence"/>.
+    /// </summary>
+    [Fact]
+    public async Task A_forwarded_membersafe_act_outside_any_catch_up_answer_is_dropped_and_never_held()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid trueOriginNode = DomainId.New();
+        Guid forwardingNode = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, trueOriginNode, cts.Token);
+        await SeedNodeFileAsync(ledger, forwardingNode, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("relay");
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+
+        const string ownerARoot = "owner-a-root-membersafe";
+        const string ownerMRoot = "owner-m-root-membersafe";
+        string originKeyLine = $"ssh-ed25519 AAAAFAKE{trueOriginNode:N} test";
+        string forwarderKeyLine = $"ssh-ed25519 AAAAFAKE{forwardingNode:N} test";
+        TrustChain trustChain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                [ownerARoot] = new TrustedOwner(
+                    ownerARoot, "ssh-ed25519 AAAAFAKEownerA test",
+                    [new TrustedNode(trueOriginNode.ToString(), originKeyLine, NodeKeyStore.Fingerprint(originKeyLine), Now)]),
+                [ownerMRoot] = new TrustedOwner(
+                    ownerMRoot, "ssh-ed25519 AAAAFAKEownerM test",
+                    [new TrustedNode(forwardingNode.ToString(), forwarderKeyLine, NodeKeyStore.Fingerprint(forwarderKeyLine), Now)]),
+            },
+            [
+                new ProjectMember(ownerARoot, MembershipRole.Owner, Now),
+                new ProjectMember(ownerMRoot, MembershipRole.Member, Now),
+            ]);
+
+        await using DocumentStore storeB = OpenStoreB();
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                projectId,
+                new ProjectRegistered(projectId, ownerId, DomainId.New(), "Shared Project", "/repo-b", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The true origin's own genuine first event, delivered directly by itself — establishes the
+        // stream on node B holding OriginSequence 1 recorded for trueOriginNode.
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid genesisEventId = DomainId.New();
+        TaskAdded genesis = TaskDecider.Add(
+            taskId, projectId, "Ship the thing", ["it ships"], TaskType.Feature, null, null, null, Now.AddSeconds(1), ownerId);
+        EventReplicationCodec.ReplicatedEventRecord genesisRecord = new(
+            taskId, typeof(TaskAdded).FullName!, JsonSerializer.Serialize(genesis, jsonOptions),
+            genesisEventId, OriginSequence: 1, trueOriginNode, ownerARoot, Now.AddSeconds(1), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, trueOriginNode, projectId, ownerARoot, MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([genesisRecord]), Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, trueOriginNode, projectId, "shared-project-key", adoptUnassigned: false,
+                committer, signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult genesisRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, trueOriginNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain, cts.Token);
+            genesisRead.EventsApplied.Should().Be(1, "the true origin's own genuine genesis applies normally");
+        }
+
+        // The attack: forwardingNode — a genuinely vouched member, never the true origin — flushes
+        // an ordinary broadcast batch (no catch-up About at all) carrying a plain MemberSafe act
+        // that claims trueOriginNode as its own origin, with an inflated OriginSequence. No catch-up
+        // request this node ever minted names this exchange, so this must be dropped.
+        Guid forgedEventId = DomainId.New();
+        TaskCompleted forgedPayload = new(taskId, runId, PullRequestUrl: null, Now.AddSeconds(4));
+        EventReplicationCodec.ReplicatedEventRecord forgedRecord = new(
+            taskId, typeof(TaskCompleted).FullName!, JsonSerializer.Serialize(forgedPayload, jsonOptions),
+            forgedEventId, OriginSequence: long.MaxValue, trueOriginNode, ownerARoot, Now.AddSeconds(4), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, forwardingNode, projectId, ownerMRoot, MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([forgedRecord]), Now.AddSeconds(5), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, forwardingNode, projectId, "shared-project-key", adoptUnassigned: false,
+                committer, signingKey, Now.AddSeconds(5), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult forgedRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, forwardingNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(6),
+                trustChain, cts.Token);
+            forgedRead.EventsApplied.Should().Be(
+                0, "forwardingNode is not the true origin and answers no catch-up request this node minted");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.LoadAsync<ReplicatedEventRecord>(forgedEventId, cts.Token)).Should().BeNull(
+                "a dropped foreign-origin record is never stored under its claimed OriginEventId — storing one "
+                + "there would let a forger pre-empt the genuine event's own future dedupe");
+            (await session.Query<HeldTaskActRecord>().Where(record => record.TaskId == taskId).ToListAsync(cts.Token))
+                .Should().BeEmpty("dropped at the forwarded-record admission gate, before the Task/Run act "
+                    + "classification gate — and its own hold queue — ever sees a plain MemberSafe act either");
+        }
+
+        // The proof: a genuine follow-up from the true origin, sent directly by itself at the next
+        // real sequence, must still apply — it would be refused as "belongs before origin sequence
+        // long.MaxValue" if the forged record above had ever reached ApplyAsync and poisoned this
+        // stream's own recorded high-water mark for trueOriginNode.
+        Guid genuineFollowUpEventId = DomainId.New();
+        TaskCompleted genuineFollowUp = new(taskId, runId, PullRequestUrl: null, Now.AddSeconds(7));
+        EventReplicationCodec.ReplicatedEventRecord genuineFollowUpRecord = new(
+            taskId, typeof(TaskCompleted).FullName!, JsonSerializer.Serialize(genuineFollowUp, jsonOptions),
+            genuineFollowUpEventId, OriginSequence: 2, trueOriginNode, ownerARoot, Now.AddSeconds(7), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, trueOriginNode, projectId, ownerARoot, MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([genuineFollowUpRecord]), Now.AddSeconds(8), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, trueOriginNode, projectId, "shared-project-key", adoptUnassigned: false,
+                committer, signingKey, Now.AddSeconds(8), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult followUpRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, trueOriginNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(9),
+                trustChain, cts.Token);
+            followUpRead.EventsApplied.Should().Be(
+                1, "the true origin's own later, genuine history must never be frozen by the dropped forgery");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            task.State.Should().Be(TaskState.Done, "the genuine follow-up actually applied");
+        }
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 8, terminal lap (dispute-preparation Q1(a)): the cycle-8
+    /// exemption that let a Task or Run act skip
+    /// <see cref="EventReplicationInbox.IsForwardedRecordAdmitted"/> outright let a member forge the
+    /// OWNER as a forwarded record's own claimed origin on the member's OWN already-assigned task.
+    /// <see cref="EventReplicationInbox.EvaluateTaskActVerdict"/>'s own Conditional check only ever
+    /// compared the ACT'S SENDER root against the task's own assignment, never the claimed origin,
+    /// so a member sending directly (never relaying anyone else's own record) could stamp the
+    /// owner's own node as origin with an inflated
+    /// <see cref="EventReplicationCodec.ReplicatedEventRecord.OriginSequence"/> and have it Allowed
+    /// on the strength of the member's OWN assignment — freezing the owner's own later, genuine
+    /// history on that stream as "belongs before" the forged sequence. Removing the exemption closes
+    /// this: the record's own claimed origin differs from its actual sender, so it is a forwarded
+    /// record like any other, and is dropped at admission for naming no catch-up request this node
+    /// ever minted.
+    /// </summary>
+    [Fact]
+    public async Task A_members_forged_owner_origin_on_their_own_assigned_task_is_dropped_at_admission()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid ownerNode = DomainId.New();
+        Guid memberNode = DomainId.New();
+        Guid ownerOwnerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+
+        const string ownerRoot = "owner-root-forge";
+        const string memberRoot = "member-root-forge";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, ownerNode, cts.Token);
+        await SeedNodeFileAsync(ledger, memberNode, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("relay");
+
+        TrustChain chain = TwoRootChain(ownerNode, memberNode, ownerRoot, memberRoot);
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        // The task is assigned to the FORGING member's own root — the fact that let the old
+        // Conditional check Allow this act outright, since it only ever compared the act's own
+        // sender root (the member, delivering directly) against the assignment, never the claimed
+        // origin.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Ship the thing", ["it ships"], TaskType.Feature, null, null, null, Now,
+                ownerOwnerId);
+            session.Events.StartStream<TaskAggregate>(taskId, added);
+            session.Events.Append(taskId, new TaskPublished(taskId, Now, ownerOwnerId));
+            session.Events.Append(
+                taskId,
+                new TaskAssigned(
+                    taskId, ownerOwnerId, UnmetDependencies: [], Now, ownerOwnerId,
+                    AssignedOwnerRootFingerprint: memberRoot));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+
+        // The forgery: memberNode sends this directly (never relaying anyone else's record — an
+        // ordinary flush, no catch-up About at all), but the record itself claims the OWNER's own
+        // node as origin, with an inflated OriginSequence.
+        Guid forgedEventId = DomainId.New();
+        TaskRevised forged = new(
+            taskId, Optional<string>.Of("Ship the forged thing"), Optional<IReadOnlyList<string>>.None,
+            Optional<string>.None, Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None,
+            Optional<AgentModel>.None, Now.AddSeconds(1), ownerOwnerId);
+        EventReplicationCodec.ReplicatedEventRecord forgedRecord = new(
+            taskId, typeof(TaskRevised).FullName!, JsonSerializer.Serialize(forged, jsonOptions),
+            forgedEventId, OriginSequence: long.MaxValue, ownerNode, ownerRoot, Now.AddSeconds(1), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, memberNode, projectId, memberRoot, MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([forgedRecord]), Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, memberNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, memberNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: chain, cts.Token);
+            read.EventsApplied.Should().Be(
+                0, "memberNode is not the record's own claimed origin and answers no catch-up request this "
+                    + "node minted");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.LoadAsync<ReplicatedEventRecord>(forgedEventId, cts.Token)).Should().BeNull(
+                "a dropped foreign-origin record is never stored under its claimed OriginEventId");
+            (await session.Query<HeldTaskActRecord>().Where(record => record.TaskId == taskId).ToListAsync(cts.Token))
+                .Should().BeEmpty("dropped at the forwarded-record admission gate, before the Task/Run act "
+                    + "classification gate — the one that would otherwise have judged the sender's OWN "
+                    + "assignment and Allowed it — ever sees it");
+
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            task.Objective.Should().Be("Ship the thing", "the forged revise never applied");
+        }
+
+        // The proof: a genuine event from the claimed origin (the owner), delivered directly, must
+        // still apply at its own real sequence 1 — it would be refused as "belongs before origin
+        // sequence long.MaxValue" had the forgery ever reached ApplyAsync and poisoned this stream's
+        // own recorded high-water mark for the owner.
+        TaskRevised genuine = new(
+            taskId, Optional<string>.Of("Ship the genuine thing"), Optional<IReadOnlyList<string>>.None,
+            Optional<string>.None, Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None,
+            Optional<AgentModel>.None, Now.AddSeconds(4), ownerOwnerId);
+        EventReplicationCodec.ReplicatedEventRecord genuineRecord = new(
+            taskId, typeof(TaskRevised).FullName!, JsonSerializer.Serialize(genuine, jsonOptions),
+            DomainId.New(), OriginSequence: 1, ownerNode, ownerRoot, Now.AddSeconds(4), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, ownerNode, projectId, ownerRoot, MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([genuineRecord]), Now.AddSeconds(5), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, ownerNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(5), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, ownerNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(6),
+                trustChain: chain, cts.Token);
+            read.EventsApplied.Should().Be(
+                1, "the owner's own later, genuine history must never be frozen by the dropped forgery");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            task.Objective.Should().Be("Ship the genuine thing", "the genuine revise actually applied");
+        }
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 3, conformance lens (ProjectStreamReplicationRules.cs:572):
     /// applying a teammate's own per-install lifecycle decision (archive, reactivate, rename,
     /// schedule or cancel a purge) to the receiver's own Project stream let another node's local
@@ -4322,12 +4632,15 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     /// (now-irrelevant) root. This proves the fix: the direct delivery both applies the act for real
     /// and clears its own stale hold.
     /// <para>
-    /// The record queued behind the claim is itself a plain MemberSafe act (<see cref="TaskCompleted"/>),
-    /// which only drains once IT is ALSO delivered directly by the true origin (independent pre-PR
-    /// review, cycle 8, conformance and adversarial lenses, high): a MemberSafe act's own
-    /// unconditional-Allowed shortcut is native-only now, since nothing else in that bucket ever
-    /// verified who the true origin actually was, and the relay's own forwarding of it is no more
-    /// trustworthy than the relay's forwarding of the claim was.
+    /// The relay's own forward is admitted at all only because it answers a catch-up request this
+    /// node itself minted for the task's own stream (independent pre-PR review, cycle 8, terminal
+    /// lap: <see cref="EventReplicationInbox.IsForwardedRecordAdmitted"/> now polices a Task or Run
+    /// act exactly like any other forwarded record — the cycle-8 exemption that let one skip that
+    /// gate outright regressed main's own trust-ledger findings 4 and 7). The record queued behind
+    /// the claim is a plain MemberSafe act (<see cref="TaskCompleted"/>): once it has already
+    /// cleared that admission gate alongside the claim, it needs no SECOND direct delivery of its
+    /// own — the moment the claim's own hold clears and the re-check reaches it, it applies
+    /// straight off the queue.
     /// </para>
     /// </summary>
     [Fact]
@@ -4336,6 +4649,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         Guid memberNode = DomainId.New();
         Guid relayNode = DomainId.New();
+        Guid receiverNodeId = DomainId.New();
         Guid creatorOwnerId = DomainId.New();
         Guid memberOwnerId = DomainId.New();
         Guid projectId = DomainId.New();
@@ -4392,6 +4706,24 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
             await session.SaveChangesAsync(cts.Token);
         }
 
+        // A broadcast this receiving node itself minted for the task's own stream — the shape the
+        // relay's forward below is entitled to answer at all now that IsForwardedRecordAdmitted
+        // polices a Task or Run act exactly like any other forwarded record (ForStreamId = taskId,
+        // Candidates empty: any vouched project member may reply).
+        Guid requestId = DomainId.New();
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Store(new EventCatchUpRequest
+            {
+                Id = requestId,
+                ProjectId = projectId,
+                ForStreamId = taskId,
+                Candidates = [],
+                SentAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
         JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
 
         // Origin sequence 1: the true origin's own claim, forwarded here by a fellow member relay
@@ -4415,9 +4747,9 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                session, relayNode, projectId, relayRoot, MessageAudience.Project, about: null,
-                MessageKind.Events, EventReplicationCodec.EncodeBatch([claimRecord, completedRecord]), Now.AddSeconds(3),
-                cts.Token);
+                session, relayNode, projectId, relayRoot, MessageAudience.Node(receiverNodeId),
+                about: requestId.ToString(), MessageKind.Events, EventReplicationCodec.EncodeBatch([claimRecord, completedRecord]),
+                Now.AddSeconds(3), cts.Token);
             await messageOutbox.FlushAsync(
                 session, RepositoryPath, relayNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
                 signingKey, Now.AddSeconds(3), cts.Token);
@@ -4426,7 +4758,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, relayNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4),
+                session, RepositoryPath, relayNode, projectId, receiverNodeId, "owner-b-fingerprint", Now.AddSeconds(4),
                 trustChain: chain, cts.Token);
             read.EventsApplied.Should().Be(
                 0, "the relay's own root does not match the assignment, so the claim is held and the record "
@@ -4457,51 +4789,16 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
                 session, RepositoryPath, memberNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(6),
                 trustChain: chain, cts.Token);
             read.EventsApplied.Should().Be(
-                1, "the direct claim applies for real and clears its own stale relay hold, but the completion "
-                    + "was itself only ever forwarded by the relay too — independent pre-PR review, cycle 8, "
-                    + "conformance and adversarial lenses, high: a plain MemberSafe act is no longer trusted to "
-                    + "attribute itself to an origin the transport never actually verified, so it stays held "
-                    + "for the true origin's own direct word on it, exactly like the claim just was");
-        }
-
-        Guid completedHoldId;
-        await using (IQuerySession session = storeB.QuerySession())
-        {
-            IReadOnlyList<HeldTaskActRecord> held = await session.Query<HeldTaskActRecord>()
-                .Where(record => record.TaskId == taskId).ToListAsync(cts.Token);
-            held.Should().HaveCount(1, "the claim's own hold cleared, but the completion, never itself "
-                + "delivered directly, is still held");
-            completedHoldId = held.Single().Id;
-
-            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
-            task.State.Should().Be(TaskState.Claimed, "only the claim has actually applied so far");
-            task.HolderNodeId.Should().Be(memberNode);
-        }
-
-        // The true origin now answers the completion directly too — the identical record, same
-        // origin event id, this time natively delivered rather than relayed.
-        await using (IDocumentSession session = _postgres.Store.LightweightSession())
-        {
-            await MessageOutbox.QueueAsync(
-                session, memberNode, projectId, memberRoot, MessageAudience.Project, about: null,
-                MessageKind.Events, EventReplicationCodec.EncodeBatch([completedRecord]), Now.AddSeconds(7), cts.Token);
-            await messageOutbox.FlushAsync(
-                session, RepositoryPath, memberNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
-                signingKey, Now.AddSeconds(7), cts.Token);
-        }
-
-        await using (IDocumentSession session = storeB.LightweightSession())
-        {
-            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, memberNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(8),
-                trustChain: chain, cts.Token);
-            read.EventsApplied.Should().Be(1, "the completion's own native delivery finally applies it for real");
+                2, "the direct claim applies for real and clears its own stale relay hold, and that same read "
+                    + "then finds the completion — already legitimately admitted through the catch-up answer the "
+                    + "relay forwarded it inside — at the head of the queue and applies it too, with no second "
+                    + "direct delivery needed");
         }
 
         await using (IQuerySession session = storeB.QuerySession())
         {
-            (await session.LoadAsync<HeldTaskActRecord>(completedHoldId, cts.Token)).Should().BeNull(
-                "the completion's own direct delivery clears its stale relay hold the same way the claim's did");
+            (await session.Query<HeldTaskActRecord>().Where(record => record.TaskId == taskId).ToListAsync(cts.Token))
+                .Should().BeEmpty("both the claim's and the completion's own holds cleared in the same read");
 
             TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
             task.State.Should().Be(TaskState.Done, "the claim and the completion both actually applied, in order");
@@ -4525,6 +4822,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         Guid ownerNode = DomainId.New();
         Guid relayNode = DomainId.New();
+        Guid receiverNodeId = DomainId.New();
         Guid ownerOwnerId = DomainId.New();
         Guid projectId = DomainId.New();
         Guid taskId = DomainId.New();
@@ -4562,6 +4860,23 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
             await session.SaveChangesAsync(cts.Token);
         }
 
+        // A broadcast this receiving node itself minted for the task's own stream — the shape the
+        // relay's forward below is entitled to answer at all now that IsForwardedRecordAdmitted
+        // polices a Task or Run act exactly like any other forwarded record.
+        Guid requestId = DomainId.New();
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Store(new EventCatchUpRequest
+            {
+                Id = requestId,
+                ProjectId = projectId,
+                ForStreamId = taskId,
+                Candidates = [],
+                SentAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
         JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
 
         // Origin sequence 1: a claim the relay forges as coming from the OWNER's own node, but the
@@ -4577,8 +4892,9 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                session, relayNode, projectId, relayRoot, MessageAudience.Project, about: null,
-                MessageKind.Events, EventReplicationCodec.EncodeBatch([claimRecord]), Now.AddSeconds(2), cts.Token);
+                session, relayNode, projectId, relayRoot, MessageAudience.Node(receiverNodeId),
+                about: requestId.ToString(), MessageKind.Events, EventReplicationCodec.EncodeBatch([claimRecord]),
+                Now.AddSeconds(2), cts.Token);
             await messageOutbox.FlushAsync(
                 session, RepositoryPath, relayNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
                 signingKey, Now.AddSeconds(2), cts.Token);
@@ -4587,7 +4903,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, relayNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                session, RepositoryPath, relayNode, projectId, receiverNodeId, "owner-b-fingerprint", Now.AddSeconds(3),
                 trustChain: chain, cts.Token);
             read.EventsApplied.Should().Be(0, "the relay's own root does not match the assignment, so its claim is held");
         }
@@ -4650,6 +4966,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         Guid memberNode = DomainId.New();
         Guid relayNode = DomainId.New();
+        Guid receiverNodeId = DomainId.New();
         Guid creatorOwnerId = DomainId.New();
         Guid memberOwnerId = DomainId.New();
         Guid projectId = DomainId.New();
@@ -4706,6 +5023,23 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
             await session.SaveChangesAsync(cts.Token);
         }
 
+        // A broadcast this receiving node itself minted for the task's own stream — the shape the
+        // relay's forward below is entitled to answer at all now that IsForwardedRecordAdmitted
+        // polices a Task or Run act exactly like any other forwarded record.
+        Guid requestId = DomainId.New();
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Store(new EventCatchUpRequest
+            {
+                Id = requestId,
+                ProjectId = projectId,
+                ForStreamId = taskId,
+                Candidates = [],
+                SentAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
         JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
 
         // Origin sequence 1: the true origin's own claim, forwarded here by a fellow member relay
@@ -4729,9 +5063,9 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                session, relayNode, projectId, relayRoot, MessageAudience.Project, about: null,
-                MessageKind.Events, EventReplicationCodec.EncodeBatch([claimRecord, handedBackRecord]), Now.AddSeconds(3),
-                cts.Token);
+                session, relayNode, projectId, relayRoot, MessageAudience.Node(receiverNodeId),
+                about: requestId.ToString(), MessageKind.Events, EventReplicationCodec.EncodeBatch([claimRecord, handedBackRecord]),
+                Now.AddSeconds(3), cts.Token);
             await messageOutbox.FlushAsync(
                 session, RepositoryPath, relayNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
                 signingKey, Now.AddSeconds(3), cts.Token);
@@ -4740,7 +5074,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, relayNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4),
+                session, RepositoryPath, relayNode, projectId, receiverNodeId, "owner-b-fingerprint", Now.AddSeconds(4),
                 trustChain: chain, cts.Token);
             read.EventsApplied.Should().Be(
                 0, "the relay's own root does not match the assignment, so the claim is held and the record "
@@ -4839,6 +5173,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         Guid ownerNode = DomainId.New();
         Guid memberNode = DomainId.New();
+        Guid receiverNodeId = DomainId.New();
         Guid memberOwnerId = DomainId.New();
         Guid projectId = DomainId.New();
         Guid taskId = DomainId.New();
@@ -4858,6 +5193,25 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using DocumentStore storeB = OpenStoreB();
         JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
 
+        // A broadcast this receiving node itself minted for the task's own stream — the shape the
+        // owner's relay below is entitled to answer at all now that IsForwardedRecordAdmitted
+        // polices a Task or Run act exactly like any other forwarded record; a fresh stream id is
+        // still a legitimate ForStreamId ask (h9k task pull), since the requester by definition
+        // does not hold it yet.
+        Guid requestId = DomainId.New();
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Store(new EventCatchUpRequest
+            {
+                Id = requestId,
+                ProjectId = projectId,
+                ForStreamId = taskId,
+                Candidates = [],
+                SentAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
         // The member's own draft genesis, delivered here by the OWNER relaying it rather than the
         // member itself — the ordinary shape a catch-up broadcast answer takes
         // (EventCatchUpResponder's own doc): the wire record's own OriginNodeId names the member,
@@ -4872,8 +5226,9 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                session, ownerNode, projectId, ownerRoot, MessageAudience.Project, about: null,
-                MessageKind.Events, EventReplicationCodec.EncodeBatch([addedRecord]), Now.AddSeconds(2), cts.Token);
+                session, ownerNode, projectId, ownerRoot, MessageAudience.Node(receiverNodeId),
+                about: requestId.ToString(), MessageKind.Events, EventReplicationCodec.EncodeBatch([addedRecord]),
+                Now.AddSeconds(2), cts.Token);
             await messageOutbox.FlushAsync(
                 session, RepositoryPath, ownerNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
                 signingKey, Now.AddSeconds(2), cts.Token);
@@ -4882,7 +5237,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, ownerNode, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                session, RepositoryPath, ownerNode, projectId, receiverNodeId, "owner-b-fingerprint", Now.AddSeconds(3),
                 trustChain: chain, cts.Token);
             read.EventsApplied.Should().Be(1, "the relayed genesis still starts the stream");
         }
