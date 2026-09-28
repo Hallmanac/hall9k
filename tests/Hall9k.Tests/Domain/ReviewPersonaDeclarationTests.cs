@@ -122,7 +122,11 @@ public sealed class ReviewPersonaDeclarationTests
             owner, Optional<ReviewRerequestPolicy>.None, Now, Optional<VoiceSkillName>.None,
             Optional<IReadOnlyList<ReviewPersona>>.Of([ReviewPersona.Qa, ReviewPersona.Unknown]));
 
-        act.Should().Throw<DomainValidationException>().WithMessage("*engineer, qa, designer*");
+        act.Should().Throw<DomainValidationException>().WithMessage("*engineer, qa, designer*")
+            .Which.Message.Should().NotContain("security",
+                "this refusal names the set a member may DECLARE (independent pre-PR review, cycle 1, both "
+                + "lenses, low) — security is never one of them, so naming it here would tell whoever hits "
+                + "this refusal that --persona security is a legal retry when it is refused outright");
     }
 
     /// <summary>

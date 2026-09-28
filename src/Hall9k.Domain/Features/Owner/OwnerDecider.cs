@@ -79,9 +79,9 @@ public static class OwnerDecider
             && reviewPersonas.Value?.Any(persona => persona is not { HasValue: true }) == true)
         {
             throw new DomainValidationException(
-                "One of these review personas is not one the platform recognizes. The set is fixed: "
-                + $"{string.Join(", ", ReviewPersona.All.Select(persona => persona.Value))} — each one maps "
-                + "to its own review prompt and criteria in the platform's persona registry "
+                "One of these review personas is not one the platform recognizes. The set a member may "
+                + $"declare is fixed: {string.Join(", ", ReviewPersona.Declarable.Select(persona => persona.Value))} "
+                + "— each one maps to its own review prompt and criteria in the platform's persona registry "
                 + "(idea b9b09779). Declaring none reads as the engineer's review.");
         }
 
