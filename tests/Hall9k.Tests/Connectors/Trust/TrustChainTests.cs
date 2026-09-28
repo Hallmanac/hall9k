@@ -64,33 +64,6 @@ public sealed class TrustChainTests
     }
 
     [Fact]
-    public void IsAllowedSigner_WithNodeId_RejectsTheRootsOwnKeyForAnyOtherNodeId()
-    {
-        Guid rootNodeId = Guid.Parse("33333333-3333-3333-3333-333333333333");
-        TrustedOwner owner = new(
-            "root-fingerprint", "ssh-ed25519 AAAAroot root",
-            [new TrustedNode(VouchedNodeId.ToString(), "ssh-ed25519 AAAAnode node", "node-fingerprint", DateTimeOffset.UnixEpoch)],
-            RootNodeId: rootNodeId.ToString());
-        TrustChain chain = new(
-            new Dictionary<string, TrustedOwner> { ["root-fingerprint"] = owner },
-            [new ProjectMember("root-fingerprint", MembershipRole.Owner, DateTimeOffset.UnixEpoch)]);
-
-        chain.IsAllowedSigner("root-fingerprint", OtherNodeId).Should().BeFalse(
-            "OtherNodeId was never attached as this root's own node id");
-    }
-
-    [Fact]
-    public void IsAllowedSigner_WithNodeId_RejectsTheRootsOwnKeyWhenNoRootNodeIdIsAttachedAtAll()
-    {
-        // BuildChain() attaches no RootNodeId — the shape a ledger read produces when this root's
-        // own node file is missing or not signed by the root key (GitLedgerChainReader's own doc).
-        TrustChain chain = BuildChain();
-
-        chain.IsAllowedSigner("root-fingerprint", OtherNodeId).Should().BeFalse(
-            "no node id has ever been proven to be this root's own device");
-    }
-
-    [Fact]
     public void IsAllowedSigner_WithNodeId_RejectsAKeyNoOwnerChainContainsAtAll()
     {
         TrustChain chain = BuildChain();

@@ -79,6 +79,18 @@ public sealed record TrustedOwner(
     /// node id as <see cref="RootNodeId"/> (that field's own doc: only when the node file's newest
     /// commit is signed by the root key and still claims that root), never for a second node that
     /// happens to declare the same key without ever having been established as the root's own device.
+    /// <para>
+    /// Enforced at two callers: <see cref="Hall9k.Connectors.Messaging.GitLedgerMessageTransport.ReadSinceAsync"/>
+    /// refuses a sender outright when its own node file's key fails this check
+    /// (<c>chain.IsAllowedSigner(senderFingerprint, senderNodeId)</c>), and
+    /// <see cref="Hall9k.Connectors.Replication.EventReplicationInbox.EvaluateGatedEvent"/> uses this
+    /// same rule to decide whether a project-settings-shaped replicated event's own sender currently
+    /// belongs to an owner's chain for that sender's node id. A root node refused by either — one
+    /// whose own node file is missing, or whose newest commit no longer self-certifies as this root's
+    /// device — is repaired only by re-running <c>h9k project join</c> against that root's own key: no
+    /// start-up path rewrites a root's node file on its behalf (<c>NodeFileWriter.RefreshGitHubDeclarationAsync</c>
+    /// never creates one, only ever updates an existing file's GitHub declaration).
+    /// </para>
     /// </summary>
     public bool ContainsForNode(string fingerprint, string nodeId) =>
         (RootFingerprint == fingerprint && RootNodeId == nodeId)
