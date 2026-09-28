@@ -10,6 +10,7 @@ using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
+using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -722,20 +723,19 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         Guid projectId = DomainId.New();
         await using (IDocumentSession projectSession = store.LightweightSession())
         {
-            Hall9k.Domain.Features.Project.ProjectAggregate project = new();
-            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+            ProjectAggregate project = new();
+            ProjectRegistered registered = ProjectDecider.Register(
                 projectId, node.OwnerId, DomainId.New(), $"ci-less-{projectId:N}", repoPath, null, "main", Now);
             project.Apply(registered);
-            projectSession.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(
+            projectSession.Events.StartStream<ProjectAggregate>(
                 projectId, registered,
-                Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ChangeSettings(
+                ProjectDecider.ChangeSettings(
                     project,
-                    verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.None,
+                    verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
                     skipPermissions: Optional<bool>.None,
-                    contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
+                    contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
                     Now, node.OwnerId,
-                    ciPolicy: Optional<Hall9k.Domain.Features.Project.CiPolicy>.Of(
-                        Hall9k.Domain.Features.Project.CiPolicy.None)));
+                    ciPolicy: Optional<CiPolicy>.Of(CiPolicy.None)));
             await projectSession.SaveChangesAsync(cts.Token);
         }
 

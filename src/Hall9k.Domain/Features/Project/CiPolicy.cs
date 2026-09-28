@@ -10,7 +10,7 @@ namespace Hall9k.Domain.Features.Project;
 /// daemon-consumers finding A), as <c>h9k project set --ci</c> records it. An empty rollup is
 /// indistinguishable from a repository with no CI configured at all AND from a workflow run that
 /// simply has not registered yet
-/// (<see cref="Hall9k.Daemon.Closeout.PullRequestSnapshot.HasObservedChecks"/>'s own doc), so the
+/// (<c>Hall9k.Daemon.Closeout.PullRequestSnapshot.HasObservedChecks</c>'s own doc), so the
 /// gate no longer resolves that ambiguity by trusting silence — it parks and names this setting,
 /// and only a project that has said out loud it runs no CI is read as "no CI" past the window.
 /// <para>

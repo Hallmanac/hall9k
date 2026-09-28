@@ -821,7 +821,7 @@ one of them, grouped by what it governs, with its default. Three things apply to
 | `Hall9k__MaxMechanicalResolutionAttempts` | 3 | For a pre-approved task, how many times a merge that GitHub refuses for a mechanical reason is retried without an agent before the run parks with an itemized reason. A manual `h9k pr resolve` refills it. |
 | `Hall9k__MaxStackReplayRuns` | 12 | For a stacked child, how many mechanical replays onto a moved parent head (or onto the base branch once the parent merged) it gets before it parks. It is its own budget, higher than the closeout ceiling, because a parent under review legitimately moves once per lap; a manual `h9k pr resolve` resets it. |
 | `Hall9k__CopilotReviewSettleWindow` | 24h | How long a pre-approved task's pull request waits for a requested Copilot review to arrive before the run parks instead of waiting forever. |
-| `Hall9k__ChecksRegistrationSettleWindow` | 15m | How long a pre-approved task's merge gate waits, after the head was last pushed, for GitHub to report a first check run before deciding what an empty list means. Past the window, an empty rollup parks the task naming `h9k project set --ci none` unless the project already declared it (`h9k project set --ci none\|required`, default `required`) — an empty rollup is never trusted as "no CI" on its own. |
+| `Hall9k__ChecksRegistrationSettleWindow` | 15m | How long a pre-approved task's merge gate waits, after the head was last pushed, for GitHub to report a first check run before deciding what an empty list means. Past the window, an empty rollup parks the task naming `h9k project set --ci none` unless the project already declared it (`h9k project set --ci none\|required`, default `required`); an empty rollup is never trusted as "no CI" on its own. |
 | `Hall9k__MaxReviewRerequestsAfterFixes` | 2 | How many countersign re-requests one task's pull request may draw before it settles on the internal review, the thread replies, and CI (Decisions Log #62). |
 | `Hall9k__DefaultReviewRerequest` | disabled | Whether closeout asks reviewers for another pass after fixes push |
 | `Hall9k__DefaultCommitStyle` | narrative | How follow-up runs land review fixes when a project sets no style of its own: `narrative` folds each fix into its owning commit, `append` stacks fix commits on top. `h9k project set --commit-style` overrides it per project. |
@@ -1379,15 +1379,16 @@ file name at any depth, and anything else matches against the full path.
 A pre-approved task's merge gate (`h9k task set-pre-approved`) waits, after a head is pushed, up to
 `Hall9k__ChecksRegistrationSettleWindow` (15 minutes by default) for GitHub to report even one
 check run. An empty check rollup is indistinguishable from a repository that genuinely runs no CI
-until that window elapses — and it is *still* indistinguishable afterward, so it is never merely
+until that window elapses, and it is *still* indistinguishable afterward, so it is never merely
 trusted as "no CI" on its own. Past the window, the gate parks the task instead, naming the command
 below, unless the project has already declared it. `--ci none|required` is that declaration
 (default `required`): `none` is a standing statement that this project runs no CI at all, and every
 pre-approved task then merges past a still-empty rollup exactly as it always did; `required` (or
 never setting it) means an empty rollup past the window is treated as unproven rather than green,
-and the task parks with one line naming `h9k project set <project> --ci none` as the way past it.
-Inside the window nothing changes either way — the gate simply waits for the next sweep to check
-again.
+and the task parks naming `h9k project set <project> --ci none`. That setting only changes how the
+next task's own gate reads a still-empty rollup; a task already parked on this reason stays parked
+until it is merged by hand or granted another attempt with `h9k pr resolve`. Inside the window
+nothing changes either way; the gate simply waits for the next sweep to check again.
 
 `h9k project show <name>` prints every setting a project runs by, alongside how it is registered.
 Ask `h9k project set --help` for the current list and what each value means.

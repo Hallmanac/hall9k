@@ -528,10 +528,12 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "all — trusting the silence used to be this gate's whole answer to that ambiguity, and a "
             + "project that genuinely has no CI is the one case that answer was ever right for. 'none' "
             + "is that explicit declaration: a human statement, never inferred, and once set every such "
-            + "task merges past an empty rollup exactly as it did before this setting existed. This "
-            + "command is refused from inside a dispatched session's own worktree, the same as every "
-            + "other h9k project set flag, so a run cannot declare its own project CI-less to clear its "
-            + "own park.")]
+            + "task merges past an empty rollup exactly as it did before this setting existed. Setting "
+            + "it does not by itself unpark a task already parked on this reason — merge that pull "
+            + "request by hand, or grant it another attempt with h9k pr resolve. This command is "
+            + "refused from inside a dispatched session's own worktree, the same as every other h9k "
+            + "project set flag, so a run cannot declare its own project CI-less to clear its own "
+            + "park.")]
         public string? Ci { get; init; }
 
         [CommandOption("--discover-run-skill")]

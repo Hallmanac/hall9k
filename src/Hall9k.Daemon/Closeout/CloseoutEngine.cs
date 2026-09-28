@@ -1349,8 +1349,10 @@ public sealed class CloseoutEngine(
                     "Pre-approved, but no check has been observed on this pull request's head for over "
                     + $"{_options.ChecksRegistrationSettleWindow.TotalMinutes:0.#} minutes since it was "
                     + "pushed — an empty check rollup is never trusted as \"no CI\" on its own. If this "
-                    + $"project genuinely runs no CI, run h9k project set {project.Name} --ci none once; "
-                    + "otherwise find out why CI never registered a run for this head.",
+                    + $"project genuinely runs no CI, run h9k project set {project.Name} --ci none so "
+                    + "future tasks merge past it; otherwise find out why CI never registered a run for "
+                    + "this head. Either way, merge this pull request by hand, or grant another attempt "
+                    + "with h9k pr resolve.",
                     now, cancellationToken);
                 return InspectionOutcome.Inspected;
             }
