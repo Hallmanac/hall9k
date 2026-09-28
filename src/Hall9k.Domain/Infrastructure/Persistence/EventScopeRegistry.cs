@@ -415,6 +415,14 @@ public static class EventScopeRegistry
         // the rest of this stream.
         [typeof(InviteLossNotified)] = EventScope.NodeScoped,
 
+        // idea 6be68ee2, companion 1bb803e1: an owner-act hold is the root's own local record of an
+        // owner-role member write it is holding for its own human to approve — keyed by the
+        // owner-act-request message's own stream id, this root's alone, never replicated (the
+        // identical "this node's own local read" reasoning the rest of this stream already carries).
+        [typeof(OwnerActHeld)] = EventScope.NodeScoped,
+        [typeof(OwnerActApproved)] = EventScope.NodeScoped,
+        [typeof(OwnerActHoldExpired)] = EventScope.NodeScoped,
+
         // Hall9k.Domain.Features.Connection — a node's own registered credential; never
         // replicated (Guid tokens and gh CLI logins are inherently local to the machine).
         [typeof(ConnectionRegistered)] = EventScope.NodeScoped,
