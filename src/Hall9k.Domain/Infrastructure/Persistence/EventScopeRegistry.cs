@@ -207,6 +207,7 @@ public static class EventScopeRegistry
         [typeof(RunGateSetAcceptanceWaitStarted)] = EventScope.NodeScoped,
         [typeof(RunKilled)] = EventScope.ProjectScoped,
         [typeof(RunLaunchHeld)] = EventScope.NodeScoped,
+        [typeof(RunPermissionDenialsRecorded)] = EventScope.ProjectScoped,
         [typeof(RunPhaseDelegated)] = EventScope.ProjectScoped,
         [typeof(RunProcessStarted)] = EventScope.NodeScoped,
         [typeof(RunRebasedOntoBase)] = EventScope.ProjectScoped,

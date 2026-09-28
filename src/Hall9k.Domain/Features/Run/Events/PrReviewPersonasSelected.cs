@@ -26,6 +26,17 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// happened, not what would be decided now. Empty for a run whose stream predates this, and for
 /// every run whose personas cannot drive at all.
 /// </param>
+/// <param name="ForkSkipped">
+/// The subset of <paramref name="Skipped"/> skipped specifically because this review's head sits
+/// on a fork (security review idea 6be68ee2, process-injection finding 1) — never because the
+/// persona has no review prompt registered. A fork head runs no session with anything beyond a
+/// static, read-only look at the diff, so a persona whose whole job is to build or drive the
+/// product (<c>ReviewPersonaEntry.CanDriveTheProduct</c>) is skipped outright rather than run
+/// under a file that would refuse everything it was asked to do. Null, or a value disjoint from
+/// <paramref name="Skipped"/>, reads as empty. Empty for a run on a non-fork head, and for a run
+/// whose stream predates the fork skip existing.
+/// </param>
+/// <param name="ForkSkipReason">Why every persona in <paramref name="ForkSkipped"/> was skipped, verbatim. Null exactly when that list is empty.</param>
 public sealed record PrReviewPersonasSelected(
     Guid Id,
     IReadOnlyList<ReviewPersona> Requested,
@@ -33,4 +44,6 @@ public sealed record PrReviewPersonasSelected(
     IReadOnlyList<ReviewPersona> Skipped,
     bool FellBackToEngineer,
     DateTimeOffset SelectedAt,
-    IReadOnlyList<ReviewDriveDecision>? DriveDecisions = null);
+    IReadOnlyList<ReviewDriveDecision>? DriveDecisions = null,
+    IReadOnlyList<ReviewPersona>? ForkSkipped = null,
+    string? ForkSkipReason = null);
