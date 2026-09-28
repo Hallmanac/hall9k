@@ -333,11 +333,16 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             ForeignRecord(projectId, settingsChange, trueOwnerOriginNode, originSequence: 2, projectId),
         ];
 
+        // Addressed and stamped exactly as EventCatchUpResponder.QueueBatchAsync actually answers a
+        // candidate ask — MessageAudience.Node(requester), about the request id — so this node's own
+        // admission rule (idea 6be68ee2, trust-ledger findings 4 and 7) recognizes forwardingNode as
+        // this exact gap-fill's own ranked candidate, the same way a real answer's own envelope would.
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                session, forwardingNode, projectId, "owner-fingerprint", MessageAudience.Project, about: null,
-                MessageKind.Events, EventReplicationCodec.EncodeBatch(answer), Now.AddSeconds(2), cts.Token);
+                session, forwardingNode, projectId, "owner-fingerprint", MessageAudience.Node(nodeB),
+                about: requestId.ToString(), MessageKind.Events, EventReplicationCodec.EncodeBatch(answer),
+                Now.AddSeconds(2), cts.Token);
             await messageOutbox.FlushAsync(
                 session, RepositoryPath, forwardingNode, projectId, "shared-project-key", adoptUnassigned: false, committer,
                 signingKey, Now.AddSeconds(2), cts.Token);
@@ -1303,10 +1308,28 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
                 signingKeyC, Now.AddSeconds(6), cts.Token);
         }
 
+        // Idea 6be68ee2, trust-ledger findings 4 and 7: node C forwards node A's own task genesis
+        // under its true origin, so admitting it here — a broadcast request, which names no single
+        // candidate up front — needs node B's own trust chain to actually vouch node C as a project
+        // member, never TrustChain.Empty.
+        const string broadcastRoot = "broadcast-root-fingerprint";
+        TrustChain broadcastMemberChain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                [broadcastRoot] = new TrustedOwner(
+                    broadcastRoot, "ssh-ed25519 AAAAFAKEbroadcastroot test",
+                    [
+                        new TrustedNode(
+                            nodeC.ToString(), $"ssh-ed25519 AAAAFAKE{nodeC:N} test", SeededFingerprintOf(nodeC), Now),
+                    ]),
+            },
+            [new ProjectMember(broadcastRoot, MembershipRole.Member, Now)]);
+
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult fillRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(7), trustChain: TrustChain.Empty, cts.Token);
+                session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(7),
+                trustChain: broadcastMemberChain, cts.Token);
             fillRead.EventsApplied.Should().BeGreaterThan(0, "node C's answer brings the broadcast stream in");
         }
 
@@ -1925,12 +1948,18 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
                 originNodeId, 5, projectIdA),
         ];
 
+        // Idea 6be68ee2, trust-ledger findings 4 and 7: nodeA forwards every record above under a
+        // foreign origin, so this node's own admission rule only lets them apply inside an answer to
+        // a catch-up request THIS node minted — seeded here as a cascade ask naming nodeA a candidate.
+        Guid requestId = DomainId.New();
+        await SeedCascadeCatchUpRequestAsync(storeB, requestId, projectIdB, [nodeA], Now, cts.Token);
+
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "Windows", Now));
             await MessageOutbox.QueueAsync(
                 session, nodeA, projectIdA, "owner-a-fingerprint", MessageAudience.Node(nodeB),
-                about: DomainId.New().ToString(), MessageKind.Events, EventReplicationCodec.EncodeBatch(answer), Now,
+                about: requestId.ToString(), MessageKind.Events, EventReplicationCodec.EncodeBatch(answer), Now,
                 cts.Token);
             await messageOutbox.FlushAsync(
                 session, RepositoryPath, nodeA, projectIdA, "shared-project-key", adoptUnassigned: false, committerA,
@@ -2009,12 +2038,18 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
                 originNodeId, 5, projectIdA),
         ];
 
+        // Idea 6be68ee2, trust-ledger findings 4 and 7: seeded as a cascade ask naming nodeA a
+        // candidate, so this node's own admission rule lets nodeA's forwarded, foreign-origin records
+        // apply (this test's own doc's "ForeignRecord" doc).
+        Guid requestId = DomainId.New();
+        await SeedCascadeCatchUpRequestAsync(storeB, requestId, projectIdB, [nodeA], Now, cts.Token);
+
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "Windows", Now));
             await MessageOutbox.QueueAsync(
                 session, nodeA, projectIdA, "owner-a-fingerprint", MessageAudience.Node(nodeB),
-                about: DomainId.New().ToString(), MessageKind.Events, EventReplicationCodec.EncodeBatch(answer), Now,
+                about: requestId.ToString(), MessageKind.Events, EventReplicationCodec.EncodeBatch(answer), Now,
                 cts.Token);
             await messageOutbox.FlushAsync(
                 session, RepositoryPath, nodeA, projectIdA, "shared-project-key", adoptUnassigned: false, committerA,
@@ -3222,6 +3257,31 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         appended.SetHeader(ReplicationEventHeaders.OriginSequence, originSequence.ToString());
         appended.SetHeader(ReplicationEventHeaders.ReceivedFromNodeId, originNodeId.ToString());
         appended.SetHeader(ReplicationEventHeaders.ReceivedAt, Now.ToString("O"));
+    }
+
+    /// <summary>
+    /// Idea 6be68ee2, trust-ledger findings 4 and 7: a hand-crafted <see cref="ForeignRecord"/> answer
+    /// admits its own foreign-origin records only when the receiving node's own store already names a
+    /// matching <see cref="EventCatchUpRequest"/> this test's own About id resolves to — the receiver
+    /// never takes a sender's own say-so for who it may speak for. Seeds a cascade-shaped request
+    /// (<paramref name="candidates"/> non-empty) naming <paramref name="requestId"/>, the same id the
+    /// test's own <c>about</c> field carries, so <see cref="EventReplicationInbox.IsForwardedRecordAdmitted"/>
+    /// finds the answering sender among its own ranked candidates.
+    /// </summary>
+    private static async Task SeedCascadeCatchUpRequestAsync(
+        IDocumentStore store, Guid requestId, Guid projectId, IReadOnlyList<Guid> candidates, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Store(new EventCatchUpRequest
+        {
+            Id = requestId,
+            ProjectId = projectId,
+            Candidates = [.. candidates],
+            CandidateIndex = 0,
+            SentAt = now,
+        });
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     private static async Task<Guid> SeedQueuedTaskAsync(

@@ -321,9 +321,42 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 }
             }
 
+            // idea 6be68ee2, trust-ledger findings 4 and 7: a record whose own claimed OriginNodeId
+            // differs from senderNodeId is a forwarded record, and a teammate may forward one only
+            // inside an answer to a catch-up request THIS node minted, never on its own say-so — the
+            // attack that otherwise needs no interaction at all, where one flush lets any sender
+            // pre-empt any origin's dedupe with a huge OriginSequence and freeze that stream on every
+            // node. Looked up once per envelope, never per record, since IsForwardedRecordAdmitted's
+            // own verdict for every record in this batch depends on the identical matched request — and
+            // only when the batch actually needs it, since an ordinary flush (EventReplicationOutbox's
+            // own doc: never ships anything but this sender's own native-origin events) never does.
+            bool batchHasForeignOrigin = batch.Any(record => record.OriginNodeId != senderNodeId);
+            EventCatchUpRequest? matchedForeignOriginRequest =
+                batchHasForeignOrigin && answeredRequestId is { } requestIdForForeignOriginMatch
+                    ? await session.Query<EventCatchUpRequest>()
+                        .Where(candidate => candidate.ProjectId == projectId && candidate.Id == requestIdForForeignOriginMatch)
+                        .FirstOrDefaultAsync(cancellationToken)
+                    : null;
+
             int appliedBeforeThisEnvelope = applied;
             foreach (EventReplicationCodec.ReplicatedEventRecord record in batch)
             {
+                if (!IsForwardedRecordAdmitted(
+                    record.OriginNodeId, senderNodeId, matchedForeignOriginRequest, trustChain, senderFingerprint))
+                {
+                    // Never stored under the claimed OriginEventId: recording a ReplicatedEventRecord
+                    // there would let a forger pre-empt the genuine event's own future dedupe the
+                    // moment the true origin, or a sender this rule actually allows, delivers it for
+                    // real. Not counted into streamIdsAnsweredThisRead either — a broadcast request
+                    // must never read this drop as though it had been genuinely answered.
+                    logger?.LogWarning(
+                        "Replicated event {OriginEventId} claims origin {OriginNodeId}, but arrived from "
+                        + "sender {SenderNodeId} outside any catch-up answer this sender is entitled to "
+                        + "speak in for this project — dropped, never applied", record.OriginEventId,
+                        record.OriginNodeId, senderNodeId);
+                    continue;
+                }
+
                 streamIdsAnsweredThisRead.Add(record.StreamId);
                 applied += await ApplyAsync(
                     session, record, senderNodeId, projectId, envelope.ProjectKey, streamsStartedThisRead,
@@ -1168,6 +1201,58 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         return originNodeId == senderNodeId
             ? GatedEventVerdict.DroppedAndRefusedPermanently
             : GatedEventVerdict.DroppedWithoutRecording;
+    }
+
+    /// <summary>
+    /// idea 6be68ee2, trust-ledger findings 4 and 7: whether a replicated record may be applied at
+    /// all, coming from <paramref name="senderNodeId"/>. A record whose own claimed
+    /// <paramref name="originNodeId"/> equals the sender is native to that sender's own outbox and
+    /// always admitted — this method's only real work is a FORWARDED record, one claiming an origin
+    /// other than whoever delivered it. A teammate may forward another node's own record only inside
+    /// an answer to a catch-up request THIS node itself minted, never on its own say-so, and only
+    /// when it is a sender that specific request actually entitles to answer:
+    /// <list type="bullet">
+    /// <item>A cascade ask (<see cref="EventCatchUpRequest.Candidates"/> non-empty — a gap-fill or a
+    /// bootstrap): the sender is one of the ranked candidates, at ANY index, not only the one
+    /// currently outstanding — a candidate the cascade already moved past may still answer late.</item>
+    /// <item>A fleet reconcile (<see cref="EventCatchUpRequest.ToNodeId"/> set, candidates always
+    /// empty): the sender is exactly that one peer.</item>
+    /// <item>A broadcast (task pull, adoption, or a whole-project pull — candidates empty, no
+    /// <c>ToNodeId</c>): any sender this project's own trust chain currently vouches, since a
+    /// broadcast names no single peer up front and any project member may legitimately answer it.</item>
+    /// </list>
+    /// <paramref name="matchedRequest"/> is looked up by the caller from the envelope's own About
+    /// field, in ANY state (answered, superseded, or exhausted all count — a split answer's later
+    /// batches arrive after the first batch already closed the request) — null when About named no
+    /// request this node ever minted, including a pre-a56cf16e sender's answer with no About at all,
+    /// which never admits a foreign-origin record. Pure: everything it reads is already-resolved,
+    /// in-memory data, so no test of it needs Docker.
+    /// </summary>
+    internal static bool IsForwardedRecordAdmitted(
+        Guid originNodeId, Guid senderNodeId, EventCatchUpRequest? matchedRequest, TrustChain trustChain,
+        string? senderFingerprint)
+    {
+        if (originNodeId == senderNodeId)
+        {
+            return true;
+        }
+
+        if (matchedRequest is null)
+        {
+            return false;
+        }
+
+        if (matchedRequest.Candidates.Count > 0)
+        {
+            return matchedRequest.Candidates.Contains(senderNodeId);
+        }
+
+        if (matchedRequest.ToNodeId is { } toNodeId)
+        {
+            return senderNodeId == toNodeId;
+        }
+
+        return senderFingerprint is not null && trustChain.IsAllowedSigner(senderFingerprint, senderNodeId);
     }
 
     /// <summary>

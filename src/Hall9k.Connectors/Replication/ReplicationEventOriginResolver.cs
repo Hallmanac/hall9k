@@ -46,7 +46,13 @@ public static class ReplicationEventOriginResolver
         }
 
         string ownNodeIdText = candidate.GetHeader(EventOriginStampingListener.NodeIdHeader) as string ?? string.Empty;
-        Guid ownNodeId = Guid.TryParse(ownNodeIdText, out Guid parsedOwnNodeId) ? parsedOwnNodeId : myNodeId;
+        // Guid.Empty is that listener's own "genuinely unclaimed at append time" sentinel
+        // ("(nodeId ?? Guid.Empty).ToString()"), resolved here rather than trusted as a final
+        // answer — the identical "resolve or fall back" rule the sibling owner-fingerprint header
+        // just below already applies (EventReplicationOutbox.ToRecord's own doc, idea 6be68ee2).
+        Guid ownNodeId = Guid.TryParse(ownNodeIdText, out Guid parsedOwnNodeId) && parsedOwnNodeId != Guid.Empty
+            ? parsedOwnNodeId
+            : myNodeId;
         // string.Empty (never null) is EventOriginStampingListener.UnclaimedOwnerRootFingerprint —
         // that listener's own doc says to resolve or fall back rather than trust it as a final
         // answer, so it is read here the identical way EventReplicationOutbox.AudienceFor treats it.
