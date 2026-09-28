@@ -112,7 +112,8 @@ public sealed class ProjectAssignKeyCommand : Hall9kAsyncCommand<ProjectAssignKe
                 $"This node ({key.Fingerprint}) does not currently hold a live root key for owner {myRoot} — "
                 + "only the root itself may assign the project's key (idea 6be68ee2, trust-ledger finding "
                 + $"2: a vouched node key can no longer write membership). Re-run h9k project assign-key "
-                + $"{project.Name} from a node holding a root key for {myRoot}{RootNodeDescription.Of(chain, myRoot)}.");
+                + $"{project.Name} from a node holding a root key for {myRoot}{RootNodeDescription.Of(chain, myRoot)}."
+                + RootNodeDescription.PromotionHint);
         }
 
         if (chain.ProjectKey is not null)

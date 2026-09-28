@@ -112,7 +112,8 @@ public sealed class ProjectMemberReaffirmCommand : Hall9kAsyncCommand<ProjectMem
                 $"This node ({key.Fingerprint}) does not currently hold a live root key for owner {myRoot} — "
                 + "only the root itself may reaffirm a member (idea 6be68ee2, trust-ledger finding 2). "
                 + $"Re-run h9k project member reaffirm {project.Name} {fingerprint} from a node holding a "
-                + $"root key for {myRoot}{RootNodeDescription.Of(chain, myRoot)}.");
+                + $"root key for {myRoot}{RootNodeDescription.Of(chain, myRoot)}."
+                + RootNodeDescription.PromotionHint);
         }
 
         LedgerCommitter committer = new(

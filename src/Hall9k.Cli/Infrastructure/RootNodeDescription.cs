@@ -40,4 +40,16 @@ internal static class RootNodeDescription
             ? $" (the root node, \"{displayName.Value}\", node {nodeId})"
             : $" (the root node, node {nodeId})";
     }
+
+    /// <summary>
+    /// The promotion hint every root-only refusal appends (idea 6be68ee2, PR B of the succession
+    /// chain, blocked-by 1bb803e1): none of these five root-only gates
+    /// (<c>NodeRevokeCommand</c>, <c>ProjectInviteCommand</c>, <c>ProjectMemberRemoveCommand</c>,
+    /// <c>ProjectMemberReaffirmCommand</c>, <c>ProjectAssignKeyCommand</c>) can name whether THIS
+    /// refusing node itself holds a live successor record, so the hint is offered unconditionally
+    /// rather than only when it would actually apply — the identical shape the root-node-holder hint
+    /// above already prints even when the caller cannot reach that node either.
+    /// </summary>
+    public const string PromotionHint =
+        " A surviving node holding a live successor record for this owner can promote itself instead: h9k owner promote.";
 }
