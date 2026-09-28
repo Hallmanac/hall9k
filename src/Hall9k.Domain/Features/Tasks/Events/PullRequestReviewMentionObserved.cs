@@ -24,6 +24,17 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// <c>PullRequestMentionComment.DatabaseId</c> is — a reader seeing null already knows to post an
 /// ordinary comment instead. Null also on a stream written before this field existed.
 /// </para>
+/// <para>
+/// <see cref="MintedTask"/> is true only when THIS event is the one that minted the task — set by
+/// <c>AutoPrReviewEngine.CreateFromMentionAsync</c> and nowhere else, and defaulted false so an
+/// attach onto an already-live task (<c>AttachMentionAsync</c>, via <c>TaskDecider.ObservePrReviewMention</c>)
+/// never carries it, even onto a task a person adopted by hand with <c>h9k task add --from-pr</c>.
+/// <see cref="Hall9k.Domain.Features.Tasks.Projections.TaskListItem.WasAutoPrReviewCreated"/> is
+/// set from this flag rather than from the event's mere presence, because this event is appended
+/// on every attach too — setting it unconditionally would mark a human-adopted task as auto-pr-
+/// review's own twin the moment a mention ever landed on it, breaking
+/// <c>PullRequestReviewDuplicateRule.IsRival</c>'s invariant that a hand-adopted task is never one.
+/// </para>
 /// </summary>
 public sealed record PullRequestReviewMentionObserved(
     Guid Id,
@@ -34,4 +45,5 @@ public sealed record PullRequestReviewMentionObserved(
     string CommentUrl,
     DateTimeOffset CommentCreatedAt,
     DateTimeOffset ObservedAt,
-    long? CommentDatabaseId = null);
+    long? CommentDatabaseId = null,
+    bool MintedTask = false);

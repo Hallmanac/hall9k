@@ -159,13 +159,18 @@ public sealed class TaskListItem
     public string? AutoPrReviewAssigneeLogin { get; set; }
     /// <summary>
     /// Whether this task was ever genuinely auto-created by the auto-pr-review poll — set once,
-    /// permanently, the moment <see cref="PullRequestReviewAssignmentObserved"/> lands, and never
-    /// cleared by a later <see cref="PullRequestReviewAssignmentRecalled"/> the way
-    /// <see cref="AutoPrReviewAssigneeLogin"/> is. What <c>CreateOneAsync</c>'s own previousReview
-    /// lookup reads instead of that transient field, so a task recalled mid-run with "the work
-    /// continues" (<see cref="PullRequestReviewAssignmentRecalled.Concluded"/> false)
-    /// still answers a later genuine re-request with its own re-review note once it reaches Done or
-    /// Abandoned, rather than reading as if auto-pr-review never touched it at all.
+    /// permanently, the moment <see cref="PullRequestReviewAssignmentObserved"/> lands (the
+    /// review-requested trigger) or <see cref="PullRequestReviewMentionObserved.MintedTask"/> reads
+    /// true (the mention trigger), and never cleared by a later
+    /// <see cref="PullRequestReviewAssignmentRecalled"/> the way <see cref="AutoPrReviewAssigneeLogin"/>
+    /// is. What <c>CreateOneAsync</c>'s own previousReview lookup reads instead of that transient
+    /// field, so a task recalled mid-run with "the work continues"
+    /// (<see cref="PullRequestReviewAssignmentRecalled.Concluded"/> false) still answers a later
+    /// genuine re-request with its own re-review note once it reaches Done or Abandoned, rather
+    /// than reading as if auto-pr-review never touched it at all. A mention that only attaches to
+    /// an already-live task — including one a human adopted by hand with <c>h9k task add --from-pr</c>
+    /// — never sets this, because <c>PullRequestReviewMentionObserved</c> is appended on every
+    /// attach and only <c>MintedTask</c> tells the two apart.
     /// </summary>
     public bool WasAutoPrReviewCreated { get; set; }
     /// <summary>
@@ -1028,6 +1033,13 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         view.LatestMentionCommentId = @event.Data.CommentId;
         view.LatestMentionAuthorLogin = @event.Data.CommentAuthorLogin;
         view.LatestMentionBody = @event.Data.CommentBody;
+        // Only when THIS event minted the task (see the event's own doc) — never unconditionally,
+        // which is appended on every attach too and would mark a human-adopted --from-pr task as
+        // auto-pr-review's own twin the moment a mention ever landed on it.
+        if (@event.Data.MintedTask)
+        {
+            view.WasAutoPrReviewCreated = true;
+        }
     }
 
     /// <summary>
