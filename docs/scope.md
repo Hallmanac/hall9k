@@ -1406,10 +1406,22 @@ authorized content rather than losing it. **Still not
 built**: no node discovery and no gossip, which is the reachability half of
 [HALL9K-P2P-DESIGN.md](../HALL9K-P2P-DESIGN.md) rather than the trust half above.
 
-**Two known, accepted limits.** A force-push over a ledger ref still rewrites trust history along with everything else in
-it; nothing here detects or prevents that rewrite before the later relay replaces git as the carrier:
-every ledger and chain fetch is a forced update with no ancestry check, so a rewritten trust ref is
-accepted silently. Separately, because a membership write is judged against the owner chain's own
+**A force-push over an append-only ledger ref is refused, and a write heals it (idea 6be68ee2).**
+Every fetch of an append-only ref (every ledger ref except a node's own outbox, which is squashed and
+force-pushed with a lease by design) lands in a private staging name first and is checked against the
+last tip this node itself verified, kept as a local-only `refs/hall9k-verified/<path>` ref beside the
+live one, before either ref ever moves. A rewind, or a side merge whose first parent is the old tip
+and second parent the current one (a plain fast-forward to origin, but never on the mainline chain a
+replay actually walks), is refused: the node keeps reading its own verified tip, the refusal is
+recorded (`h9k status` names it, with the repair command), and the very next write to
+that ref heals a pure rewind on its own by pushing forward from wherever origin now sits. A genuinely
+divergent history is never healed automatically — the push fails and a human reconciles which history
+is correct, or clears the local marker (`git -C <bare> update-ref -d refs/hall9k-verified/<path>`) to
+accept a legitimate owner rewrite (purging a leaked secret) as the new baseline. One accepted residual:
+a node offline across the rewind adopts it if the rewind point is past its own last verified tip —
+there is nothing locally to check the rewind against yet.
+
+Separately, because a membership write is judged against the owner chain's own
 live state rather than any point-in-time snapshot, a revocation retroactively voids every membership
 write the revoked node ever signed, and a later re-vouch of that node restores them on the next read
 — accepted as the correct behavior of the walked latest-of-vouch-or-revocation model, not a design
