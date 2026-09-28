@@ -1788,6 +1788,42 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task A_rotated_in_successors_own_self_revoke_of_its_obsolete_node_record_never_strips_its_own_rank()
+    {
+        // Independent pre-PR review, cycle 2, adversarial lens, high: unlike the mallory scenario
+        // above, this is the heir revoking its OWN now-obsolete ordinary node record after its own
+        // rotation has already landed — a routine, fully-authorized cleanup step (the heir is now
+        // itself a live root key, so its own signature does authorize a revocation). The fixed-point
+        // loop in ComputeOwnerChainAsync used to oscillate forever between two answers for this
+        // exact case: with the heir still counted as a live root key, its self-revoke succeeds and
+        // removes it from Nodes, which then made ComputeSuccessionAsync's own "is this node
+        // currently vouched" check fail and retract the rotation, collapsing the root-key set back
+        // to [K0] — which then made the very same self-revoke unauthorized again, putting the heir
+        // back in Nodes and re-validating the rotation, forever.
+        string hub = _repo.CreateHub();
+        (string repositoryPath, GeneratedIdentity root) = await EstablishGenesisRootAsync(hub);
+
+        GeneratedIdentity heir = GenerateIdentity();
+        await WriteNodeFileAsync(repositoryPath, heir, heir);
+        await VouchAsync(repositoryPath, root.Fingerprint, heir, root);
+        await WriteSuccessorAsync(repositoryPath, root.Fingerprint, heir, root);
+        await WriteRotationAsync(repositoryPath, root.Fingerprint, 1, heir, root.PublicKeyLine);
+        await RevokeAsync(repositoryPath, root.Fingerprint, heir.NodeId, heir);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        TrustedOwner owner = chain.OwnerChains[root.Fingerprint];
+        owner.RootKeys.Should().Contain(
+            key => key.Fingerprint == heir.Fingerprint && key.IntroducedByNodeId == heir.NodeId.ToString(),
+            "the heir's own self-revoke is fully authorized (it is itself a live root key) and targets only its "
+            + "obsolete ordinary node record, never its own promoted rank");
+        owner.Nodes.Should().NotContain(
+            node => node.NodeId == heir.NodeId.ToString(), "the heir's own authorized self-revoke does take effect on its ordinary node record");
+        owner.RevokedNodeIds.Should().Contain(heir.NodeId.ToString());
+    }
+
+    [Fact]
     public async Task A_one_owner_fleet_with_no_rotation_reads_exactly_as_before()
     {
         string hub = _repo.CreateHub();

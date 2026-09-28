@@ -510,11 +510,13 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         HashSet<string> revokedNodeIds;
         bool establishedByCarry;
         List<UnverifiedLedgerWrite> unverified;
+        Dictionary<string, int> revokedAtCommitIndex;
         int iterations = 0;
+        bool converged;
         while (true)
         {
             IReadOnlyList<string> liveRootKeyLines = [.. rootKeys.Select(key => key.PublicKeyLine)];
-            (nodes, everEnrolledNodes, revokedNodeIds, establishedByCarry, unverified) = await ReplayFleetAsync(
+            (nodes, everEnrolledNodes, revokedNodeIds, establishedByCarry, unverified, revokedAtCommitIndex) = await ReplayFleetAsync(
                 repositoryPath, root, publicKeyLine, allCommits, changedPathsByCommit,
                 (commit, _, token) => IsSignedByAnyAsync(repositoryPath, commit, liveRootKeyLines, token),
                 cancellationToken);
@@ -522,11 +524,11 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             (IReadOnlyList<LiveRootKey> candidateRootKeys, IReadOnlyList<string> candidateSuccessorNodeIds,
                 IReadOnlyList<UnverifiedLedgerWrite> candidateSuccessionUnverified) = await ComputeSuccessionAsync(
                     repositoryPath, root, publicKeyLine, allCommits, changedPathsByCommit,
-                    nodes, everEnrolledNodes, revokedNodeIds, cancellationToken);
+                    nodes, everEnrolledNodes, revokedNodeIds, revokedAtCommitIndex, cancellationToken);
 
             successionUnverified = [.. candidateSuccessionUnverified];
             successorNodeIds = candidateSuccessorNodeIds;
-            bool converged = candidateRootKeys.Count == rootKeys.Count
+            converged = candidateRootKeys.Count == rootKeys.Count
                 && candidateRootKeys.Select(key => key.Fingerprint).SequenceEqual(rootKeys.Select(key => key.Fingerprint));
             rootKeys = candidateRootKeys;
             iterations++;
@@ -535,6 +537,25 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             {
                 break;
             }
+        }
+
+        // Defensive only — the chain's own rank structure means this loop converges in at most as
+        // many iterations as the chain has links, so this never actually fires. But `nodes` above
+        // was replayed against the PREVIOUS iteration's rootKeys, one step behind the final
+        // `rootKeys` reassigned just above whenever the cap, not convergence, is what ended the
+        // loop: publishing that pairing as-is would let `TrustedOwner.RootKeys` and
+        // `TrustedOwner.Nodes`/`Unverified` each reflect a different phase of an unresolved
+        // computation, internally inconsistent in a way no caller could detect from either field
+        // alone (independent pre-PR review, cycle 2, adversarial lens, high). One extra replay
+        // against the actual final `rootKeys` guarantees whatever this method returns is at least
+        // self-consistent, even on the cap path this comment already says should be unreachable.
+        if (!converged)
+        {
+            IReadOnlyList<string> finalRootKeyLines = [.. rootKeys.Select(key => key.PublicKeyLine)];
+            (nodes, everEnrolledNodes, revokedNodeIds, establishedByCarry, unverified, revokedAtCommitIndex) = await ReplayFleetAsync(
+                repositoryPath, root, publicKeyLine, allCommits, changedPathsByCommit,
+                (commit, _, token) => IsSignedByAnyAsync(repositoryPath, commit, finalRootKeyLines, token),
+                cancellationToken);
         }
 
         // Nothing here is trusted when root.yaml's own commit is not signed by the root's own key
@@ -570,7 +591,8 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// establishing or re-authorizing a carried node was never a revocation.
     /// </summary>
     private async Task<(Dictionary<string, TrustedNode> Nodes, Dictionary<string, TrustedNode> EverEnrolledNodes,
-        HashSet<string> RevokedNodeIds, bool EstablishedByCarry, List<UnverifiedLedgerWrite> Unverified)> ReplayFleetAsync(
+        HashSet<string> RevokedNodeIds, bool EstablishedByCarry, List<UnverifiedLedgerWrite> Unverified,
+        Dictionary<string, int> RevokedAtCommitIndex)> ReplayFleetAsync(
             string repositoryPath, string root, string publicKeyLine, IReadOnlyList<string> allCommits,
             IReadOnlyDictionary<string, IReadOnlyList<string>> changedPathsByCommit,
             Func<string, IReadOnlyDictionary<string, TrustedNode>, CancellationToken, Task<bool>> authorizeRevokeAsync,
@@ -583,6 +605,17 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         Dictionary<string, TrustedNode> everEnrolledNodes = [];
         HashSet<string> revokedNodeIds = [];
         List<UnverifiedLedgerWrite> unverified = [];
+        // The `allCommits` index of each currently-revoked node id's own accepted revocation commit
+        // — present exactly when <paramref name="root"/> holds that node id in `revokedNodeIds`,
+        // cleared the moment a later vouch or carried establishment restores it. Lets
+        // <see cref="ComputeSuccessionAsync"/> tell a successor or rotation record that predates a
+        // node's eventual, ordinary departure (safe: the rank or candidacy was already earned before
+        // the node ever left) from one written AFTER that node was already gone (unsafe: a revoked —
+        // possibly compromised — node's own key still signing a fresh, self-serving promotion
+        // attempt is exactly the escalation this task exists to refuse), something the two dicts'
+        // own FINAL, order-blind membership can never distinguish on its own (independent pre-PR
+        // review, cycle 2, adversarial lens, high).
+        Dictionary<string, int> revokedAtCommitIndex = [];
         string nodesPrefix = $"owners/{root}/nodes/";
         string revokedPrefix = $"owners/{root}/revoked/";
         string carriedPrefix = $"owners/{root}/carried/";
@@ -608,8 +641,9 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         // live-chain authorization an ordinary re-vouch already needs.
         HashSet<string> carriedPathsEstablished = [];
 
-        foreach (string commit in allCommits)
+        for (int commitIndex = 0; commitIndex < allCommits.Count; commitIndex++)
         {
+            string commit = allCommits[commitIndex];
             foreach (string path in changedPathsByCommit[commit])
             {
                 if (path.StartsWith(carriedPrefix, StringComparison.Ordinal) && path.EndsWith(".yaml", StringComparison.Ordinal))
@@ -668,6 +702,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                         nodes[carriedNodeId] = carriedNode;
                         everEnrolledNodes[carriedNodeId] = carriedNode;
                         revokedNodeIds.Remove(carriedNodeId);
+                        revokedAtCommitIndex.Remove(carriedNodeId);
                         establishedByCarry = true;
                         carriedPathsEstablished.Add(carriedNodeId);
                     }
@@ -725,6 +760,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                     // id, which has no owners/<root>/nodes/<id>.yaml entry to remove) — that is the
                     // only record its revocation ever leaves, and FleetNodeIds is the sole reader.
                     revokedNodeIds.Add(nodeId);
+                    revokedAtCommitIndex[nodeId] = commitIndex;
                     continue;
                 }
 
@@ -744,10 +780,11 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 nodes[nodeId] = trustedNode;
                 everEnrolledNodes[nodeId] = trustedNode;
                 revokedNodeIds.Remove(nodeId);
+                revokedAtCommitIndex.Remove(nodeId);
             }
         }
 
-        return (nodes, everEnrolledNodes, revokedNodeIds, establishedByCarry, unverified);
+        return (nodes, everEnrolledNodes, revokedNodeIds, establishedByCarry, unverified, revokedAtCommitIndex);
     }
 
     /// <summary>Whether <paramref name="commit"/> is signed by any one of <paramref name="candidateKeys"/>.</summary>
@@ -813,7 +850,8 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             string repositoryPath, string root, string rootPublicKeyLine, IReadOnlyList<string> allCommits,
             IReadOnlyDictionary<string, IReadOnlyList<string>> changedPathsByCommit,
             IReadOnlyDictionary<string, TrustedNode> nodes, IReadOnlyDictionary<string, TrustedNode> everEnrolledNodes,
-            IReadOnlySet<string> revokedNodeIds, CancellationToken cancellationToken)
+            IReadOnlySet<string> revokedNodeIds, IReadOnlyDictionary<string, int> revokedAtCommitIndex,
+            CancellationToken cancellationToken)
     {
         string successorsPrefix = $"owners/{root}/successors/";
         string rotationsPrefix = $"owners/{root}/rotations/";
@@ -824,8 +862,9 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         Dictionary<string, string> successorCandidates = [];
         List<UnverifiedLedgerWrite> unverified = [];
 
-        foreach (string commit in allCommits)
+        for (int commitIndex = 0; commitIndex < allCommits.Count; commitIndex++)
         {
+            string commit = allCommits[commitIndex];
             foreach (string path in changedPathsByCommit[commit])
             {
                 if (path.StartsWith(successorsPrefix, StringComparison.Ordinal) && path.EndsWith(suffix, StringComparison.Ordinal))
@@ -869,18 +908,25 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
 
                     if (!nodes.TryGetValue(nodeId, out TrustedNode? vouchedNode) || vouchedNode.PublicKeyLine != declaredKey)
                     {
-                        // Valid when written but the node has since left Nodes (an ordinary,
-                        // unrelated `h9k node revoke`) is a live-state read, not a forgery: the
-                        // record simply stops counting as a successor candidate, the identical
-                        // "the chain's live state, recomputed fresh on every call" rule this
-                        // reader's own doc already states for membership writes — reporting it as
-                        // an unverifiable writer left a permanent, unresolvable yellow line in
-                        // h9k status for every owner who ever runs an ordinary revoke on a node
-                        // they once vouched a successor record for (independent pre-PR review,
-                        // cycle 1, both lenses, medium).
-                        if (revokedNodeIds.Contains(nodeId)
-                            && everEnrolledNodes.TryGetValue(nodeId, out TrustedNode? everNode) && everNode.PublicKeyLine == declaredKey)
+                        // Valid when this commit predates the node's eventual, ordinary departure
+                        // (an unrelated `h9k node revoke` of its fleet record, at
+                        // <c>revokedAtCommitIndex[nodeId]</c>, strictly later than this commit) — a
+                        // live-state read, not a forgery: the record was honest when it landed, and
+                        // still keeps this node eligible for the rotation it may already be waiting
+                        // on. A commit written AFTER that departure, by contrast, is refused below:
+                        // that shape is a revoked — possibly compromised — node's own key still
+                        // signing a fresh successor claim for itself post-revocation, exactly the
+                        // escalation this task exists to refuse, and the FINAL, order-blind
+                        // <paramref name="revokedNodeIds"/>/<paramref name="everEnrolledNodes"/>
+                        // pair alone can never tell the two shapes apart (independent pre-PR review,
+                        // cycle 1, both lenses, medium; sharpened cycle 2, adversarial lens, high, once
+                        // an already-rotated successor's own later self-revoke needed the identical
+                        // distinction).
+                        if (revokedNodeIds.Contains(nodeId) && everEnrolledNodes.TryGetValue(nodeId, out TrustedNode? everNode)
+                            && everNode.PublicKeyLine == declaredKey
+                            && revokedAtCommitIndex.TryGetValue(nodeId, out int revokedIndex) && revokedIndex > commitIndex)
                         {
+                            successorCandidates[nodeId] = declaredKey;
                             continue;
                         }
 
@@ -928,11 +974,40 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
 
                     if (!nodes.TryGetValue(promotingNodeId, out TrustedNode? vouchedNode) || vouchedNode.PublicKeyLine != promotingKey)
                     {
-                        unverified.Add(new UnverifiedLedgerWrite(
-                            "rotation", promotingNodeId, root,
-                            $"commit {commit} for {path} promotes a node that is not currently vouched into root {root}'s "
-                            + "own fleet under this exact key"));
-                        continue;
+                        // Valid when this rotation commit predates the promoting node's eventual,
+                        // ordinary departure (an unrelated `h9k node revoke` of its now-obsolete fleet
+                        // record, strictly later than this commit per <paramref
+                        // name="revokedAtCommitIndex"/>) — the identical order-aware carve-out the
+                        // successor-candidate check above already applies, extended to a rotation.
+                        // Without the ORDER check specifically (not merely "departed at some point"),
+                        // this would accept a rotation commit a node writes AFTER it was already
+                        // revoked — a revoked, possibly compromised node using its own still-valid key
+                        // to self-promote into root-key status post-revocation, exactly the escalation
+                        // this task exists to refuse. And without the carve-out at all, a live root
+                        // key's own routine self-revoke of its onetime node record retroactively
+                        // "un-vouches" the very rotation that made it a root key in `nodes`' final,
+                        // fully-replayed state (this check's own parameter, never a snapshot as of the
+                        // rotation commit) — and because ComputeOwnerChainAsync now iterates this
+                        // method and ReplayFleetAsync to a fixed point (idea 6be68ee2, trust-ledger
+                        // finding 2), that retraction and the reinstatement it triggers next iteration
+                        // (the node no longer counts as a live root key, so its own self-revoke is
+                        // unauthorized again, so it stays in Nodes, so the rotation re-validates)
+                        // alternate forever rather than ever settling (independent pre-PR review,
+                        // cycle 2, adversarial lens, high).
+                        if (revokedNodeIds.Contains(promotingNodeId) && everEnrolledNodes.TryGetValue(
+                            promotingNodeId, out TrustedNode? everNode) && everNode.PublicKeyLine == promotingKey
+                            && revokedAtCommitIndex.TryGetValue(promotingNodeId, out int revokedIndex) && revokedIndex > commitIndex)
+                        {
+                            vouchedNode = everNode;
+                        }
+                        else
+                        {
+                            unverified.Add(new UnverifiedLedgerWrite(
+                                "rotation", promotingNodeId, root,
+                                $"commit {commit} for {path} promotes a node that is not currently vouched into root {root}'s "
+                                + "own fleet under this exact key"));
+                            continue;
+                        }
                     }
 
                     if (!await IsSignedByAsync(repositoryPath, commit, promotingKey, cancellationToken))
@@ -1027,7 +1102,15 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             }
         }
 
-        return (chain, [.. successorCandidates.Keys], unverified);
+        // A candidate the order-aware carve-out above kept in `successorCandidates` purely so a
+        // rotation record earlier in the same history could still consume it is not itself a
+        // currently-eligible successor once nothing ever did consume it — the original cycle-1
+        // "medium" fix's own point stands for that leftover case: a departed, never-rotated
+        // candidate must stop counting as a listed successor, never leaving a permanent yellow line
+        // in `h9k status` for an owner's own routine revoke of a node it once named a successor.
+        IReadOnlyList<string> reportedSuccessorNodeIds = [.. successorCandidates.Keys.Where(nodes.ContainsKey)];
+
+        return (chain, reportedSuccessorNodeIds, unverified);
     }
 
     /// <summary>
