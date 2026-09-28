@@ -579,9 +579,20 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     /// state — <c>RemoteStackedParentObserved.HeadBranch</c> — replicates from another fleet
     /// node's own closeout sweep, and <see cref="StackedBaseResolver.ResolveRemote"/> hands it
     /// straight back as this run's own <c>runBaseBranch</c> with no check of its own. This proves
-    /// the check <see cref="RunLauncher.LaunchAsync"/> now runs on that combined value: dispatch is
-    /// refused before either the (fake, non-validating) worktree layer or the executor ever sees
-    /// it, so a hostile value can neither become a git argument nor reach a spawned session.
+    /// the check <see cref="RunLauncher.LaunchAsync"/> now runs on that combined value on a fresh
+    /// cut: dispatch is refused before the executor ever sees it, so a hostile value can never
+    /// reach a spawned session.
+    /// <para>
+    /// The <em>fake</em> worktree layer here (<see cref="StubWorktreeManager.CreateAsync"/>) does
+    /// still receive the hostile value first — this proves the check catches it regardless, not
+    /// that nothing upstream saw it. The real <see cref="Hall9k.Connectors.Worktrees.GitWorktreeManager.CreateAsync"/>
+    /// would have refused a fresh cut's own base branch itself, before this check ever ran
+    /// (<c>RefuseIllegalBranch</c>), so this check's real, non-redundant value on a fresh cut is
+    /// belt-and-suspenders. <see cref="A_hostile_remote_stacked_parent_head_branch_is_refused_on_a_resumed_checkout_with_no_previous_run_document"/>
+    /// below is the path where this check is the ONLY guard: a follow-up's own
+    /// <c>CheckoutExistingAsync</c> validates the branch it resumes, never the base branch it
+    /// falls back to (adversarial review, cycle 1, self-review's own class sweep).
+    /// </para>
     /// </summary>
     [Theory]
     [InlineData("+refs/heads/main:refs/heads/injected")]
@@ -646,6 +657,116 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         details.State.Value.Should().Be("Failed");
         details.FailureReason.Should().Contain("is not a legal branch name",
             "the checkout's own fake never validates a branch, so only RunLauncher's own explicit check explains this failure");
+    }
+
+    /// <summary>
+    /// The path where <see cref="RunLauncher.LaunchAsync"/>'s own base-branch check is the ONLY
+    /// guard, not a belt-and-suspenders one (adversarial review, cycle 1, self-review's own class
+    /// sweep over <see cref="A_hostile_remote_stacked_parent_head_branch_never_reaches_the_checkout_or_a_session"/>):
+    /// a follow-up run resumes an existing branch through
+    /// <see cref="Hall9k.Connectors.Worktrees.GitWorktreeManager.CheckoutExistingAsync"/>, whose own
+    /// <c>RefuseIllegalBranch</c> validates the branch being RESUMED, never the base branch this
+    /// method falls back to when <c>StackedBaseResolver.ResumedBaseAsync</c> has no previous run
+    /// document to carry a recorded base forward from (no earlier <c>RunDetails</c> stream is
+    /// started for <c>previousRunId</c> below, the same gap
+    /// <c>A_reopened_tasks_foreign_repository_pull_request_never_reaches_the_merge_check</c> already
+    /// leaves unseeded). With no previous run to resume from, <c>runBaseBranch</c> falls all the way
+    /// back to <c>stackedBase.BaseBranch</c> — the same hostile
+    /// <c>RemoteStackedParentObserved.HeadBranch</c> the fresh-cut test above proves this check
+    /// refuses, but reached here with no real worktree-layer check standing behind it at all.
+    /// </summary>
+    [Theory]
+    [InlineData("+refs/heads/main:refs/heads/injected")]
+    [InlineData("--upload-pack=x")]
+    public async Task A_hostile_remote_stacked_parent_head_branch_is_refused_on_a_resumed_checkout_with_no_previous_run_document(
+        string hostileBranch)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid previousRunId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const int parentPullRequestNumber = 265;
+        const string resumedBranch = "task/resumed-onto-hostile-parent";
+        int leaseGeneration;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"hostile-remote-stack-resume-{taskId:N}",
+                "/tmp/hostile-remote-stack-resume-repo", null, "main", Now.AddHours(-1));
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Stacked on a hostile remote parent, resumed", ["done"], TaskType.Chore,
+                    null, null, null, Now.AddHours(-1), node.OwnerId, stackedOnPullRequestNumber: parentPullRequestNumber),
+                node.OwnerId, Now.AddHours(-1));
+
+            // A stacked-on-remote-PR task is minted Blocked until its first observation, so the
+            // sweep's first, legitimate read of the parent (a plain "still open" — the branch name
+            // itself does not matter here) is what releases it to Queued before the first claim can
+            // succeed at all.
+            RemoteStackedParentObserved legitimateObservation = new(
+                Guid.Empty, parentPullRequestNumber, RemoteParentState.Open, "task/legitimate-parent-branch",
+                "abc1234", "main", $"https://github.com/x/y/pull/{parentPullRequestNumber}", null, "opened",
+                Now.AddHours(-1));
+            task.Apply(legitimateObservation);
+
+            var firstClaim = TaskDecider.Claim(task, node.NodeId, node.OwnerId, previousRunId, Now.AddHours(-1));
+            task.Apply(firstClaim);
+            var completed = TaskDecider.Complete(
+                task, previousRunId, "https://github.com/x/y/pull/1", Now.AddMinutes(-40));
+            task.Apply(completed);
+            var reopened = TaskDecider.Reopen(
+                task, previousRunId, resumedBranch, "Copilot threads.", FollowUpKind.ReviewFeedback,
+                automatic: true, Now.AddMinutes(-30), node.OwnerId);
+            task.Apply(reopened);
+
+            // The sweep's next read of the same still-open parent — this is the one the second
+            // claim below dispatches against, and it is what makes runBaseBranch hostile.
+            RemoteStackedParentObserved hostileObservation = new(
+                Guid.Empty, parentPullRequestNumber, RemoteParentState.Open, hostileBranch, "def5678", "main",
+                $"https://github.com/x/y/pull/{parentPullRequestNumber}", null, "opened", Now.AddMinutes(-20));
+            task.Apply(hostileObservation);
+
+            var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now, resumesBranch: resumedBranch);
+            task.Apply(claimed);
+            leaseGeneration = task.LeaseGeneration;
+            // previousRunId names a run this stream never starts (no RunDetails document at all)
+            // — the exact "no previous run to resume from" gap StackedBaseResolver.ResumedBaseAsync
+            // falls back through, which is what this test needs to reach RunLauncher's own check.
+            session.Events.StartStream<TaskAggregate>(
+                taskId,
+                [.. lifecycle, legitimateObservation, firstClaim, completed, reopened, hostileObservation, claimed]);
+
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = leaseGeneration, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        NotMergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, leaseGeneration, cts.Token);
+
+        executor.Request.Should().BeNull("an illegal base branch must never reach a spawned session, resumed checkout or not");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        details.State.Value.Should().Be("Failed");
+        details.FailureReason.Should().Contain("is not a legal branch name",
+            "CheckoutExistingAsync only validates the branch it resumes, never the base branch this run falls back "
+            + "to, so only RunLauncher's own explicit check explains this failure");
     }
 
     /// <summary>

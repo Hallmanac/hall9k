@@ -9,10 +9,8 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
-using Hall9k.Tests.Fakes;
 using Hall9k.Tests.Integration;
 using Marten;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -170,42 +168,45 @@ public sealed class ReviewEngineGitArgumentTests
 /// <c>EnsureRebasedBeforeFinalPassAsync</c>'s own unstacked leg and
 /// <c>DispatchRebaseRecoverySessionAsync</c> (security review idea 6be68ee2, process-injection
 /// finding 2) — live in their own class rather than beside <see cref="ReviewEngineGitArgumentTests"/>'s
-/// own git-fake-only tests, for two reasons neither of those tests needs to work around.
-/// <list type="bullet">
-/// <item>Both now check <c>EnsureCurrentGenerationAsync</c>'s live generation fence before this
-/// task's own base-branch check runs (self-review finding: a stale generation must still stop the
-/// run regardless of what its base branch looks like, so the fence has to run first), and that
-/// fence reads a real store. A real <see cref="PostgresFixture"/>, left empty for both tests below,
-/// is enough for it to read "no such run or task" and proceed.</item>
-/// <item>Neither method reads the injected <c>gitProcessRunner</c> seam for its own fetch — both
-/// still use a literal <c>ExternalProcess.RunnerWithDeadline</c>, deliberately: routing them
-/// through the seam instead broke roughly thirty of <c>ReviewEngineTests</c>'s own tests, whose
-/// shared engine-building helper defaults that seam to a "never invoked" fake and relies on these
-/// same two methods reaching a REAL git binary against a real seeded origin (self-review finding,
-/// round one). So the proof here is not "the fake runner sees no call" — there is no fake runner in
-/// the path at all — it is that the refusal's own exact message is what a <see cref="ListLogger{T}"/>
-/// or the run's own recorded <c>FailureReason</c> actually holds, which no other branch of either
-/// method produces.</item>
-/// </list>
+/// own git-fake-only tests: both now check <c>EnsureCurrentGenerationAsync</c>'s live generation
+/// fence before this task's own base-branch check runs (self-review finding: a stale generation
+/// must still stop the run regardless of what its base branch looks like, so the fence has to run
+/// first), and that fence reads a real store. A real <see cref="PostgresFixture"/>, left empty for
+/// both tests below, is enough for it to read "no such run or task" and proceed.
+/// <para>
+/// Each method is given a throwing fake through its own <c>gitOverride</c> parameter — a test-only
+/// seam that defaults to null everywhere in production, so it changes no production call site's
+/// behavior — rather than the constructor's shared <c>gitProcessRunner</c> field: that field is
+/// what roughly thirty of <c>ReviewEngineTests</c>'s own tests rely on defaulting to a "never
+/// invoked" fake while these same two methods still reach a REAL git binary against a real seeded
+/// origin for a legal base branch (self-review finding, round one), so routing through it here
+/// would have meant reworking that shared harness instead of adding a narrow, method-local seam.
+/// A throwing fake proves the illegal-branch check returns before either method ever spawns git —
+/// not merely that the refusal text was logged or recorded, which is all the prior version of this
+/// test class could show.
+/// </para>
 /// </summary>
 [Trait("Category", "RequiresDocker")]
 public sealed class ReviewEngineGitArgumentRebaseGateTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {
-    private static ReviewEngine NewEngine(DocumentStore store, ILogger<ReviewEngine> logger) => new(
+    private static ReviewEngine NewEngine(DocumentStore store) => new(
         store,
         executor: null!,
         processManager: null!,
         verification: null!,
         Options.Create(new DaemonOptions()),
-        logger,
+        NullLogger<ReviewEngine>.Instance,
         worktrees: null!,
         processRunner: null!,
         gitProcessRunner: (_, _, _, _) => throw new InvalidOperationException(
-            "neither method under test reads this seam for its own fetch — untouched means it stayed unread"),
+            "neither method under test reads this constructor-injected seam for its own fetch — untouched means it stayed unread"),
         stackedParents: null!,
         launchHold: null!,
         inspector: null!,
         closeout: null!);
+
+    private static ProcessRunner ThrowingGit() => (_, _, _, _) => throw new InvalidOperationException(
+        "a hostile base branch must be refused before it ever reaches a git argument");
 
     [Theory]
     [InlineData("+refs/heads/main:refs/heads/injected")]
@@ -213,14 +214,15 @@ public sealed class ReviewEngineGitArgumentRebaseGateTests(PostgresFixture postg
     public async Task EnsureRebasedBeforeFinalPassAsync_refuses_a_hostile_base_branch_without_ever_calling_git(
         string hostileBranch)
     {
-        ListLogger<ReviewEngine> logger = new();
+        Guid runId = DomainId.New();
+        Guid taskId = DomainId.New();
         string worktreePath = Directory.CreateTempSubdirectory("hall9k-final-pass-rebase-").FullName;
         try
         {
-            ReviewEngine engine = NewEngine(postgres.Store, logger);
+            ReviewEngine engine = NewEngine(postgres.Store);
             ReviewEngine.ReviewContext context = new(
-                RunId: DomainId.New(),
-                TaskId: DomainId.New(),
+                RunId: runId,
+                TaskId: taskId,
                 Run: new RunDetails { WorktreePath = worktreePath, BaseBranch = hostileBranch },
                 Task: new TaskDetails(),
                 Project: new ProjectDetails { RepositoryPath = "/repo", BaseBranch = "main" },
@@ -230,18 +232,20 @@ public sealed class ReviewEngineGitArgumentRebaseGateTests(PostgresFixture postg
                 PriorHumanFixes: []);
 
             ReviewEngine.RebaseGateOutcome outcome = await engine.EnsureRebasedBeforeFinalPassAsync(
-                context, new RunAggregate(), CancellationToken.None);
+                context, new RunAggregate(), CancellationToken.None, ThrowingGit());
 
-            // The same "not this run's fault" outcome a fetch or read failure on this path already
-            // returns — closeout's own mechanical rebase still covers whatever staleness this
-            // skipped rebase left behind.
-            outcome.Should().Be(ReviewEngine.RebaseGateOutcome.Proceed);
+            // An illegal base branch is not the transient "fetch/read failure" this gate otherwise
+            // treats as Proceed: it is not this run's fault either, but nothing about it is
+            // transient, so it fails the run outright rather than letting a dispatched session
+            // carry it.
+            outcome.Should().Be(ReviewEngine.RebaseGateOutcome.Stop);
 
-            // Proceed alone is not proof: RebasePreflightAsync's own worktree/branch/status checks
-            // return the identical outcome for reasons that have nothing to do with this task. The
-            // refusal's own exact wording is what only this check produces — no other branch of
-            // this method ever writes "is not a legal branch name".
-            logger.Lines.Should().Contain(line => line.Contains("is not a legal branch name"));
+            await using IQuerySession query = postgres.Store.QuerySession();
+            RunDetails? run = await query.LoadAsync<RunDetails>(runId, CancellationToken.None);
+            run.Should().NotBeNull("FailAsync records the refusal on the run, even with no task stream behind it");
+            run!.State.IsTerminal.Should().BeTrue("the run is failed rather than left stuck with no explanation");
+            run.FailureReason.Should().Contain("is not a legal branch name",
+                "the recorded reason names this exact check, not some other cause");
         }
         finally
         {
@@ -260,7 +264,7 @@ public sealed class ReviewEngineGitArgumentRebaseGateTests(PostgresFixture postg
         string worktreePath = Directory.CreateTempSubdirectory("hall9k-rebase-recovery-").FullName;
         try
         {
-            ReviewEngine engine = NewEngine(postgres.Store, NullLogger<ReviewEngine>.Instance);
+            ReviewEngine engine = NewEngine(postgres.Store);
             ReviewEngine.ReviewContext context = new(
                 RunId: runId,
                 TaskId: taskId,
@@ -283,7 +287,7 @@ public sealed class ReviewEngineGitArgumentRebaseGateTests(PostgresFixture postg
 
             bool dispatched = await engine.DispatchRebaseRecoverySessionAsync(
                 context, run, humanGuidance: null, assessmentGuidance: null, baseCommit: null,
-                precedesFirstReviewCycle: false, CancellationToken.None);
+                precedesFirstReviewCycle: false, CancellationToken.None, gitOverride: ThrowingGit());
 
             dispatched.Should().BeFalse("a hostile base branch must never earn a dispatched rebase-recovery session");
 
