@@ -233,7 +233,7 @@ public static class OrchestratorFeedDescription
     /// </summary>
     private static string Claimant(TaskClaimed claimed, MemberLabelLookup labels) =>
         claimed.OwnerRootFingerprint.IsNotBlank()
-            ? labels.LabelForFingerprint(claimed.OwnerRootFingerprint!)
+            ? labels.LabelForFingerprint(claimed.OwnerRootFingerprint)
             : "somebody the claim does not name";
 
     /// <summary>
