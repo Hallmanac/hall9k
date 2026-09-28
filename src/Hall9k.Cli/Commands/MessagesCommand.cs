@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Extensions;
 using Marten;
 using Spectre.Console;
@@ -68,6 +69,12 @@ public sealed class MessagesCommand : Hall9kAsyncCommand<MessagesCommand.Setting
             return ExitCodes.Ok;
         }
 
+        Guid[] projectIds = [.. shown.Select(message => message.ProjectId).Where(id => id != Guid.Empty).Distinct()];
+        IReadOnlyDictionary<Guid, ProjectMemberLabels> labelsByProject = projectIds.Length == 0
+            ? new Dictionary<Guid, ProjectMemberLabels>()
+            : (await session.LoadManyAsync<ProjectMemberLabels>(cancellationToken, projectIds))
+                .ToDictionary(labels => labels.Id);
+
         Table table = new Table().Border(TableBorder.Rounded);
         table.AddColumn("Id");
         table.AddColumn("Sender");
@@ -80,9 +87,10 @@ public sealed class MessagesCommand : Hall9kAsyncCommand<MessagesCommand.Setting
         foreach (MessageDetails message in shown)
         {
             string shortId = TaskListCommand.ShortId(message.Id);
+            labelsByProject.TryGetValue(message.ProjectId, out ProjectMemberLabels? projectLabels);
             table.AddRow(
                 shortId,
-                TaskListCommand.ShortId(message.FromNodeId),
+                SenderCell(message.FromNodeId, projectLabels),
                 message.ProjectId == Guid.Empty ? "[dim]—[/]" : TaskListCommand.ShortId(message.ProjectId),
                 message.SentAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? string.Empty,
                 message.About is { Length: > 0 } about ? about.EscapeMarkup() : "[dim]—[/]",
@@ -94,5 +102,20 @@ public sealed class MessagesCommand : Hall9kAsyncCommand<MessagesCommand.Setting
 
         AnsiConsole.Write(table);
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// The Sender column: the sending node's short id, with the owning member's own label appended
+    /// in parentheses when this project's own projection knows one (task b7d8222e) — markup-escaped,
+    /// since a display name or a declared login can carry the square brackets Spectre's table cells
+    /// would otherwise try to parse as its own markup. Pure and database-free so it is a unit test
+    /// rather than an integration one.
+    /// </summary>
+    internal static string SenderCell(Guid fromNodeId, ProjectMemberLabels? projectLabels)
+    {
+        string id = TaskListCommand.ShortId(fromNodeId);
+        return MemberLabelResolver.LabelForNodeId(projectLabels, fromNodeId) is { } label
+            ? $"{id} ({label.EscapeMarkup()})"
+            : id;
     }
 }
