@@ -132,6 +132,14 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
                 senderNodeId, SenderIgnored: true, EnvelopesConsidered: 0, EnvelopesStored: 0, SenderNotVouched: true);
         }
 
+        // The verified key this exact read resolved for senderNodeId — never the sender's own
+        // wire-level claim — is what the FromOwner check below verifies each envelope's own claimed
+        // owner against (idea 6be68ee2, trust findings 10/12). Read is vouched at this point, so the
+        // transport always resolved one; null is kept possible only for the type's own honesty
+        // toward a transport that somehow did not (TrustChain.VouchesOwnerForNode then treats it as
+        // no key at all, never as "skip the check").
+        string? senderFingerprint = read.SenderFingerprint;
+
         // An override above the persisted cursor deliberately skips whatever sits between the two
         // without ever asking the transport for it — this sweep must never mistake "found nothing"
         // or "found something past the gap" for permission to drag the cursor across that
@@ -194,6 +202,22 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
         // value, or one from a build older than idea 202383dc's M2), is read as "no opinion" and
         // never refused on that basis alone (MessageEnvelopeV1.ProjectKey's own doc).
         List<long> projectKeyMismatchSeqs = [];
+        // Every seq whose own envelope's declared FromOwner does not verify against the ledger's own
+        // trust chain — the sender's verified key (senderFingerprint) is not currently vouched into
+        // that exact claimed owner's chain for senderNodeId specifically — refused the identical way
+        // a project key mismatch is: never stored, folded into the same standing "sender ignored"
+        // record (idea 6be68ee2, trust findings 10/12: a note's declared sender is checked against
+        // the chain, copying ClaimRequestWatchLoop.IsRequesterOwnerVerified's own check via the
+        // shared TrustChain.VouchesOwnerForNode rather than re-typing it). Only checked when a
+        // TrustChain was actually supplied — the identical "no opinion when nothing to check against"
+        // reading ResolveLocalProjectKeyAsync's own fallback already applies, since a caller reading
+        // with no chain at all (every pre-T1 test that predates idea 202383dc's own chain-level
+        // rule) has nothing here to verify a claim against either way. Checked after the project key
+        // mismatch above, not before: several existing tests build a TrustChain that carries a real
+        // ProjectKey but a deliberately empty OwnerChains (they exercise the project-key path alone,
+        // not this one), and this order lets that mismatch continue past the loop body before this
+        // newer, stricter check would otherwise refuse the identical envelope for the wrong reason.
+        List<long> fromOwnerMismatchSeqs = [];
         foreach (TransportEnvelope raw in read.Envelopes.OrderBy(envelope => envelope.Seq))
         {
             highestSeqConsidered = raw.Seq;
@@ -224,6 +248,16 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
                 logger?.LogWarning(
                     "Envelope {Seq} from sender {SenderNodeId} carries a project key that does not match "
                     + "this project's own ledger-derived key, refused", raw.Seq, senderNodeId);
+                continue;
+            }
+
+            if (trustChain is not null && !trustChain.VouchesOwnerForNode(envelope.FromOwner, senderFingerprint, senderNodeId))
+            {
+                fromOwnerMismatchSeqs.Add(raw.Seq);
+                logger?.LogWarning(
+                    "Envelope {Seq} from sender {SenderNodeId} declares owner {FromOwner}, which the ledger's "
+                    + "own trust chain does not vouch this sender for — refused", raw.Seq, senderNodeId,
+                    envelope.FromOwner);
                 continue;
             }
 
@@ -277,7 +311,8 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
         highestSeqConsidered = Math.Max(highestSeqConsidered, read.HighestSeqInspected);
 
         bool cursorAdvanced = highestSeqConsidered > persistedCursor && !overrideSkipsAhead;
-        bool envelopeVerificationFailed = read.RejectedSeqs.Count > 0 || projectKeyMismatchSeqs.Count > 0;
+        bool envelopeVerificationFailed =
+            read.RejectedSeqs.Count > 0 || projectKeyMismatchSeqs.Count > 0 || fromOwnerMismatchSeqs.Count > 0;
 
         List<object> inboxEvents = [];
         if (cursorAdvanced)
@@ -304,6 +339,13 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
                 reasons.Add(projectKeyMismatchSeqs.Count == 1
                     ? $"project key mismatch for seq {projectKeyMismatchSeqs[0]}"
                     : $"project key mismatch for seqs {string.Join(", ", projectKeyMismatchSeqs)}");
+            }
+
+            if (fromOwnerMismatchSeqs.Count > 0)
+            {
+                reasons.Add(fromOwnerMismatchSeqs.Count == 1
+                    ? $"declared owner not vouched for seq {fromOwnerMismatchSeqs[0]}"
+                    : $"declared owner not vouched for seqs {string.Join(", ", fromOwnerMismatchSeqs)}");
             }
 
             inboxEvents.Add(MessageInboxDecider.IgnoreSender(

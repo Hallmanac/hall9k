@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
@@ -504,6 +505,65 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         inboxDoc!.SenderIgnored.Should().BeTrue(
             "the cursor advancing past a rejected candidate must never be read as this sender being fine");
         inboxDoc.HighestSeqReceived.Should().Be(5, "the cursor still moves past the rejected candidate");
+    }
+
+    /// <summary>idea 6be68ee2, trust findings 10/12: an envelope's own <see cref="MessageEnvelopeV1.FromOwner"/>
+    /// is a self-declared claim, just like <c>ClaimEnvelopeCodec.ClaimRequestRecord.RequesterOwnerFingerprint</c>
+    /// already was — node A really is vouched, but under its own genuine owner root, never the
+    /// impersonated one this envelope claims, so the ledger's own trust chain must refuse it exactly
+    /// the way a mismatched project key already is.</summary>
+    [Fact]
+    public async Task A_forged_FromOwner_is_refused_and_named_in_the_sender_ignored_record()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        const string ownerB = "owner-b-fingerprint";
+        const string genuineOwnerOfNodeA = "owner-a-genuine-root";
+        const string impersonatedOwnerClaim = "owner-a-genuine-root-impersonated";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox outbox = new(transport);
+        MessageInbox inbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        await using (IDocumentSession sendSession = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                sendSession, nodeA, ProjectId, impersonatedOwnerClaim, MessageAudience.Node(nodeB), about: null,
+                MessageKind.Note, "a forged owner claim", Now, cts.Token);
+            await outbox.FlushAsync(
+                sendSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false,
+                committerA, signingKeyA, Now, cts.Token);
+        }
+
+        string nodeAFingerprint = NodeKeyStore.Fingerprint($"ssh-ed25519 AAAAFAKE{nodeA:N} test");
+        TrustChain trustChain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                [genuineOwnerOfNodeA] = new TrustedOwner(
+                    genuineOwnerOfNodeA, "ssh-ed25519 AAAAFAKE owner-a-root",
+                    [new TrustedNode(nodeA.ToString(), $"ssh-ed25519 AAAAFAKE{nodeA:N} test", nodeAFingerprint, Now)]),
+            },
+            [],
+            ProjectKey: "shared-project-key");
+
+        await using IDocumentSession readSession = _postgres.Store.LightweightSession();
+        MessageInboxSweepResult sweep = await inbox.ReadFromAsync(
+            readSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(1), trustChain: trustChain,
+            cancellationToken: cts.Token);
+
+        sweep.EnvelopesStored.Should().Be(
+            0, "the envelope's own declared owner is never vouched by the ledger's own chain for this sender");
+        sweep.SenderIgnored.Should().BeTrue();
+
+        MessageInboxDetails? inboxDoc = await readSession.LoadAsync<MessageInboxDetails>(
+            MessageStreamId.ForInbox(nodeA, ProjectId), cts.Token);
+        inboxDoc.Should().NotBeNull();
+        inboxDoc!.SenderIgnored.Should().BeTrue();
+        inboxDoc.IgnoredReason.Should().Contain("declared owner not vouched");
     }
 
     [Fact]
