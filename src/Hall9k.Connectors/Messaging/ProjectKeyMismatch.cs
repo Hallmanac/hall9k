@@ -46,9 +46,12 @@ public static class ProjectKeyMismatch
     /// <paramref name="candidateKey"/> is genuinely <see cref="KeyLength"/> characters — a lookup for
     /// whether some OTHER local project already carries this exact key, so a project too new or too
     /// far behind to have read its own key back yet still refuses an envelope this node can already
-    /// prove belongs elsewhere.
+    /// prove belongs elsewhere. A <see cref="ValueTask{TResult}"/> rather than a <see cref="Task{TResult}"/>
+    /// (independent pre-PR review, cycle 1, conformance lens, low): every envelope all three readers
+    /// inspect on every sweep takes the pure <see cref="IsMismatch"/> path once <paramref name="localProjectKey"/>
+    /// is already known, which finishes with no I/O at all, and every caller awaits this exactly once.
     /// </summary>
-    public static async Task<bool> IsMismatchAsync(
+    public static async ValueTask<bool> IsMismatchAsync(
         IDocumentSession session, Guid projectId, string? candidateKey, string? localProjectKey,
         CancellationToken cancellationToken)
     {
