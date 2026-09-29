@@ -58,17 +58,35 @@ public static class ReplicatedNote
 
     /// <summary>
     /// The words that name where a note came from, for the prompt: "a note from &lt;owner&gt;
-    /// (node &lt;short id&gt;)", where the owner is the sender's own from the chain (the GitHub
+    /// (node &lt;short id&gt;)", where the owner is the node's own from the chain (the GitHub
     /// account its fleet declared, else its short root fingerprint), or "an owner not verified"
     /// when the chain cannot place the node. A sender that was never recorded
     /// (<see cref="Guid.Empty"/>) names no node at all and says so. The label names the SENDER, the
-    /// one node this node authenticated.
+    /// one node this node authenticated, except when one of the local owner's own nodes relayed a
+    /// note that began on a node outside the fleet: the sender is then a trusted relay, and naming it
+    /// would put a teammate's words under the local owner's own name, so the label names the node the
+    /// note claims to have begun on and says which of the fleet's nodes relayed it.
     /// </summary>
-    public static string Origin(Guid senderNodeId, LocalFleet? localFleet)
+    public static string Origin(Guid senderNodeId, Guid? originNodeId, LocalFleet? localFleet)
     {
         if (senderNodeId == Guid.Empty)
         {
             return PromptTemplates.Load(TemplateFile, "origin-unidentified");
+        }
+
+        if (originNodeId is { } origin
+            && origin != Guid.Empty
+            && origin != senderNodeId
+            && localFleet is { } fleet
+            && fleet.NodeIds.Contains(senderNodeId)
+            && !fleet.NodeIds.Contains(origin))
+        {
+            return PromptTemplates.Load(TemplateFile, "origin-relayed", new Dictionary<string, string>
+            {
+                ["Owner"] = OwnerLabel(origin, fleet.Chain),
+                ["Node"] = DomainId.Short(origin),
+                ["Relay"] = DomainId.Short(senderNodeId),
+            });
         }
 
         return PromptTemplates.Load(TemplateFile, "origin", new Dictionary<string, string>
@@ -104,10 +122,10 @@ public static class ReplicatedNote
     /// came from, capped, and fenced, so a fix session weighs it against the code rather than
     /// obeying it.
     /// </summary>
-    public static string ForeignReviewResolution(string humanFindings, Guid senderNodeId, LocalFleet? localFleet) =>
+    public static string ForeignReviewResolution(string humanFindings, Guid senderNodeId, Guid? originNodeId, LocalFleet? localFleet) =>
         PromptTemplates.Load(TemplateFile, "foreign-review-resolution", new Dictionary<string, string>
         {
-            ["Origin"] = Origin(senderNodeId, localFleet),
+            ["Origin"] = Origin(senderNodeId, originNodeId, localFleet),
             ["Findings"] = Block(humanFindings, MaxReasonLength),
         });
 
@@ -116,10 +134,10 @@ public static class ReplicatedNote
     /// labelled with where it came from, the verdict named as that note's own claim, and its reason
     /// capped and fenced. Blank reasons (a merge-ready resolution may carry none) say so.
     /// </summary>
-    public static string ForeignRuling(string verdictWord, string? reason, Guid senderNodeId, LocalFleet? localFleet) =>
+    public static string ForeignRuling(string verdictWord, string? reason, Guid senderNodeId, Guid? originNodeId, LocalFleet? localFleet) =>
         PromptTemplates.Load(TemplateFile, reason.IsNotBlank() ? "foreign-ruling" : "foreign-ruling-no-reason", new Dictionary<string, string>
         {
-            ["Origin"] = Origin(senderNodeId, localFleet),
+            ["Origin"] = Origin(senderNodeId, originNodeId, localFleet),
             ["Verdict"] = verdictWord,
             ["Reason"] = reason.IsNotBlank() ? Block(reason, MaxReasonLength) : string.Empty,
         });

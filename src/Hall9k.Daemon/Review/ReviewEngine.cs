@@ -2481,7 +2481,7 @@ public sealed class ReviewEngine(
                 : null;
         string findings = humanFindings.IsNotBlank()
             ? foreignResolver is { } foreign
-                ? ReplicatedNote.ForeignReviewResolution(humanFindings, foreign, localFleet)
+                ? ReplicatedNote.ForeignReviewResolution(humanFindings, foreign, findingsFrom.OriginNodeId, localFleet)
                 : $"Human review verdict (h9k review resolve): needs fixes.\n\n{humanFindings}"
             : await File.ReadAllTextAsync(RunPaths.ReviewFindingsFile(runDirectory, cycle), cancellationToken);
 

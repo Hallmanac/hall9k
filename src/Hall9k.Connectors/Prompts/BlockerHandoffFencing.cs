@@ -49,7 +49,7 @@ public static class BlockerHandoffFencing
         && ReplicatedNote.IsForeign(sender, blocker.SummaryOriginNodeId, localFleet)
             ? PromptTemplates.Load(ReplicatedNote.TemplateFile, "foreign-blocker-summary", new Dictionary<string, string>
             {
-                ["Origin"] = ReplicatedNote.Origin(sender, localFleet),
+                ["Origin"] = ReplicatedNote.Origin(sender, blocker.SummaryOriginNodeId, localFleet),
                 ["Summary"] = ReplicatedNote.Block(summary),
             })
             : blocker.Summary;
