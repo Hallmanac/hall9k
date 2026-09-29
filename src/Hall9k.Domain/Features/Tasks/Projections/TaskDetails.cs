@@ -1188,7 +1188,8 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
         // Mirrors TaskAggregate.Apply(TaskRequeued) — see PendingMentionFollowUpAfterPreflight's own doc.
         view.PendingMentionFollowUpAfterPreflight =
-            @event.Data.Reason == RequeueReason.PrReviewPreflightSafeMentionFollowUp;
+            @event.Data.Reason == RequeueReason.PrReviewPreflightSafeMentionFollowUp
+            || @event.Data.Reason == RequeueReason.PrReviewPreflightRetryMentionFollowUp;
         // The second exit door alongside Apply(TaskHandedBack) below and
         // Apply(IEvent<TaskInteractiveClaimUnassigned>) above — mirrors
         // TaskAggregate.Apply(TaskRequeued) (design ruling R6, amended 2026-09-05): a default

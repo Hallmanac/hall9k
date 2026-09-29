@@ -853,14 +853,17 @@ public sealed class TaskAggregate
 
     /// <summary>
     /// True for exactly the one dispatch cycle after a pull-request review pre-flight (idea
-    /// 6be68ee2, finding 1, phase one) comes back safe for a pre-flight dispatched to gate a
-    /// mention follow-up's own checkout (<see cref="RequeueReason.PrReviewPreflightSafeMentionFollowUp"/>)
+    /// 6be68ee2, finding 1, phase one) dispatched to gate a mention follow-up's own checkout either
+    /// comes back safe (<see cref="RequeueReason.PrReviewPreflightSafeMentionFollowUp"/>) or never
+    /// reaches a verdict at all (<see cref="RequeueReason.PrReviewPreflightRetryMentionFollowUp"/>)
     /// — the signal <c>RunLauncher.LaunchAsync</c> reads, through its own
-    /// <see cref="Projections.TaskDetails"/> mirror, to answer the mentioning comment through
-    /// <c>LaunchPrReviewMentionFollowUpAsync</c> instead of dispatching an ordinary full review.
-    /// Recomputed fresh on every <see cref="Apply(Events.TaskRequeued)"/> from that event's own
-    /// reason alone, never accumulated, so any other requeue (a lease expiry, a run failure, an
-    /// ordinary safe pre-flight verdict) clears it the same way it was set.
+    /// <see cref="Projections.TaskDetails"/> mirror, to route back through
+    /// <c>LaunchPrReviewMentionFollowUpAsync</c> instead of dispatching an ordinary full review; that
+    /// method itself dispatches a fresh mention-flagged pre-flight when the retry reason means no
+    /// safe verdict exists yet. Recomputed fresh on every <see cref="Apply(Events.TaskRequeued)"/>
+    /// from that event's own reason alone, never accumulated, so any other requeue (a lease expiry,
+    /// a run failure, an ordinary safe or retried pre-flight verdict) clears it the same way it was
+    /// set.
     /// </summary>
     public bool PendingMentionFollowUpAfterPreflight { get; private set; }
 
@@ -1835,9 +1838,15 @@ public sealed class TaskAggregate
         // sweep pick the task back up once the blocker actually clears.
         State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
         // Recomputed fresh from this event's own reason alone every time (PendingMentionFollowUpAfterPreflight's
-        // own doc) — never OR-accumulated, so any requeue reason other than the one mention
-        // follow-up's own safe verdict uses clears it the same way it was set.
-        PendingMentionFollowUpAfterPreflight = @event.Reason == RequeueReason.PrReviewPreflightSafeMentionFollowUp;
+        // own doc) — never OR-accumulated, so any requeue reason other than one of the two mention
+        // follow-up's own pre-flight uses clears it the same way it was set. The retry reason keeps
+        // this true (never reached a verdict, so the mention still has no answer) the same way the
+        // safe reason sets it (independent pre-PR review, cycle 3, conformance lens): without it, a
+        // pre-flight abandoned — timeout, budget exhaustion, launch failure, or a dead process at
+        // restart — while gating a mention follow-up lost the mention for good, because the very
+        // next claim ran an unrequested full review instead of retrying the follow-up.
+        PendingMentionFollowUpAfterPreflight = @event.Reason == RequeueReason.PrReviewPreflightSafeMentionFollowUp
+            || @event.Reason == RequeueReason.PrReviewPreflightRetryMentionFollowUp;
         // The second exit door alongside Apply(TaskHandedBack) (design ruling R6, amended
         // 2026-09-05): a default h9k task release is the human's own explicit act of returning
         // the task to the machine, so it clears the flag exactly as handback does. Every other

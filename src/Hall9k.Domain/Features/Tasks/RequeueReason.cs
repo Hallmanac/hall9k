@@ -34,6 +34,19 @@ public sealed record RequeueReason
     /// all).
     /// </summary>
     public static readonly RequeueReason PrReviewPreflightSafeMentionFollowUp = new("PrReviewPreflightSafeMentionFollowUp");
+    /// <summary>
+    /// The identical never-reached-a-verdict shape <see cref="PrReviewPreflightRetry"/> gives, for a
+    /// pre-flight dispatched to gate a mention follow-up's own checkout rather than an ordinary
+    /// review dispatch: the next claim retries through
+    /// <c>RunLauncher.LaunchPrReviewMentionFollowUpAsync</c>, which dispatches a fresh
+    /// mention-flagged pre-flight itself, instead of falling into an ordinary full-review dispatch
+    /// that never answers the mentioning comment (independent pre-PR review, cycle 3, conformance
+    /// lens — a bare <see cref="PrReviewPreflightRetry"/> requeue here cleared
+    /// <c>PendingMentionFollowUpAfterPreflight</c> the same way an ordinary safe verdict does, so the
+    /// next claim ran an unrequested full review and the mention was lost for good, since
+    /// <c>ObservedReviewMention</c> dedups it permanently).
+    /// </summary>
+    public static readonly RequeueReason PrReviewPreflightRetryMentionFollowUp = new("PrReviewPreflightRetryMentionFollowUp");
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly RequeueReason Unknown = new("");
 

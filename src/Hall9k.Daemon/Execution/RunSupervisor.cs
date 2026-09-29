@@ -305,7 +305,19 @@ public sealed class RunSupervisor(
             return;
         }
 
-        session.Events.Append(taskId, TaskDecider.Requeue(task, RequeueReason.PrReviewPreflightRetry, now));
+        // The retry reason must match whether this abandoned row was gating a mention follow-up's
+        // own checkout: a bare PrReviewPreflightRetry here cleared PendingMentionFollowUpAfterPreflight
+        // the same way an ordinary safe verdict does, so the next claim ran an unrequested full
+        // review through LaunchAsync's own isPrReview branch instead of retrying the follow-up
+        // through LaunchPrReviewMentionFollowUpAsync — and since ObservedReviewMention dedups the
+        // mentioning comment permanently, that follow-up was lost for good (independent pre-PR
+        // review, cycle 3, conformance lens).
+        PrReviewPreflightDetails? preflight = await session.LoadAsync<PrReviewPreflightDetails>(
+            preflightRunId, cancellationToken);
+        RequeueReason reason = preflight?.IsMentionFollowUp == true
+            ? RequeueReason.PrReviewPreflightRetryMentionFollowUp
+            : RequeueReason.PrReviewPreflightRetry;
+        session.Events.Append(taskId, TaskDecider.Requeue(task, reason, now));
         session.Delete<TaskLease>(taskId);
         await session.SaveChangesAsync(cancellationToken);
 
