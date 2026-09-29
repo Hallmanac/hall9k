@@ -11,9 +11,17 @@ namespace Hall9k.Domain.Features.Run;
 /// <param name="Summary">What happened, in the agent's own words.</param>
 /// <param name="HumanDirected">Whether a human, not the agent's own judgment, directed the interaction or its outcome.</param>
 /// <param name="Reason">The human's own instruction or reason, when <see cref="HumanDirected"/> is true.</param>
+/// <param name="ForeignNote">
+/// Never set by the projection. The daemon and the <c>h9k pr review</c> briefing set it, before a
+/// prompt is built, on an interaction another owner's node replicated here: the labelled, fenced text
+/// a prompt shows in place of <paramref name="Party"/>, <paramref name="Summary"/> and
+/// <paramref name="Reason"/>, which is then that node's claim and never a call this owner's human
+/// made. Null for every interaction that began on this owner's own nodes.
+/// </param>
 public sealed record ExternalInteractionRecord(
     DateTimeOffset LoggedAt,
     string Party,
     string Summary,
     bool HumanDirected,
-    string? Reason);
+    string? Reason,
+    string? ForeignNote = null);

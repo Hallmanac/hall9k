@@ -3080,7 +3080,12 @@ public static class AgentPromptBuilder
         // human directive just because it rode in on this list.
         IReadOnlyList<ExternalInteractionRecord> humanDirectedOnly = priorHumanDirectedInteractions is null
             ? []
-            : [.. priorHumanDirectedInteractions.Where(interaction => interaction.HumanDirected)];
+            : [.. priorHumanDirectedInteractions.Where(interaction => interaction.HumanDirected && interaction.ForeignNote is null)];
+        // An interaction another owner's node replicated is that node's claim, not a directive from
+        // this owner's human: it is listed apart as a note and never joins the standing instructions.
+        IReadOnlyList<ExternalInteractionRecord> foreignInteractions = priorHumanDirectedInteractions is null
+            ? []
+            : [.. priorHumanDirectedInteractions.Where(interaction => interaction.HumanDirected && interaction.ForeignNote is not null)];
         if (humanDirectedOnly.Count > 0)
         {
             prompt.AppendLine(Fragment(file, "human-directives-heading"));
@@ -3093,6 +3098,21 @@ public static class AgentPromptBuilder
                 prompt.AppendLine(
                     $"- {loggedAt}, with {PrintedInteractionParty(interaction)}: " +
                     $"{PrintedInteractionSummary(interaction)} (reason given: {PrintedInteractionReason(interaction)})");
+            }
+
+            prompt.AppendLine();
+        }
+
+        if (foreignInteractions.Count > 0)
+        {
+            prompt.AppendLine(Fragment(file, "foreign-directives-heading"));
+            prompt.AppendLine();
+            AppendFragment(prompt, file, "foreign-directives-intro");
+            prompt.AppendLine();
+            foreach (ExternalInteractionRecord interaction in foreignInteractions.TakeLast(MaxPriorRulings))
+            {
+                string loggedAt = interaction.LoggedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                prompt.AppendLine($"- {loggedAt}: {interaction.ForeignNote}");
             }
 
             prompt.AppendLine();
@@ -3287,7 +3307,7 @@ public static class AgentPromptBuilder
         priorHumanDirectedInteractions is null
             ? []
             : [.. priorHumanDirectedInteractions
-                .Where(interaction => interaction.HumanDirected)
+                .Where(interaction => interaction.HumanDirected && interaction.ForeignNote is null)
                 .TakeLast(MaxPriorRulings)
                 .Select(PrintedInteractionParty)];
 

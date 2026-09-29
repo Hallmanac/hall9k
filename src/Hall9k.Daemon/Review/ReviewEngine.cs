@@ -7650,8 +7650,8 @@ public sealed class ReviewEngine(
                 IReadOnlyList<BoundaryApprovalRecord> priorBoundaryApprovals,
                 IReadOnlyList<HumanFixRecord> priorHumanFixes) =
             await LoadPriorRulingsAndInteractionsAsync(query, taskId, cancellationToken);
-        priorRulings = await ReplicatedResolutionFencing.FenceRulingsAsync(
-            query, fleets, project.Id, taskId, priorRulings, cancellationToken);
+        (priorRulings, priorHumanDirectedInteractions) = await ReplicatedResolutionFencing.FencePriorAsync(
+            query, fleets, project.Id, taskId, priorRulings, priorHumanDirectedInteractions, cancellationToken);
         // The owner's standing voice preference (#193), read here so a prompt this
         // engine dispatches which asks a session to write text under the owner's login names the
         // same skill the dispatching launcher would have. Null when the record is missing, which

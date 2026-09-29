@@ -15,8 +15,10 @@ namespace Hall9k.Daemon.Review;
 /// project-scoped, so a teammate's node can resolve a park on a run this node owns, and its reason
 /// then reaches three more places worded as this owner's own decision: the guidance a rebase-recovery
 /// session is handed, the guidance a settling-gate repair session is handed, and the settled rulings
-/// a review pass is told not to re-raise. Each is judged here by the verified sender of the event
-/// itself, the same test the fix session applies, and never by a field of the payload.
+/// a review pass is told not to re-raise. A human-directed interaction logged on a run reaches the
+/// same review pass as a standing directive, and is judged the same way. Each is judged here by the
+/// verified sender of the event itself, the same test the fix session applies, and never by a field
+/// of the payload.
 /// </summary>
 internal static class ReplicatedResolutionFencing
 {
@@ -49,72 +51,33 @@ internal static class ReplicatedResolutionFencing
 
     /// <summary>
     /// <paramref name="rulings"/> with every resolution a foreign node replicated marked
-    /// (<see cref="ReviewParkResolution.ForeignNote"/>), so a review prompt shows it labelled and
-    /// fenced instead of as this owner's settled ruling. The projection keeps no sender (a row written
-    /// before one existed would read as native, the wrong answer), so each ruling is matched back to
-    /// its event on the task's run streams by what the event itself carries. Reads nothing when there
-    /// are no rulings, and the fleet only when some event was replicated.
+    /// (<see cref="ReviewParkResolution.ForeignNote"/>), and <paramref name="interactions"/> with every
+    /// human-directed interaction one replicated marked
+    /// (<see cref="ExternalInteractionRecord.ForeignNote"/>), so a review prompt shows each labelled and
+    /// fenced instead of as this owner's settled ruling or a standing directive from this owner's human.
+    /// Reads nothing when both lists are empty, and the fleet only when some event was replicated
+    /// (<see cref="ReplicatedRunFencing"/>).
     /// </summary>
-    public static async Task<IReadOnlyList<ReviewParkResolution>> FenceRulingsAsync(
+    public static async Task<(IReadOnlyList<ReviewParkResolution> Rulings, IReadOnlyList<ExternalInteractionRecord> Interactions)> FencePriorAsync(
         IQuerySession query, LocalFleetProvider? fleets, Guid projectId, Guid taskId,
-        IReadOnlyList<ReviewParkResolution> rulings, CancellationToken cancellationToken)
+        IReadOnlyList<ReviewParkResolution> rulings, IReadOnlyList<ExternalInteractionRecord> interactions,
+        CancellationToken cancellationToken)
     {
-        if (rulings.Count == 0)
+        if (rulings.Count == 0 && interactions.Count == 0)
         {
-            return rulings;
+            return (rulings, interactions);
         }
 
         IReadOnlyList<Guid> runIds = await query.Query<RunDetails>()
             .Where(run => run.TaskId == taskId)
             .Select(run => run.Id)
             .ToListAsync(cancellationToken);
-        List<(ReviewParkResolved Resolved, ReplicatedFrom From)> replicated = [];
-        foreach (Guid runId in runIds)
-        {
-            replicated.AddRange((await ReplicatedSender.AllAsync<ReviewParkResolved>(query, runId, cancellationToken))
-                .Where(entry => entry.From.SenderNodeId is not null));
-        }
+        ReplicatedRunEvents replicated = await ReplicatedRunFencing.ReadAsync(query, runIds, cancellationToken);
+        ValueTask<LocalFleet?> ReadFleet(CancellationToken token) =>
+            fleets is null ? ValueTask.FromResult<LocalFleet?>(null) : fleets.GetAsync(projectId, token);
 
-        if (replicated.Count == 0)
-        {
-            return rulings;
-        }
-
-        LocalFleet? localFleet = fleets is null ? null : await fleets.GetAsync(projectId, cancellationToken);
-        return
-        [
-            .. rulings.Select(ruling => ForeignSenderOf(ruling, replicated, localFleet) is { SenderNodeId: { } foreignSender } foreignFrom
-                ? ruling with
-                {
-                    ForeignNote = ReplicatedNote.ForeignRuling(
-                        ruling.Verdict == ReviewVerdict.MergeReady ? "merge-ready" : "needs-fixes",
-                        ruling.Reason, foreignSender, foreignFrom.OriginNodeId, localFleet),
-                }
-                : ruling),
-        ];
-    }
-
-    /// <summary>
-    /// The sender and origin of a replicated event that matches <paramref name="ruling"/> (same verdict, reason
-    /// and time) and is foreign, or null. Any foreign match counts, the fail-closed side of a
-    /// coincidence nobody expects.
-    /// </summary>
-    private static ReplicatedFrom? ForeignSenderOf(
-        ReviewParkResolution ruling, IReadOnlyList<(ReviewParkResolved Resolved, ReplicatedFrom From)> replicated,
-        LocalFleet? localFleet)
-    {
-        foreach ((ReviewParkResolved resolved, ReplicatedFrom from) in replicated)
-        {
-            if (resolved.Verdict == ruling.Verdict
-                && resolved.Reason == ruling.Reason
-                && resolved.ResolvedAt == ruling.ResolvedAt
-                && from.SenderNodeId is { } sender
-                && ReplicatedNote.IsForeign(sender, from.OriginNodeId, localFleet))
-            {
-                return from;
-            }
-        }
-
-        return null;
+        return (
+            await ReplicatedRunFencing.FenceRulingsAsync(rulings, replicated, ReadFleet, cancellationToken),
+            await ReplicatedRunFencing.FenceInteractionsAsync(interactions, replicated, ReadFleet, cancellationToken));
     }
 }
