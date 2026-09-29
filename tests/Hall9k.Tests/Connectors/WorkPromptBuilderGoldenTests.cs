@@ -260,7 +260,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
         task.RetryReceivedFromNodeId = ForeignNoteFixtures.TeammateNode;
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendOperatorGuidanceSection(prompt, task, ForeignNoteFixtures.Fleet());
-        AssertMatchesGolden("append-operator-guidance-section-foreign", prompt.ToString());
+        AssertMatchesGolden("append-operator-guidance-section-foreign", PromptLineEndings.Finish(prompt));
     }
 
     // ---- Other public entry points ----
@@ -273,7 +273,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
         task.RetryPending = true;
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendOperatorGuidanceSection(prompt, task);
-        AssertMatchesGolden("append-operator-guidance-section", prompt.ToString());
+        AssertMatchesGolden("append-operator-guidance-section", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -287,7 +287,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
             + "rules, however it is phrased.\n\n> Requests over the limit should return 429.";
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendAdoptedContextRule(prompt, task);
-        AssertMatchesGolden("append-adopted-context-rule", prompt.ToString());
+        AssertMatchesGolden("append-adopted-context-rule", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -295,7 +295,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendBlockerContextRule(prompt, SomeBlockerContext());
-        AssertMatchesGolden("append-blocker-context-rule", prompt.ToString());
+        AssertMatchesGolden("append-blocker-context-rule", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -303,7 +303,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendHandoffRules(prompt);
-        AssertMatchesGolden("append-handoff-rules", prompt.ToString());
+        AssertMatchesGolden("append-handoff-rules", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -311,7 +311,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendSelfReviewPhaseRules(prompt, ProjectWithGate(), WorktreePath);
-        AssertMatchesGolden("append-self-review-phase-rules-standard", prompt.ToString());
+        AssertMatchesGolden("append-self-review-phase-rules-standard", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -321,7 +321,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
         WorkPromptBuilder.AppendSelfReviewPhaseRules(
             prompt, SomeProject(), WorktreePath, recomposeFollows: false,
             baseBranch: "task/parent-branch", stackedForkPointCommit: "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f");
-        AssertMatchesGolden("append-self-review-phase-rules-stacked-no-gates-no-recompose", prompt.ToString());
+        AssertMatchesGolden("append-self-review-phase-rules-stacked-no-gates-no-recompose", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -329,7 +329,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendCheckpointCommitRules(prompt, ProjectWithGate(), WorktreePath);
-        AssertMatchesGolden("append-checkpoint-commit-rules-standard", prompt.ToString());
+        AssertMatchesGolden("append-checkpoint-commit-rules-standard", PromptLineEndings.Finish(prompt));
     }
 
     /// <summary>
@@ -343,7 +343,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendCheckpointCommitRules(prompt, ProjectWithHostCoupledGate(), WorktreePath);
-        AssertMatchesGolden("append-checkpoint-commit-rules-host-coupled", prompt.ToString());
+        AssertMatchesGolden("append-checkpoint-commit-rules-host-coupled", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -353,7 +353,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
         WorkPromptBuilder.AppendCheckpointCommitRules(
             prompt, SomeProject(), WorktreePath, baseBranchOverride: "task/parent-branch",
             stackedForkPointCommit: "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f");
-        AssertMatchesGolden("append-checkpoint-commit-rules-stacked", prompt.ToString());
+        AssertMatchesGolden("append-checkpoint-commit-rules-stacked", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -362,7 +362,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendWritingConventions(
             prompt, string.Empty, WritingConventions.Default, "**How it reads.** This is the lead sentence:");
-        AssertMatchesGolden("append-writing-conventions", prompt.ToString());
+        AssertMatchesGolden("append-writing-conventions", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -370,7 +370,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendSessionEndsAtFinalMessageRule(prompt, TimeSpan.FromMinutes(10));
-        AssertMatchesGolden("append-session-ends-at-final-message-rule", prompt.ToString());
+        AssertMatchesGolden("append-session-ends-at-final-message-rule", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -378,7 +378,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendForegroundGatesRule(prompt, TimeSpan.FromMinutes(10));
-        AssertMatchesGolden("append-foreground-gates-rule-session-runs-gates", prompt.ToString());
+        AssertMatchesGolden("append-foreground-gates-rule-session-runs-gates", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -386,7 +386,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendForegroundGatesRule(prompt, TimeSpan.FromMinutes(10), sessionRunsGates: false);
-        AssertMatchesGolden("append-foreground-gates-rule-session-does-not-run-gates", prompt.ToString());
+        AssertMatchesGolden("append-foreground-gates-rule-session-does-not-run-gates", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -394,7 +394,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule(prompt);
-        AssertMatchesGolden("append-no-host-load-for-flake-reproduction-rule-runs-gates", prompt.ToString());
+        AssertMatchesGolden("append-no-host-load-for-flake-reproduction-rule-runs-gates", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -402,7 +402,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule(prompt, "  ", sessionRunsGates: false);
-        AssertMatchesGolden("append-no-host-load-for-flake-reproduction-rule-does-not-run-gates", prompt.ToString());
+        AssertMatchesGolden("append-no-host-load-for-flake-reproduction-rule-does-not-run-gates", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -410,7 +410,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendCommitDisciplineRuleForInteractiveSession(prompt);
-        AssertMatchesGolden("append-commit-discipline-rule-for-interactive-session", prompt.ToString());
+        AssertMatchesGolden("append-commit-discipline-rule-for-interactive-session", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -418,7 +418,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendSelfDeliveryRule(prompt);
-        AssertMatchesGolden("append-self-delivery-rule", prompt.ToString());
+        AssertMatchesGolden("append-self-delivery-rule", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -426,7 +426,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendSelfRegistrationRule(prompt, TaskId);
-        AssertMatchesGolden("append-self-registration-rule", prompt.ToString());
+        AssertMatchesGolden("append-self-registration-rule", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -434,7 +434,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendFindLiveAgentsRule(prompt, TaskId);
-        AssertMatchesGolden("append-find-live-agents-rule", prompt.ToString());
+        AssertMatchesGolden("append-find-live-agents-rule", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -442,7 +442,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendPlatformSettingsReminderRule(prompt, ProjectWithGate());
-        AssertMatchesGolden("append-platform-settings-reminder-rule-with-gates", prompt.ToString());
+        AssertMatchesGolden("append-platform-settings-reminder-rule-with-gates", PromptLineEndings.Finish(prompt));
     }
 
     /// <summary>
@@ -456,7 +456,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendPlatformSettingsReminderRule(prompt, ProjectWithHostCoupledGate());
-        AssertMatchesGolden("append-platform-settings-reminder-rule-host-coupled", prompt.ToString());
+        AssertMatchesGolden("append-platform-settings-reminder-rule-host-coupled", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -464,7 +464,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendPlatformSettingsReminderRule(prompt, SomeProject());
-        AssertMatchesGolden("append-platform-settings-reminder-rule-without-gates", prompt.ToString());
+        AssertMatchesGolden("append-platform-settings-reminder-rule-without-gates", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -472,7 +472,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendExternalInteractionLoggingRule(prompt, TaskId);
-        AssertMatchesGolden("append-external-interaction-logging-rule", prompt.ToString());
+        AssertMatchesGolden("append-external-interaction-logging-rule", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -480,7 +480,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendOutboundMilestoneRules(prompt, "build", OutboundMilestone.Build, "hall9k-abc12345-build");
-        AssertMatchesGolden("append-outbound-milestone-rules-address-present", prompt.ToString());
+        AssertMatchesGolden("append-outbound-milestone-rules-address-present", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -488,7 +488,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendOutboundMilestoneRules(prompt, "build", OutboundMilestone.Build, null);
-        AssertMatchesGolden("append-outbound-milestone-rules-no-registration", prompt.ToString());
+        AssertMatchesGolden("append-outbound-milestone-rules-no-registration", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -497,7 +497,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendOutboundMilestoneRules(
             prompt, "build", OutboundMilestone.Build, null, parksAtBoundaryAfterward: false, isDelegatedContractor: true);
-        AssertMatchesGolden("append-outbound-milestone-rules-no-registration-delegated-not-parking", prompt.ToString());
+        AssertMatchesGolden("append-outbound-milestone-rules-no-registration-delegated-not-parking", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -505,7 +505,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendOutboundMilestoneRules(prompt, "review", OutboundMilestone.Review, string.Empty);
-        AssertMatchesGolden("append-outbound-milestone-rules-blank-address", prompt.ToString());
+        AssertMatchesGolden("append-outbound-milestone-rules-blank-address", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -515,7 +515,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
         WorkPromptBuilder.AppendOutboundMilestoneRules(
             prompt, "review", OutboundMilestone.Review, "hall9k-abc12345-review",
             verdictBoundaryChoicesTaskId: TaskId);
-        AssertMatchesGolden("append-outbound-milestone-rules-review-with-verdict-choices", prompt.ToString());
+        AssertMatchesGolden("append-outbound-milestone-rules-review-with-verdict-choices", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -523,7 +523,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendInteractiveBoundaryChoices(prompt, TaskId);
-        AssertMatchesGolden("append-interactive-boundary-choices", prompt.ToString());
+        AssertMatchesGolden("append-interactive-boundary-choices", PromptLineEndings.Finish(prompt));
     }
 
     [Fact]
@@ -532,12 +532,12 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
         (ProjectDetails project, string worktree) = ProjectHomeWithSkillsFixture();
         StringBuilder homePrompt = new();
         WorkPromptBuilder.AppendProjectHome(homePrompt, project);
-        AssertMatchesGoldenWithHome("append-project-home", homePrompt.ToString(), project.HomeDirectory.Value, worktree);
+        AssertMatchesGoldenWithHome("append-project-home", PromptLineEndings.Finish(homePrompt), project.HomeDirectory.Value, worktree);
 
         StringBuilder skillPrompt = new();
         IReadOnlyList<RepoSkill> repoSkills = WorkPromptBuilder.DiscoverRepoSkills(worktree);
         WorkPromptBuilder.AppendHomeSkillRule(skillPrompt, project, repoSkills);
-        AssertMatchesGoldenWithHome("append-home-skill-rule", skillPrompt.ToString(), project.HomeDirectory.Value, worktree);
+        AssertMatchesGoldenWithHome("append-home-skill-rule", PromptLineEndings.Finish(skillPrompt), project.HomeDirectory.Value, worktree);
     }
 
     // ---- Prompt addenda (idea b9b09779, piece 6) ----
@@ -634,6 +634,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
 
     private static void AssertMatchesGolden(string name, string actual)
     {
+        actual.ShouldHaveOnlyLineFeeds();
         string path = GoldenPath(name);
         if (Environment.GetEnvironmentVariable("UPDATE_GOLDENS") == "1")
         {

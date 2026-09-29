@@ -396,6 +396,7 @@ public sealed class QaReviewPromptTests : IDisposable
 
     private static void AssertMatchesGolden(string name, string actual)
     {
+        actual.ShouldHaveOnlyLineFeeds();
         string path = GoldenPath(name);
         if (Environment.GetEnvironmentVariable("UPDATE_GOLDENS") == "1")
         {
