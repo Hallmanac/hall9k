@@ -1693,7 +1693,12 @@ because their value is their length. A review park resolution is judged everywhe
 prompt: the findings a fix session is handed, the guidance a rebase-recovery or settling-gate repair
 session is handed (each under a heading that says the note is not your decision), and the settled
 rulings a review pass is shown, where a teammate's resolution is listed apart as a note and never
-counts as a ruling of yours.
+counts as a ruling of yours, and the "what the author's own run already settled" section of the
+`h9k pr review` briefing, where it is listed apart from the calls your own human made. A
+human-directed interaction (`h9k task log-interaction --human-directed`) a teammate's node replicated
+is treated the same way: the review pass lists it under its own heading and the briefing lists it
+apart, each time labelled, with its party, summary and reason each cut to 500 characters and fenced,
+and never as a standing instruction from your human.
 
 The test is the **verified sender**, the node that delivered the event to this one and that this
 node's own inbox recorded, checked against your owner's fleet on the project's ledger chain. It is

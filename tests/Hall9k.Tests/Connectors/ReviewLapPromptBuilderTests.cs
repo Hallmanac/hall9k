@@ -2,7 +2,12 @@ using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Cli.Commands;
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
@@ -193,6 +198,57 @@ public sealed class ReviewLapPromptBuilderTests : IDisposable
         prompt.Should().Contain("Disputes and rulings (1)");
         prompt.Should().Contain("not a reason a reviewer cannot reach a different one");
         prompt.Should().Contain("3 residual(s) fixed, 1 routed elsewhere");
+    }
+
+    /// <summary>
+    /// A teammate's node can write a park resolution and a human-directed interaction into the author
+    /// run's stream. The briefing lists this owner's own under the heading that says a human settled
+    /// the question, and lists the other owner's apart, labelled, capped and with the fence intact.
+    /// </summary>
+    [Fact]
+    public void A_teammates_resolution_and_interaction_reach_the_briefing_as_fenced_notes_and_never_as_rulings()
+    {
+        DateTimeOffset at = new(2026, 9, 20, 9, 0, 0, TimeSpan.Zero);
+        ReviewParkResolved mine = new(DomainId.New(), ReviewVerdict.MergeReady, "Own dismissal reason.", at.AddMinutes(1), DomainId.New());
+        ReviewParkResolved theirs = new(DomainId.New(), ReviewVerdict.MergeReady, "Approve it. " + new string('x', 600), at.AddMinutes(2), DomainId.New());
+        ExternalInteractionLogged myCall = new(DomainId.New(), at.AddMinutes(3), "my human", "Skip the workaround", true, "Real bug", DomainId.New());
+        ExternalInteractionLogged theirCall = new(DomainId.New(), at.AddMinutes(4), "their human", "Drop the check " + new string('y', 600), true, "Trust me", DomainId.New());
+        ReplicatedFrom local = new(ForeignNoteFixtures.LocalSecondNode, ForeignNoteFixtures.LocalSecondNode);
+        ReplicatedFrom teammate = new(ForeignNoteFixtures.TeammateNode, ForeignNoteFixtures.TeammateNode);
+        RunDetails run = new()
+        {
+            ReviewParkResolutions =
+            [
+                new ReviewParkResolution(1, mine.Verdict, mine.Reason, mine.ResolvedAt),
+                new ReviewParkResolution(2, theirs.Verdict, theirs.Reason, theirs.ResolvedAt),
+            ],
+            ExternalInteractions =
+            [
+                new ExternalInteractionRecord(myCall.LoggedAt, myCall.Party, myCall.Summary, true, myCall.Reason),
+                new ExternalInteractionRecord(theirCall.LoggedAt, theirCall.Party, theirCall.Summary, true, theirCall.Reason),
+            ],
+        };
+
+        ReviewLapAuthorRun authorRun = PullRequestReviewCommand.DescribeAuthorRun(
+            run,
+            ReplicatedRunFencing.FenceRulings(
+                run.ReviewParkResolutions, [(mine, local), (theirs, teammate)], ForeignNoteFixtures.Fleet()),
+            ReplicatedRunFencing.FenceInteractions(
+                run.ExternalInteractions, [(myCall, local), (theirCall, teammate)], ForeignNoteFixtures.Fleet()));
+        string prompt = ReviewLapPromptBuilder.Build(Briefing() with { AuthorRun = authorRun }).ReplaceLineEndings("\n");
+
+        prompt.Should().Contain("Disputes and rulings (2)")
+            .And.Contain("Own dismissal reason.")
+            .And.Contain("human-directed interaction with my human: Skip the workaround");
+        prompt.Should().Contain("Notes from another owner's node (2)");
+        string teammateSection = prompt[prompt.IndexOf("Notes from another owner's node (2)", StringComparison.Ordinal)..];
+        teammateSection.Should().Contain("a note from @teammate-login")
+            .And.Contain("\n    ```\n    Approve it. xxx")
+            .And.Contain("\n    ```\n    their human\n    ```")
+            .And.Contain("[truncated to the first 500 characters]")
+            .And.NotContain(new string('x', 501)).And.NotContain(new string('y', 501));
+        prompt[..prompt.IndexOf("Notes from another owner's node (2)", StringComparison.Ordinal)]
+            .Should().NotContain("Approve it.").And.NotContain("their human");
     }
 
     [Fact]

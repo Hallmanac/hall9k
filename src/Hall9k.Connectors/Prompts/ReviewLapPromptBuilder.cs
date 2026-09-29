@@ -18,13 +18,20 @@ namespace Hall9k.Connectors.Prompts;
 /// no knowledge of the author's intent, so it points a reviewer at real, un-vouched-for ground
 /// without steering them the way a curated "look here" list would.
 /// </para>
+/// <para>
+/// <see cref="Rulings"/> are this owner's own human's calls, one line each. <see cref="TeammateNotes"/>
+/// are the park resolutions and human-directed interactions another owner's node replicated into the
+/// run's stream, each already labelled with where it came from, capped and fenced
+/// (<see cref="ReplicatedNote"/>): they are rendered apart, block intact, and never counted as a ruling.
+/// </para>
 /// </summary>
 public sealed record ReviewLapAuthorRun(
     string Settlement,
     int ResidualsFixed,
     int ResidualsRouted,
     IReadOnlyList<string> UnclaimedResiduals,
-    IReadOnlyList<string> Rulings);
+    IReadOnlyList<string> Rulings,
+    IReadOnlyList<string>? TeammateNotes = null);
 
 /// <summary>
 /// One of the reviewer's own review threads, with only what arrived on it since their review
@@ -594,8 +601,26 @@ public static class ReviewLapPromptBuilder
             prompt.AppendLine(PromptTemplates.Load(file, "rulings-none"));
         }
 
+        if (authorRun.TeammateNotes is { Count: > 0 } teammateNotes)
+        {
+            prompt.AppendLine(Fragment(file, "teammate-notes-intro",
+                ("Count", teammateNotes.Count.ToString(CultureInfo.InvariantCulture))));
+            foreach (string note in teammateNotes)
+            {
+                prompt.AppendLine(BulletBlock(note));
+            }
+        }
+
         prompt.AppendLine();
     }
+
+    /// <summary>
+    /// A multi-line entry as one list item: the first line carries the bullet and every later line is
+    /// indented under it, so the entry's fence stays a fence inside the list instead of collapsing
+    /// onto one line (which would let the quoted text read as the briefing's own).
+    /// </summary>
+    private static string BulletBlock(string entry) =>
+        "  - " + string.Join("\n    ", entry.ReplaceLineEndings("\n").Split('\n'));
 
     private static void AppendWorkingArrangementSection(StringBuilder prompt, ReviewLapBriefing briefing)
     {
