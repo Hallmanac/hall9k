@@ -309,9 +309,31 @@ public sealed class UpdateCommandTests : IDisposable
 
         exitCode.Should().NotBe(0);
         Directory.Exists(DaemonRuntime.BinDirectory).Should().BeFalse();
-        captured.Text.Should().Contain("2.49.0").And.Contain("Upgrade gh");
+        captured.Text.Should().Contain("2.68.0").And.Contain("Upgrade gh");
         captured.Text.Should().NotContain("Attestation verification failed",
             "gh being too old to attempt verification is not the same outcome as a verification that ran and failed");
+    }
+
+    [Fact]
+    public async Task A_gh_new_enough_for_attestation_but_too_old_for_source_ref_prints_the_same_upgrade_message()
+    {
+        if (ReleasePlatform.CurrentRid() is null)
+        {
+            return;
+        }
+
+        FakeGh gh = FakeGh.ForCurrentPlatform(workspace, version: "1.2.3", skillName: "pr-summary");
+        gh.MakeAttestationVerifyReportGhTooOldForSourceRefFlag();
+
+        using ScopedConsoleCapture captured = ScopedConsoleCapture.StandardError();
+
+        int exitCode = await Run(gh.Runner);
+
+        exitCode.Should().NotBe(0);
+        Directory.Exists(DaemonRuntime.BinDirectory).Should().BeFalse();
+        captured.Text.Should().Contain("2.68.0").And.Contain("Upgrade gh");
+        captured.Text.Should().NotContain("Attestation verification failed",
+            "a gh new enough for `gh attestation` but too old for --source-ref must not be reported as a failed verification");
     }
 
     [Fact]
@@ -388,6 +410,7 @@ public sealed class UpdateCommandTests : IDisposable
             Verified,
             NoAttestationFound,
             GhTooOldForAttestation,
+            GhTooOldForSourceRefFlag,
             VerificationFailed,
         }
 
@@ -397,13 +420,6 @@ public sealed class UpdateCommandTests : IDisposable
             this.archiveFileName = archiveFileName;
             this.tag = tag;
         }
-
-        /// <summary>The tag <c>gh release view</c> reports back, and the tag every later call
-        /// (<c>gh release download</c>, <c>gh attestation verify --source-ref</c>) is asserted
-        /// against — capturing what UpdateCommand actually passed down the chain rather than
-        /// assuming it, so a regression that drops the resolved tag on the floor between the two
-        /// calls fails a test instead of silently downloading "latest" again.</summary>
-        public string Tag => tag;
 
         /// <summary>The tag argument <c>gh release download</c> was actually invoked with, or
         /// null if it was never called.</summary>
@@ -468,6 +484,11 @@ public sealed class UpdateCommandTests : IDisposable
 
         public void MakeAttestationVerifyReportGhTooOld() => attestationOutcome = AttestationOutcome.GhTooOldForAttestation;
 
+        // gh 2.49.0 to 2.67.x has the `attestation` subcommand but not the --source-ref flag
+        // (that landed in 2.68.0, cli/cli#10308), so it fails with "unknown flag" rather than
+        // "unknown command" — a differently-worded case of the same "gh is too old" outcome.
+        public void MakeAttestationVerifyReportGhTooOldForSourceRefFlag() => attestationOutcome = AttestationOutcome.GhTooOldForSourceRefFlag;
+
         public void MakeAttestationVerifyFail() => attestationOutcome = AttestationOutcome.VerificationFailed;
 
         public ProcessRunner Runner => (fileName, arguments, _, _) =>
@@ -488,10 +509,9 @@ public sealed class UpdateCommandTests : IDisposable
         private ProcessResult HandleReleaseDownload(List<string> argumentList)
         {
             // The tag UpdateCommand.RunAsync resolved from `gh release view` above is passed as
-            // the positional argument right after the subcommand — asserted here, rather than
-            // only in DownloadedTag afterwards, so a call shaped any other way (the tag dropped,
-            // or "latest" substituted for it) fails loudly instead of quietly downloading the
-            // wrong release.
+            // the positional argument right after the subcommand — recorded here rather than
+            // assumed, so the pinned-tag test can assert against what was actually passed
+            // (DownloadedTag) instead of trusting the call was shaped correctly.
             DownloadedTag = argumentList[2];
 
             string downloadDirectory = argumentList[argumentList.IndexOf("--dir") + 1];
@@ -522,6 +542,8 @@ public sealed class UpdateCommandTests : IDisposable
                 AttestationOutcome.NoAttestationFound => new ProcessResult(1, string.Empty, "Error: no attestations found"),
                 AttestationOutcome.GhTooOldForAttestation =>
                     new ProcessResult(1, string.Empty, "unknown command \"attestation\" for \"gh\""),
+                AttestationOutcome.GhTooOldForSourceRefFlag =>
+                    new ProcessResult(1, string.Empty, "unknown flag: --source-ref"),
                 AttestationOutcome.VerificationFailed =>
                     new ProcessResult(1, string.Empty, "Error: verification failed: signer workflow does not match"),
                 _ => throw new InvalidOperationException($"Unhandled {nameof(AttestationOutcome)}: {attestationOutcome}"),
