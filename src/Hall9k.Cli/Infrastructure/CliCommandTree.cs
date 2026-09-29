@@ -749,11 +749,14 @@ public static class CliCommandTree
 
         config.AddCommand<UpdateCommand>("update")
             .WithDescription(
-                "The one-command path for a machine already installed: fetch the latest GitHub release for "
-                + "this platform via gh, verify its checksum, republish binaries and the canonical skill set "
-                + "through the same idempotent path as h9k install --from-release, and offer the daemon "
-                + "restart — no repo checkout, no .NET SDK. gh must be authenticated against the release's "
-                + "repository (backlog 42).")
+                "The one-command path for a machine already installed: resolve the latest GitHub release's "
+                + "tag and fetch its archive for this platform via gh, verify its artifact attestation (pinned "
+                + "to that tag and to release.yml) and its checksum, republish binaries and the canonical "
+                + "skill set through the same idempotent path as h9k install --from-release, and offer the "
+                + "daemon restart — no repo checkout, no .NET SDK. gh must be authenticated against the "
+                + "release's repository and no older than 2.49.0 (attestation support); an unattested or "
+                + "tampered archive is refused outright, with no flag to skip that check (backlog 42, "
+                + "security review idea 6be68ee2).")
             .WithExample("update")
             .WithExample("update", "--restart");
 

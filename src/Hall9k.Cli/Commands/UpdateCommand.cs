@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text.Json;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Installation;
 using Hall9k.Connectors.Processes;
@@ -112,14 +113,21 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
         {
             Directory.CreateDirectory(downloadDirectory);
 
-            AnsiConsole.MarkupLineInterpolated($"[dim]Fetching the latest release for {rid} from {repository}…[/]");
+            AnsiConsole.MarkupLineInterpolated($"[dim]Resolving the latest release for {repository}…[/]");
+            string? tag = await ResolveLatestTagAsync(gh, repository, workingDirectory, cancellationToken);
+            if (tag is null)
+            {
+                return ExitCodes.Error;
+            }
+
+            AnsiConsole.MarkupLineInterpolated($"[dim]Fetching {tag} for {rid} from {repository}…[/]");
             ProcessResult download;
             try
             {
                 download = await gh(
                     "gh",
                     [
-                        "release", "download",
+                        "release", "download", tag,
                         "--repo", repository,
                         "--pattern", archiveName,
                         "--pattern", "checksums.txt",
@@ -145,7 +153,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
             if (download.ExitCode != 0)
             {
                 await Console.Error.WriteLineAsync(
-                    $"gh release download failed for {repository} ({archiveName}):");
+                    $"gh release download failed for {repository} ({archiveName}) at tag {tag}:");
                 await Console.Error.WriteLineAsync(download.StandardError);
                 await Console.Error.WriteLineAsync(
                     "Check gh auth status — a private repository's releases need an authenticated gh (gh auth login).");
@@ -161,6 +169,15 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
                     + "the release may not carry a build for this platform yet.");
                 return ExitCodes.Error;
             }
+
+            int? attestationExitCode = await VerifyAttestationAsync(
+                gh, repository, tag, archivePath, workingDirectory, cancellationToken);
+            if (attestationExitCode is not null)
+            {
+                return attestationExitCode.Value;
+            }
+
+            AnsiConsole.MarkupLine("[dim]Attestation verified.[/]");
 
             string? checksumProblem = await ReleaseArchive.VerifyAsync(archivePath, checksumsPath, cancellationToken);
             if (checksumProblem is not null)
@@ -213,6 +230,158 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
             TryDeleteScratchDirectory(downloadDirectory);
             TryDeleteScratchDirectory(extractDirectory);
         }
+    }
+
+    /// <summary>
+    /// The tag <c>gh release download</c> pins its download to below, resolved separately rather
+    /// than left implicit in a tag-less <c>gh release download</c> (which floats to whatever is
+    /// latest at the moment it runs): both the download and the attestation verify that follows
+    /// it need to agree on one concrete tag, and <c>--source-ref refs/tags/&lt;tag&gt;</c> only
+    /// means something once that tag is in hand. Returns the resolved tag, or null once the
+    /// caller should return <see cref="ExitCodes.Error"/> without going any further — the message
+    /// has already gone to stderr either way, so there is nothing else for the caller to report.
+    /// </summary>
+    private static async Task<string?> ResolveLatestTagAsync(
+        ProcessRunner gh, string repository, string workingDirectory, CancellationToken cancellationToken)
+    {
+        ProcessResult view;
+        try
+        {
+            view = await gh(
+                "gh",
+                ["release", "view", "--repo", repository, "--json", "tagName"],
+                workingDirectory,
+                cancellationToken);
+        }
+        catch (Win32Exception)
+        {
+            await Console.Error.WriteLineAsync(
+                "gh is not installed or not on the PATH — h9k update fetches releases through the GitHub "
+                + "CLI. Install it from https://cli.github.com and run gh auth login.");
+            return null;
+        }
+        catch (TimeoutException exception)
+        {
+            await Console.Error.WriteLineAsync($"gh release view timed out: {exception.Message}");
+            return null;
+        }
+
+        if (view.ExitCode != 0)
+        {
+            await Console.Error.WriteLineAsync($"gh release view failed for {repository}:");
+            await Console.Error.WriteLineAsync(view.StandardError);
+            await Console.Error.WriteLineAsync(
+                "Check gh auth status — a private repository's releases need an authenticated gh (gh auth login).");
+            return null;
+        }
+
+        string? tagName;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(view.StandardOutput);
+            tagName = document.RootElement.GetProperty("tagName").GetString();
+        }
+        catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            await Console.Error.WriteLineAsync(
+                $"gh release view returned output h9k update could not parse for {repository}: {exception.Message}");
+            return null;
+        }
+
+        if (string.IsNullOrEmpty(tagName))
+        {
+            await Console.Error.WriteLineAsync(
+                $"gh release view returned no tagName for {repository} — cannot resolve which release to download.");
+            return null;
+        }
+
+        return tagName;
+    }
+
+    /// <summary>
+    /// Verifies the downloaded archive carries a GitHub artifact attestation pinned to both the
+    /// resolved release tag (<c>--source-ref</c>) and the release workflow that is meant to have
+    /// produced it (<c>--signer-workflow</c>) — <c>--repo</c> alone would accept an attestation
+    /// from any workflow on any ref in the repository, which defeats the point (security review
+    /// idea 6be68ee2, finding 4: this closes an asset uploaded or replaced outside release.yml,
+    /// a stolen PAT or a <c>--clobber</c> re-upload — not a compromised token that can push the
+    /// tag itself and run release.yml legitimately; that is closed by a tag ruleset, a GitHub
+    /// Settings change rather than code). Returns null on a successful verification, or the exit
+    /// code the caller should return once this has written the refusal to stderr.
+    /// <para>
+    /// There is deliberately no <c>--skip-attestation</c> escape hatch: every refusal below names
+    /// the one manual path that remains (download the release yourself, then
+    /// <c>h9k install --from-release &lt;dir&gt;</c>, which verifies nothing of its own) rather than
+    /// offering a flag that would make an attacker's job of bypassing verification a one-word one.
+    /// </para>
+    /// </summary>
+    private static async Task<int?> VerifyAttestationAsync(
+        ProcessRunner gh, string repository, string tag, string archivePath, string workingDirectory,
+        CancellationToken cancellationToken)
+    {
+        string archiveName = Path.GetFileName(archivePath);
+        string manualPath =
+            $"To install without verification, download {archiveName} from the {tag} release yourself and run "
+            + "h9k install --from-release <dir> instead (that path verifies nothing of its own) — there is no "
+            + "--skip-attestation flag.";
+
+        ProcessResult verify;
+        try
+        {
+            verify = await gh(
+                "gh",
+                [
+                    "attestation", "verify", archivePath,
+                    "--repo", repository,
+                    "--source-ref", $"refs/tags/{tag}",
+                    "--signer-workflow", $"{repository}/.github/workflows/release.yml",
+                ],
+                workingDirectory,
+                cancellationToken);
+        }
+        catch (Win32Exception)
+        {
+            await Console.Error.WriteLineAsync(
+                "gh is not installed or not on the PATH — h9k update fetches releases through the GitHub "
+                + "CLI. Install it from https://cli.github.com and run gh auth login.");
+            return ExitCodes.Error;
+        }
+        catch (TimeoutException exception)
+        {
+            await Console.Error.WriteLineAsync($"gh attestation verify timed out: {exception.Message}");
+            return ExitCodes.Error;
+        }
+
+        if (verify.ExitCode == 0)
+        {
+            return null;
+        }
+
+        // gh 2.49.0 is where `gh attestation` first shipped (AC: the Mac this was written on
+        // carries 2.100.0; an older gh — Windows unconfirmed at the time of writing — reports the
+        // subcommand itself as unrecognized) — this is not a failed verification, it is gh being
+        // unable to attempt one at all, so it gets its own message rather than being reported as
+        // an unattested or tampered release.
+        if (verify.StandardError.Contains("unknown command", StringComparison.OrdinalIgnoreCase))
+        {
+            await Console.Error.WriteLineAsync(
+                "gh is too old to verify a release attestation — attestation support needs gh 2.49.0 or newer. "
+                + "Upgrade gh from https://cli.github.com and run h9k update again.");
+            return ExitCodes.Error;
+        }
+
+        if (verify.StandardError.Contains("no attestations found", StringComparison.OrdinalIgnoreCase))
+        {
+            await Console.Error.WriteLineAsync(
+                $"The {tag} release carries no attestation for {archiveName} — refusing to install an unattested "
+                + $"archive. {manualPath}");
+            return ExitCodes.Error;
+        }
+
+        await Console.Error.WriteLineAsync($"Attestation verification failed for {archiveName} at tag {tag}:");
+        await Console.Error.WriteLineAsync(verify.StandardError);
+        await Console.Error.WriteLineAsync(manualPath);
+        return ExitCodes.Error;
     }
 
     /// <summary>Best-effort, matching <see cref="InstallCommand.TryDelete"/>: a locked file

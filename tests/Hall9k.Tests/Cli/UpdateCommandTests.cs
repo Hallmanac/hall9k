@@ -238,6 +238,83 @@ public sealed class UpdateCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task The_download_and_the_attestation_verify_are_both_pinned_to_the_tag_resolved_from_gh_release_view()
+    {
+        if (ReleasePlatform.CurrentRid() is null)
+        {
+            return;
+        }
+
+        FakeGh gh = FakeGh.ForCurrentPlatform(workspace, version: "1.2.3", skillName: "pr-summary", tag: "v9.9.9");
+
+        int exitCode = await Run(gh.Runner);
+
+        exitCode.Should().Be(0);
+        gh.DownloadedTag.Should().Be("v9.9.9");
+        gh.VerifiedSourceRef.Should().Be("refs/tags/v9.9.9");
+    }
+
+    [Fact]
+    public async Task A_failed_attestation_verification_aborts_before_extraction()
+    {
+        if (ReleasePlatform.CurrentRid() is null)
+        {
+            return;
+        }
+
+        FakeGh gh = FakeGh.ForCurrentPlatform(workspace, version: "1.2.3", skillName: "pr-summary");
+        gh.MakeAttestationVerifyFail();
+
+        int exitCode = await Run(gh.Runner);
+
+        exitCode.Should().NotBe(0);
+        Directory.Exists(DaemonRuntime.BinDirectory).Should().BeFalse(
+            "a failed attestation verification must refuse before the checksum check or the swap ever run");
+    }
+
+    [Fact]
+    public async Task A_release_carrying_no_attestation_is_refused_with_its_own_message()
+    {
+        if (ReleasePlatform.CurrentRid() is null)
+        {
+            return;
+        }
+
+        FakeGh gh = FakeGh.ForCurrentPlatform(workspace, version: "1.2.3", skillName: "pr-summary", tag: "v1.2.3");
+        gh.MakeAttestationVerifyReportNoAttestation();
+
+        using ScopedConsoleCapture captured = ScopedConsoleCapture.StandardError();
+
+        int exitCode = await Run(gh.Runner);
+
+        exitCode.Should().NotBe(0);
+        Directory.Exists(DaemonRuntime.BinDirectory).Should().BeFalse();
+        captured.Text.Should().Contain("v1.2.3").And.Contain("no attestation");
+    }
+
+    [Fact]
+    public async Task A_gh_too_old_to_verify_attestations_prints_an_upgrade_message_rather_than_a_verification_failure()
+    {
+        if (ReleasePlatform.CurrentRid() is null)
+        {
+            return;
+        }
+
+        FakeGh gh = FakeGh.ForCurrentPlatform(workspace, version: "1.2.3", skillName: "pr-summary");
+        gh.MakeAttestationVerifyReportGhTooOld();
+
+        using ScopedConsoleCapture captured = ScopedConsoleCapture.StandardError();
+
+        int exitCode = await Run(gh.Runner);
+
+        exitCode.Should().NotBe(0);
+        Directory.Exists(DaemonRuntime.BinDirectory).Should().BeFalse();
+        captured.Text.Should().Contain("2.49.0").And.Contain("Upgrade gh");
+        captured.Text.Should().NotContain("Attestation verification failed",
+            "gh being too old to attempt verification is not the same outcome as a verification that ran and failed");
+    }
+
+    [Fact]
     public async Task A_successful_update_leaves_no_scratch_directories_in_temp()
     {
         if (ReleasePlatform.CurrentRid() is null)
@@ -294,22 +371,51 @@ public sealed class UpdateCommandTests : IDisposable
     /// A fake `gh release download`: on the expected arguments, it writes the same shape
     /// a real download would have (the platform's archive plus checksums.txt) into the
     /// requested --dir, built fresh from a small payload so the test never needs a real
-    /// network call or a real GitHub release.
+    /// network call or a real GitHub release. Dispatches on the subcommand
+    /// (<c>release view</c>, <c>release download</c>, <c>attestation verify</c>) rather than
+    /// treating every call as a download, since UpdateCommand.RunAsync now makes all three.
     /// </summary>
     private sealed class FakeGh
     {
         private readonly string archiveSource;
         private readonly string archiveFileName;
+        private readonly string tag;
         private bool corrupt;
+        private AttestationOutcome attestationOutcome = AttestationOutcome.Verified;
 
-        private FakeGh(string archiveSource, string archiveFileName)
+        private enum AttestationOutcome
+        {
+            Verified,
+            NoAttestationFound,
+            GhTooOldForAttestation,
+            VerificationFailed,
+        }
+
+        private FakeGh(string archiveSource, string archiveFileName, string tag)
         {
             this.archiveSource = archiveSource;
             this.archiveFileName = archiveFileName;
+            this.tag = tag;
         }
 
+        /// <summary>The tag <c>gh release view</c> reports back, and the tag every later call
+        /// (<c>gh release download</c>, <c>gh attestation verify --source-ref</c>) is asserted
+        /// against — capturing what UpdateCommand actually passed down the chain rather than
+        /// assuming it, so a regression that drops the resolved tag on the floor between the two
+        /// calls fails a test instead of silently downloading "latest" again.</summary>
+        public string Tag => tag;
+
+        /// <summary>The tag argument <c>gh release download</c> was actually invoked with, or
+        /// null if it was never called.</summary>
+        public string? DownloadedTag { get; private set; }
+
+        /// <summary>The <c>--source-ref</c> value <c>gh attestation verify</c> was actually
+        /// invoked with, or null if it was never called.</summary>
+        public string? VerifiedSourceRef { get; private set; }
+
         public static FakeGh ForCurrentPlatform(
-            string workspace, string version, string skillName, string cliContent = "cli\n", string daemonContent = "daemon\n")
+            string workspace, string version, string skillName, string cliContent = "cli\n", string daemonContent = "daemon\n",
+            string tag = "v1.2.3")
         {
             string rid = ReleasePlatform.CurrentRid()!;
             string payload = Path.Combine(workspace, "payload");
@@ -353,14 +459,41 @@ public sealed class UpdateCommandTests : IDisposable
                 TarFile.CreateFromDirectory(payload, gzip, includeBaseDirectory: false);
             }
 
-            return new FakeGh(archivePath, archiveFileName);
+            return new FakeGh(archivePath, archiveFileName, tag);
         }
 
         public void CorruptTheDownloadedArchive() => corrupt = true;
 
+        public void MakeAttestationVerifyReportNoAttestation() => attestationOutcome = AttestationOutcome.NoAttestationFound;
+
+        public void MakeAttestationVerifyReportGhTooOld() => attestationOutcome = AttestationOutcome.GhTooOldForAttestation;
+
+        public void MakeAttestationVerifyFail() => attestationOutcome = AttestationOutcome.VerificationFailed;
+
         public ProcessRunner Runner => (fileName, arguments, _, _) =>
         {
             List<string> argumentList = [.. arguments];
+            return Task.FromResult(argumentList switch
+            {
+                ["release", "view", ..] => HandleReleaseView(),
+                ["release", "download", ..] => HandleReleaseDownload(argumentList),
+                ["attestation", "verify", ..] => HandleAttestationVerify(argumentList),
+                _ => throw new InvalidOperationException($"FakeGh does not know how to handle: gh {string.Join(' ', argumentList)}"),
+            });
+        };
+
+        private ProcessResult HandleReleaseView() =>
+            new(0, $$"""{"tagName":"{{tag}}"}""", string.Empty);
+
+        private ProcessResult HandleReleaseDownload(List<string> argumentList)
+        {
+            // The tag UpdateCommand.RunAsync resolved from `gh release view` above is passed as
+            // the positional argument right after the subcommand — asserted here, rather than
+            // only in DownloadedTag afterwards, so a call shaped any other way (the tag dropped,
+            // or "latest" substituted for it) fails loudly instead of quietly downloading the
+            // wrong release.
+            DownloadedTag = argumentList[2];
+
             string downloadDirectory = argumentList[argumentList.IndexOf("--dir") + 1];
             Directory.CreateDirectory(downloadDirectory);
 
@@ -376,7 +509,23 @@ public sealed class UpdateCommandTests : IDisposable
             string hash = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(archiveSource)));
             File.WriteAllText(Path.Combine(downloadDirectory, "checksums.txt"), $"{hash}  {archiveFileName}\n");
 
-            return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
-        };
+            return new ProcessResult(0, string.Empty, string.Empty);
+        }
+
+        private ProcessResult HandleAttestationVerify(List<string> argumentList)
+        {
+            VerifiedSourceRef = argumentList[argumentList.IndexOf("--source-ref") + 1];
+
+            return attestationOutcome switch
+            {
+                AttestationOutcome.Verified => new ProcessResult(0, string.Empty, string.Empty),
+                AttestationOutcome.NoAttestationFound => new ProcessResult(1, string.Empty, "Error: no attestations found"),
+                AttestationOutcome.GhTooOldForAttestation =>
+                    new ProcessResult(1, string.Empty, "unknown command \"attestation\" for \"gh\""),
+                AttestationOutcome.VerificationFailed =>
+                    new ProcessResult(1, string.Empty, "Error: verification failed: signer workflow does not match"),
+                _ => throw new InvalidOperationException($"Unhandled {nameof(AttestationOutcome)}: {attestationOutcome}"),
+            };
+        }
     }
 }
