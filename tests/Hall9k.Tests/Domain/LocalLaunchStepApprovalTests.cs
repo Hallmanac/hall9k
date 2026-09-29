@@ -13,8 +13,8 @@ namespace Hall9k.Tests.Domain;
 /// </summary>
 public sealed class LocalLaunchStepApprovalTests
 {
-    private static RunSkillStep Command(int number, string command, string text = "run it") =>
-        new(number, RunSkillStepKind.Command, "Launch", text, command);
+    private static RunSkillStep Command(int number, string command, string text = "run it", string section = "Launch") =>
+        new(number, RunSkillStepKind.Command, section, text, command);
 
     private static RunSkillStep Human(int number, string text) =>
         new(number, RunSkillStepKind.Human, "Human steps", text, string.Empty);
@@ -62,8 +62,8 @@ public sealed class LocalLaunchStepApprovalTests
     }
 
     /// <summary>
-    /// The fingerprint covers <see cref="RunSkillStep.Command"/> alone, never
-    /// <see cref="RunSkillStep.Text"/>: a prose-only edit — the wording of a human step, a step's
+    /// The fingerprint covers <see cref="RunSkillStep.Command"/> and <see cref="RunSkillStep.Section"/>,
+    /// never <see cref="RunSkillStep.Text"/>: a prose-only edit — the wording of a human step, a step's
     /// own descriptive sentence — must never re-open an approval already given to the identical
     /// commands (the acceptance criterion's own "a prose-only change does not prompt").
     /// </summary>
@@ -82,6 +82,31 @@ public sealed class LocalLaunchStepApprovalTests
         ];
 
         LocalLaunchStepApproval.Fingerprint(original).Should().Be(LocalLaunchStepApproval.Fingerprint(reworded));
+    }
+
+    /// <summary>
+    /// The fingerprint must also cover <see cref="RunSkillStep.Section"/>: the same command text
+    /// moved between sections is a different plan, because
+    /// <see cref="Hall9k.Connectors.Processes.LocalLaunchWalker"/> decides whether a step is
+    /// spawned detached and left running, or waited on and checked for failure, purely from which
+    /// section it sits in (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public void A_step_moved_to_a_different_section_is_changed()
+    {
+        IReadOnlyList<RunSkillStep> approved =
+        [
+            Command(1, "./scripts/verify-deps.sh", section: "One-time setup"),
+            Command(2, "npm run dev -- --port 3000", section: "Launch"),
+        ];
+        IReadOnlyList<RunSkillStep> current =
+        [
+            Command(1, "./scripts/verify-deps.sh", section: "Launch"),
+            Command(2, "npm run dev -- --port 3000", section: "Launch"),
+        ];
+        string fingerprint = LocalLaunchStepApproval.Fingerprint(approved);
+
+        LocalLaunchStepApproval.Changed(fingerprint, current).Should().BeTrue();
     }
 
     [Fact]

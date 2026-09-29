@@ -14,13 +14,18 @@ namespace Hall9k.Domain.Features.Run;
 /// <c>TaskRunLocalCommand</c>'s own gate depends on is exercised here rather than only through a
 /// live console and store.
 /// <para>
-/// The fingerprint covers every step's own <see cref="RunSkillStep.Command"/>, in plan order,
-/// never <see cref="RunSkillStep.Text"/>: a prose-only edit (the "how to know it is up" wording, a
-/// human step's own instructions) changes nothing a shell would ever run, so it must not re-open
-/// an approval an operator already gave to the identical commands. Each command is length-prefixed
-/// before joining, the same discipline <see cref="Project.VerifyCommand.Fingerprint"/> already
-/// uses and for the same reason: two different plans whose commands differ only in where one ends
-/// and the next begins must never collide on the same digest.
+/// The fingerprint covers every step's own <see cref="RunSkillStep.Command"/> and
+/// <see cref="RunSkillStep.Section"/>, in plan order, never <see cref="RunSkillStep.Text"/>: a
+/// prose-only edit (the "how to know it is up" wording, a human step's own instructions) changes
+/// nothing a shell would ever run, so it must not re-open an approval an operator already gave to
+/// the identical commands. Section is not prose here — <see cref="Hall9k.Connectors.Processes.LocalLaunchWalker"/>
+/// reads it to decide whether a step is spawned detached with its port substituted in, or run to
+/// completion and checked for failure — so a command moved between sections with its text
+/// untouched (a setup check relocated into <c>## Launch</c>, say) is a different plan and must
+/// re-open approval too. Each command and section is length-prefixed before joining, the same
+/// discipline <see cref="Project.VerifyCommand.Fingerprint"/> already uses and for the same
+/// reason: two different plans whose commands differ only in where one ends and the next begins
+/// must never collide on the same digest.
 /// </para>
 /// </summary>
 public static class LocalLaunchStepApproval
@@ -41,7 +46,7 @@ public static class LocalLaunchStepApproval
         lastApprovedFingerprint is null
         || !string.Equals(lastApprovedFingerprint, Fingerprint(steps), StringComparison.Ordinal);
 
-    /// <summary>The SHA-256 of every step's own command, in plan order — the whole digest, recorded on approval and compared on every later run.</summary>
+    /// <summary>The SHA-256 of every step's own command and section, in plan order — the whole digest, recorded on approval and compared on every later run.</summary>
     public static string Fingerprint(IReadOnlyList<RunSkillStep> steps) =>
         Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(Canonical(steps))));
 
@@ -63,5 +68,6 @@ public static class LocalLaunchStepApproval
     private static string Canonical(IReadOnlyList<RunSkillStep> steps) =>
         string.Join(
             '\u001f',
-            steps.Select(step => FormattableString.Invariant($"{step.Command.Length}:{step.Command}")));
+            steps.Select(step => FormattableString.Invariant(
+                $"{step.Section.Length}:{step.Section}:{step.Command.Length}:{step.Command}")));
 }
