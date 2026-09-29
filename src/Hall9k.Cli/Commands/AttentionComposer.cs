@@ -1283,6 +1283,21 @@ internal static class AttentionComposer
     /// </summary>
     private static string PreflightParkedCause(TaskListItem task)
     {
+        // "unreadable" (ParkUnreadableDiffPreflightAsync) is not a verdict any session ever
+        // reached — gh itself refused the diff outright, over its own 300-file ceiling — so unlike
+        // a genuine unsafe verdict, h9k task assign here only re-dispatches the identical
+        // pre-flight into the identical refusal: nothing about reassigning changes how many files
+        // the pull request touches. Said plainly, rather than showing the same remedy line a
+        // genuine unsafe verdict shows and letting the owner spend an assign on a park that
+        // command can never resolve (independent pre-PR review, cycle 3, adversarial lens).
+        if (string.Equals(task.PrReviewPreflightParkedVerdict, "unreadable", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"gh could not read this pull request's diff at all ({task.PrReviewPreflightParkedReason}); "
+                + "h9k task assign only re-dispatches the identical pre-flight, which hits the same refusal "
+                + "again — nothing resolves this until the pull request itself shrinks under GitHub's "
+                + "300-file diff ceiling, after which a plain h9k task assign reads it cleanly";
+        }
+
         string surfaces = task.PrReviewPreflightParkedSurfaces.Count > 0
             ? string.Join(", ", task.PrReviewPreflightParkedSurfaces)
             : "none recorded";
