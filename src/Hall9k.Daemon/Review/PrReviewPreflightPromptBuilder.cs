@@ -1,6 +1,7 @@
 using System.Text;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Infrastructure.Storage;
 
 namespace Hall9k.Daemon.Review;
 
@@ -145,7 +146,7 @@ public static class PrReviewPreflightPromptBuilder
             "Answer unsafe if you are not confident it is safe. Anything other than exactly 'safe' "
             + "or 'unsafe' as the marker's own first word is treated as unsafe.");
 
-        return builder.ToString();
+        return PromptLineEndings.Finish(builder);
     }
 
     /// <summary>

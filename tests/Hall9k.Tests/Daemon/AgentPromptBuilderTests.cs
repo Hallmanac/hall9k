@@ -1193,13 +1193,13 @@ public sealed class AgentPromptBuilderTests : IDisposable
             prompt.Should().NotContain("No pull request exists yet",
                 "this pull request is already open; nothing about this review opens one");
             prompt.Should().NotContain(
-                "a diff that is about to" + Environment.NewLine + "become a pull request",
+                "a diff that is about to\nbecome a pull request",
                 "the diff under review already is a pull request, someone else's — the phrase wraps across "
                 + "a line break, so a single-line NotContain here would never match the rendered text "
                 + "regardless of which framing the prompt actually uses, and would guard nothing");
             prompt.Should().Contain("already opened and authored", "the opening paragraph itself states the foreign-PR truth");
             prompt.Should().Contain(
-                "your verdict opens" + Environment.NewLine + "nothing",
+                "your verdict opens\nnothing",
                 "stated up front rather than only 200 lines later");
         }
     }
@@ -3073,7 +3073,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "finding's sweep surfaced the sibling or how that finding is itself dispositioned",
             "the precedence rule is stated independently of the swept finding's own disposition");
         prompt.Should().NotContain(
-            $"unless the finding{Environment.NewLine}     you are sweeping is itself dispositioned",
+            "unless the finding\n     you are sweeping is itself dispositioned",
             "cycle 11's regression phrased the swept-finding arm as an 'unless' override that replaced arm 1 "
             + "(the sibling's own disposition always wins) rather than coexisting with it; cycle 12 restored "
             + "both arms and phrases the swept-finding condition with 'when' instead, so it reads as an "
@@ -3127,7 +3127,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
         prompt.Should().Contain("Run the touched tests, in the foreground");
         prompt.Should().Contain(
-            $"do not{Environment.NewLine}     background them",
+            "do not\n     background them",
             "the foreground-test sub-rule's own do-not-background clause, not one of the prompt's other "
             + "unrelated 'do not' instructions — the phrase wraps across a line break, so the two halves "
             + "must be asserted together to mean anything");
@@ -4155,9 +4155,8 @@ public sealed class AgentPromptBuilderTests : IDisposable
             (fixPrompt, "# Spike fix lap: "),
         })
         {
-            // StringBuilder.AppendLine writes Environment.NewLine, so the prompt's own line break is
-            // "\r\n" on Windows and "\n" elsewhere. ReadLine stops at either and returns neither,
-            // so the length bound below measures the heading and not the OS's line ending.
+            // ReadLine returns the heading without its line ending, so the length bound below
+            // measures the heading alone.
             string heading = new StringReader(prompt).ReadLine() ?? "";
             heading.Should().StartWith(prefix);
             heading.Length.Should().BeLessThanOrEqualTo(
@@ -4349,7 +4348,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
             sinceSha: null, priorCycleMode: ReviewMode.Discovery, priorCycleSinceSha: null);
 
         prompt.Should().Contain(
-            "severity=high;" + Environment.NewLine + "scope=in-scope; track=conformance",
+            "severity=high;\nscope=in-scope; track=conformance",
             "the grading instruction, not the unrelated track-tag example elsewhere in this prompt, must pin high/in-scope/conformance together");
         prompt.Should().Contain("generated host load to", "the instruction must name the specific defect it is grading");
         prompt.Should().Contain(

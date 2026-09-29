@@ -7016,7 +7016,7 @@ public sealed class ReviewEngine(
 
         AppendDispositions(merged, cycle, plans, routed, fixSessionWillDispatch);
         await File.WriteAllTextAsync(
-            RunPaths.ReviewFindingsFile(runDirectory, cycle), merged.ToString(), cancellationToken);
+            RunPaths.ReviewFindingsFile(runDirectory, cycle), PromptLineEndings.Finish(merged), cancellationToken);
     }
 
     /// <summary>

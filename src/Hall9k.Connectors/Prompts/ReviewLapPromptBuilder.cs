@@ -234,7 +234,7 @@ public static class ReviewLapPromptBuilder
         WorkPromptBuilder.AppendPromptAddendum(prompt, briefing.PromptAddendum);
         AppendClosingSection(prompt, briefing);
 
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>

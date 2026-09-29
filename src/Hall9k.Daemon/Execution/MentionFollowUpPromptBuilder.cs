@@ -102,7 +102,7 @@ public static class MentionFollowUpPromptBuilder
 
         WorkPromptBuilder.AppendPromptAddendum(prompt, project, PromptBuilderKey.MentionFollowUp);
 
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -153,7 +153,7 @@ public static class MentionFollowUpPromptBuilder
         WorkPromptBuilder.AppendOwnerVoiceRule(
             prompt, string.Empty, voiceSkill, WorkPromptBuilder.ExplainerVoiceContext);
 
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     private static Dictionary<string, string> Params(params (string Key, string Value)[] values) =>

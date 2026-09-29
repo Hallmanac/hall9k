@@ -7,7 +7,7 @@ namespace Hall9k.Tests.Domain;
 
 /// <summary>
 /// <see cref="PromptTemplates"/>'s own contract: substitution, exact line reconstruction from a
-/// template file's own newlines (never <see cref="Environment.NewLine"/> read raw off disk), and
+/// template file's own newlines (each ending in <c>\n</c> whatever the platform or the file's own endings), and
 /// resolving the install's canonical copy — the only place these fixtures ever write a template —
 /// once a checkout's own <c>.claude/templates</c> does not carry the relative path being asked for.
 /// </summary>
@@ -151,7 +151,7 @@ public sealed class PromptTemplatesTests : IDisposable
         PromptTemplates.AppendTemplate(builder, "sample/three-lines.md");
         builder.Append("Fourth, appended after");
 
-        builder.ToString().Should().Be("First" + Environment.NewLine + Environment.NewLine + "Third"
-            + Environment.NewLine + "Fourth, appended after");
+        builder.ToString().Should().Be("First\n\nThird\nFourth, appended after",
+            "a template's lines end in \\n on every platform, never Environment.NewLine");
     }
 }

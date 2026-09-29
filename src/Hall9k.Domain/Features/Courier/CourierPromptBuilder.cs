@@ -1,3 +1,5 @@
+using Hall9k.Domain.Infrastructure.Storage;
+
 namespace Hall9k.Domain.Features.Courier;
 
 /// <summary>
@@ -28,7 +30,7 @@ public static class CourierPromptBuilder
     /// the identical bytes on Windows and on Unix (this project's own CI runs both).
     /// </summary>
     public static string Build(string projectName, IReadOnlyList<string> feedLines, string deliveryInstruction) =>
-        string.Join(
+        PromptLineEndings.Normalize(string.Join(
             '\n',
             [
                 $"# Deliver the {projectName} orchestrator feed",
@@ -47,5 +49,5 @@ public static class CourierPromptBuilder
                     + "once it sees delivered. Do not run any h9k command. Do not read any file outside this "
                     + "prompt. End your turn immediately after that line.",
                 "",
-            ]);
+            ]));
 }

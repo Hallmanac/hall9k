@@ -447,7 +447,7 @@ public static class WorkPromptBuilder
 
         AppendPromptAddendum(prompt, project, PromptBuilderKey.Work);
 
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
