@@ -248,6 +248,13 @@ public static class OperatingSettingsRendering
         // it floors at its own compiled model (idea 6be68ee2, phase two).
         nameof(RoleModelSettings.SecurityReview) =>
             $"{AgentModel.SecurityReviewDefault}, the Security persona's own floor",
+        // The pull-request review pre-flight's own floor, the identical courier-precedent
+        // reasoning stated above: unset, this session still never runs on the platform's
+        // ordinary tier — it floors at its own compiled model, since it reads attacker-written
+        // text before any worktree or permission scoping to a real checkout exists (idea
+        // 6be68ee2, finding 1, phase one).
+        nameof(RoleModelSettings.SecurityPreflight) =>
+            $"{AgentModel.SecurityPreflightDefault}, the pre-flight's own floor",
         _ => "the platform default",
     };
 

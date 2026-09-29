@@ -408,6 +408,15 @@ public sealed class RoleModelSettings
     [JsonConverter(typeof(LenientModelStringJsonConverter))]
     public string? SecurityReview { get; set; }
 
+    /// <summary>
+    /// The pull-request review pre-flight's own model (idea 6be68ee2, finding 1, phase one): blank
+    /// falls through to its own floor, <c>AgentModel.SecurityPreflightDefault</c>, read by
+    /// <c>DaemonOptions.ResolveSecurityPreflightModel</c> — its own <see cref="AgentRole"/> rather
+    /// than a narrower knob under another one, the courier precedent, not the Security persona's.
+    /// </summary>
+    [JsonConverter(typeof(LenientModelStringJsonConverter))]
+    public string? SecurityPreflight { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
 
@@ -419,6 +428,7 @@ public sealed class RoleModelSettings
         yield return (nameof(ReviewVerify), ReviewVerify);
         yield return (nameof(ReviewFinalFullPass), ReviewFinalFullPass);
         yield return (nameof(SecurityReview), SecurityReview);
+        yield return (nameof(SecurityPreflight), SecurityPreflight);
         yield return (nameof(Fix), Fix);
         yield return (nameof(Synthesis), Synthesis);
         yield return (nameof(Refinement), Refinement);
@@ -462,6 +472,9 @@ public sealed class RoleEffortSettings
     /// <summary>The Security persona's own effort (idea 6be68ee2, phase two); null falls through to <see cref="Review"/>, the same narrower-override shape <see cref="RoleModelSettings.SecurityReview"/> is for the model.</summary>
     public string? SecurityReview { get; set; }
 
+    /// <summary>The pull-request review pre-flight's own effort (idea 6be68ee2, finding 1); its own <see cref="AgentRole"/>, so this is read the ordinary way rather than as a narrower knob under another role, the same shape <see cref="RoleModelSettings.SecurityPreflight"/> is for the model.</summary>
+    public string? SecurityPreflight { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
 
@@ -473,6 +486,7 @@ public sealed class RoleEffortSettings
         yield return (nameof(ReviewVerify), ReviewVerify);
         yield return (nameof(ReviewFinalFullPass), ReviewFinalFullPass);
         yield return (nameof(SecurityReview), SecurityReview);
+        yield return (nameof(SecurityPreflight), SecurityPreflight);
         yield return (nameof(Fix), Fix);
         yield return (nameof(Synthesis), Synthesis);
         yield return (nameof(Refinement), Refinement);

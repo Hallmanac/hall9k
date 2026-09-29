@@ -56,6 +56,18 @@ public sealed record AgentModel
     /// </summary>
     public const string SecurityReviewDefault = "claude-opus-5-5";
 
+    /// <summary>
+    /// The pull-request review pre-flight's own bottom-of-chain floor (idea 6be68ee2, finding 1,
+    /// phase one): the courier precedent, not <see cref="PlatformFallback"/> — this session reads
+    /// attacker-written text (a pull request's own diff and changed-file list) before any worktree
+    /// exists, and must never silently run on a cheaper model than the platform's strongest
+    /// available reasoning, the identical reasoning <see cref="SecurityReviewDefault"/> carries for
+    /// the persona that follows it. Read by <c>DaemonOptions.ResolveSecurityPreflightModel</c> and
+    /// named in <c>h9k config set --model-security-preflight</c>'s own description, so the two
+    /// surfaces state the identical number rather than each holding their own copy of it.
+    /// </summary>
+    public const string SecurityPreflightDefault = "claude-opus-5-5";
+
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly AgentModel Unknown = new("");
 

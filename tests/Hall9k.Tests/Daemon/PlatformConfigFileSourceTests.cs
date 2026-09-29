@@ -121,7 +121,7 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
     /// <summary>
     /// Every role the config file can carry an effort for lands on the <c>DaemonOptions</c> slot of the same
     /// name, so <c>h9k config show</c> and <c>h9k daemon status</c> never report a level the daemon does not
-    /// run on. Both sides are named after the same ten properties, which this holds true by binding each one.
+    /// run on. Both sides are named after the same eleven properties, which this holds true by binding each one.
     /// </summary>
     [Fact]
     public async Task Effort_by_role_binds_every_role_from_the_config_file_beside_the_node_wide_effort()
@@ -135,6 +135,7 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
                 s.EffortByRole.ReviewVerify = "xhigh";
                 s.EffortByRole.ReviewFinalFullPass = "low";
                 s.EffortByRole.SecurityReview = "medium";
+                s.EffortByRole.SecurityPreflight = "xhigh";
                 s.EffortByRole.Fix = "high";
                 s.EffortByRole.Synthesis = "xhigh";
                 s.EffortByRole.Refinement = "low";
@@ -156,6 +157,7 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
             (nameof(RoleEffortDefaults.ReviewVerify), bound.EffortByRole.ReviewVerify),
             (nameof(RoleEffortDefaults.ReviewFinalFullPass), bound.EffortByRole.ReviewFinalFullPass),
             (nameof(RoleEffortDefaults.SecurityReview), bound.EffortByRole.SecurityReview),
+            (nameof(RoleEffortDefaults.SecurityPreflight), bound.EffortByRole.SecurityPreflight),
             (nameof(RoleEffortDefaults.Fix), bound.EffortByRole.Fix),
             (nameof(RoleEffortDefaults.Synthesis), bound.EffortByRole.Synthesis),
             (nameof(RoleEffortDefaults.Refinement), bound.EffortByRole.Refinement),
@@ -163,9 +165,9 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
             (nameof(RoleEffortDefaults.Courier), bound.EffortByRole.Courier),
         ];
         roles.Select(role => role.Value).Should().Equal(
-            "medium", "high", "xhigh", "low", "medium", "high", "xhigh", "low", "medium", "high");
+            "medium", "high", "xhigh", "low", "medium", "xhigh", "high", "xhigh", "low", "medium", "high");
         new RoleEffortSettings().AsPairs().Select(pair => pair.Role).Should().BeEquivalentTo(
-            roles.Select(role => role.Role), "the report and the daemon name the same ten slots");
+            roles.Select(role => role.Role), "the report and the daemon name the same eleven slots");
     }
 
     /// <summary>

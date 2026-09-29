@@ -327,6 +327,23 @@ public sealed class DaemonOptions
     public int CourierMaxTurns { get; set; } = 8;
 
     /// <summary>
+    /// The wall-clock ceiling on one pull-request review pre-flight session (idea 6be68ee2, finding
+    /// 1, phase one) — the same "bounded by construction" reasoning <see cref="CourierTimeout"/>
+    /// gives its own narrow auxiliary session, sized a little more generously since this one reads
+    /// a real diff rather than a short feed summary.
+    /// </summary>
+    public TimeSpan SecurityPreflightTimeout { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// The turn cap a pull-request review pre-flight session is spawned with (idea 6be68ee2,
+    /// finding 1, phase one), passed straight through as <c>claude -p --max-turns</c> the same way
+    /// <see cref="CourierMaxTurns"/> bounds its own narrow auxiliary session. The job is read the
+    /// changed-file list and the matched hunks once, then answer with one marker line — six turns
+    /// is generous headroom for that, not a tight budget for it.
+    /// </summary>
+    public int SecurityPreflightMaxTurns { get; set; } = 6;
+
+    /// <summary>
     /// How often <c>RunSkillSweepEngine</c> answers an outstanding run-skill discovery request
     /// and pushes a newly recorded run skill to the ledger (idea b9b09779, piece 4). A fixed
     /// interval for the same reason <see cref="PromptAddendaSweepPollInterval"/> is one, and a
@@ -946,6 +963,32 @@ public sealed class DaemonOptions
             platformDefault: AgentModel.CourierDefault);
 
     /// <summary>
+    /// The effective model for the pull-request review pre-flight (idea 6be68ee2, finding 1, phase
+    /// one): the project's own <c>--model</c>, then the node's own
+    /// <see cref="RoleModelDefaults.SecurityPreflight"/>, the same project-over-node shape
+    /// <see cref="ResolveModel"/> gives Build and Review, but bottoming out at
+    /// <see cref="AgentModel.SecurityPreflightDefault"/> rather than <see cref="DefaultModel"/>.
+    /// There is no task override parameter, unlike every other role's own resolve method: the
+    /// courier precedent — a pre-flight runs on its own stream, before the worktree it would
+    /// otherwise read a task-level override from even exists.
+    /// <para>
+    /// Its own floor rather than a non-blank <see cref="RoleModelDefaults.SecurityPreflight"/>
+    /// compiled default, for the identical reason <see cref="ResolveCourierModel"/> and
+    /// <see cref="ResolveSecurityReviewModel"/> each get their own method instead of a non-blank
+    /// field: every other role in <see cref="RoleModelDefaults"/> ships blank by design (Decisions
+    /// Log #33, asserted by <c>ModelPolicyTests</c>), so giving this one field alone a shipped
+    /// value would be a silent, single-field exception to that invariant rather than a documented
+    /// one. This session reads attacker-written text (a pull request's own diff and changed-file
+    /// list) before any worktree or permission scoping exists, so it floors at the platform's
+    /// strongest available reasoning rather than the courier's own cheap tier.
+    /// </para>
+    /// </summary>
+    public AgentModel ResolveSecurityPreflightModel(AgentModel? projectModel) =>
+        AgentModel.Resolve(
+            taskOverride: null, projectDefault: projectModel, roleDefault: ModelByRole.For(AgentRole.SecurityPreflight),
+            platformDefault: AgentModel.SecurityPreflightDefault);
+
+    /// <summary>
     /// The effective model for the Security persona's own pr-review session (idea 6be68ee2, phase
     /// two): a task override still wins, same as any other pass, and so does the project's own
     /// model (the same "a project model is a blanket statement" ruling <see cref="ResolveVerifyReviewModel"/>
@@ -1046,6 +1089,9 @@ public sealed class RoleEffortDefaults
     /// <summary>The Security persona's own effort (idea 6be68ee2, phase two); blank falls through to <see cref="Review"/>, read by <see cref="DaemonOptions.ResolveSecurityReviewEffort"/> rather than <see cref="For"/>.</summary>
     public string SecurityReview { get; set; } = string.Empty;
 
+    /// <summary>The pull-request review pre-flight's own effort (idea 6be68ee2, finding 1); read by <see cref="For"/> like every ordinary role, since the pre-flight is its own <see cref="AgentRole"/> rather than a narrower knob under another one.</summary>
+    public string SecurityPreflight { get; set; } = string.Empty;
+
     public AgentEffort For(AgentRole role) => role switch
     {
         _ when role == AgentRole.Build => AgentEffort.FromInput(Build),
@@ -1055,6 +1101,7 @@ public sealed class RoleEffortDefaults
         _ when role == AgentRole.Refinement => AgentEffort.FromInput(Refinement),
         _ when role == AgentRole.Publication => AgentEffort.FromInput(Publication),
         _ when role == AgentRole.Courier => AgentEffort.FromInput(Courier),
+        _ when role == AgentRole.SecurityPreflight => AgentEffort.FromInput(SecurityPreflight),
         _ => AgentEffort.Unknown,
     };
 }
@@ -1124,6 +1171,15 @@ public sealed class RoleModelDefaults
     /// </summary>
     public string SecurityReview { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The pull-request review pre-flight's own model (idea 6be68ee2, finding 1, phase one), blank
+    /// like every sibling above ("no role opinion, ask the next level down"): its own non-blank
+    /// floor is <see cref="DaemonOptions.ResolveSecurityPreflightModel"/>'s, not this field's
+    /// shipped default, the identical reason <see cref="Courier"/> stays empty rather than
+    /// following its own floor directly — see that method's own doc for why.
+    /// </summary>
+    public string SecurityPreflight { get; set; } = string.Empty;
+
     public AgentModel For(AgentRole role) => role switch
     {
         _ when role == AgentRole.Build => AgentModel.FromInput(Build),
@@ -1133,6 +1189,7 @@ public sealed class RoleModelDefaults
         _ when role == AgentRole.Refinement => AgentModel.FromInput(Refinement),
         _ when role == AgentRole.Publication => AgentModel.FromInput(Publication),
         _ when role == AgentRole.Courier => AgentModel.FromInput(Courier),
+        _ when role == AgentRole.SecurityPreflight => AgentModel.FromInput(SecurityPreflight),
         _ => AgentModel.Unknown,
     };
 }
