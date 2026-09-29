@@ -1485,6 +1485,27 @@ public static class TaskDecider
     }
 
     /// <summary>
+    /// A pull-request review pre-flight (idea 6be68ee2, finding 1, phase one) came back unsafe for
+    /// the task's current head: Claimed -> Published, in one event, so there is no window in which
+    /// this task reads claimable again before a human has looked at the verdict — the same "union
+    /// of a give-back and an unassign, written atomically" shape <see cref="ReleaseInteractiveClaimUnassigned"/>
+    /// gives an interactive release, but guarded the ordinary way (any node's real claim, not the
+    /// interactive sentinel) since the caller here is a daemon dispatch, never a human.
+    /// </summary>
+    public static PrReviewPreflightParked ParkPrReviewPreflight(
+        TaskAggregate task, IReadOnlyList<string> surfaces, string headRefOid, string verdict, string reason,
+        DateTimeOffset parkedAt)
+    {
+        if (task.State != TaskState.Claimed)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value} — only a claimed task's own pre-flight parks this way.");
+        }
+
+        return new PrReviewPreflightParked(task.Id, surfaces, headRefOid, verdict, reason, parkedAt);
+    }
+
+    /// <summary>
     /// Gives back the ledger holder lock (idea 202383dc, A3b) — true completion,
     /// <c>h9k task abandon</c>, or the sweep that found the holding node's own run gone; never
     /// <c>h9k task release</c>, which stays scoped to an interactive claim and never writes a

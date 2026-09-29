@@ -98,6 +98,17 @@ internal static class AttentionComposer
             return new TaskAttention(AttentionLevel.NeedsYou, GateParkedCause(task), $"h9k task assign {id}");
         }
 
+        // A pr-review task whose own pre-flight came back unsafe for its current head (idea
+        // 6be68ee2, finding 1, phase one): the daemon had already claimed and was mid-dispatch on
+        // this task, and gave the claim back the moment the verdict landed, so it reads exactly
+        // like the membership gate's own park above — Published, never NeedsHuman, so h9k task
+        // assign still works exactly as it does for any other published-and-unassigned task. Ahead
+        // of every other check for the identical reason the gate-parked arm is.
+        if (task.State == TaskState.Published && task.PrReviewPreflightUnsafe)
+        {
+            return new TaskAttention(AttentionLevel.NeedsYou, PreflightParkedCause(task), $"h9k task assign {id}");
+        }
+
         // A Queued row this node refuses to claim because the project's own current verify gate
         // set has not been accepted here (security review idea 6be68ee2, process-injection
         // finding 1, the local half) — ahead of every other arm, since none of them can be true of
@@ -1262,6 +1273,25 @@ internal static class AttentionComposer
         return $"\"{title}\" was minted but not assigned: its author is {author}, not a declared hall9k "
             + $"team member (declared member ids: {memberIds}{missingDeclaration}), on a {visibility} "
             + $"repository — head is {head}; {files}";
+    }
+
+    /// <summary>
+    /// The pre-flight park's own cause line (idea 6be68ee2, finding 1, phase one): the pre-flight
+    /// session's own marker verdict and reason, verbatim, plus the surfaces that pointed its
+    /// attention and the exact head commit it judged — so a card reader can tell, after the pull
+    /// request's head has since moved again, exactly which commit this verdict was ever about.
+    /// </summary>
+    private static string PreflightParkedCause(TaskListItem task)
+    {
+        string surfaces = task.PrReviewPreflightParkedSurfaces.Count > 0
+            ? string.Join(", ", task.PrReviewPreflightParkedSurfaces)
+            : "none recorded";
+        string headRefOid = task.PrReviewPreflightParkedHeadRefOid.IsNotBlank()
+            ? task.PrReviewPreflightParkedHeadRefOid
+            : "an unrecorded commit";
+        return $"the pre-flight security lap read this pull request's head ({headRefOid}) as "
+            + $"\"{task.PrReviewPreflightParkedVerdict}\" — {task.PrReviewPreflightParkedReason}; "
+            + $"surfaces that pointed its attention: {surfaces}";
     }
 
     private static string Reason(string? recorded, string absent) =>

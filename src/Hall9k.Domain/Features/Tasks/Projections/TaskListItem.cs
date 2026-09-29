@@ -192,6 +192,19 @@ public sealed class TaskListItem
     public IReadOnlyList<string> PrReviewGateParkedMembersWithoutDeclaredAccount { get; set; } = [];
     /// <summary>The pull request's own title at park time — see <see cref="TaskAggregate.PrReviewGateParkedTitle"/>.</summary>
     public string? PrReviewGateParkedTitle { get; set; }
+
+    /// <summary>
+    /// Mirrors <see cref="TaskAggregate.PrReviewPreflightUnsafe"/> and its sibling fields (idea
+    /// 6be68ee2, finding 1, phase one): whether this pr-review task's own pre-flight came back
+    /// unsafe for its current head, and the facts the park card names. <c>AttentionComposer</c>
+    /// reads these to render the needs-you row.
+    /// </summary>
+    public bool PrReviewPreflightUnsafe { get; set; }
+    public IReadOnlyList<string> PrReviewPreflightParkedSurfaces { get; set; } = [];
+    public string PrReviewPreflightParkedHeadRefOid { get; set; } = string.Empty;
+    public string PrReviewPreflightParkedVerdict { get; set; } = string.Empty;
+    public string PrReviewPreflightParkedReason { get; set; } = string.Empty;
+
     /// <summary>
     /// Mirrors <see cref="TaskAggregate.PrReviewFollowThroughOpen"/>: whether this pr-review
     /// task's posted review is still being followed through (task: a pr-review task stays open
@@ -995,6 +1008,30 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         view.PrReviewGateParkedMemberAccountIds = @event.Data.MemberAccountIds;
         view.PrReviewGateParkedMembersWithoutDeclaredAccount = @event.Data.MembersWithoutDeclaredAccount;
         view.PrReviewGateParkedTitle = @event.Data.Title;
+    }
+
+    // The identical union Apply(IEvent<TaskInteractiveClaimUnassigned>) mirrors, plus the
+    // park card's own facts — mirrors TaskAggregate.Apply(PrReviewPreflightParked).
+    public void Apply(IEvent<PrReviewPreflightParked> @event, TaskListItem view)
+    {
+        view.ClaimedByNodeId = null;
+        view.CurrentRunId = null;
+
+        view.AssignedOwnerId = null;
+        view.AssignedOwnerFingerprint = null;
+        view.PlacedOnNodeId = null;
+        view.AssignedAt = null;
+        view.UnmetDependencies = [];
+        view.DeadDependencies = [];
+        view.DeadDependencyReasons = [];
+        view.DependencyFailureReason = null;
+        view.State = TaskState.Published;
+
+        view.PrReviewPreflightUnsafe = true;
+        view.PrReviewPreflightParkedSurfaces = @event.Data.Surfaces;
+        view.PrReviewPreflightParkedHeadRefOid = @event.Data.HeadRefOid;
+        view.PrReviewPreflightParkedVerdict = @event.Data.Verdict;
+        view.PrReviewPreflightParkedReason = @event.Data.Reason;
     }
 
     // Mirrors TaskAggregate.Apply(PullRequestReviewFollowThroughOpened): the pr-review task's own

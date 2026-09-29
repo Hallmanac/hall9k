@@ -825,6 +825,29 @@ public sealed class TaskAggregate
     public string? PrReviewGateParkedTitle { get; private set; }
 
     /// <summary>
+    /// Whether this pr-review task's own pre-flight (idea 6be68ee2, finding 1, phase one) came
+    /// back unsafe for its current head — true the moment
+    /// <see cref="Apply(Events.PrReviewPreflightParked)"/> lands, alongside
+    /// <see cref="PrReviewPreflightParkedSurfaces"/> through <see cref="PrReviewPreflightParkedReason"/>
+    /// the park card names. Never cleared afterward, since <c>h9k task assign</c> is the human go
+    /// that ends the park — a subsequent successful dispatch starts a fresh <see cref="TaskState.Claimed"/>
+    /// lifecycle whose own pre-flight either records a new, safe verdict or parks again.
+    /// </summary>
+    public bool PrReviewPreflightUnsafe { get; private set; }
+
+    /// <summary>The executable surfaces the pre-flight's own diff read touched — see <see cref="PrReviewPreflightSurfaceMatcher"/>.</summary>
+    public IReadOnlyList<string> PrReviewPreflightParkedSurfaces { get; private set; } = [];
+
+    /// <summary>The exact pull-request head commit the pre-flight judged — see <see cref="Events.PrReviewPreflightParked.HeadRefOid"/>.</summary>
+    public string PrReviewPreflightParkedHeadRefOid { get; private set; } = string.Empty;
+
+    /// <summary>The pre-flight session's own marker verdict, verbatim.</summary>
+    public string PrReviewPreflightParkedVerdict { get; private set; } = string.Empty;
+
+    /// <summary>The pre-flight session's own stated reason, verbatim.</summary>
+    public string PrReviewPreflightParkedReason { get; private set; } = string.Empty;
+
+    /// <summary>
     /// The most recent GitHub comment that mentioned the install's login on this task's own pull
     /// request (idea 2f079bcd: a mention is auto-pr-review's second trigger), or null when none
     /// has ever been observed. Set by <see cref="Apply(Events.PullRequestReviewMentionObserved)"/>
@@ -2217,6 +2240,35 @@ public sealed class TaskAggregate
         PrReviewGateParkedMemberAccountIds = @event.MemberAccountIds;
         PrReviewGateParkedMembersWithoutDeclaredAccount = @event.MembersWithoutDeclaredAccount;
         PrReviewGateParkedTitle = @event.Title;
+    }
+
+    // The atomic union of Apply(TaskRequeued) and Apply(TaskUnassigned), the identical shape
+    // Apply(TaskInteractiveClaimUnassigned) gives an interactive release: everything the claim
+    // owns is cleared and everything the assignment owns is cleared in the one write, landing
+    // unconditionally on Published, so there is no intermediate Queued/Blocked state a dispatcher
+    // could ever observe this task in before a human has looked at the pre-flight's own verdict.
+    public void Apply(PrReviewPreflightParked @event)
+    {
+        ClaimedByNodeId = null;
+        CurrentRunId = null;
+        PendingQuestionId = null;
+        EndAnyOpenReviewLap();
+
+        AssignedOwnerId = null;
+        AssignedOwnerFingerprint = null;
+        PlacedOnNodeId = null;
+        _unmetDependencies.Clear();
+        _deadDependencies.Clear();
+        _deadDependencyReasons.Clear();
+        DependencyFailureReason = null;
+        _acknowledgedUnmetDependencyIds.Clear();
+        State = TaskState.Published;
+
+        PrReviewPreflightUnsafe = true;
+        PrReviewPreflightParkedSurfaces = @event.Surfaces;
+        PrReviewPreflightParkedHeadRefOid = @event.HeadRefOid;
+        PrReviewPreflightParkedVerdict = @event.Verdict;
+        PrReviewPreflightParkedReason = @event.Reason;
     }
 
     // State is never touched here (see the event's own doc comment): the caller that appends

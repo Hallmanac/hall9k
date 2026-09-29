@@ -53,6 +53,10 @@ public static class EventScopeRegistry
         [typeof(JiraWriteRequested)] = EventScope.ProjectScoped,
         [typeof(JiraWriteSucceeded)] = EventScope.ProjectScoped,
         [typeof(PublicationTokensRecorded)] = EventScope.ProjectScoped,
+        // The pull-request review pre-flight's own park (idea 6be68ee2, finding 1, phase one): a
+        // team-visible fact about the task's own outcome, the same tier every other task-stream
+        // event here travels at — any fleet node must be able to see why this task sits parked.
+        [typeof(PrReviewPreflightParked)] = EventScope.ProjectScoped,
         [typeof(PullRequestReviewAssignmentObserved)] = EventScope.ProjectScoped,
         [typeof(PullRequestReviewAssignmentRecalled)] = EventScope.ProjectScoped,
         [typeof(PullRequestReviewAuthorResponded)] = EventScope.ProjectScoped,
