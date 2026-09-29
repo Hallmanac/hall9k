@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
@@ -70,6 +71,17 @@ public sealed class LearningDetails
     /// </summary>
     public Guid? RecordedOnNodeId { get; set; }
 
+    /// <summary>
+    /// The verified sender of the event that recorded this lesson, read by
+    /// <see cref="ReplicatedSender.Of"/>: null for a lesson this node recorded itself, the sending
+    /// node's id for one replication delivered, <see cref="Guid.Empty"/> for one that was
+    /// replicated with the sender never recorded. The prompt feed holds a lesson whose sender is
+    /// outside the local owner's fleet, whatever run it names. Kept apart from
+    /// <see cref="RecordedOnNodeId"/> on purpose: that one is the node the fact CLAIMS to have come
+    /// from (the origin header the sender wrote), this one is the node that actually delivered it.
+    /// </summary>
+    public Guid? ReceivedFromNodeId { get; set; }
+
     public LearningStatus Status { get; set; } = LearningStatus.Unknown;
     public string? RetireReason { get; set; }
     public DateTimeOffset? RetiredAt { get; set; }
@@ -87,6 +99,7 @@ public sealed partial class LearningDetailsProjection : SingleStreamProjection<L
         Provenance = @event.Data.Provenance,
         RecordedAt = @event.Data.RecordedAt,
         RecordedOnNodeId = EventRecordingNode.Of(@event),
+        ReceivedFromNodeId = ReplicatedSender.Of(@event),
         Status = LearningStatus.Active,
     };
 
@@ -105,6 +118,7 @@ public sealed partial class LearningDetailsProjection : SingleStreamProjection<L
         view.Provenance = @event.Data.Provenance;
         view.RecordedAt = @event.Data.RecordedAt;
         view.RecordedOnNodeId = EventRecordingNode.Of(@event);
+        view.ReceivedFromNodeId = ReplicatedSender.Of(@event);
         view.Status = view.RetiredAt is null ? LearningStatus.Active : LearningStatus.Retired;
     }
 

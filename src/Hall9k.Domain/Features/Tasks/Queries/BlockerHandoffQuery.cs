@@ -1,4 +1,6 @@
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Replication;
+using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Marten;
@@ -11,6 +13,14 @@ namespace Hall9k.Domain.Features.Tasks.Queries;
 /// objective and acceptance criteria travel unconditionally, because they are the honest
 /// fallback when there is no handoff — a blocker with nothing to say still says what it was
 /// for.
+/// <para>
+/// <c>SummaryReceivedFromNodeId</c> is the verified sender of the event that recorded the summary
+/// (<see cref="ReplicatedSender"/>): null when this node's own run wrote it, a node id or
+/// <see cref="Guid.Empty"/> when replication delivered it, and <c>SummaryOriginNodeId</c> is the node
+/// the sender said it began on, which differs when the record was forwarded. A dependent's prompt fences a summary
+/// whose sender is outside the local owner's fleet; the Domain only carries the fact, because the
+/// fence lives in Connectors.
+/// </para>
 /// </summary>
 public sealed record BlockerHandoff(
     Guid TaskId,
@@ -18,7 +28,9 @@ public sealed record BlockerHandoff(
     IReadOnlyList<string> AcceptanceCriteria,
     TaskState State,
     HandoffOutcome Outcome,
-    string? Summary)
+    string? Summary,
+    Guid? SummaryReceivedFromNodeId = null,
+    Guid? SummaryOriginNodeId = null)
 {
     /// <summary>Whether this blocker contributes real handoff text rather than only its intent.</summary>
     public bool HasSummary => Outcome.HasSummary && Summary.IsNotBlank();
@@ -65,16 +77,29 @@ public static class BlockerHandoffQuery
         IReadOnlyDictionary<Guid, RunDetails> closedOut =
             await ClosedOutRunsAsync(session, wanted, cancellationToken);
 
+        // The sender is read off the closing run's own RunHandoffRecorded rather than projected onto
+        // RunDetails: RunDetails is Inline, so a row written before this read existed would carry
+        // no sender and read as native, which is exactly the wrong answer for a teammate's summary.
+        // One indexed stream read per blocker that actually has a summary; a solo project's
+        // summaries are all native and the read is a single cheap query each.
+        Dictionary<Guid, ReplicatedFrom> senders = [];
+        foreach ((Guid taskId, RunDetails run) in closedOut.Where(pair => pair.Value.HandoffSummary.IsNotBlank()))
+        {
+            senders[taskId] = await ReplicatedSender.OfLatestAsync<RunHandoffRecorded>(
+                session, run.Id, cancellationToken);
+        }
+
         return
         [
             .. blockedBy
                 .Select(id => byId.GetValueOrDefault(id))
                 .OfType<TaskDetails>()
-                .Select(blocker => Handoff(blocker, closedOut.GetValueOrDefault(blocker.Id))),
+                .Select(blocker => Handoff(
+                    blocker, closedOut.GetValueOrDefault(blocker.Id), senders.GetValueOrDefault(blocker.Id))),
         ];
     }
 
-    private static BlockerHandoff Handoff(TaskDetails blocker, RunDetails? closedOutRun) => new(
+    private static BlockerHandoff Handoff(TaskDetails blocker, RunDetails? closedOutRun, ReplicatedFrom summaryFrom) => new(
         blocker.Id,
         blocker.Objective,
         [.. blocker.AcceptanceCriteria],
@@ -85,7 +110,9 @@ public static class BlockerHandoffQuery
         // is honest where NotCaptured would describe "the run that closed this out" — a run
         // this blocker does not have.
         closedOutRun?.HandoffOutcome ?? HandoffOutcome.NotClosedOut,
-        closedOutRun?.HandoffSummary);
+        closedOutRun?.HandoffSummary,
+        summaryFrom.SenderNodeId,
+        summaryFrom.OriginNodeId);
 
     /// <summary>
     /// The run that carried each blocker to true closeout — <see cref="RunState.Completed"/>,
