@@ -42,6 +42,16 @@ public sealed record AgentRole
     /// ResolveCourierModel</c>) rather than the platform's <c>DefaultModel</c>.
     /// </summary>
     public static readonly AgentRole Courier = new("Courier");
+    /// <summary>
+    /// The pull-request review pre-flight (idea 6be68ee2, finding 1, phase one) — a short, no-
+    /// checkout security lap over a pull request's own changed-file list and diff hunks, run on
+    /// its own stream before any worktree exists (the courier's own run-with-no-task precedent).
+    /// Its own role for the identical reason <see cref="Courier"/> is: the pre-flight's own model
+    /// default sits underneath a floor of its own (<c>DaemonOptions.ResolveSecurityPreflightModel</c>)
+    /// rather than the platform's <c>DefaultModel</c>, because it reads attacker-written text
+    /// before any permission scoping to a real checkout exists.
+    /// </summary>
+    public static readonly AgentRole SecurityPreflight = new("SecurityPreflight");
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly AgentRole Unknown = new("");
 

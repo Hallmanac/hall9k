@@ -67,6 +67,15 @@ public static class SessionRoleName
     public const string Courier = "courier";
 
     /// <summary>
+    /// The pull-request review pre-flight (idea 6be68ee2, finding 1, phase one): a short security
+    /// lap over a pull request's own changed-file list and diff hunks, run on its own stream
+    /// before any worktree exists. Its own role, not <see cref="ReviewSecurity"/>'s: this session
+    /// never checks anything out and runs at most once per judged head oid, never per review
+    /// cycle.
+    /// </summary>
+    public const string SecurityPreflight = "security-preflight";
+
+    /// <summary>
     /// The bounded follow-up lap auto-pr-review's own mention trigger dispatches on an
     /// already-reviewed pull request (idea 2f079bcd): a single, narrowly-scoped session answering
     /// one tagged comment, never a fresh review. Its own role rather than <see cref="ReviewAdversarial"/>

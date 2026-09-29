@@ -479,8 +479,8 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
 
         report.EffortByRole.Select(role => role.Role).Should().Equal(
-            "Build", "Review", "ReviewVerify", "ReviewFinalFullPass", "SecurityReview", "Fix", "Synthesis",
-            "Refinement", "Publication", "Courier");
+            "Build", "Review", "ReviewVerify", "ReviewFinalFullPass", "SecurityReview", "SecurityPreflight", "Fix",
+            "Synthesis", "Refinement", "Publication", "Courier");
         report.EffortByRole.Should().OnlyContain(
             role => role.Effort.Origin == SettingOrigin.Default && role.Effort.Value == null);
     }

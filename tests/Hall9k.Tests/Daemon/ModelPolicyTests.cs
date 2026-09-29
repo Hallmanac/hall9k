@@ -246,6 +246,41 @@ public sealed class ModelPolicyTests
     }
 
     /// <summary>
+    /// The pull-request review pre-flight (idea 6be68ee2, finding 1, phase one) is the courier's
+    /// own shape: with nothing configured at any level, it still resolves to its own floor rather
+    /// than the platform's ordinary default, because this session reads attacker-written text
+    /// before any worktree or permission scoping to a real checkout exists.
+    /// </summary>
+    [Fact]
+    public void An_unconfigured_security_preflight_resolves_to_its_own_floor_rather_than_the_platform_default()
+    {
+        DaemonOptions options = new() { DefaultModel = "claude-opus-5" };
+
+        options.ResolveSecurityPreflightModel(projectModel: null).Value.Should().Be(
+            AgentModel.SecurityPreflightDefault);
+    }
+
+    [Fact]
+    public void A_node_role_default_outranks_the_security_preflights_own_floor()
+    {
+        DaemonOptions options = new() { ModelByRole = new RoleModelDefaults { SecurityPreflight = "haiku" } };
+
+        options.ResolveSecurityPreflightModel(projectModel: null).Should().Be(AgentModel.Haiku);
+    }
+
+    [Fact]
+    public void A_project_default_outranks_both_the_security_preflights_own_floor_and_the_node_role_default()
+    {
+        DaemonOptions options = new();
+
+        options.ResolveSecurityPreflightModel(projectModel: AgentModel.Opus).Should().Be(AgentModel.Opus);
+
+        options.ModelByRole.SecurityPreflight = "haiku";
+        options.ResolveSecurityPreflightModel(projectModel: AgentModel.Opus).Should().Be(
+            AgentModel.Opus, "the project's model is more specific than the node's per-role default");
+    }
+
+    /// <summary>
     /// The Security persona (idea 6be68ee2, phase two) is the other role that ships with an
     /// opinion of its own, the courier's identical shape: with nothing configured at any level,
     /// it still resolves to its own floor rather than the platform's ordinary Review default,

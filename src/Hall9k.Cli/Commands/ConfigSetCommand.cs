@@ -168,6 +168,18 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "review session runs on.")]
         public string? ModelCourier { get; init; }
 
+        [CommandOption("--model-security-preflight <MODEL>")]
+        [Description(
+            "This node's model for the pull-request review pre-flight (idea 6be68ee2, finding 1, phase one) — "
+            + "the short, no-checkout security lap that reads a pull request's own changed-file list and diff "
+            + "hunks before any worktree is cut. Its own role, the courier's own run-with-no-task precedent, "
+            + "not a narrower knob under --model-review. Unlike most --model-<role> options, 'default' here "
+            + "does not clear to the platform default: this session's own floor beneath a project's --model "
+            + $"and this setting is {AgentModel.SecurityPreflightDefault}, so clearing this override still "
+            + "leaves it running on the platform's strongest available reasoning — it reads attacker-written "
+            + "text before any worktree or permission scoping to a real checkout exists.")]
+        public string? ModelSecurityPreflight { get; init; }
+
         [CommandOption("--effort-build <low|medium|high|xhigh>")]
         [Description(
             "This node's reasoning effort for the Build role, the session that writes the feature. It sits above the node-wide --effort and below a "
@@ -240,6 +252,15 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "medium, high or xhigh; 'default' clears it, falling through to the node-wide --effort, then the model's own default.")]
         public string? EffortCourier { get; init; }
 
+        [CommandOption("--effort-security-preflight <low|medium|high|xhigh>")]
+        [Description(
+            "This node's reasoning effort for the pull-request review pre-flight specifically (idea 6be68ee2, "
+            + "finding 1), its own role rather than a narrower knob under --effort-review. It sits above the "
+            + "node-wide --effort and below a project's (h9k project set --effort) own value. Accepts low, "
+            + "medium, high or xhigh; 'default' clears it, falling through to the node-wide --effort, then the "
+            + "model's own default.")]
+        public string? EffortSecurityPreflight { get; init; }
+
         /// <summary>Every per-role effort option, paired with where its value lands, so validation, the no-op check and the write all walk one list.</summary>
         internal IReadOnlyList<RoleEffortOption> RoleEfforts =>
         [
@@ -254,6 +275,9 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             new(
                 "--effort-security-review", "effort (security-review)", EffortSecurityReview,
                 (roles, value) => roles.SecurityReview = value),
+            new(
+                "--effort-security-preflight", "effort (security-preflight)", EffortSecurityPreflight,
+                (roles, value) => roles.SecurityPreflight = value),
             new("--effort-fix", "effort (fix)", EffortFix, (roles, value) => roles.Fix = value),
             new("--effort-synthesis", "effort (synthesis)", EffortSynthesis, (roles, value) => roles.Synthesis = value),
             new("--effort-refinement", "effort (refinement)", EffortRefinement, (roles, value) => roles.Refinement = value),
@@ -485,6 +509,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.OrchestratorModel is null && settings.OrchestratorEffort is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelReviewFinalPass is null && settings.ModelSecurityReview is null
+            && settings.ModelSecurityPreflight is null
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
             && settings.ModelPublication is null && settings.ModelCourier is null
             && settings.MaxComplianceReviewCycles is null
@@ -523,6 +548,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.OrchestratorModel is null && settings.OrchestratorEffort is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelReviewFinalPass is null && settings.ModelSecurityReview is null
+            && settings.ModelSecurityPreflight is null
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
             && settings.ModelPublication is null && settings.ModelCourier is null
             && settings.InteractiveClaimStaleAfterDays is null
@@ -793,6 +819,9 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         ApplyModel(
             "model (security-review)", settings.ModelSecurityReview,
             value => operating.ModelByRole.SecurityReview = value, changed);
+        ApplyModel(
+            "model (security-preflight)", settings.ModelSecurityPreflight,
+            value => operating.ModelByRole.SecurityPreflight = value, changed);
         ApplyModel("model (fix)", settings.ModelFix, value => operating.ModelByRole.Fix = value, changed);
         ApplyModel("model (synthesis)", settings.ModelSynthesis, value => operating.ModelByRole.Synthesis = value, changed);
         ApplyModel("model (refinement)", settings.ModelRefinement, value => operating.ModelByRole.Refinement = value, changed);
