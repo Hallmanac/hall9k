@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Hall9k.Cli.Commands;
 using Hall9k.Cli.Infrastructure;
 using Xunit;
 
@@ -7,13 +8,12 @@ namespace Hall9k.Tests.Cli;
 /// <summary>
 /// A run skill's content can arrive from a discovery agent or replicate in from another node, so
 /// by the time <c>h9k project run-skill show</c> prints it, it is outside text like an adopted
-/// issue body, not something this node authored. Line 49 of
-/// <c>ProjectRunSkillShowCommand.RunAsync</c> prints it through
-/// <see cref="ExternalText.ForTerminal"/> before <c>AnsiConsole.WriteLine</c> ever sees it, exactly
-/// the gate <c>TaskShowCommand</c> already puts an adopted body through
-/// (<c>TaskExternalReferenceTests</c>) — this test pins the same guarantee for the run-skill
-/// surface, since a skill carrying a control sequence could otherwise act on the operator's
-/// terminal instead of merely being read by them.
+/// issue body, not something this node authored. This test drives
+/// <see cref="ProjectRunSkillShowCommand.RenderedSkillContent"/> — the exact method
+/// <c>ProjectRunSkillShowCommand.RunAsync</c> prints through — rather than
+/// <see cref="ExternalText.ForTerminal"/> directly, so it fails if the command ever stops routing
+/// a skill's content through that guarantee, exactly the gate <c>TaskShowCommand</c> already puts
+/// an adopted body through (<c>TaskExternalReferenceTests</c>).
 /// </summary>
 public sealed class ProjectRunSkillShowCommandTests
 {
@@ -40,7 +40,7 @@ public sealed class ProjectRunSkillShowCommandTests
             + "\tindented step\r\n"
             + "last step";
 
-        string rendered = ExternalText.ForTerminal(content);
+        string rendered = ProjectRunSkillShowCommand.RenderedSkillContent(content);
 
         rendered.Should().NotContain(Escape, "an escape sequence is obeyed by the terminal, not read by it")
             .And.NotContain(Bell, "the BEL that terminates an OSC write is a control character too")
