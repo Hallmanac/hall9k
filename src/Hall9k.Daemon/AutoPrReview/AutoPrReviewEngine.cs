@@ -16,6 +16,7 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -2378,9 +2379,12 @@ public sealed class AutoPrReviewEngine(
         // task.PrReviewFollowThroughRunId, which OpenPrReviewFollowThrough overwrites with whatever
         // run most recently opened the follow-through, including an earlier follow-up's own run
         // with no findings file of its own (independent pre-PR review, cycle 1, adversarial lens).
-        // RunIds[0] is always that original review, because a pr-review task's very first dispatch
-        // is always its adversarial-lens review (RunLauncher's own isPrReview branch).
-        Guid? priorReviewRunId = task.RunIds.Count > 0 ? task.RunIds[0] : null;
+        // Never RunIds[0] itself (independent pre-PR review, cycle 5, conformance lens): a
+        // pr-review task's first claim can now dispatch nothing but a pre-flight and requeue
+        // before any run is ever opened, so RunIds[0] can be a run with no RunDetails at all —
+        // OriginalReviewRunResolver walks the history for the first one that actually has one.
+        Guid? priorReviewRunId = await OriginalReviewRunResolver.ResolveAsync(
+            session, task.RunIds, cancellationToken);
         string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
             session, node.OwnerId, cancellationToken);
         TaskClaimed claimed = TaskDecider.ClaimForMentionFollowUp(

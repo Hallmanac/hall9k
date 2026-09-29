@@ -11,6 +11,17 @@ namespace Hall9k.Domain.Features.PrReviewPreflight;
 /// between a pre-flight and the task's next dispatch, and a verdict is a fact about ONE judged
 /// oid, never the task's own current state.
 /// </summary>
+/// <param name="DispatchingRunId">
+/// The run id of the claim this pre-flight was dispatched to gate — <c>RunLauncher.LaunchAsync</c>'s
+/// own <c>runId</c> parameter, the same id <see cref="Tasks.Events.TaskClaimed.RunId"/> carried at
+/// that claim (independent pre-PR review, cycle 5, adversarial lens, RunSupervisor.cs:275): a
+/// pre-flight that outlives the claim it was dispatched for — reclaimed after a long daemon restart,
+/// or released by a human — must never requeue or park a task whose live claim now belongs to a
+/// different, later dispatch. <see cref="RunSupervisor.CompletePreflightAsync"/> and
+/// <see cref="RunSupervisor.AbandonPreflightAsync"/> both compare this against the task's own
+/// current run id before acting, exactly the way both already refuse to act once the task is no
+/// longer <see cref="Tasks.TaskState.Claimed"/> at all.
+/// </param>
 /// <param name="IsMentionFollowUp">
 /// True when this pre-flight gates a mention follow-up's own checkout
 /// (<c>RunLauncher.LaunchPrReviewMentionFollowUpAsync</c>) rather than an ordinary review
@@ -22,6 +33,7 @@ namespace Hall9k.Domain.Features.PrReviewPreflight;
 public sealed record PrReviewPreflightDispatched(
     Guid Id,
     Guid TaskId,
+    Guid DispatchingRunId,
     Guid NodeId,
     AgentModel Model,
     string HeadRefOid,

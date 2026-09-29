@@ -158,7 +158,8 @@ public sealed class RunLauncher(
                     task.LatestMentionCommentId ?? string.Empty, task.LatestMentionAuthorLogin ?? string.Empty,
                     task.LatestMentionBody ?? string.Empty, task.LatestMentionUrl ?? string.Empty,
                     task.LatestMentionCreatedAt ?? DateTimeOffset.UtcNow, task.LatestMentionCommentDatabaseId);
-                Guid? priorReviewRunId = task.RunIds.Count > 0 ? task.RunIds[0] : null;
+                Guid? priorReviewRunId = await OriginalReviewRunResolver.ResolveAsync(
+                    session, task.RunIds, cancellationToken);
                 await LaunchPrReviewMentionFollowUpAsync(
                     taskId, runId, ownerId, leaseGeneration, dispatchingNodeId ?? nodeId, comment, priorReviewRunId,
                     cancellationToken);
@@ -271,7 +272,7 @@ public sealed class RunLauncher(
                     await DispatchPrReviewPreflightAsync(
                         task, project, prReviewFacts! with { HeadRefOid = exception.ObservedHeadOid },
                         dispatchingNodeId ?? nodeId, runId, leaseGeneration, isMentionFollowUp: false,
-                        cancellationToken, headOidFromGitFetch: true);
+                        cancellationToken);
                     return;
                 }
 
@@ -1040,7 +1041,7 @@ public sealed class RunLauncher(
                     taskId, exception.Message);
                 await DispatchPrReviewPreflightAsync(
                     task, project, facts with { HeadRefOid = exception.ObservedHeadOid }, dispatchingNodeId, runId,
-                    leaseGeneration, isMentionFollowUp: true, cancellationToken, headOidFromGitFetch: true);
+                    leaseGeneration, isMentionFollowUp: true, cancellationToken);
                 return;
             }
 
@@ -1953,8 +1954,7 @@ public sealed class RunLauncher(
     /// </summary>
     private async Task DispatchPrReviewPreflightAsync(
         TaskDetails task, ProjectDetails project, PullRequestFacts facts, Guid nodeId, Guid runId,
-        int leaseGeneration, bool isMentionFollowUp, CancellationToken cancellationToken,
-        bool headOidFromGitFetch = false)
+        int leaseGeneration, bool isMentionFollowUp, CancellationToken cancellationToken)
     {
         Guid preflightRunId = DomainId.New();
         string runDirectory = RunPaths.GlobalDirectory(preflightRunId);
@@ -1963,95 +1963,48 @@ public sealed class RunLauncher(
         string reference = ExternalReference.Parse(task.ExternalReference).Reference;
         GitHubPullRequestProvider ghProvider = new(processRunner);
 
-        // The head oid this verdict is about to be recorded against (facts.HeadRefOid) is read by
-        // gh pr view earlier and separately from the gh pr diff calls below — two independent
-        // observations that can disagree if the head moved in between. Cycle 1's own fix here
-        // (06714e1de) reread the head once after the diff fetch and adopted the newer oid, but kept
-        // the diff already fetched under the older one, so a single push landing in that window
-        // still recorded a safe verdict against content this pre-flight never actually read
-        // (independent pre-PR review, cycle 3, adversarial lens). Rereading alone can never make
-        // facts.HeadRefOid describe the diff in hand — only rereading the diff itself does, so a
-        // disagreement here discards the diff and refetches it under the newer oid instead of
-        // silently swapping facts underneath unchanged content. Bounded, rather than looped forever,
-        // for the pathological case of a head that keeps moving every time this checks it. Skipped
-        // entirely when headOidFromGitFetch is true (both PullRequestHeadMovedException catches pass
-        // it): that oid already comes from a direct git fetch of refs/pull/<n>/head, strictly fresher
-        // than a second gh pr view could ever confirm, so asking gh again there would only replace a
-        // more-authoritative reading with a less fresh one.
-        const int maxHeadRereadAttempts = 3;
-        IReadOnlyList<string> changedFiles;
+        // The head oid this verdict is about to be recorded against (facts.HeadRefOid) is bound
+        // directly into this one read via the compare API, rather than read separately from a
+        // gh pr diff / gh pr view --name-only pair that could each observe a different commit if
+        // the head moved between them (independent pre-PR review, cycle 5, adversarial lens):
+        // cycle 1's own fix reread the head once after the diff fetch and adopted the newer oid,
+        // cycle 3 caught that the diff already fetched under the older oid was kept regardless,
+        // and cycle 5 caught that even rereading before and after the diff fetch cannot rule out
+        // the head moving away and back inside that same window, since gh pr diff's own response
+        // never says which oid it actually read. Naming the oid in the request itself, rather than
+        // inferring it from two separate observations of "whatever the head currently is", removes
+        // the race entirely: whatever this returns is provably the diff for facts.HeadRefOid, or
+        // the call fails outright.
         string diff;
-        for (int attempt = 1; ; attempt++)
+        try
         {
-            try
+            diff = await ghProvider.FetchDiffForCommitAsync(
+                facts.Repository, facts.Number, facts.BaseRefName, facts.HeadRefOid, runDirectory, cancellationToken);
+        }
+        catch (DomainException exception)
+        {
+            // GitHub's own diff endpoint refuses a pull request over its file-count ceiling
+            // outright (documented at 300 files) — with nothing to judge, this pre-flight cannot
+            // reach a verdict at all, so the task parks as needs-you exactly as an unparseable
+            // session verdict already does, rather than failing the launch permanently on a pull
+            // request that can never shrink back under the ceiling on its own (independent pre-PR
+            // review, cycle 1, adversarial lens: a dependency bump, a generated-code refresh, or a
+            // rename sweep touching more than 300 files could otherwise never be reviewed again).
+            if (GitHubDiffSizeLimitClassifier.IsDiffTooLarge(exception.Message))
             {
-                changedFiles = await ghProvider.FetchChangedFileNamesAsync(reference, runDirectory, cancellationToken);
-                diff = await ghProvider.FetchDiffAsync(reference, runDirectory, cancellationToken);
-            }
-            catch (DomainException exception)
-            {
-                // GitHub's own diff endpoint refuses a pull request over its file-count ceiling
-                // outright (documented at 300 files) — with nothing to judge, this pre-flight cannot
-                // reach a verdict at all, so the task parks as needs-you exactly as an unparseable
-                // session verdict already does, rather than failing the launch permanently on a pull
-                // request that can never shrink back under the ceiling on its own (independent pre-PR
-                // review, cycle 1, adversarial lens: a dependency bump, a generated-code refresh, or a
-                // rename sweep touching more than 300 files could otherwise never be reviewed again).
-                if (GitHubDiffSizeLimitClassifier.IsDiffTooLarge(exception.Message))
-                {
-                    await ParkUnreadableDiffPreflightAsync(
-                        task.Id, facts,
-                        $"gh could not read this pull request's diff, so the pre-flight has nothing to judge: "
-                        + $"{exception.Message}",
-                        cancellationToken);
-                    return;
-                }
-
-                await RecordLaunchFailureAsync(task.Id, runId, leaseGeneration, exception.Message, cancellationToken);
-                return;
-            }
-
-            if (headOidFromGitFetch)
-            {
-                break;
-            }
-
-            PullRequestFacts recheckedFacts;
-            try
-            {
-                recheckedFacts = await ghProvider.FetchFactsAsync(reference, runDirectory, cancellationToken);
-            }
-            catch (DomainException exception)
-            {
-                await RecordLaunchFailureAsync(task.Id, runId, leaseGeneration, exception.Message, cancellationToken);
-                return;
-            }
-
-            if (recheckedFacts.HeadRefOid == facts.HeadRefOid)
-            {
-                break;
-            }
-
-            if (attempt >= maxHeadRereadAttempts)
-            {
-                await RecordLaunchFailureAsync(
-                    task.Id, runId, leaseGeneration,
-                    $"{task.ExternalReference}'s head kept moving while the pre-flight was reading its diff "
-                    + $"(last seen {facts.HeadRefOid}, then {recheckedFacts.HeadRefOid}) — giving up after "
-                    + $"{maxHeadRereadAttempts} attempts rather than recording a verdict for a diff this "
-                    + "pre-flight never actually read against the head it judged.",
+                await ParkUnreadableDiffPreflightAsync(
+                    task.Id, facts,
+                    $"gh could not read this pull request's diff, so the pre-flight has nothing to judge: "
+                    + $"{exception.Message}",
                     cancellationToken);
                 return;
             }
 
-            logger.LogWarning(
-                "Task {TaskId}: the pull request's head read as {ExpectedHeadOid} earlier but "
-                + "{ObservedHeadOid} just now, after the diff fetch — refetching the diff against the head "
-                + "actually observed instead of recording a verdict for stale content (attempt {Attempt})",
-                task.Id, facts.HeadRefOid, recheckedFacts.HeadRefOid, attempt);
-            facts = recheckedFacts;
+            await RecordLaunchFailureAsync(task.Id, runId, leaseGeneration, exception.Message, cancellationToken);
+            return;
         }
 
+        IReadOnlyList<string> changedFiles = PrReviewPreflightDiffExtractor.ExtractChangedFiles(diff);
         IReadOnlyList<string> surfaces = PrReviewPreflightSurfaceMatcher.Match(changedFiles);
         string matchedHunks = PrReviewPreflightDiffExtractor.ExtractMatchedHunks(diff, surfaces);
         string prompt = PrReviewPreflightPromptBuilder.Build(reference, facts.Url, changedFiles, surfaces, matchedHunks);
@@ -2062,7 +2015,7 @@ public sealed class RunLauncher(
         await using (IDocumentSession dispatchSession = store.LightweightSession())
         {
             dispatchSession.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
-                preflightRunId, task.Id, nodeId, model, facts.HeadRefOid, surfaces, DateTimeOffset.UtcNow,
+                preflightRunId, task.Id, runId, nodeId, model, facts.HeadRefOid, surfaces, DateTimeOffset.UtcNow,
                 isMentionFollowUp));
             await dispatchSession.SaveChangesAsync(cancellationToken);
         }
