@@ -9,6 +9,20 @@ public sealed record RequeueReason
     public static readonly RequeueReason LeaseExpired = new("LeaseExpired");
     public static readonly RequeueReason RunFailedRetryable = new("RunFailedRetryable");
     public static readonly RequeueReason HumanRequested = new("HumanRequested");
+    /// <summary>
+    /// A pull-request review pre-flight (idea 6be68ee2, finding 1, phase one) came back safe for
+    /// the task's current head oid: the lease is given back so the next claim finds that recorded
+    /// verdict and proceeds straight to the worktree, rather than the primary session that would
+    /// otherwise have dispatched into it.
+    /// </summary>
+    public static readonly RequeueReason PrReviewPreflightSafe = new("PrReviewPreflightSafe");
+    /// <summary>
+    /// A pull-request review pre-flight's own session ended without a usable verdict — a budget
+    /// exhaustion or a launch failure, the same non-fatal, redispatchable shape <c>PrReviewEngine</c>
+    /// gives its own follow-on sessions — so the lease is given back to try a fresh pre-flight
+    /// rather than parking the task as unsafe.
+    /// </summary>
+    public static readonly RequeueReason PrReviewPreflightRetry = new("PrReviewPreflightRetry");
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly RequeueReason Unknown = new("");
 

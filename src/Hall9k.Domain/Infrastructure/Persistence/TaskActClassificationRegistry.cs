@@ -71,6 +71,12 @@ public static class TaskActClassificationRegistry
         [typeof(JiraWriteSucceeded)] = TaskActClassification.MemberSafe,
         [typeof(PublicationTokensRecorded)] = TaskActClassification.MemberSafe,
 
+        // The pull-request review pre-flight's own park (idea 6be68ee2, finding 1, phase one)
+        // clears the current claim and assignment unconditionally, the identical shape
+        // TaskInteractiveClaimUnassigned and TaskRequeued give a member's own give-back — a forged
+        // copy from a non-holder sender must not be able to unassign a task it does not hold.
+        [typeof(PrReviewPreflightParked)] = TaskActClassification.Conditional,
+
         // Pull-request review sightings — observations the running node recorded about GitHub's
         // own state, never a decision over who controls the task.
         [typeof(PullRequestReviewAssignmentObserved)] = TaskActClassification.MemberSafe,
