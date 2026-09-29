@@ -62,4 +62,19 @@ public sealed class PrReviewPreflightPromptBuilderTests
         int fenceCount = prompt.Split("````").Length - 1;
         fenceCount.Should().Be(2, "exactly one opening and one closing fence around the diff hunk");
     }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 5, conformance lens: an empty surface match must never read
+    /// as "nothing here can run code" — on a non-fork head, the verify gate a later persona runs
+    /// builds and tests the whole checkout, including ordinary source and test files the fixed
+    /// surface list never covers.
+    /// </summary>
+    [Fact]
+    public void An_empty_surface_match_is_told_the_verify_gate_still_runs_every_source_file()
+    {
+        string prompt = PrReviewPreflightPromptBuilder.Build(
+            "acme/web#1", null, ["tests/SomeTests.cs"], [], matchedHunks: string.Empty);
+
+        prompt.Should().Contain("fork").And.Contain("verify gate").And.Contain("source file");
+    }
 }
