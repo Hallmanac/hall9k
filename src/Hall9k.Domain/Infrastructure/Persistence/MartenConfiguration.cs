@@ -9,6 +9,7 @@ using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.PrReviewPreflight;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -84,6 +85,7 @@ public static class MartenConfiguration
         opts.Projections.Add<OwnerActHoldDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<OrchestratorPresenceDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<CourierRunDetailsProjection>(ProjectionLifecycle.Inline);
+        opts.Projections.Add<PrReviewPreflightDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<DecisionDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<LearningDetailsProjection>(ProjectionLifecycle.Inline);
 

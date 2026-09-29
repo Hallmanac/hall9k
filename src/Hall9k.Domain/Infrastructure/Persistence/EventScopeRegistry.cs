@@ -9,6 +9,7 @@ using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.PrReviewPreflight;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks.Events;
@@ -358,6 +359,16 @@ public static class EventScopeRegistry
         [typeof(CourierRunDispatched)] = EventScope.NodeScoped,
         [typeof(CourierRunCompleted)] = EventScope.NodeScoped,
         [typeof(CourierTokensRecorded)] = EventScope.NodeScoped,
+
+        // Hall9k.Domain.Features.PrReviewPreflight — idea 6be68ee2, finding 1, phase one: unlike
+        // the courier above, a pre-flight's own verdict is a fact about a project-scoped task any
+        // fleet node may reclaim once its lease is released (RequeueReason.PrReviewPreflightSafe/
+        // PrReviewPreflightRetry) — the node that dispatched the pre-flight and the node that next
+        // claims the task are not guaranteed to be the same one, so this travels rather than
+        // staying node-local the way a courier's own delivery does.
+        [typeof(PrReviewPreflightDispatched)] = EventScope.ProjectScoped,
+        [typeof(PrReviewPreflightProcessStarted)] = EventScope.ProjectScoped,
+        [typeof(PrReviewPreflightCompleted)] = EventScope.ProjectScoped,
 
         // Hall9k.Domain.Features.Message — idea 202383dc, M1a: messages are ephemeral, ruled
         // 2026-09-13 ("read receipts and bookmark announcements are dead ... messages are
