@@ -2718,6 +2718,7 @@ public sealed class EventReplicationInbox(
         { } ns when ns.StartsWith("Hall9k.Domain.Features.Idea", StringComparison.Ordinal) => ReplicationStreamFamily.Idea,
         { } ns when ns.StartsWith("Hall9k.Domain.Features.Epic", StringComparison.Ordinal) => ReplicationStreamFamily.Epic,
         { } ns when ns.StartsWith("Hall9k.Domain.Features.Run", StringComparison.Ordinal) => ReplicationStreamFamily.Run,
+        { } ns when ns.StartsWith("Hall9k.Domain.Features.PrReviewPreflight", StringComparison.Ordinal) => ReplicationStreamFamily.PrReviewPreflight,
         { } ns when ns.StartsWith("Hall9k.Domain.Features.Decision", StringComparison.Ordinal) => ReplicationStreamFamily.Decision,
         { } ns when ns.StartsWith("Hall9k.Domain.Features.Learning", StringComparison.Ordinal) => ReplicationStreamFamily.Learning,
         { } ns when ns.StartsWith("Hall9k.Domain.Features.Project", StringComparison.Ordinal) => ReplicationStreamFamily.Project,
