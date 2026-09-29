@@ -1494,7 +1494,7 @@ public static class TaskDecider
     /// </summary>
     public static PrReviewPreflightParked ParkPrReviewPreflight(
         TaskAggregate task, IReadOnlyList<string> surfaces, string headRefOid, string verdict, string reason,
-        DateTimeOffset parkedAt)
+        DateTimeOffset parkedAt, bool isMentionFollowUp = false)
     {
         if (task.State != TaskState.Claimed)
         {
@@ -1502,7 +1502,8 @@ public static class TaskDecider
                 $"Task {task.Id} is {task.State.Value} — only a claimed task's own pre-flight parks this way.");
         }
 
-        return new PrReviewPreflightParked(task.Id, surfaces, headRefOid, verdict, reason, parkedAt);
+        return new PrReviewPreflightParked(
+            task.Id, surfaces, headRefOid, verdict, reason, parkedAt, isMentionFollowUp);
     }
 
     /// <summary>

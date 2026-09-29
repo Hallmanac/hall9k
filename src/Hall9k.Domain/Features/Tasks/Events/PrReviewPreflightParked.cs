@@ -17,10 +17,22 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// moved again, exactly which commit this verdict was ever about.
 /// </para>
 /// </summary>
+/// <param name="IsMentionFollowUp">
+/// Mirrors the pre-flight's own <see cref="PrReviewPreflightDispatched.IsMentionFollowUp"/>
+/// (independent pre-PR review, cycle 7, adversarial lens): an unsafe verdict for a pre-flight that
+/// was gating a mention follow-up's own checkout still owes that mention an answer, so
+/// <see cref="TaskAggregate.Apply(PrReviewPreflightParked)"/> sets
+/// <see cref="TaskAggregate.PendingMentionFollowUpAfterPreflight"/> from this field exactly the way
+/// <see cref="Handlers.TaskDecider.Requeue"/> already does for a safe verdict or a retry — without
+/// it, the next <c>h9k task assign</c> ran an unrequested full review instead of answering the
+/// mentioning comment, which <see cref="Features.AutoPrReview.ObservedReviewMention"/> dedups
+/// permanently.
+/// </param>
 public sealed record PrReviewPreflightParked(
     Guid Id,
     IReadOnlyList<string> Surfaces,
     string HeadRefOid,
     string Verdict,
     string Reason,
-    DateTimeOffset ParkedAt);
+    DateTimeOffset ParkedAt,
+    bool IsMentionFollowUp = false);
