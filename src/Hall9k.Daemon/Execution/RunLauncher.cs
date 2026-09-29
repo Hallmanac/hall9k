@@ -2067,6 +2067,14 @@ public sealed class RunLauncher(
             await dispatchSession.SaveChangesAsync(cancellationToken);
         }
 
+        // Reserved the instant the row above commits, before the spawn even starts — never after
+        // it returns: RunSupervisor.ResumeStrandedPreflightsAsync runs concurrently off the
+        // dispatch loop and treats anything already in its own _monitors set as not this sweep's
+        // to touch, so without this reservation a sweep landing inside the SpawnAsync await below
+        // saw no process recorded and no monitor either, and abandoned a row a session was
+        // actively being started for (independent pre-PR review, cycle 3, both lenses).
+        supervisor.ReservePreflightSpawn(preflightRunId);
+
         SpawnedAgent agent;
         try
         {
@@ -2098,6 +2106,12 @@ public sealed class RunLauncher(
                     preflightRunId, new PrReviewPreflightAbandoned(preflightRunId, DateTimeOffset.UtcNow));
                 await abandonSession.SaveChangesAsync(cancellationToken);
             }
+
+            // Releases the reservation above: this row is now permanently abandoned by the event
+            // just appended, so leaving it in _monitors forever would only ever leak the entry —
+            // ResumeStrandedPreflightsAsync's own query already excludes an abandoned row by
+            // AbandonedAt regardless of _monitors membership.
+            supervisor.ReleasePreflightSpawnReservation(preflightRunId);
 
             await RecordLaunchFailureAsync(task.Id, runId, leaseGeneration, exception.Message, cancellationToken);
             return;
