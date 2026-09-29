@@ -6,17 +6,21 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// The tool check (<see cref="ToolDoctor"/>), the container port-binding check
+/// The home directory mode check (<see cref="HomeDirectoryPermissions.Check(bool)"/>, security
+/// review idea 6be68ee2, secrets-files-network finding 8), the tool check (<see cref="ToolDoctor"/>),
+/// the container port-binding check
 /// (<see cref="DatabaseDoctor.CheckContainerPortBindingAsync(bool,System.Threading.CancellationToken)"/>,
-/// security review idea 6be68ee2), and the database doctor check (Decisions Log #58, #73), in that
-/// order. The tool check runs first — and needs no daemon and no reachable database itself — so
-/// it still runs on the database section's own early-return path below, exactly the moment the
-/// generated project <c>AGENTS.md</c> promises it will. The port-binding check runs unconditionally
-/// too, on every invocation of this command, whether or not the four database questions that
-/// follow it find anything wrong: it is a question about the container Docker actually created,
-/// not about the connection string. The database check itself is the same four questions any other
-/// command runs automatically when it hits an unreachable database, on demand, whether or not
-/// anything is actually broken right now.
+/// the same idea's finding 1), and the database doctor check (Decisions Log #58, #73), in that
+/// order. The home directory check runs first, and needs nothing else here — it is a single stat
+/// against <see cref="Hall9k.Domain.Infrastructure.Storage.PlatformPaths.Home"/>, unconditional on
+/// every invocation, the same as the port-binding check below it. The tool check runs next — and
+/// needs no daemon and no reachable database itself — so it still runs on the database section's
+/// own early-return path below, exactly the moment the generated project <c>AGENTS.md</c> promises
+/// it will. The port-binding check runs unconditionally too, on every invocation of this command,
+/// whether or not the four database questions that follow it find anything wrong: it is a question
+/// about the container Docker actually created, not about the connection string. The database check
+/// itself is the same four questions any other command runs automatically when it hits an
+/// unreachable database, on demand, whether or not anything is actually broken right now.
 /// </summary>
 public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
 {
@@ -51,6 +55,8 @@ public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
+        HomeDirectoryPermissions.Check(settings.Yes);
+
         await ToolDoctor.RunAsync(cancellationToken);
 
         await DatabaseDoctor.CheckContainerPortBindingAsync(settings.Yes, cancellationToken);
