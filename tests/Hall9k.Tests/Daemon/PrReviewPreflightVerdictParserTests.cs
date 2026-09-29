@@ -67,6 +67,21 @@ public sealed class PrReviewPreflightVerdictParserTests
         verdict.Reason.Should().Contain("unparseable");
     }
 
+    /// <summary>
+    /// Independent pre-PR review, cycle 3, both lenses: the verdict token is the marker's own first
+    /// word, never a split on the first '-' — a hedge that starts with "safe-" must not read as
+    /// exactly "safe" just because a naive split on '-' would carve "safe" off the front of it.
+    /// </summary>
+    [Theory]
+    [InlineData("PREFLIGHT: safe-ish - only a workflow comment changed")]
+    [InlineData("PREFLIGHT: safe-but-unsure")]
+    public void A_hedge_starting_with_safe_dash_is_unparseable_and_unsafe_not_safe(string summary)
+    {
+        PrReviewPreflightVerdict verdict = PrReviewPreflightVerdictParser.Parse(summary);
+
+        verdict.Safe.Should().BeFalse("the first word is 'safe-ish' or 'safe-but-unsure', neither of which is exactly 'safe'");
+    }
+
     [Fact]
     public void The_last_marker_line_wins_when_more_than_one_is_present()
     {

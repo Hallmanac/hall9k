@@ -26,10 +26,17 @@ public static class PrReviewPreflightVerdictParser
                 Reason: "no PREFLIGHT marker was found in the session's own output");
         }
 
+        // The marker's own first word, never a split on the first '-' — the prompt this parses
+        // (PrReviewPreflightPromptBuilder) tells the session exactly that: "anything other than
+        // exactly 'safe' or 'unsafe' as the marker's own first word is treated as unsafe." Splitting
+        // on '-' instead let a hedge like "safe-ish - only a workflow comment changed" or
+        // "safe-but-unsure" read its verdict token as exactly "safe" (independent pre-PR review,
+        // cycle 3, both lenses).
         string trimmed = raw.Trim();
-        int separatorIndex = trimmed.IndexOf('-');
-        string verdictToken = (separatorIndex >= 0 ? trimmed[..separatorIndex] : trimmed).Trim();
-        string reason = separatorIndex >= 0 ? trimmed[(separatorIndex + 1)..].Trim() : string.Empty;
+        int whitespaceIndex = trimmed.IndexOfAny([' ', '\t']);
+        string verdictToken = (whitespaceIndex >= 0 ? trimmed[..whitespaceIndex] : trimmed).Trim();
+        string rest = (whitespaceIndex >= 0 ? trimmed[(whitespaceIndex + 1)..] : string.Empty).Trim();
+        string reason = rest.StartsWith('-') ? rest[1..].Trim() : rest;
 
         bool safe = string.Equals(verdictToken, "safe", StringComparison.OrdinalIgnoreCase);
         bool isUnsafe = string.Equals(verdictToken, "unsafe", StringComparison.OrdinalIgnoreCase);
