@@ -38,8 +38,17 @@ public static class LearningDetailsProjectionBackfill
     /// for every lesson that was not recorded as a distillation, so an old row already answers
     /// correctly and rebuilding it would change nothing.
     /// </para>
+    /// <para>
+    /// <see cref="LearningDetails.ReceivedFromNodeId"/> is the second marker, and it matters for the
+    /// same reason in the other direction: the prompt feed holds a lesson whose verified sender is
+    /// outside the local owner's fleet, and a row written before the field existed reads as a lesson
+    /// this node recorded itself, so a teammate's lesson already on an upgrading install would keep
+    /// reaching prompts until something rebuilt it. Replaying the stream reads the sender back off
+    /// the event's own headers.
+    /// </para>
     /// </summary>
-    private const string StaleDocument = "(not jsonb_exists(d.data, 'recordedOnNodeId'))";
+    private const string StaleDocument =
+        "(not jsonb_exists(d.data, 'recordedOnNodeId') or not jsonb_exists(d.data, 'receivedFromNodeId'))";
 
     /// <summary>
     /// Rebuilds every lesson stream still carrying an out-of-date document and returns the ids it

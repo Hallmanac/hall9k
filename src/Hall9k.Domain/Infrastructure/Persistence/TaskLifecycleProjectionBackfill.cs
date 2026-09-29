@@ -120,13 +120,26 @@ public static class TaskLifecycleProjectionBackfill
     /// always present on a document the current projection wrote, and its absent-key reading —
     /// "no retry pending" — is exactly wrong for a task that was retried on the pre-marker build
     /// and has not been claimed since (independent pre-PR review, cycle 3, both lenses).
+    /// <see cref="TaskDetails.RetryReceivedFromNodeId"/> and
+    /// <see cref="TaskDetails.HandoffNoteReceivedFromNodeId"/>, with their two origin siblings
+    /// (<see cref="TaskDetails.RetryOriginNodeId"/> and <see cref="TaskDetails.HandoffNoteOriginNodeId"/>),
+    /// are markers as explicit nulls, which is why they work despite being nullable. A replicated
+    /// retry, handback or handoff note reaches a prompt fenced unless the node that delivered it and
+    /// the node it began on are both in the local owner's fleet. A document written before those
+    /// landed has no key at all and reads as a native note, so a teammate's standing retry reason
+    /// would go on rendering as operator guidance until its stream happened to get another retry.
+    /// Replaying the stream restores both nodes from the event's own headers.
     /// </summary>
     private const string StaleDetailsOnlyDocument =
         "(" + StaleDocument
         + " or not jsonb_exists(d.data, 'failedRunId')"
         + " or not jsonb_exists(d.data, 'resolvedRunId')"
         + " or not jsonb_exists(d.data, 'untrackedAttested')"
-        + " or not jsonb_exists(d.data, 'retryPending'))";
+        + " or not jsonb_exists(d.data, 'retryPending')"
+        + " or not jsonb_exists(d.data, 'retryReceivedFromNodeId')"
+        + " or not jsonb_exists(d.data, 'handoffNoteReceivedFromNodeId')"
+        + " or not jsonb_exists(d.data, 'retryOriginNodeId')"
+        + " or not jsonb_exists(d.data, 'handoffNoteOriginNodeId'))";
 
     /// <summary>
     /// <see cref="StaleDocument"/>'s markers, plus the field <see cref="TaskListItem"/> alone

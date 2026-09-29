@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -384,6 +385,22 @@ public sealed class TaskDetails
     public Guid? HandoffNoteAuthorNodeId { get; set; }
     /// <summary>See <see cref="TaskAggregate.HandoffNoteAt"/>'s own doc.</summary>
     public DateTimeOffset? HandoffNoteAt { get; set; }
+    /// <summary>
+    /// The verified sender of the event that wrote <see cref="HandoffNote"/>, read by
+    /// <see cref="ReplicatedSender.Of"/>: null when this node wrote it itself, the sending node's id
+    /// when replication delivered it, <see cref="Guid.Empty"/> when it was replicated and the sender
+    /// was never recorded. A prompt fences the note when this names a node outside the local owner's
+    /// fleet. Deliberately not <see cref="HandoffNoteAuthorNodeId"/>, which is a value the author
+    /// wrote into the event's own payload.
+    /// </summary>
+    public Guid? HandoffNoteReceivedFromNodeId { get; set; }
+    /// <summary>
+    /// Where the sender said the event that wrote <see cref="HandoffNote"/> began
+    /// (<see cref="ReplicatedSender.OriginOf"/>): it differs from <see cref="HandoffNoteReceivedFromNodeId"/>
+    /// exactly when the note was forwarded. Only ever used to tighten, so a note counts as local only
+    /// when the node that delivered it and the node it began on are both in the local fleet.
+    /// </summary>
+    public Guid? HandoffNoteOriginNodeId { get; set; }
     /// <summary>See <see cref="TaskAggregate.TakenOverFromNodeId"/>'s own doc — mirrored here for <c>h9k task show</c> and <c>h9k status</c> alike.</summary>
     public Guid? TakenOverFromNodeId { get; set; }
     /// <summary>See <see cref="TaskAggregate.TakenOverReason"/>'s own doc.</summary>
@@ -440,6 +457,16 @@ public sealed class TaskDetails
     /// <summary>See <see cref="LastPushedBranch"/> — the commit that push landed at.</summary>
     public string? LastPushedBranchTip { get; set; }
     public string? RetryReason { get; set; }
+    /// <summary>
+    /// The verified sender of the <see cref="Events.TaskRetried"/> or <see cref="Events.TaskHandedBack"/>
+    /// that wrote <see cref="RetryReason"/>, with the same three answers as
+    /// <see cref="HandoffNoteReceivedFromNodeId"/> (null native, a node id, or <see cref="Guid.Empty"/>
+    /// for a replicated event whose sender was never recorded). Deliberately not the event's own
+    /// <c>RetriedByOwnerId</c> or <c>HandedBackByOwnerId</c>, which the author wrote themselves.
+    /// </summary>
+    public Guid? RetryReceivedFromNodeId { get; set; }
+    /// <summary>See <see cref="HandoffNoteOriginNodeId"/>: the same reading for the event that wrote <see cref="RetryReason"/>.</summary>
+    public Guid? RetryOriginNodeId { get; set; }
     /// <summary>
     /// Whether <see cref="RetryReason"/> was last set by <see cref="Events.TaskHandedBack"/>
     /// rather than <see cref="Events.TaskRetried"/> — the two share the field (both resume the
@@ -1076,6 +1103,8 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.HandoffNoteAuthorOwnerRootFingerprint = @event.Data.AuthorOwnerRootFingerprint;
         view.HandoffNoteAuthorNodeId = @event.Data.AuthorNodeId;
         view.HandoffNoteAt = @event.Data.NotedAt;
+        view.HandoffNoteReceivedFromNodeId = ReplicatedSender.Of(@event);
+        view.HandoffNoteOriginNodeId = ReplicatedSender.OriginOf(@event);
     }
 
     /// <summary>Mirrors <see cref="TaskAggregate.Apply(Events.TaskHolderTakenOver)"/> — see <see cref="TaskDetails.TakenOverFromNodeId"/>'s own doc.</summary>
@@ -1336,6 +1365,8 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.RetryBranchResumesForeignNode = false;
         EndAnyOpenReviewLap(view);
         view.RetryReason = @event.Data.Reason;
+        view.RetryReceivedFromNodeId = ReplicatedSender.Of(@event);
+        view.RetryOriginNodeId = ReplicatedSender.OriginOf(@event);
         view.RetryReasonIsHandback = false;
         view.RetryPending = true;
         view.ResumesFromHandback = false;
@@ -1358,6 +1389,8 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.RetryBranchResumesForeignNode = false;
         EndAnyOpenReviewLap(view);
         view.RetryReason = @event.Data.Reason;
+        view.RetryReceivedFromNodeId = ReplicatedSender.Of(@event);
+        view.RetryOriginNodeId = ReplicatedSender.OriginOf(@event);
         view.RetryReasonIsHandback = true;
         view.RetryPending = true;
         view.ResumesFromHandback = true;
