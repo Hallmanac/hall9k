@@ -1,0 +1,26 @@
+hall9k-task-record: 1
+task-id: 01a0ed97-6489-7441-89d7-c82fba735a12
+project: hall9k
+type: refactor
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#655
+objective: |-
+  GitLedgerChainReaderTests stops dominating the host suite: the trust rules are tested fast in memory, a small real-git set keeps the end-to-end proof, and the Windows host gate fits well inside its 30-minute timeout again
+criteria:
+  - Every scenario the 66 tests cover today is still covered after the change, either by a fast in-memory test of the trust rules or by a kept end-to-end test; the PR lists each existing test and where its scenario now lives
+  - |-
+    No more than about eight tests keep real git repositories and real signing keys, chosen to prove the end-to-end paths the in-memory tests cannot: commit signature verification, carried bundles with embedded commits, ref rewind refusal, and genesis selection by ref order
+  - The fast tests are not in the RealProcessSpawn category or collection, so they run in the parallel test gate and not the serialized host gate
+  - |-
+    Measured on this Windows node with the host gate's own command and a trx logger at the PR's head: GitLedgerChainReaderTests and its fast replacement together take under 5 minutes, and the whole host suite takes under 20 minutes; the PR records before and after numbers
+  - Any production seam added to make the rules testable leaves every verification result unchanged; the existing end-to-end tests that remain pass unmodified in what they assert
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a04de3-7a23-75c0-8a06-9314ef6ab27d
+origin-node-name: HALL-AGELESSRX
+origin-branch: task/ba735a12-gitledgerchainreadertests-stop
+published: 2026-09-29 14:36:00Z
+context: |-
+  Why: on 2026-09-29 the host suite at origin/main 4c5e8d48c took 37m56s on Windows (20m51s on the Mac), over the 30-minute DaemonOptions.VerifyGateTimeout, so no host gate here can pass (53ffc224, PR #636, parked on three timeouts). GitLedgerChainReaderTests (tests/Hall9k.Tests/Connectors/Trust/GitLedgerChainReaderTests.cs, 66 tests) took 1,675 s of it, 28 to 86 s per test, and sits in [Collection("RealProcessSpawn")], so its tests run one after another and form the suite's critical path. It grew with the trust-chain security work, commits 4e6064006 through f3be40fc0 (09-26 to 09-28). Evidence and per-test numbers: the project home's notes/host-gate-slowdown-2026-09-28.md and notes/timing-2026-09-29/results/host.trx.
+  Approach: most of these tests exercise the trust rules (vouch, revoke, rotation, rank, carried bundles, fixed-point resolution), which need no real git repository and no real signing key. Test those rules against fast in-memory inputs, keep a small real-git, real-key end-to-end set, and take the fast tests out of the serialized RealProcessSpawn collection.
+  Boundaries: do not raise the gate timeout. Do not weaken any trust rule or drop a scenario. A production seam extracted for testability must not change any verification result. Other slow classes (ReviewEngineTests, CloseoutEngineTests, StackedChildTests) are out of scope.
