@@ -91,53 +91,32 @@ public sealed class GitHubPullRequestProvider(ProcessRunner? runner = null, Time
     }
 
     /// <summary>
-    /// The pull-request review pre-flight's own first read (idea 6be68ee2, finding 1, phase one):
-    /// every path the pull request's diff touches, through <c>gh pr diff --name-only</c>. Run from
-    /// the pre-flight's own run directory, never a git repository — <paramref name="reference"/>
-    /// always carries an explicit repository for a pr-review task's own adopted reference, so
-    /// <c>--repo</c> is always passed and <c>gh</c> never needs to infer one from a git remote at
-    /// <paramref name="workingDirectory"/>.
-    /// </summary>
-    public async Task<IReadOnlyList<string>> FetchChangedFileNamesAsync(
-        string reference, string workingDirectory, CancellationToken cancellationToken)
-    {
-        (string? repository, int number) = GitHubPullRequestReference.Parse(reference);
-
-        List<string> arguments =
-            ["pr", "diff", number.ToString(CultureInfo.InvariantCulture), "--name-only"];
-        if (repository is not null)
-        {
-            arguments.AddRange(["--repo", repository]);
-        }
-
-        ProcessResult result = await RunGhAsync(arguments, workingDirectory, cancellationToken);
-        if (result.ExitCode != 0)
-        {
-            throw Explain(result.StandardError, repository, number, workingDirectory);
-        }
-
-        return [.. result.StandardOutput
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Select(line => line.Trim())
-            .Where(line => line.IsNotBlank())];
-    }
-
-    /// <summary>
-    /// The pull-request review pre-flight's own second read: the full unified diff, through
-    /// <c>gh pr diff</c> — the pre-flight prompt then fences only the hunks for the files
+    /// The pull-request review pre-flight's own diff read, pinned to an exact head commit
+    /// (independent pre-PR review, cycle 5, adversarial lens, RunLauncher.cs:2014): <c>gh pr
+    /// diff</c> and <c>gh pr view --name-only</c> both read whatever the pull request's head
+    /// currently is, so two separate calls around a head that moves between them can each observe
+    /// a different commit — and since neither response says which oid it actually read, no amount
+    /// of rereading <c>gh pr view</c> before and after can catch a head that moved out and back
+    /// during the window. The compare API takes the head oid as part of the request itself, so the
+    /// diff this returns is always the diff for that exact commit against
+    /// <paramref name="baseRefName"/>, never "whatever gh pr diff happened to see just now" — a
+    /// head that has moved on since simply leaves this oid answerable until it is garbage
+    /// collected, rather than silently swapped for newer content. The pre-flight prompt then fences
+    /// only the hunks for the files
     /// <see cref="Hall9k.Domain.Features.PrReviewPreflight.PrReviewPreflightSurfaceMatcher"/>
-    /// matched, capped, never the whole thing. Same "always carries an explicit repository"
-    /// reasoning as <see cref="FetchChangedFileNamesAsync"/>.
+    /// matched, capped, never the whole thing; the changed-file list itself is read back out of
+    /// this same diff (<see cref="Hall9k.Domain.Features.PrReviewPreflight.PrReviewPreflightDiffExtractor.ExtractChangedFiles"/>)
+    /// rather than a second, separately-racing call.
     /// </summary>
-    public async Task<string> FetchDiffAsync(string reference, string workingDirectory, CancellationToken cancellationToken)
+    public async Task<string> FetchDiffForCommitAsync(
+        string repository, int number, string baseRefName, string headOid, string workingDirectory,
+        CancellationToken cancellationToken)
     {
-        (string? repository, int number) = GitHubPullRequestReference.Parse(reference);
-
-        List<string> arguments = ["pr", "diff", number.ToString(CultureInfo.InvariantCulture)];
-        if (repository is not null)
-        {
-            arguments.AddRange(["--repo", repository]);
-        }
+        List<string> arguments =
+        [
+            "api", $"repos/{repository}/compare/{baseRefName}...{headOid}",
+            "-H", "Accept: application/vnd.github.v3.diff",
+        ];
 
         ProcessResult result = await RunGhAsync(arguments, workingDirectory, cancellationToken);
         if (result.ExitCode != 0)

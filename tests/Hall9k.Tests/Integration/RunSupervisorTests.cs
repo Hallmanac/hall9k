@@ -3130,7 +3130,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         await using (IDocumentSession session = store.LightweightSession())
         {
             session.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
-                preflightRunId, taskId, node.NodeId, "claude-opus-5-5", string.Empty, [], Now,
+                preflightRunId, taskId, runId, node.NodeId, "claude-opus-5-5", string.Empty, [], Now,
                 IsMentionFollowUp: true));
             await session.SaveChangesAsync(cts.Token);
         }
@@ -3197,7 +3197,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         await using (IDocumentSession session = store.LightweightSession())
         {
             session.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
-                preflightRunId, taskId, node.NodeId, "claude-opus-5-5", "abc123", ["src/Auth/Login.cs"], Now));
+                preflightRunId, taskId, runId, node.NodeId, "claude-opus-5-5", "abc123", ["src/Auth/Login.cs"], Now));
             await session.SaveChangesAsync(cts.Token);
         }
 
@@ -3278,7 +3278,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         await using (IDocumentSession session = store.LightweightSession())
         {
             session.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
-                preflightRunId, taskId, node.NodeId, "claude-opus-5-5", "def456", [], Now));
+                preflightRunId, taskId, runId, node.NodeId, "claude-opus-5-5", "def456", [], Now));
             await session.SaveChangesAsync(cts.Token);
         }
 
@@ -3320,6 +3320,92 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         {
             listItem.PrReviewPreflightParkedReason.Should().Contain(expectedReasonSubstring);
         }
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 5, adversarial lens (RunSupervisor.cs:275): a pre-flight
+    /// that outlives the claim it was dispatched to gate — here, the task was reclaimed under a
+    /// fresh run while the first pre-flight was still in flight — must never touch the state of the
+    /// claim that now owns the task, even with a safe verdict. Before
+    /// <see cref="Hall9k.Domain.Features.PrReviewPreflight.PrReviewPreflightDispatched.DispatchingRunId"/>,
+    /// <c>CompletePreflightAsync</c> only checked the task was still <c>Claimed</c>, not which
+    /// claim — a safe verdict for the stale run would have requeued the task out from under
+    /// whatever the fresh claim was already doing.
+    /// </summary>
+    [Fact]
+    public async Task A_safe_verdict_for_a_reclaimed_tasks_stale_preflight_never_touches_the_fresh_claim()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid staleRunId = DomainId.New();
+        Guid freshRunId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, DomainId.New(), "Review pull request acme/web#21", ["the verdict is submitted"],
+                    TaskType.PrReview, null, constraints: null,
+                    new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#21"), Now, node.OwnerId),
+                node.OwnerId, Now);
+            TaskClaimed claimed1 = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, staleRunId, Now);
+            aggregate.Apply(claimed1);
+            // The reclaim a long daemon restart or a human release can produce while a pre-flight
+            // is still mid-flight (RunSupervisor.cs:275's own doc): the task is requeued and
+            // reclaimed under a fresh run before the earlier pre-flight ever reaches a verdict.
+            TaskRequeued requeued = TaskDecider.Requeue(aggregate, RequeueReason.PrReviewPreflightRetry, Now);
+            aggregate.Apply(requeued);
+            TaskClaimed claimed2 = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, freshRunId, Now);
+            aggregate.Apply(claimed2);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed1, requeued, claimed2]);
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = claimed2.LeaseGeneration, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid preflightRunId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
+                preflightRunId, taskId, staleRunId, node.NodeId, "claude-opus-5-5", string.Empty, [], Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        int processId = SpawnFakeAgent(preflightRunId, FakeAgentScript.New().Emit(AssistantLine).Emit(
+            """{"type":"result","subtype":"success","is_error":false,"result":"Looks fine.\n\nPREFLIGHT: safe - no risky surfaces touched","usage":{"input_tokens":1,"output_tokens":1}}"""));
+        DateTimeOffset startedAt;
+        try
+        {
+            using Process process = Process.GetProcessById(processId);
+            startedAt = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or Win32Exception)
+        {
+            startedAt = DateTimeOffset.UtcNow;
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(preflightRunId, new PrReviewPreflightProcessStarted(preflightRunId, processId, startedAt));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        NewSupervisor(store, node).StartPreflightMonitoring(preflightRunId, taskId, processId, startedAt, cts.Token);
+
+        await WaitForEventCountAsync<PrReviewPreflightCompleted>(store, preflightRunId, 1, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        details.State.Value.Should().Be(
+            "Claimed", "the stale pre-flight's own safe verdict must never requeue a task a fresh claim already owns");
+        details.CurrentRunId.Should().Be(
+            freshRunId, "the fresh claim's own run must stay untouched by a verdict dispatched for a different, stale one");
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().NotBeNull(
+            "the stale pre-flight's completion must never delete the fresh claim's own lease");
     }
 
     private static string DisputedResultLine(string summary) =>

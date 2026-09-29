@@ -196,8 +196,12 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         DateTimeOffset seededAt = DateTimeOffset.UtcNow;
         Guid preflightRunId = DomainId.New();
         await using IDocumentSession session = store.LightweightSession();
+        // DispatchingRunId is read only by RunSupervisor's own claim-identity guard, never by the
+        // read-side gate this seed exists to satisfy (EnsurePrReviewPreflightSafeAsync) — an
+        // arbitrary id stands in for it here, since none of this file's callers claim through the
+        // supervisor at seed time.
         session.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
-            preflightRunId, taskId, nodeId, "claude-opus-5-5", string.Empty, [], seededAt));
+            preflightRunId, taskId, DomainId.New(), nodeId, "claude-opus-5-5", string.Empty, [], seededAt));
         session.Events.Append(preflightRunId, new PrReviewPreflightCompleted(
             preflightRunId, Safe: true, "safe", "seeded for test", seededAt));
         await session.SaveChangesAsync(cancellationToken);

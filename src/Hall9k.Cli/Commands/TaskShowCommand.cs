@@ -2791,13 +2791,17 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 .FirstOrDefaultAsync(cancellationToken);
         }
 
-        // Only the task's very first run ever carries a mint's own "You were asked" section
-        // (RunLauncher's own isPrReview branch writes mention-answer.md only there — the identical
-        // RunIds[0]-is-the-original-review invariant AutoPrReviewEngine.AttachMentionAsync's own
-        // priorReviewRunId comment states) — a later re-review's own ReviewParked run answers no
-        // mention at all, and must not resurrect an already-answered one just because this task
-        // happens to have been minted from a mention once.
-        if (details.RunIds.Count == 0 || details.RunIds[0] != runId)
+        // Only the task's own original review run ever carries a mint's own "You were asked"
+        // section (RunLauncher's own isPrReview branch writes mention-answer.md only there) — a
+        // later re-review's own ReviewParked run answers no mention at all, and must not resurrect
+        // an already-answered one just because this task happens to have been minted from a
+        // mention once. Resolved through OriginalReviewRunResolver rather than a bare RunIds[0]
+        // (independent pre-PR review, cycle 5, conformance lens): a pr-review task's very first
+        // claim can now dispatch nothing but a pre-flight and requeue before any run is ever
+        // opened, so RunIds[0] can name a run with no RunDetails, ever, for this task.
+        Guid? originalReviewRunId = await OriginalReviewRunResolver.ResolveAsync(
+            session, details.RunIds, cancellationToken);
+        if (originalReviewRunId != runId)
         {
             return null;
         }

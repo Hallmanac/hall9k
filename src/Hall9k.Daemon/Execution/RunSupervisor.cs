@@ -260,9 +260,14 @@ public sealed class RunSupervisor(
     /// verdict on the pre-flight's own stream, then either releases the task (safe — the next
     /// claim finds this verdict and cuts the worktree) or parks it as needs-you (unsafe, including
     /// an unparseable marker, which is unsafe by construction) — nothing is checked out either
-    /// way. Guarded on the task still being <see cref="TaskState.Claimed"/>: a human could have
-    /// abandoned it while the pre-flight ran, in which case there is nothing left here to requeue
-    /// or park, and the recorded verdict alone is enough for the next dispatch to read.
+    /// way. Guarded on the task still being <see cref="TaskState.Claimed"/> under the SAME claim
+    /// this pre-flight was dispatched to gate (independent pre-PR review, cycle 5, adversarial
+    /// lens, RunSupervisor.cs:275): a human could have abandoned it while the pre-flight ran, in
+    /// which case there is nothing left here to requeue or park and the recorded verdict alone is
+    /// enough for the next dispatch to read — and a pre-flight that outlives its own claim (a long
+    /// daemon restart gave the lease sweep time to requeue it, or a human released it) must never
+    /// requeue or park a task whose live claim now belongs to a later dispatch, possibly one
+    /// already mid-review under a fresh, already-safe verdict of its own.
     /// </summary>
     private async Task CompletePreflightAsync(
         Guid preflightRunId, Guid taskId, PrReviewPreflightVerdict verdict, CancellationToken cancellationToken)
@@ -271,18 +276,21 @@ public sealed class RunSupervisor(
         session.Events.Append(preflightRunId, new PrReviewPreflightCompleted(
             preflightRunId, verdict.Safe, verdict.Verdict, verdict.Reason, DateTimeOffset.UtcNow));
 
+        PrReviewPreflightDetails? preflight = await session.LoadAsync<PrReviewPreflightDetails>(
+            preflightRunId, cancellationToken);
+
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-        if (task is null || task.State != TaskState.Claimed)
+        if (task is null || task.State != TaskState.Claimed
+            || task.CurrentRunId != preflight?.DispatchingRunId)
         {
             logger.LogInformation(
                 "Task {TaskId}: the pull-request review pre-flight finished ({Verdict}) but the task is no "
-                + "longer claimed — nothing to release or park", taskId, verdict.Safe ? "safe" : "unsafe");
+                + "longer claimed under the run this pre-flight was dispatched for — nothing to release or "
+                + "park", taskId, verdict.Safe ? "safe" : "unsafe");
             await session.SaveChangesAsync(cancellationToken);
             return;
         }
 
-        PrReviewPreflightDetails? preflight = await session.LoadAsync<PrReviewPreflightDetails>(
-            preflightRunId, cancellationToken);
         DateTimeOffset now = DateTimeOffset.UtcNow;
         if (verdict.Safe)
         {
@@ -322,23 +330,18 @@ public sealed class RunSupervisor(
     /// <see cref="ResumeStrandedPreflightsAsync"/> excludes an already-abandoned row from its own
     /// query, so a row already marked here is never re-abandoned (independent pre-PR review, cycle
     /// 1, both lenses: without either half of this, a fresh pre-flight was never actually
-    /// dispatched again, and this same row was requeued in an unbroken loop instead).
+    /// dispatched again, and this same row was requeued in an unbroken loop instead). Also guarded
+    /// on the task's live claim still being the one this pre-flight was dispatched for
+    /// (independent pre-PR review, cycle 5, adversarial lens, RunSupervisor.cs:275): an abandon
+    /// this stale reaching the task at all means a later dispatch has already reclaimed it —
+    /// possibly into a live review under its own, unrelated verdict — and this row's own timeout
+    /// has nothing left here to requeue.
     /// </summary>
     private async Task AbandonPreflightAsync(Guid preflightRunId, Guid taskId, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
         DateTimeOffset now = DateTimeOffset.UtcNow;
         session.Events.Append(preflightRunId, new PrReviewPreflightAbandoned(preflightRunId, now));
-
-        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-        if (task is null || task.State != TaskState.Claimed)
-        {
-            logger.LogInformation(
-                "Task {TaskId}: the pull-request review pre-flight {PreflightRunId} never reached a verdict, but "
-                + "the task is no longer claimed — nothing to requeue", taskId, preflightRunId);
-            await session.SaveChangesAsync(cancellationToken);
-            return;
-        }
 
         // The retry reason must match whether this abandoned row was gating a mention follow-up's
         // own checkout: a bare PrReviewPreflightRetry here cleared PendingMentionFollowUpAfterPreflight
@@ -349,6 +352,19 @@ public sealed class RunSupervisor(
         // review, cycle 3, conformance lens).
         PrReviewPreflightDetails? preflight = await session.LoadAsync<PrReviewPreflightDetails>(
             preflightRunId, cancellationToken);
+
+        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
+        if (task is null || task.State != TaskState.Claimed
+            || task.CurrentRunId != preflight?.DispatchingRunId)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: the pull-request review pre-flight {PreflightRunId} never reached a verdict, but "
+                + "the task is no longer claimed under the run it was dispatched for — nothing to requeue",
+                taskId, preflightRunId);
+            await session.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
         RequeueReason reason = preflight?.IsMentionFollowUp == true
             ? RequeueReason.PrReviewPreflightRetryMentionFollowUp
             : RequeueReason.PrReviewPreflightRetry;

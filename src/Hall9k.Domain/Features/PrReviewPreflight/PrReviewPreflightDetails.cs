@@ -15,6 +15,8 @@ public sealed class PrReviewPreflightDetails
 {
     public Guid Id { get; set; }
     public Guid TaskId { get; set; }
+    /// <summary>Mirrors <see cref="PrReviewPreflightDispatched.DispatchingRunId"/>.</summary>
+    public Guid DispatchingRunId { get; set; }
     public Guid NodeId { get; set; }
     public string Model { get; set; } = string.Empty;
     public string HeadRefOid { get; set; } = string.Empty;
@@ -37,6 +39,7 @@ public sealed partial class PrReviewPreflightDetailsProjection : SingleStreamPro
     {
         Id = @event.Data.Id,
         TaskId = @event.Data.TaskId,
+        DispatchingRunId = @event.Data.DispatchingRunId,
         NodeId = @event.Data.NodeId,
         Model = @event.Data.Model.Value,
         HeadRefOid = @event.Data.HeadRefOid,

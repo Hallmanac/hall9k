@@ -125,6 +125,25 @@ public sealed class GitHubPullRequestProviderTests
             .Should().Contain("is an issue, not a pull request");
     }
 
+    /// <summary>
+    /// Independent pre-PR review, cycle 5, adversarial lens (RunLauncher.cs:2014): the pre-flight's
+    /// diff read must name the exact head oid a verdict is about to be recorded against as part of
+    /// the request itself, rather than trusting a second, separately-timed gh call to agree with an
+    /// earlier one — the compare API's own base...head form is what makes that binding possible.
+    /// </summary>
+    [Fact]
+    public async Task FetchDiffForCommitAsync_binds_the_request_to_the_exact_base_and_head()
+    {
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding("diff --git a/README.md b/README.md\n");
+
+        string diff = await new GitHubPullRequestProvider(gh.Runner).FetchDiffForCommitAsync(
+            "Hallmanac/hall9k", 42, "main", "abc123", "/repos/hall9k", CancellationToken.None);
+
+        diff.Should().Contain("README.md");
+        gh.Calls.Single().Arguments.Should().ContainInOrder(
+            "api", "repos/Hallmanac/hall9k/compare/main...abc123", "-H", "Accept: application/vnd.github.v3.diff");
+    }
+
     [Fact]
     public async Task WebUrl_points_at_the_pull_request_path_not_issues()
     {

@@ -4151,7 +4151,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         await using (IDocumentSession seed = store.LightweightSession())
         {
             seed.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
-                preflightRunId, taskId, node.NodeId, "claude-opus-5-5", string.Empty,
+                preflightRunId, taskId, runId, node.NodeId, "claude-opus-5-5", string.Empty,
                 ["Dockerfile"], DateTimeOffset.UtcNow));
             seed.Events.Append(preflightRunId, new PrReviewPreflightCompleted(
                 preflightRunId, Safe: false, "unsafe", "the Dockerfile adds a curl-pipe-to-shell step",
@@ -4249,46 +4249,35 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
-    /// Independent pre-PR review, cycle 1, adversarial lens (RunLauncher.cs:1947): the head oid a
-    /// verdict is recorded against comes from gh pr view, read once at the top of LaunchAsync —
-    /// separately, and earlier, than the gh pr diff calls the pre-flight itself reads. Cycle 1's own
-    /// fix reread the head once after the diff fetch and swapped facts to the newer oid, but kept
-    /// the diff already fetched under the older one — cycle 3's adversarial lens caught that a
-    /// single push landing in the window still bound a safe verdict to content the diff read never
-    /// actually saw. The fix now discards that stale diff and refetches it under the newer oid,
-    /// rechecking again, rather than trusting a bare oid swap to make facts describe the diff in
-    /// hand.
+    /// Independent pre-PR review, cycle 5, adversarial lens (RunLauncher.cs:2014): the pre-flight's
+    /// diff read must be bound to the exact head oid the verdict is about to be recorded against,
+    /// never re-derived from a second, separately-timed gh call that could observe a different
+    /// commit — the defect that let a safe verdict get recorded against a head the pre-flight never
+    /// actually read. The compare API takes the oid as part of the request itself, so this proves
+    /// the exact oid gh pr view reported is exactly what shows up in the compare URL.
     /// </summary>
     [Fact]
-    public async Task A_head_that_moves_between_gh_pr_view_and_the_diff_fetch_rereads_the_diff_before_binding_to_the_newer_oid()
+    public async Task The_preflight_diff_is_read_through_the_compare_api_bound_to_the_exact_head_oid()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 912, cts.Token);
 
-        int viewCalls = 0;
-        RecordingProcessRunner gh = new(arguments =>
-        {
-            if (arguments.Contains("diff"))
+        string prView = """
             {
-                return new ProcessResult(0, string.Empty, string.Empty);
+              "number": 912,
+              "title": "Add rate limiting to auth endpoints",
+              "body": "Fixes an incident.",
+              "state": "OPEN",
+              "url": "https://github.com/acme/web/pull/912",
+              "baseRefName": "main",
+              "headRefOid": "the-exact-oid"
             }
-
-            viewCalls++;
-            string headRefOid = viewCalls == 1 ? "old-oid" : "new-oid";
-            return new ProcessResult(0, $$"""
-                {
-                  "number": 912,
-                  "title": "Add rate limiting to auth endpoints",
-                  "body": "Fixes an incident.",
-                  "state": "OPEN",
-                  "url": "https://github.com/acme/web/pull/912",
-                  "baseRefName": "main",
-                  "headRefOid": "{{headRefOid}}"
-                }
-                """, string.Empty);
-        });
+            """;
+        RecordingProcessRunner gh = new(arguments => arguments.Contains("api")
+            ? new ProcessResult(0, string.Empty, string.Empty)
+            : new ProcessResult(0, prView, string.Empty));
         CapturingExecutor executor = new();
         RefusingWorktreeManager worktrees = new();
         MergedInspector inspector = new();
@@ -4300,57 +4289,36 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
 
         executor.Request.Should().NotBeNull();
-        viewCalls.Should().Be(
-            3, "the initial fetch, the recheck that catches the mismatch, and the recheck that confirms "
-            + "the refetched diff finally matches");
-        gh.Calls.Count(call => call.Arguments.Contains("diff")).Should().Be(
-            4, "two gh invocations (name-only, then the full diff) per attempt, across the two attempts "
-            + "the mismatch forces");
+        (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) compareCall = gh.Calls.Single(
+            call => call.Arguments.Contains("api"));
+        compareCall.Arguments.Should().Contain(
+            argument => argument.Contains("compare/main...the-exact-oid", StringComparison.Ordinal),
+            "the diff request names the exact head oid a verdict is about to be recorded against, "
+            + "rather than trusting a second, separately-timed observation to agree with it");
 
         await using IQuerySession query = store.QuerySession();
         PrReviewPreflightDetails dispatched = (await query.Query<PrReviewPreflightDetails>()
             .Where(preflight => preflight.TaskId == taskId).ToListAsync(cts.Token)).Single();
-        dispatched.HeadRefOid.Should().Be(
-            "new-oid",
-            "the verdict must bind to the head the refetched diff was actually read against, not the "
-            + "earlier gh pr view's own answer");
+        dispatched.HeadRefOid.Should().Be("the-exact-oid");
     }
 
     /// <summary>
-    /// Independent pre-PR review, cycle 3, adversarial lens: a head that keeps moving every single
-    /// time this rereads it can never be reconciled by retrying forever, so the retry is bounded.
-    /// Giving up must fail the launch rather than silently proceeding with a diff that still does
-    /// not match the oid a verdict would be recorded against.
+    /// Independent pre-PR review, cycle 5, adversarial lens: when the compare API cannot answer for
+    /// the exact head oid a verdict would be recorded against, the launch fails outright rather than
+    /// silently falling back to whatever gh currently reports for a possibly-different head — the
+    /// failure mode a reread-and-hope loop could never fully rule out.
     /// </summary>
     [Fact]
-    public async Task A_head_that_keeps_moving_on_every_reread_fails_the_launch_instead_of_binding_a_mismatched_verdict()
+    public async Task A_compare_api_failure_fails_the_launch_instead_of_falling_back_to_the_current_head()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 913, cts.Token);
 
-        int viewCalls = 0;
-        RecordingProcessRunner gh = new(arguments =>
-        {
-            if (arguments.Contains("diff"))
-            {
-                return new ProcessResult(0, string.Empty, string.Empty);
-            }
-
-            viewCalls++;
-            return new ProcessResult(0, $$"""
-                {
-                  "number": 913,
-                  "title": "Add rate limiting to auth endpoints",
-                  "body": "Fixes an incident.",
-                  "state": "OPEN",
-                  "url": "https://github.com/acme/web/pull/913",
-                  "baseRefName": "main",
-                  "headRefOid": "oid-{{viewCalls}}"
-                }
-                """, string.Empty);
-        });
+        RecordingProcessRunner gh = new(arguments => arguments.Contains("api")
+            ? new ProcessResult(1, string.Empty, "HTTP 404: No commit found for the ref the-exact-oid")
+            : new ProcessResult(0, PullRequestPreflightJson.Replace("901", "913", StringComparison.Ordinal), string.Empty));
         CapturingExecutor executor = new();
         RefusingWorktreeManager worktrees = new();
         MergedInspector inspector = new();
@@ -4361,15 +4329,15 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
 
-        executor.Request.Should().BeNull("a head that never settles must never reach a dispatched pre-flight session");
+        executor.Request.Should().BeNull(
+            "a diff that cannot be read for the exact oid a verdict would bind to must never dispatch a session");
 
         await using IQuerySession query = store.QuerySession();
         (await query.Query<PrReviewPreflightDetails>()
             .Where(preflight => preflight.TaskId == taskId).ToListAsync(cts.Token)).Should().BeEmpty(
-            "no verdict may ever be recorded when the diff read could never be confirmed against a stable head");
+            "no verdict may ever be recorded when the diff for the judged oid could not be read");
         TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
         details.State.Value.Should().Be("Failed");
-        details.FailureReason.Should().Contain("kept moving");
     }
 
     /// <summary>
@@ -4391,7 +4359,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         await using (IDocumentSession seed = store.LightweightSession())
         {
             seed.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
-                preflightRunId, taskId, node.NodeId, "claude-opus-5-5", string.Empty, [], Now));
+                preflightRunId, taskId, runId, node.NodeId, "claude-opus-5-5", string.Empty, [], Now));
             seed.Events.Append(preflightRunId, new PrReviewPreflightAbandoned(preflightRunId, Now));
             await seed.SaveChangesAsync(cts.Token);
         }
@@ -4425,13 +4393,13 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
-        (Guid taskId, _, _) = await SeedClaimedPrReviewTaskAsync(store, node, 909, cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 909, cts.Token);
 
         Guid preflightRunId = DomainId.New();
         await using (IDocumentSession seed = store.LightweightSession())
         {
             seed.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
-                preflightRunId, taskId, node.NodeId, "claude-opus-5-5", string.Empty, [], Now));
+                preflightRunId, taskId, runId, node.NodeId, "claude-opus-5-5", string.Empty, [], Now));
             seed.Events.Append(preflightRunId, new PrReviewPreflightAbandoned(preflightRunId, Now));
             await seed.SaveChangesAsync(cts.Token);
         }
@@ -4768,8 +4736,11 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     {
         Guid preflightRunId = DomainId.New();
         await using IDocumentSession session = store.LightweightSession();
+        // DispatchingRunId is read only by RunSupervisor's own claim-identity guard, never by the
+        // read-side gate this seed exists to satisfy (EnsurePrReviewPreflightSafeAsync) — an
+        // arbitrary id stands in for it here.
         session.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
-            preflightRunId, taskId, nodeId, "claude-opus-5-5", headRefOid, [], Now));
+            preflightRunId, taskId, DomainId.New(), nodeId, "claude-opus-5-5", headRefOid, [], Now));
         session.Events.Append(preflightRunId, new PrReviewPreflightCompleted(
             preflightRunId, Safe: true, "safe", "seeded for test", Now));
         await session.SaveChangesAsync(cancellationToken);

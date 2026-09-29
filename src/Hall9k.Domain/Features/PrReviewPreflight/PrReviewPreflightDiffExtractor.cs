@@ -22,6 +22,35 @@ public static class PrReviewPreflightDiffExtractor
     private static readonly Regex DiffGitLine = new(@"^diff --git a/(?<a>.*) b/(?<b>.*)$", RegexOptions.Compiled);
 
     /// <summary>
+    /// Every path a unified diff touches, read back out of the diff's own <c>diff --git a/... b/...</c>
+    /// headers rather than a second, separately-fetched name list (independent pre-PR review, cycle
+    /// 5, adversarial lens): a pre-flight bound to one commit's diff (<see
+    /// cref="Hall9k.Connectors.WorkItems.GitHubPullRequestProvider.FetchDiffForCommitAsync"/>) must
+    /// never re-derive its changed-file list from a second call that could observe a different head.
+    /// The new (<c>b/</c>) path is reported for every entry, including a rename, since that is where
+    /// the changed content now lives.
+    /// </summary>
+    public static IReadOnlyList<string> ExtractChangedFiles(string diff)
+    {
+        if (diff.IsBlank())
+        {
+            return [];
+        }
+
+        List<string> files = [];
+        foreach (string line in diff.Replace("\r\n", "\n").Split('\n'))
+        {
+            Match match = DiffGitLine.Match(line);
+            if (match.Success)
+            {
+                files.Add(match.Groups["b"].Value);
+            }
+        }
+
+        return files;
+    }
+
+    /// <summary>
     /// Every hunk belonging to a file in <paramref name="matchedFiles"/>, joined in the diff's own
     /// order, truncated to <paramref name="maxCharacters"/> with a trailing note when it was cut.
     /// Empty when there is nothing to extract — an empty match list, or a diff with no matching

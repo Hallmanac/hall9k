@@ -52,4 +52,22 @@ public sealed class PrReviewPreflightDiffExtractorTests
         extracted.Length.Should().BeGreaterThan(10, "the truncation note itself is appended after the cap");
         extracted.Should().Contain("capped at 10 characters");
     }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 5, adversarial lens: the changed-file list is read back out
+    /// of the same oid-pinned diff read rather than a second, separately-timed gh call, so this
+    /// proves the extraction itself lists every file the diff's own headers name.
+    /// </summary>
+    [Fact]
+    public void Every_files_path_in_the_diffs_own_headers_is_extracted()
+    {
+        PrReviewPreflightDiffExtractor.ExtractChangedFiles(TwoFileDiff).Should().Equal(
+            "package.json", "src/App.cs");
+    }
+
+    [Fact]
+    public void An_empty_diff_extracts_no_changed_files()
+    {
+        PrReviewPreflightDiffExtractor.ExtractChangedFiles(string.Empty).Should().BeEmpty();
+    }
 }
