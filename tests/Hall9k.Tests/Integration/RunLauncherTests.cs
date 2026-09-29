@@ -4269,7 +4269,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         PullRequestMentionComment comment = new(
             "IC_1", "ryan", "@brian one more thing", "https://github.com/acme/web/pull/906#issuecomment-IC_1", Now);
         await launcher.LaunchPrReviewMentionFollowUpAsync(
-            taskId, runId, node.OwnerId, 1, node.NodeId, comment, priorReviewRunId: null, cts.Token);
+            taskId, runId, node.NodeId, node.OwnerId, 1, node.NodeId, comment, priorReviewRunId: null, cts.Token);
 
         executor.Request.Should().NotBeNull("with no verdict on record the site dispatches a pre-flight instead of refusing outright");
         executor.Request!.Prompt.Should().Contain(PrReviewPreflightVerdictParser.Marker,
@@ -4605,6 +4605,16 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         executor.Request.MaxTurns.Should().Be(
             new DaemonOptions().PrReviewMentionFollowUpMaxTurns,
             "the bounded follow-up's own turn cap, never the review role's unbounded one");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(claimed2.RunId, cts.Token))!;
+        run.NodeId.Should().Be(
+            node.NodeId,
+            "this claim holds a real TaskLease for this node (independent pre-PR review, cycle 1, adversarial "
+            + "lens, RunLauncher.cs:155) — the ceiling-exempt Guid.Empty sentinel is only correct for "
+            + "AutoPrReviewEngine's own lease-free ClaimForMentionFollowUp claim, and writing it here left "
+            + "RunSupervisor.RefreshAdoptedLeaseAsync and the startup expiry sweep both reading this live "
+            + "session as ownerless");
     }
 
     /// <summary>
