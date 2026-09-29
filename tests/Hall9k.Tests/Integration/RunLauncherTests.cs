@@ -4015,7 +4015,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
-        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 901, cts.Token);
+        (Guid taskId, Guid runId, Guid projectId) = await SeedClaimedPrReviewTaskAsync(store, node, 901, cts.Token);
 
         RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(PullRequestPreflightJson);
         CapturingExecutor executor = new();
@@ -4028,6 +4028,11 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
 
+        await using IQuerySession projectQuery = store.QuerySession();
+        ProjectDetails project = (await projectQuery.LoadAsync<ProjectDetails>(projectId, cts.Token))!;
+        gh.Calls.Should().NotBeEmpty();
+        gh.Calls.Should().OnlyContain(call => call.WorkingDirectory == project.RepositoryPath,
+            "ProjectScopedGitHubRunner finds the project's gh account by its repository path, which a run directory never matches");
         executor.Request.Should().NotBeNull("no verdict exists yet, so the pre-flight itself is what gets dispatched");
         executor.Request!.Prompt.Should().Contain(PrReviewPreflightVerdictParser.Marker);
         executor.Request.UntrustedWorkingDirectory.Should().BeTrue();

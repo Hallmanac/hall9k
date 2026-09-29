@@ -2073,8 +2073,11 @@ public sealed class RunLauncher(
         string diff;
         try
         {
+            // The project's repository path, not the run directory: ProjectScopedGitHubRunner finds
+            // the account to run gh as by matching the working directory against it.
             diff = await ghProvider.FetchDiffForCommitAsync(
-                facts.Repository, facts.Number, facts.BaseRefName, facts.HeadRefOid, runDirectory, cancellationToken);
+                facts.Repository, facts.Number, facts.BaseRefName, facts.HeadRefOid, project.RepositoryPath,
+                cancellationToken);
         }
         catch (DomainException exception)
         {
