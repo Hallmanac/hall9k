@@ -162,9 +162,10 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
     /// <summary>
     /// Everything after staging is ready, shared by <c>h9k install --repo</c>,
-    /// <c>h9k install --from-release</c>, and <see cref="UpdateCommand"/>: swap the
-    /// staged binaries into place, write Hall9k's own Postgres definition, republish the
-    /// canonical skill set, put h9k on the PATH, report the version placed, and offer the restart —
+    /// <c>h9k install --from-release</c>, and <see cref="UpdateCommand"/>: narrow the home
+    /// directory to 0700 on Unix, swap the staged binaries into place, write Hall9k's own Postgres
+    /// definition, republish the canonical skill set, put h9k on the PATH, report the version
+    /// placed, and offer the restart —
     /// whether or not a daemon was already running, since <c>--restart</c>'s own promise (the doctor
     /// step and the daemon start) is what actually finishes a migration like the Postgres loopback
     /// recreate, and a daemon a teammate happened to have stopped by hand is not a reason to leave
@@ -207,6 +208,14 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         ProcessRunner? containerRuntimeRunner = null,
         CancellationToken cancellationToken = default)
     {
+        // Narrows the home directory itself before anything else in this method touches it —
+        // every other step below either writes into it (the compose file, the skills and
+        // templates directories, the recipe library) or is the swap into ~/.hall9k/bin, and a
+        // secret this run is about to write is exactly what this guards (security review idea
+        // 6be68ee2, secrets-files-network finding 8). Run for every caller, install and update
+        // alike, since both funnel through this method.
+        HomeDirectoryPermissions.NarrowIfWider();
+
         // The actual last point before staging becomes ~/.hall9k/bin, run for every caller —
         // ExecuteAsync's --repo branch included, which stages straight from `dotnet publish`
         // and never goes through StageFromRelease's own filtering. Directory.Build.targets is

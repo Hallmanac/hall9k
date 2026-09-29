@@ -605,6 +605,17 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
     └── handoff.md              what this run hands down in turn
 ```
 
+On Unix, `~/.hall9k` itself (or `HALL9K_HOME`, when redirected) is kept at `0700`, readable and
+traversable only by the account that owns it — the one directory mode that closes every secret
+underneath it, config.json, keys/, run transcripts, database dumps, regardless of each file's own
+mode (security review idea 6be68ee2, secrets-files-network finding 8). `h9k install` and
+`h9k update` narrow it whenever it is wider, printing one line only when they actually do; `h9k
+doctor` reports a home wider than `0700` and repairs it only with `--yes`, the same shape as every
+other doctor remediation, which is also what catches a home a daemon created before install ever
+ran (the dev loop, or a temp home). A running daemon's open handles, Docker Desktop, and launchd
+are unaffected, since every one of them runs as the same owning account. Windows has no POSIX mode
+to narrow; the profile ACL is the boundary there instead.
+
 `recipes/orchestrator.md` sets the orchestrator window's default operator voice (plain
 language, one idea per paragraph, a scenario before any criteria walk), which never surfaces a
 routine event: no reply to a routine one, ever, and anything actionable is reported at once. The
