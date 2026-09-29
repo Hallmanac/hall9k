@@ -161,6 +161,10 @@ public sealed class DispatchLoop(
                 // (h9k review resolve) or a branch an operator just delivered interactively
                 // (h9k task deliver) re-enters the pipeline before anything else acts.
                 await supervisor.ResumeStrandedPipelinesAsync(stoppingToken);
+                // The pre-flight's own sibling to the pipeline resume above (idea 6be68ee2,
+                // finding 1, phase one): a daemon restart mid-pre-flight re-runs or adopts it,
+                // never skips it — see ResumeStrandedPreflightsAsync's own doc.
+                await supervisor.ResumeStrandedPreflightsAsync(stoppingToken);
                 // A deliberate h9k task start claim carries no lease and no monitor of its own
                 // (task: a do-now session launched by h9k task start is caught within seconds) —
                 // this is what notices its session exiting and either delivers it automatically or

@@ -10,6 +10,7 @@ using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.PrReviewPreflight;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -171,6 +172,19 @@ public sealed class RunLauncher(
                 }
             }
 
+            // The pull-request review pre-flight (idea 6be68ee2, finding 1, phase one): every
+            // pr-review dispatch is gated here, before any worktree is cut, on a safe verdict for
+            // this exact head oid. Not safe yet (no verdict at all, or one for a since-moved head)
+            // dispatches a fresh pre-flight and returns; unsafe parks the task as needs-you and
+            // returns; either way nothing below this point runs for this dispatch.
+            if (isPrReview && prReviewFacts is not null
+                && !await EnsurePrReviewPreflightSafeAsync(
+                    session, task, project, prReviewFacts, dispatchingNodeId ?? nodeId, runId, leaseGeneration,
+                    cancellationToken))
+            {
+                return;
+            }
+
             // A reopened task carries the branch of its existing PR: the follow-up run
             // resumes that branch instead of cutting a fresh one off the base (log #20).
             (string Branch, string PullRequestUrl)? followUp =
@@ -209,16 +223,50 @@ public sealed class RunLauncher(
                     "Task {TaskId}: run {RunId} is {Reason}", taskId, runId, stackedBase.Reason);
             }
 
-            (Worktree worktree, bool resumesPreviousWork, RunStartedCleanAfterBranchGone? startedClean) = isPrReview
-                ? (await worktrees.CreatePrReviewCheckoutAsync(
-                    new PrReviewWorktreeRequest(project.RepositoryPath, prReviewFacts!.Number, taskId, runId),
-                    cancellationToken), false, null)
-                : followUp is { } resume
-                    ? (await worktrees.CheckoutExistingAsync(
-                        new FollowUpWorktreeRequest(project.RepositoryPath, resume.Branch, taskId, runId),
-                        cancellationToken), true, null)
-                    : await CheckoutFreshOrRetryAsync(
-                        task, project, stackedBase.BaseBranch, taskId, runId, cancellationToken);
+            Worktree worktree;
+            bool resumesPreviousWork;
+            RunStartedCleanAfterBranchGone? startedClean;
+            if (isPrReview)
+            {
+                try
+                {
+                    worktree = await worktrees.CreatePrReviewCheckoutAsync(
+                        new PrReviewWorktreeRequest(
+                            project.RepositoryPath, prReviewFacts!.Number, taskId, runId, prReviewFacts.HeadRefOid),
+                        cancellationToken);
+                }
+                catch (PullRequestHeadMovedException exception)
+                {
+                    // The safe verdict this dispatch just confirmed was judged against a head this
+                    // checkout's own fetch no longer observes (idea 6be68ee2, finding 1, phase
+                    // two) — a fresh pre-flight is dispatched against the head actually observed
+                    // here, exactly as a dispatch that found no verdict at all would, rather than
+                    // proceeding with a checkout the verdict was never about.
+                    logger.LogWarning(
+                        "Task {TaskId}: {Message} — dispatching a fresh pre-flight instead of proceeding",
+                        taskId, exception.Message);
+                    await DispatchPrReviewPreflightAsync(
+                        task, project, prReviewFacts! with { HeadRefOid = exception.ObservedHeadOid },
+                        dispatchingNodeId ?? nodeId, runId, leaseGeneration, cancellationToken);
+                    return;
+                }
+
+                resumesPreviousWork = false;
+                startedClean = null;
+            }
+            else if (followUp is { } resume)
+            {
+                worktree = await worktrees.CheckoutExistingAsync(
+                    new FollowUpWorktreeRequest(project.RepositoryPath, resume.Branch, taskId, runId),
+                    cancellationToken);
+                resumesPreviousWork = true;
+                startedClean = null;
+            }
+            else
+            {
+                (worktree, resumesPreviousWork, startedClean) = await CheckoutFreshOrRetryAsync(
+                    task, project, stackedBase.BaseBranch, taskId, runId, cancellationToken);
+            }
 
             await RenderKnowledgeDocumentsIntoAsync(session, project, worktree.Path, runId, cancellationToken);
             // The lesson section every prompt this method composes carries (idea d805fd8b, piece
@@ -941,9 +989,35 @@ public sealed class RunLauncher(
                 return;
             }
 
+            // The identical pre-flight gate LaunchAsync's own isPrReview branch requires (idea
+            // 6be68ee2, finding 1, phase one — the acceptance criterion is explicit that BOTH
+            // daemon checkout sites require a safe verdict for the current head oid): this method
+            // cuts a fresh checkout too, and never passes through that branch, so it needs its own
+            // call to the identical gate rather than inheriting one it never runs through.
+            if (!await EnsurePrReviewPreflightSafeAsync(
+                session, task, project, facts, dispatchingNodeId, runId, leaseGeneration, cancellationToken))
+            {
+                return;
+            }
+
             await CleanUpPreviousPrReviewWorktreesAsync(taskId, project, cancellationToken);
-            Worktree worktree = await worktrees.CreatePrReviewCheckoutAsync(
-                new PrReviewWorktreeRequest(project.RepositoryPath, facts.Number, taskId, runId), cancellationToken);
+            Worktree worktree;
+            try
+            {
+                worktree = await worktrees.CreatePrReviewCheckoutAsync(
+                    new PrReviewWorktreeRequest(project.RepositoryPath, facts.Number, taskId, runId, facts.HeadRefOid),
+                    cancellationToken);
+            }
+            catch (PullRequestHeadMovedException exception)
+            {
+                logger.LogWarning(
+                    "Task {TaskId}: {Message} — dispatching a fresh pre-flight instead of proceeding",
+                    taskId, exception.Message);
+                await DispatchPrReviewPreflightAsync(
+                    task, project, facts with { HeadRefOid = exception.ObservedHeadOid }, dispatchingNodeId, runId,
+                    leaseGeneration, cancellationToken);
+                return;
+            }
 
             await RenderKnowledgeDocumentsIntoAsync(session, project, worktree.Path, runId, cancellationToken);
 
@@ -1774,6 +1848,162 @@ public sealed class RunLauncher(
         PullRequestFacts facts = await new GitHubPullRequestProvider(processRunner).FetchFactsAsync(
             ExternalReference.Parse(task.ExternalReference).Reference, project.RepositoryPath, cancellationToken);
         return facts.State.Equals("OPEN", StringComparison.OrdinalIgnoreCase) ? facts : null;
+    }
+
+    /// <summary>
+    /// The pull-request review pre-flight's own gate (idea 6be68ee2, finding 1, phase one): true
+    /// only when a safe verdict is on record for this task's CURRENT head oid, in which case the
+    /// caller proceeds to cut the worktree exactly as before. False means this dispatch is done —
+    /// either a fresh pre-flight was just dispatched (no usable verdict for this exact head), one
+    /// is already dispatched and not yet complete (its own monitor, or a restart's adoption sweep,
+    /// completes or abandons it later), or the task was just parked unsafe. Shared by
+    /// <see cref="LaunchAsync"/>'s own <c>isPrReview</c> branch and
+    /// <see cref="LaunchPrReviewMentionFollowUpAsync"/>: both cut a fresh checkout, and neither
+    /// may do so without this gate (the acceptance criterion is explicit that both sites require
+    /// it).
+    /// </summary>
+    private async Task<bool> EnsurePrReviewPreflightSafeAsync(
+        IDocumentSession session, TaskDetails task, ProjectDetails project, PullRequestFacts facts, Guid nodeId,
+        Guid runId, int leaseGeneration, CancellationToken cancellationToken)
+    {
+        PrReviewPreflightDetails? latest = await session.Query<PrReviewPreflightDetails>()
+            .Where(preflight => preflight.TaskId == task.Id)
+            .OrderByDescending(preflight => preflight.DispatchedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (latest is { CompletedAt: not null } completed && completed.HeadRefOid == facts.HeadRefOid)
+        {
+            // Every completed row is a genuine verdict: a budget exhaustion, a launch failure, a
+            // timeout, or a dead process at restart never reaches PrReviewPreflightCompleted at
+            // all (RunSupervisor.AbandonPreflightAsync leaves the row incomplete instead), so
+            // there is no third "completed but not really" case to fall through here.
+            if (completed.Safe)
+            {
+                return true;
+            }
+
+            // Defensive: the pre-flight's own monitor already parks the task the moment it
+            // records an unsafe verdict, in the same transaction — this only fires if a crash
+            // landed between those two writes.
+            await ParkUnsafePrReviewPreflightIfStillClaimedAsync(task.Id, completed, cancellationToken);
+            return false;
+        }
+        else if (latest is { CompletedAt: null } inFlight && inFlight.HeadRefOid == facts.HeadRefOid)
+        {
+            // Already dispatched for this exact head — its own monitor (or, after a restart, the
+            // adoption sweep) completes or abandons it and releases this task's lease.
+            return false;
+        }
+
+        await DispatchPrReviewPreflightAsync(task, project, facts, nodeId, runId, leaseGeneration, cancellationToken);
+        return false;
+    }
+
+    private async Task ParkUnsafePrReviewPreflightIfStillClaimedAsync(
+        Guid taskId, PrReviewPreflightDetails completed, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
+        if (task is null || task.State != TaskState.Claimed)
+        {
+            return;
+        }
+
+        session.Events.Append(taskId, TaskDecider.ParkPrReviewPreflight(
+            task, completed.Surfaces, completed.HeadRefOid, completed.Verdict, completed.Reason,
+            DateTimeOffset.UtcNow));
+        session.Delete<TaskLease>(taskId);
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Reads a pull request's own changed-file list and diff hunks through <c>gh</c> and spawns
+    /// the pre-flight session against them (idea 6be68ee2, finding 1, phase one) — the courier's
+    /// own run-with-no-task precedent (working directory <see cref="RunPaths.GlobalDirectory"/>,
+    /// <c>UntrustedWorkingDirectory</c> true, a turn cap from <see cref="DaemonOptions"/>, its own
+    /// stream) rather than the ordinary <c>RunDispatched</c>/<see cref="RunAggregate"/> shape:
+    /// <see cref="RunDispatched.WorktreePath"/> is required, and
+    /// <see cref="CleanUpPreviousPrReviewWorktreesAsync"/> removes any recorded path — a run whose
+    /// worktree is its own run directory is a trap for that sweep. Never awaited on to finish:
+    /// <see cref="RunSupervisor.StartPreflightMonitoring"/> is fired and this method returns, so
+    /// the dispatch loop that called <see cref="LaunchAsync"/> is never stalled behind this
+    /// session (the acceptance criterion's own "without ever blocking the dispatch loop").
+    /// </summary>
+    private async Task DispatchPrReviewPreflightAsync(
+        TaskDetails task, ProjectDetails project, PullRequestFacts facts, Guid nodeId, Guid runId,
+        int leaseGeneration, CancellationToken cancellationToken)
+    {
+        Guid preflightRunId = DomainId.New();
+        string runDirectory = RunPaths.GlobalDirectory(preflightRunId);
+        Directory.CreateDirectory(runDirectory);
+
+        string reference = ExternalReference.Parse(task.ExternalReference).Reference;
+        GitHubPullRequestProvider ghProvider = new(processRunner);
+
+        IReadOnlyList<string> changedFiles;
+        string diff;
+        try
+        {
+            changedFiles = await ghProvider.FetchChangedFileNamesAsync(reference, runDirectory, cancellationToken);
+            diff = await ghProvider.FetchDiffAsync(reference, runDirectory, cancellationToken);
+        }
+        catch (DomainException exception)
+        {
+            await RecordLaunchFailureAsync(task.Id, runId, leaseGeneration, exception.Message, cancellationToken);
+            return;
+        }
+
+        IReadOnlyList<string> surfaces = PrReviewPreflightSurfaceMatcher.Match(changedFiles);
+        string matchedHunks = PrReviewPreflightDiffExtractor.ExtractMatchedHunks(diff, surfaces);
+        string prompt = PrReviewPreflightPromptBuilder.Build(reference, facts.Url, changedFiles, surfaces, matchedHunks);
+
+        AgentModel model = options.Value.ResolveSecurityPreflightModel(project.Model);
+        AgentEffort effort = options.Value.ResolveEffort(AgentRole.SecurityPreflight, taskEffort: null, project.Effort);
+
+        await using (IDocumentSession dispatchSession = store.LightweightSession())
+        {
+            dispatchSession.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
+                preflightRunId, task.Id, nodeId, model, facts.HeadRefOid, surfaces, DateTimeOffset.UtcNow));
+            await dispatchSession.SaveChangesAsync(cancellationToken);
+        }
+
+        SpawnedAgent agent;
+        try
+        {
+            agent = await executor.SpawnAsync(
+                new AgentSpawnRequest(
+                    preflightRunId, preflightRunId, runDirectory, runDirectory, prompt, ExecutorMode.Subscription,
+                    model, effort, SkipPermissions: false,
+                    UntrustedWorkingDirectory: true,
+                    MaxTurns: options.Value.SecurityPreflightMaxTurns)
+                {
+                    TaskId = task.Id,
+                    SessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.SecurityPreflight),
+                    UsesReviewPermissions = true,
+                },
+                cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogError(
+                exception, "Task {TaskId}: the pull-request review pre-flight could not be spawned", task.Id);
+            await RecordLaunchFailureAsync(task.Id, runId, leaseGeneration, exception.Message, cancellationToken);
+            return;
+        }
+
+        await using (IDocumentSession startSession = store.LightweightSession())
+        {
+            startSession.Events.Append(
+                preflightRunId, new PrReviewPreflightProcessStarted(preflightRunId, agent.ProcessId, agent.StartedAt));
+            await startSession.SaveChangesAsync(cancellationToken);
+        }
+
+        logger.LogInformation(
+            "Task {TaskId}: pull-request review pre-flight dispatched (pid {ProcessId}, model {Model}, "
+            + "{SurfaceCount} matched surface(s) of {ChangedCount} changed file(s))",
+            task.Id, agent.ProcessId, model.Value, surfaces.Count, changedFiles.Count);
+
+        supervisor.StartPreflightMonitoring(preflightRunId, task.Id, agent.ProcessId, agent.StartedAt, cancellationToken);
     }
 
     /// <summary>
