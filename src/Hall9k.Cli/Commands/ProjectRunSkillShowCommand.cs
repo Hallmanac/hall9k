@@ -46,7 +46,7 @@ public sealed class ProjectRunSkillShowCommand : Hall9kAsyncCommand<ProjectRunSk
 
         AnsiConsole.MarkupLine($"Run skill for '{project.Name.EscapeMarkup()}' [dim]({skill.Shape.Value})[/]:");
         AnsiConsole.WriteLine();
-        AnsiConsole.WriteLine(skill.Content);
+        AnsiConsole.WriteLine(ExternalText.ForTerminal(skill.Content));
         AnsiConsole.WriteLine();
         Guid? thisNodeId = (await session.Query<NodeDetails>()
             .Where(candidate => candidate.MachineName == Environment.MachineName)
