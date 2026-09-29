@@ -113,4 +113,23 @@ public sealed class PrReviewPreflightDiffExtractorTests
         PrReviewPreflightDiffExtractor.ExtractChangedFiles(diff).Should().Equal(
             ".github/actions/setup b/action.yml");
     }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 8, adversarial lens: git quotes only whichever side of a
+    /// rename actually needs it, not both — renaming into a non-ASCII new name quotes only the
+    /// b-path, leaving the a-path plain. The prior fix only recognized both-quoted and
+    /// quoted-a/plain-b; this asymmetric plain-a/quoted-b shape dropped the file outright.
+    /// </summary>
+    [Fact]
+    public void A_rename_with_only_the_new_path_quoted_is_still_extracted()
+    {
+        string diff =
+            "diff --git a/foo.txt \"b/.github/workflows/d\\303\\251ploiement.yml\"\n"
+            + "similarity index 100%\n"
+            + "rename from foo.txt\n"
+            + "rename to .github/workflows/déploiement.yml\n";
+
+        PrReviewPreflightDiffExtractor.ExtractChangedFiles(diff).Should().Equal(
+            ".github/workflows/déploiement.yml");
+    }
 }
