@@ -1963,68 +1963,93 @@ public sealed class RunLauncher(
         string reference = ExternalReference.Parse(task.ExternalReference).Reference;
         GitHubPullRequestProvider ghProvider = new(processRunner);
 
+        // The head oid this verdict is about to be recorded against (facts.HeadRefOid) is read by
+        // gh pr view earlier and separately from the gh pr diff calls below — two independent
+        // observations that can disagree if the head moved in between. Cycle 1's own fix here
+        // (06714e1de) reread the head once after the diff fetch and adopted the newer oid, but kept
+        // the diff already fetched under the older one, so a single push landing in that window
+        // still recorded a safe verdict against content this pre-flight never actually read
+        // (independent pre-PR review, cycle 3, adversarial lens). Rereading alone can never make
+        // facts.HeadRefOid describe the diff in hand — only rereading the diff itself does, so a
+        // disagreement here discards the diff and refetches it under the newer oid instead of
+        // silently swapping facts underneath unchanged content. Bounded, rather than looped forever,
+        // for the pathological case of a head that keeps moving every time this checks it. Skipped
+        // entirely when headOidFromGitFetch is true (both PullRequestHeadMovedException catches pass
+        // it): that oid already comes from a direct git fetch of refs/pull/<n>/head, strictly fresher
+        // than a second gh pr view could ever confirm, so asking gh again there would only replace a
+        // more-authoritative reading with a less fresh one.
+        const int maxHeadRereadAttempts = 3;
         IReadOnlyList<string> changedFiles;
         string diff;
-        try
-        {
-            changedFiles = await ghProvider.FetchChangedFileNamesAsync(reference, runDirectory, cancellationToken);
-            diff = await ghProvider.FetchDiffAsync(reference, runDirectory, cancellationToken);
-        }
-        catch (DomainException exception)
-        {
-            // GitHub's own diff endpoint refuses a pull request over its file-count ceiling
-            // outright (documented at 300 files) — with nothing to judge, this pre-flight cannot
-            // reach a verdict at all, so the task parks as needs-you exactly as an unparseable
-            // session verdict already does, rather than failing the launch permanently on a pull
-            // request that can never shrink back under the ceiling on its own (independent pre-PR
-            // review, cycle 1, adversarial lens: a dependency bump, a generated-code refresh, or a
-            // rename sweep touching more than 300 files could otherwise never be reviewed again).
-            if (GitHubDiffSizeLimitClassifier.IsDiffTooLarge(exception.Message))
-            {
-                await ParkUnreadableDiffPreflightAsync(
-                    task.Id, facts,
-                    $"gh could not read this pull request's diff, so the pre-flight has nothing to judge: "
-                    + $"{exception.Message}",
-                    cancellationToken);
-                return;
-            }
-
-            await RecordLaunchFailureAsync(task.Id, runId, leaseGeneration, exception.Message, cancellationToken);
-            return;
-        }
-
-        // The head oid this verdict is about to be recorded against (facts.HeadRefOid) was read
-        // by gh pr view earlier and separately from the gh pr diff calls just above — two
-        // independent observations that can disagree if the head moved in between (independent
-        // pre-PR review, cycle 1, adversarial lens: force-push away and back around the diff read
-        // would otherwise record a safe verdict against a head this pre-flight never actually
-        // judged the diff of). Re-read here, immediately after the diff fetch, and record the
-        // verdict against whichever oid is actually current now rather than the earlier, possibly
-        // stale one. Skipped when headOidFromGitFetch is true (both PullRequestHeadMovedException
-        // catches pass it): that oid already comes from a direct git fetch of
-        // refs/pull/<n>/head, strictly fresher than a second gh pr view could ever confirm, so
-        // asking gh again there would only replace a more-authoritative reading with a less fresh
-        // one.
-        if (!headOidFromGitFetch)
+        for (int attempt = 1; ; attempt++)
         {
             try
             {
-                PullRequestFacts recheckedFacts = await ghProvider.FetchFactsAsync(reference, runDirectory, cancellationToken);
-                if (recheckedFacts.HeadRefOid != facts.HeadRefOid)
+                changedFiles = await ghProvider.FetchChangedFileNamesAsync(reference, runDirectory, cancellationToken);
+                diff = await ghProvider.FetchDiffAsync(reference, runDirectory, cancellationToken);
+            }
+            catch (DomainException exception)
+            {
+                // GitHub's own diff endpoint refuses a pull request over its file-count ceiling
+                // outright (documented at 300 files) — with nothing to judge, this pre-flight cannot
+                // reach a verdict at all, so the task parks as needs-you exactly as an unparseable
+                // session verdict already does, rather than failing the launch permanently on a pull
+                // request that can never shrink back under the ceiling on its own (independent pre-PR
+                // review, cycle 1, adversarial lens: a dependency bump, a generated-code refresh, or a
+                // rename sweep touching more than 300 files could otherwise never be reviewed again).
+                if (GitHubDiffSizeLimitClassifier.IsDiffTooLarge(exception.Message))
                 {
-                    logger.LogWarning(
-                        "Task {TaskId}: the pull request's head read as {ExpectedHeadOid} earlier but "
-                        + "{ObservedHeadOid} just now, after the diff fetch — recording this verdict against "
-                        + "the head actually observed",
-                        task.Id, facts.HeadRefOid, recheckedFacts.HeadRefOid);
-                    facts = recheckedFacts;
+                    await ParkUnreadableDiffPreflightAsync(
+                        task.Id, facts,
+                        $"gh could not read this pull request's diff, so the pre-flight has nothing to judge: "
+                        + $"{exception.Message}",
+                        cancellationToken);
+                    return;
                 }
+
+                await RecordLaunchFailureAsync(task.Id, runId, leaseGeneration, exception.Message, cancellationToken);
+                return;
+            }
+
+            if (headOidFromGitFetch)
+            {
+                break;
+            }
+
+            PullRequestFacts recheckedFacts;
+            try
+            {
+                recheckedFacts = await ghProvider.FetchFactsAsync(reference, runDirectory, cancellationToken);
             }
             catch (DomainException exception)
             {
                 await RecordLaunchFailureAsync(task.Id, runId, leaseGeneration, exception.Message, cancellationToken);
                 return;
             }
+
+            if (recheckedFacts.HeadRefOid == facts.HeadRefOid)
+            {
+                break;
+            }
+
+            if (attempt >= maxHeadRereadAttempts)
+            {
+                await RecordLaunchFailureAsync(
+                    task.Id, runId, leaseGeneration,
+                    $"{task.ExternalReference}'s head kept moving while the pre-flight was reading its diff "
+                    + $"(last seen {facts.HeadRefOid}, then {recheckedFacts.HeadRefOid}) — giving up after "
+                    + $"{maxHeadRereadAttempts} attempts rather than recording a verdict for a diff this "
+                    + "pre-flight never actually read against the head it judged.",
+                    cancellationToken);
+                return;
+            }
+
+            logger.LogWarning(
+                "Task {TaskId}: the pull request's head read as {ExpectedHeadOid} earlier but "
+                + "{ObservedHeadOid} just now, after the diff fetch — refetching the diff against the head "
+                + "actually observed instead of recording a verdict for stale content (attempt {Attempt})",
+                task.Id, facts.HeadRefOid, recheckedFacts.HeadRefOid, attempt);
+            facts = recheckedFacts;
         }
 
         IReadOnlyList<string> surfaces = PrReviewPreflightSurfaceMatcher.Match(changedFiles);

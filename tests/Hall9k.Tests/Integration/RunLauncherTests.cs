@@ -4251,14 +4251,16 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     /// <summary>
     /// Independent pre-PR review, cycle 1, adversarial lens (RunLauncher.cs:1947): the head oid a
     /// verdict is recorded against comes from gh pr view, read once at the top of LaunchAsync —
-    /// separately, and earlier, than the gh pr diff calls the pre-flight itself reads. A pull
-    /// request whose head moves in that window (a force-push away and back would bind a safe
-    /// verdict to a commit the diff read never actually saw) is caught by re-reading the head
-    /// immediately after the diff fetch and recording the verdict against whichever oid is
-    /// actually current then.
+    /// separately, and earlier, than the gh pr diff calls the pre-flight itself reads. Cycle 1's own
+    /// fix reread the head once after the diff fetch and swapped facts to the newer oid, but kept
+    /// the diff already fetched under the older one — cycle 3's adversarial lens caught that a
+    /// single push landing in the window still bound a safe verdict to content the diff read never
+    /// actually saw. The fix now discards that stale diff and refetches it under the newer oid,
+    /// rechecking again, rather than trusting a bare oid swap to make facts describe the diff in
+    /// hand.
     /// </summary>
     [Fact]
-    public async Task A_head_that_moves_between_gh_pr_view_and_the_diff_fetch_binds_the_verdict_to_the_newer_oid()
+    public async Task A_head_that_moves_between_gh_pr_view_and_the_diff_fetch_rereads_the_diff_before_binding_to_the_newer_oid()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
@@ -4298,15 +4300,76 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
 
         executor.Request.Should().NotBeNull();
-        viewCalls.Should().Be(2, "the initial fetch, plus this fix's own recheck right after the diff read");
+        viewCalls.Should().Be(
+            3, "the initial fetch, the recheck that catches the mismatch, and the recheck that confirms "
+            + "the refetched diff finally matches");
+        gh.Calls.Count(call => call.Arguments.Contains("diff")).Should().Be(
+            4, "two gh invocations (name-only, then the full diff) per attempt, across the two attempts "
+            + "the mismatch forces");
 
         await using IQuerySession query = store.QuerySession();
         PrReviewPreflightDetails dispatched = (await query.Query<PrReviewPreflightDetails>()
             .Where(preflight => preflight.TaskId == taskId).ToListAsync(cts.Token)).Single();
         dispatched.HeadRefOid.Should().Be(
             "new-oid",
-            "the verdict must bind to the head actually current when the diff was read, not the earlier "
-            + "gh pr view's own answer");
+            "the verdict must bind to the head the refetched diff was actually read against, not the "
+            + "earlier gh pr view's own answer");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 3, adversarial lens: a head that keeps moving every single
+    /// time this rereads it can never be reconciled by retrying forever, so the retry is bounded.
+    /// Giving up must fail the launch rather than silently proceeding with a diff that still does
+    /// not match the oid a verdict would be recorded against.
+    /// </summary>
+    [Fact]
+    public async Task A_head_that_keeps_moving_on_every_reread_fails_the_launch_instead_of_binding_a_mismatched_verdict()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 913, cts.Token);
+
+        int viewCalls = 0;
+        RecordingProcessRunner gh = new(arguments =>
+        {
+            if (arguments.Contains("diff"))
+            {
+                return new ProcessResult(0, string.Empty, string.Empty);
+            }
+
+            viewCalls++;
+            return new ProcessResult(0, $$"""
+                {
+                  "number": 913,
+                  "title": "Add rate limiting to auth endpoints",
+                  "body": "Fixes an incident.",
+                  "state": "OPEN",
+                  "url": "https://github.com/acme/web/pull/913",
+                  "baseRefName": "main",
+                  "headRefOid": "oid-{{viewCalls}}"
+                }
+                """, string.Empty);
+        });
+        CapturingExecutor executor = new();
+        RefusingWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        executor.Request.Should().BeNull("a head that never settles must never reach a dispatched pre-flight session");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.Query<PrReviewPreflightDetails>()
+            .Where(preflight => preflight.TaskId == taskId).ToListAsync(cts.Token)).Should().BeEmpty(
+            "no verdict may ever be recorded when the diff read could never be confirmed against a stable head");
+        TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        details.State.Value.Should().Be("Failed");
+        details.FailureReason.Should().Contain("kept moving");
     }
 
     /// <summary>
