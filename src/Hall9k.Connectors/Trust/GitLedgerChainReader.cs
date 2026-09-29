@@ -53,27 +53,41 @@ namespace Hall9k.Connectors.Trust;
 /// a throwaway bare repository is used at all (Brian's 2026-09-13 testing rule).
 /// </para>
 /// </summary>
-public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedgerChainReader
+public sealed class GitLedgerChainReader : ILedgerChainReader
 {
-    private readonly ProcessRunner runner = runner ?? ExternalProcess.Runner;
+    private readonly ProcessRunner runner;
+    private readonly Func<string, ILedgerCommitAccess>? testCommitAccessFactory;
+
+    public GitLedgerChainReader(ProcessRunner? runner = null)
+    {
+        this.runner = runner ?? ExternalProcess.Runner;
+    }
+
+    /// <summary>
+    /// Test-only seam (<c>GitLedgerChainReaderFastTests</c>): swaps every git-plumbing read this
+    /// class performs for an in-memory <see cref="ILedgerCommitAccess"/> built directly from a
+    /// hand-constructed commit graph, so the trust rules above the seam (vouch/revoke ordering,
+    /// succession rank, carried-record structural gating, membership authorization, the fixed-point
+    /// loop) run with no real git process and no real SSH key ever touched.
+    /// <see cref="GitPlumbingLedgerCommitAccess"/>, this class' own other constructor's choice, is
+    /// the production access every other caller gets — every call site here routes through
+    /// <see cref="Access"/> either way, so this override changes nothing about what a caller of
+    /// <see cref="ComputeAsync"/> observes beyond which backing store answered it.
+    /// </summary>
+    internal GitLedgerChainReader(Func<string, ILedgerCommitAccess> testCommitAccessFactory)
+    {
+        this.runner = ExternalProcess.Runner;
+        this.testCommitAccessFactory = testCommitAccessFactory;
+    }
+
+    private ILedgerCommitAccess Access(string repositoryPath) =>
+        this.testCommitAccessFactory is { } factory
+            ? factory(repositoryPath)
+            : new GitPlumbingLedgerCommitAccess(this.runner, repositoryPath);
 
     private const string OwnersRefPrefix = "refs/hall9k/ledger/owners/";
     private const string NodesRefPrefix = "refs/hall9k/ledger/nodes/";
     private const string MembersRefName = "refs/hall9k/ledger/members";
-
-    /// <summary>The only principal <see cref="IsSignedByAsync"/> ever writes into a temporary
-    /// <c>allowed_signers</c> file — a fixed literal, never the commit's own committer email. That
-    /// field was previously the (attacker-controlled) committer email of the very commit under
-    /// verification: a crafted email containing a space let a malicious pusher smuggle their own
-    /// key into the allowed-signers line's key-type/key-data fields, displacing the real candidate
-    /// key into a trailing, ignored comment, so <c>git verify-commit</c> verified a forged commit
-    /// against the attacker's own key instead — the identical injection
-    /// <c>GitLedgerMessageTransport.AllowedSignersPrincipal</c>'s own doc comment already fixed
-    /// there (independent pre-PR review, cycle 1, conformance and adversarial lenses, both high).
-    /// <c>git verify-commit</c> never requires this principal to match the commit's own committer
-    /// identity, so a fixed principal costs nothing: every candidate key already came from this
-    /// project's own ledger, never from anything a commit's own author controls.</summary>
-    private const string AllowedSignersPrincipal = "hall9k-chain-writer";
 
     public async Task<TrustChain> ComputeAsync(string repositoryPath, CancellationToken cancellationToken)
     {
@@ -124,43 +138,9 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// (independent pre-PR review, cycle 1, adversarial lens, medium). Shared by
     /// <see cref="DiscoverOwnerRootsAsync"/> and <see cref="DiscoverNodeIdsAsync"/> — identical
     /// shape, different prefix.</summary>
-    private async Task<IReadOnlyList<string>> DiscoverRefSuffixesAsync(
-        string repositoryPath, string prefix, CancellationToken cancellationToken)
-    {
-        ProcessResult result = await runner("git", ["ls-remote", "origin", $"{prefix}*"], repositoryPath, cancellationToken);
-        if (result.ExitCode != 0)
-        {
-            throw new InvalidOperationException(
-                $"git ls-remote against {repositoryPath} for the {prefix} prefix failed "
-                + $"(exit {result.ExitCode}): {result.StandardError.Trim()}");
-        }
-
-        HashSet<string> suffixes = [];
-        foreach (string line in result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
-        {
-            string[] parts = line.Split('\t', 2);
-            if (parts.Length != 2)
-            {
-                continue;
-            }
-
-            string refName = parts[1].Trim();
-            if (refName.StartsWith(prefix, StringComparison.Ordinal))
-            {
-                suffixes.Add(refName[prefix.Length..]);
-            }
-        }
-
-        // Unioned with whatever this node's own local refs/hall9k-verified/ tree already holds under
-        // this prefix, so a ref origin has since deleted (a removed owners/<fp> or nodes/<id>) is
-        // still discovered as the missing-remote-ref refusal it is, rather than silently dropped from
-        // discovery the moment ls-remote no longer lists it (idea 6be68ee2, trust finding 8).
-        IReadOnlyList<string> verifiedSuffixes =
-            await LedgerAppendOnlyRefFetcher.DiscoverLocallyVerifiedSuffixesAsync(runner, repositoryPath, prefix, cancellationToken);
-        suffixes.UnionWith(verifiedSuffixes);
-
-        return [.. suffixes];
-    }
+    private Task<IReadOnlyList<string>> DiscoverRefSuffixesAsync(
+        string repositoryPath, string prefix, CancellationToken cancellationToken) =>
+        Access(repositoryPath).DiscoverRefSuffixesAsync(prefix, cancellationToken);
 
     /// <summary>
     /// Finds each root's own node id — the node whose own key established that root
@@ -226,7 +206,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         }
 
         IReadOnlyDictionary<string, LedgerAppendOnlyFetchResult> fetchResults =
-            await LedgerAppendOnlyRefFetcher.FetchPrefixAsync(runner, repositoryPath, NodesRefPrefix, nodeIds, cancellationToken);
+            await Access(repositoryPath).FetchPrefixAsync(NodesRefPrefix, nodeIds, cancellationToken);
 
         List<UnverifiedLedgerWrite> unverified = [];
         Dictionary<string, NodeGitHubDeclaration> declarations = [];
@@ -357,13 +337,8 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     }
 
     /// <summary>The committer time of <paramref name="commit"/>, only ever used to order two declarations of the same account against each other (a rename), never as a trust anchor.</summary>
-    private async Task<DateTimeOffset> CommitTimeAsync(string repositoryPath, string commit, CancellationToken cancellationToken)
-    {
-        string output = await RunGitCaptureOrThrowAsync(repositoryPath, ["log", "-1", "--format=%cI", commit], cancellationToken);
-        return DateTimeOffset.TryParse(output.Trim(), CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset parsed)
-            ? parsed
-            : DateTimeOffset.MinValue;
-    }
+    private Task<DateTimeOffset> CommitTimeAsync(string repositoryPath, string commit, CancellationToken cancellationToken) =>
+        Access(repositoryPath).CommitTimeAsync(commit, cancellationToken);
 
     /// <summary>
     /// Among <paramref name="commits"/> (newest first, every commit <see cref="CommitsTouchingPathAsync"/>
@@ -1322,40 +1297,9 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// and <c>git verify-commit</c> needs nothing beyond the commit object itself (never its tree or
     /// parents) to check a signature over it.
     /// </summary>
-    private async Task<bool> IsSignedByRawBytesAsync(
-        string repositoryPath, string rawCommitBytes, string publicKeyLine, CancellationToken cancellationToken)
-    {
-        if (!HasSshSignatureHeader(rawCommitBytes))
-        {
-            return false;
-        }
-
-        string tempCommitFile = Path.Combine(Path.GetTempPath(), $"h9k-carried-commit-{Guid.NewGuid():N}");
-        try
-        {
-            await File.WriteAllTextAsync(tempCommitFile, rawCommitBytes, cancellationToken);
-            ProcessResult hashResult = await runner(
-                "git", ["hash-object", "-w", "-t", "commit", tempCommitFile], repositoryPath, cancellationToken);
-            if (hashResult.ExitCode != 0)
-            {
-                return false;
-            }
-
-            string injectedSha = hashResult.StandardOutput.Trim();
-            return await IsSignedByAsync(repositoryPath, injectedSha, publicKeyLine, cancellationToken);
-        }
-        finally
-        {
-            try
-            {
-                File.Delete(tempCommitFile);
-            }
-            catch (IOException)
-            {
-                // Best-effort cleanup of a temp file; nothing downstream reads it again.
-            }
-        }
-    }
+    private Task<bool> IsSignedByRawBytesAsync(
+        string repositoryPath, string rawCommitBytes, string publicKeyLine, CancellationToken cancellationToken) =>
+        Access(repositoryPath).IsSignedByRawBytesAsync(rawCommitBytes, publicKeyLine, cancellationToken);
 
     private static bool TryDecodeBase64(string base64, out string decoded)
     {
@@ -1710,121 +1654,37 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// call sites turns into its own contextual <see cref="UnverifiedLedgerWrite"/>.
     /// </summary>
     private Task<LedgerAppendOnlyFetchResult> FetchRefAsync(string repositoryPath, string refName, CancellationToken cancellationToken) =>
-        LedgerAppendOnlyRefFetcher.FetchAsync(runner, repositoryPath, refName, cancellationToken);
+        Access(repositoryPath).FetchRefAsync(refName, cancellationToken);
 
-    /// <summary>Every commit reachable from <paramref name="tip"/>, oldest first —
-    /// <c>--topo-order --first-parent</c> so replay follows the actual mainline commit graph rather
-    /// than committer-date order (freely chosen by whoever signs a commit, and never consulted
-    /// anywhere in this walk) and never descends into a merge's second parent at all, closing the
-    /// path a backdated, merged-in commit would otherwise use to reorder itself earlier in ref
-    /// history (independent pre-PR review, cycle 1, adversarial lens, medium).</summary>
-    private async Task<IReadOnlyList<string>> CommitsOldestFirstAsync(
-        string repositoryPath, string tip, CancellationToken cancellationToken)
-    {
-        string output = await RunGitCaptureOrThrowAsync(
-            repositoryPath, ["log", "--format=%H", "--reverse", "--topo-order", "--first-parent", tip], cancellationToken);
-        return [.. output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.Trim())];
-    }
+    /// <summary>Every commit reachable from <paramref name="tip"/>, oldest first, mainline only.</summary>
+    private Task<IReadOnlyList<string>> CommitsOldestFirstAsync(
+        string repositoryPath, string tip, CancellationToken cancellationToken) =>
+        Access(repositoryPath).CommitsOldestFirstAsync(tip, cancellationToken);
 
-    /// <summary>Every commit reachable from <paramref name="tip"/> (mainline only —
-    /// <c>--topo-order --first-parent</c>, the identical reasoning <see cref="CommitsOldestFirstAsync"/>
-    /// applies) that touched <paramref name="path"/>, newest first — <c>[0]</c> is therefore the
-    /// commit that currently produces whatever content a caller just read at <paramref name="tip"/>.</summary>
-    private async Task<IReadOnlyList<string>> CommitsTouchingPathAsync(
-        string repositoryPath, string tip, string path, CancellationToken cancellationToken)
-    {
-        string output = await RunGitCaptureOrThrowAsync(
-            repositoryPath, ["log", "--format=%H", "--topo-order", "--first-parent", tip, "--", path], cancellationToken);
-        return [.. output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.Trim())];
-    }
+    /// <summary>Every commit reachable from <paramref name="tip"/> (mainline only) that touched
+    /// <paramref name="path"/>, newest first — <c>[0]</c> is therefore the commit that currently
+    /// produces whatever content a caller just read at <paramref name="tip"/>.</summary>
+    private Task<IReadOnlyList<string>> CommitsTouchingPathAsync(
+        string repositoryPath, string tip, string path, CancellationToken cancellationToken) =>
+        Access(repositoryPath).CommitsTouchingPathAsync(tip, path, cancellationToken);
 
     /// <summary>Every path <paramref name="commit"/> added, changed, or removed relative to its own
-    /// mainline parent — <c>--root</c> so a commit with no parent (a fresh ref's first commit) diffs
-    /// against the empty tree instead of failing, and <c>--diff-merges=first-parent</c> so a merge
-    /// commit diffs against its first parent alone rather than git's own bare default of naming no
-    /// paths at all for a merge (confirmed live against a throwaway repo). Every walk that feeds a
-    /// commit here already replays <c>--topo-order --first-parent</c>
-    /// (<see cref="CommitsOldestFirstAsync"/>), so a merge commit only ever appears when its first
-    /// parent is the ref's own prior mainline tip — a path introduced purely via that merge's second
-    /// parent must diff as mainline-introduced right here, or it is applied to nothing, recorded as
-    /// unverified for nothing, and simply vanishes from the walk (independent pre-PR review,
-    /// cycle 2, conformance lens, medium).</summary>
-    private async Task<IReadOnlyList<string>> ChangedPathsAsync(string repositoryPath, string commit, CancellationToken cancellationToken)
-    {
-        string output = await RunGitCaptureOrThrowAsync(
-            repositoryPath,
-            ["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "--diff-merges=first-parent", commit],
-            cancellationToken);
-        return [.. output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.Trim())];
-    }
+    /// mainline parent.</summary>
+    private Task<IReadOnlyList<string>> ChangedPathsAsync(string repositoryPath, string commit, CancellationToken cancellationToken) =>
+        Access(repositoryPath).ChangedPathsAsync(commit, cancellationToken);
 
     /// <summary>The content of <paramref name="path"/> at <paramref name="commit"/>'s own tree, or
     /// null when the path is not there — either it never existed at this commit, or (a members
-    /// removal) this commit is the one that deleted it. Only that specific, documented git message
-    /// is read as absence; any other failure (a corrupt or incomplete local object, disk I/O) is
-    /// thrown instead of silently read as a deletion, which would let a broken local read change
-    /// what this walk trusts rather than simply fail (independent review finding: this previously
-    /// folded every non-zero exit from <c>git show</c> into absence).</summary>
-    private async Task<string?> ReadAtCommitAsync(string repositoryPath, string commit, string path, CancellationToken cancellationToken)
-    {
-        ProcessResult result = await runner("git", ["show", $"{commit}:{path}"], repositoryPath, cancellationToken);
-        if (result.ExitCode == 0)
-        {
-            return result.StandardOutput;
-        }
-
-        if (result.StandardError.Contains("does not exist in", StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        throw new InvalidOperationException(
-            $"git show {commit}:{path} failed in {repositoryPath} (exit {result.ExitCode}): "
-            + $"{result.StandardError.Trim()} — refusing to read this as a deletion when the failure was "
-            + "never confirmed to mean the path is actually absent.");
-    }
+    /// removal) this commit is the one that deleted it.</summary>
+    private Task<string?> ReadAtCommitAsync(string repositoryPath, string commit, string path, CancellationToken cancellationToken) =>
+        Access(repositoryPath).ReadAtCommitAsync(commit, path, cancellationToken);
 
     /// <summary>Verifies <paramref name="commitSha"/> was actually signed by
-    /// <paramref name="publicKeyLine"/> — the identical technique
-    /// <c>GitLedgerMessageTransport.IsSignedByRegisteredKeyAsync</c> uses (confirming the
-    /// <c>gpgsig</c> header itself names an SSH signature before ever trusting
-    /// <c>git verify-commit</c>'s own exit code, and writing only the fixed
-    /// <see cref="AllowedSignersPrincipal"/> into the temporary <c>allowed_signers</c> file — never
-    /// the commit's own committer email, which the commit's own author controls), duplicated rather
-    /// than shared: a different class in a different concern, and this narrow, already-proven shape
-    /// is cheaper to repeat than to widen a seam neither caller needs generalized (the same call
-    /// <c>GitLedgerMessageTransport</c> itself makes about its own private process runner).</summary>
-    private async Task<bool> IsSignedByAsync(string repositoryPath, string commitSha, string publicKeyLine, CancellationToken cancellationToken)
-    {
-        string? rawCommit = await RunGitCaptureAsync(repositoryPath, ["cat-file", "commit", commitSha], cancellationToken);
-        if (rawCommit is null || !HasSshSignatureHeader(rawCommit))
-        {
-            return false;
-        }
-
-        string allowedSignersFile = Path.Combine(Path.GetTempPath(), $"h9k-chain-allowed-signers-{Guid.NewGuid():N}");
-        try
-        {
-            await File.WriteAllTextAsync(allowedSignersFile, $"{AllowedSignersPrincipal} {publicKeyLine}\n", cancellationToken);
-            ProcessResult result = await runner(
-                "git",
-                ["-c", "gpg.format=ssh", "-c", $"gpg.ssh.allowedSignersFile={allowedSignersFile}", "verify-commit", commitSha],
-                repositoryPath,
-                cancellationToken);
-            return result.ExitCode == 0;
-        }
-        finally
-        {
-            try
-            {
-                File.Delete(allowedSignersFile);
-            }
-            catch (IOException)
-            {
-                // Best-effort cleanup of a temp file; nothing downstream reads it again.
-            }
-        }
-    }
+    /// <paramref name="publicKeyLine"/>. <see cref="GitPlumbingLedgerCommitAccess"/> carries the
+    /// production implementation and its own doc comment on the AllowedSignersPrincipal injection
+    /// this closes.</summary>
+    private Task<bool> IsSignedByAsync(string repositoryPath, string commitSha, string publicKeyLine, CancellationToken cancellationToken) =>
+        Access(repositoryPath).IsSignedByAsync(commitSha, publicKeyLine, cancellationToken);
 
     internal static bool HasSshSignatureHeader(string rawCommitObject)
     {
@@ -1863,28 +1723,4 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         return null;
     }
 
-    private async Task<string?> RunGitCaptureAsync(string repositoryPath, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
-    {
-        ProcessResult result = await runner("git", arguments, repositoryPath, cancellationToken);
-        return result.ExitCode == 0 ? result.StandardOutput : null;
-    }
-
-    /// <summary>For a walk that has already confirmed <c>tip</c> or <c>commit</c> resolves: a log
-    /// or diff-tree over a commit this walk already knows exists has no legitimate failure mode, so
-    /// unlike <see cref="RunGitCaptureAsync"/> a non-zero exit here is thrown rather than folded
-    /// into "no commits"/"no changed paths" — a corrupt pack or a local git failure must stop the
-    /// walk, never silently read as though that commit changed nothing at all (independent review
-    /// finding, the same fail-closed reasoning <see cref="ReadAtCommitAsync"/> now applies).</summary>
-    private async Task<string> RunGitCaptureOrThrowAsync(string repositoryPath, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
-    {
-        ProcessResult result = await runner("git", arguments, repositoryPath, cancellationToken);
-        if (result.ExitCode != 0)
-        {
-            throw new InvalidOperationException(
-                $"git {string.Join(' ', arguments)} failed in {repositoryPath} (exit {result.ExitCode}): "
-                + $"{result.StandardError.Trim()} — refusing to read this commit as though it changed nothing.");
-        }
-
-        return result.StandardOutput;
-    }
 }
