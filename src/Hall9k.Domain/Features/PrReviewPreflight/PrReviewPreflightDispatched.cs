@@ -20,7 +20,11 @@ namespace Hall9k.Domain.Features.PrReviewPreflight;
 /// different, later dispatch. <see cref="RunSupervisor.CompletePreflightAsync"/> and
 /// <see cref="RunSupervisor.AbandonPreflightAsync"/> both compare this against the task's own
 /// current run id before acting, exactly the way both already refuse to act once the task is no
-/// longer <see cref="Tasks.TaskState.Claimed"/> at all.
+/// longer <see cref="Tasks.TaskState.Claimed"/> at all. Not necessarily this event's own original
+/// value for the rest of the row's life: <see cref="PrReviewPreflightReclaimed"/> retargets it when
+/// a still-in-flight pre-flight is found dispatched for an earlier, now-superseded claim
+/// (independent pre-PR review, cycle 7, conformance lens) — the field always names whichever claim
+/// is live now, not necessarily the one that started this pre-flight.
 /// </param>
 /// <param name="IsMentionFollowUp">
 /// True when this pre-flight gates a mention follow-up's own checkout

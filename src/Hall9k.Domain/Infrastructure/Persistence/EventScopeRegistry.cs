@@ -378,6 +378,11 @@ public static class EventScopeRegistry
         [typeof(PrReviewPreflightDispatched)] = EventScope.ProjectScoped,
         [typeof(PrReviewPreflightCompleted)] = EventScope.ProjectScoped,
         [typeof(PrReviewPreflightAbandoned)] = EventScope.ProjectScoped,
+        // A reclaim retargets DispatchingRunId to the run that now holds the task's live claim
+        // (independent pre-PR review, cycle 7, conformance lens) — the same fleet-any-node reason
+        // the three events above travel: the node completing or abandoning this pre-flight is not
+        // guaranteed to be the node that reclaimed the task.
+        [typeof(PrReviewPreflightReclaimed)] = EventScope.ProjectScoped,
         // A pid-and-start-time liveness marker with the identical shape Decisions Log #192
         // classifies node-scoped by mechanics rather than by the stream it sits on
         // (RunProcessStarted, WorkItemPublicationSessionStarted): meaningless read from another
