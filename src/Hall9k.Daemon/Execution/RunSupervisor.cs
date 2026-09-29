@@ -133,6 +133,32 @@ public sealed class RunSupervisor(
     }
 
     /// <summary>
+    /// Reserves this pre-flight's own <see cref="_monitors"/> slot the instant its
+    /// <see cref="PrReviewPreflightDispatched"/> commits — before <c>executor.SpawnAsync</c> even
+    /// starts, not after it returns. <see cref="ResumeStrandedPreflightsAsync"/> runs concurrently,
+    /// off the dispatch loop, and excludes anything already in <see cref="_monitors"/> from its own
+    /// "no process recorded, so this must be dead" read; without a reservation here, that sweep
+    /// landing inside the still-running spawn saw no <see cref="PrReviewPreflightDetails.ProcessId"/>
+    /// and no monitor either, and abandoned a row a session was actively being started for —
+    /// requeuing the task out from under the spawn in progress and letting the dispatch loop reclaim
+    /// it into a second, duplicate pre-flight (independent pre-PR review, cycle 3, both lenses).
+    /// <see cref="StartPreflightMonitoring"/> (spawn succeeded) and <see cref="ReleasePreflightSpawnReservation"/>
+    /// (spawn failed) both resolve this same reservation rather than adding a second one.
+    /// </summary>
+    public void ReservePreflightSpawn(Guid preflightRunId) => _monitors.TryAdd(preflightRunId, Task.CompletedTask);
+
+    /// <summary>
+    /// Releases a <see cref="ReservePreflightSpawn"/> reservation when the spawn it was held for
+    /// never happened — <see cref="RunLauncher.DispatchPrReviewPreflightAsync"/>'s own catch for a
+    /// spawn failure, which already appends <see cref="PrReviewPreflightAbandoned"/> directly to
+    /// the pre-flight's own stream. Without this, every failed spawn would leave its reservation in
+    /// <see cref="_monitors"/> forever — harmless to <see cref="ResumeStrandedPreflightsAsync"/>'s
+    /// own query, which already excludes an abandoned row by <see cref="PrReviewPreflightDetails.AbandonedAt"/>,
+    /// but an unbounded leak of dictionary entries over the node's own lifetime otherwise.
+    /// </summary>
+    public void ReleasePreflightSpawnReservation(Guid preflightRunId) => _monitors.TryRemove(preflightRunId, out _);
+
+    /// <summary>
     /// Fires the pull-request review pre-flight's own monitor (idea 6be68ee2, finding 1, phase
     /// one) — <see cref="RunLauncher"/> calls this right after spawning the pre-flight and returns
     /// at once, without cutting a worktree or waiting on the session: the dispatch loop that
@@ -140,15 +166,24 @@ public sealed class RunSupervisor(
     /// (<c>DispatchLoop</c>'s own claim and lease sweeps run every cycle, not once per task). The
     /// same <see cref="_monitors"/> dictionary <see cref="StartMonitoring"/> uses, keyed by the
     /// pre-flight's own stream id rather than an ordinary run's — the two id spaces never collide,
-    /// since both are freshly minted <c>DomainId.New()</c> values.
+    /// since both are freshly minted <c>DomainId.New()</c> values. Always overwrites rather than
+    /// <c>TryAdd</c>ing: the successful-spawn caller already holds this slot from
+    /// <see cref="ReservePreflightSpawn"/>, and the restart-adoption caller in
+    /// <see cref="ResumeStrandedPreflightsAsync"/> only ever reaches here for a row its own query
+    /// just proved is not in <see cref="_monitors"/> yet. A bare <c>TryAdd</c> here previously left
+    /// the reservation in place and started the real monitor task regardless of whether the add
+    /// succeeded — <c>Task.Run</c> schedules before <c>TryAdd</c> is even evaluated — so a row this
+    /// sweep raced into after the reservation already ran through this method would spawn a second,
+    /// untracked <see cref="MonitorPreflightAsync"/> that no one could ever cancel or deduplicate
+    /// against (independent pre-PR review, cycle 3, adversarial lens).
     /// </summary>
     public void StartPreflightMonitoring(
         Guid preflightRunId, Guid taskId, int processId, DateTimeOffset processStartedAt,
         CancellationToken cancellationToken)
     {
-        _monitors.TryAdd(preflightRunId, Task.Run(
+        _monitors[preflightRunId] = Task.Run(
             () => MonitorPreflightAsync(preflightRunId, taskId, processId, processStartedAt, cancellationToken),
-            cancellationToken));
+            cancellationToken);
     }
 
     private async Task MonitorPreflightAsync(
@@ -334,7 +369,11 @@ public sealed class RunSupervisor(
     /// stack that spawned the pre-flight. A pre-flight still alive is reattached (tailing its own
     /// stream file is idempotent — nothing here consumes or mutates it); one whose process died is
     /// abandoned, so the task's next claim dispatches a fresh one instead of waiting on a process
-    /// that no longer exists.
+    /// that no longer exists. A pre-flight this node's own <c>RunLauncher.DispatchPrReviewPreflightAsync</c>
+    /// is still actively spawning is neither of those — its <see cref="ReservePreflightSpawn"/>
+    /// reservation keeps it out of the <c>incomplete.Where</c> filter below for the entire spawn
+    /// window, so this sweep never mistakes a session still starting for one whose process never
+    /// existed (independent pre-PR review, cycle 3, both lenses).
     /// </summary>
     public async Task ResumeStrandedPreflightsAsync(CancellationToken cancellationToken)
     {
