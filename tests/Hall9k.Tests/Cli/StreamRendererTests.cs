@@ -11,7 +11,7 @@ namespace Hall9k.Tests.Cli;
 /// fallback, and the assistant's own prose are all text hall9k did not author, so none of it may
 /// crash <c>h9k logs</c> or reach the terminal unsanitised. Origin incident (Windows field
 /// deployment, 2026-08-31): <c>AgentModel.PlatformFallback</c> is literally
-/// <c>claude-opus-5[1m]</c>, and Spectre reads <c>[1m]</c> as a color tag it does not recognise,
+/// <c>claude-opus-5-5[1m]</c>, and Spectre reads <c>[1m]</c> as a color tag it does not recognise,
 /// so every install that never overrode the model crashed <c>h9k logs</c> on essentially every
 /// run.
 /// </summary>
@@ -34,14 +34,14 @@ public sealed class StreamRendererTests
     [Fact]
     public void A_system_init_line_carrying_the_platform_fallback_model_id_renders_without_throwing()
     {
-        string line = SystemInitLine("claude-opus-5[1m]");
+        string line = SystemInitLine("claude-opus-5-5[1m]");
 
         string? rendered = StreamRenderer.TryRenderLine(line);
 
         rendered.Should().NotBeNull();
         Action act = () => RenderPlain(rendered!);
         act.Should().NotThrow("a raw model id used to be read back as Spectre markup and crash the command");
-        RenderPlain(rendered!).Should().Contain("claude-opus-5[1m]",
+        RenderPlain(rendered!).Should().Contain("claude-opus-5-5[1m]",
             "the model id is printed literally rather than interpreted as markup");
     }
 

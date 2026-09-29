@@ -243,7 +243,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         [Description(
             "Model this task's sessions run on, overriding every other level of the chain "
             + "(Decisions Log #33): a tier alias (fable, opus, sonnet, haiku) or an exact model id "
-            + "(claude-opus-5, claude-sonnet-5-5, or a context variant like claude-opus-5[[1m]]); anything "
+            + "(claude-opus-5-5, claude-sonnet-5-5, or a context variant like claude-opus-5-5[[1m]]); anything "
             + "'claude -p --model' accepts, except the word 'default'. "
             + "Omit it — or pass 'default', which states no override rather than naming a model — and "
             + "the project default, then the node's per-role default, then the platform default decide. "

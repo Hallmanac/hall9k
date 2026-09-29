@@ -199,7 +199,7 @@ public static class CliCommandTree
                 .WithExample("project", "set", "hall9k", "--priority", "high")
                 .WithExample("project", "set", "hall9k", "--priority", "normal")
                 .WithExample("project", "set", "hall9k", "--home", "~/.hall9k/projects/hall9k")
-                .WithExample("project", "set", "hall9k", "--model", "claude-opus-5")
+                .WithExample("project", "set", "hall9k", "--model", "claude-opus-5-5")
                 .WithExample("project", "set", "hall9k", "--effort", "high")
                 .WithExample("project", "set", "hall9k", "--effort", "default")
                 .WithExample("project", "set", "hall9k", "--orchestrator-model", "sonnet")
@@ -1243,7 +1243,7 @@ public static class CliCommandTree
                     + "type, model, caps, dependencies, epic) and is read once, here.")
                 .WithExample("task", "add", "--project", "hall9k", "--objective", "\"Add the project browse surface\"",
                     "--criteria", "\"h9k project list shows one row per project\"")
-                .WithExample("task", "add", "--file", "backlog/19-model-policy.md", "--model", "claude-opus-5")
+                .WithExample("task", "add", "--file", "backlog/19-model-policy.md", "--model", "claude-opus-5-5")
                 .WithExample("task", "add", "--from-idea", "28b19893", "--objective", "\"Add the project browse surface\"")
                 .WithExample("task", "add", "--project", "hall9k", "--from-issue", "42")
                 .WithExample("task", "add", "--project", "hall9k", "--from-issue", "266", "--pre-approved")

@@ -45,7 +45,7 @@ public sealed class ModelPolicyTests
     {
         AgentModel shipped = new DaemonOptions().ResolveModel(AgentRole.Build, taskModel: null, projectModel: null);
 
-        shipped.Value.Should().Be("claude-opus-5[1m]",
+        shipped.Value.Should().Be("claude-opus-5-5[1m]",
             "narrowing the platform default to standard context is a model change, and a model change is never silent");
         shipped.IsWellFormed.Should().BeTrue("the platform default has to survive the executor's own refusal to spawn");
     }
@@ -390,14 +390,14 @@ public sealed class ModelPolicyTests
         Guid runId = DomainId.New();
         AgentSpawnRequest request = new(
             runId, DomainId.New(), "/tmp/worktree", "/tmp/run", "prompt", ExecutorMode.Subscription,
-            AgentModel.FromInput("claude-opus-5[1m]"), AgentEffort.Unknown, SkipPermissions: true)
+            AgentModel.FromInput("claude-opus-5-5[1m]"), AgentEffort.Unknown, SkipPermissions: true)
         {
             SessionName = "test-build",
         };
 
         string[] arguments = [.. ClaudeExecutor.Arguments(request)];
 
-        arguments.Should().Contain("--model \"claude-opus-5[1m]\"",
+        arguments.Should().Contain("--model \"claude-opus-5-5[1m]\"",
             "the model is quoted so an id carrying shell glob characters reaches claude intact");
         arguments.Should().Contain($"--session-id {request.SessionId}");
         arguments.Should().Contain("--name \"test-build\"",

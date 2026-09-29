@@ -919,7 +919,7 @@ Which model runs what is explained in [Which model runs what](#which-model-runs-
 
 | Option | Default | What it governs |
 |---|---|---|
-| `Hall9k__DefaultModel` | `claude-opus-5[1m]` | The bottom of the agent-model chain: the model every agent session runs on unless something more specific says otherwise (`h9k config set --default-model`). |
+| `Hall9k__DefaultModel` | `claude-opus-5-5[1m]` | The bottom of the agent-model chain: the model every agent session runs on unless something more specific says otherwise (`h9k config set --default-model`). |
 | `Hall9k__Effort` | unset | The node-wide reasoning effort level every headless agent session runs at (`low`, `medium`, `high` or `xhigh`; `max` is session-only in Claude Code and is refused), written into each session's settings file as `effortLevel` (`h9k config set --effort`). It is the level beneath every other one. Unset leaves the key out, so each model's own default decides; that matters because a headless session ignores your user-level `effortLevel` and honors only that file, and Claude Opus 5.5 defaults to medium where earlier Opus models defaulted to high. |
 | `Hall9k__EffortByRole__Build`, `__Review`, `__Fix`, `__Synthesis`, `__Refinement`, `__Publication`, `__Courier`, `__SecurityPreflight` | blank | The node's effort for each role, or blank for no opinion (`--effort-build`, `--effort-review`, `--effort-fix`, `--effort-synthesis`, `--effort-refinement`, `--effort-publication`, `--effort-courier`, `--effort-security-preflight`). A role's value sits above `Hall9k__Effort` and below a project's or a task's own, except `SecurityPreflight`: the pre-flight runs before any task-level context is read, so its own effort sits above `Hall9k__Effort` and below only a project's. |
 | `Hall9k__EffortByRole__ReviewVerify`, `Hall9k__EffortByRole__ReviewFinalFullPass` | blank | Narrower overrides for a Verify-shape review pass and the mandatory FinalFullPass, each blank falling through to the review role's effort before the node-wide one (`--effort-review-verify`, `--effort-review-finalpass`). |
@@ -1026,7 +1026,7 @@ h9k config show                                             # every setting, and
 h9k config set --max-concurrent-task-runs 2                 # the node's run ceiling
 h9k config set --session-cap-per-run 1                      # the per-run session cap's global default
 h9k task set-session-cap 28b19893 1                         # override the cap for one task, even mid-run
-h9k config set --default-model "claude-opus-5[1m]"          # the bottom of the agent-model chain; 'default' clears it
+h9k config set --default-model "claude-opus-5-5[1m]"          # the bottom of the agent-model chain; 'default' clears it
 h9k config set --orchestrator-model sonnet                  # the model the orchestrator window runs on; 'default' clears it
 h9k config set --orchestrator-effort high                   # the effort the orchestrator window runs at; 'default' clears it
 h9k config set --effort high                                # the node-wide effort level dispatched sessions run at; 'default' clears it
@@ -1121,9 +1121,9 @@ know about untouched when it writes, so a hand-edited setting survives:
   "connectionString": "Host=127.0.0.1;Port=5432;…",
   "hall9k": {
     "maxConcurrentTaskRuns": 2,
-    "defaultModel": "claude-opus-5[1m]",
+    "defaultModel": "claude-opus-5-5[1m]",
     "orchestratorModel": "sonnet",
-    "modelByRole": { "build": "sonnet", "review": "claude-opus-5[1m]", "reviewVerify": "sonnet" },
+    "modelByRole": { "build": "sonnet", "review": "claude-opus-5-5[1m]", "reviewVerify": "sonnet" },
     "maxComplianceReviewCycles": 3,
     "messageIdlePollMinSeconds": 120,
     "pollInterval": "00:00:10"
@@ -1141,8 +1141,8 @@ the file alone.
 | `maxConcurrentTaskRuns` | `--max-concurrent-task-runs` | `Hall9k__MaxConcurrentTaskRuns` | 1 |
 | `maxConcurrentAgentSessions` (legacy) | `--max-concurrent-agent-sessions` | `Hall9k__MaxConcurrentAgentSessions` | 3, converted to 1 run |
 | `sessionCapPerRun` | `--session-cap-per-run` | `Hall9k__SessionCapPerRun` | 3 |
-| `defaultModel` | `--default-model` | `Hall9k__DefaultModel` | `claude-opus-5[1m]` |
-| `orchestratorModel` | `--orchestrator-model` | none | falls back to `defaultModel`, then `claude-opus-5[1m]` |
+| `defaultModel` | `--default-model` | `Hall9k__DefaultModel` | `claude-opus-5-5[1m]` |
+| `orchestratorModel` | `--orchestrator-model` | none | falls back to `defaultModel`, then `claude-opus-5-5[1m]` |
 | `orchestratorEffort` | `--orchestrator-effort` (`default` clears it) | none | unset, so the model's own default decides (no fallback to `effort` or any dispatch effort) |
 | `effort` | `--effort` (`default` clears it) | `Hall9k__Effort` | unset, so each model's own default decides |
 | `effortByRole.build`, `.review`, `.fix`, `.synthesis`, `.refinement`, `.publication`, `.courier`, `.securityPreflight` | `--effort-build`, `--effort-review`, `--effort-fix`, `--effort-synthesis`, `--effort-refinement`, `--effort-publication`, `--effort-courier`, `--effort-security-preflight` (`default` clears one) | `Hall9k__EffortByRole__Build`, `__Review`, `__Fix`, `__Synthesis`, `__Refinement`, `__Publication`, `__Courier`, `__SecurityPreflight` | blank |
@@ -1185,10 +1185,10 @@ first, and the resolved value is recorded on the dispatch event as an observed f
 2. The project's model (`h9k project set <name> --model`).
 3. The node's default for that session's role (`h9k config set --model-<role>`).
 4. The node's `--default-model` (`Hall9k__DefaultModel`).
-5. The platform fallback, `claude-opus-5[1m]`, which is what applies when nothing above is set.
+5. The platform fallback, `claude-opus-5-5[1m]`, which is what applies when nothing above is set.
 
-A model is an exact id (`claude-opus-5`, `claude-sonnet-5-5`, or a context variant such as
-`claude-opus-5[1m]`) or a tier alias (`fable`, `opus`, `sonnet`, `haiku`); an exact id is the
+A model is an exact id (`claude-opus-5-5`, `claude-sonnet-5-5`, or a context variant such as
+`claude-opus-5-5[1m]`) or a tier alias (`fable`, `opus`, `sonnet`, `haiku`); an exact id is the
 stabler choice, because an alias is re-pointed as new models ship. The word `default` is never a
 model name. Passed to a node or project option, it clears that level, so the levels around it decide.
 `--default-model` is the bottom of the chain and exists so the platform never inherits whatever
@@ -1229,7 +1229,7 @@ silently move your own window, and the reverse. For a project's window, most spe
    existed.
 3. The node's `--orchestrator-model` (`h9k config set --orchestrator-model <model>`).
 4. The node's `--default-model`, as recorded in the config file.
-5. The platform fallback, `claude-opus-5[1m]`.
+5. The platform fallback, `claude-opus-5-5[1m]`.
 
 The node's own window (the one in `~/.hall9k`) uses only steps 3 to 5. Two details are worth
 knowing. The node levels are read from the config file alone, because the orchestrator model has no
@@ -1268,7 +1268,7 @@ own launch line passes `--effort`.
 Settings resolve most-specific-wins, and each chain always ends somewhere explicit. The review
 re-request policy resolves **project over owner over the node default**. The agent model resolves
 **task override, then the project default, then this node's per-role default, then the node's
-`--default-model`** (which is the platform fallback, `claude-opus-5[1m]`, until you change it), and
+`--default-model`** (which is the platform fallback, `claude-opus-5-5[1m]`, until you change it), and
 the resolved value is recorded on the dispatch event as an observed fact of the run.
 [Which model runs what](#which-model-runs-what) has the whole story, including the separate chain
 for the orchestrator window.
@@ -1276,7 +1276,7 @@ for the orchestrator window.
 ```bash
 h9k project set myproject --verify "build=dotnet build" --verify "test=dotnet test"
 h9k project set myproject --verify-gate-filter "test=Category=RequiresDocker"
-h9k project set myproject --model claude-opus-5
+h9k project set myproject --model claude-opus-5-5
 h9k project set myproject --orchestrator-model sonnet       # the model this project's orchestrator window runs on; 'default' clears it
 h9k project set myproject --orchestrator-effort high        # the effort this project's orchestrator window runs at; 'default' clears it
 h9k project set myproject --commit-style narrative
