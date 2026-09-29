@@ -87,6 +87,17 @@ public sealed class RunSupervisor(
     private const int MaxLaunchHeldSpawnFailures = 5;
 
     /// <summary>
+    /// Bounds the reread-and-redecide retry <see cref="CompletePreflightAsync"/> and
+    /// <see cref="AbandonPreflightAsync"/> both take on a concurrency conflict against
+    /// <see cref="RunLauncher"/>'s own <c>PrReviewPreflightReclaimed</c> append (independent
+    /// pre-PR review, cycle 1, adversarial lens, RunSupervisor.cs:284): a handful of attempts is
+    /// enough to ride out genuine contention on this one stream, the same bound
+    /// <see cref="LaunchHoldEngine"/>'s own <c>MaxConcurrentAppendAttempts</c> uses for the
+    /// identical shape.
+    /// </summary>
+    private const int MaxPreflightTerminalRetries = 5;
+
+    /// <summary>
     /// The wait <see cref="RetryBuildSessionAsync"/> takes between recording the in-place error
     /// retry and its own post-wait hold check — real <see cref="Task.Delay(TimeSpan, CancellationToken)"/>
     /// for every daemon, and the one seam a test has to pin exactly when that check runs without
@@ -288,54 +299,92 @@ public sealed class RunSupervisor(
     /// daemon restart gave the lease sweep time to requeue it, or a human released it) must never
     /// requeue or park a task whose live claim now belongs to a later dispatch, possibly one
     /// already mid-review under a fresh, already-safe verdict of its own.
+    /// <para>
+    /// The terminal append is fenced to the stream version read alongside <c>DispatchingRunId</c>,
+    /// and a version conflict rereads everything from scratch rather than trusting either read
+    /// (independent pre-PR review, cycle 1, adversarial lens, RunSupervisor.cs:284):
+    /// <see cref="RunLauncher"/>'s own gate can retarget <c>DispatchingRunId</c> with
+    /// <c>PrReviewPreflightReclaimed</c> at any point up to its own commit, and an unfenced append
+    /// here could either clobber that retarget or, reading it a moment too early, permanently miss
+    /// the reclaim and decide "nothing to release or park" against a run this task has already
+    /// moved past — wedging the task Claimed with a verdict recorded but nothing left to act on
+    /// it. Retrying against fresh data resolves both directions: whichever side's commit lands
+    /// second finds the row already changed and redecides against what actually landed instead of
+    /// what it read.
+    /// </para>
     /// </summary>
     private async Task CompletePreflightAsync(
-        Guid preflightRunId, Guid taskId, PrReviewPreflightVerdict verdict, CancellationToken cancellationToken)
+        Guid preflightRunId, Guid taskId, PrReviewPreflightVerdict verdict, CancellationToken cancellationToken,
+        int attempt = 0)
     {
         await using IDocumentSession session = store.LightweightSession();
-        session.Events.Append(preflightRunId, new PrReviewPreflightCompleted(
-            preflightRunId, verdict.Safe, verdict.Verdict, verdict.Reason, DateTimeOffset.UtcNow));
 
         PrReviewPreflightDetails? preflight = await session.LoadAsync<PrReviewPreflightDetails>(
             preflightRunId, cancellationToken);
+        StreamState? preflightFence = await session.Events.FetchStreamStateAsync(preflightRunId, cancellationToken);
+        if (preflightFence is null)
+        {
+            return;
+        }
+
+        session.Events.Append(
+            preflightRunId, expectedVersion: preflightFence.Version + 1, new PrReviewPreflightCompleted(
+                preflightRunId, verdict.Safe, verdict.Verdict, verdict.Reason, DateTimeOffset.UtcNow));
 
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-        if (task is null || task.State != TaskState.Claimed
-            || task.CurrentRunId != preflight?.DispatchingRunId)
+        bool released;
+        if (task is null || task.State != TaskState.Claimed || task.CurrentRunId != preflight?.DispatchingRunId)
         {
+            released = false;
             logger.LogInformation(
                 "Task {TaskId}: the pull-request review pre-flight finished ({Verdict}) but the task is no "
                 + "longer claimed under the run this pre-flight was dispatched for — nothing to release or "
                 + "park", taskId, verdict.Safe ? "safe" : "unsafe");
-            await session.SaveChangesAsync(cancellationToken);
-            return;
-        }
-
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-        if (verdict.Safe)
-        {
-            // A pre-flight dispatched to gate a mention follow-up's own checkout releases the
-            // task through its own requeue reason, so the next claim answers the mentioning
-            // comment (RunLauncher.LaunchAsync's own PendingMentionFollowUpAfterPreflight branch)
-            // instead of running an ordinary full review (independent pre-PR review, cycle 1, both
-            // lenses).
-            RequeueReason reason = preflight?.IsMentionFollowUp == true
-                ? RequeueReason.PrReviewPreflightSafeMentionFollowUp
-                : RequeueReason.PrReviewPreflightSafe;
-            session.Events.Append(taskId, TaskDecider.Requeue(task, reason, now));
         }
         else
         {
-            session.Events.Append(taskId, TaskDecider.ParkPrReviewPreflight(
-                task, preflight?.Surfaces ?? [], preflight?.HeadRefOid ?? string.Empty, verdict.Verdict,
-                verdict.Reason, now, preflight?.IsMentionFollowUp == true));
+            released = true;
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            if (verdict.Safe)
+            {
+                // A pre-flight dispatched to gate a mention follow-up's own checkout releases the
+                // task through its own requeue reason, so the next claim answers the mentioning
+                // comment (RunLauncher.LaunchAsync's own PendingMentionFollowUpAfterPreflight branch)
+                // instead of running an ordinary full review (independent pre-PR review, cycle 1, both
+                // lenses).
+                RequeueReason reason = preflight?.IsMentionFollowUp == true
+                    ? RequeueReason.PrReviewPreflightSafeMentionFollowUp
+                    : RequeueReason.PrReviewPreflightSafe;
+                session.Events.Append(taskId, TaskDecider.Requeue(task, reason, now));
+            }
+            else
+            {
+                session.Events.Append(taskId, TaskDecider.ParkPrReviewPreflight(
+                    task, preflight?.Surfaces ?? [], preflight?.HeadRefOid ?? string.Empty, verdict.Verdict,
+                    verdict.Reason, now, preflight?.IsMentionFollowUp == true));
+            }
+
+            session.Delete<TaskLease>(taskId);
         }
 
-        session.Delete<TaskLease>(taskId);
-        await session.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException) when (attempt < MaxPreflightTerminalRetries)
+        {
+            logger.LogDebug(
+                "Task {TaskId}: the pull-request review pre-flight's own verdict commit lost a race with a "
+                + "concurrent reclaim — rereading and retrying (attempt {Attempt})", taskId, attempt + 1);
+            await CompletePreflightAsync(preflightRunId, taskId, verdict, cancellationToken, attempt + 1);
+            return;
+        }
 
-        logger.LogInformation(
-            "Task {TaskId}: pull-request review pre-flight {Outcome}", taskId, verdict.Safe ? "safe" : "unsafe");
+        if (released)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: pull-request review pre-flight {Outcome}", taskId, verdict.Safe ? "safe" : "unsafe");
+        }
     }
 
     /// <summary>
@@ -356,12 +405,18 @@ public sealed class RunSupervisor(
     /// this stale reaching the task at all means a later dispatch has already reclaimed it —
     /// possibly into a live review under its own, unrelated verdict — and this row's own timeout
     /// has nothing left here to requeue.
+    /// <para>
+    /// Fenced and retried on a concurrency conflict the same way <see cref="CompletePreflightAsync"/>
+    /// is (independent pre-PR review, cycle 1, adversarial lens, RunSupervisor.cs:284): the
+    /// abandon can race <see cref="RunLauncher"/>'s own <c>PrReviewPreflightReclaimed</c> append
+    /// exactly as a completion can, and an unfenced append here is the identical trap.
+    /// </para>
     /// </summary>
-    private async Task AbandonPreflightAsync(Guid preflightRunId, Guid taskId, CancellationToken cancellationToken)
+    private async Task AbandonPreflightAsync(
+        Guid preflightRunId, Guid taskId, CancellationToken cancellationToken, int attempt = 0)
     {
         await using IDocumentSession session = store.LightweightSession();
         DateTimeOffset now = DateTimeOffset.UtcNow;
-        session.Events.Append(preflightRunId, new PrReviewPreflightAbandoned(preflightRunId, now));
 
         // The retry reason must match whether this abandoned row was gating a mention follow-up's
         // own checkout: a bare PrReviewPreflightRetry here cleared PendingMentionFollowUpAfterPreflight
@@ -372,29 +427,55 @@ public sealed class RunSupervisor(
         // review, cycle 3, conformance lens).
         PrReviewPreflightDetails? preflight = await session.LoadAsync<PrReviewPreflightDetails>(
             preflightRunId, cancellationToken);
+        StreamState? preflightFence = await session.Events.FetchStreamStateAsync(preflightRunId, cancellationToken);
+        if (preflightFence is null)
+        {
+            return;
+        }
+
+        session.Events.Append(
+            preflightRunId, expectedVersion: preflightFence.Version + 1,
+            new PrReviewPreflightAbandoned(preflightRunId, now));
 
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-        if (task is null || task.State != TaskState.Claimed
-            || task.CurrentRunId != preflight?.DispatchingRunId)
+        bool requeued;
+        if (task is null || task.State != TaskState.Claimed || task.CurrentRunId != preflight?.DispatchingRunId)
         {
+            requeued = false;
             logger.LogInformation(
                 "Task {TaskId}: the pull-request review pre-flight {PreflightRunId} never reached a verdict, but "
                 + "the task is no longer claimed under the run it was dispatched for — nothing to requeue",
                 taskId, preflightRunId);
+        }
+        else
+        {
+            requeued = true;
+            RequeueReason reason = preflight?.IsMentionFollowUp == true
+                ? RequeueReason.PrReviewPreflightRetryMentionFollowUp
+                : RequeueReason.PrReviewPreflightRetry;
+            session.Events.Append(taskId, TaskDecider.Requeue(task, reason, now));
+            session.Delete<TaskLease>(taskId);
+        }
+
+        try
+        {
             await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException) when (attempt < MaxPreflightTerminalRetries)
+        {
+            logger.LogDebug(
+                "Task {TaskId}: the pull-request review pre-flight's own abandon commit lost a race with a "
+                + "concurrent reclaim — rereading and retrying (attempt {Attempt})", taskId, attempt + 1);
+            await AbandonPreflightAsync(preflightRunId, taskId, cancellationToken, attempt + 1);
             return;
         }
 
-        RequeueReason reason = preflight?.IsMentionFollowUp == true
-            ? RequeueReason.PrReviewPreflightRetryMentionFollowUp
-            : RequeueReason.PrReviewPreflightRetry;
-        session.Events.Append(taskId, TaskDecider.Requeue(task, reason, now));
-        session.Delete<TaskLease>(taskId);
-        await session.SaveChangesAsync(cancellationToken);
-
-        logger.LogInformation(
-            "Task {TaskId}: pull-request review pre-flight {PreflightRunId} never reached a verdict — requeued "
-            + "for a fresh one", taskId, preflightRunId);
+        if (requeued)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: pull-request review pre-flight {PreflightRunId} never reached a verdict — requeued "
+                + "for a fresh one", taskId, preflightRunId);
+        }
     }
 
     /// <summary>

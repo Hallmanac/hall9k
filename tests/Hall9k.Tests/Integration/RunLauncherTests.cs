@@ -4247,6 +4247,53 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         stillClaimed.CurrentRunId.Should().Be(freshRunId);
     }
 
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, adversarial lens (RunLauncher.cs:1926): every node
+    /// shares one database, so a row another node dispatched is still visible to this query —
+    /// but only that node's own ResumeStrandedPreflightsAsync can ever complete or abandon it.
+    /// Deferring to it as "still in flight" the way the same-node check does would leave this
+    /// task claimed-and-requeued forever if the other node never comes back. This node falls
+    /// through to a fresh dispatch of its own instead.
+    /// </summary>
+    [Fact]
+    public async Task An_in_flight_preflight_owned_by_a_different_node_falls_through_to_a_fresh_dispatch()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid otherNodeId = DomainId.New();
+        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 916, cts.Token);
+
+        Guid preflightRunId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
+                preflightRunId, taskId, runId, otherNodeId, "claude-opus-5-5", string.Empty, ["Dockerfile"],
+                DateTimeOffset.UtcNow));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(
+            PullRequestPreflightJson.Replace("901", "916", StringComparison.Ordinal));
+        CapturingExecutor executor = new();
+        RunLauncher launcher = new(store, new RefusingWorktreeManager(), executor,
+            NewSupervisor(store, node), NewContextAssembler(store), new MergedInspector(),
+            NewCloseoutEngine(store, node, new MergedInspector(), new RefusingWorktreeManager()),
+            NewPullRequestOpener(store), gh.Runner, Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        executor.Request.Should().NotBeNull(
+            "a row owned by a different node must never be read as still in flight; it falls through to a "
+            + "fresh dispatch on this node instead of waiting on a node that may never come back");
+
+        await using IQuerySession query = store.QuerySession();
+        PrReviewPreflightDetails other = (await query.LoadAsync<PrReviewPreflightDetails>(preflightRunId, cts.Token))!;
+        other.DispatchingRunId.Should().Be(
+            runId, "the other node's own row is left untouched — reclaiming it here would only be this node "
+            + "racing to retarget a row it can never itself complete or abandon");
+    }
+
     /// <summary>Idea 6be68ee2, finding 1, phase two: the mention follow-up site is gated identically to the ordinary dispatch — it refuses to cut a checkout without a safe verdict.</summary>
     [Fact]
     public async Task The_mention_follow_up_site_refuses_a_checkout_without_a_verdict()
