@@ -177,7 +177,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         Guid runId = attachment.RunId;
         string worktreePath = attachment.WorktreePath;
         ReviewLapBriefing briefing = await ComposeBriefingAsync(
-            session, project, taskId, runId, worktreePath, pullRequest, cancellationToken);
+            session, project, context.OwnerId, taskId, runId, worktreePath, pullRequest, cancellationToken);
         if (settings.SinceMyReview)
         {
             briefing = briefing with
@@ -989,7 +989,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// exists only when this node can see the task that built the pull request at all.
     /// </summary>
     private static async Task<ReviewLapBriefing> ComposeBriefingAsync(
-        IQuerySession session, ProjectDetails project, Guid taskId, Guid runId, string worktreePath,
+        IQuerySession session, ProjectDetails project, Guid ownerId, Guid taskId, Guid runId, string worktreePath,
         PullRequestSurface pullRequest, CancellationToken cancellationToken)
     {
         RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
@@ -1007,7 +1007,9 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             authorTask?.AcceptanceCriteria ?? [],
             authorTask is null ? null : TaskListCommand.ShortId(authorTask.Id),
             findingsReport,
-            authorRun is null ? null : DescribeAuthorRun(authorRun),
+            authorRun is null
+                ? null
+                : await DescribeAuthorRunAsync(session, new LocalFleetSource(session, project, ownerId), authorRun, cancellationToken),
             SinceMyReview: null,
             WritingConventions: project.WritingConventions,
             PromptAddendum: ProjectPromptAddendaLoader.TryLoad(project, PromptBuilderKey.ReviewLap));
@@ -1255,15 +1257,41 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     }
 
     /// <summary>
+    /// <see cref="DescribeAuthorRun"/> after the author run's park resolutions and human-directed
+    /// interactions have been judged by their verified sender: a teammate's node can write both into
+    /// a project-scoped run stream, so one from outside this owner's fleet is marked and reaches the
+    /// briefing as a labelled, fenced note instead of as a human's settled ruling. The fleet is read
+    /// only when some event on the run was replicated.
+    /// </summary>
+    private static async Task<ReviewLapAuthorRun> DescribeAuthorRunAsync(
+        IQuerySession session, LocalFleetSource fleet, RunDetails run, CancellationToken cancellationToken)
+    {
+        ReplicatedRunEvents replicated = await ReplicatedRunFencing.ReadAsync(session, [run.Id], cancellationToken);
+        ValueTask<LocalFleet?> ReadFleet(CancellationToken token) => new(fleet.GetAsync(token));
+
+        return DescribeAuthorRun(
+            run,
+            await ReplicatedRunFencing.FenceRulingsAsync(run.ReviewParkResolutions, replicated, ReadFleet, cancellationToken),
+            await ReplicatedRunFencing.FenceInteractionsAsync(run.ExternalInteractions, replicated, ReadFleet, cancellationToken));
+    }
+
+    /// <summary>
     /// The author's run rendered into the briefing's own vocabulary. Unclaimed residuals are the
     /// two tallies the platform already names on the pull request body itself
     /// (<c>PullRequestBody</c>): findings the review raised and then did not fix here, either
     /// because the loop ran out of cycles (unfixed) or because it graded them below the bar of
     /// the cycle that found them (ride-alongs). They are listed together because the distinction
     /// is about how the platform decided, and what the reviewer is being pointed at is the same
-    /// either way — a finding on this diff nobody has vouched for.
+    /// either way: a finding on this diff nobody has vouched for.
+    /// <para>
+    /// <paramref name="resolutions"/> and <paramref name="interactions"/> arrive already judged
+    /// (<see cref="ReplicatedRunFencing"/>): an entry another owner's node replicated carries its
+    /// <c>ForeignNote</c> and is kept out of the rulings list, so the two never mix under the
+    /// heading that says a human settled the question.
+    /// </para>
     /// </summary>
-    private static ReviewLapAuthorRun DescribeAuthorRun(RunDetails run)
+    internal static ReviewLapAuthorRun DescribeAuthorRun(
+        RunDetails run, IReadOnlyList<ReviewParkResolution> resolutions, IReadOnlyList<ExternalInteractionRecord> interactions)
     {
         List<string> residuals =
         [
@@ -1274,12 +1302,18 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         ];
         List<string> rulings =
         [
-            .. run.ReviewParkResolutions.Select(resolution =>
-                $"{resolution.Verdict.Value}: {resolution.Reason ?? "(no reason recorded)"}"),
-            .. run.ExternalInteractions
-                .Where(interaction => interaction.HumanDirected)
+            .. resolutions
+                .Where(resolution => resolution.ForeignNote is null)
+                .Select(resolution => $"{resolution.Verdict.Value}: {resolution.Reason ?? "(no reason recorded)"}"),
+            .. interactions
+                .Where(interaction => interaction.HumanDirected && interaction.ForeignNote is null)
                 .Select(interaction =>
                     $"human-directed interaction with {interaction.Party}: {interaction.Summary}"),
+        ];
+        List<string> teammateNotes =
+        [
+            .. resolutions.Select(resolution => resolution.ForeignNote).OfType<string>(),
+            .. interactions.Where(interaction => interaction.HumanDirected).Select(interaction => interaction.ForeignNote).OfType<string>(),
         ];
         // The two counted tallies stay counts rather than being folded into the residual list:
         // a fixed or routed residual has already been dealt with, and naming it alongside the
@@ -1290,7 +1324,8 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             run.ReviewResidualsFixed,
             run.ReviewResidualsRouted,
             residuals,
-            rulings);
+            rulings,
+            teammateNotes);
     }
 
     private static string Severity(ReviewSeverity severity) =>
