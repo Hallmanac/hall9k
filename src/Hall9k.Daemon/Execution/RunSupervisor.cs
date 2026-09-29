@@ -224,12 +224,29 @@ public sealed class RunSupervisor(
             // identical shape PrReviewEngine's own AwaitFollowOnSessionAsync gives its own
             // follow-on sessions (idea 6be68ee2, finding 1's own acceptance criterion) — never
             // read as an unsafe verdict, since no real verdict was ever reached.
-            bool abandon = timedOut || result is null
-                || (result.IsError && BudgetExhaustionParser.IsBudgetExhausted(result.Summary))
-                || (result.IsError && LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration));
+            bool budgetExhausted = result is { IsError: true }
+                && BudgetExhaustionParser.IsBudgetExhausted(result.Summary);
+            bool launchFailure = result is { IsError: true }
+                && LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration);
+            bool abandon = timedOut || result is null || budgetExhausted || launchFailure;
 
             if (abandon)
             {
+                if (budgetExhausted || launchFailure)
+                {
+                    // Mirrors PrReviewEngine.AwaitFollowOnSessionAsync's own identical branch for
+                    // its follow-on sessions: without this, the abandon-and-requeue below was
+                    // reclaimed by this node's own dispatch loop every PollInterval, spawning a
+                    // fresh gh fetch and a fresh pre-flight session into the same usage limit or
+                    // the same broken launch every few seconds until an operator fixed it by hand
+                    // (independent pre-PR review, cycle 1, both lenses). Raising or joining the
+                    // node-wide hold here shuts DispatchEngine's own claim gate for every queued
+                    // task on this node, not only this one, until a probe finds the node can
+                    // launch again.
+                    string observedMessage = result?.Summary ?? "the pre-flight exceeded its own timeout without a result";
+                    await launchHold.RaiseOrJoinAsync(node.NodeId, preflightRunId, observedMessage, cancellationToken);
+                }
+
                 await AbandonPreflightAsync(preflightRunId, taskId, cancellationToken);
                 return;
             }
