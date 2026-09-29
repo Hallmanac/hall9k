@@ -271,7 +271,7 @@ public sealed class RunLauncher(
                     await DispatchPrReviewPreflightAsync(
                         task, project, prReviewFacts! with { HeadRefOid = exception.ObservedHeadOid },
                         dispatchingNodeId ?? nodeId, runId, leaseGeneration, isMentionFollowUp: false,
-                        cancellationToken);
+                        cancellationToken, headOidFromGitFetch: true);
                     return;
                 }
 
@@ -1040,7 +1040,7 @@ public sealed class RunLauncher(
                     taskId, exception.Message);
                 await DispatchPrReviewPreflightAsync(
                     task, project, facts with { HeadRefOid = exception.ObservedHeadOid }, dispatchingNodeId, runId,
-                    leaseGeneration, isMentionFollowUp: true, cancellationToken);
+                    leaseGeneration, isMentionFollowUp: true, cancellationToken, headOidFromGitFetch: true);
                 return;
             }
 
@@ -1953,7 +1953,8 @@ public sealed class RunLauncher(
     /// </summary>
     private async Task DispatchPrReviewPreflightAsync(
         TaskDetails task, ProjectDetails project, PullRequestFacts facts, Guid nodeId, Guid runId,
-        int leaseGeneration, bool isMentionFollowUp, CancellationToken cancellationToken)
+        int leaseGeneration, bool isMentionFollowUp, CancellationToken cancellationToken,
+        bool headOidFromGitFetch = false)
     {
         Guid preflightRunId = DomainId.New();
         string runDirectory = RunPaths.GlobalDirectory(preflightRunId);
@@ -1990,6 +1991,40 @@ public sealed class RunLauncher(
 
             await RecordLaunchFailureAsync(task.Id, runId, leaseGeneration, exception.Message, cancellationToken);
             return;
+        }
+
+        // The head oid this verdict is about to be recorded against (facts.HeadRefOid) was read
+        // by gh pr view earlier and separately from the gh pr diff calls just above — two
+        // independent observations that can disagree if the head moved in between (independent
+        // pre-PR review, cycle 1, adversarial lens: force-push away and back around the diff read
+        // would otherwise record a safe verdict against a head this pre-flight never actually
+        // judged the diff of). Re-read here, immediately after the diff fetch, and record the
+        // verdict against whichever oid is actually current now rather than the earlier, possibly
+        // stale one. Skipped when headOidFromGitFetch is true (both PullRequestHeadMovedException
+        // catches pass it): that oid already comes from a direct git fetch of
+        // refs/pull/<n>/head, strictly fresher than a second gh pr view could ever confirm, so
+        // asking gh again there would only replace a more-authoritative reading with a less fresh
+        // one.
+        if (!headOidFromGitFetch)
+        {
+            try
+            {
+                PullRequestFacts recheckedFacts = await ghProvider.FetchFactsAsync(reference, runDirectory, cancellationToken);
+                if (recheckedFacts.HeadRefOid != facts.HeadRefOid)
+                {
+                    logger.LogWarning(
+                        "Task {TaskId}: the pull request's head read as {ExpectedHeadOid} earlier but "
+                        + "{ObservedHeadOid} just now, after the diff fetch — recording this verdict against "
+                        + "the head actually observed",
+                        task.Id, facts.HeadRefOid, recheckedFacts.HeadRefOid);
+                    facts = recheckedFacts;
+                }
+            }
+            catch (DomainException exception)
+            {
+                await RecordLaunchFailureAsync(task.Id, runId, leaseGeneration, exception.Message, cancellationToken);
+                return;
+            }
         }
 
         IReadOnlyList<string> surfaces = PrReviewPreflightSurfaceMatcher.Match(changedFiles);

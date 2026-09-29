@@ -4249,6 +4249,67 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 1, adversarial lens (RunLauncher.cs:1947): the head oid a
+    /// verdict is recorded against comes from gh pr view, read once at the top of LaunchAsync —
+    /// separately, and earlier, than the gh pr diff calls the pre-flight itself reads. A pull
+    /// request whose head moves in that window (a force-push away and back would bind a safe
+    /// verdict to a commit the diff read never actually saw) is caught by re-reading the head
+    /// immediately after the diff fetch and recording the verdict against whichever oid is
+    /// actually current then.
+    /// </summary>
+    [Fact]
+    public async Task A_head_that_moves_between_gh_pr_view_and_the_diff_fetch_binds_the_verdict_to_the_newer_oid()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 912, cts.Token);
+
+        int viewCalls = 0;
+        RecordingProcessRunner gh = new(arguments =>
+        {
+            if (arguments.Contains("diff"))
+            {
+                return new ProcessResult(0, string.Empty, string.Empty);
+            }
+
+            viewCalls++;
+            string headRefOid = viewCalls == 1 ? "old-oid" : "new-oid";
+            return new ProcessResult(0, $$"""
+                {
+                  "number": 912,
+                  "title": "Add rate limiting to auth endpoints",
+                  "body": "Fixes an incident.",
+                  "state": "OPEN",
+                  "url": "https://github.com/acme/web/pull/912",
+                  "baseRefName": "main",
+                  "headRefOid": "{{headRefOid}}"
+                }
+                """, string.Empty);
+        });
+        CapturingExecutor executor = new();
+        RefusingWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        executor.Request.Should().NotBeNull();
+        viewCalls.Should().Be(2, "the initial fetch, plus this fix's own recheck right after the diff read");
+
+        await using IQuerySession query = store.QuerySession();
+        PrReviewPreflightDetails dispatched = (await query.Query<PrReviewPreflightDetails>()
+            .Where(preflight => preflight.TaskId == taskId).ToListAsync(cts.Token)).Single();
+        dispatched.HeadRefOid.Should().Be(
+            "new-oid",
+            "the verdict must bind to the head actually current when the diff was read, not the earlier "
+            + "gh pr view's own answer");
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 1, both lenses, finding 1 (RunLauncher.cs:1891): an
     /// abandoned pre-flight row (its own process gone, or a timeout/budget-exhaustion/launch-failure
     /// it never reached a verdict from) must never be read as "already dispatched and still in
