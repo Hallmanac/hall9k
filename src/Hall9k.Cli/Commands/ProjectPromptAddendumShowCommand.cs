@@ -49,11 +49,13 @@ public sealed class ProjectPromptAddendumShowCommand : Hall9kAsyncCommand<Projec
             $"[bold]{builder.Value}[/] addendum for '{project.Name.EscapeMarkup()}'"
             + (addendum.OverCap ? " [yellow](set over this project's usual length cap)[/]" : string.Empty) + ":");
         AnsiConsole.WriteLine();
-        AnsiConsole.WriteLine(addendum.Content);
+        AnsiConsole.WriteLine(RenderedAddendumContent(addendum.Content));
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine(
             $"[dim]Set {addendum.SetAt.ToString("u", CultureInfo.InvariantCulture)} by owner {addendum.SetByOwnerId}"
-            + (addendum.OverCap ? $" — over cap: {addendum.OverCapReason?.EscapeMarkup()}" : string.Empty) + ".[/]");
+            + (addendum.OverCap && addendum.OverCapReason is { } overCapReason
+                ? $" — over cap: {RenderedOverCapReason(overCapReason)}"
+                : string.Empty) + ".[/]");
 
         // Mirrors ProjectPromptAddendumListCommand's own warning: this node's own audit trail
         // above is accurate, but a standing ledger-push failure means the daemon has not actually
@@ -70,4 +72,22 @@ public sealed class ProjectPromptAddendumShowCommand : Hall9kAsyncCommand<Projec
 
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// A prompt addendum's content, as any project member who can set one is free to write it, so
+    /// by the time this command prints it, it is outside text like an adopted issue body or a run
+    /// skill's content, not something this node authored — hence the pass through
+    /// <see cref="ExternalText.ForTerminal"/> before <see cref="AnsiConsole.WriteLine(string)"/>
+    /// ever sees it, the same gate <c>ProjectRunSkillShowCommand.RenderedSkillContent</c> puts a
+    /// skill's own content through. Pulled out as its own pure method so a test can pin the
+    /// guarantee to this command's own rendering.
+    /// </summary>
+    internal static string RenderedAddendumContent(string content) => ExternalText.ForTerminal(content);
+
+    /// <summary>
+    /// The over-cap reason, framed inside a single line of markup rather than printed as its own
+    /// block: unlike the addendum content above, a stray line break here could print lines of its
+    /// own choosing underneath the "Set … by owner …" line it is meant to trail.
+    /// </summary>
+    internal static string RenderedOverCapReason(string reason) => ExternalText.OneLineMarkup(reason);
 }

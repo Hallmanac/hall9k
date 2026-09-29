@@ -71,7 +71,7 @@ public sealed class ProjectRunSkillShowCommand : Hall9kAsyncCommand<ProjectRunSk
             // lens). The reason FailRunSkillDiscovery insists on exists to be read somewhere.
             AnsiConsole.MarkupLine(
                 $"[yellow]Warning:[/] the last discovery failed and did not replace the above: "
-                + $"{failure.EscapeMarkup()} Ask again with h9k project set "
+                + $"{RenderedDiscoveryFailure(failure)} Ask again with h9k project set "
                 + $"{project.Name.EscapeMarkup()} --discover-run-skill.");
         }
 
@@ -102,6 +102,15 @@ public sealed class ProjectRunSkillShowCommand : Hall9kAsyncCommand<ProjectRunSk
     internal static string RenderedSkillContent(string content) => ExternalText.ForTerminal(content);
 
     /// <summary>
+    /// A discovery-failure reason, as recorded verbatim from the discovery session's own declared
+    /// <c>RUN SKILL SHAPE:</c> value (<c>RunSkillResultParser</c>), so it is outside text the same
+    /// way a run skill's own content is — framed inside a single line of markup rather than printed
+    /// as a block, since a stray line break here could print lines of its own choosing underneath
+    /// the warning or the pending-state line it trails.
+    /// </summary>
+    internal static string RenderedDiscoveryFailure(string failure) => ExternalText.OneLineMarkup(failure);
+
+    /// <summary>
     /// What a project with no recorded skill is actually waiting on — told apart honestly rather
     /// than collapsed into one "nothing here" line: a discovery the daemon will answer, one
     /// already dispatched with nothing recorded since, one that failed and why, or nobody having
@@ -120,7 +129,7 @@ public sealed class ProjectRunSkillShowCommand : Hall9kAsyncCommand<ProjectRunSk
             + $"redispatched on its own, so ask again if it stays this way with h9k project set "
             + $"{project.Name.EscapeMarkup()} --discover-run-skill.",
         { RunSkillDiscoveryFailure: { } failure } =>
-            $"The last discovery failed: {failure.EscapeMarkup()} Ask again with "
+            $"The last discovery failed: {RenderedDiscoveryFailure(failure)} Ask again with "
             + $"h9k project set {project.Name.EscapeMarkup()} --discover-run-skill.",
         _ =>
             $"Ask for one with h9k project set {project.Name.EscapeMarkup()} --discover-run-skill, "

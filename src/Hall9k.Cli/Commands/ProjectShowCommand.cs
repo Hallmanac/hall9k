@@ -405,7 +405,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
                 { RunSkillDiscoveryOutstanding: true } => " [dim]— a fresh discovery is outstanding[/]",
                 { RunSkillDiscoveryFailure: { } failed } =>
                     $" [yellow]— the last discovery failed and this is the skill it did not replace:[/] "
-                    + $"[dim]{failed.EscapeMarkup()} Ask again: h9k project set "
+                    + $"[dim]{RenderedDiscoveryFailure(failed)} Ask again: h9k project set "
                     + $"{project.Name.EscapeMarkup()} --discover-run-skill[/]",
                 _ => string.Empty,
             };
@@ -420,7 +420,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
 
         if (project.RunSkillDiscoveryFailure is { } failure)
         {
-            return $"[yellow]discovery failed[/] [dim]— {failure.EscapeMarkup()} Ask again: h9k project set "
+            return $"[yellow]discovery failed[/] [dim]— {RenderedDiscoveryFailure(failure)} Ask again: h9k project set "
                 + $"{project.Name.EscapeMarkup()} --discover-run-skill[/]";
         }
 
@@ -428,6 +428,16 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             ? $"[dim]{RunSkillPendingState(project, requestedAt)}[/]"
             : $"[dim]none — ask for one: h9k project set {project.Name.EscapeMarkup()} --discover-run-skill[/]";
     }
+
+    /// <summary>
+    /// A discovery-failure reason, recorded verbatim from the discovery session's own declared
+    /// <c>RUN SKILL SHAPE:</c> value (<c>RunSkillResultParser</c>), so it is outside text like a
+    /// run skill's own content — framed inside a single line of markup rather than printed as a
+    /// block, since a stray line break here could print lines of its own choosing underneath the
+    /// row it trails. The same guarantee <c>ProjectRunSkillShowCommand.RenderedDiscoveryFailure</c>
+    /// puts this same value through wherever it prints there.
+    /// </summary>
+    internal static string RenderedDiscoveryFailure(string failure) => ExternalText.OneLineMarkup(failure);
 
     /// <summary>
     /// An asked-for discovery that has produced nothing yet, told apart from one that has been
