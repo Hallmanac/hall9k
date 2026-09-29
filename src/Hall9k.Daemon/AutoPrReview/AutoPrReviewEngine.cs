@@ -2407,8 +2407,8 @@ public sealed class AutoPrReviewEngine(
         try
         {
             await launcher.LaunchPrReviewMentionFollowUpAsync(
-                existing.Id, runId, node.OwnerId, claimed.LeaseGeneration, node.NodeId, comment, priorReviewRunId,
-                cancellationToken);
+                existing.Id, runId, claimed.NodeId, node.OwnerId, claimed.LeaseGeneration, node.NodeId, comment,
+                priorReviewRunId, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

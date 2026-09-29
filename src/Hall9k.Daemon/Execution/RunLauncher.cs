@@ -161,8 +161,8 @@ public sealed class RunLauncher(
                 Guid? priorReviewRunId = await OriginalReviewRunResolver.ResolveAsync(
                     session, task.RunIds, cancellationToken);
                 await LaunchPrReviewMentionFollowUpAsync(
-                    taskId, runId, ownerId, leaseGeneration, dispatchingNodeId ?? nodeId, comment, priorReviewRunId,
-                    cancellationToken);
+                    taskId, runId, nodeId, ownerId, leaseGeneration, dispatchingNodeId ?? nodeId, comment,
+                    priorReviewRunId, cancellationToken);
                 return;
             }
 
@@ -953,9 +953,23 @@ public sealed class RunLauncher(
     /// Claimed under a fresh generation by the time this runs, exactly as every other launch here
     /// assumes.
     /// </para>
+    /// <para>
+    /// <paramref name="nodeId"/> is the claim's own <see cref="Domain.Features.Tasks.Events.TaskClaimed.NodeId"/>,
+    /// recorded verbatim onto <see cref="RunDispatched.NodeId"/> — never hard-coded to
+    /// <see cref="Guid.Empty"/> here, because this method now has two callers with two different
+    /// claim shapes (independent pre-PR review, cycle 1, adversarial lens): <c>AutoPrReviewEngine</c>'s
+    /// own sentinel <c>ClaimForMentionFollowUp</c> claim, which never writes a
+    /// <see cref="Domain.Features.Tasks.Documents.TaskLease"/> and so genuinely is
+    /// <see cref="Guid.Empty"/>, and <see cref="LaunchAsync"/>'s own
+    /// <c>PendingMentionFollowUpAfterPreflight</c> branch, an ORDINARY dispatch claim holding a
+    /// real lease for a real node. Writing the sentinel unconditionally for the second shape left
+    /// <see cref="RunSupervisor.RefreshAdoptedLeaseAsync"/> and the startup expiry sweep's own
+    /// liveness check both reading a live session as ownerless, and a daemon restart longer than
+    /// the lease timeout requeued the task out from under a session that was still running.
+    /// </para>
     /// </summary>
     public async Task LaunchPrReviewMentionFollowUpAsync(
-        Guid taskId, Guid runId, Guid ownerId, int leaseGeneration, Guid dispatchingNodeId,
+        Guid taskId, Guid runId, Guid nodeId, Guid ownerId, int leaseGeneration, Guid dispatchingNodeId,
         PullRequestMentionComment comment, Guid? priorReviewRunId, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
@@ -1062,7 +1076,7 @@ public sealed class RunLauncher(
                 : RunPaths.ResolveDirectory(project.HomeDirectory, TaskDocumentRenderer.DirectoryName(task), runId);
 
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
-                runId, taskId, Guid.Empty, ownerId, leaseGeneration, sessionId,
+                runId, taskId, nodeId, ownerId, leaseGeneration, sessionId,
                 worktree.Path, worktree.Branch, ExecutorMode.Subscription, DateTimeOffset.UtcNow,
                 Model: model, RunDirectory: runDirectory, PrReviewBaseRefName: facts.BaseRefName,
                 SessionName: sessionName, ReviewStageComposition: ReviewStageComposition.FullPipeline,
