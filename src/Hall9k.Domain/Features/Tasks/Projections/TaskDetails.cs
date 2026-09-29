@@ -866,6 +866,31 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         }
     }
 
+    // The identical union Apply(IEvent<TaskUnassigned>) above gives, plus the claim-clearing half
+    // Apply(IEvent<TaskInteractiveClaimUnassigned>) also gives — mirrors
+    // TaskAggregate.Apply(PrReviewPreflightParked) and TaskListItem.Apply(IEvent<PrReviewPreflightParked>),
+    // both of which already land unconditionally on Published. Without this, an unsafe or unreadable
+    // park left this view still reporting the task's old ClaimedByNodeId, CurrentRunId and
+    // AssignedOwnerId as live: h9k task show and the project-home board both read this projection, not
+    // the aggregate, so both kept showing a claim that no longer exists until some unrelated later
+    // event happened to overwrite those fields (independent pre-PR review, cycle 3, conformance lens).
+    public void Apply(IEvent<PrReviewPreflightParked> @event, TaskDetails view)
+    {
+        view.ClaimedByNodeId = null;
+        view.CurrentRunId = null;
+        EndAnyOpenReviewLap(view);
+
+        view.AssignedOwnerId = null;
+        view.AssignedOwnerFingerprint = null;
+        view.PlacedOnNodeId = null;
+        view.AssignedAt = null;
+        view.UnmetDependencies = [];
+        view.DeadDependencies = [];
+        view.DeadDependencyReasons = [];
+        view.DependencyFailureReason = null;
+        view.State = TaskState.Published;
+    }
+
     // Dependency bookkeeping only means anything while the task is Blocked, and the decider
     // only ever emits these three events from that state. Anything else on the stream is a lost
     // race — a human unassigned or abandoned the task between a resolver's read and its append
