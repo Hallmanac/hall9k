@@ -553,6 +553,8 @@ public sealed class TaskDetails
     public DateTimeOffset? LatestMentionCreatedAt { get; set; }
     /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionCommentDatabaseId"/> — the numeric REST id, set only for an inline review-comment-thread reply.</summary>
     public long? LatestMentionCommentDatabaseId { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.PendingMentionFollowUpAfterPreflight"/> — see its own doc.</summary>
+    public bool PendingMentionFollowUpAfterPreflight { get; set; }
 }
 
 public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskDetails, Guid>
@@ -1184,6 +1186,9 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         // closed out. Landing back on Blocked instead keeps this view honest with the aggregate
         // it mirrors and lets the ordinary Blocked-state dependency sweep pick it back up.
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+        // Mirrors TaskAggregate.Apply(TaskRequeued) — see PendingMentionFollowUpAfterPreflight's own doc.
+        view.PendingMentionFollowUpAfterPreflight =
+            @event.Data.Reason == RequeueReason.PrReviewPreflightSafeMentionFollowUp;
         // The second exit door alongside Apply(TaskHandedBack) below and
         // Apply(IEvent<TaskInteractiveClaimUnassigned>) above — mirrors
         // TaskAggregate.Apply(TaskRequeued) (design ruling R6, amended 2026-09-05): a default

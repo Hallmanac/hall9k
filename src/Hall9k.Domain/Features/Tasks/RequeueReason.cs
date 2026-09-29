@@ -23,6 +23,17 @@ public sealed record RequeueReason
     /// rather than parking the task as unsafe.
     /// </summary>
     public static readonly RequeueReason PrReviewPreflightRetry = new("PrReviewPreflightRetry");
+    /// <summary>
+    /// The identical safe verdict <see cref="PrReviewPreflightSafe"/> gives, for a pre-flight
+    /// dispatched to gate a mention follow-up's own checkout rather than an ordinary review
+    /// dispatch: the next claim answers the mentioning comment through
+    /// <c>RunLauncher.LaunchPrReviewMentionFollowUpAsync</c> instead of running a fresh full
+    /// review (independent pre-PR review, cycle 1, both lenses — a bare <see cref="PrReviewPreflightSafe"/>
+    /// requeue here let the ordinary dispatch loop's own <c>LaunchAsync</c> claim it and answer the
+    /// mentioning comment with an unrequested full review instead, never answering the comment at
+    /// all).
+    /// </summary>
+    public static readonly RequeueReason PrReviewPreflightSafeMentionFollowUp = new("PrReviewPreflightSafeMentionFollowUp");
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly RequeueReason Unknown = new("");
 

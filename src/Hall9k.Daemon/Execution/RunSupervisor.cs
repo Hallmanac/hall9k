@@ -251,7 +251,15 @@ public sealed class RunSupervisor(
         DateTimeOffset now = DateTimeOffset.UtcNow;
         if (verdict.Safe)
         {
-            session.Events.Append(taskId, TaskDecider.Requeue(task, RequeueReason.PrReviewPreflightSafe, now));
+            // A pre-flight dispatched to gate a mention follow-up's own checkout releases the
+            // task through its own requeue reason, so the next claim answers the mentioning
+            // comment (RunLauncher.LaunchAsync's own PendingMentionFollowUpAfterPreflight branch)
+            // instead of running an ordinary full review (independent pre-PR review, cycle 1, both
+            // lenses).
+            RequeueReason reason = preflight?.IsMentionFollowUp == true
+                ? RequeueReason.PrReviewPreflightSafeMentionFollowUp
+                : RequeueReason.PrReviewPreflightSafe;
+            session.Events.Append(taskId, TaskDecider.Requeue(task, reason, now));
         }
         else
         {
@@ -272,23 +280,32 @@ public sealed class RunSupervisor(
     /// failure, or (from <see cref="ResumeStrandedPreflightsAsync"/>) a daemon restart that found
     /// the process dead. Requeues the task so a fresh pre-flight is dispatched on the next claim,
     /// exactly the redispatch (never a park) the acceptance criterion gives budget exhaustion and
-    /// a launch hold. Nothing is appended to the pre-flight's own stream — it stays permanently
-    /// incomplete, which is fine: <c>RunLauncher</c> reads only the LATEST pre-flight for a task,
-    /// and a fresh dispatch mints a fresh, strictly later one.
+    /// a launch hold. <see cref="PrReviewPreflightAbandoned"/> is appended to the pre-flight's own
+    /// stream alongside the requeue, so the row stays permanently incomplete AND permanently
+    /// marked as abandoned — <c>RunLauncher.EnsurePrReviewPreflightSafeAsync</c> reads the marker
+    /// to tell this row apart from one still genuinely in flight, and this method's own caller in
+    /// <see cref="ResumeStrandedPreflightsAsync"/> excludes an already-abandoned row from its own
+    /// query, so a row already marked here is never re-abandoned (independent pre-PR review, cycle
+    /// 1, both lenses: without either half of this, a fresh pre-flight was never actually
+    /// dispatched again, and this same row was requeued in an unbroken loop instead).
     /// </summary>
     private async Task AbandonPreflightAsync(Guid preflightRunId, Guid taskId, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        session.Events.Append(preflightRunId, new PrReviewPreflightAbandoned(preflightRunId, now));
+
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
         if (task is null || task.State != TaskState.Claimed)
         {
             logger.LogInformation(
                 "Task {TaskId}: the pull-request review pre-flight {PreflightRunId} never reached a verdict, but "
                 + "the task is no longer claimed — nothing to requeue", taskId, preflightRunId);
+            await session.SaveChangesAsync(cancellationToken);
             return;
         }
 
-        session.Events.Append(taskId, TaskDecider.Requeue(task, RequeueReason.PrReviewPreflightRetry, DateTimeOffset.UtcNow));
+        session.Events.Append(taskId, TaskDecider.Requeue(task, RequeueReason.PrReviewPreflightRetry, now));
         session.Delete<TaskLease>(taskId);
         await session.SaveChangesAsync(cancellationToken);
 
@@ -314,7 +331,8 @@ public sealed class RunSupervisor(
         await using (IQuerySession query = store.QuerySession())
         {
             incomplete = await query.Query<PrReviewPreflightDetails>()
-                .Where(preflight => preflight.NodeId == nodeId && preflight.CompletedAt == null)
+                .Where(preflight => preflight.NodeId == nodeId && preflight.CompletedAt == null
+                    && preflight.AbandonedAt == null)
                 .ToListAsync(cancellationToken);
         }
 

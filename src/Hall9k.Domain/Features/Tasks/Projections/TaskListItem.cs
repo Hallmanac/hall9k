@@ -551,6 +551,8 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         view.State = view.UnmetDependencies.Count == 0 && !AwaitsRemoteStackedParent(view)
             ? TaskState.Queued
             : TaskState.Blocked;
+        // Mirrors TaskAggregate.Apply(TaskAssigned) — see PrReviewPreflightUnsafe's own doc.
+        view.PrReviewPreflightUnsafe = false;
     }
 
     /// <summary>Mirrors <see cref="TaskAggregate.Apply(Events.TaskPlacementChanged)"/> — see its own doc.</summary>
