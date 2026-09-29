@@ -55,4 +55,41 @@ public sealed class PrReviewPreflightParkedProjectionTests
         view.PlacedOnNodeId.Should().BeNull();
         view.AssignedAt.Should().BeNull();
     }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 7, adversarial lens: an unsafe verdict for a pre-flight
+    /// gating a mention follow-up's own checkout still owes that mention an answer. Before this,
+    /// neither this Apply nor Apply(IEvent&lt;TaskAssigned&gt;) ever touched
+    /// PendingMentionFollowUpAfterPreflight, so it stayed at whatever the last TaskRequeued set it
+    /// to (false on a first attempt) straight through the park — RunLauncher reads this field off
+    /// TaskDetails, not the aggregate, to decide whether the next claim answers the mention or runs
+    /// an unrequested full review.
+    /// </summary>
+    [Fact]
+    public void A_preflight_park_for_a_mention_follow_up_preserves_the_pending_follow_up_flag()
+    {
+        TaskDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        Guid runId = DomainId.New();
+
+        TaskDetails view = projection.Create(new FakeEvent<TaskAdded>(new TaskAdded(
+            id, DomainId.New(), "Review pull request acme/web#913", ["every finding names a file and line"],
+            TaskType.PrReview, null, null, null, Now, ownerId)));
+
+        projection.Apply(new FakeEvent<TaskAssigned>(new TaskAssigned(
+            id, ownerId, [], Now.AddMinutes(1), ownerId)), view);
+        projection.Apply(new FakeEvent<TaskClaimed>(new TaskClaimed(
+            id, nodeId, ownerId, 1, runId, Now.AddMinutes(2))), view);
+
+        projection.Apply(new FakeEvent<PrReviewPreflightParked>(new PrReviewPreflightParked(
+            id, [".github/workflows/deploy.yml"], "def456", "unsafe", "adds a curl-pipe-to-shell step",
+            Now.AddMinutes(3), IsMentionFollowUp: true)), view);
+
+        view.State.Should().Be(TaskState.Published);
+        view.PendingMentionFollowUpAfterPreflight.Should().BeTrue(
+            "the next h9k task assign must answer the mentioning comment instead of running an unrequested "
+            + "full review");
+    }
 }

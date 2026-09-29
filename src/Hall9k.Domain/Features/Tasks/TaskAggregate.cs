@@ -2306,6 +2306,16 @@ public sealed class TaskAggregate
         PrReviewPreflightParkedHeadRefOid = @event.HeadRefOid;
         PrReviewPreflightParkedVerdict = @event.Verdict;
         PrReviewPreflightParkedReason = @event.Reason;
+
+        // Recomputed fresh from this event's own flag, the identical "never OR-accumulated"
+        // treatment Apply(TaskRequeued) gives it (that Apply's own doc): an unsafe verdict for a
+        // pre-flight gating a mention follow-up's own checkout still owes that mention an answer,
+        // so the next h9k task assign must reach LaunchPrReviewMentionFollowUpAsync rather than an
+        // unrequested full review (independent pre-PR review, cycle 7, adversarial lens) — without
+        // this, the flag stayed at whatever TaskRequeued last set it to (false on a first attempt),
+        // Apply(TaskAssigned) never touches it either, and the mentioning comment was never
+        // answered.
+        PendingMentionFollowUpAfterPreflight = @event.IsMentionFollowUp;
     }
 
     // State is never touched here (see the event's own doc comment): the caller that appends

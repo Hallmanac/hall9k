@@ -889,6 +889,11 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.DeadDependencyReasons = [];
         view.DependencyFailureReason = null;
         view.State = TaskState.Published;
+
+        // Mirrors TaskAggregate.Apply(PrReviewPreflightParked) — see its own doc: RunLauncher reads
+        // this field off THIS projection, not the aggregate, to decide whether the next claim
+        // answers a mention follow-up or runs an ordinary full review.
+        view.PendingMentionFollowUpAfterPreflight = @event.Data.IsMentionFollowUp;
     }
 
     // Dependency bookkeeping only means anything while the task is Blocked, and the decider
