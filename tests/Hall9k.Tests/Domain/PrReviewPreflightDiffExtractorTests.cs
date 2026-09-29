@@ -70,4 +70,47 @@ public sealed class PrReviewPreflightDiffExtractorTests
     {
         PrReviewPreflightDiffExtractor.ExtractChangedFiles(string.Empty).Should().BeEmpty();
     }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 7, adversarial lens: git quotes a header path that holds a
+    /// non-ASCII byte under the default core.quotePath, octal-escaping each byte of the encoded
+    /// character — a header a plain "a/... b/..." regex never matches at all, dropping the file
+    /// outright.
+    /// </summary>
+    [Fact]
+    public void A_quoted_header_path_with_an_octal_escaped_non_ascii_byte_is_still_extracted()
+    {
+        string diff =
+            "diff --git \"a/.github/workflows/d\\303\\251pl.yml\" \"b/.github/workflows/d\\303\\251pl.yml\"\n"
+            + "index 1111111..2222222 100644\n"
+            + "--- \"a/.github/workflows/d\\303\\251pl.yml\"\n"
+            + "+++ \"b/.github/workflows/d\\303\\251pl.yml\"\n"
+            + "@@ -1,1 +1,1 @@\n"
+            + "-old\n"
+            + "+new\n";
+
+        PrReviewPreflightDiffExtractor.ExtractChangedFiles(diff).Should().Equal(".github/workflows/dépl.yml");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 7, adversarial lens: an unquoted path that itself contains
+    /// the literal " b/" separator makes the header ambiguous — the prior greedy regex always split
+    /// at the last occurrence, misreading a new file's own name. The fix prefers the split where
+    /// both halves are identical, which is every non-rename header, this one included.
+    /// </summary>
+    [Fact]
+    public void A_new_files_own_path_containing_the_literal_separator_is_not_misread()
+    {
+        string diff =
+            "diff --git a/.github/actions/setup b/action.yml b/.github/actions/setup b/action.yml\n"
+            + "new file mode 100644\n"
+            + "index 0000000..1111111\n"
+            + "--- /dev/null\n"
+            + "+++ b/.github/actions/setup b/action.yml\n"
+            + "@@ -0,0 +1,1 @@\n"
+            + "+new\n";
+
+        PrReviewPreflightDiffExtractor.ExtractChangedFiles(diff).Should().Equal(
+            ".github/actions/setup b/action.yml");
+    }
 }
