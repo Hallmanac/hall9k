@@ -44,42 +44,54 @@ public static class PrReviewPreflightPromptBuilder
         Uri? prUrl,
         IReadOnlyList<string> changedFiles,
         IReadOnlyList<string> surfaces,
-        string matchedHunks)
+        string matchedHunks,
+        string headRefOid,
+        string diffFilePath)
     {
         StringBuilder builder = new();
 
-        builder.AppendLine(
+        void Line(string text = "") => builder.Append(text).Append('\n');
+
+        Line(
             "You are the pull-request review pre-flight (idea 6be68ee2, finding 1) — a short "
             + "security lap that runs before any checkout exists. Your one job: decide whether it "
             + "is safe to let this platform check this pull request's own code out into a sandboxed "
             + "worktree and run its build, test and gate commands against it next. This is NOT a "
             + "code review — no style, correctness or design opinion is wanted here, only a safety "
             + "judgment about executing this diff's own content.");
-        builder.AppendLine();
-        builder.AppendLine(
+        Line();
+        Line(
             "This run's own working directory is NOT a git repository — no worktree has been cut "
             + "for this pull request yet, and none exists here. Every gh command you run must name "
             + "the repository explicitly (-R owner/repo) or use the pull request's own full URL; gh "
             + "cannot infer a repository from this directory's own git remote, because it has none.");
-        builder.AppendLine();
-        builder.AppendLine($"Pull request: {prReference}");
+        Line();
+        Line($"Pull request: {prReference}");
         if (prUrl is not null)
         {
-            builder.AppendLine($"URL: {prUrl}");
+            Line($"URL: {prUrl}");
         }
 
-        builder.AppendLine();
-        builder.AppendLine(
+        Line();
+        Line(
             "The executable-surface list below (idea 6be68ee2, finding 1's own acceptance "
             + "criterion — .github/**, build and package manifests, scripts, install hooks, "
             + "Dockerfiles, compose files, .claude/**, CLAUDE.md, AGENTS.md, and a few more) is a "
             + "fixed list of paths worth your closest attention. It is not a classifier and does "
             + "not decide anything on its own: matching nothing here does not by itself mean this "
-            + "pull request is safe, and matching something does not by itself mean it is unsafe. "
-            + "Use gh (gh pr diff, gh pr view, always with -R or the URL above) to read anything "
-            + "beyond what is quoted below if the changed-file list suggests you should.");
-        builder.AppendLine();
-        builder.AppendLine(
+            + "pull request is safe, and matching something does not by itself mean it is unsafe.");
+        Line();
+        Line(
+            $"This pull request's head commit, at the moment this pre-flight read it, is {headRefOid}. "
+            + "Every hunk shown below is quoted from the diff for exactly that commit against its "
+            + $"base. The complete diff for that same commit, not only the matched surfaces below, is "
+            + $"already on disk at {diffFilePath} — read it directly for anything beyond what is "
+            + "quoted below if the changed-file list suggests you should. Do not run 'gh pr diff': it "
+            + "reads whatever this pull request's head is right now, which can be a different commit "
+            + $"than {headRefOid} by the time you run it, and the verdict you give is about "
+            + $"{headRefOid} specifically.");
+        Line();
+        Line(
             "An empty match above never by itself means there is nothing here that can run code. "
             + "A safe verdict lets this platform check the pull request out; on a head that is not a "
             + "fork, whichever persona reviews it next may run this project's own verify gate over "
@@ -87,21 +99,21 @@ public static class PrReviewPreflightPromptBuilder
             + "source file and test the pull request touches, not only the fixed surfaces above. A "
             + "pull request that changes nothing but an ordinary .cs, .ts or test file can still add "
             + "code that runs the moment that gate does.");
-        builder.AppendLine();
-        builder.AppendLine(ChangedFileListNonInstructionFraming);
-        builder.AppendLine();
-        builder.AppendLine($"Changed files ({changedFiles.Count} total):");
+        Line();
+        Line(ChangedFileListNonInstructionFraming);
+        Line();
+        Line($"Changed files ({changedFiles.Count} total):");
         if (changedFiles.Count == 0)
         {
-            builder.AppendLine("(none reported)");
+            Line("(none reported)");
         }
         else
         {
             AppendFenced(builder, string.Join('\n', changedFiles.Select(file => $"- {file}")));
         }
 
-        builder.AppendLine();
-        builder.AppendLine(
+        Line();
+        Line(
             surfaces.Count == 0
                 ? "None of the changed files matched the fixed executable-surface list above."
                 : $"{surfaces.Count} changed file(s) matched the executable-surface list above:");
@@ -112,24 +124,24 @@ public static class PrReviewPreflightPromptBuilder
 
         if (matchedHunks.IsNotBlank())
         {
-            builder.AppendLine();
-            builder.AppendLine(DiffNonInstructionFraming);
+            Line();
+            Line(DiffNonInstructionFraming);
             AppendFenced(builder, matchedHunks, infoString: "diff");
         }
 
-        builder.AppendLine();
-        builder.AppendLine(
+        Line();
+        Line(
             "A safe verdict here is a layer, never the lock: it sits on top of the membership gate "
             + "that already decided this pull request's own author is a trusted reviewer target, "
             + "and the permission file every following session runs under. It does not replace "
             + "either one.");
-        builder.AppendLine();
-        builder.AppendLine(
+        Line();
+        Line(
             "End your final message with exactly one line, and nothing else on it:");
-        builder.AppendLine($"{PrReviewPreflightVerdictParser.Marker} safe - <one short sentence>");
-        builder.AppendLine("or:");
-        builder.AppendLine($"{PrReviewPreflightVerdictParser.Marker} unsafe - <one short sentence>");
-        builder.AppendLine(
+        Line($"{PrReviewPreflightVerdictParser.Marker} safe - <one short sentence>");
+        Line("or:");
+        Line($"{PrReviewPreflightVerdictParser.Marker} unsafe - <one short sentence>");
+        Line(
             "Answer unsafe if you are not confident it is safe. Anything other than exactly 'safe' "
             + "or 'unsafe' as the marker's own first word is treated as unsafe.");
 
@@ -149,8 +161,8 @@ public static class PrReviewPreflightPromptBuilder
     private static void AppendFenced(StringBuilder builder, string text, string? infoString = null)
     {
         string fence = RelayedText.FenceFor(text);
-        builder.AppendLine(infoString.IsNotBlank() ? $"{fence}{infoString}" : fence);
-        builder.AppendLine(text);
-        builder.AppendLine(fence);
+        builder.Append(infoString.IsNotBlank() ? $"{fence}{infoString}" : fence).Append('\n');
+        builder.Append(text).Append('\n');
+        builder.Append(fence).Append('\n');
     }
 }
