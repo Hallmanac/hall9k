@@ -51,17 +51,13 @@ public static class AgentPromptBuilder
     /// Checks the fragment's own unsubstituted text for an embedded line break before
     /// substituting anything into it — never the final, parameter-filled result, since a
     /// legitimately multi-line runtime VALUE (<c>task.Objective</c>, a review comment body)
-    /// substituted into an otherwise single-line fragment is not this defect (independent
-    /// pre-PR review, cycle 1, adversarial finding: a golden-fixture assertion over the final
-    /// text would have flagged exactly that legitimate case as a false positive on Windows,
-    /// where <see cref="Environment.NewLine"/> is <c>"\r\n"</c>). What this guards against is
-    /// narrower and purely static: an author moving a fragment's own AUTHORED prose to span
-    /// several source lines without switching its call site from <see cref="Fragment"/> (one
-    /// <c>AppendLine</c>, so an embedded <c>\n</c> never becomes <see cref="Environment.NewLine"/>)
-    /// to <see cref="AppendFragment"/> (line by line, so it always does) — the exact defect
-    /// commit 9c8df66b fixed, caught immediately, on every platform, the moment any test
-    /// exercises the call site, rather than only on a Windows CI leg whose own golden fixture
-    /// happens to alias the regression away through <c>\r\n</c>-to-<c>\n</c> normalization.
+    /// substituted into an otherwise single-line fragment is not this defect. What this guards
+    /// against is narrower and purely static: an author moving a fragment's own AUTHORED prose to
+    /// span several source lines without switching its call site from <see cref="Fragment"/> (one
+    /// <c>AppendLine</c>) to <see cref="AppendFragment"/> (line by line), which keeps the
+    /// fragment's own lines going through the same <c>\n</c> terminator as the rest of the prompt
+    /// (<see cref="PromptLineEndings"/> normalizes whatever the finished text carries either way)
+    /// and is caught immediately, on every platform, the moment any test exercises the call site.
     /// </para>
     /// </summary>
     private static string Fragment(string file, string name, params (string Key, string Value)[] values)
@@ -71,9 +67,8 @@ public static class AgentPromptBuilder
         {
             throw new InvalidOperationException(
                 $"Fragment '{name}' in {file} spans multiple lines; append it with AppendFragment "
-                + "(line by line, preserving Environment.NewLine) instead of Fragment paired with a "
-                + "single AppendLine, which would leak the fragment's own bare '\\n' line breaks into "
-                + "the assembled prompt in place of Environment.NewLine.");
+                + "(line by line, each ended with '\\n') instead of Fragment paired with a single "
+                + "AppendLine, which is meant for one authored line.");
         }
 
         return values.Length == 0
@@ -94,9 +89,10 @@ public static class AgentPromptBuilder
 
     /// <summary>
     /// A named multi-line fragment, appended line by line via <see cref="PromptTemplates.AppendTemplate"/>
-    /// so a template's own line endings never leak into the assembled prompt in place of
-    /// <see cref="Environment.NewLine"/> — the same guarantee <see cref="Fragment"/> gets from a
-    /// single <c>AppendLine</c> call, extended to a fragment spanning several source lines. The
+    /// so a template's own line endings, whatever a checkout converted them to, are replaced by
+    /// <c>\n</c> — the terminator <see cref="PromptLineEndings"/> holds for the whole prompt —
+    /// extending to a fragment spanning several source lines what <see cref="Fragment"/> gets from
+    /// a single <c>AppendLine</c> call. The
     /// <c>params</c> tuple array is this call site's whole parameter dictionary.
     /// </summary>
     private static void AppendFragment(

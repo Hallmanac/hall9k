@@ -2132,9 +2132,8 @@ public static class WorkPromptBuilder
     /// <see cref="PromptTemplates.AppendTemplate"/> rather than a bare <c>AppendLine</c> over the
     /// loaded text — a multi-line fragment's own internal line breaks otherwise never go through
     /// <see cref="StringBuilder.AppendLine()"/> at all, so they stay whatever this checkout's
-    /// <c>.gitattributes</c> normalized them to (a bare <c>\n</c>) instead of
-    /// <see cref="Environment.NewLine"/>, and a Windows-run session's rendered prompt ends up with
-    /// mixed line endings (independent pre-PR review, cycle 1, both lenses). The <c>params</c>
+    /// <c>.gitattributes</c> normalized them to instead of <c>\n</c>, the one terminator
+    /// <see cref="PromptLineEndings"/> holds for a whole prompt. The <c>params</c>
     /// tuple array is this call site's whole parameter dictionary, spelled without one to build.
     /// </summary>
     private static void AppendFragment(

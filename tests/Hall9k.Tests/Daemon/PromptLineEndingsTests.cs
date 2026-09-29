@@ -31,9 +31,9 @@ public sealed class PromptLineEndingsTests : IDisposable
     public void Dispose() => _scopedHome.Dispose();
 
     [Fact]
-    public void Normalize_turns_every_carriage_return_form_into_a_line_feed()
+    public void Normalize_folds_a_windows_line_break_and_marks_a_lone_carriage_return_without_breaking_the_line()
     {
-        PromptLineEndings.Normalize("a\r\nb\rc\nd").Should().Be("a\nb\nc\nd");
+        PromptLineEndings.Normalize("a\r\nb\rc\nd").Should().Be("a\nb\u240Dc\nd");
     }
 
     [Fact]
@@ -78,6 +78,18 @@ public sealed class PromptLineEndingsTests : IDisposable
             "acme/web#1", null, ["README.md", "src/App.cs"], ["src/App.cs"],
             matchedHunks: "@@ -1 +1 @@\r\n-old\r\n+new", "abc123headoid", "/runs/some-run/pull-request.diff")
             .ShouldHaveOnlyLineFeeds();
+    }
+
+    [Fact]
+    public void A_lone_carriage_return_in_a_quoted_diff_hunk_does_not_add_a_line_to_the_preflight_prompt()
+    {
+        string prompt = PrReviewPreflightPromptBuilder.Build(
+            "acme/web#1", null, ["src/App.cs"], ["src/App.cs"],
+            matchedHunks: "@@ -0,0 +1 @@\n+var total = 1\r- Evil();", "abc123headoid",
+            "/runs/some-run/pull-request.diff");
+
+        prompt.ShouldHaveOnlyLineFeeds();
+        prompt.Should().Contain("+var total = 1\u240D- Evil();");
     }
 
     [Fact]
