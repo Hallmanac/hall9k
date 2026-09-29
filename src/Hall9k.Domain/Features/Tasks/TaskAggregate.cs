@@ -829,9 +829,13 @@ public sealed class TaskAggregate
     /// back unsafe for its current head — true the moment
     /// <see cref="Apply(Events.PrReviewPreflightParked)"/> lands, alongside
     /// <see cref="PrReviewPreflightParkedSurfaces"/> through <see cref="PrReviewPreflightParkedReason"/>
-    /// the park card names. Never cleared afterward, since <c>h9k task assign</c> is the human go
-    /// that ends the park — a subsequent successful dispatch starts a fresh <see cref="TaskState.Claimed"/>
-    /// lifecycle whose own pre-flight either records a new, safe verdict or parks again.
+    /// the park card names. Cleared by <see cref="Apply(TaskAssigned)"/>, the human go that ends
+    /// the park (<c>h9k task assign</c>): that assignment's own next dispatch always runs a fresh
+    /// pre-flight (<c>RunLauncher.EnsurePrReviewPreflightSafeAsync</c> never trusts a stale unsafe
+    /// verdict), which either records a new, safe verdict or parks again — leaving this flag set
+    /// past that point would show a stale "unsafe" card if the task later returned to
+    /// <see cref="TaskState.Published"/> for an unrelated reason (independent pre-PR review, cycle
+    /// 1, conformance lens).
     /// </summary>
     public bool PrReviewPreflightUnsafe { get; private set; }
 
@@ -846,6 +850,19 @@ public sealed class TaskAggregate
 
     /// <summary>The pre-flight session's own stated reason, verbatim.</summary>
     public string PrReviewPreflightParkedReason { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// True for exactly the one dispatch cycle after a pull-request review pre-flight (idea
+    /// 6be68ee2, finding 1, phase one) comes back safe for a pre-flight dispatched to gate a
+    /// mention follow-up's own checkout (<see cref="RequeueReason.PrReviewPreflightSafeMentionFollowUp"/>)
+    /// — the signal <c>RunLauncher.LaunchAsync</c> reads, through its own
+    /// <see cref="Projections.TaskDetails"/> mirror, to answer the mentioning comment through
+    /// <c>LaunchPrReviewMentionFollowUpAsync</c> instead of dispatching an ordinary full review.
+    /// Recomputed fresh on every <see cref="Apply(Events.TaskRequeued)"/> from that event's own
+    /// reason alone, never accumulated, so any other requeue (a lease expiry, a run failure, an
+    /// ordinary safe pre-flight verdict) clears it the same way it was set.
+    /// </summary>
+    public bool PendingMentionFollowUpAfterPreflight { get; private set; }
 
     /// <summary>
     /// The most recent GitHub comment that mentioned the install's login on this task's own pull
@@ -1320,6 +1337,13 @@ public sealed class TaskAggregate
         State = _unmetDependencies.Count == 0 && !AwaitsRemoteStackedParent
             ? TaskState.Queued
             : TaskState.Blocked;
+
+        // A fresh assignment answers the pre-flight's own park card (PrReviewPreflightUnsafe's own
+        // doc): the next dispatch always runs a fresh pre-flight rather than trusting the stale
+        // verdict this assignment is answering, so nothing here should keep reading as the reason
+        // a later, unrelated Published state needs a human (independent pre-PR review, cycle 1,
+        // conformance lens).
+        PrReviewPreflightUnsafe = false;
     }
 
     /// <summary>
@@ -1810,6 +1834,10 @@ public sealed class TaskAggregate
         // instead preserves that invariant and lets TaskDependencyResolver's ordinary Blocked
         // sweep pick the task back up once the blocker actually clears.
         State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+        // Recomputed fresh from this event's own reason alone every time (PendingMentionFollowUpAfterPreflight's
+        // own doc) — never OR-accumulated, so any requeue reason other than the one mention
+        // follow-up's own safe verdict uses clears it the same way it was set.
+        PendingMentionFollowUpAfterPreflight = @event.Reason == RequeueReason.PrReviewPreflightSafeMentionFollowUp;
         // The second exit door alongside Apply(TaskHandedBack) (design ruling R6, amended
         // 2026-09-05): a default h9k task release is the human's own explicit act of returning
         // the task to the machine, so it clears the flag exactly as handback does. Every other

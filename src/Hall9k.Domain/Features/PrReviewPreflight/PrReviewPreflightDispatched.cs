@@ -11,6 +11,14 @@ namespace Hall9k.Domain.Features.PrReviewPreflight;
 /// between a pre-flight and the task's next dispatch, and a verdict is a fact about ONE judged
 /// oid, never the task's own current state.
 /// </summary>
+/// <param name="IsMentionFollowUp">
+/// True when this pre-flight gates a mention follow-up's own checkout
+/// (<c>RunLauncher.LaunchPrReviewMentionFollowUpAsync</c>) rather than an ordinary review
+/// dispatch — read back by <c>RunSupervisor.CompletePreflightAsync</c> so a safe verdict releases
+/// the task through <see cref="Tasks.RequeueReason.PrReviewPreflightSafeMentionFollowUp"/> instead
+/// of the ordinary <see cref="Tasks.RequeueReason.PrReviewPreflightSafe"/>, and the next claim
+/// answers the comment instead of running a fresh full review.
+/// </param>
 public sealed record PrReviewPreflightDispatched(
     Guid Id,
     Guid TaskId,
@@ -18,4 +26,5 @@ public sealed record PrReviewPreflightDispatched(
     AgentModel Model,
     string HeadRefOid,
     IReadOnlyList<string> Surfaces,
-    DateTimeOffset DispatchedAt);
+    DateTimeOffset DispatchedAt,
+    bool IsMentionFollowUp = false);

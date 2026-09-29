@@ -142,6 +142,29 @@ public sealed class RunLauncher(
                 return;
             }
 
+            // A safe verdict for a pre-flight dispatched to gate a mention follow-up's own
+            // checkout (idea 2f079bcd, decision 2) releases the task through its own requeue
+            // reason rather than the ordinary one (RunSupervisor.CompletePreflightAsync), so this
+            // claim answers the mentioning comment instead of running the full review the rest of
+            // this isPrReview branch dispatches (independent pre-PR review, cycle 1, both lenses
+            // — a bare PrReviewPreflightSafe requeue here let the ordinary dispatch loop claim the
+            // task straight into the full-review branch below, and the mentioning comment was
+            // never answered). Delegates entirely: LaunchPrReviewMentionFollowUpAsync re-reads the
+            // pull request, re-runs the identical foreign-repository and pre-flight gates the rest
+            // of this branch runs below, and cuts its own checkout.
+            if (isPrReview && task.PendingMentionFollowUpAfterPreflight)
+            {
+                PullRequestMentionComment comment = new(
+                    task.LatestMentionCommentId ?? string.Empty, task.LatestMentionAuthorLogin ?? string.Empty,
+                    task.LatestMentionBody ?? string.Empty, task.LatestMentionUrl ?? string.Empty,
+                    task.LatestMentionCreatedAt ?? DateTimeOffset.UtcNow, task.LatestMentionCommentDatabaseId);
+                Guid? priorReviewRunId = task.RunIds.Count > 0 ? task.RunIds[0] : null;
+                await LaunchPrReviewMentionFollowUpAsync(
+                    taskId, runId, ownerId, leaseGeneration, dispatchingNodeId ?? nodeId, comment, priorReviewRunId,
+                    cancellationToken);
+                return;
+            }
+
             // The worktree checkout below fetches from the PROJECT's own origin — it has no
             // notion of any other remote — so a pull request adopted from a different
             // repository (--from-pr accepts any owner/repo#N or URL) would otherwise either
@@ -180,7 +203,7 @@ public sealed class RunLauncher(
             if (isPrReview && prReviewFacts is not null
                 && !await EnsurePrReviewPreflightSafeAsync(
                     session, task, project, prReviewFacts, dispatchingNodeId ?? nodeId, runId, leaseGeneration,
-                    cancellationToken))
+                    isMentionFollowUp: false, cancellationToken))
             {
                 return;
             }
@@ -247,7 +270,8 @@ public sealed class RunLauncher(
                         taskId, exception.Message);
                     await DispatchPrReviewPreflightAsync(
                         task, project, prReviewFacts! with { HeadRefOid = exception.ObservedHeadOid },
-                        dispatchingNodeId ?? nodeId, runId, leaseGeneration, cancellationToken);
+                        dispatchingNodeId ?? nodeId, runId, leaseGeneration, isMentionFollowUp: false,
+                        cancellationToken);
                     return;
                 }
 
@@ -995,7 +1019,8 @@ public sealed class RunLauncher(
             // cuts a fresh checkout too, and never passes through that branch, so it needs its own
             // call to the identical gate rather than inheriting one it never runs through.
             if (!await EnsurePrReviewPreflightSafeAsync(
-                session, task, project, facts, dispatchingNodeId, runId, leaseGeneration, cancellationToken))
+                session, task, project, facts, dispatchingNodeId, runId, leaseGeneration, isMentionFollowUp: true,
+                cancellationToken))
             {
                 return;
             }
@@ -1015,7 +1040,7 @@ public sealed class RunLauncher(
                     taskId, exception.Message);
                 await DispatchPrReviewPreflightAsync(
                     task, project, facts with { HeadRefOid = exception.ObservedHeadOid }, dispatchingNodeId, runId,
-                    leaseGeneration, cancellationToken);
+                    leaseGeneration, isMentionFollowUp: true, cancellationToken);
                 return;
             }
 
@@ -1854,17 +1879,19 @@ public sealed class RunLauncher(
     /// The pull-request review pre-flight's own gate (idea 6be68ee2, finding 1, phase one): true
     /// only when a safe verdict is on record for this task's CURRENT head oid, in which case the
     /// caller proceeds to cut the worktree exactly as before. False means this dispatch is done —
-    /// either a fresh pre-flight was just dispatched (no usable verdict for this exact head), one
-    /// is already dispatched and not yet complete (its own monitor, or a restart's adoption sweep,
-    /// completes or abandons it later), or the task was just parked unsafe. Shared by
+    /// either a fresh pre-flight was just dispatched (no usable verdict for this exact head, or the
+    /// latest row is unsafe or abandoned), or one is already dispatched and not yet complete (its
+    /// own monitor, or a restart's adoption sweep, completes or abandons it later). Shared by
     /// <see cref="LaunchAsync"/>'s own <c>isPrReview</c> branch and
     /// <see cref="LaunchPrReviewMentionFollowUpAsync"/>: both cut a fresh checkout, and neither
     /// may do so without this gate (the acceptance criterion is explicit that both sites require
-    /// it).
+    /// it). <paramref name="isMentionFollowUp"/> is threaded straight through to
+    /// <see cref="DispatchPrReviewPreflightAsync"/> so a fresh dispatch this gate triggers is
+    /// tagged the same way the caller's own checkout would have been.
     /// </summary>
     private async Task<bool> EnsurePrReviewPreflightSafeAsync(
         IDocumentSession session, TaskDetails task, ProjectDetails project, PullRequestFacts facts, Guid nodeId,
-        Guid runId, int leaseGeneration, CancellationToken cancellationToken)
+        Guid runId, int leaseGeneration, bool isMentionFollowUp, CancellationToken cancellationToken)
     {
         PrReviewPreflightDetails? latest = await session.Query<PrReviewPreflightDetails>()
             .Where(preflight => preflight.TaskId == task.Id)
@@ -1882,38 +1909,33 @@ public sealed class RunLauncher(
                 return true;
             }
 
-            // Defensive: the pre-flight's own monitor already parks the task the moment it
-            // records an unsafe verdict, in the same transaction — this only fires if a crash
-            // landed between those two writes.
-            await ParkUnsafePrReviewPreflightIfStillClaimedAsync(task.Id, completed, cancellationToken);
+            // An unsafe verdict is never cached forever: ParkPrReviewPreflight lands the task on
+            // Published, never Queued, so the ordinary dispatch loop can never reclaim it on its
+            // own — the only way this gate runs again against the identical head is a human's own
+            // h9k task assign. Re-parking off the stale row here, rather than judging fresh, left
+            // that deliberate override unable to ever change the outcome (independent pre-PR
+            // review, cycle 1, adversarial lens) and contradicted PrReviewPreflightUnsafe's own
+            // doc, which promises this next dispatch's own pre-flight "either records a new, safe
+            // verdict or parks again" — never a silent re-park off data the session never judged
+            // this claim against.
+            await DispatchPrReviewPreflightAsync(
+                task, project, facts, nodeId, runId, leaseGeneration, isMentionFollowUp, cancellationToken);
             return false;
         }
-        else if (latest is { CompletedAt: null } inFlight && inFlight.HeadRefOid == facts.HeadRefOid)
+        else if (latest is { CompletedAt: null, AbandonedAt: null } inFlight && inFlight.HeadRefOid == facts.HeadRefOid)
         {
-            // Already dispatched for this exact head — its own monitor (or, after a restart, the
-            // adoption sweep) completes or abandons it and releases this task's lease.
+            // Already dispatched for this exact head and not abandoned — its own monitor (or,
+            // after a restart, the adoption sweep) completes or abandons it and releases this
+            // task's lease. An abandoned row (AbandonedAt set) falls through to a fresh dispatch
+            // below instead: it never will complete, and treating it as still in flight left this
+            // task claimed-and-requeued forever with no pre-flight ever running again (independent
+            // pre-PR review, cycle 1, both lenses).
             return false;
         }
 
-        await DispatchPrReviewPreflightAsync(task, project, facts, nodeId, runId, leaseGeneration, cancellationToken);
+        await DispatchPrReviewPreflightAsync(
+            task, project, facts, nodeId, runId, leaseGeneration, isMentionFollowUp, cancellationToken);
         return false;
-    }
-
-    private async Task ParkUnsafePrReviewPreflightIfStillClaimedAsync(
-        Guid taskId, PrReviewPreflightDetails completed, CancellationToken cancellationToken)
-    {
-        await using IDocumentSession session = store.LightweightSession();
-        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-        if (task is null || task.State != TaskState.Claimed)
-        {
-            return;
-        }
-
-        session.Events.Append(taskId, TaskDecider.ParkPrReviewPreflight(
-            task, completed.Surfaces, completed.HeadRefOid, completed.Verdict, completed.Reason,
-            DateTimeOffset.UtcNow));
-        session.Delete<TaskLease>(taskId);
-        await session.SaveChangesAsync(cancellationToken);
     }
 
     /// <summary>
@@ -1931,7 +1953,7 @@ public sealed class RunLauncher(
     /// </summary>
     private async Task DispatchPrReviewPreflightAsync(
         TaskDetails task, ProjectDetails project, PullRequestFacts facts, Guid nodeId, Guid runId,
-        int leaseGeneration, CancellationToken cancellationToken)
+        int leaseGeneration, bool isMentionFollowUp, CancellationToken cancellationToken)
     {
         Guid preflightRunId = DomainId.New();
         string runDirectory = RunPaths.GlobalDirectory(preflightRunId);
@@ -1949,6 +1971,23 @@ public sealed class RunLauncher(
         }
         catch (DomainException exception)
         {
+            // GitHub's own diff endpoint refuses a pull request over its file-count ceiling
+            // outright (documented at 300 files) — with nothing to judge, this pre-flight cannot
+            // reach a verdict at all, so the task parks as needs-you exactly as an unparseable
+            // session verdict already does, rather than failing the launch permanently on a pull
+            // request that can never shrink back under the ceiling on its own (independent pre-PR
+            // review, cycle 1, adversarial lens: a dependency bump, a generated-code refresh, or a
+            // rename sweep touching more than 300 files could otherwise never be reviewed again).
+            if (GitHubDiffSizeLimitClassifier.IsDiffTooLarge(exception.Message))
+            {
+                await ParkUnreadableDiffPreflightAsync(
+                    task.Id, facts,
+                    $"gh could not read this pull request's diff, so the pre-flight has nothing to judge: "
+                    + $"{exception.Message}",
+                    cancellationToken);
+                return;
+            }
+
             await RecordLaunchFailureAsync(task.Id, runId, leaseGeneration, exception.Message, cancellationToken);
             return;
         }
@@ -1963,7 +2002,8 @@ public sealed class RunLauncher(
         await using (IDocumentSession dispatchSession = store.LightweightSession())
         {
             dispatchSession.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
-                preflightRunId, task.Id, nodeId, model, facts.HeadRefOid, surfaces, DateTimeOffset.UtcNow));
+                preflightRunId, task.Id, nodeId, model, facts.HeadRefOid, surfaces, DateTimeOffset.UtcNow,
+                isMentionFollowUp));
             await dispatchSession.SaveChangesAsync(cancellationToken);
         }
 
@@ -1987,6 +2027,18 @@ public sealed class RunLauncher(
         {
             logger.LogError(
                 exception, "Task {TaskId}: the pull-request review pre-flight could not be spawned", task.Id);
+            // The identical orphan-row gap AbandonPreflightAsync's own doc closes for a timeout or
+            // a budget exhaustion (independent pre-PR review, cycle 1, both lenses): without this,
+            // PrReviewPreflightDispatched just above already committed, so the row sits incomplete
+            // and un-abandoned forever, and EnsurePrReviewPreflightSafeAsync reads it as still in
+            // flight on every later h9k task retry.
+            await using (IDocumentSession abandonSession = store.LightweightSession())
+            {
+                abandonSession.Events.Append(
+                    preflightRunId, new PrReviewPreflightAbandoned(preflightRunId, DateTimeOffset.UtcNow));
+                await abandonSession.SaveChangesAsync(cancellationToken);
+            }
+
             await RecordLaunchFailureAsync(task.Id, runId, leaseGeneration, exception.Message, cancellationToken);
             return;
         }
@@ -2004,6 +2056,34 @@ public sealed class RunLauncher(
             task.Id, agent.ProcessId, model.Value, surfaces.Count, changedFiles.Count);
 
         supervisor.StartPreflightMonitoring(preflightRunId, task.Id, agent.ProcessId, agent.StartedAt, cancellationToken);
+    }
+
+    /// <summary>
+    /// Parks a pr-review task as needs-you when gh itself refused to hand the pre-flight anything
+    /// to judge (<see cref="GitHubDiffSizeLimitClassifier"/>) — no pre-flight session ever ran, so
+    /// nothing is appended to a <see cref="PrReviewPreflightDetails"/> stream here; the task's own
+    /// stream carries the whole story via the identical <see cref="PrReviewPreflightParked"/>
+    /// event a genuine unsafe verdict uses, so <c>AttentionComposer</c> renders one park card
+    /// either way.
+    /// </summary>
+    private async Task ParkUnreadableDiffPreflightAsync(
+        Guid taskId, PullRequestFacts facts, string reason, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
+        if (task is null || task.State != TaskState.Claimed)
+        {
+            return;
+        }
+
+        session.Events.Append(taskId, TaskDecider.ParkPrReviewPreflight(
+            task, surfaces: [], facts.HeadRefOid, "unreadable", reason, DateTimeOffset.UtcNow));
+        session.Delete<TaskLease>(taskId);
+        await session.SaveChangesAsync(cancellationToken);
+
+        logger.LogWarning(
+            "Task {TaskId}: parked as needs-you — the pull-request review pre-flight could not read this pull "
+            + "request's diff ({Reason})", taskId, reason);
     }
 
     /// <summary>

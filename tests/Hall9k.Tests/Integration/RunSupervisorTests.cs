@@ -10,6 +10,7 @@ using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.PrReviewPreflight;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -3090,6 +3091,78 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         details.ParkedOnReviewDisagreement.Should().BeFalse();
     }
 
+    /// <summary>
+    /// Idea 6be68ee2, finding 1, phase one, mention follow-up half (independent pre-PR review,
+    /// cycle 1, both lenses): a pre-flight dispatched to gate a mention follow-up's own checkout
+    /// must release the task through <see cref="RequeueReason.PrReviewPreflightSafeMentionFollowUp"/>,
+    /// never the ordinary <see cref="RequeueReason.PrReviewPreflightSafe"/> — otherwise the ordinary
+    /// dispatch loop's own <c>RunLauncher.LaunchAsync</c> claims the task straight into a full
+    /// review and the mentioning comment this follow-up existed to answer is never answered.
+    /// <see cref="RunLauncher.LaunchAsync"/>'s own redirect (a separate, deterministic test in
+    /// <c>RunLauncherTests</c>) reads exactly this reason back through
+    /// <see cref="TaskDetails.PendingMentionFollowUpAfterPreflight"/>; this test proves
+    /// <c>CompletePreflightAsync</c> is what actually writes it.
+    /// </summary>
+    [Fact]
+    public async Task A_safe_verdict_for_a_mention_follow_ups_own_preflight_requeues_through_its_own_reason()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, DomainId.New(), "Review pull request acme/web#7", ["the verdict is submitted"],
+                    TaskType.PrReview, null, constraints: null,
+                    new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#7"), Now, node.OwnerId),
+                node.OwnerId, Now);
+            TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid preflightRunId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
+                preflightRunId, taskId, node.NodeId, "claude-opus-5-5", string.Empty, [], Now,
+                IsMentionFollowUp: true));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        int processId = SpawnFakeAgent(preflightRunId, FakeAgentScript.New().Emit(AssistantLine).Emit(
+            """{"type":"result","subtype":"success","is_error":false,"result":"Looks fine.\n\nPREFLIGHT: safe - no risky surfaces touched","usage":{"input_tokens":1,"output_tokens":1}}"""));
+        DateTimeOffset startedAt;
+        try
+        {
+            using Process process = Process.GetProcessById(processId);
+            startedAt = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or Win32Exception)
+        {
+            startedAt = DateTimeOffset.UtcNow;
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(preflightRunId, new PrReviewPreflightProcessStarted(preflightRunId, processId, startedAt));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        NewSupervisor(store, node).StartPreflightMonitoring(preflightRunId, taskId, processId, startedAt, cts.Token);
+
+        TaskDetails requeued = await WaitForTaskStateAsync(store, taskId, TaskState.Queued, cts.Token);
+        requeued.PendingMentionFollowUpAfterPreflight.Should().BeTrue(
+            "a safe verdict for a mention follow-up's own pre-flight must release the task through its own "
+            + "requeue reason, not the ordinary PrReviewPreflightSafe one, or the next claim runs an "
+            + "unrequested full review instead of answering the comment");
+    }
+
     private static string DisputedResultLine(string summary) =>
         JsonSerializer.Serialize(new
         {
@@ -3657,6 +3730,28 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         throw new TimeoutException(
             $"Run {runId} never reached state {state}; it is {reached?.State.Value ?? "(no projection)"} "
             + $"(failure: {reached?.FailureReason ?? "none"}, park: {reached?.ParkedReason ?? "none"}).");
+    }
+
+    /// <summary>The task-projection equivalent of <see cref="WaitForStateAsync"/> — waits for the pre-flight monitor's own background completion to land on <see cref="TaskDetails"/> rather than <see cref="RunDetails"/>.</summary>
+    private static async Task<TaskDetails> WaitForTaskStateAsync(
+        DocumentStore store, Guid taskId, TaskState state, CancellationToken cancellationToken, TimeSpan? timeout = null)
+    {
+        DateTimeOffset deadline = DateTimeOffset.UtcNow.Add(timeout ?? TimeSpan.FromSeconds(30));
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            await using IQuerySession query = store.QuerySession();
+            TaskDetails? details = await query.LoadAsync<TaskDetails>(taskId, cancellationToken);
+            if (details?.State == state)
+            {
+                return details;
+            }
+
+            await Task.Delay(250, cancellationToken);
+        }
+
+        await using IQuerySession final = store.QuerySession();
+        TaskDetails? reached = await final.LoadAsync<TaskDetails>(taskId, cancellationToken);
+        throw new TimeoutException($"Task {taskId} never reached state {state}; it is {reached?.State}.");
     }
 
     /// <summary>

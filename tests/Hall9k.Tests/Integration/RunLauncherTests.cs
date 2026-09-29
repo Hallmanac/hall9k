@@ -4130,9 +4130,17 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
                 "the fresh pre-flight is dispatched against the oid the checkout's own fetch actually observed");
     }
 
-    /// <summary>Idea 6be68ee2, finding 1, phase one: an unsafe verdict parks the task as needs-you with nothing checked out.</summary>
+    /// <summary>
+    /// Idea 6be68ee2, finding 1, phase one, corrected by independent pre-PR review, cycle 1,
+    /// adversarial lens (RunLauncher.cs:1888): a stale unsafe verdict for the current head is
+    /// never re-parked from cached data. Since <c>ParkPrReviewPreflight</c> lands the task on
+    /// Published, never Queued, the only way this exact shape (Claimed, with a completed unsafe
+    /// row on file for the current head) is reached again is a human's own deliberate
+    /// <c>h9k task assign</c> — simulated here directly. A fresh pre-flight dispatches instead of
+    /// the gate re-parking off a verdict no session ever judged this claim against.
+    /// </summary>
     [Fact]
-    public async Task An_unsafe_verdict_parks_the_task_with_nothing_checked_out()
+    public async Task An_unsafe_verdict_is_never_reused_a_reclaim_dispatches_a_fresh_preflight_instead()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
@@ -4153,21 +4161,23 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
         RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(
             PullRequestPreflightJson.Replace("901", "905", StringComparison.Ordinal));
-        RunLauncher launcher = new(store, new RefusingWorktreeManager(), new RefusingExecutor(),
+        CapturingExecutor executor = new();
+        RunLauncher launcher = new(store, new RefusingWorktreeManager(), executor,
             NewSupervisor(store, node), NewContextAssembler(store), new MergedInspector(),
             NewCloseoutEngine(store, node, new MergedInspector(), new RefusingWorktreeManager()),
             NewPullRequestOpener(store), gh.Runner, Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
 
+        executor.Request.Should().NotBeNull(
+            "the deliberate reclaim this simulates runs a fresh pre-flight rather than silently re-parking "
+            + "off the stale unsafe row");
+        executor.Request!.Prompt.Should().Contain(PrReviewPreflightVerdictParser.Marker);
+
         await using IQuerySession query = store.QuerySession();
-        TaskListItem parked = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
-        parked.State.Should().Be(TaskState.Published, "the same Published-but-unassigned shape the membership gate's own park uses");
-        parked.PrReviewPreflightUnsafe.Should().BeTrue();
-        parked.PrReviewPreflightParkedVerdict.Should().Be("unsafe");
-        parked.PrReviewPreflightParkedReason.Should().Contain("curl-pipe-to-shell");
-        parked.PrReviewPreflightParkedSurfaces.Should().Equal("Dockerfile");
-        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull("an unassigned task carries no lease");
+        TaskListItem stillClaimed = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        stillClaimed.State.Should().Be(
+            TaskState.Claimed, "a fresh pre-flight was dispatched and the task stays claimed while it runs");
         (await query.LoadAsync<RunDetails>(runId, cts.Token)).Should().BeNull("nothing was ever checked out");
     }
 
@@ -4198,6 +4208,196 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         executor.Request.Should().NotBeNull("with no verdict on record the site dispatches a pre-flight instead of refusing outright");
         executor.Request!.Prompt.Should().Contain(PrReviewPreflightVerdictParser.Marker,
             "RefusingWorktreeManager throwing on any checkout proves the mention follow-up's own checkout never ran");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, adversarial lens: GitHub's own diff endpoint refuses a
+    /// pull request over its file-count ceiling (documented at 300 files) outright, so the
+    /// pre-flight has nothing to judge. Before this fix, the launch failed permanently on a pull
+    /// request that can never shrink back under the ceiling on its own; now it parks as needs-you,
+    /// the same "nothing here to check out" shape a genuine unsafe verdict leaves.
+    /// </summary>
+    [Fact]
+    public async Task A_pull_request_over_ghs_own_diff_file_ceiling_parks_instead_of_failing_forever()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 911, cts.Token);
+
+        string prView = PullRequestPreflightJson.Replace("901", "911", StringComparison.Ordinal);
+        RecordingProcessRunner gh = new(arguments => arguments.Contains("view")
+            ? new ProcessResult(0, prView, string.Empty)
+            : new ProcessResult(
+                1, string.Empty,
+                "HTTP 406: Sorry, the diff exceeded the maximum number of files (300), so it is not available"));
+        RunLauncher launcher = new(store, new RefusingWorktreeManager(), new RefusingExecutor(),
+            NewSupervisor(store, node), NewContextAssembler(store), new MergedInspector(),
+            NewCloseoutEngine(store, node, new MergedInspector(), new RefusingWorktreeManager()),
+            NewPullRequestOpener(store), gh.Runner, Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem parked = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        parked.State.Should().Be(TaskState.Published, "the same Published-but-unassigned shape a genuine unsafe verdict parks with");
+        parked.PrReviewPreflightUnsafe.Should().BeTrue();
+        parked.PrReviewPreflightParkedVerdict.Should().Be("unreadable");
+        parked.PrReviewPreflightParkedReason.Should().Contain("maximum number of files");
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull("an unassigned task carries no lease");
+        (await query.LoadAsync<RunDetails>(runId, cts.Token)).Should().BeNull("nothing was ever checked out, and no pre-flight session ever ran");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, both lenses, finding 1 (RunLauncher.cs:1891): an
+    /// abandoned pre-flight row (its own process gone, or a timeout/budget-exhaustion/launch-failure
+    /// it never reached a verdict from) must never be read as "already dispatched and still in
+    /// flight" — that read left the task claimed-and-requeued in an unbroken loop with no fresh
+    /// pre-flight ever actually dispatched again. The gate now falls through to a fresh dispatch.
+    /// </summary>
+    [Fact]
+    public async Task An_abandoned_preflight_row_does_not_block_a_fresh_dispatch()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 907, cts.Token);
+
+        Guid preflightRunId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
+                preflightRunId, taskId, node.NodeId, "claude-opus-5-5", string.Empty, [], Now));
+            seed.Events.Append(preflightRunId, new PrReviewPreflightAbandoned(preflightRunId, Now));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(
+            PullRequestPreflightJson.Replace("901", "907", StringComparison.Ordinal));
+        CapturingExecutor executor = new();
+        RefusingWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        executor.Request.Should().NotBeNull(
+            "the latest row is marked abandoned, never a genuinely in-flight pre-flight, so a fresh one dispatches");
+        executor.Request!.Prompt.Should().Contain(PrReviewPreflightVerdictParser.Marker);
+    }
+
+    /// <summary>
+    /// The other half of <see cref="An_abandoned_preflight_row_does_not_block_a_fresh_dispatch"/>:
+    /// <see cref="RunSupervisor.ResumeStrandedPreflightsAsync"/>'s own sweep must skip a row already
+    /// marked abandoned rather than requeuing the task a second time — before this fix, the sweep
+    /// re-abandoned the identical row every cycle, appending an unbounded run of TaskRequeued events.
+    /// </summary>
+    [Fact]
+    public async Task ResumeStrandedPreflightsAsync_never_re_abandons_an_already_abandoned_row()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, _, _) = await SeedClaimedPrReviewTaskAsync(store, node, 909, cts.Token);
+
+        Guid preflightRunId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
+                preflightRunId, taskId, node.NodeId, "claude-opus-5-5", string.Empty, [], Now));
+            seed.Events.Append(preflightRunId, new PrReviewPreflightAbandoned(preflightRunId, Now));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await NewSupervisor(store, node).ResumeStrandedPreflightsAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(
+            TaskState.Claimed,
+            "the row is already marked abandoned, so the sweep must skip it rather than requeuing the task again");
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().NotBeNull(
+            "an already-abandoned row must never cause a second requeue-and-lease-delete");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, both lenses, finding 2 (RunLauncher.cs:998 /
+    /// RunSupervisor.cs:254): once a pre-flight dispatched to gate a mention follow-up's own
+    /// checkout comes back safe, the very next claim must answer the mentioning comment through
+    /// LaunchPrReviewMentionFollowUpAsync — never the ordinary full review this isPrReview branch
+    /// otherwise dispatches. TaskDetails.PendingMentionFollowUpAfterPreflight is the signal
+    /// RunSupervisor.CompletePreflightAsync sets (a separate, real-process test in
+    /// RunSupervisorTests proves that half); this test proves LaunchAsync reads it and redirects.
+    /// </summary>
+    [Fact]
+    public async Task A_pending_mention_follow_up_after_a_safe_preflight_answers_the_comment_not_a_full_review()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid projectId = DomainId.New();
+        TaskClaimed claimed2;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"pr-review-mention-redirect-{taskId:N}",
+                $"/tmp/pr-review-mention-redirect-repo-{taskId:N}", new Uri("https://github.com/acme/web"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Review pull request acme/web#910", ["every finding names a file and line"],
+                    TaskType.PrReview, null, null,
+                    new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#910"), Now, node.OwnerId),
+                node.OwnerId, Now);
+            Guid originalRunId = DomainId.New();
+            TaskClaimed claimed1 = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, originalRunId, Now);
+            aggregate.Apply(claimed1);
+            PullRequestReviewMentionObserved observed = TaskDecider.ObservePrReviewMention(
+                aggregate, "https://github.com/acme/web/pull/910", "IC_1", "ryan", "@brian take another look",
+                "https://github.com/acme/web/pull/910#issuecomment-IC_1", Now, Now);
+            aggregate.Apply(observed);
+            TaskRequeued requeued = TaskDecider.Requeue(aggregate, RequeueReason.PrReviewPreflightSafeMentionFollowUp, Now);
+            aggregate.Apply(requeued);
+            claimed2 = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, DomainId.New(), Now);
+            aggregate.Apply(claimed2);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed1, observed, requeued, claimed2]);
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = claimed2.LeaseGeneration, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await SeedSafePrReviewPreflightAsync(store, taskId, node.NodeId, headRefOid: string.Empty, cts.Token);
+
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(
+            PullRequestPreflightJson.Replace("901", "910", StringComparison.Ordinal));
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(
+            taskId, claimed2.RunId, node.NodeId, node.OwnerId, claimed2.LeaseGeneration, cts.Token);
+
+        executor.Request.Should().NotBeNull("a safe verdict for the mention follow-up's own pre-flight redirects here");
+        executor.Request!.Prompt.Should().Contain(
+            "@brian take another look",
+            "PendingMentionFollowUpAfterPreflight must redirect to the mention follow-up's own prompt, "
+            + "never the ordinary full review");
+        executor.Request.MaxTurns.Should().Be(
+            new DaemonOptions().PrReviewMentionFollowUpMaxTurns,
+            "the bounded follow-up's own turn cap, never the review role's unbounded one");
     }
 
     /// <summary>
