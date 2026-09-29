@@ -475,4 +475,14 @@ public static class RunPaths
     /// <summary>One pass of a spike's own review cycle — the judge session's own verdict text against the exit criterion, before any fix lap.</summary>
     public static string SpikeReviewFile(string runDirectory, int pass) =>
         Path.Combine(runDirectory, $"spike-review-{pass}.md");
+
+    /// <summary>
+    /// The pull-request review pre-flight's own compare diff (idea 6be68ee2, finding 1), written
+    /// to this fixed path so the prompt can point the session at it instead of <c>gh pr diff</c>
+    /// (independent pre-PR review, cycle 6): the diff this file holds is pinned to the exact head
+    /// oid the daemon read it for, where <c>gh pr diff</c> reads whatever the pull request's head
+    /// currently is and could disagree with the oid a verdict gets recorded against.
+    /// </summary>
+    public static string PullRequestDiffFile(string runDirectory) =>
+        Path.Combine(runDirectory, "pull-request.diff");
 }

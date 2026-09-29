@@ -4303,6 +4303,55 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 6: the session's own Read tool is scoped to the pre-flight's
+    /// run directory, not to gh, so the full compare diff this method already fetched for the judged
+    /// oid must be written there for the prompt to point at, rather than telling the session to
+    /// reread it through 'gh pr diff' — a call that reads whatever the head is at the moment the
+    /// session runs it, not the oid the verdict is bound to.
+    /// </summary>
+    [Fact]
+    public async Task The_full_compare_diff_is_written_to_the_run_directory_for_the_prompt_to_point_at()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 914, cts.Token);
+
+        string prView = """
+            {
+              "number": 914,
+              "title": "Add rate limiting to auth endpoints",
+              "body": "Fixes an incident.",
+              "state": "OPEN",
+              "url": "https://github.com/acme/web/pull/914",
+              "baseRefName": "main",
+              "headRefOid": "the-exact-oid"
+            }
+            """;
+        const string compareDiff = "diff --git a/build.sh b/build.sh\n+curl | sh\n";
+        RecordingProcessRunner gh = new(arguments => arguments.Contains("api")
+            ? new ProcessResult(0, compareDiff, string.Empty)
+            : new ProcessResult(0, prView, string.Empty));
+        CapturingExecutor executor = new();
+        RefusingWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        executor.Request.Should().NotBeNull();
+        string diffFilePath = RunPaths.PullRequestDiffFile(executor.Request!.RunDirectory);
+        File.Exists(diffFilePath).Should().BeTrue("the prompt points the session at this file instead of gh pr diff");
+        (await File.ReadAllTextAsync(diffFilePath, cts.Token)).Should().Be(compareDiff,
+            "the file must hold exactly the compare output already fetched for the judged head oid");
+        executor.Request.Prompt.Should().Contain("the-exact-oid").And.Contain(diffFilePath)
+            .And.Contain("Do not run 'gh pr diff'").And.NotContain("Use gh (gh pr diff");
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 5, adversarial lens: when the compare API cannot answer for
     /// the exact head oid a verdict would be recorded against, the launch fails outright rather than
     /// silently falling back to whatever gh currently reports for a possibly-different head — the

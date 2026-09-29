@@ -2007,7 +2007,17 @@ public sealed class RunLauncher(
         IReadOnlyList<string> changedFiles = PrReviewPreflightDiffExtractor.ExtractChangedFiles(diff);
         IReadOnlyList<string> surfaces = PrReviewPreflightSurfaceMatcher.Match(changedFiles);
         string matchedHunks = PrReviewPreflightDiffExtractor.ExtractMatchedHunks(diff, surfaces);
-        string prompt = PrReviewPreflightPromptBuilder.Build(reference, facts.Url, changedFiles, surfaces, matchedHunks);
+
+        // The full compare diff this method already fetched, pinned to facts.HeadRefOid, written
+        // out so the prompt can point the session at it instead of telling it to run gh pr diff
+        // for anything past the capped, surface-matched hunks above (independent pre-PR review,
+        // cycle 6): gh pr diff reads whatever the pull request's head is when the session runs it,
+        // which can disagree with the oid this verdict is about to be recorded against.
+        string diffFilePath = RunPaths.PullRequestDiffFile(runDirectory);
+        await File.WriteAllTextAsync(diffFilePath, diff, cancellationToken);
+
+        string prompt = PrReviewPreflightPromptBuilder.Build(
+            reference, facts.Url, changedFiles, surfaces, matchedHunks, facts.HeadRefOid, diffFilePath);
 
         AgentModel model = options.Value.ResolveSecurityPreflightModel(project.Model);
         AgentEffort effort = options.Value.ResolveEffort(AgentRole.SecurityPreflight, taskEffort: null, project.Effort);
