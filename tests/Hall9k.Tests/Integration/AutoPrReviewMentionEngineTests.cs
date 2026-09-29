@@ -9,6 +9,7 @@ using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.AutoPrReview;
+using Hall9k.Domain.Features.PrReviewPreflight;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -174,6 +175,31 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
                 Optional<IReadOnlyList<ContextLink>>.None, registeredAt, node.OwnerId, autoPrReview: speed));
         }
 
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Seeds a completed, safe pull-request review pre-flight (idea 6be68ee2, finding 1, phase
+    /// one) for <paramref name="taskId"/> so a follow-up dispatch in this file's own tests clears
+    /// the gate exactly as a real pre-flight already having run would — every scripted <c>gh pr
+    /// view</c> fixture in <see cref="MentionScriptedGh"/> carries no <c>headRefOid</c> field, so
+    /// <see cref="Connectors.WorkItems.GitHubPullRequestProvider"/> reads it as empty here too.
+    /// </summary>
+    private static async Task SeedSafePrReviewPreflightAsync(
+        DocumentStore store, Guid taskId, Guid nodeId, CancellationToken cancellationToken)
+    {
+        // DateTimeOffset.UtcNow, not this file's own fixed Now: RunLauncher's own production
+        // dispatch records a pre-flight at the real current time, and RunLauncher.LaunchAsync
+        // always reads the LATEST pre-flight by DispatchedAt — a seed timestamped at this file's
+        // own fixed (and much older) Now would sort behind an already-dispatched pre-flight from
+        // an earlier poll in the same test, rather than superseding it.
+        DateTimeOffset seededAt = DateTimeOffset.UtcNow;
+        Guid preflightRunId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
+            preflightRunId, taskId, nodeId, "claude-opus-5-5", string.Empty, [], seededAt));
+        session.Events.Append(preflightRunId, new PrReviewPreflightCompleted(
+            preflightRunId, Safe: true, "safe", "seeded for test", seededAt));
         await session.SaveChangesAsync(cancellationToken);
     }
 
@@ -652,6 +678,14 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
     /// task's own stream (idea 2f079bcd, decision 3): the findings report it produces is the ONE
     /// place a mint-triggered task's "You were asked" section can come from, since no separate
     /// follow-up lap ever runs for a task that had no live coverage to attach to.
+    /// <para>
+    /// The pull-request review pre-flight (idea 6be68ee2, finding 1, phase one) sits ahead of that
+    /// primary session now: "Now speed" still dispatches immediately, but what it dispatches first
+    /// is the pre-flight, never the primary session, on the very first poll. This test reaches the
+    /// primary session by simulating what a safe verdict's own release does — re-invoking the same
+    /// claim once a pre-flight is on record — since it wires no <c>DispatchEngine</c> of its own to
+    /// pick the released task back up the way the daemon's real dispatch loop would.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task A_fresh_mint_from_a_mention_asks_its_primary_session_to_answer_the_comment_too()
@@ -671,13 +705,30 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             repository, number, "brian",
             [("IC_1", "ryan", "@brian does this handle the empty-list case?", Now.AddMinutes(5))]);
         CapturingExecutor executor = new();
+        RunLauncher launcher = NewLauncher(store, node, new StubWorktreeManager(), executor, gh);
         AutoPrReviewEngine engine = new(
-            store, node, NewLauncher(store, node, new StubWorktreeManager(), executor, gh),
-            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
+            store, node, launcher, gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
+            NullLogger<AutoPrReviewEngine>.Instance);
 
         await engine.PollOnceAsync(cts.Token);
 
-        executor.Request.Should().NotBeNull("Now speed launches the primary review session immediately");
+        executor.Request.Should().NotBeNull("Now speed still launches immediately, but its first dispatch is the pre-flight gate");
+        executor.Request!.Prompt.Should().Contain(
+            PrReviewPreflightVerdictParser.Marker,
+            "the pre-flight gate runs before any checkout, so the first dispatch is never the primary session");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem minted = (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token)).Single();
+        TaskDetails claimed = (await query.LoadAsync<TaskDetails>(minted.Id, cts.Token))!;
+
+        // A safe verdict releases the task for the daemon's ordinary dispatch loop to reclaim and
+        // relaunch — simulated here by re-invoking the same still-current claim directly. "Now
+        // speed" claims through the sentinel path, which never writes a TaskLease document, so the
+        // still-current generation is read off the task's own stream instead.
+        await SeedSafePrReviewPreflightAsync(store, minted.Id, node.NodeId, cts.Token);
+        await launcher.LaunchAsync(
+            minted.Id, claimed.CurrentRunId!.Value, node.NodeId, node.OwnerId, claimed.LeaseGeneration, cts.Token);
+
         executor.Request!.Prompt.Should().Contain("@brian does this handle the empty-list case?");
         executor.Request.Prompt.Should().Contain("ryan");
         // The session's own working directory is the pull request checkout, a different directory
@@ -996,6 +1047,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             store, node, NewLauncher(store, node, new StubWorktreeManager(), executor, gh),
             gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
 
+        await SeedSafePrReviewPreflightAsync(store, watchedTaskId, node.NodeId, cts.Token);
         await engine.PollOnceAsync(cts.Token);
 
         await using IQuerySession query = store.QuerySession();
@@ -1095,6 +1147,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             store, node, NewLauncher(store, node, new StubWorktreeManager(), executor, gh),
             gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
 
+        await SeedSafePrReviewPreflightAsync(store, watchedTaskId, node.NodeId, cts.Token);
         await engine.PollOnceAsync(cts.Token);
 
         await using IQuerySession query = store.QuerySession();

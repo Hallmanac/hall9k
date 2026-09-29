@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Closeout;
@@ -8,6 +9,7 @@ using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Review;
+using Hall9k.Domain.Features.PrReviewPreflight;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -3709,6 +3711,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
+        await SeedSafePrReviewPreflightAsync(store, taskId, node.NodeId, headRefOid: string.Empty, cts.Token);
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
 
         executor.Request.Should().NotBeNull("the fresh gh read found the pull request open, so dispatch must proceed");
@@ -3780,6 +3783,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
+        await SeedSafePrReviewPreflightAsync(store, taskId, node.NodeId, headRefOid: string.Empty, cts.Token);
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
 
         executor.Request.Should().NotBeNull();
@@ -3913,6 +3917,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
+        await SeedSafePrReviewPreflightAsync(store, taskId, node.NodeId, headRefOid: string.Empty, cts.Token);
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
 
         await using IQuerySession query = store.QuerySession();
@@ -3920,6 +3925,279 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         run.ReviewStageComposition.Should().Be(ReviewStageComposition.FullPipeline,
             "both lenses always dispatch on a pr-review run, so this is the only value that is ever "
             + "actually true here — never the project's own None");
+    }
+
+    /// <summary>Seeds a Claimed pr-review task with a lease, the shape every pre-flight test below shares.</summary>
+    private static async Task<(Guid TaskId, Guid RunId, Guid ProjectId)> SeedClaimedPrReviewTaskAsync(
+        DocumentStore store, NodeContext node, int pullRequestNumber, CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        ProjectRegistered registered = ProjectDecider.Register(
+            projectId, node.OwnerId, DomainId.New(), $"pr-review-preflight-{taskId:N}",
+            $"/tmp/pr-review-preflight-repo-{taskId:N}", new Uri("https://github.com/acme/web"), "main", Now);
+        session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+        (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(
+                taskId, projectId, $"Review pull request acme/web#{pullRequestNumber}",
+                ["every finding names a file and line"], TaskType.PrReview, null, null,
+                new ExternalReference(WorkItemProvider.GitHubPullRequest, $"acme/web#{pullRequestNumber}"), Now,
+                node.OwnerId),
+            node.OwnerId, Now);
+        Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+            TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+        session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+        await session.SaveChangesAsync(cancellationToken);
+        return (taskId, runId, projectId);
+    }
+
+    /// <summary>Throws <see cref="PullRequestHeadMovedException"/> on its one call — every other member is unreachable in these tests.</summary>
+    private sealed class HeadMovedWorktreeManager(string expectedHeadOid, string observedHeadOid) : IWorktreeManager
+    {
+        public Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("not exercised by this test");
+
+        public Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("not exercised by this test");
+
+        public Task<Worktree> CreatePrReviewCheckoutAsync(PrReviewWorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new PullRequestHeadMovedException(
+                expectedHeadOid, observedHeadOid,
+                $"Pull request #{request.PullRequestNumber}'s head moved: judged {expectedHeadOid}, observed {observedHeadOid}.");
+
+        public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task DeletePrReviewTrackingRefAsync(string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task DeleteBranchEverywhereAsync(
+            string repositoryPath, string branch, RemoteBranchDeletionOwner remoteDeletion,
+            CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task PruneAsync(string repositoryPath, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task<CheckoutRefresh> RefreshReadingCheckoutAsync(
+            string checkoutPath, string branch, CancellationToken cancellationToken) =>
+            Task.FromResult(new CheckoutRefresh(UpToDate: true, "nothing here is a real repository"));
+
+        public Task<IAsyncDisposable> AcquireRepositoryLockAsync(string repositoryPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
+
+        public Task<IAsyncDisposable> AcquireCheckoutLockAsync(string checkoutPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
+    }
+
+    private const string PullRequestPreflightJson = """
+        {
+          "number": 901,
+          "title": "Add rate limiting to auth endpoints",
+          "body": "Fixes an incident.",
+          "state": "OPEN",
+          "url": "https://github.com/acme/web/pull/901",
+          "baseRefName": "main"
+        }
+        """;
+
+    /// <summary>
+    /// Idea 6be68ee2, finding 1, phase one's own first acceptance criterion: with no pre-flight
+    /// verdict on record at all, <c>LaunchAsync</c> dispatches the pre-flight itself — never the
+    /// primary session, and never a worktree — and returns without waiting on that session to
+    /// finish (the dispatch loop's own claim and lease sweeps must not stall behind it).
+    /// </summary>
+    [Fact]
+    public async Task With_no_verdict_on_record_launchasync_dispatches_the_preflight_and_returns_without_a_checkout()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 901, cts.Token);
+
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(PullRequestPreflightJson);
+        CapturingExecutor executor = new();
+        RefusingWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        executor.Request.Should().NotBeNull("no verdict exists yet, so the pre-flight itself is what gets dispatched");
+        executor.Request!.Prompt.Should().Contain(PrReviewPreflightVerdictParser.Marker);
+        executor.Request.UntrustedWorkingDirectory.Should().BeTrue();
+        executor.Request.UsesReviewPermissions.Should().BeTrue("the pre-flight runs under the same real permission file every pr-review session does");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token)).Should().BeNull(
+            "RefusingWorktreeManager throwing on any checkout call proves none was ever cut, and no RunDispatched "
+            + "was ever recorded for the reserved run id either");
+    }
+
+    /// <summary>
+    /// Idea 6be68ee2, finding 1, phase one: the configured node-level model reaches the
+    /// pre-flight's own spawn request, the same way every other role's configured model does.
+    /// </summary>
+    [Fact]
+    public async Task The_configured_security_preflight_model_reaches_the_preflight_spawn_request()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 902, cts.Token);
+
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(
+            PullRequestPreflightJson.Replace("901", "902", StringComparison.Ordinal));
+        CapturingExecutor executor = new();
+        RefusingWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        DaemonOptions options = new() { ModelByRole = new RoleModelDefaults { SecurityPreflight = "haiku" } };
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(options), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        executor.Request.Should().NotBeNull();
+        executor.Request!.Model.Should().Be(AgentModel.Haiku, "the node's own configured pre-flight model must reach the spawn");
+    }
+
+    /// <summary>Idea 6be68ee2, finding 1, phase two: a safe verdict recorded for a head this pull request has since moved past triggers a fresh pre-flight rather than a checkout.</summary>
+    [Fact]
+    public async Task A_moved_head_after_a_safe_verdict_triggers_a_fresh_preflight_instead_of_a_checkout()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 903, cts.Token);
+
+        // Safe, but judged against an oid this pull request's own current head (empty, per the
+        // scripted gh fixture below, which carries no headRefOid) does not actually match.
+        await SeedSafePrReviewPreflightAsync(store, taskId, node.NodeId, headRefOid: "stale-oid", cts.Token);
+
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(
+            PullRequestPreflightJson.Replace("901", "903", StringComparison.Ordinal));
+        CapturingExecutor executor = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, new RefusingWorktreeManager(), executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, new RefusingWorktreeManager()), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        executor.Request.Should().NotBeNull(
+            "the recorded verdict's own oid does not match the current head, so a fresh pre-flight dispatches");
+        executor.Request!.Prompt.Should().Contain(PrReviewPreflightVerdictParser.Marker);
+    }
+
+    /// <summary>Idea 6be68ee2, finding 1, phase two: a safe verdict for a head the checkout's own fetch no longer observes dispatches a fresh pre-flight rather than proceeding.</summary>
+    [Fact]
+    public async Task A_head_that_moved_between_gh_and_the_checkouts_own_fetch_triggers_a_fresh_preflight()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 904, cts.Token);
+        await SeedSafePrReviewPreflightAsync(store, taskId, node.NodeId, headRefOid: string.Empty, cts.Token);
+
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(
+            PullRequestPreflightJson.Replace("901", "904", StringComparison.Ordinal));
+        CapturingExecutor executor = new();
+        MergedInspector inspector = new();
+        HeadMovedWorktreeManager worktrees = new(expectedHeadOid: string.Empty, observedHeadOid: "raced-past-it");
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        executor.Request.Should().NotBeNull(
+            "the checkout's own fetch observed a different oid than the safe verdict was judged against");
+        executor.Request!.Prompt.Should().Contain(PrReviewPreflightVerdictParser.Marker);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.Query<PrReviewPreflightDetails>().Where(p => p.TaskId == taskId).ToListAsync(cts.Token))
+            .Should().Contain(
+                preflight => preflight.HeadRefOid == "raced-past-it",
+                "the fresh pre-flight is dispatched against the oid the checkout's own fetch actually observed");
+    }
+
+    /// <summary>Idea 6be68ee2, finding 1, phase one: an unsafe verdict parks the task as needs-you with nothing checked out.</summary>
+    [Fact]
+    public async Task An_unsafe_verdict_parks_the_task_with_nothing_checked_out()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 905, cts.Token);
+
+        Guid preflightRunId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
+                preflightRunId, taskId, node.NodeId, "claude-opus-5-5", string.Empty,
+                ["Dockerfile"], DateTimeOffset.UtcNow));
+            seed.Events.Append(preflightRunId, new PrReviewPreflightCompleted(
+                preflightRunId, Safe: false, "unsafe", "the Dockerfile adds a curl-pipe-to-shell step",
+                DateTimeOffset.UtcNow));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(
+            PullRequestPreflightJson.Replace("901", "905", StringComparison.Ordinal));
+        RunLauncher launcher = new(store, new RefusingWorktreeManager(), new RefusingExecutor(),
+            NewSupervisor(store, node), NewContextAssembler(store), new MergedInspector(),
+            NewCloseoutEngine(store, node, new MergedInspector(), new RefusingWorktreeManager()),
+            NewPullRequestOpener(store), gh.Runner, Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem parked = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        parked.State.Should().Be(TaskState.Published, "the same Published-but-unassigned shape the membership gate's own park uses");
+        parked.PrReviewPreflightUnsafe.Should().BeTrue();
+        parked.PrReviewPreflightParkedVerdict.Should().Be("unsafe");
+        parked.PrReviewPreflightParkedReason.Should().Contain("curl-pipe-to-shell");
+        parked.PrReviewPreflightParkedSurfaces.Should().Equal("Dockerfile");
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull("an unassigned task carries no lease");
+        (await query.LoadAsync<RunDetails>(runId, cts.Token)).Should().BeNull("nothing was ever checked out");
+    }
+
+    /// <summary>Idea 6be68ee2, finding 1, phase two: the mention follow-up site is gated identically to the ordinary dispatch — it refuses to cut a checkout without a safe verdict.</summary>
+    [Fact]
+    public async Task The_mention_follow_up_site_refuses_a_checkout_without_a_verdict()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 906, cts.Token);
+
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(
+            PullRequestPreflightJson.Replace("901", "906", StringComparison.Ordinal));
+        CapturingExecutor executor = new();
+        RefusingWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        PullRequestMentionComment comment = new(
+            "IC_1", "ryan", "@brian one more thing", "https://github.com/acme/web/pull/906#issuecomment-IC_1", Now);
+        await launcher.LaunchPrReviewMentionFollowUpAsync(
+            taskId, runId, node.OwnerId, 1, node.NodeId, comment, priorReviewRunId: null, cts.Token);
+
+        executor.Request.Should().NotBeNull("with no verdict on record the site dispatches a pre-flight instead of refusing outright");
+        executor.Request!.Prompt.Should().Contain(PrReviewPreflightVerdictParser.Marker,
+            "RefusingWorktreeManager throwing on any checkout proves the mention follow-up's own checkout never ran");
     }
 
     /// <summary>
@@ -4151,6 +4429,27 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             new StackedParentWatch(worktrees, new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance),
             RecordingProcessRunner.Succeeding(string.Empty).Runner, FakeJiraRequester.NeverInvoked(),
             Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
+
+    /// <summary>
+    /// Seeds a completed, safe pull-request review pre-flight (idea 6be68ee2, finding 1, phase
+    /// one) for <paramref name="taskId"/> against <paramref name="headRefOid"/> — every ordinary
+    /// dispatch test in this file exercises the checkout and the primary session, not the
+    /// pre-flight gate itself, so this stands in for a pre-flight that already ran and cleared the
+    /// task for dispatch. <paramref name="headRefOid"/> defaults to empty, matching every scripted
+    /// pull-request JSON fixture in this file: none of them carry a <c>headRefOid</c> field, so
+    /// <see cref="Connectors.WorkItems.GitHubPullRequestProvider"/> reads it as empty too.
+    /// </summary>
+    private static async Task SeedSafePrReviewPreflightAsync(
+        DocumentStore store, Guid taskId, Guid nodeId, string headRefOid, CancellationToken cancellationToken)
+    {
+        Guid preflightRunId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
+            preflightRunId, taskId, nodeId, "claude-opus-5-5", headRefOid, [], Now));
+        session.Events.Append(preflightRunId, new PrReviewPreflightCompleted(
+            preflightRunId, Safe: true, "safe", "seeded for test", Now));
+        await session.SaveChangesAsync(cancellationToken);
+    }
 
     private RunSupervisor NewSupervisor(DocumentStore store, NodeContext node)
     {

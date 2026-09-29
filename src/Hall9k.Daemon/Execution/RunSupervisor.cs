@@ -4,6 +4,7 @@ using System.Text;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.Review;
+using Hall9k.Domain.Features.PrReviewPreflight;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Documents;
@@ -129,6 +130,212 @@ public sealed class RunSupervisor(
                 runId, resolvedRunDirectory, taskId, processId, processStartedAt, cancellationToken,
                 isDeliberateHeadlessStart),
             cancellationToken));
+    }
+
+    /// <summary>
+    /// Fires the pull-request review pre-flight's own monitor (idea 6be68ee2, finding 1, phase
+    /// one) — <see cref="RunLauncher"/> calls this right after spawning the pre-flight and returns
+    /// at once, without cutting a worktree or waiting on the session: the dispatch loop that
+    /// called it must not stall behind a session it does not need to wait on
+    /// (<c>DispatchLoop</c>'s own claim and lease sweeps run every cycle, not once per task). The
+    /// same <see cref="_monitors"/> dictionary <see cref="StartMonitoring"/> uses, keyed by the
+    /// pre-flight's own stream id rather than an ordinary run's — the two id spaces never collide,
+    /// since both are freshly minted <c>DomainId.New()</c> values.
+    /// </summary>
+    public void StartPreflightMonitoring(
+        Guid preflightRunId, Guid taskId, int processId, DateTimeOffset processStartedAt,
+        CancellationToken cancellationToken)
+    {
+        _monitors.TryAdd(preflightRunId, Task.Run(
+            () => MonitorPreflightAsync(preflightRunId, taskId, processId, processStartedAt, cancellationToken),
+            cancellationToken));
+    }
+
+    private async Task MonitorPreflightAsync(
+        Guid preflightRunId, Guid taskId, int processId, DateTimeOffset processStartedAt,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            string runDirectory = RunPaths.GlobalDirectory(preflightRunId);
+            AgentResult? result = null;
+            bool timedOut = false;
+            using CancellationTokenSource budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            budget.CancelAfter(_options.SecurityPreflightTimeout);
+            try
+            {
+                result = (await SessionResultWaiter.WaitAsync(
+                    RunPaths.StreamFile(runDirectory), processId, processStartedAt, processManager, onOutput: null,
+                    budget.Token)).Result;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning(
+                    "Task {TaskId}: the pull-request review pre-flight exceeded {Timeout} — terminating it",
+                    taskId, _options.SecurityPreflightTimeout);
+                try
+                {
+                    processManager.Terminate(processId, processStartedAt);
+                }
+                catch (Exception exception)
+                {
+                    logger.LogWarning(exception, "Task {TaskId}: could not terminate the timed-out pre-flight", taskId);
+                }
+
+                timedOut = true;
+            }
+
+            // Budget exhaustion and a launch failure are both non-fatal and redispatchable, the
+            // identical shape PrReviewEngine's own AwaitFollowOnSessionAsync gives its own
+            // follow-on sessions (idea 6be68ee2, finding 1's own acceptance criterion) — never
+            // read as an unsafe verdict, since no real verdict was ever reached.
+            bool abandon = timedOut || result is null
+                || (result.IsError && BudgetExhaustionParser.IsBudgetExhausted(result.Summary))
+                || (result.IsError && LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration));
+
+            if (abandon)
+            {
+                await AbandonPreflightAsync(preflightRunId, taskId, cancellationToken);
+                return;
+            }
+
+            PrReviewPreflightVerdict verdict = PrReviewPreflightVerdictParser.Parse(result!.Summary);
+            await CompletePreflightAsync(preflightRunId, taskId, verdict, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The daemon is stopping — the row stays incomplete, and ResumeStrandedPreflightsAsync
+            // either reattaches or abandons it once this node starts back up, never silently
+            // skipping it (idea 6be68ee2, finding 1's own acceptance criterion).
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(
+                exception, "Task {TaskId}: the pull-request review pre-flight could not be seen through to a verdict",
+                taskId);
+        }
+        finally
+        {
+            _monitors.TryRemove(preflightRunId, out _);
+        }
+    }
+
+    /// <summary>
+    /// A pre-flight reached a real parse (idea 6be68ee2, finding 1, phase one): records the
+    /// verdict on the pre-flight's own stream, then either releases the task (safe — the next
+    /// claim finds this verdict and cuts the worktree) or parks it as needs-you (unsafe, including
+    /// an unparseable marker, which is unsafe by construction) — nothing is checked out either
+    /// way. Guarded on the task still being <see cref="TaskState.Claimed"/>: a human could have
+    /// abandoned it while the pre-flight ran, in which case there is nothing left here to requeue
+    /// or park, and the recorded verdict alone is enough for the next dispatch to read.
+    /// </summary>
+    private async Task CompletePreflightAsync(
+        Guid preflightRunId, Guid taskId, PrReviewPreflightVerdict verdict, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(preflightRunId, new PrReviewPreflightCompleted(
+            preflightRunId, verdict.Safe, verdict.Verdict, verdict.Reason, DateTimeOffset.UtcNow));
+
+        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
+        if (task is null || task.State != TaskState.Claimed)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: the pull-request review pre-flight finished ({Verdict}) but the task is no "
+                + "longer claimed — nothing to release or park", taskId, verdict.Safe ? "safe" : "unsafe");
+            await session.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
+        PrReviewPreflightDetails? preflight = await session.LoadAsync<PrReviewPreflightDetails>(
+            preflightRunId, cancellationToken);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        if (verdict.Safe)
+        {
+            session.Events.Append(taskId, TaskDecider.Requeue(task, RequeueReason.PrReviewPreflightSafe, now));
+        }
+        else
+        {
+            session.Events.Append(taskId, TaskDecider.ParkPrReviewPreflight(
+                task, preflight?.Surfaces ?? [], preflight?.HeadRefOid ?? string.Empty, verdict.Verdict,
+                verdict.Reason, now));
+        }
+
+        session.Delete<TaskLease>(taskId);
+        await session.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation(
+            "Task {TaskId}: pull-request review pre-flight {Outcome}", taskId, verdict.Safe ? "safe" : "unsafe");
+    }
+
+    /// <summary>
+    /// A pre-flight never reached a real verdict — a timeout, a budget exhaustion, a launch
+    /// failure, or (from <see cref="ResumeStrandedPreflightsAsync"/>) a daemon restart that found
+    /// the process dead. Requeues the task so a fresh pre-flight is dispatched on the next claim,
+    /// exactly the redispatch (never a park) the acceptance criterion gives budget exhaustion and
+    /// a launch hold. Nothing is appended to the pre-flight's own stream — it stays permanently
+    /// incomplete, which is fine: <c>RunLauncher</c> reads only the LATEST pre-flight for a task,
+    /// and a fresh dispatch mints a fresh, strictly later one.
+    /// </summary>
+    private async Task AbandonPreflightAsync(Guid preflightRunId, Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
+        if (task is null || task.State != TaskState.Claimed)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: the pull-request review pre-flight {PreflightRunId} never reached a verdict, but "
+                + "the task is no longer claimed — nothing to requeue", taskId, preflightRunId);
+            return;
+        }
+
+        session.Events.Append(taskId, TaskDecider.Requeue(task, RequeueReason.PrReviewPreflightRetry, DateTimeOffset.UtcNow));
+        session.Delete<TaskLease>(taskId);
+        await session.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation(
+            "Task {TaskId}: pull-request review pre-flight {PreflightRunId} never reached a verdict — requeued "
+            + "for a fresh one", taskId, preflightRunId);
+    }
+
+    /// <summary>
+    /// The pre-flight's own sibling to <see cref="ResumeStrandedPipelinesAsync"/> (idea 6be68ee2,
+    /// finding 1's own acceptance criterion: "a daemon restart mid-pre-flight re-runs or adopts
+    /// it, never skips it") — called every dispatch loop cycle, the identical "detached spawn,
+    /// independent sweep notices completion via projection state" shape, never inline on the call
+    /// stack that spawned the pre-flight. A pre-flight still alive is reattached (tailing its own
+    /// stream file is idempotent — nothing here consumes or mutates it); one whose process died is
+    /// abandoned, so the task's next claim dispatches a fresh one instead of waiting on a process
+    /// that no longer exists.
+    /// </summary>
+    public async Task ResumeStrandedPreflightsAsync(CancellationToken cancellationToken)
+    {
+        Guid nodeId = node.NodeId;
+        IReadOnlyList<PrReviewPreflightDetails> incomplete;
+        await using (IQuerySession query = store.QuerySession())
+        {
+            incomplete = await query.Query<PrReviewPreflightDetails>()
+                .Where(preflight => preflight.NodeId == nodeId && preflight.CompletedAt == null)
+                .ToListAsync(cancellationToken);
+        }
+
+        foreach (PrReviewPreflightDetails preflight in incomplete.Where(preflight => !_monitors.ContainsKey(preflight.Id)))
+        {
+            if (preflight.ProcessId is { } processId && preflight.ProcessStartedAt is { } processStartedAt
+                && processManager.IsAlive(processId, processStartedAt))
+            {
+                logger.LogInformation(
+                    "Task {TaskId}: reattaching to the pull-request review pre-flight {PreflightRunId} found "
+                    + "still running at startup", preflight.TaskId, preflight.Id);
+                StartPreflightMonitoring(preflight.Id, preflight.TaskId, processId, processStartedAt, cancellationToken);
+            }
+            else
+            {
+                logger.LogInformation(
+                    "Task {TaskId}: the pull-request review pre-flight {PreflightRunId} never recorded a "
+                    + "process, or that process is gone — requeuing for a fresh one", preflight.TaskId, preflight.Id);
+                await AbandonPreflightAsync(preflight.Id, preflight.TaskId, cancellationToken);
+            }
+        }
     }
 
     /// <summary>
