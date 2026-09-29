@@ -151,6 +151,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -166,6 +168,21 @@ jobs:
         run: |
           cat hall9k-*.sha256 > checksums.txt
           rm hall9k-*.sha256
+
+      # Signs build provenance for the four platform archives (checksums.txt needs none — it
+      # carries no code of its own, just hashes of the archives this already covers) so h9k
+      # update can refuse to install anything that did not come out of this workflow for this
+      # tag (security review idea 6be68ee2, finding 4). Runs before `gh release create` below:
+      # an attestation is not a release asset, it is a separate signature GitHub associates
+      # with the archive's digest, so the five files that guard re-runs are unaffected either
+      # way — but a node checking `h9k update` against a release still mid-publish should
+      # never see assets without the attestation that covers them.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            release-assets/hall9k-*.tar.gz
+            release-assets/hall9k-*.zip
 
       # A second run for the same tag (the double-delivery race the concurrency group above
       # serializes rather than prevents) must not re-run `gh release create`: it would fail
