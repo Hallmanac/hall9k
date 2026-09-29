@@ -156,7 +156,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         [Description(
             "Model every agent session on this project runs on unless a more specific level says "
             + "otherwise (Decisions Log #33): a tier alias (fable, opus, sonnet, haiku) or an exact "
-            + "model id (claude-opus-5, claude-sonnet-5, or a context variant like claude-opus-5[[1m]]); "
+            + "model id (claude-opus-5, claude-sonnet-5-5, or a context variant like claude-opus-5[[1m]]); "
             + "anything 'claude -p --model' accepts, except the word 'default'. "
             + "The chain is task override > this project value > the node's per-role default "
             + "(DaemonOptions.ModelByRole) > the platform default (DaemonOptions.DefaultModel), the same "

@@ -1283,7 +1283,7 @@ token spend, and its own outcome, folded into `h9k status`'s spend line the same
 role's. It is its own role in the model-by-role policy (`h9k config set --model-courier`); its
 own field ships blank exactly like every other role's ("ask the platform default"),
 but its *resolution* is the one deliberate exception — a blank courier bottoms out at
-`claude-sonnet-5`, cheap by construction, rather than falling all the way through to the platform
+`claude-sonnet-5-5`, cheap by construction, rather than falling all the way through to the platform
 default the way every other role's blank does.
 
 Depth: [PLAN.md §16](../PLAN.md), Decisions Log #245.

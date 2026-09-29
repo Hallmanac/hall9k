@@ -42,7 +42,7 @@ public sealed record AgentModel
     /// own description, so the two surfaces state the identical number rather than each holding
     /// their own copy of it.
     /// </summary>
-    public const string CourierDefault = "claude-sonnet-5";
+    public const string CourierDefault = "claude-sonnet-5-5";
 
     /// <summary>
     /// The Security persona's own bottom-of-chain floor (idea 6be68ee2, phase two): an exact

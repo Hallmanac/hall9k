@@ -140,7 +140,7 @@ line: the live window's session name, CLI, process id and age, or "none live" wi
 shutdown or loss time. The feed courier that acts on it, spawning only while a window is up
 (idea 89471598, piece 3), delivers the project's own undrained feed items to that window and
 exits — a short-lived session on its own model role (`h9k config set --model-courier <model>`,
-floored at `claude-sonnet-5` rather than the platform default), batched behind a per-project wait
+floored at `claude-sonnet-5-5` rather than the platform default), batched behind a per-project wait
 (`h9k project set <name> --courier-max-wait <seconds>`) that an urgent item bypasses.
 
 **The same bare repo also carries a hidden ledger** (Decisions Log #189, idea
