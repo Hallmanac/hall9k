@@ -112,7 +112,10 @@ public static class PrReviewPreflightDiffExtractor
     /// half actually held it (independent pre-PR review, cycle 7, adversarial lens). The plain form
     /// resolves that ambiguity by preferring the split where the two path halves are identical —
     /// true for every header except a rename, which is the overwhelming majority of headers this
-    /// ever needs to read.
+    /// ever needs to read. A rename quotes only whichever side needs escaping, not necessarily
+    /// both: this also recognizes a plain a-path paired with a quoted b-path, not just the
+    /// symmetric quoted/quoted and quoted/plain shapes (independent pre-PR review, cycle 8,
+    /// adversarial lens).
     /// </summary>
     private static bool TryParseDiffGitLine(string line, out string aPath, out string bPath)
     {
@@ -133,6 +136,22 @@ public static class PrReviewPreflightDiffExtractor
         if (!rest.StartsWith("a/", StringComparison.Ordinal))
         {
             return false;
+        }
+
+        // A rename quotes only whichever side actually needs it: the plain a-path can never
+        // contain a literal quote character (git would have quoted it too if it did), so a
+        // `"b/` immediately after a space unambiguously marks the start of a quoted b-path,
+        // distinct from the both-plain case handled below (independent pre-PR review, cycle 8,
+        // adversarial lens).
+        int quotedBAt = rest.IndexOf(" \"b/", StringComparison.Ordinal);
+        if (quotedBAt >= 0
+            && TryParseQuotedToken(rest, quotedBAt + 1, out string quotedB, out int afterQuotedB)
+            && afterQuotedB == rest.Length
+            && quotedB.StartsWith("b/", StringComparison.Ordinal))
+        {
+            aPath = rest[2..quotedBAt];
+            bPath = quotedB[2..];
+            return true;
         }
 
         string[] parts = rest[2..].Split(" b/", StringSplitOptions.None);
