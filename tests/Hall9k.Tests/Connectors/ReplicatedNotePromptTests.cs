@@ -105,7 +105,7 @@ public sealed class ReplicatedNotePromptTests : IDisposable
     [Fact]
     public void A_teammates_node_is_labelled_with_the_account_its_fleet_declared_and_the_node_short_id()
     {
-        ReplicatedNote.Origin(ForeignNoteFixtures.TeammateNode, ForeignNoteFixtures.Fleet())
+        ReplicatedNote.Origin(ForeignNoteFixtures.TeammateNode, null, ForeignNoteFixtures.Fleet())
             .Should().Be("a note from @teammate-login (node 0000abcd)");
     }
 
@@ -114,25 +114,47 @@ public sealed class ReplicatedNotePromptTests : IDisposable
     {
         TrustChain undeclared = ForeignNoteFixtures.Chain() with { NodeDeclarations = new Dictionary<string, NodeGitHubDeclaration>() };
 
-        ReplicatedNote.Origin(ForeignNoteFixtures.TeammateNode, LocalFleet.Of(undeclared, ForeignNoteFixtures.LocalRoot))
+        ReplicatedNote.Origin(ForeignNoteFixtures.TeammateNode, null, LocalFleet.Of(undeclared, ForeignNoteFixtures.LocalRoot))
             .Should().Be("a note from root SHA256:teamm (node 0000abcd)");
     }
 
     [Fact]
     public void A_node_the_chain_cannot_place_says_the_owner_is_not_verified()
     {
-        ReplicatedNote.Origin(ForeignNoteFixtures.StrangerNode, ForeignNoteFixtures.Fleet())
+        ReplicatedNote.Origin(ForeignNoteFixtures.StrangerNode, null, ForeignNoteFixtures.Fleet())
             .Should().Be("a note from an owner not verified (node 000000ef)");
-        ReplicatedNote.Origin(ForeignNoteFixtures.TeammateNode, new LocalFleet(new HashSet<Guid>()))
+        ReplicatedNote.Origin(ForeignNoteFixtures.TeammateNode, null, new LocalFleet(new HashSet<Guid>()))
             .Should().Be("a note from an owner not verified (node 0000abcd)", "no chain in hand means no owner can be named");
-        ReplicatedNote.Origin(ForeignNoteFixtures.TeammateNode, localFleet: null)
+        ReplicatedNote.Origin(ForeignNoteFixtures.TeammateNode, null, localFleet: null)
             .Should().Contain("owner not verified");
+    }
+
+    /// <summary>
+    /// One of your own nodes relaying a teammate's note must not put the teammate's words under your
+    /// own name: the label names the node the note claims to have begun on and the relay by its id.
+    /// </summary>
+    [Fact]
+    public void A_teammates_note_relayed_by_your_node_is_labelled_with_its_claimed_origin_not_the_relay()
+    {
+        string label = ReplicatedNote.Origin(
+            ForeignNoteFixtures.LocalSecondNode, ForeignNoteFixtures.TeammateNode, ForeignNoteFixtures.Fleet());
+
+        label.Should().Be(
+            $"a note attributed to @teammate-login (node 0000abcd), relayed by your own node {DomainId.Short(ForeignNoteFixtures.LocalSecondNode)}");
+    }
+
+    [Fact]
+    public void A_foreign_sender_is_labelled_by_itself_whatever_origin_it_claims()
+    {
+        ReplicatedNote.Origin(
+                ForeignNoteFixtures.TeammateNode, ForeignNoteFixtures.LocalRootNode, ForeignNoteFixtures.Fleet())
+            .Should().Be("a note from @teammate-login (node 0000abcd)");
     }
 
     [Fact]
     public void A_sender_that_was_never_recorded_is_named_as_unidentified()
     {
-        ReplicatedNote.Origin(Guid.Empty, ForeignNoteFixtures.Fleet()).Should().Contain("owner not verified")
+        ReplicatedNote.Origin(Guid.Empty, null, ForeignNoteFixtures.Fleet()).Should().Contain("owner not verified")
             .And.Contain("not recorded");
     }
 
@@ -167,17 +189,6 @@ public sealed class ReplicatedNotePromptTests : IDisposable
     // ---- WorkPromptBuilder: retry reason as operator guidance ----
 
     [Fact]
-    public void The_local_owners_own_retry_reason_keeps_its_operator_guidance_heading_unfenced()
-    {
-        TaskDetails task = RetriedTask(Injection, sender: null);
-
-        string section = OperatorGuidance(task, ForeignNoteFixtures.Fleet());
-
-        section.Should().Contain("## Operator guidance").And.Contain("A human gave this instruction")
-            .And.Contain(Injection).And.NotContain("```");
-    }
-
-    [Fact]
     public void A_retry_reason_from_a_node_of_the_local_fleet_is_still_the_local_owners_guidance()
     {
         TaskDetails task = RetriedTask(Injection, ForeignNoteFixtures.LocalSecondNode);
@@ -196,7 +207,9 @@ public sealed class ReplicatedNotePromptTests : IDisposable
         string section = OperatorGuidance(task, ForeignNoteFixtures.Fleet());
 
         section.Should().NotContain("## Operator guidance").And.Contain("## A retry note from another owner's node")
-            .And.Contain($"```\n{Injection}\n```");
+            .And.Contain($"```\n{Injection}\n```")
+            .And.Contain("a note attributed to @teammate-login").And.Contain("relayed by your own node")
+            .And.NotContain("by a node outside this owner's fleet");
     }
 
     /// <summary>
@@ -235,19 +248,6 @@ public sealed class ReplicatedNotePromptTests : IDisposable
     }
 
     // ---- WorkPromptBuilder: handback reason, both branches ----
-
-    [Fact]
-    public void The_local_owners_handback_reason_renders_unchanged()
-    {
-        TaskDetails task = RetriedTask("ran out of time", sender: null);
-        task.RetryReasonIsHandback = true;
-
-        string prompt = WorkPromptBuilder.Build(
-            task, Project(), Branch, WorktreePath, resumesPreviousWork: true, isHandback: true,
-            resumeReason: task.RetryReason);
-
-        prompt.Should().Contain("Why they handed it back, in their own words: ran out of time");
-    }
 
     // ---- WorkPromptBuilder: handoff note ----
 

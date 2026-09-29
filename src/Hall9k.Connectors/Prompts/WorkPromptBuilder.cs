@@ -138,7 +138,7 @@ public static class WorkPromptBuilder
                     && ReplicatedNote.IsForeign(handbackSender, task.RetryOriginNodeId, localFleet))
                 {
                     AppendFragment(prompt, file, "handback-reason-foreign",
-                        ("Origin", ReplicatedNote.Origin(handbackSender, localFleet)),
+                        ("Origin", ReplicatedNote.Origin(handbackSender, task.RetryOriginNodeId, localFleet)),
                         ("ResumeReason", ReplicatedNote.Block(resumeReason, ReplicatedNote.MaxReasonLength)));
                 }
                 else
@@ -196,7 +196,7 @@ public static class WorkPromptBuilder
                     && ReplicatedNote.IsForeign(causelessSender, task.RetryOriginNodeId, localFleet))
                 {
                     AppendFragment(prompt, file, "retry-reason-is-handback-causeless-foreign",
-                        ("Origin", ReplicatedNote.Origin(causelessSender, localFleet)),
+                        ("Origin", ReplicatedNote.Origin(causelessSender, task.RetryOriginNodeId, localFleet)),
                         ("RetryReason", ReplicatedNote.Block(task.RetryReason, ReplicatedNote.MaxReasonLength)));
                 }
                 else
@@ -244,7 +244,7 @@ public static class WorkPromptBuilder
                 AppendFragment(
                     prompt, file, "handoff-note-body-foreign",
                     ("Note", ReplicatedNote.Block(task.HandoffNote)),
-                    ("Origin", ReplicatedNote.Origin(noteSender, localFleet)), ("When", when));
+                    ("Origin", ReplicatedNote.Origin(noteSender, task.HandoffNoteOriginNodeId, localFleet)), ("When", when));
             }
             else
             {
@@ -501,7 +501,7 @@ public static class WorkPromptBuilder
             // as this run's priority.
             AppendFragment(prompt, file, "foreign-heading");
             prompt.AppendLine();
-            AppendFragment(prompt, file, "foreign-lead", ("Origin", ReplicatedNote.Origin(sender, localFleet)));
+            AppendFragment(prompt, file, "foreign-lead", ("Origin", ReplicatedNote.Origin(sender, task.RetryOriginNodeId, localFleet)));
             prompt.AppendLine();
             prompt.AppendLine(ReplicatedNote.Block(task.RetryReason, ReplicatedNote.MaxReasonLength));
             prompt.AppendLine();

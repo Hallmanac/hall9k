@@ -43,7 +43,7 @@ internal static class ReplicatedResolutionFencing
 
         LocalFleet? localFleet = fleets is null ? null : await fleets.GetAsync(projectId, cancellationToken);
         return ReplicatedNote.IsForeign(sender, from.OriginNodeId, localFleet)
-            ? (ReplicatedNote.ForeignReviewResolution(guidance, sender, localFleet), true)
+            ? (ReplicatedNote.ForeignReviewResolution(guidance, sender, from.OriginNodeId, localFleet), true)
             : (guidance, false);
     }
 
@@ -83,23 +83,23 @@ internal static class ReplicatedResolutionFencing
         LocalFleet? localFleet = fleets is null ? null : await fleets.GetAsync(projectId, cancellationToken);
         return
         [
-            .. rulings.Select(ruling => ForeignSenderOf(ruling, replicated, localFleet) is { } foreignSender
+            .. rulings.Select(ruling => ForeignSenderOf(ruling, replicated, localFleet) is { SenderNodeId: { } foreignSender } foreignFrom
                 ? ruling with
                 {
                     ForeignNote = ReplicatedNote.ForeignRuling(
                         ruling.Verdict == ReviewVerdict.MergeReady ? "merge-ready" : "needs-fixes",
-                        ruling.Reason, foreignSender, localFleet),
+                        ruling.Reason, foreignSender, foreignFrom.OriginNodeId, localFleet),
                 }
                 : ruling),
         ];
     }
 
     /// <summary>
-    /// The sender of a replicated event that matches <paramref name="ruling"/> (same verdict, reason
+    /// The sender and origin of a replicated event that matches <paramref name="ruling"/> (same verdict, reason
     /// and time) and is foreign, or null. Any foreign match counts, the fail-closed side of a
     /// coincidence nobody expects.
     /// </summary>
-    private static Guid? ForeignSenderOf(
+    private static ReplicatedFrom? ForeignSenderOf(
         ReviewParkResolution ruling, IReadOnlyList<(ReviewParkResolved Resolved, ReplicatedFrom From)> replicated,
         LocalFleet? localFleet)
     {
@@ -111,7 +111,7 @@ internal static class ReplicatedResolutionFencing
                 && from.SenderNodeId is { } sender
                 && ReplicatedNote.IsForeign(sender, from.OriginNodeId, localFleet))
             {
-                return sender;
+                return from;
             }
         }
 

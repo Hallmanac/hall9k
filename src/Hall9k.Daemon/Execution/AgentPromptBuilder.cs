@@ -3173,8 +3173,9 @@ public static class AgentPromptBuilder
     /// <summary>
     /// The prior-ruling reason text this prompt actually prints (the newest
     /// <see cref="MaxPriorRulings"/>, truncated exactly as <see cref="AppendSettledRulings"/>
-    /// prints it) — handed to <see cref="ReviewVerdictValidation.NamesAFinding"/> so a reviewer's
-    /// verbatim echo of a human's own <c>--reason</c> text is stripped before validation the same
+    /// prints it, after the replicated rulings that section keeps out of its settled list are set
+    /// aside, so both pick the same newest entries) — handed to
+    /// <see cref="ReviewVerdictValidation.NamesAFinding"/> so a reviewer's verbatim echo of a human's own <c>--reason</c> text is stripped before validation the same
     /// way an echoed task objective or acceptance criterion already is. Restricted to
     /// <see cref="ReviewVerdict.MergeReady"/> rulings: that reason is a dismissal the reviewer is
     /// told not to re-raise, so echoing it back manufactures no new finding. A
@@ -3187,9 +3188,10 @@ public static class AgentPromptBuilder
     internal static IReadOnlyList<string> RulingReasonsShown(IReadOnlyList<ReviewParkResolution>? priorRulings) =>
         priorRulings is null
             ? []
-            : [.. priorRulings.TakeLast(MaxPriorRulings)
-                .Where(ruling => ruling.ForeignNote is null
-                    && ruling.Verdict == ReviewVerdict.MergeReady && ruling.Reason.IsNotBlank())
+            : [.. priorRulings
+                .Where(ruling => ruling.ForeignNote is null)
+                .TakeLast(MaxPriorRulings)
+                .Where(ruling => ruling.Verdict == ReviewVerdict.MergeReady && ruling.Reason.IsNotBlank())
                 .Select(PrintedReason)];
 
     /// <summary>

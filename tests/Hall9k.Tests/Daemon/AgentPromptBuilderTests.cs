@@ -1622,6 +1622,27 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// The settled-rulings section drops replicated rulings before it keeps the newest eight, so the
+    /// reasons handed to verdict validation must be cut the same way: with newer replicated rulings
+    /// on the task, the oldest printed dismissal still has to be stripped from a reviewer's echo.
+    /// </summary>
+    [Fact]
+    public void Reasons_shown_skip_replicated_rulings_before_keeping_the_newest_eight()
+    {
+        DateTimeOffset at = new(2026, 8, 24, 0, 0, 0, TimeSpan.Zero);
+        List<ReviewParkResolution> rulings =
+        [
+            .. Enumerable.Range(1, 8).Select(cycle => new ReviewParkResolution(
+                cycle, ReviewVerdict.MergeReady, $"own dismissal {cycle}", at.AddDays(cycle))),
+            .. Enumerable.Range(9, 2).Select(cycle => new ReviewParkResolution(
+                cycle, ReviewVerdict.MergeReady, $"foreign dismissal {cycle}", at.AddDays(cycle), "a fenced note")),
+        ];
+
+        AgentPromptBuilder.RulingReasonsShown(rulings).Should().HaveCount(8)
+            .And.Contain("own dismissal 1").And.NotContain(reason => reason.Contains("foreign"));
+    }
+
+    /// <summary>
     /// A needs-fixes ruling is the opposite of a dismissal: the human confirmed the defect was
     /// real and ordered it fixed, and the settled-rulings trailer tells the reviewer to check
     /// whether the fix landed and report it again if not. Stripping that reason's own defect

@@ -33,7 +33,7 @@ The rest are one command away: `h9k learn list`, which lists the same set newest
 ===held-for-provenance===
 Held out of this section on provenance: {{HeldForProvenance}}. Four things put a lesson there and
 the count above says which: an agent run on a machine this node does not control, a lesson
-replicated here by a node outside this owner's fleet, a recording node nobody observed, or no
+replicated here from outside this owner's fleet, a recording node nobody observed, or no
 provenance on the stream at all. Until the security review in idea 7e403b80
 rules on it, a lesson this node cannot show was recorded here or on another node of this owner's
 fleet is rendered in `lessons.md` for a reader and never written into another session's
