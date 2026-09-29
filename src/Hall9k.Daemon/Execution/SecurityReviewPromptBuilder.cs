@@ -64,7 +64,7 @@ public static class SecurityReviewPromptBuilder
 
         AppendRules(prompt, request.CommandTimeout);
         AppendClosing(prompt);
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     private static void AppendOpening(StringBuilder prompt, string baseBranch)

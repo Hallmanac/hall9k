@@ -62,11 +62,12 @@ public static class PromptTemplates
     /// <summary>
     /// Loads a template (or, with <paramref name="fragment"/>, one of its named fragments — see
     /// <see cref="Load"/>) and appends it line by line, exactly as a sequence of discrete
-    /// <c>AppendLine</c> calls over the same static text would have — so a template's own line
+    /// <c>AppendLine</c> calls over the same static text would have, each ended with <c>\n</c>
+    /// (the convention <see cref="PromptLineEndings"/> holds) — so a template's own line
     /// endings, whatever this checkout's <c>.gitattributes</c> normalizes them to, never leak into
-    /// the assembled prompt in place of <see cref="Environment.NewLine"/>. A single trailing
-    /// newline (the normal shape of a saved text file, or of a fragment's own blank separator
-    /// line) is treated as the file's own terminator, not an extra blank line.
+    /// the assembled prompt. A single trailing newline (the normal shape of a saved text file, or
+    /// of a fragment's own blank separator line) is treated as the file's own terminator, not an
+    /// extra blank line.
     /// </summary>
     public static void AppendTemplate(
         StringBuilder builder, string relativePath, string? fragment = null,
@@ -77,7 +78,7 @@ public static class PromptTemplates
         int count = lines.Length > 0 && lines[^1].Length == 0 ? lines.Length - 1 : lines.Length;
         for (int index = 0; index < count; index++)
         {
-            builder.AppendLine(lines[index]);
+            builder.Append(lines[index]).Append('\n');
         }
     }
 

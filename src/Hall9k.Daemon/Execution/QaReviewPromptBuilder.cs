@@ -76,7 +76,7 @@ public static class QaReviewPromptBuilder
 
         AppendRules(prompt, request.CommandTimeout);
         AppendClosing(prompt, drive);
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     private static void AppendOpening(StringBuilder prompt, string baseBranch)

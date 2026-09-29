@@ -96,7 +96,7 @@ public static class DesignReviewPromptBuilder
 
         prompt.AppendLine();
         PromptTemplates.AppendTemplate(prompt, file, "closing");
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>

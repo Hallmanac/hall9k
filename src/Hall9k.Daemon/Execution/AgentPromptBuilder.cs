@@ -234,7 +234,7 @@ public static class AgentPromptBuilder
             + "and your reason for it — met or not-met — but it is not the recorded answer: a separate "
             + "review session judges the real verdict independently against this same document and your "
             + "branch, so write your honest assessment rather than the answer you think is wanted.");
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>The heading <see cref="BuildSpike"/>'s own findings-document instructions live under, so its own result-capture step (SpikeEngine) can find the same text a human reading the prompt would.</summary>
@@ -330,7 +330,7 @@ public static class AgentPromptBuilder
             $"End your final message with exactly two lines: `{SpikeVerdictMarker} met` or "
             + $"`{SpikeVerdictMarker} not-met`, then `{SpikeReasonMarker} <one sentence>` stating why, "
             + "specifically against the exit criterion above.");
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -379,7 +379,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("## What was run");
         prompt.AppendLine("## What was observed");
         prompt.AppendLine("## Verdict");
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -528,7 +528,7 @@ public static class AgentPromptBuilder
         AppendHandoffRules(prompt);
 
         AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -631,7 +631,7 @@ public static class AgentPromptBuilder
         AppendHandoffRules(prompt);
 
         AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -955,7 +955,7 @@ public static class AgentPromptBuilder
         AppendHandoffRules(prompt);
 
         AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -1141,7 +1141,7 @@ public static class AgentPromptBuilder
         AppendHandoffRules(prompt);
 
         AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -1399,7 +1399,7 @@ public static class AgentPromptBuilder
         AppendExternalInteractionLoggingRule(prompt, taskId);
         AppendFragment(prompt, file, "closing");
 
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -1480,7 +1480,7 @@ public static class AgentPromptBuilder
             prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout, sessionRunsGates: false);
         AppendFragment(prompt, file, "closing");
 
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -1706,7 +1706,7 @@ public static class AgentPromptBuilder
         AppendHandoffRules(prompt);
 
         AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -1828,7 +1828,7 @@ public static class AgentPromptBuilder
         AppendHandoffRules(prompt);
 
         AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     private static string ShortCommit(string commit) => commit.Length > 10 ? commit[..10] : commit;
@@ -1989,7 +1989,7 @@ public static class AgentPromptBuilder
         WorkPromptBuilder.AppendHandoffRules(prompt);
 
         AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -2402,17 +2402,18 @@ public static class AgentPromptBuilder
         StringBuilder guidance = new();
         AppendOperatorGuidanceSection(guidance, task, localFleet);
 
-        return BuildReview(
-            task, project, branch, cycle: 1, lens, priorRulings: null,
-            mechanicsOverride: new ReviewMechanicsOverride(
-                baseBranch,
-                CheckoutDescription: PromptTemplates.Load(file, "checkout-description"),
-                GatesObserved: false,
-                DiffIsForeignPullRequest: true),
-            commandTimeout: commandTimeout)
+        return PromptLineEndings.Normalize(
+            BuildReview(
+                task, project, branch, cycle: 1, lens, priorRulings: null,
+                mechanicsOverride: new ReviewMechanicsOverride(
+                    baseBranch,
+                    CheckoutDescription: PromptTemplates.Load(file, "checkout-description"),
+                    GatesObserved: false,
+                    DiffIsForeignPullRequest: true),
+                commandTimeout: commandTimeout)
             + "\n\n" + PromptTemplates.Load(file, "foreign-pr-notice")
             + (lens == ReviewLens.Conformance ? PromptTemplates.Load(file, "conformance-basis-addendum") : string.Empty)
-            + (guidance.Length > 0 ? "\n\n" + guidance : string.Empty);
+            + (guidance.Length > 0 ? "\n\n" + guidance : string.Empty));
     }
 
     /// <summary>
@@ -2657,7 +2658,7 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "verdict-outcome-tail");
 
         AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -2858,7 +2859,7 @@ public static class AgentPromptBuilder
         }
 
         AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -2956,7 +2957,7 @@ public static class AgentPromptBuilder
         }
 
         AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>How many prior rulings ride into a review prompt — the newest, since they are the ones most likely still relevant.</summary>
@@ -3806,7 +3807,7 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "closing", ("Cycle", cycle.ToString(CultureInfo.InvariantCulture)));
 
         AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -3841,7 +3842,7 @@ public static class AgentPromptBuilder
         WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule(
             prompt, sessionRunsGates: task.Type != TaskType.PrReview);
 
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -3870,7 +3871,7 @@ public static class AgentPromptBuilder
         WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule(
             prompt, sessionRunsGates: task.Type != TaskType.PrReview);
 
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -3933,7 +3934,7 @@ public static class AgentPromptBuilder
             prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout, sessionRunsGates: false);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
 
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -4053,7 +4054,7 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "resolution-disputed-condition");
 
         AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -4312,7 +4313,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         AppendFragment(prompt, file, "output-body", ("BlockerContextHeading", BlockerContextDocument.Heading));
 
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
     /// <summary>
@@ -4482,7 +4483,7 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "closing-summary");
 
         AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
-        return prompt.ToString();
+        return PromptLineEndings.Finish(prompt);
     }
 
 }
