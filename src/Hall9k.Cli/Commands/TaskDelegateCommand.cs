@@ -466,7 +466,8 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         // collision-free suffix without needing to count this run's prior delegations.
         string sessionFileKey = $"{sessionName}-{DomainId.Short(claudeSessionId)}";
 
-        string? blockerContext = await TaskWorkCommand.LoadBlockerContextAsync(session, taskDetails, cancellationToken);
+        LocalFleetSource fleet = new(session, project, context.OwnerId);
+        string? blockerContext = await TaskWorkCommand.LoadBlockerContextAsync(session, taskDetails, fleet, cancellationToken);
         // This run's own recorded base, not the project's — the same reason the commit count above
         // reads it (independent pre-PR review, cycle 1, conformance lens): the contractor's
         // self-review hunt draws its ownership line from this branch's base, and drawing it from
@@ -488,7 +489,8 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
             // And the same lesson section (idea d805fd8b, piece 5): a delegated contractor is a
             // build session on this project's own branch, so what this project's runs have learned
             // applies to it exactly as it does to a dispatched one.
-            lessons: await LessonPromptFeed.LoadAsync(session, project.Id, cancellationToken));
+            lessons: await LessonPromptFeed.LoadAsync(session, project.Id, fleet.LessonReader, cancellationToken),
+            localFleet: await fleet.GetIfCarriedByAsync(taskDetails, cancellationToken));
 
         return new DelegationPlan(
             runId, run.WorktreePath, run.Branch, run.RunDirectory, resumesPreviousWork, model, effort, prompt,

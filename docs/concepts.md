@@ -112,7 +112,11 @@ prose.
   follow-up, review, and fix prompt carries a bounded section of this project's active lessons,
   newest first, and the section announces what it held back rather than truncating silently. A
   lesson an agent recorded on somebody else's node stays out of the prompt until the security review
-  in idea 7e403b80 rules on it. The two caps (`h9k config set --lesson-prompt-max-lessons` and
+  in idea 7e403b80 rules on it, and the test is who sent it to this node rather than what the lesson
+  says about itself: a lesson replicated here by a node outside your own fleet is held whether or not
+  it names a run, while one from another of your own nodes reaches the prompt. `lessons.md` is
+  unchanged, since it must read the same on every node holding the same records, so the prompt tells
+  a session to lean only on the lessons its own section names by id. The two caps (`h9k config set --lesson-prompt-max-lessons` and
   `--lesson-prompt-max-characters`) bound what a prompt pays for; retiring a lesson or running
   `h9k learn distill` is what shrinks the inventory itself.
 - **The run skill** is the project's own answer to "how do I stand this up locally", written down
@@ -1673,6 +1677,34 @@ with their own root.
 Depth: `h9k decide list` carries the decisions behind idea 202383dc, the distributed-team chain, and
 [The distributed team](cli.md#the-distributed-team-identity-fleet-and-holding) in cli.md is the
 command reference.
+
+### Text a teammate's node sent you
+
+Some free text rides along with a replicated event straight into a prompt: a retry reason
+(`h9k task retry --reason`), a handback reason, a review park resolution (`h9k review resolve`), a
+handoff note, and a blocker's closeout summary. On your own node that text is you, so it keeps its
+heading ("Operator guidance", "Why they handed it back"). When your node received it from another
+owner's node it is neither guidance nor a verdict, and the prompt says so: it appears under its own
+heading as "a note from" the sender's owner (the GitHub account their fleet declared, else a short
+root fingerprint, plus the node's short id, or "an owner not verified" when the chain cannot place
+the node), inside a code fence a backtick run in the text cannot close, and cut to 500 characters
+when it is a reason or a verdict. A handoff note and a blocker's summary are fenced but never cut,
+because their value is their length. A review park resolution is judged everywhere it reaches a
+prompt: the findings a fix session is handed, the guidance a rebase-recovery or settling-gate repair
+session is handed (each under a heading that says the note is not your decision), and the settled
+rulings a review pass is shown, where a teammate's resolution is listed apart as a note and never
+counts as a ruling of yours.
+
+The test is the **verified sender**, the node that delivered the event to this one and that this
+node's own inbox recorded, checked against your owner's fleet on the project's ledger chain. It is
+never a field the author wrote into the event (`RetriedByOwnerId`, `HandedBackByOwnerId`, the
+handoff's author node), which the sender chose. Native text and text from another of your own nodes
+stays unfenced. When the fleet cannot be read, replicated text is fenced (fail closed), and so is a
+record a teammate forwarded in a catch-up answer even if it began on one of your own nodes, since
+the teammate is what delivered it. The reverse holds too: a catch-up answer serves what a node has
+applied as well as what it wrote, so a teammate's note that one of your nodes relays to another
+still reads as the teammate's, because the node it says it began on has to be in your fleet as well. A task's own objective, criteria, and context from a teammate
+are the instruction and are not fenced; who may create or revise them is a separate question.
 
 ## Replication scopes
 

@@ -7,6 +7,14 @@ using Marten.Linq.MatchesSql;
 namespace Hall9k.Domain.Features.Learning.Queries;
 
 /// <summary>
+/// Reads the asking owner's fleet, the node ids the ledger chain vouches for, or null when it cannot
+/// be read. Handed to <see cref="LessonPromptFeed"/> as a function rather than a value because the
+/// read is a git ledger walk that a project with no replicated lesson never needs: the feed calls
+/// it only when at least one lesson it loaded was replicated here.
+/// </summary>
+public delegate Task<IReadOnlySet<Guid>?> LocalFleetReader(CancellationToken cancellationToken);
+
+/// <summary>
 /// The one read every prompt-composing caller makes to get its lesson section (idea d805fd8b,
 /// piece 5; backlog 55): a project's active lessons plus this owner's, marked against this node's
 /// own identity, bounded by this node's configured caps.
@@ -43,7 +51,7 @@ public static class LessonPromptFeed
     /// </para>
     /// </summary>
     public static async Task<InjectedLessons> LoadAsync(
-        IQuerySession query, Guid projectId, CancellationToken cancellationToken)
+        IQuerySession query, Guid projectId, LocalFleetReader? localFleet, CancellationToken cancellationToken)
     {
         string machineName = Environment.MachineName;
         NodeDetails? node = (await query.Query<NodeDetails>()
@@ -56,7 +64,7 @@ public static class LessonPromptFeed
             configured.LessonPromptMaxLessons, configured.LessonPromptMaxCharacters);
 
         return await ComposeAsync(
-            query, projectId, node?.OwnerId ?? Guid.Empty, node?.Id ?? Guid.Empty, caps, cancellationToken);
+            query, projectId, node?.OwnerId ?? Guid.Empty, node?.Id ?? Guid.Empty, caps, localFleet, cancellationToken);
     }
 
     /// <summary>
@@ -71,12 +79,29 @@ public static class LessonPromptFeed
     /// assembling the instructions rather than about whose run the branch started as.
     /// </para>
     /// </summary>
+    public static Task<InjectedLessons> ComposeAsync(
+        IQuerySession query,
+        Guid projectId,
+        Guid ownerId,
+        Guid thisNodeId,
+        LessonInjectionCaps caps,
+        CancellationToken cancellationToken) =>
+        ComposeAsync(query, projectId, ownerId, thisNodeId, caps, localFleet: null, cancellationToken);
+
+    /// <summary>
+    /// <see cref="ComposeAsync(IQuerySession, Guid, Guid, Guid, LessonInjectionCaps, CancellationToken)"/>
+    /// with the owner's fleet. <paramref name="localFleet"/> is read at most once, and only when a
+    /// lesson that would otherwise be considered was replicated here
+    /// (<see cref="LearningDetails.ReceivedFromNodeId"/> non-null), so a solo project pays nothing;
+    /// null, or a reader that returns null, holds every replicated lesson (fail closed).
+    /// </summary>
     public static async Task<InjectedLessons> ComposeAsync(
         IQuerySession query,
         Guid projectId,
         Guid ownerId,
         Guid thisNodeId,
         LessonInjectionCaps caps,
+        LocalFleetReader? localFleet,
         CancellationToken cancellationToken)
     {
         string projectScope = KnowledgeScope.Project;
@@ -98,7 +123,12 @@ public static class LessonPromptFeed
                 .Where(lesson => lesson.MatchesSql("d.data ->> 'status' = ?", active))
                 .ToListAsync(cancellationToken);
 
-        return LessonInjection.Compose(projectLessons, ownerLessons, thisNodeId, caps);
+        bool anyReplicated = projectLessons.Concat(ownerLessons).Any(lesson => lesson.ReceivedFromNodeId is not null);
+        IReadOnlySet<Guid>? fleet = anyReplicated && localFleet is not null
+            ? await localFleet(cancellationToken)
+            : null;
+
+        return LessonInjection.Compose(projectLessons, ownerLessons, thisNodeId, caps, fleet);
     }
 
     /// <summary>

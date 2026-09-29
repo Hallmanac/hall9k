@@ -146,7 +146,8 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(taskDetails.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {taskId}'s project no longer exists.");
 
-        string? blockerContext = await TaskWorkCommand.LoadBlockerContextAsync(session, taskDetails, cancellationToken);
+        LocalFleetSource fleet = new(session, project, context.OwnerId);
+        string? blockerContext = await TaskWorkCommand.LoadBlockerContextAsync(session, taskDetails, fleet, cancellationToken);
         // isInteractive: false — the ordinary headless build prompt (checkpoint commits, the
         // self-review phase, the end-of-session recompose, the handoff rules): this session is
         // unattended exactly like a dispatcher-launched build, not an operator's own attended one.
@@ -179,7 +180,8 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             baseBranch: baseBranch, baseCommit: baseCommit,
             voiceSkill: (await session.LoadAsync<OwnerDetails>(context.OwnerId, cancellationToken))?.VoiceSkill,
             // The same lesson section a dispatcher-launched build gets (idea d805fd8b, piece 5).
-            lessons: await LessonPromptFeed.LoadAsync(session, project.Id, cancellationToken));
+            lessons: await LessonPromptFeed.LoadAsync(session, project.Id, fleet.LessonReader, cancellationToken),
+            localFleet: await fleet.GetIfCarriedByAsync(taskDetails, cancellationToken));
 
         string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);
         Directory.CreateDirectory(resolvedRunDirectory);

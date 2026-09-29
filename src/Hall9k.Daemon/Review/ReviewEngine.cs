@@ -4,8 +4,10 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
@@ -15,6 +17,7 @@ using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Documents;
 using Hall9k.Domain.Features.Run.Events;
@@ -107,7 +110,8 @@ public sealed class ReviewEngine(
     StackedParentWatch stackedParents,
     LaunchHoldEngine launchHold,
     IPullRequestInspector inspector,
-    CloseoutEngine closeout)
+    CloseoutEngine closeout,
+    LocalFleetProvider? fleets = null)
 {
     /// <summary>
     /// How long a single git call in the pre-final-pass rebase check gets (task: a run rebases
@@ -2453,8 +2457,32 @@ public sealed class ReviewEngine(
         // is recorded pending only on a cycle where nothing anywhere is being fixed, which is
         // exactly the cycle every active track concludes on (RecordReviewPassAsync), so the review
         // is already over before a later fix session could ever exist to claim it.
+        // The resolution's verified sender, read off the run stream's newest ReviewParkResolved
+        // (RunAggregate is live-aggregated, so its Apply never sees the header). A resolution
+        // another owner's node replicated here is a note from them, not this owner's verdict.
+        ReplicatedFrom findingsFrom = default;
+        if (humanFindings.IsNotBlank())
+        {
+            await using IQuerySession senderQuery = store.QuerySession();
+            findingsFrom = await ReplicatedSender.OfLatestAsync<ReviewParkResolved>(
+                senderQuery, context.RunId, cancellationToken);
+        }
+
+        // Read once, and only when the findings text or the task's own retry reason has a
+        // replicated sender to judge (a solo project never pays for the ledger walk). Null when it
+        // cannot be read, which fences.
+        LocalFleet? localFleet = (findingsFrom.SenderNodeId is not null || ReplicatedNote.CarriesSender(context.Task)) && fleets is not null
+            ? await fleets.GetAsync(context.Project.Id, cancellationToken)
+            : null;
+        Guid? foreignResolver = humanFindings.IsNotBlank()
+            && findingsFrom.SenderNodeId is { } sender
+            && ReplicatedNote.IsForeign(sender, findingsFrom.OriginNodeId, localFleet)
+                ? sender
+                : null;
         string findings = humanFindings.IsNotBlank()
-            ? $"Human review verdict (h9k review resolve): needs fixes.\n\n{humanFindings}"
+            ? foreignResolver is { } foreign
+                ? ReplicatedNote.ForeignReviewResolution(humanFindings, foreign, localFleet)
+                : $"Human review verdict (h9k review resolve): needs fixes.\n\n{humanFindings}"
             : await File.ReadAllTextAsync(RunPaths.ReviewFindingsFile(runDirectory, cycle), cancellationToken);
 
         if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
@@ -2502,7 +2530,8 @@ public sealed class ReviewEngine(
                 context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled,
                 baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit,
                 commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill,
-                lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken))
+                lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken),
+                localFleet: localFleet, humanResolutionIsForeign: foreignResolver is not null)
             : AgentPromptBuilder.BuildReviewFix(
                 context.Task, context.Project, context.Run.Branch, findings, cycle,
                 context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled,
@@ -4933,6 +4962,8 @@ public sealed class ReviewEngine(
         // `REBASE_HEAD` exists only while a rebase is actually in progress, so this observes the
         // worktree's real state rather than trusting either caller's own attempt at recovering it.
         bool rebaseStillInProgress = await IsRebaseInProgressAsync(git, worktreePath, cancellationToken);
+        (string? resolutionText, bool resolutionIsForeign) =
+            await FenceParkGuidanceAsync(context, humanGuidance, cancellationToken);
 
         Guid sessionId = DomainId.New();
         CommitStyle commitStyle = CommitStyle.Resolve(context.Project.CommitStyle, _options.DefaultCommitStyle);
@@ -4941,12 +4972,13 @@ public sealed class ReviewEngine(
         // project to land the gate fix as its own commit, with a message a human reads.
         string prompt = AgentPromptBuilder.BuildPreFinalPassRebase(
             context.Task, context.Project, context.Run.Branch, commitStyle, context.Task.PullRequestUrl,
-            humanGuidance, rebaseStillInProgress, baseBranch: baseBranch,
+            resolutionText, rebaseStillInProgress, baseBranch: baseBranch,
             commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill,
             assessmentGuidance: assessmentGuidance, baseCommit: baseCommit,
             precedesFirstReviewCycle: precedesFirstReviewCycle,
             mechanicalRetryAttempted: mechanicalRetryAttempted,
-            lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken));
+            lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken),
+            humanResolutionIsForeign: resolutionIsForeign);
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
         AgentEffort effort = _options.ResolveEffort(AgentRole.Fix, context.Task.Effort, context.Project.Effort);
@@ -5494,6 +5526,8 @@ public sealed class ReviewEngine(
             return false;
         }
 
+        (string? guidanceText, bool guidanceIsForeign) =
+            await FenceParkGuidanceAsync(context, humanGuidance, cancellationToken);
         Guid sessionId = DomainId.New();
         CommitStyle commitStyle = CommitStyle.Resolve(context.Project.CommitStyle, _options.DefaultCommitStyle);
         string prompt = AgentPromptBuilder.BuildSettlingGateRepair(
@@ -5501,9 +5535,10 @@ public sealed class ReviewEngine(
             context.BaseBranch,
             run.LastPreFinalPassRebaseFromCommit ?? RunRebasedOntoBase.UnreadableCommit,
             run.LastPreFinalPassRebaseOntoCommit ?? RunRebasedOntoBase.UnreadableCommit,
-            run.LastPreFinalPassRebaseRecovered, gateOutput, humanGuidance,
+            run.LastPreFinalPassRebaseRecovered, gateOutput, guidanceText,
             commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill,
-            lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken));
+            lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken),
+            humanGuidanceIsForeign: guidanceIsForeign);
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
         AgentEffort effort = _options.ResolveEffort(AgentRole.Fix, context.Task.Effort, context.Project.Effort);
@@ -7615,6 +7650,8 @@ public sealed class ReviewEngine(
                 IReadOnlyList<BoundaryApprovalRecord> priorBoundaryApprovals,
                 IReadOnlyList<HumanFixRecord> priorHumanFixes) =
             await LoadPriorRulingsAndInteractionsAsync(query, taskId, cancellationToken);
+        priorRulings = await ReplicatedResolutionFencing.FenceRulingsAsync(
+            query, fleets, project.Id, taskId, priorRulings, cancellationToken);
         // The owner's standing voice preference (#193), read here so a prompt this
         // engine dispatches which asks a session to write text under the owner's login names the
         // same skill the dispatching launcher would have. Null when the record is missing, which
@@ -7725,6 +7762,14 @@ public sealed class ReviewEngine(
             .OrderBy(fix => fix.AppliedAt)];
 
         return (priorRulings, priorHumanDirectedInteractions, priorBoundaryApprovals, priorHumanFixes);
+    }
+
+    private async Task<(string? Text, bool IsForeign)> FenceParkGuidanceAsync(
+        ReviewContext context, string? guidance, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        return await ReplicatedResolutionFencing.FenceGuidanceAsync(
+            query, fleets, context.Project.Id, context.RunId, guidance, cancellationToken);
     }
 
     private async Task<RunAggregate> LoadRunAsync(Guid runId, CancellationToken cancellationToken)
@@ -8415,7 +8460,12 @@ public sealed class ReviewEngine(
         try
         {
             await using IQuerySession query = store.QuerySession();
-            return await LessonPromptFeed.LoadAsync(query, projectId, cancellationToken);
+            return await LessonPromptFeed.LoadAsync(
+                query, projectId,
+                fleets is null
+                    ? null
+                    : async token => (await fleets.GetAsync(projectId, token))?.NodeIds,
+                cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

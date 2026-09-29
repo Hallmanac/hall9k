@@ -115,7 +115,11 @@ so a dispatched session's lesson carries its run rather than landing marked as h
 What is injected is decided by provenance, not only displayed: a lesson an agent
 run on ANOTHER node recorded stays in `lessons.md` and out of every prompt until the security
 review in idea 7e403b80 rules otherwise, and `h9k learn show <id>` says which side of that line a
-lesson falls on, and whether it is still active enough to reach one at all.
+lesson falls on, and whether it is still active enough to reach one at all. "Another node" means
+the node that delivered the lesson to this one, checked against your own fleet on the project's
+ledger chain: a lesson a teammate's node replicated here is held even when it names no run, and one
+from a second machine of your own reaches the prompt, but a teammate's lesson that one of your own
+machines relayed does not. When the fleet cannot be read the replicated lesson is held.
 
 `h9k learn distill [--project <name>|--owner]` authors the task that merges a scope's lessons into
 fewer, better ones. It creates an ordinary Research task **draft** and stops there: the daemon

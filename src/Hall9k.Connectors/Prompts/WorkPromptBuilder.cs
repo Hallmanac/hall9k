@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Linq;
 using System.Text;
+using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Project;
@@ -89,7 +90,8 @@ public static class WorkPromptBuilder
         string? baseCommit = null,
         TimeSpan? commandTimeout = null,
         VoiceSkillName? voiceSkill = null,
-        InjectedLessons? lessons = null)
+        InjectedLessons? lessons = null,
+        LocalFleet? localFleet = null)
     {
         // The branch this session's work sits on top of, resolved by the caller at dispatch
         // (RunDispatched.BaseBranch): the project's own for every ordinary run, a stacked child's
@@ -130,7 +132,19 @@ public static class WorkPromptBuilder
             if (resumeReason.IsNotBlank())
             {
                 prompt.AppendLine();
-                AppendFragment(prompt, file, "handback-reason", ("ResumeReason", resumeReason));
+                // A handback replicated from a node outside the local fleet is a note, not the
+                // requester's own words: fenced, capped, and labelled with where it came from.
+                if (task.RetryReceivedFromNodeId is { } handbackSender
+                    && ReplicatedNote.IsForeign(handbackSender, task.RetryOriginNodeId, localFleet))
+                {
+                    AppendFragment(prompt, file, "handback-reason-foreign",
+                        ("Origin", ReplicatedNote.Origin(handbackSender, localFleet)),
+                        ("ResumeReason", ReplicatedNote.Block(resumeReason, ReplicatedNote.MaxReasonLength)));
+                }
+                else
+                {
+                    AppendFragment(prompt, file, "handback-reason", ("ResumeReason", resumeReason));
+                }
             }
 
             prompt.AppendLine();
@@ -178,12 +192,23 @@ public static class WorkPromptBuilder
                 // words, not a retry instruction, so it keeps the same causeless wording that
                 // branch would have used rather than being mislabeled as operator guidance
                 // (independent pre-PR review, cycle 1, both lenses).
-                AppendFragment(prompt, file, "retry-reason-is-handback-causeless", ("RetryReason", task.RetryReason));
+                if (task.RetryReceivedFromNodeId is { } causelessSender
+                    && ReplicatedNote.IsForeign(causelessSender, task.RetryOriginNodeId, localFleet))
+                {
+                    AppendFragment(prompt, file, "retry-reason-is-handback-causeless-foreign",
+                        ("Origin", ReplicatedNote.Origin(causelessSender, localFleet)),
+                        ("RetryReason", ReplicatedNote.Block(task.RetryReason, ReplicatedNote.MaxReasonLength)));
+                }
+                else
+                {
+                    AppendFragment(prompt, file, "retry-reason-is-handback-causeless", ("RetryReason", task.RetryReason));
+                }
+
                 prompt.AppendLine();
             }
             else
             {
-                AppendOperatorGuidanceSection(prompt, task);
+                AppendOperatorGuidanceSection(prompt, task, localFleet);
             }
         }
 
@@ -210,8 +235,23 @@ public static class WorkPromptBuilder
                 ? $"node {DomainId.Short(authorNodeId)}"
                 : "an unrecorded node";
             string when = task.HandoffNoteAt is { } notedAt ? notedAt.ToLocalTime().ToString("g") : "an unrecorded time";
-            AppendFragment(
-                prompt, file, "handoff-note-body", ("Note", task.HandoffNote), ("Author", author), ("When", when));
+            // The author above is a value the note's own writer put in the event; the sender is the
+            // node this node's inbox verified. A note from outside the local fleet is quoted as data
+            // under the sender's label, with no cap: a handoff is useful for its length.
+            if (task.HandoffNoteReceivedFromNodeId is { } noteSender
+                && ReplicatedNote.IsForeign(noteSender, task.HandoffNoteOriginNodeId, localFleet))
+            {
+                AppendFragment(
+                    prompt, file, "handoff-note-body-foreign",
+                    ("Note", ReplicatedNote.Block(task.HandoffNote)),
+                    ("Origin", ReplicatedNote.Origin(noteSender, localFleet)), ("When", when));
+            }
+            else
+            {
+                AppendFragment(
+                    prompt, file, "handoff-note-body", ("Note", task.HandoffNote), ("Author", author), ("When", when));
+            }
+
             prompt.AppendLine();
         }
 
@@ -441,7 +481,8 @@ public static class WorkPromptBuilder
     /// human gave this instruction" would be exactly the unobserved-fact guess AGENTS.md forbids
     /// (independent pre-PR review, cycle 1, conformance lens).
     /// </remarks>
-    public static void AppendOperatorGuidanceSection(StringBuilder prompt, TaskDetails task)
+    public static void AppendOperatorGuidanceSection(
+        StringBuilder prompt, TaskDetails task, LocalFleet? localFleet = null)
     {
         if (task.RetryReason.IsBlank()
             || task.RetryReasonIsHandback
@@ -452,6 +493,21 @@ public static class WorkPromptBuilder
         }
 
         const string file = $"{TemplateDirectory}/operator-guidance.md";
+        if (task.RetryReceivedFromNodeId is { } sender
+            && ReplicatedNote.IsForeign(sender, task.RetryOriginNodeId, localFleet))
+        {
+            // Not the local operator's instruction: a retry another owner's node replicated here.
+            // It keeps neither the "operator guidance" heading nor the claim that a human gave it
+            // as this run's priority.
+            AppendFragment(prompt, file, "foreign-heading");
+            prompt.AppendLine();
+            AppendFragment(prompt, file, "foreign-lead", ("Origin", ReplicatedNote.Origin(sender, localFleet)));
+            prompt.AppendLine();
+            prompt.AppendLine(ReplicatedNote.Block(task.RetryReason, ReplicatedNote.MaxReasonLength));
+            prompt.AppendLine();
+            return;
+        }
+
         AppendFragment(prompt, file, "heading");
         prompt.AppendLine();
         AppendFragment(prompt, file, "lead");
@@ -1823,7 +1879,10 @@ public static class WorkPromptBuilder
             prompt.AppendLine();
             foreach (InjectedLesson lesson in lessons.Lessons)
             {
-                prompt.AppendLine(lesson.Line);
+                // Printable on top of the one-lining the Domain already did: a lesson's statement
+                // is text any node that was once trusted could have written, and a control or
+                // layout-override character in it acts on a terminal rather than reading as prose.
+                prompt.AppendLine(RelayedText.Printable(lesson.Line));
             }
         }
         else
@@ -1881,10 +1940,10 @@ public static class WorkPromptBuilder
 
     /// <summary>
     /// What the section says it held back on provenance, counted under each mark that actually
-    /// held something rather than under one mark standing in for all three. Three different
-    /// claims share that hold — an agent on a machine this node does not control, a recording node
-    /// nobody observed, and a lesson with no provenance at all — and naming the first for all of
-    /// them tells a session something nobody saw, which is the guess AGENTS.md forbids outright
+    /// held something rather than under one mark standing in for all of them. Four different
+    /// claims share that hold: an agent on a machine this node does not control, a lesson replicated
+    /// from outside this owner's fleet, a recording node nobody observed, and a lesson with no
+    /// provenance at all. Naming the first for all of them tells a session something nobody saw, which is the guess AGENTS.md forbids outright
     /// (cycle-1 pre-PR review, both lenses).
     /// <para>
     /// One mark reads as the plain phrase, because the total and the breakdown are then the same

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.AutoPrReview;
@@ -2401,6 +2402,25 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     }
 
     /// <summary>
+    /// The local owner's fleet, for fencing a replicated note on this screen the way the daemon's
+    /// prompt does: null when this machine has no node, owner or repository to read one from, which
+    /// fences.
+    /// </summary>
+    private static async Task<LocalFleet?> ReadLocalFleetAsync(
+        IQuerySession session, TaskDetails details, CancellationToken cancellationToken)
+    {
+        string machineName = Environment.MachineName;
+        NodeDetails? node = (await session.Query<NodeDetails>()
+            .Where(candidate => candidate.MachineName == machineName)
+            .Take(1)
+            .ToListAsync(cancellationToken)).FirstOrDefault();
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(details.ProjectId, cancellationToken);
+        return node is null || project is null
+            ? null
+            : await new LocalFleetSource(session, project, node.OwnerId).GetAsync(cancellationToken);
+    }
+
+    /// <summary>
     /// The context this task would receive if a node claimed it right now (Decisions Log #36):
     /// its immediate blockers' handoffs, rendered by the same
     /// <see cref="BlockerContextDocument"/> the daemon pastes into the agent's prompt. Sharing
@@ -2420,8 +2440,12 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             return;
         }
 
-        IReadOnlyList<BlockerHandoff> handoffs = await BlockerHandoffQuery.LoadAsync(
-            session, details.BlockedBy, cancellationToken);
+        // Fenced by the same pass the daemon's prompt runs, so this screen shows the document a claim
+        // would be handed. The fleet is only read if a blocker's summary has a replicated sender, and
+        // an install with no owner or repository resolves none, which fences (fail closed).
+        IReadOnlyList<BlockerHandoff> handoffs = await BlockerHandoffFencing.ApplyAsync(
+            await BlockerHandoffQuery.LoadAsync(session, details.BlockedBy, cancellationToken),
+            async token => await ReadLocalFleetAsync(session, details, token), cancellationToken);
         if (BlockerContextDocument.Render(handoffs) is not { } context)
         {
             return;

@@ -1,3 +1,5 @@
+using Hall9k.Connectors.Prompts;
+using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Project.Projections;
@@ -30,7 +32,8 @@ public sealed class BlockerContextAssembler(
     IExecutor executor,
     IProcessManager processManager,
     IOptions<DaemonOptions> options,
-    ILogger<BlockerContextAssembler> logger)
+    ILogger<BlockerContextAssembler> logger,
+    LocalFleetProvider? fleets = null)
 {
     private readonly DaemonOptions _options = options.Value;
 
@@ -55,6 +58,12 @@ public sealed class BlockerContextAssembler(
             blockers = await BlockerHandoffQuery.LoadAsync(query, task.BlockedBy, cancellationToken);
         }
 
+        // Fenced here, before both the synthesis pass and the raw document read it, so a summary
+        // another owner's node replicated reaches neither as an instruction.
+        blockers = await BlockerHandoffFencing.ApplyAsync(
+            blockers,
+            async token => fleets is null ? null : await fleets.GetAsync(project.Id, token),
+            cancellationToken);
         if (BlockerContextDocument.Render(blockers) is not { } raw)
         {
             return null;

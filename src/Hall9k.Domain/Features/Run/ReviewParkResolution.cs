@@ -16,8 +16,15 @@ namespace Hall9k.Domain.Features.Run;
 /// Null means none was recorded, not that nothing was decided.
 /// </param>
 /// <param name="ResolvedAt">When the human recorded it.</param>
+/// <param name="ForeignNote">
+/// Never set by the projection. The daemon sets it, before a prompt is built, on a resolution
+/// another owner's node replicated here: the labelled, fenced text a prompt shows in place of
+/// <paramref name="Reason"/>, which is then not this owner's ruling and is never read as one. Null
+/// for every resolution that began on this owner's own nodes.
+/// </param>
 public sealed record ReviewParkResolution(
     int Cycle,
     ReviewVerdict Verdict,
     string? Reason,
-    DateTimeOffset ResolvedAt);
+    DateTimeOffset ResolvedAt,
+    string? ForeignNote = null);

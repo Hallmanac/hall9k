@@ -1,6 +1,7 @@
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.ProjectHomes;
@@ -53,7 +54,8 @@ public sealed class RunLauncher(
     PullRequestOpener pullRequests,
     ProcessRunner processRunner,
     IOptions<DaemonOptions> options,
-    ILogger<RunLauncher> logger)
+    ILogger<RunLauncher> logger,
+    LocalFleetProvider? fleets = null)
 {
     /// <summary>
     /// Bounds the reread-and-redecide retry <see cref="EnsurePrReviewPreflightSafeAsync"/> takes
@@ -687,6 +689,12 @@ public sealed class RunLauncher(
             // renders for an owner who never named one.
             VoiceSkillName? voiceSkill =
                 (await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken))?.VoiceSkill;
+            // The local owner's fleet, read only when a field this dispatch's prompts quote carries a
+            // replicated sender: a solo project, and any task whose retry and handoff text this node
+            // wrote itself, never pays for the ledger walk. Null when unknown, which fences.
+            LocalFleet? localFleet = ReplicatedNote.CarriesSender(task) && fleets is not null
+                ? await fleets.GetAsync(project.Id, cancellationToken)
+                : null;
             string prompt;
             if (isPrReview)
             {
@@ -700,7 +708,7 @@ public sealed class RunLauncher(
                 ReviewDriveDecision primaryDrive = personaPlan.DriveFor(primarySession.Persona);
                 prompt = primarySession.BuildPrompt(new ReviewPersonaPromptRequest(
                     task, project, worktree.Branch, baseBranch, options.Value.VerifyGateTimeout, primaryDrive,
-                    primaryDrive.Drives ? ProjectRunSkillReader.Read(project) : null));
+                    primaryDrive.Drives ? ProjectRunSkillReader.Read(project) : null, localFleet));
 
                 // This mint itself came from a GitHub mention (idea 2f079bcd, decision 2 and 3):
                 // the primary session's own ordinary verdict is not enough here, so it is also
@@ -763,7 +771,7 @@ public sealed class RunLauncher(
                         task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                         interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
                         baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout,
-                        voiceSkill: voiceSkill, lessons: lessons)
+                        voiceSkill: voiceSkill, lessons: lessons, localFleet: localFleet)
                     : task.FollowUpKind == FollowUpKind.Rebase
                         // voiceSkill on both of these too: each ends in the rebase verification
                         // rule, whose gate-fix instruction asks an append-style project for an
@@ -772,7 +780,7 @@ public sealed class RunLauncher(
                             task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                             interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
                             baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout,
-                            voiceSkill: voiceSkill, lessons: lessons)
+                            voiceSkill: voiceSkill, lessons: lessons, localFleet: localFleet)
                         : isStackReplay
                             ? AgentPromptBuilder.BuildStackReplay(
                                 task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
@@ -793,12 +801,12 @@ public sealed class RunLauncher(
                                     task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                                     interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
                                     baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout,
-                                    voiceSkill: voiceSkill, lessons: lessons)
+                                    voiceSkill: voiceSkill, lessons: lessons, localFleet: localFleet)
                                 : AgentPromptBuilder.BuildFollowUp(
                                     task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                                     interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
                                     baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout,
-                                    voiceSkill: voiceSkill, lessons: lessons);
+                                    voiceSkill: voiceSkill, lessons: lessons, localFleet: localFleet);
             }
             else
             {
@@ -841,7 +849,7 @@ public sealed class RunLauncher(
                         task, project, worktree.Branch, worktree.Path, resumesPreviousWork, handoffs,
                         baseBranch: runBaseBranch, baseCommit: baseCommit,
                         commandTimeout: options.Value.VerifyGateTimeout, voiceSkill: voiceSkill,
-                        lessons: lessons);
+                        lessons: lessons, localFleet: localFleet);
             }
 
             // isPrReview and the followUp branches above both compose through AgentPromptBuilder's
@@ -1524,7 +1532,12 @@ public sealed class RunLauncher(
     {
         try
         {
-            return await LessonPromptFeed.LoadAsync(query, project.Id, cancellationToken);
+            return await LessonPromptFeed.LoadAsync(
+                query, project.Id,
+                fleets is null
+                    ? null
+                    : async token => (await fleets.GetAsync(project.Id, token))?.NodeIds,
+                cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
