@@ -153,6 +153,16 @@ public sealed class StackedBaseBranchGuardTests
                 continue;
             }
 
+            // The pull-request review pre-flight's own prompt (PrReviewPreflightPromptBuilder,
+            // idea 6be68ee2, finding 1, phase one) is the identical "PromptBuilder.Build(" name
+            // coincidence the courier's own exemption above states: it runs before any worktree
+            // or branch exists at all, and carries neither the checkpoint/recompose protocol nor
+            // the self-review phase. There is no base for it to be handed.
+            if (lines[i].Contains("PrReviewPreflightPromptBuilder.Build(", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             // Long argument lists here, so a wider window than the git-call scan's three lines —
             // baseBranch sits last by convention (CancellationToken aside, prompts take none).
             string window = string.Join(' ', lines.Skip(i).Take(10));

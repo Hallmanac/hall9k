@@ -697,7 +697,13 @@ public static class ReviewResultParser
             _ => ReviewFixOutcome.Unknown,
         };
 
-    private static string? LastMarkerValue(string? summary, string marker)
+    /// <summary>
+    /// Widened from <see langword="private"/> to <see langword="internal"/> for the pull-request
+    /// review pre-flight's own verdict parser (idea 6be68ee2, finding 1, phase one), which reuses
+    /// this same last-marker-wins tolerance for its own <c>PREFLIGHT:</c> line rather than
+    /// reimplementing it.
+    /// </summary>
+    internal static string? LastMarkerValue(string? summary, string marker)
     {
         if (summary.IsBlank())
         {
