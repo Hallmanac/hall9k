@@ -133,15 +133,18 @@ public sealed class RunSupervisor(
     }
 
     /// <summary>
-    /// Reserves this pre-flight's own <see cref="_monitors"/> slot the instant its
-    /// <see cref="PrReviewPreflightDispatched"/> commits — before <c>executor.SpawnAsync</c> even
-    /// starts, not after it returns. <see cref="ResumeStrandedPreflightsAsync"/> runs concurrently,
-    /// off the dispatch loop, and excludes anything already in <see cref="_monitors"/> from its own
-    /// "no process recorded, so this must be dead" read; without a reservation here, that sweep
-    /// landing inside the still-running spawn saw no <see cref="PrReviewPreflightDetails.ProcessId"/>
-    /// and no monitor either, and abandoned a row a session was actively being started for —
-    /// requeuing the task out from under the spawn in progress and letting the dispatch loop reclaim
-    /// it into a second, duplicate pre-flight (independent pre-PR review, cycle 3, both lenses).
+    /// Reserves this pre-flight's own <see cref="_monitors"/> slot BEFORE its own
+    /// <see cref="PrReviewPreflightDispatched"/> even commits, not after (independent pre-PR
+    /// review, cycle 1, adversarial lens): <see cref="ResumeStrandedPreflightsAsync"/> runs
+    /// concurrently, off the dispatch loop, and excludes anything already in
+    /// <see cref="_monitors"/> from its own "no process recorded, so this must be dead" read.
+    /// Reserving only after that commit returned left a window in which the row was already
+    /// visible to that sweep's own query but not yet excluded — landing in exactly that gap, the
+    /// sweep saw no <see cref="PrReviewPreflightDetails.ProcessId"/> and no monitor either, and
+    /// abandoned a row a session was actively being started for, requeuing the task out from under
+    /// the spawn in progress and letting the dispatch loop reclaim it into a second, duplicate
+    /// pre-flight (independent pre-PR review, cycle 3, both lenses). Reserving first, before the
+    /// row can ever become visible, closes that window outright rather than merely narrowing it.
     /// <see cref="StartPreflightMonitoring"/> (spawn succeeded) and <see cref="ReleasePreflightSpawnReservation"/>
     /// (spawn failed) both resolve this same reservation rather than adding a second one.
     /// </summary>

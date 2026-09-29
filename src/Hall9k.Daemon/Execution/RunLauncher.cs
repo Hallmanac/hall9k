@@ -2041,6 +2041,17 @@ public sealed class RunLauncher(
         AgentModel model = options.Value.ResolveSecurityPreflightModel(project.Model);
         AgentEffort effort = options.Value.ResolveEffort(AgentRole.SecurityPreflight, taskEffort: null, project.Effort);
 
+        // Reserved before the row below even commits, not after it returns (independent pre-PR
+        // review, cycle 1, adversarial lens): RunSupervisor.ResumeStrandedPreflightsAsync queries
+        // this row straight from the store and excludes anything already in its own _monitors set
+        // from its own "no process recorded, so this must be dead" read. Reserving only after the
+        // commit below left a window in which the row was already visible to that query but not
+        // yet excluded — a sweep landing in exactly that gap saw a row with no process and no
+        // monitor either, and abandoned a row a session was actively being started for. Reserving
+        // first closes the window outright: the row can never become visible before its own
+        // reservation exists.
+        supervisor.ReservePreflightSpawn(preflightRunId);
+
         await using (IDocumentSession dispatchSession = store.LightweightSession())
         {
             dispatchSession.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
@@ -2048,14 +2059,6 @@ public sealed class RunLauncher(
                 isMentionFollowUp));
             await dispatchSession.SaveChangesAsync(cancellationToken);
         }
-
-        // Reserved the instant the row above commits, before the spawn even starts — never after
-        // it returns: RunSupervisor.ResumeStrandedPreflightsAsync runs concurrently off the
-        // dispatch loop and treats anything already in its own _monitors set as not this sweep's
-        // to touch, so without this reservation a sweep landing inside the SpawnAsync await below
-        // saw no process recorded and no monitor either, and abandoned a row a session was
-        // actively being started for (independent pre-PR review, cycle 3, both lenses).
-        supervisor.ReservePreflightSpawn(preflightRunId);
 
         SpawnedAgent agent;
         try
