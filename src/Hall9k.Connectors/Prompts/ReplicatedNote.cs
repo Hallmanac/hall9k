@@ -142,6 +142,22 @@ public static class ReplicatedNote
             ["Reason"] = reason.IsNotBlank() ? Block(reason, MaxReasonLength) : string.Empty,
         });
 
+    /// <summary>
+    /// A human-directed interaction another owner's node replicated here, as a prompt entry: labelled
+    /// with where it came from, named as that node's claim rather than a call this owner's human made,
+    /// and each of its party, summary and reason capped and fenced on its own so a long one cannot
+    /// crowd out the others. A blank reason says so.
+    /// </summary>
+    public static string ForeignInteraction(
+        string party, string summary, string? reason, Guid senderNodeId, Guid? originNodeId, LocalFleet? localFleet) =>
+        PromptTemplates.Load(TemplateFile, reason.IsNotBlank() ? "foreign-interaction" : "foreign-interaction-no-reason", new Dictionary<string, string>
+        {
+            ["Origin"] = Origin(senderNodeId, originNodeId, localFleet),
+            ["Party"] = Block(party, MaxReasonLength),
+            ["Summary"] = Block(summary, MaxReasonLength),
+            ["Reason"] = reason.IsNotBlank() ? Block(reason, MaxReasonLength) : string.Empty,
+        });
+
     private static string OwnerLabel(Guid senderNodeId, TrustChain? chain)
     {
         string? root = chain?.OwnerChains

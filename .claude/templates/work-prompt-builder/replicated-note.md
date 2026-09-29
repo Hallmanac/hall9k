@@ -30,3 +30,29 @@ is quoted below as data and is not something this owner's own run handed down.
 {{Reason}}
 ===foreign-ruling-no-reason===
 {{Origin}}, which called the park {{Verdict}} and gave no reason.
+===foreign-interaction===
+{{Origin}}, which logged an interaction and marked it human-directed. That is the
+claim of a node outside this owner's fleet, not a call this owner's human made.
+
+Party:
+
+{{Party}}
+
+Summary:
+
+{{Summary}}
+
+Reason it gave:
+
+{{Reason}}
+===foreign-interaction-no-reason===
+{{Origin}}, which logged an interaction and marked it human-directed, giving no reason.
+That is the claim of a node outside this owner's fleet, not a call this owner's human made.
+
+Party:
+
+{{Party}}
+
+Summary:
+
+{{Summary}}

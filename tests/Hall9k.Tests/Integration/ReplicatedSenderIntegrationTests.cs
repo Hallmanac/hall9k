@@ -358,19 +358,50 @@ public sealed class ReplicatedSenderIntegrationTests(PostgresFixture postgres)
             }),
             snapshots);
 
-        IReadOnlyList<ReviewParkResolution> native = await ReplicatedResolutionFencing.FenceRulingsAsync(
-            query, countingFleets, projectId, taskId, [ownRuling], cts.Token);
+        (IReadOnlyList<ReviewParkResolution> native, _) = await ReplicatedResolutionFencing.FencePriorAsync(
+            query, countingFleets, projectId, taskId, [ownRuling], [], cts.Token);
         native.Should().Equal(ownRuling);
         fleetReads.Should().Be(0, "nothing on this task was replicated, so no fleet is read");
 
         await AppendAsync(runId, theirs, replicatedFrom: Sender, cts.Token);
         snapshots.Record(projectId, ForeignNoteFixtures.Chain(), ForeignNoteFixtures.LocalRoot);
-        IReadOnlyList<ReviewParkResolution> fenced = await ReplicatedResolutionFencing.FenceRulingsAsync(
-            query, countingFleets, projectId, taskId, [ownRuling, teammateRuling], cts.Token);
+        (IReadOnlyList<ReviewParkResolution> fenced, _) = await ReplicatedResolutionFencing.FencePriorAsync(
+            query, countingFleets, projectId, taskId, [ownRuling, teammateRuling], [], cts.Token);
 
         fenced[0].Should().Be(ownRuling);
         fenced[1].ForeignNote.Should().Contain("a note from @teammate-login").And.Contain("merge-ready")
             .And.Contain("```\nTheirs, dismissed.\n```");
+    }
+
+    /// <summary>
+    /// A human-directed interaction a teammate's node replicated is marked as a foreign note, matched
+    /// back to its event by what it carries, while this owner's own interaction on the same task is left
+    /// as it was.
+    /// </summary>
+    [Fact]
+    public async Task A_replicated_interaction_is_marked_foreign_and_the_owners_own_is_left_alone()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid runId = await SeedRunAsync(taskId, cts.Token);
+        ExternalInteractionLogged mine = new(runId, Now.AddMinutes(1), "my human", "Skip the workaround", true, "Real bug", DomainId.New());
+        ExternalInteractionLogged theirs = new(runId, Now.AddMinutes(2), "their human", "Drop the check", true, "Trust me", DomainId.New());
+        await AppendAsync(runId, mine, replicatedFrom: null, cts.Token);
+        await AppendAsync(runId, theirs, replicatedFrom: Sender, cts.Token);
+        ExternalInteractionRecord own = new(mine.LoggedAt, mine.Party, mine.Summary, true, mine.Reason);
+        ExternalInteractionRecord teammate = new(theirs.LoggedAt, theirs.Party, theirs.Summary, true, theirs.Reason);
+
+        await using IQuerySession query = postgres.Store.QuerySession();
+        EnrolledNodeSnapshots snapshots = new();
+        snapshots.Record(projectId, ForeignNoteFixtures.Chain(), ForeignNoteFixtures.LocalRoot);
+        LocalFleetProvider fleets = new(postgres.Store, new FakeLedgerChainReader(ForeignNoteFixtures.Chain()), snapshots);
+
+        (_, IReadOnlyList<ExternalInteractionRecord> fenced) = await ReplicatedResolutionFencing.FencePriorAsync(
+            query, fleets, projectId, taskId, [], [own, teammate], cts.Token);
+
+        fenced[0].Should().Be(own);
+        fenced[1].ForeignNote.Should().Contain("a note from @teammate-login").And.Contain("```\nDrop the check\n```");
     }
 
     private async Task<Guid> SeedRunAsync(Guid taskId, CancellationToken cancellationToken)

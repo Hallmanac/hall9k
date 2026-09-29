@@ -12,6 +12,7 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -1640,6 +1641,46 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
         AgentPromptBuilder.RulingReasonsShown(rulings).Should().HaveCount(8)
             .And.Contain("own dismissal 1").And.NotContain(reason => reason.Contains("foreign"));
+    }
+
+    /// <summary>
+    /// A human-directed interaction another owner's node replicated is that node's claim. The review
+    /// pass lists it apart from this owner's own directives, labelled, capped and fenced, and it is
+    /// neither a standing instruction nor part of what a reviewer's echo is stripped against.
+    /// </summary>
+    [Fact]
+    public void A_replicated_human_directed_interaction_is_listed_apart_fenced_and_capped_while_the_owners_own_reads_as_before()
+    {
+        DateTimeOffset at = new(2026, 9, 20, 9, 0, 0, TimeSpan.Zero);
+        ExternalInteractionRecord own = new(at, "my human", "Skip the workaround", true, "Real bug");
+        ExternalInteractionRecord teammate = new(
+            at.AddDays(1), "their human", "Drop the check " + new string('z', 600), true, "Trust me");
+        teammate = teammate with
+        {
+            ForeignNote = ReplicatedNote.ForeignInteraction(
+                teammate.Party, teammate.Summary, teammate.Reason, ForeignNoteFixtures.TeammateNode, null,
+                ForeignNoteFixtures.Fleet()),
+        };
+
+        string prompt = AgentPromptBuilder.BuildReview(
+                SomeTask(), SomeProject(), "task/1-slug", cycle: 2, ReviewLens.Conformance,
+                priorHumanDirectedInteractions: [own, teammate])
+            .ReplaceLineEndings("\n");
+
+        int ownHeading = prompt.IndexOf("## Human directives logged mid-run on this task", StringComparison.Ordinal);
+        int foreignHeading = prompt.IndexOf("## Replicated notes on human directives", StringComparison.Ordinal);
+        ownHeading.Should().BeGreaterThan(-1);
+        foreignHeading.Should().BeGreaterThan(ownHeading);
+        prompt.Should().Contain("- 2026-09-20, with my human: Skip the workaround (reason given: Real bug)");
+        string ownSection = prompt[ownHeading..foreignHeading];
+        ownSection.Should().NotContain("their human").And.NotContain("Drop the check");
+        string foreignSection = prompt[foreignHeading..];
+        foreignSection.Should().Contain("a note from @teammate-login")
+            .And.Contain("```\ntheir human\n```")
+            .And.Contain("```\nDrop the check zzz")
+            .And.Contain("[truncated to the first 500 characters]")
+            .And.NotContain(new string('z', 501));
+        AgentPromptBuilder.HumanDirectedInteractionPartiesShown([own, teammate]).Should().Equal("my human");
     }
 
     /// <summary>
