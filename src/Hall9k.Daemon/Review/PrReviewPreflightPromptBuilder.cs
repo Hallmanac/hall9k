@@ -79,6 +79,15 @@ public static class PrReviewPreflightPromptBuilder
             + "Use gh (gh pr diff, gh pr view, always with -R or the URL above) to read anything "
             + "beyond what is quoted below if the changed-file list suggests you should.");
         builder.AppendLine();
+        builder.AppendLine(
+            "An empty match above never by itself means there is nothing here that can run code. "
+            + "A safe verdict lets this platform check the pull request out; on a head that is not a "
+            + "fork, whichever persona reviews it next may run this project's own verify gate over "
+            + "that checkout, and the verify gate builds and runs the whole thing — every ordinary "
+            + "source file and test the pull request touches, not only the fixed surfaces above. A "
+            + "pull request that changes nothing but an ordinary .cs, .ts or test file can still add "
+            + "code that runs the moment that gate does.");
+        builder.AppendLine();
         builder.AppendLine(ChangedFileListNonInstructionFraming);
         builder.AppendLine();
         builder.AppendLine($"Changed files ({changedFiles.Count} total):");
