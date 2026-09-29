@@ -6,8 +6,8 @@ namespace Hall9k.Domain.Shared.ValueObjects;
 /// <summary>
 /// The model an agent session runs on, stored as the exact string <c>claude -p --model</c>
 /// accepts (Decisions Log #33). The named statics are the tier aliases; any other value
-/// rides through as itself so an exact model id (<c>claude-opus-5</c>, or a
-/// context-variant like <c>claude-opus-5[1m]</c>) is equally expressible: the set is
+/// rides through as itself so an exact model id (<c>claude-opus-5-5</c>, or a
+/// context-variant like <c>claude-opus-5-5[1m]</c>) is equally expressible: the set is
 /// defined once, not enforced. Unknown means "not set at this level", which is how every
 /// optional link in the resolution chain says "ask the next one down".
 /// </summary>
@@ -30,7 +30,7 @@ public sealed record AgentModel
     /// failure this value object exists to prevent. Fable is the human-interactive tier, not
     /// a silent-agent default. Overridable through DaemonOptions.DefaultModel.
     /// </summary>
-    public const string PlatformFallback = "claude-opus-5[1m]";
+    public const string PlatformFallback = "claude-opus-5-5[1m]";
 
     /// <summary>
     /// The feed courier's own bottom-of-chain default (idea 89471598, piece 3): an exact model id

@@ -1546,7 +1546,7 @@ environment variable that outranks it, and the default for every one of them.
 | `h9k config set --max-concurrent-task-runs <N>` | Sets how many task runs may be live on this node at once, which is the node's own admission ceiling. |
 | `h9k config set --max-concurrent-agent-sessions <N>` | Is the retired session-denominated ceiling, still writable and still read as a fallback that converts to `floor(n/2)` runs, minimum one, when the run-denominated setting is absent. |
 | `h9k config set --session-cap-per-run <N>` | Sets the global default for how many agent sessions one run may hold at once, which `h9k task set-session-cap` overrides per task. |
-| `h9k config set --default-model <model>` | Sets the platform default every agent session runs on unless a more specific level says otherwise, with `default` clearing it back to the built-in `claude-opus-5[1m]`. |
+| `h9k config set --default-model <model>` | Sets the platform default every agent session runs on unless a more specific level says otherwise, with `default` clearing it back to the built-in `claude-opus-5-5[1m]`. |
 | `h9k config set --orchestrator-model <model>` | Sets the model the node's orchestrator window runs on, independent of `--default-model`, with `default` clearing it. |
 | `h9k config set --orchestrator-effort <low\|medium\|high\|xhigh>` | Sets the reasoning effort the node's orchestrator window runs at, independent of `--effort` and every dispatch effort, with `default` clearing it. |
 | `h9k config set --effort <low\|medium\|high\|xhigh>` | Sets the node-wide reasoning effort level every headless agent session runs at (the daemon's dispatches, `h9k task start` and `h9k task delegate`), with `default` clearing it. It is the level beneath every other one. It exists because a headless session ignores the owner's user-level `effortLevel` and honors the `--settings` file the daemon hands it, and Claude Opus 5.5 defaults to medium where earlier Opus models defaulted to high. |
@@ -1575,7 +1575,7 @@ environment variable that outranks it, and the default for every one of them.
 **Two of these settings decide which model runs what, and they are deliberately independent.**
 `--default-model` is the bottom of the agent-dispatch chain: a session's model is the task's own
 `--model`, then the project's `--model`, then this node's per-role default, then the default model,
-which ships as `claude-opus-5[1m]`. `--orchestrator-model` is a separate lever for the
+which ships as `claude-opus-5-5[1m]`. `--orchestrator-model` is a separate lever for the
 window you talk to, not for the sessions it dispatches. It is the model that `recipes/settings.json`
 is rendered for, so raising or lowering the model dispatched agents run on never moves your own
 window, and the reverse. A window's model resolves as the project's `--orchestrator-model`, then the

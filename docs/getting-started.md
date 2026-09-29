@@ -244,7 +244,7 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   model roles, each independently settable** (`--model-build`, `--model-fix`, `--model-review`,
   `--model-synthesis`, `--model-refinement`, `--model-publication`, `--model-courier`). The
   shipped default puts the same exact model id on every role but one, deliberately: an exact id
-  (`claude-opus-5[1m]`), not a tier alias (`opus`), because an alias is re-pointed as new models
+  (`claude-opus-5-5[1m]`), not a tier alias (`opus`), because an alias is re-pointed as new models
   ship and drifting silently is the whole problem this setting exists to close (Decisions Log
   #33). The courier's own field ships blank like every sibling role's — `h9k config show` prints
   it the same way — but its *resolution* is the one deliberate exception (idea 89471598, piece
@@ -267,7 +267,7 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
 - **The platform default, `--default-model`, and the orchestrator window's own model,
   `--orchestrator-model`.** `--default-model` is the model every agent session runs on unless a
   more specific level says otherwise, and it is what the chain above bottoms out at (the platform
-  fallback is `claude-opus-5[1m]`); `default` clears an override back to that fallback.
+  fallback is `claude-opus-5-5[1m]`); `default` clears an override back to that fallback.
   `--orchestrator-model` is the model the orchestrator window itself runs on, deliberately
   independent of the dispatch model, so raising or lowering what dispatched agents run on never
   moves the window you are sitting in, and the reverse. It is set on the node with
@@ -275,7 +275,7 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   `default` clears it back to the node's resolution.
 
   ```bash
-  h9k config set --default-model claude-opus-5
+  h9k config set --default-model claude-opus-5-5
   h9k config set --orchestrator-model sonnet
   h9k project set <name> --orchestrator-model sonnet
   ```

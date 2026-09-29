@@ -15,7 +15,7 @@ namespace Hall9k.Cli.Commands;
 /// fallback, each framed inside a single line of its own) or
 /// <see cref="ExternalText.ForTerminalMarkup"/> (the assistant's own prose, rendered as a block
 /// that is meant to keep the line breaks the assistant wrote) so a value that happens to look
-/// like Spectre markup (<c>claude-opus-5[1m]</c>, parsed as a color tag named <c>1m</c> if left
+/// like Spectre markup (<c>claude-opus-5-5[1m]</c>, parsed as a color tag named <c>1m</c> if left
 /// raw) or that carries a terminal escape sequence can neither crash the command nor reach the
 /// terminal unsanitised.
 /// </para>
