@@ -924,7 +924,7 @@ Which model runs what is explained in [Which model runs what](#which-model-runs-
 | `Hall9k__ModelByRole__Build`, `__Review`, `__Fix`, `__Synthesis`, `__Refinement`, `__Publication` | blank | The node's model for each role, or blank for no opinion (`--model-build`, `--model-review`, `--model-fix`, `--model-synthesis`, `--model-refinement`, `--model-publication`). |
 | `Hall9k__ModelByRole__ReviewVerify`, `Hall9k__ModelByRole__ReviewFinalFullPass` | blank | Not extra roles, but narrower overrides for a Verify-shape review pass and the mandatory FinalFullPass respectively, each blank falling through to whatever review resolves (`--model-review-verify`, `--model-review-finalpass`). |
 | `Hall9k__ModelByRole__Courier` | blank | The node's model for the feed courier (`--model-courier`). Blank does not mean the platform default: a courier's own floor is `claude-sonnet-5`. |
-| `Hall9k__ModelByRole__SecurityPreflight` | blank | The node's model for the pull-request review pre-flight (idea 6be68ee2, finding 1, phase one) — the short, no-checkout security lap every pr-review dispatch now runs first, before any worktree is cut, over the pull request's own changed-file list and diff hunks read through `gh` (`--model-security-preflight`). Blank does not mean the platform default: the pre-flight's own floor is `claude-opus-5-5`, since it reads attacker-written text ahead of any worktree or permission scoping to a real checkout. |
+| `Hall9k__ModelByRole__SecurityPreflight` | blank | The node's model for the pull-request review pre-flight (idea 6be68ee2, finding 1, phase one), the short, no-checkout security lap every pr-review dispatch now runs first, before any worktree is cut, over the pull request's own changed-file list and diff hunks read through `gh` (`--model-security-preflight`). Blank does not mean the platform default: the pre-flight's own floor is `claude-opus-5-5`, since it reads attacker-written text ahead of any worktree or permission scoping to a real checkout. |
 
 Before Decisions Log #111, the ceiling was set in agent sessions and spent in runs, so there was a
 conversion between the number you configured and the number of tasks in flight. That conversion is
@@ -1211,7 +1211,7 @@ The pull-request review pre-flight (idea 6be68ee2, finding 1, phase one) has the
 floor-not-default shape. Before any pr-review dispatch cuts a worktree, this node now runs a short,
 no-checkout security lap that reads the pull request's own changed-file list and diff hunks through
 `gh` and judges whether it is safe to let the ordinary review persona plan check the pull request's
-code out at all — an extra Opus session ahead of every pr-review, not a narrower knob under
+code out at all, an extra Opus session ahead of every pr-review, not a narrower knob under
 `--model-review`. Its chain is the project's `--model`, then the node's
 `--model-security-preflight`, then `claude-opus-5-5`; `--model-security-preflight default` leaves it
 on that floor rather than clearing to `--default-model`, because this is the one session that reads
