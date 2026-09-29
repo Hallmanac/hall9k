@@ -23,9 +23,17 @@ namespace Hall9k.Connectors.WorkItems;
 /// never needs to re-read it later. False when the field was absent or unparseable, never a guess
 /// standing in for an observation this read genuinely could not make.
 /// </param>
+/// <param name="HeadRefOid">
+/// The pull request's own head commit at the moment this was read (idea 6be68ee2, finding 1,
+/// phase two): what a pre-flight verdict is bound to, and what the checkout that follows a safe
+/// verdict re-checks after its own fetch of <c>refs/pull/&lt;n&gt;/head</c>, since GitHub's own
+/// read here and the checkout's own fetch are two separate observations that can disagree if the
+/// head moved in between. Blank when the field was absent or unparseable, never a guess standing
+/// in for an observation this read genuinely could not make.
+/// </param>
 public sealed record PullRequestFacts(
     string Repository, int Number, string Title, string? Body, string State, string BaseRefName, Uri? Url,
-    bool IsCrossRepository = false);
+    bool IsCrossRepository = false, string HeadRefOid = "");
 
 /// <summary>
 /// GitHub pull requests through the <c>gh</c> CLI, exactly the same already-authenticated seam
@@ -36,7 +44,7 @@ public sealed record PullRequestFacts(
 /// </summary>
 public sealed class GitHubPullRequestProvider(ProcessRunner? runner = null, TimeProvider? clock = null) : IWorkItemProvider
 {
-    private const string RequestedFields = "number,title,body,state,url,baseRefName,isCrossRepository";
+    private const string RequestedFields = "number,title,body,state,url,baseRefName,isCrossRepository,headRefOid";
 
     private readonly ProcessRunner runner = runner ?? ExternalProcess.Runner;
     private readonly TimeProvider clock = clock ?? TimeProvider.System;
@@ -80,6 +88,64 @@ public sealed class GitHubPullRequestProvider(ProcessRunner? runner = null, Time
         }
 
         return Map(result.StandardOutput, number);
+    }
+
+    /// <summary>
+    /// The pull-request review pre-flight's own first read (idea 6be68ee2, finding 1, phase one):
+    /// every path the pull request's diff touches, through <c>gh pr diff --name-only</c>. Run from
+    /// the pre-flight's own run directory, never a git repository — <paramref name="reference"/>
+    /// always carries an explicit repository for a pr-review task's own adopted reference, so
+    /// <c>--repo</c> is always passed and <c>gh</c> never needs to infer one from a git remote at
+    /// <paramref name="workingDirectory"/>.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> FetchChangedFileNamesAsync(
+        string reference, string workingDirectory, CancellationToken cancellationToken)
+    {
+        (string? repository, int number) = GitHubPullRequestReference.Parse(reference);
+
+        List<string> arguments =
+            ["pr", "diff", number.ToString(CultureInfo.InvariantCulture), "--name-only"];
+        if (repository is not null)
+        {
+            arguments.AddRange(["--repo", repository]);
+        }
+
+        ProcessResult result = await RunGhAsync(arguments, workingDirectory, cancellationToken);
+        if (result.ExitCode != 0)
+        {
+            throw Explain(result.StandardError, repository, number, workingDirectory);
+        }
+
+        return [.. result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Trim())
+            .Where(line => line.IsNotBlank())];
+    }
+
+    /// <summary>
+    /// The pull-request review pre-flight's own second read: the full unified diff, through
+    /// <c>gh pr diff</c> — the pre-flight prompt then fences only the hunks for the files
+    /// <see cref="Hall9k.Domain.Features.PrReviewPreflight.PrReviewPreflightSurfaceMatcher"/>
+    /// matched, capped, never the whole thing. Same "always carries an explicit repository"
+    /// reasoning as <see cref="FetchChangedFileNamesAsync"/>.
+    /// </summary>
+    public async Task<string> FetchDiffAsync(string reference, string workingDirectory, CancellationToken cancellationToken)
+    {
+        (string? repository, int number) = GitHubPullRequestReference.Parse(reference);
+
+        List<string> arguments = ["pr", "diff", number.ToString(CultureInfo.InvariantCulture)];
+        if (repository is not null)
+        {
+            arguments.AddRange(["--repo", repository]);
+        }
+
+        ProcessResult result = await RunGhAsync(arguments, workingDirectory, cancellationToken);
+        if (result.ExitCode != 0)
+        {
+            throw Explain(result.StandardError, repository, number, workingDirectory);
+        }
+
+        return result.StandardOutput;
     }
 
     public Uri? WebUrl(ExternalReference reference) =>
@@ -127,7 +193,8 @@ public sealed class GitHubPullRequestProvider(ProcessRunner? runner = null, Time
                 ReadString(root, "state") ?? string.Empty,
                 ReadString(root, "baseRefName") ?? string.Empty,
                 url is not null && Uri.TryCreate(url, UriKind.Absolute, out Uri? parsed) ? parsed : null,
-                isCrossRepository);
+                isCrossRepository,
+                ReadString(root, "headRefOid") ?? string.Empty);
         }
     }
 

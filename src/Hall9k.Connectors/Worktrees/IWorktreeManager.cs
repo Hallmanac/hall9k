@@ -40,7 +40,16 @@ public sealed record PrReviewWorktreeRequest(
     string RepositoryPath,
     int PullRequestNumber,
     Guid TaskId,
-    Guid RunId);
+    Guid RunId,
+    /// <summary>
+    /// The head commit a safe pre-flight verdict was judged against (idea 6be68ee2, finding 1,
+    /// phase two), checked against the tracking ref this fetch actually observes — GitHub's own
+    /// read (<c>PullRequestFacts.HeadRefOid</c>) and this checkout's own fetch of
+    /// <c>refs/pull/&lt;n&gt;/head</c> are two separate observations that can disagree if the head
+    /// moved in between. Null skips the check entirely — the mention follow-up and every other
+    /// caller that predates the pre-flight gate.
+    /// </summary>
+    string? ExpectedHeadOid = null);
 
 /// <summary>
 /// A checkout a run works in. <paramref name="StartPoint"/> is the ref the branch was cut from as
@@ -95,6 +104,23 @@ public sealed class BranchGoneException(string branch, string message) : Worktre
 {
     /// <summary>The branch that is on neither side, carried apart from the message so a caller can name it without parsing prose.</summary>
     public string Branch { get; } = branch;
+}
+
+/// <summary>
+/// A safe pre-flight verdict's own judged head oid (idea 6be68ee2, finding 1, phase two) does not
+/// match the commit this checkout's own fetch of <c>refs/pull/&lt;n&gt;/head</c> actually observed
+/// — GitHub's own read at pre-flight time and this fetch are two separate observations of the same
+/// pull request, and a caller must run a fresh pre-flight against <see cref="ObservedHeadOid"/>
+/// rather than proceed with a checkout the verdict was never actually about.
+/// </summary>
+public sealed class PullRequestHeadMovedException(string expectedHeadOid, string observedHeadOid, string message)
+    : WorktreeException(message)
+{
+    /// <summary>The oid the pre-flight verdict was judged against.</summary>
+    public string ExpectedHeadOid { get; } = expectedHeadOid;
+
+    /// <summary>The oid this checkout's own fetch actually observed.</summary>
+    public string ObservedHeadOid { get; } = observedHeadOid;
 }
 
 /// <summary>
