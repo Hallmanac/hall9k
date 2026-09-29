@@ -3323,6 +3323,83 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 1, both lenses (RunSupervisor.cs:227): a usage-limit
+    /// result never reaches a real verdict, so the row is abandoned and the task requeued exactly
+    /// as before — but without a node-wide launch hold standing in the way too, the ordinary
+    /// dispatch loop reclaims this same task every PollInterval and spends a fresh gh fetch and a
+    /// fresh pre-flight session into the same usage limit every few seconds, with nothing to slow
+    /// it down until an operator notices by hand.
+    /// </summary>
+    [Fact]
+    public async Task A_budget_exhausted_preflight_result_raises_the_launch_hold_before_requeuing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, DomainId.New(), "Review pull request acme/web#31", ["the verdict is submitted"],
+                    TaskType.PrReview, null, constraints: null,
+                    new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#31"), Now, node.OwnerId),
+                node.OwnerId, Now);
+            TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid preflightRunId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
+                preflightRunId, taskId, runId, node.NodeId, "claude-opus-5-5", "abc123", [], Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        const string budgetResultLine =
+            """{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude AI usage limit reached|1762952400"}""";
+        int processId = SpawnFakeAgent(preflightRunId, FakeAgentScript.New().Emit(AssistantLine).Emit(budgetResultLine));
+        DateTimeOffset startedAt;
+        try
+        {
+            using Process process = Process.GetProcessById(processId);
+            startedAt = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or Win32Exception)
+        {
+            startedAt = DateTimeOffset.UtcNow;
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(preflightRunId, new PrReviewPreflightProcessStarted(preflightRunId, processId, startedAt));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        NewSupervisor(store, node).StartPreflightMonitoring(preflightRunId, taskId, processId, startedAt, cts.Token);
+
+        await WaitForTaskStateAsync(store, taskId, TaskState.Queued, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        NodeDetails? nodeDetails = await query.LoadAsync<NodeDetails>(node.NodeId, cts.Token);
+        nodeDetails.Should().NotBeNull();
+        nodeDetails!.LaunchHoldActive.Should().BeTrue(
+            "without the hold, the dispatch loop reclaims this requeued task every PollInterval and spends a "
+            + "fresh gh fetch and a fresh pre-flight session into the same usage limit every few seconds");
+        nodeDetails.LaunchHoldCauseText.Should().Contain("Claude AI usage limit reached");
+
+        List<object> preflightEvents =
+            [.. (await query.Events.FetchStreamAsync(preflightRunId, token: cts.Token)).Select(e => e.Data)];
+        preflightEvents.OfType<PrReviewPreflightAbandoned>().Should().ContainSingle(
+            "a budget exhaustion never reaches a real verdict, so the row is abandoned exactly as before");
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 5, adversarial lens (RunSupervisor.cs:275): a pre-flight
     /// that outlives the claim it was dispatched to gate — here, the task was reclaimed under a
     /// fresh run while the first pre-flight was still in flight — must never touch the state of the
