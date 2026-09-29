@@ -30,6 +30,7 @@ using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Marten.Linq.MatchesSql;
 using Microsoft.Extensions.Options;
 
@@ -54,6 +55,16 @@ public sealed class RunLauncher(
     IOptions<DaemonOptions> options,
     ILogger<RunLauncher> logger)
 {
+    /// <summary>
+    /// Bounds the reread-and-redecide retry <see cref="EnsurePrReviewPreflightSafeAsync"/> takes
+    /// when its own <see cref="TryReclaimPreflightAsync"/> loses a concurrency race against
+    /// <see cref="RunSupervisor.CompletePreflightAsync"/> or <see cref="RunSupervisor.AbandonPreflightAsync"/>
+    /// (independent pre-PR review, cycle 1, adversarial lens, RunSupervisor.cs:284) — the same
+    /// bound <see cref="LaunchHoldEngine"/>'s own <c>MaxConcurrentAppendAttempts</c> uses for the
+    /// identical shape.
+    /// </summary>
+    private const int MaxPreflightReclaimRetries = 5;
+
     /// <summary>
     /// The ordinary shape, for every dispatch where the calling node IS the dispatching node —
     /// every caller except auto-pr-review's "now" speed, which needs the overload below.
@@ -1906,7 +1917,8 @@ public sealed class RunLauncher(
     /// </summary>
     private async Task<bool> EnsurePrReviewPreflightSafeAsync(
         IDocumentSession session, TaskDetails task, ProjectDetails project, PullRequestFacts facts, Guid nodeId,
-        Guid runId, int leaseGeneration, bool isMentionFollowUp, CancellationToken cancellationToken)
+        Guid runId, int leaseGeneration, bool isMentionFollowUp, CancellationToken cancellationToken,
+        int attempt = 0)
     {
         PrReviewPreflightDetails? latest = await session.Query<PrReviewPreflightDetails>()
             .Where(preflight => preflight.TaskId == task.Id)
@@ -1937,7 +1949,8 @@ public sealed class RunLauncher(
                 task, project, facts, nodeId, runId, leaseGeneration, isMentionFollowUp, cancellationToken);
             return false;
         }
-        else if (latest is { CompletedAt: null, AbandonedAt: null } inFlight && inFlight.HeadRefOid == facts.HeadRefOid)
+        else if (latest is { CompletedAt: null, AbandonedAt: null } inFlight && inFlight.HeadRefOid == facts.HeadRefOid
+            && inFlight.NodeId == nodeId)
         {
             // Already dispatched for this exact head and not abandoned — its own monitor (or,
             // after a restart, the adoption sweep) completes or abandons it and releases this
@@ -1945,6 +1958,14 @@ public sealed class RunLauncher(
             // below instead: it never will complete, and treating it as still in flight left this
             // task claimed-and-requeued forever with no pre-flight ever running again (independent
             // pre-PR review, cycle 1, both lenses).
+            //
+            // Scoped to a row THIS node dispatched (independent pre-PR review, cycle 1, adversarial
+            // lens): RunSupervisor.ResumeStrandedPreflightsAsync only ever reattaches or abandons a
+            // row whose own NodeId names this node, so a row another node dispatched (visible here
+            // only because every node shares one database) can never complete or abandon on its own
+            // if that other node is gone for good. Deferring to it as "in flight" the way the check
+            // above used to left the task claimed-and-requeued forever behind a row nothing left
+            // running will ever finish — falling through to a fresh dispatch on this node instead.
             //
             // The row's own DispatchingRunId can still name an earlier, superseded claim: a
             // restart long enough to expire this task's lease leaves the detached pre-flight
@@ -1956,12 +1977,20 @@ public sealed class RunLauncher(
             // reclaimed task Claimed for good (independent pre-PR review, cycle 7, conformance
             // lens, RunLauncher.cs:1935). The pre-flight itself is left running exactly as it was —
             // only the claim it will report back to changes.
-            if (inFlight.DispatchingRunId != runId)
+            if (inFlight.DispatchingRunId != runId
+                && attempt < MaxPreflightReclaimRetries
+                && !await TryReclaimPreflightAsync(inFlight.Id, runId, cancellationToken))
             {
-                await using IDocumentSession reclaimSession = store.LightweightSession();
-                reclaimSession.Events.Append(
-                    inFlight.Id, new PrReviewPreflightReclaimed(inFlight.Id, runId, DateTimeOffset.UtcNow));
-                await reclaimSession.SaveChangesAsync(cancellationToken);
+                // Lost the race to RunSupervisor.CompletePreflightAsync/AbandonPreflightAsync,
+                // which committed a terminal verdict for this exact row between the read above and
+                // this reclaim attempt (independent pre-PR review, cycle 1, adversarial lens,
+                // RunSupervisor.cs:284) — rereads fresh state and redecides against whatever
+                // actually landed instead of trusting a reclaim that never took effect. The
+                // now-completed row's own top branch above resolves this dispatch directly (safe
+                // or unsafe), so nothing here needs the release RunSupervisor's own side missed.
+                return await EnsurePrReviewPreflightSafeAsync(
+                    session, task, project, facts, nodeId, runId, leaseGeneration, isMentionFollowUp,
+                    cancellationToken, attempt + 1);
             }
 
             return false;
@@ -1970,6 +1999,39 @@ public sealed class RunLauncher(
         await DispatchPrReviewPreflightAsync(
             task, project, facts, nodeId, runId, leaseGeneration, isMentionFollowUp, cancellationToken);
         return false;
+    }
+
+    /// <summary>
+    /// Fences the reclaim's own append to the preflight stream's version at the moment this
+    /// attempt actually commits, not to whatever <see cref="EnsurePrReviewPreflightSafeAsync"/>
+    /// read moments earlier (independent pre-PR review, cycle 1, adversarial lens,
+    /// RunSupervisor.cs:284): a concurrent <c>RunSupervisor.CompletePreflightAsync</c> or
+    /// <c>AbandonPreflightAsync</c> can commit a terminal event for this exact row in that gap, and
+    /// an unfenced append here would either silently clobber it or land on a row that has already
+    /// resolved without the reclaim it never saw. Returns false on a lost race so the caller
+    /// rereads rather than trusting a reclaim that never actually took effect.
+    /// </summary>
+    private async Task<bool> TryReclaimPreflightAsync(Guid preflightId, Guid runId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession reclaimSession = store.LightweightSession();
+        StreamState? fence = await reclaimSession.Events.FetchStreamStateAsync(preflightId, cancellationToken);
+        if (fence is null)
+        {
+            return false;
+        }
+
+        reclaimSession.Events.Append(
+            preflightId, expectedVersion: fence.Version + 1,
+            new PrReviewPreflightReclaimed(preflightId, runId, DateTimeOffset.UtcNow));
+        try
+        {
+            await reclaimSession.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            return false;
+        }
     }
 
     /// <summary>
