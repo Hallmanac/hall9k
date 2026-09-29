@@ -1244,7 +1244,7 @@ no AGENTS.md — just the feed items as `--drain` itself would print them, plus 
 address the orchestrator's own registered session through Claude Code's cross-session mesh
 (`SendMessage`) and report back; the daemon drains the feed itself once it sees the reported
 delivery, so a failed send leaves the cursor exactly where it was for the next attempt. It runs as
-a run with no task, its own model role (`h9k config set --model-courier`, `claude-sonnet-5` by
+a run with no task, its own model role (`h9k config set --model-courier`, `claude-sonnet-5-5` by
 default — cheap by construction, unlike every other role's blank shipped opinion), counted in
 `h9k status`'s spend line the same as any other role's.
 

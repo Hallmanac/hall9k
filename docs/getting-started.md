@@ -249,7 +249,7 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   #33). The courier's own field ships blank like every sibling role's — `h9k config show` prints
   it the same way — but its *resolution* is the one deliberate exception (idea 89471598, piece
   3): where a blank Build or Review falls through to the platform default, a blank
-  courier bottoms out at `claude-sonnet-5` instead, since a short-lived session that only relays
+  courier bottoms out at `claude-sonnet-5-5` instead, since a short-lived session that only relays
   a project's own feed to a live orchestrator window has no business defaulting to the same tier
   a build or review session does. `fable` is the human-interactive tier for a session a person is
   actually in, not a silent-agent default for build, fix, or review. Leave the other six roles at the

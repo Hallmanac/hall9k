@@ -925,7 +925,7 @@ Which model runs what is explained in [Which model runs what](#which-model-runs-
 | `Hall9k__EffortByRole__ReviewVerify`, `Hall9k__EffortByRole__ReviewFinalFullPass` | blank | Narrower overrides for a Verify-shape review pass and the mandatory FinalFullPass, each blank falling through to the review role's effort before the node-wide one (`--effort-review-verify`, `--effort-review-finalpass`). |
 | `Hall9k__ModelByRole__Build`, `__Review`, `__Fix`, `__Synthesis`, `__Refinement`, `__Publication` | blank | The node's model for each role, or blank for no opinion (`--model-build`, `--model-review`, `--model-fix`, `--model-synthesis`, `--model-refinement`, `--model-publication`). |
 | `Hall9k__ModelByRole__ReviewVerify`, `Hall9k__ModelByRole__ReviewFinalFullPass` | blank | Not extra roles, but narrower overrides for a Verify-shape review pass and the mandatory FinalFullPass respectively, each blank falling through to whatever review resolves (`--model-review-verify`, `--model-review-finalpass`). |
-| `Hall9k__ModelByRole__Courier` | blank | The node's model for the feed courier (`--model-courier`). Blank does not mean the platform default: a courier's own floor is `claude-sonnet-5`. |
+| `Hall9k__ModelByRole__Courier` | blank | The node's model for the feed courier (`--model-courier`). Blank does not mean the platform default: a courier's own floor is `claude-sonnet-5-5`. |
 | `Hall9k__ModelByRole__SecurityPreflight` | blank | The node's model for the pull-request review pre-flight (idea 6be68ee2, finding 1, phase one), the short, no-checkout security lap every pr-review dispatch now runs first, before any worktree is cut, over the pull request's own changed-file list and diff hunks read through `gh` (`--model-security-preflight`). Blank does not mean the platform default: the pre-flight's own floor is `claude-opus-5-5`, since it reads attacker-written text ahead of any worktree or permission scoping to a real checkout. |
 
 Before Decisions Log #111, the ceiling was set in agent sessions and spent in runs, so there was a
@@ -1037,7 +1037,7 @@ h9k config set --model-build sonnet --model-synthesis haiku # the build session,
 h9k config set --model-refinement haiku --model-publication haiku   # the draft-refinement and tracker-card sessions
 h9k config set --model-review-verify sonnet                 # Verify-shape passes only; defaults to --model-review
 h9k config set --model-review-finalpass sonnet              # the mandatory FinalFullPass only; defaults to --model-review
-h9k config set --model-courier haiku                        # the feed courier; 'default' returns it to its claude-sonnet-5 floor
+h9k config set --model-courier haiku                        # the feed courier; 'default' returns it to its claude-sonnet-5-5 floor
 h9k config set --interactive-claim-stale-after-days 5       # the interactive-claim nudge threshold
 h9k config set --max-compliance-review-cycles 5 --lifetime-review-cycle-budget 40   # the node's review-cycle caps
 h9k config set --max-adversarial-review-cycles 5 --max-final-full-pass-rounds 3     # and the other two
@@ -1150,7 +1150,7 @@ the file alone.
 | `modelByRole.build`, `.review`, `.fix` | `--model-build`, `--model-review`, `--model-fix` | `Hall9k__ModelByRole__Build`, `__Review`, `__Fix` | blank |
 | `modelByRole.synthesis`, `.refinement`, `.publication` | `--model-synthesis`, `--model-refinement`, `--model-publication` | `Hall9k__ModelByRole__Synthesis`, `__Refinement`, `__Publication` | blank |
 | `modelByRole.reviewVerify`, `.reviewFinalFullPass` | `--model-review-verify`, `--model-review-finalpass` | `Hall9k__ModelByRole__ReviewVerify`, `__ReviewFinalFullPass` | blank |
-| `modelByRole.courier` | `--model-courier` | `Hall9k__ModelByRole__Courier` | blank, with a floor of `claude-sonnet-5` |
+| `modelByRole.courier` | `--model-courier` | `Hall9k__ModelByRole__Courier` | blank, with a floor of `claude-sonnet-5-5` |
 | `modelByRole.securityPreflight` | `--model-security-preflight` | `Hall9k__ModelByRole__SecurityPreflight` | blank, with a floor of `claude-opus-5-5` |
 | `maxComplianceReviewCycles` | `--max-compliance-review-cycles` | `Hall9k__MaxComplianceReviewCycles` | 3 |
 | `maxAdversarialReviewCycles` | `--max-adversarial-review-cycles` | `Hall9k__MaxAdversarialReviewCycles` | 4 |
@@ -1187,7 +1187,7 @@ first, and the resolved value is recorded on the dispatch event as an observed f
 4. The node's `--default-model` (`Hall9k__DefaultModel`).
 5. The platform fallback, `claude-opus-5[1m]`, which is what applies when nothing above is set.
 
-A model is an exact id (`claude-opus-5`, `claude-sonnet-5`, or a context variant such as
+A model is an exact id (`claude-opus-5`, `claude-sonnet-5-5`, or a context variant such as
 `claude-opus-5[1m]`) or a tier alias (`fable`, `opus`, `sonnet`, `haiku`); an exact id is the
 stabler choice, because an alias is re-pointed as new models ship. The word `default` is never a
 model name. Passed to a node or project option, it clears that level, so the levels around it decide.
@@ -1201,11 +1201,11 @@ the task's override and the project's `--model` and above `--model-review`, and 
 falls through to whatever the review role resolves.
 
 The feed courier is the one role with a floor of its own. Its chain is the project's
-`--model`, then the node's `--model-courier`, then `claude-sonnet-5`. It never reaches
+`--model`, then the node's `--model-courier`, then `claude-sonnet-5-5`. It never reaches
 `--default-model`, and it has no task level because a courier runs with no task. That floor is why
 `--model-courier default` does not clear to the platform default the way every other
 `--model-<role> default` does: it removes the override and leaves the courier on the deliberately
-cheap `claude-sonnet-5`, unless the project sets a `--model` of its own. Because the project's model
+cheap `claude-sonnet-5-5`, unless the project sets a `--model` of its own. Because the project's model
 outranks the node's, a project `--model` chosen for builds also lifts the courier above a cheaper
 `--model-courier`.
 

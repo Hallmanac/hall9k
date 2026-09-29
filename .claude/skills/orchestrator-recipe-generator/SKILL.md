@@ -260,7 +260,7 @@ other or from what this skill says next time it runs.
 >
 > | Tier | Agent CLI | Model | Effort |
 > | --- | --- | --- | --- |
-> | Mechanical: probes, scripted checks, sweep grooming, lookups | claude-code | `claude-sonnet-5` | high |
+> | Mechanical: probes, scripted checks, sweep grooming, lookups | claude-code | `claude-sonnet-5-5` | high |
 > | Deep-reading: idea discovery, refinement, design walks, challenges, deep-reading dispute preparation | claude-code | `claude-opus-5-5[1m]` | high |
 > | Hardest-reasoning: cross-product architecture, a second opinion on a doubted answer | claude-code | `claude-fable-5-1[1m]` | high (Fable's own default) |
 >
@@ -292,7 +292,7 @@ section), before anything else:
 
 ```
 ---
-generated-by: orchestrator-recipe-generator, run by <agent CLI and model, e.g. "Claude Code, sonnet-5">
+generated-by: orchestrator-recipe-generator, run by <agent CLI and model, e.g. "Claude Code, Sonnet 5.5">
 generated-at: <date '+%Y-%m-%d %H:%M %Z' — run it, do not hand-type it>
 skill-version: shipped with h9k <output of `h9k --version`>
 hand-edited-since: no

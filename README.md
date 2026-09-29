@@ -595,11 +595,11 @@ one or for the next manual `--drain`. Two settings tune it:
 ```bash
 h9k project set demo --courier-max-wait 120         # ceiling on the batching wait, in seconds; default 60
 h9k project set demo --courier-max-wait default     # back to the platform default
-h9k config set --model-courier claude-sonnet-5      # this node's model for the courier role
+h9k config set --model-courier claude-sonnet-5-5      # this node's model for the courier role
 ```
 
 `--model-courier default` does not clear to the platform default the way every other role's does:
-the courier's own floor is `claude-sonnet-5`, so clearing the override still leaves it on a
+the courier's own floor is `claude-sonnet-5-5`, so clearing the override still leaves it on a
 deliberately inexpensive model. See
 [docs/concepts.md](docs/concepts.md#the-feed-courier) for the full delivery model.
 

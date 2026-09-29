@@ -68,7 +68,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         [CommandOption("--default-model <MODEL>")]
         [Description(
             "The platform default every agent session runs on unless a more specific level says otherwise "
-            + "(DaemonOptions.DefaultModel, Decisions Log #33) — an exact model id (claude-opus-5, claude-sonnet-5, "
+            + "(DaemonOptions.DefaultModel, Decisions Log #33) — an exact model id (claude-opus-5, claude-sonnet-5-5, "
             + "or a context variant like claude-opus-5[[1m]]); anything 'claude -p --model' accepts, except the word "
             + "'default'. 'default' clears the override, so the built-in shipped default decides.")]
         public string? DefaultModel { get; init; }

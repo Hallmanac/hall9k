@@ -1560,7 +1560,7 @@ environment variable that outranks it, and the default for every one of them.
 | `h9k config set --model-synthesis <model>` | Sets this node's model for condensing a fan-in of blocker handoffs. |
 | `h9k config set --model-refinement <model>` | Sets this node's model for the future draft-refinement role, which is configurable before it exists. |
 | `h9k config set --model-publication <model>` | Sets this node's model for writing a task up as an external tracker card. |
-| `h9k config set --model-courier <model>` | Sets this node's model for the feed courier, where `default` does not clear to the platform default because the courier's own floor is `claude-sonnet-5`. |
+| `h9k config set --model-courier <model>` | Sets this node's model for the feed courier, where `default` does not clear to the platform default because the courier's own floor is `claude-sonnet-5-5`. |
 | `h9k config set --model-security-preflight <model>` | Sets this node's model for the pull-request review pre-flight (idea 6be68ee2, finding 1, phase one), the short, no-checkout security lap every pr-review dispatch now runs first, reading the pull request's own changed-file list and diff hunks through `gh` before any worktree is cut. `default` does not clear to the platform default here either: the pre-flight's own floor is `claude-opus-5-5`, since it reads attacker-written text before any worktree or permission scoping to a real checkout exists. |
 | `h9k config set --max-compliance-review-cycles <N>` | Sets this node's cycle cap for the conformance review track, with no clearing word, so the way back is the compiled default's own number. |
 | `h9k config set --max-adversarial-review-cycles <N>` | Sets this node's cycle cap for the adversarial track, with the same resolution order and the same lack of a clearing word. |
@@ -1660,7 +1660,7 @@ live for the project on this node, no courier is already running, and a batching
 Urgent items (a park, a dispute, daemon trouble, a message from a person) go at once. Two settings
 tune it: `h9k project set <project> --courier-max-wait <seconds>|default` is that project's ceiling
 on the batching wait (sixty seconds by default), and `h9k config set --model-courier <model>` is the
-node's model for the role, which bottoms out at `claude-sonnet-5` and does not clear to the platform
+node's model for the role, which bottoms out at `claude-sonnet-5-5` and does not clear to the platform
 default. The mechanism is in [concepts.md's The feed courier](concepts.md#the-feed-courier).
 
 `register`/`deregister`/`status` are how the platform knows whether a window is actually up for a
