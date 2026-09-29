@@ -209,6 +209,29 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                 $"fetch origin \"+refs/pull/{request.PullRequestNumber}/head:{trackingRef}\"",
                 cancellationToken);
 
+            // A safe pre-flight verdict is bound to one judged oid (idea 6be68ee2, finding 1,
+            // phase two): GitHub's own read at pre-flight time and this fetch are two separate
+            // observations of the same pull request, and they can disagree if the head moved in
+            // the interval between them. Checked here, immediately after the fetch that could
+            // have observed a moved head, rather than trusted because a caller already read one
+            // fact about it earlier — the caller runs a fresh pre-flight against the oid actually
+            // observed here instead of proceeding with a checkout the verdict was never about.
+            if (request.ExpectedHeadOid.IsNotBlank())
+            {
+                (int revParseExit, string revParseOutput, _) = await TryRunGitAsync(
+                    repositoryPath, $"rev-parse {trackingRef}", cancellationToken);
+                string observedHeadOid = revParseOutput.Trim();
+                if (revParseExit != 0
+                    || !string.Equals(observedHeadOid, request.ExpectedHeadOid, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new PullRequestHeadMovedException(
+                        request.ExpectedHeadOid, observedHeadOid,
+                        $"Pull request #{request.PullRequestNumber}'s head moved: the pre-flight verdict was "
+                        + $"judged against {request.ExpectedHeadOid}, but this checkout's own fetch observed "
+                        + $"{(observedHeadOid.IsBlank() ? "no readable commit" : observedHeadOid)} instead.");
+                }
+            }
+
             string worktreePath = WorktreePathFor(repositoryPath, request.TaskId, request.RunId);
             await RunGitAsync(repositoryPath, $"worktree add --detach \"{worktreePath}\" {trackingRef}", cancellationToken);
 
