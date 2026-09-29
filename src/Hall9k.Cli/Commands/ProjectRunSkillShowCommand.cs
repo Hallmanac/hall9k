@@ -14,7 +14,9 @@ namespace Hall9k.Cli.Commands;
 /// (idea b9b09779, piece 4) — this node's own audit trail, never a live ledger read, the same
 /// reason <c>ProjectPromptAddendumShowCommand</c> reads the projection: the ledger is the
 /// daemon's to write and to fetch, and a CLI process that read it directly would need the
-/// project's remote reachable to answer a question the local store already holds.
+/// project's remote reachable to answer a question the local store already holds. Skill content
+/// is printed through <see cref="RenderedSkillContent"/>, not a raw <c>AnsiConsole.WriteLine</c>,
+/// since it can arrive from a discovery agent or another node.
 /// </summary>
 public sealed class ProjectRunSkillShowCommand : Hall9kAsyncCommand<ProjectRunSkillShowCommand.Settings>
 {
@@ -46,7 +48,7 @@ public sealed class ProjectRunSkillShowCommand : Hall9kAsyncCommand<ProjectRunSk
 
         AnsiConsole.MarkupLine($"Run skill for '{project.Name.EscapeMarkup()}' [dim]({skill.Shape.Value})[/]:");
         AnsiConsole.WriteLine();
-        AnsiConsole.WriteLine(ExternalText.ForTerminal(skill.Content));
+        AnsiConsole.WriteLine(RenderedSkillContent(skill.Content));
         AnsiConsole.WriteLine();
         Guid? thisNodeId = (await session.Query<NodeDetails>()
             .Where(candidate => candidate.MachineName == Environment.MachineName)
@@ -87,6 +89,17 @@ public sealed class ProjectRunSkillShowCommand : Hall9kAsyncCommand<ProjectRunSk
 
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// A run skill's content can arrive from a discovery agent or replicate in from another node,
+    /// so by the time it reaches this command it is outside text like an adopted issue body, not
+    /// something this node authored — hence the pass through <see cref="ExternalText.ForTerminal"/>
+    /// before <see cref="AnsiConsole.WriteLine(string)"/> ever sees it, the same gate
+    /// <c>TaskShowCommand</c> puts an adopted body through. Pulled out as its own pure method
+    /// so a test can pin the guarantee to this command's own rendering rather than to
+    /// <see cref="ExternalText.ForTerminal"/> in isolation.
+    /// </summary>
+    internal static string RenderedSkillContent(string content) => ExternalText.ForTerminal(content);
 
     /// <summary>
     /// What a project with no recorded skill is actually waiting on — told apart honestly rather
