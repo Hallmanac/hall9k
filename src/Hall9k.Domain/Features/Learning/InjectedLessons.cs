@@ -34,10 +34,11 @@ public sealed record InjectedLesson(Guid Id, string Statement, KnowledgeScope Sc
 
 /// <summary>
 /// How many lessons one provenance mark held out of a section. The mark travels with the count
-/// rather than the count alone, because the three held marks are three different claims: a lesson
-/// written on a machine this node does not control, one whose recording node nobody observed, and
-/// one whose stream carries no provenance at all. A section that reports a total and names only
-/// the first is guessing at the other two, which is the one thing this whole slice is not allowed
+/// rather than the count alone, because the held marks are different claims: a lesson written on a
+/// machine this node does not control, one replicated from outside this owner's fleet, one whose
+/// recording node nobody observed, and one whose stream carries no provenance at all. A section
+/// that reports a total and names only the first is guessing at the others, which is the one thing
+/// this whole slice is not allowed
 /// to do (AGENTS.md, never guess at unobserved facts; cycle-1 pre-PR review, both lenses).
 /// </summary>
 public sealed record HeldLessonCount(LessonProvenanceMark Mark, int Count);
@@ -122,12 +123,18 @@ public static class LessonInjection
     /// the prompt actually pays for, and a lesson is never truncated mid-claim: half a claim is a
     /// different claim, so a lesson that will not fit whole is held back whole and counted.
     /// </para>
+    /// <para>
+    /// <paramref name="localFleet"/> is the asking owner's fleet, and it is only consulted for a
+    /// lesson that was replicated here (<see cref="LearningDetails.ReceivedFromNodeId"/> non-null):
+    /// null means it could not be read, which holds those lessons rather than admitting them.
+    /// </para>
     /// </summary>
     public static InjectedLessons Compose(
         IReadOnlyList<LearningDetails> projectLessons,
         IReadOnlyList<LearningDetails> ownerLessons,
         Guid thisNodeId,
-        LessonInjectionCaps caps)
+        LessonInjectionCaps caps,
+        IReadOnlySet<Guid>? localFleet = null)
     {
         List<LearningDetails> active =
         [
@@ -142,7 +149,7 @@ public static class LessonInjection
         foreach (LearningDetails lesson in active)
         {
             LessonProvenanceMark mark = LessonProvenanceMark.Of(
-                lesson.Provenance, lesson.RecordedOnNodeId, thisNodeId);
+                lesson.Provenance, lesson.RecordedOnNodeId, thisNodeId, lesson.ReceivedFromNodeId, localFleet);
             if (!mark.ReachesAPrompt)
             {
                 heldForProvenance[mark] = heldForProvenance.GetValueOrDefault(mark) + 1;

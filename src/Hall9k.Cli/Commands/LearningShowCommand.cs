@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -96,8 +97,20 @@ public sealed class LearningShowCommand : Hall9kAsyncCommand<LearningShowCommand
             .Where(candidate => candidate.MachineName == machineName)
             .Take(1)
             .ToListAsync(cancellationToken)).FirstOrDefault();
+        // The fleet is read only for a lesson that was replicated here, and only a project-scoped
+        // one has a repository whose ledger can name it: an owner-scoped replicated lesson reads as
+        // outside the fleet here (fail closed), where the prompt feed, which knows the project it
+        // is composing for, may admit it.
+        IReadOnlySet<Guid>? localFleet = null;
+        if (learning.ReceivedFromNodeId is not null && learning.Scope == KnowledgeScope.Project && node is not null
+            && await session.LoadAsync<ProjectDetails>(learning.ScopeId, cancellationToken) is { } project)
+        {
+            localFleet = (await new LocalFleetSource(session, project, node.OwnerId).GetAsync(cancellationToken))?.NodeIds;
+        }
+
         LessonProvenanceMark mark = LessonProvenanceMark.Of(
-            learning.Provenance, learning.RecordedOnNodeId, node?.Id ?? Guid.Empty);
+            learning.Provenance, learning.RecordedOnNodeId, node?.Id ?? Guid.Empty, learning.ReceivedFromNodeId,
+            localFleet);
         // Only a project-scoped lesson resolves a label at all (task 21c8f2f3): LearningDetails
         // carries Scope/ScopeId rather than a ProjectId, and an owner-scoped or unrecorded-scope
         // lesson has no project whose member-labels projection could ever answer for it.

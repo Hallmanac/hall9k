@@ -61,7 +61,7 @@ public static class DesignReviewPromptBuilder
         // the prompt somebody typed for this particular run — and it reaches the design session at
         // all because `h9k task retry --reason` is as live on a pr-review task as on any other
         // (AgentPromptBuilder.BuildPrReviewLens's own comment).
-        WorkPromptBuilder.AppendOperatorGuidanceSection(prompt, request.Task);
+        WorkPromptBuilder.AppendOperatorGuidanceSection(prompt, request.Task, request.LocalFleet);
         AppendTaskContextSection(prompt, request.Task);
         AppendReferenceSection(prompt);
         AppendDesignSystemSection(prompt);

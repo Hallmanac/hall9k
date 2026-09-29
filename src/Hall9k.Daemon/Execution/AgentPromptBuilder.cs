@@ -132,12 +132,13 @@ public static class AgentPromptBuilder
         string? baseCommit = null,
         TimeSpan? commandTimeout = null,
         VoiceSkillName? voiceSkill = null,
-        InjectedLessons? lessons = null) =>
+        InjectedLessons? lessons = null,
+        LocalFleet? localFleet = null) =>
         WorkPromptBuilder.Build(
             task, project, branch, worktreePath, resumesPreviousWork, blockerContext, task.RetryReason,
             isHandback: task.ResumesFromHandback, interactiveMilestoneAddress: interactiveMilestoneAddress,
             baseBranch: baseBranch, baseCommit: baseCommit, commandTimeout: commandTimeout,
-            voiceSkill: voiceSkill, lessons: lessons);
+            voiceSkill: voiceSkill, lessons: lessons, localFleet: localFleet);
 
     /// <summary>
     /// A spike's own build session prompt (task: a spike is a run, not a walk) — the kind decides
@@ -452,7 +453,8 @@ public static class AgentPromptBuilder
     public static string BuildFollowUp(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
         string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null,
-        TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null, InjectedLessons? lessons = null)
+        TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null, InjectedLessons? lessons = null,
+        LocalFleet? localFleet = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         const string file = $"{TemplateDirectory}/follow-up.md";
@@ -470,7 +472,7 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
-        AppendOperatorGuidanceSection(prompt, task);
+        AppendOperatorGuidanceSection(prompt, task, localFleet);
 
         prompt.AppendLine(Fragment(file, "original-objective-heading"));
         prompt.AppendLine();
@@ -560,7 +562,8 @@ public static class AgentPromptBuilder
     public static string BuildReviewRequestedChanges(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
         string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null,
-        TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null, InjectedLessons? lessons = null)
+        TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null, InjectedLessons? lessons = null,
+        LocalFleet? localFleet = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         const string file = $"{TemplateDirectory}/review-requested-changes.md";
@@ -578,7 +581,7 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
-        AppendOperatorGuidanceSection(prompt, task);
+        AppendOperatorGuidanceSection(prompt, task, localFleet);
 
         prompt.AppendLine(Fragment(file, "original-objective-heading"));
         prompt.AppendLine();
@@ -887,7 +890,8 @@ public static class AgentPromptBuilder
     public static string BuildFixChecks(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
         string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null,
-        TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null, InjectedLessons? lessons = null)
+        TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null, InjectedLessons? lessons = null,
+        LocalFleet? localFleet = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         const string file = $"{TemplateDirectory}/fix-checks.md";
@@ -905,7 +909,7 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
-        AppendOperatorGuidanceSection(prompt, task);
+        AppendOperatorGuidanceSection(prompt, task, localFleet);
 
         prompt.AppendLine(Fragment(file, "original-objective-heading"));
         prompt.AppendLine();
@@ -979,6 +983,12 @@ public static class AgentPromptBuilder
     /// dispatches for an ordinary <c>FollowUpKind.Rebase</c> — the two callers are told apart
     /// below by this parameter's own presence, since a Build-role follow-up never carries one.
     /// </param>
+    /// <param name="humanResolutionIsForeign">
+    /// True when <paramref name="humanResolution"/> is a note another owner's node replicated
+    /// (already labelled and fenced by <see cref="ReplicatedNote.ForeignReviewResolution"/>): the
+    /// section then carries a heading and intro that say so instead of presenting it as this
+    /// owner's decision to apply.
+    /// </param>
     /// <param name="interactiveMilestoneAddress">
     /// R8's outbound-milestone address (task: agents on an interactive-mode task report outbound).
     /// <see cref="RunLauncher"/>'s own Build-role follow-up dispatch always passes null here (a
@@ -1005,7 +1015,8 @@ public static class AgentPromptBuilder
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
         string? humanResolution = null, string? interactiveMilestoneAddress = null,
         bool? interactiveModeEnabledOverride = null, string? baseBranch = null, string? baseCommit = null,
-        TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null, InjectedLessons? lessons = null)
+        TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null, InjectedLessons? lessons = null,
+        LocalFleet? localFleet = null, bool humanResolutionIsForeign = false)
     {
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
@@ -1039,13 +1050,14 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
-        AppendOperatorGuidanceSection(prompt, task);
+        AppendOperatorGuidanceSection(prompt, task, localFleet);
 
         if (humanResolution.IsNotBlank())
         {
-            prompt.AppendLine(Fragment(file, "human-decision-heading"));
+            string kind = humanResolutionIsForeign ? "foreign-decision" : "human-decision";
+            prompt.AppendLine(Fragment(file, $"{kind}-heading"));
             prompt.AppendLine();
-            AppendFragment(prompt, file, "human-decision-intro");
+            AppendFragment(prompt, file, $"{kind}-intro");
             prompt.AppendLine();
             prompt.AppendLine(humanResolution);
             prompt.AppendLine();
@@ -1549,13 +1561,16 @@ public static class AgentPromptBuilder
     /// once outside a <paramref name="precedesFirstReviewCycle"/> dispatch, so it defaults to true
     /// (the ordinary "conflicted, twice" shape) for every other caller.
     /// </param>
+    /// <param name="humanResolutionIsForeign">
+    /// See <see cref="BuildRebase"/>'s own parameter of the same name.
+    /// </param>
     public static string BuildPreFinalPassRebase(
         TaskDetails task, ProjectDetails project, string branch, CommitStyle commitStyle,
         string? pullRequestUrl, string? humanResolution = null, bool rebaseStillInProgress = false,
         string? baseBranch = null, TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null,
         string? assessmentGuidance = null, string? baseCommit = null, bool precedesFirstReviewCycle = false,
         bool mechanicalRetryAttempted = true,
-        InjectedLessons? lessons = null)
+        InjectedLessons? lessons = null, bool humanResolutionIsForeign = false)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         // Keyed to baseCommit's own presence, not to effectiveBaseBranch's name, unlike every other
@@ -1597,9 +1612,10 @@ public static class AgentPromptBuilder
 
         if (humanResolution.IsNotBlank())
         {
-            prompt.AppendLine(Fragment(file, "human-decision-heading"));
+            string kind = humanResolutionIsForeign ? "foreign-decision" : "human-decision";
+            prompt.AppendLine(Fragment(file, $"{kind}-heading"));
             prompt.AppendLine();
-            AppendFragment(prompt, file, "human-decision-intro");
+            AppendFragment(prompt, file, $"{kind}-intro");
             prompt.AppendLine();
             prompt.AppendLine(humanResolution);
             prompt.AppendLine();
@@ -1723,11 +1739,16 @@ public static class AgentPromptBuilder
     /// <see cref="ReviewPhase.SettlingGateRepairNeeded"/>): their guidance, inserted so the agent
     /// applies it rather than repeating whatever the earlier round(s) already tried.
     /// </param>
+    /// <param name="humanGuidanceIsForeign">
+    /// True when <paramref name="humanGuidance"/> is a note another owner's node replicated (already
+    /// labelled and fenced by <see cref="ReplicatedNote.ForeignReviewResolution"/>), so the section
+    /// says so rather than presenting it as this owner's guidance to apply.
+    /// </param>
     public static string BuildSettlingGateRepair(
         TaskDetails task, ProjectDetails project, string branch, CommitStyle commitStyle,
         string? pullRequestUrl, string baseBranch, string rebasedFromCommit, string rebasedOntoCommit,
         bool rebaseWasRecovered, string gateOutput, string? humanGuidance = null, TimeSpan? commandTimeout = null,
-        VoiceSkillName? voiceSkill = null, InjectedLessons? lessons = null)
+        VoiceSkillName? voiceSkill = null, InjectedLessons? lessons = null, bool humanGuidanceIsForeign = false)
     {
         const string file = $"{TemplateDirectory}/settling-gate-repair.md";
         StringBuilder prompt = new();
@@ -1747,9 +1768,10 @@ public static class AgentPromptBuilder
 
         if (humanGuidance.IsNotBlank())
         {
-            prompt.AppendLine(Fragment(file, "human-guidance-heading"));
+            string kind = humanGuidanceIsForeign ? "foreign-guidance" : "human-guidance";
+            prompt.AppendLine(Fragment(file, $"{kind}-heading"));
             prompt.AppendLine();
-            AppendFragment(prompt, file, "human-guidance-intro");
+            AppendFragment(prompt, file, $"{kind}-intro");
             prompt.AppendLine();
             prompt.AppendLine(humanGuidance);
             prompt.AppendLine();
@@ -2360,7 +2382,7 @@ public static class AgentPromptBuilder
     /// </summary>
     public static string BuildPrReviewLens(
         TaskDetails task, ProjectDetails project, string branch, ReviewLens lens, string baseBranch,
-        TimeSpan? commandTimeout = null)
+        TimeSpan? commandTimeout = null, LocalFleet? localFleet = null)
     {
         // A pr-review task retries through the same TaskDecider.Retry every other task type
         // does — nothing gates it to TaskType.PrReview — so an operator's `h9k task retry
@@ -2378,7 +2400,7 @@ public static class AgentPromptBuilder
         // same reasoning a settled park ruling already gets handed to both lenses for.
         const string file = $"{TemplateDirectory}/pr-review-lens.md";
         StringBuilder guidance = new();
-        AppendOperatorGuidanceSection(guidance, task);
+        AppendOperatorGuidanceSection(guidance, task, localFleet);
 
         return BuildReview(
             task, project, branch, cycle: 1, lens, priorRulings: null,
@@ -2941,7 +2963,7 @@ public static class AgentPromptBuilder
     private const int MaxPriorRulings = 8;
 
     /// <summary>How much of a human's own reason text rides in per ruling — a summary, not the reason restated in full.</summary>
-    private const int MaxRulingReasonLength = 500;
+    private const int MaxRulingReasonLength = ReplicatedNote.MaxReasonLength;
 
     /// <summary>
     /// What a fresh-context review pass is told about questions this task has already settled
@@ -3009,7 +3031,15 @@ public static class AgentPromptBuilder
         IReadOnlyList<HumanFixRecord>? priorHumanFixes = null)
     {
         const string file = $"{TemplateDirectory}/settled-rulings.md";
-        if (priorRulings is { Count: > 0 })
+        // A resolution another owner's node replicated is a note, not this owner's ruling: it never
+        // joins the settled list, whose merge-ready entries tell a reviewer not to re-raise a finding.
+        IReadOnlyList<ReviewParkResolution> ownRulings = priorRulings is null
+            ? []
+            : [.. priorRulings.Where(ruling => ruling.ForeignNote is null)];
+        IReadOnlyList<ReviewParkResolution> foreignRulings = priorRulings is null
+            ? []
+            : [.. priorRulings.Where(ruling => ruling.ForeignNote is not null)];
+        if (ownRulings.Count > 0)
         {
             prompt.AppendLine(Fragment(file, "rulings-heading"));
             prompt.AppendLine();
@@ -3018,12 +3048,27 @@ public static class AgentPromptBuilder
             AppendFragment(prompt, file, "rulings-dismissal-meaning", ("MergeReadyWord", "merge-ready"));
             AppendFragment(prompt, file, "rulings-confirmed-defect-meaning", ("NeedsFixesWord", "needs-fixes"));
             prompt.AppendLine();
-            foreach (ReviewParkResolution ruling in priorRulings.TakeLast(MaxPriorRulings))
+            foreach (ReviewParkResolution ruling in ownRulings.TakeLast(MaxPriorRulings))
             {
                 string verdict = ruling.Verdict == ReviewVerdict.MergeReady ? "merge-ready" : "needs-fixes";
                 string resolvedAt = ruling.ResolvedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                 prompt.AppendLine(
                     $"- Cycle {ruling.Cycle}, resolved {resolvedAt} as {verdict}: {PrintedReason(ruling)}");
+            }
+
+            prompt.AppendLine();
+        }
+
+        if (foreignRulings.Count > 0)
+        {
+            prompt.AppendLine(Fragment(file, "foreign-rulings-heading"));
+            prompt.AppendLine();
+            AppendFragment(prompt, file, "foreign-rulings-intro");
+            prompt.AppendLine();
+            foreach (ReviewParkResolution ruling in foreignRulings.TakeLast(MaxPriorRulings))
+            {
+                string resolvedAt = ruling.ResolvedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                prompt.AppendLine($"- Cycle {ruling.Cycle}, resolved {resolvedAt}: {ruling.ForeignNote}");
             }
 
             prompt.AppendLine();
@@ -3143,7 +3188,8 @@ public static class AgentPromptBuilder
         priorRulings is null
             ? []
             : [.. priorRulings.TakeLast(MaxPriorRulings)
-                .Where(ruling => ruling.Verdict == ReviewVerdict.MergeReady && ruling.Reason.IsNotBlank())
+                .Where(ruling => ruling.ForeignNote is null
+                    && ruling.Verdict == ReviewVerdict.MergeReady && ruling.Reason.IsNotBlank())
                 .Select(PrintedReason)];
 
     /// <summary>

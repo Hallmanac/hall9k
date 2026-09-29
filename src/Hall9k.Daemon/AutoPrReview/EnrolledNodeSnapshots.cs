@@ -14,12 +14,15 @@ namespace Hall9k.Daemon.AutoPrReview;
 /// <see cref="MembersWithoutDeclaredAccount"/> names, for a park card's sake, every current member
 /// none of whose nodes has declared one at all — a fleet on a version before v0.10.54, or one not
 /// restarted since — so that member's own parked pull requests can say what is actually missing
-/// rather than a bare "not a member".
+/// rather than a bare "not a member". <see cref="Chain"/> is the chain those were computed from, kept
+/// so a prompt can name the owner behind a replicated note without a second ledger read
+/// (<see cref="LocalFleetProvider"/>); it is a label source only.
 /// </summary>
 public sealed record EnrolledFleetSnapshot(
     IReadOnlyCollection<Guid> FleetNodeIds,
     IReadOnlyCollection<long> MemberAccountIds,
-    IReadOnlyCollection<string> MembersWithoutDeclaredAccount);
+    IReadOnlyCollection<string> MembersWithoutDeclaredAccount,
+    TrustChain? Chain = null);
 
 /// <summary>
 /// The trust chain the message sweep last computed for each project, held in process so
@@ -98,7 +101,7 @@ public sealed class EnrolledNodeSnapshots
             }
         }
 
-        _byProject[projectId] = new EnrolledFleetSnapshot(fleet, memberAccountIds, membersWithoutDeclaredAccount);
+        _byProject[projectId] = new EnrolledFleetSnapshot(fleet, memberAccountIds, membersWithoutDeclaredAccount, chain);
     }
 
     /// <summary>The last recorded snapshot for the project, or null when there is none.</summary>

@@ -1,7 +1,9 @@
 using System.Text;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Connectors.Worktrees;
@@ -58,7 +60,8 @@ public sealed class PrReviewEngine(
     IWorktreeManager worktrees,
     LaunchHoldEngine launchHold,
     IOptions<DaemonOptions> options,
-    ILogger<PrReviewEngine> logger)
+    ILogger<PrReviewEngine> logger,
+    LocalFleetProvider? fleets = null)
 {
     private readonly DaemonOptions _options = options.Value;
 
@@ -697,8 +700,13 @@ public sealed class PrReviewEngine(
         // it on the stream — a project that has one at this instant and had one at dispatch is
         // the ordinary case, and the decision above, not this read, is what the report describes.
         string? runSkill = drive.Drives ? ProjectRunSkillReader.Read(project) : null;
+        // Read only when the retry reason this lens quotes has a replicated sender to judge; null
+        // (not known) fences it.
+        LocalFleet? localFleet = ReplicatedNote.CarriesSender(task) && fleets is not null
+            ? await fleets.GetAsync(project.Id, cancellationToken)
+            : null;
         string prompt = personaSession.BuildPrompt(new ReviewPersonaPromptRequest(
-            task, project, run.Branch, baseBranch, _options.VerifyGateTimeout, drive, runSkill));
+            task, project, run.Branch, baseBranch, _options.VerifyGateTimeout, drive, runSkill, localFleet));
 
         // The QA session's own earned exception (security review idea 6be68ee2,
         // process-injection finding 1; Brian's ruling 2026-09-27): the project's own recorded

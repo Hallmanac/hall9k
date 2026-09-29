@@ -209,15 +209,18 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // and depth-one reader both surfaces already agree on — h9k task show pastes the same
         // unsynthesized document into its own "Starting context" screen (Decisions Log #36) —
         // so an operator's session gets the real context rather than none at all.
-        string? blockerContext = await LoadBlockerContextAsync(session, taskDetails, cancellationToken);
+        LocalFleetSource fleet = new(session, project, context.OwnerId);
+        string? blockerContext = await LoadBlockerContextAsync(session, taskDetails, fleet, cancellationToken);
         // The same lesson section a headless dispatch composes (idea d805fd8b, piece 5), through
         // the same Domain read: an interactive claim cuts its own worktree outside dispatch, so it
         // gets no rendered lessons.md there, which makes the injected section the only route this
         // session's own lessons take.
-        InjectedLessons lessons = await LessonPromptFeed.LoadAsync(session, project.Id, cancellationToken);
+        InjectedLessons lessons = await LessonPromptFeed.LoadAsync(
+            session, project.Id, fleet.LessonReader, cancellationToken);
         string prompt = WorkPromptBuilder.Build(
             taskDetails, project, branch, worktreePath, resumesPreviousWork, blockerContext, taskDetails.RetryReason,
-            isInteractive: true, requiresSelfRegistration: !settings.DirectLaunch, lessons: lessons);
+            isInteractive: true, requiresSelfRegistration: !settings.DirectLaunch, lessons: lessons,
+            localFleet: await fleet.GetIfCarriedByAsync(taskDetails, cancellationToken));
 
         // The same settings file every headless spawn writes (ClaudeExecutor), so the
         // platform-imposed overrides — no co-authored-by trailers (PLAN.md §6.6), and command-tool
@@ -526,15 +529,16 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
     /// <summary>Internal rather than private: <see cref="TaskStartCommand"/> shares this exact load (task 8a56af78-h9k).</summary>
     internal static async Task<string?> LoadBlockerContextAsync(
-        IDocumentSession session, TaskDetails taskDetails, CancellationToken cancellationToken)
+        IDocumentSession session, TaskDetails taskDetails, LocalFleetSource fleet, CancellationToken cancellationToken)
     {
         if (taskDetails.BlockedBy.Count == 0)
         {
             return null;
         }
 
-        IReadOnlyList<BlockerHandoff> handoffs = await BlockerHandoffQuery.LoadAsync(
-            session, taskDetails.BlockedBy, cancellationToken);
+        IReadOnlyList<BlockerHandoff> handoffs = await BlockerHandoffFencing.ApplyAsync(
+            await BlockerHandoffQuery.LoadAsync(session, taskDetails.BlockedBy, cancellationToken),
+            fleet.Reader, cancellationToken);
         if (BlockerContextDocument.Render(handoffs) is not { } context)
         {
             return null;

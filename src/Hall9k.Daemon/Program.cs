@@ -212,7 +212,8 @@ builder.Services.AddSingleton(services => new ReviewEngine(
     services.GetRequiredService<StackedParentWatch>(),
     services.GetRequiredService<LaunchHoldEngine>(),
     services.GetRequiredService<IPullRequestInspector>(),
-    services.GetRequiredService<CloseoutEngine>()));
+    services.GetRequiredService<CloseoutEngine>(),
+    services.GetRequiredService<LocalFleetProvider>()));
 builder.Services.AddSingleton<PrReviewEngine>();
 builder.Services.AddSingleton<SpikeEngine>();
 builder.Services.AddSingleton<PullRequestOpener>();
@@ -269,6 +270,7 @@ builder.Services.AddSingleton<PrReviewFollowThroughEngine>();
 builder.Services.AddSingleton<CloseoutEngine>();
 builder.Services.AddSingleton<PullRequestReviewDuplicateConvergence>();
 builder.Services.AddSingleton<EnrolledNodeSnapshots>();
+builder.Services.AddSingleton<LocalFleetProvider>();
 builder.Services.AddSingleton<AutoPrReviewEngine>();
 builder.Services.AddSingleton<CardPublicationEngine>();
 builder.Services.AddSingleton<JiraWriteRetryEngine>();

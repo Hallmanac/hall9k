@@ -1,3 +1,4 @@
+using Hall9k.Connectors.Prompts;
 using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -29,9 +30,15 @@ namespace Hall9k.Daemon.Review;
 /// two ways: the decision's boolean is what the run records and the report reads, and this is the
 /// text the prompt carries.
 /// </param>
+/// <param name="LocalFleet">
+/// The local owner's fleet, read only when the task's retry reason or handoff note carries a
+/// replicated sender (<see cref="ReplicatedNote.CarriesSender"/>): the retry reason a lens quotes is
+/// fenced as another node's note unless its verified sender is in it. Null means not known, which
+/// fences a replicated reason and leaves a native one alone.
+/// </param>
 public sealed record ReviewPersonaPromptRequest(
     TaskDetails Task, ProjectDetails Project, string Branch, string BaseBranch, TimeSpan? CommandTimeout,
-    ReviewDriveDecision? Drive = null, string? RunSkill = null);
+    ReviewDriveDecision? Drive = null, string? RunSkill = null, LocalFleet? LocalFleet = null);
 
 /// <summary>
 /// One agent session a persona's review is made of. Most personas are one session; the engineer's
@@ -478,5 +485,6 @@ public static class ReviewPersonaRegistry
 
     private static string BuildLens(ReviewPersonaPromptRequest request, ReviewLens lens) =>
         AgentPromptBuilder.BuildPrReviewLens(
-            request.Task, request.Project, request.Branch, lens, request.BaseBranch, request.CommandTimeout);
+            request.Task, request.Project, request.Branch, lens, request.BaseBranch, request.CommandTimeout,
+            request.LocalFleet);
 }
