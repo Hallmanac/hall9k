@@ -2,6 +2,7 @@ using Hall9k.Domain.Features.Decision;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Learning;
+using Hall9k.Domain.Features.PrReviewPreflight;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -31,6 +32,7 @@ public enum ReplicationStreamFamily
     Run,
     Decision,
     Learning,
+    PrReviewPreflight,
 }
 
 /// <summary>One project-scoped event's own project (for the outbound flush), the current
@@ -117,6 +119,19 @@ public sealed class ReplicationProjectResolver
             return new ReplicationOwnership(
                 owningTask?.ProjectId, owningTask?.Scope ?? ReplicationScope.Team, TaskId: run.TaskId,
                 Family: ReplicationStreamFamily.Run);
+        }
+
+        // The pull-request review pre-flight's own stream (idea 6be68ee2, finding 1, phase one) is
+        // keyed by the pre-flight's own id, never the task's, the identical "resolve by the owning
+        // task" shape Run's own branch just above uses — without this branch these events resolved
+        // to no project at all and never reached an outbox, whatever EventScopeRegistry's own
+        // ProjectScoped classification said (independent pre-PR review, cycle 1, both lenses).
+        if (await session.LoadAsync<PrReviewPreflightDetails>(streamId, cancellationToken) is { } preflight)
+        {
+            TaskDetails? owningTask = await session.LoadAsync<TaskDetails>(preflight.TaskId, cancellationToken);
+            return new ReplicationOwnership(
+                owningTask?.ProjectId, owningTask?.Scope ?? ReplicationScope.Team, TaskId: preflight.TaskId,
+                Family: ReplicationStreamFamily.PrReviewPreflight);
         }
 
         // Idea d805fd8b, piece 1. The scope coordinate IS the project for a project-scoped

@@ -367,12 +367,24 @@ public static class EventScopeRegistry
         // Hall9k.Domain.Features.PrReviewPreflight — idea 6be68ee2, finding 1, phase one: unlike
         // the courier above, a pre-flight's own verdict is a fact about a project-scoped task any
         // fleet node may reclaim once its lease is released (RequeueReason.PrReviewPreflightSafe/
-        // PrReviewPreflightRetry) — the node that dispatched the pre-flight and the node that next
-        // claims the task are not guaranteed to be the same one, so this travels rather than
-        // staying node-local the way a courier's own delivery does.
+        // PrReviewPreflightRetry/PrReviewPreflightSafeMentionFollowUp) — the node that dispatched
+        // the pre-flight and the node that next claims the task are not guaranteed to be the same
+        // one, so this travels rather than staying node-local the way a courier's own delivery
+        // does. Resolved by ReplicationProjectResolver's own PrReviewPreflightDetails branch (the
+        // stream is keyed by the pre-flight's own id, not the task's, so it needs a dedicated
+        // lookup by TaskId the way Run's own branch resolves by task rather than by itself);
+        // without that branch these three never actually reached an outbox, whatever this
+        // classification said (independent pre-PR review, cycle 1, both lenses).
         [typeof(PrReviewPreflightDispatched)] = EventScope.ProjectScoped,
-        [typeof(PrReviewPreflightProcessStarted)] = EventScope.ProjectScoped,
         [typeof(PrReviewPreflightCompleted)] = EventScope.ProjectScoped,
+        [typeof(PrReviewPreflightAbandoned)] = EventScope.ProjectScoped,
+        // A pid-and-start-time liveness marker with the identical shape Decisions Log #192
+        // classifies node-scoped by mechanics rather than by the stream it sits on
+        // (RunProcessStarted, WorkItemPublicationSessionStarted): meaningless read from another
+        // node, and never needed there — a fleet node that reclaims this task after a safe verdict
+        // reads the verdict alone, never which pid ran it (independent pre-PR review, cycle 1,
+        // adversarial lens).
+        [typeof(PrReviewPreflightProcessStarted)] = EventScope.NodeScoped,
 
         // Hall9k.Domain.Features.Message — idea 202383dc, M1a: messages are ephemeral, ruled
         // 2026-09-13 ("read receipts and bookmark announcements are dead ... messages are
