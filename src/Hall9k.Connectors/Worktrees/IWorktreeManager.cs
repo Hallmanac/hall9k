@@ -46,8 +46,12 @@ public sealed record PrReviewWorktreeRequest(
     /// phase two), checked against the tracking ref this fetch actually observes — GitHub's own
     /// read (<c>PullRequestFacts.HeadRefOid</c>) and this checkout's own fetch of
     /// <c>refs/pull/&lt;n&gt;/head</c> are two separate observations that can disagree if the head
-    /// moved in between. Null skips the check entirely — the mention follow-up and every other
-    /// caller that predates the pre-flight gate.
+    /// moved in between. Null or blank both skip the check entirely
+    /// (<c>GitWorktreeManager</c> reads it with <c>IsNotBlank</c>, not a null check alone) — every
+    /// caller outside the daemon's own pre-flight-gated dispatch, such as <c>h9k pr review</c>'s
+    /// interactive checkout, which never runs the pre-flight at all. The mention follow-up is not
+    /// one of these: it passes <c>facts.HeadRefOid</c> the same as the ordinary pr-review dispatch
+    /// does, since it runs through the identical pre-flight gate (<c>RunLauncher.EnsurePrReviewPreflightSafeAsync</c>).
     /// </summary>
     string? ExpectedHeadOid = null);
 
