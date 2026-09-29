@@ -3163,6 +3163,165 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             + "unrequested full review instead of answering the comment");
     }
 
+    /// <summary>
+    /// Independent pre-PR review, cycle 3, conformance lens: the only pre-flight monitor-path test
+    /// on record before this one drove the safe branch of <c>CompletePreflightAsync</c>; nothing
+    /// drove its unsafe branch (<see cref="TaskDecider.ParkPrReviewPreflight"/>, the lease delete,
+    /// the return to Published) from an actual session result. A regression narrowing that branch
+    /// would pass the suite without this.
+    /// </summary>
+    [Fact]
+    public async Task A_genuine_unsafe_verdict_parks_the_task_with_nothing_checked_out()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, DomainId.New(), "Review pull request acme/web#8", ["the verdict is submitted"],
+                    TaskType.PrReview, null, constraints: null,
+                    new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#8"), Now, node.OwnerId),
+                node.OwnerId, Now);
+            TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid preflightRunId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
+                preflightRunId, taskId, node.NodeId, "claude-opus-5-5", "abc123", ["src/Auth/Login.cs"], Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        int processId = SpawnFakeAgent(preflightRunId, FakeAgentScript.New().Emit(AssistantLine).Emit(
+            """{"type":"result","subtype":"success","is_error":false,"result":"Looks risky.\n\nPREFLIGHT: unsafe - the workflow file grants secrets to a forked pull request.","usage":{"input_tokens":1,"output_tokens":1}}"""));
+        DateTimeOffset startedAt;
+        try
+        {
+            using Process process = Process.GetProcessById(processId);
+            startedAt = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or Win32Exception)
+        {
+            startedAt = DateTimeOffset.UtcNow;
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(preflightRunId, new PrReviewPreflightProcessStarted(preflightRunId, processId, startedAt));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        NewSupervisor(store, node).StartPreflightMonitoring(preflightRunId, taskId, processId, startedAt, cts.Token);
+
+        TaskDetails parked = await WaitForTaskStateAsync(store, taskId, TaskState.Published, cts.Token);
+        parked.ClaimedByNodeId.Should().BeNull("an unsafe verdict gives the claim back in the same write");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull("an unsafe park deletes the lease");
+        (await query.LoadAsync<RunDetails>(runId, cts.Token)).Should().BeNull(
+            "nothing was ever checked out — the pre-flight parked before any worktree was cut");
+
+        TaskListItem listItem = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        listItem.PrReviewPreflightUnsafe.Should().BeTrue();
+        listItem.PrReviewPreflightParkedVerdict.Should().Be("unsafe");
+        listItem.PrReviewPreflightParkedReason.Should().Contain("the workflow file grants secrets to a forked pull request.");
+        listItem.PrReviewPreflightParkedSurfaces.Should().Contain("src/Auth/Login.cs");
+    }
+
+    /// <summary>
+    /// The other two ways a pre-flight session's own result reads as unsafe by construction
+    /// (<see cref="PrReviewPreflightVerdictParser"/>): a marker value that is neither exactly
+    /// "safe" nor "unsafe" (unparseable), and a bare "unsafe" with no reason at all — "unsafe"
+    /// contains "safe" as a substring, the hazard the parser exists to avoid. Both must still park,
+    /// end to end, from an actual session result rather than only through the parser's own unit
+    /// tests.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "Not sure either way.\n\nPREFLIGHT: maybe - not sure honestly",
+        "neither 'safe' nor 'unsafe'")]
+    [InlineData(
+        "PREFLIGHT: unsafe",
+        "")]
+    public async Task A_malformed_marker_and_a_bare_unsafe_marker_both_park(string result, string expectedReasonSubstring)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, DomainId.New(), "Review pull request acme/web#9", ["the verdict is submitted"],
+                    TaskType.PrReview, null, constraints: null,
+                    new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#9"), Now, node.OwnerId),
+                node.OwnerId, Now);
+            TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid preflightRunId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
+                preflightRunId, taskId, node.NodeId, "claude-opus-5-5", "def456", [], Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        int processId = SpawnFakeAgent(preflightRunId, FakeAgentScript.New().Emit(AssistantLine).Emit(
+            JsonSerializer.Serialize(new
+            {
+                type = "result",
+                subtype = "success",
+                is_error = false,
+                result,
+                usage = new { input_tokens = 1, output_tokens = 1 },
+            })));
+        DateTimeOffset startedAt;
+        try
+        {
+            using Process process = Process.GetProcessById(processId);
+            startedAt = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or Win32Exception)
+        {
+            startedAt = DateTimeOffset.UtcNow;
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(preflightRunId, new PrReviewPreflightProcessStarted(preflightRunId, processId, startedAt));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        NewSupervisor(store, node).StartPreflightMonitoring(preflightRunId, taskId, processId, startedAt, cts.Token);
+
+        await WaitForTaskStateAsync(store, taskId, TaskState.Published, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull();
+        TaskListItem listItem = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        listItem.PrReviewPreflightUnsafe.Should().BeTrue("neither a malformed marker nor a bare 'unsafe' is ever read as safe");
+        if (!string.IsNullOrEmpty(expectedReasonSubstring))
+        {
+            listItem.PrReviewPreflightParkedReason.Should().Contain(expectedReasonSubstring);
+        }
+    }
+
     private static string DisputedResultLine(string summary) =>
         JsonSerializer.Serialize(new
         {
