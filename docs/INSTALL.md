@@ -24,10 +24,15 @@ demand (`h9k daemon start` / `stop`), and start-at-login is a separate, explicit
 
 ## Prerequisites
 
-- **`gh`, the GitHub CLI, authenticated** (`gh auth login`) — Hall9k's releases live in this
-  repository, and reading them (a private repo especially) needs a logged-in `gh`. Nothing
-  else is required: no repo checkout, no .NET SDK, no Docker (Docker is only needed later,
-  for Postgres, and `h9k doctor` teaches that at the moment it matters).
+- **`gh`, the GitHub CLI, authenticated** (`gh auth login`), **2.68.0 or newer** — Hall9k's
+  releases live in this repository, and reading them (a private repo especially) needs a
+  logged-in `gh`. `h9k update` also verifies each release archive's artifact attestation before
+  installing it, pinned to the release's tag and to the workflow that built it, and refuses to
+  install an archive without a valid attestation; that verification needs 2.68.0 for the
+  `gh attestation verify` flags it passes (`--source-ref`, `--signer-workflow`), a newer minimum
+  than the 2.49.0 that first shipped `gh attestation` itself. Nothing else is required: no repo
+  checkout, no .NET SDK, no Docker (Docker is only needed later, for Postgres, and `h9k doctor`
+  teaches that at the moment it matters).
 - macOS (arm64), Windows (x64 or ARM64), or Linux (x64). Other platforms are not built by `release.yml`.
   On Windows ARM64 (for example Windows in Parallels on an Apple silicon Mac) `install.ps1` picks the
   `win-arm64` release by itself, and `h9k update` does the same afterward.
@@ -139,8 +144,10 @@ h9k update
 ```
 
 This is `h9k install --from-release`'s download half, wired to the same idempotent finish:
-it fetches the latest release for your platform via `gh`, verifies the checksum, republishes
-the binaries, the canonical skill set, and the canonical template set, and offers to restart
+it fetches the latest release for your platform via `gh`, verifies its artifact attestation
+(pinned to the resolved tag and to the release workflow) and then its checksum, refusing to
+install an archive that fails either check, republishes the binaries, the canonical skill set,
+and the canonical template set, and offers to restart
 onto the fresh binaries, whether or not a daemon was already running — no repo checkout, no
 .NET SDK, on the machine that runs it. `h9k update
 --restart` skips the restart prompt and always runs the hand-off, even on a machine whose

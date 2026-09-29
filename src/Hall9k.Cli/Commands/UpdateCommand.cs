@@ -357,15 +357,18 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
             return null;
         }
 
-        // gh 2.49.0 is where `gh attestation` first shipped (AC: the Mac this was written on
-        // carries 2.100.0; an older gh — Windows unconfirmed at the time of writing — reports the
-        // subcommand itself as unrecognized) — this is not a failed verification, it is gh being
-        // unable to attempt one at all, so it gets its own message rather than being reported as
-        // an unattested or tampered release.
-        if (verify.StandardError.Contains("unknown command", StringComparison.OrdinalIgnoreCase))
+        // gh 2.49.0 is where `gh attestation` first shipped, but --source-ref and --signer-workflow
+        // (both passed above) need 2.68.0 (cli/cli#10308) — a gh between those two versions has the
+        // subcommand but not the flags, and reports "unknown flag" rather than "unknown command" (AC:
+        // the Mac this was written on carries 2.100.0; an older gh — Windows unconfirmed at the time
+        // of writing — reports one of the two). Either wording means gh is unable to attempt a
+        // verification at all, so it gets its own message rather than being reported as an unattested
+        // or tampered release.
+        if (verify.StandardError.Contains("unknown command", StringComparison.OrdinalIgnoreCase)
+            || verify.StandardError.Contains("unknown flag", StringComparison.OrdinalIgnoreCase))
         {
             await Console.Error.WriteLineAsync(
-                "gh is too old to verify a release attestation — attestation support needs gh 2.49.0 or newer. "
+                "gh is too old to verify a release attestation — attestation support needs gh 2.68.0 or newer. "
                 + "Upgrade gh from https://cli.github.com and run h9k update again.");
             return ExitCodes.Error;
         }

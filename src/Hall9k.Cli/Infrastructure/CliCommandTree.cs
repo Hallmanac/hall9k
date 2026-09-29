@@ -754,7 +754,8 @@ public static class CliCommandTree
                 + "to that tag and to release.yml) and its checksum, republish binaries and the canonical "
                 + "skill set through the same idempotent path as h9k install --from-release, and offer the "
                 + "daemon restart — no repo checkout, no .NET SDK. gh must be authenticated against the "
-                + "release's repository and no older than 2.49.0 (attestation support); an unattested or "
+                + "release's repository and no older than 2.68.0 (attestation support with --source-ref and "
+                + "--signer-workflow); an unattested or "
                 + "tampered archive is refused outright, with no flag to skip that check (backlog 42, "
                 + "security review idea 6be68ee2).")
             .WithExample("update")

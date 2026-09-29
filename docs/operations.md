@@ -41,10 +41,13 @@ The mechanism, in short:
   needs attention (almost always: a Postgres connection string — see [Postgres](#postgres) below)
   rather than declaring victory silently.
 - **`h9k update`** is the one-command path for a machine that already has `h9k`: it fetches the
-  latest release for the platform via `gh`, verifies the checksum, republishes binaries and the
-  skill set through the same `--from-release` finish, and offers to restart onto the fresh
-  binaries whether or not a daemon was already running — no repo checkout, no .NET SDK, on the
-  machine that runs it. A CLI call made between the republished binary and that restart fails
+  latest release for the platform via `gh`, verifies its artifact attestation (pinned to the
+  resolved tag and to the release workflow) and then the checksum, refusing to install an archive
+  that fails either check, republishes binaries and the skill set through the same
+  `--from-release` finish, and offers to restart onto the fresh binaries whether or not a daemon
+  was already running — no repo checkout, no .NET SDK, on the machine that runs it. `gh` must be
+  2.68.0 or newer for the attestation verification's flags. A CLI call made between the
+  republished binary and that restart fails
   once against a schema the new binary reads as stale, with the doctor's own message pointing at
   `h9k doctor --yes`; taking the restart offer clears it, because the restart runs
   `h9k doctor --yes` itself between the stop and the start, even on a node whose daemon was
