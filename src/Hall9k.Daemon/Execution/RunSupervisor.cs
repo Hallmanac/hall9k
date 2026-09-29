@@ -308,7 +308,7 @@ public sealed class RunSupervisor(
         {
             session.Events.Append(taskId, TaskDecider.ParkPrReviewPreflight(
                 task, preflight?.Surfaces ?? [], preflight?.HeadRefOid ?? string.Empty, verdict.Verdict,
-                verdict.Reason, now));
+                verdict.Reason, now, preflight?.IsMentionFollowUp == true));
         }
 
         session.Delete<TaskLease>(taskId);

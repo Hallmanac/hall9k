@@ -4181,6 +4181,72 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         (await query.LoadAsync<RunDetails>(runId, cts.Token)).Should().BeNull("nothing was ever checked out");
     }
 
+    /// <summary>
+    /// Independent pre-PR review, cycle 7, conformance lens (RunLauncher.cs:1935): a still-in-flight
+    /// pre-flight dispatched under an earlier claim (a long daemon restart can expire that claim's
+    /// lease while its detached process keeps running) must not leave a fresh reclaim stranded
+    /// Claimed forever with nothing running to release it. The in-flight gate retargets the row's
+    /// own <see cref="PrReviewPreflightDetails.DispatchingRunId"/> to the fresh claim instead of
+    /// silently doing nothing, so <c>RunSupervisor.CompletePreflightAsync</c> recognizes the fresh
+    /// claim as its own once this pre-flight finally reaches a verdict.
+    /// </summary>
+    [Fact]
+    public async Task A_still_in_flight_preflight_from_a_superseded_claim_is_reclaimed_for_the_fresh_one()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid staleRunId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 915, cts.Token);
+
+        Guid freshRunId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate aggregate = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            // The restart-and-reclaim shape RunLauncher.cs:1935's own doc describes: the stale
+            // claim's lease expired and a fresh claim was granted while the pre-flight dispatched
+            // under the stale one is still genuinely running.
+            TaskRequeued requeued = TaskDecider.Requeue(aggregate, RequeueReason.LeaseExpired, Now);
+            aggregate.Apply(requeued);
+            TaskClaimed claimed2 = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, freshRunId, Now);
+            aggregate.Apply(claimed2);
+            session.Events.Append(taskId, requeued, claimed2);
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = claimed2.LeaseGeneration, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid preflightRunId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Events.StartStream(preflightRunId, new PrReviewPreflightDispatched(
+                preflightRunId, taskId, staleRunId, node.NodeId, "claude-opus-5-5", string.Empty, ["Dockerfile"],
+                DateTimeOffset.UtcNow));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(
+            PullRequestPreflightJson.Replace("901", "915", StringComparison.Ordinal));
+        RunLauncher launcher = new(store, new RefusingWorktreeManager(), new RefusingExecutor(),
+            NewSupervisor(store, node), NewContextAssembler(store), new MergedInspector(),
+            NewCloseoutEngine(store, node, new MergedInspector(), new RefusingWorktreeManager()),
+            NewPullRequestOpener(store), gh.Runner, Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, freshRunId, node.NodeId, node.OwnerId, 2, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        PrReviewPreflightDetails preflight = (await query.LoadAsync<PrReviewPreflightDetails>(preflightRunId, cts.Token))!;
+        preflight.DispatchingRunId.Should().Be(
+            freshRunId, "the still-running pre-flight is retargeted to the claim that is actually live now, "
+            + "so its own eventual verdict is not silently dropped on the floor");
+
+        TaskListItem stillClaimed = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        stillClaimed.State.Should().Be(
+            TaskState.Claimed, "the fresh claim gates on the same still-running pre-flight rather than dispatching a second one");
+        stillClaimed.CurrentRunId.Should().Be(freshRunId);
+    }
+
     /// <summary>Idea 6be68ee2, finding 1, phase two: the mention follow-up site is gated identically to the ordinary dispatch — it refuses to cut a checkout without a safe verdict.</summary>
     [Fact]
     public async Task The_mention_follow_up_site_refuses_a_checkout_without_a_verdict()

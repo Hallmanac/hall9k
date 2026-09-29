@@ -1931,6 +1931,25 @@ public sealed class RunLauncher(
             // below instead: it never will complete, and treating it as still in flight left this
             // task claimed-and-requeued forever with no pre-flight ever running again (independent
             // pre-PR review, cycle 1, both lenses).
+            //
+            // The row's own DispatchingRunId can still name an earlier, superseded claim: a
+            // restart long enough to expire this task's lease leaves the detached pre-flight
+            // process running underneath it, and the claim that reclaims the task afterward
+            // (runId, the one this method was called for) has nothing else of its own that will
+            // ever reach a verdict. Without retargeting the row here, RunSupervisor.CompletePreflightAsync
+            // and AbandonPreflightAsync both find the task claimed under a run that no longer
+            // matches DispatchingRunId once this pre-flight finally finishes, and leave the
+            // reclaimed task Claimed for good (independent pre-PR review, cycle 7, conformance
+            // lens, RunLauncher.cs:1935). The pre-flight itself is left running exactly as it was —
+            // only the claim it will report back to changes.
+            if (inFlight.DispatchingRunId != runId)
+            {
+                await using IDocumentSession reclaimSession = store.LightweightSession();
+                reclaimSession.Events.Append(
+                    inFlight.Id, new PrReviewPreflightReclaimed(inFlight.Id, runId, DateTimeOffset.UtcNow));
+                await reclaimSession.SaveChangesAsync(cancellationToken);
+            }
+
             return false;
         }
 
@@ -1996,7 +2015,7 @@ public sealed class RunLauncher(
                     task.Id, facts,
                     $"gh could not read this pull request's diff, so the pre-flight has nothing to judge: "
                     + $"{exception.Message}",
-                    cancellationToken);
+                    isMentionFollowUp, cancellationToken);
                 return;
             }
 
@@ -2101,10 +2120,13 @@ public sealed class RunLauncher(
     /// nothing is appended to a <see cref="PrReviewPreflightDetails"/> stream here; the task's own
     /// stream carries the whole story via the identical <see cref="PrReviewPreflightParked"/>
     /// event a genuine unsafe verdict uses, so <c>AttentionComposer</c> renders one park card
-    /// either way.
+    /// either way. <paramref name="isMentionFollowUp"/> carries the same flag a genuine verdict's
+    /// own park does (independent pre-PR review, cycle 7, adversarial lens), so a park from here
+    /// loses a mention follow-up no less than one from an actual verdict would.
     /// </summary>
     private async Task ParkUnreadableDiffPreflightAsync(
-        Guid taskId, PullRequestFacts facts, string reason, CancellationToken cancellationToken)
+        Guid taskId, PullRequestFacts facts, string reason, bool isMentionFollowUp,
+        CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
@@ -2114,7 +2136,7 @@ public sealed class RunLauncher(
         }
 
         session.Events.Append(taskId, TaskDecider.ParkPrReviewPreflight(
-            task, surfaces: [], facts.HeadRefOid, "unreadable", reason, DateTimeOffset.UtcNow));
+            task, surfaces: [], facts.HeadRefOid, "unreadable", reason, DateTimeOffset.UtcNow, isMentionFollowUp));
         session.Delete<TaskLease>(taskId);
         await session.SaveChangesAsync(cancellationToken);
 

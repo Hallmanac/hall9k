@@ -66,4 +66,9 @@ public sealed partial class PrReviewPreflightDetailsProjection : SingleStreamPro
     {
         view.AbandonedAt = @event.Data.AbandonedAt;
     }
+
+    public void Apply(IEvent<PrReviewPreflightReclaimed> @event, PrReviewPreflightDetails view)
+    {
+        view.DispatchingRunId = @event.Data.DispatchingRunId;
+    }
 }
