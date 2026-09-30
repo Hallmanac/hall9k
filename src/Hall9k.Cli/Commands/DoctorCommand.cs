@@ -19,7 +19,7 @@ namespace Hall9k.Cli.Commands;
 /// it will. The port-binding check runs unconditionally too, on every invocation of this command,
 /// whether or not the four database questions that follow it find anything wrong: it is a question
 /// about the container Docker actually created. It is read-only until it is about to recreate that
-/// container (only then does it rewrite the compose file), and it leaves alone a node whose
+/// container (only then does it rewrite the compose file), and it never recreates for a node whose
 /// connection string points at a Postgres that is not hall9k's own local container. The database
 /// check itself is the same four questions any other command runs automatically when it hits an
 /// unreachable database, on demand, whether or not anything is actually broken right now.
@@ -41,7 +41,7 @@ public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
             + "exactly the pinned hall9k-pgdata volume, was created from this install's own compose "
             + "file, and no daemon is running, otherwise this prints the exact commands to fix it by "
             + "hand instead. A node whose connection string names a Postgres on another host is "
-            + "left alone: hall9k never rebinds or rotates a database it did not create.")]
+            + "never recreated over: hall9k never rebinds or rotates a database it did not create.")]
         public bool Yes { get; init; }
 
         [CommandOption("--no-configure")]

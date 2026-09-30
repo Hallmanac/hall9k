@@ -404,6 +404,43 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
     }
 
     [Fact]
+    public async Task Compose_up_rewrites_a_stale_compose_file_before_composing_from_it()
+    {
+        // A container created after `docker rm` is built from whatever the file says at that
+        // moment, so a pre-pin or hand-widened copy must be replaced first, keeping its password.
+        Directory.CreateDirectory(PostgresRuntime.ComposeDirectory);
+        File.WriteAllText(PostgresRuntime.ComposeFile, PostgresRuntime.ComposeFileContentsFor("kept-password").Replace("127.0.0.1:", string.Empty));
+        string? contentsWhenComposeRan = null;
+        RecordingProcessRunner runner = new(arguments =>
+        {
+            if (arguments is ["compose", ..])
+            {
+                contentsWhenComposeRan = File.ReadAllText(PostgresRuntime.ComposeFile);
+            }
+
+            return new ProcessResult(0, string.Empty, string.Empty);
+        });
+
+        (ComposeUpResult result, _) = await ContainerRuntimeProbe.ComposeUpAsync(runner.Runner, CancellationToken.None);
+
+        result.Should().Be(ComposeUpResult.Started);
+        contentsWhenComposeRan.Should().Be(PostgresRuntime.ComposeFileContentsFor("kept-password"));
+    }
+
+    [Fact]
+    public async Task Compose_up_reports_a_failed_compose_file_write_and_composes_nothing()
+    {
+        // A plain file where the compose directory should be makes the write throw.
+        File.WriteAllText(PostgresRuntime.ComposeDirectory, "not a directory");
+        RecordingProcessRunner runner = new(() => new ProcessResult(0, string.Empty, string.Empty));
+
+        (ComposeUpResult result, _) = await ContainerRuntimeProbe.ComposeUpAsync(runner.Runner, CancellationToken.None);
+
+        result.Should().Be(ComposeUpResult.ComposeFileWriteFailed);
+        runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && call.Arguments[0] == "compose");
+    }
+
+    [Fact]
     public async Task Inspect_port_binding_reads_host_ip_label_and_mounted_volumes_together()
     {
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding(

@@ -15,7 +15,7 @@ namespace Hall9k.Tests.Cli;
 /// reports, and (only under <c>--yes</c> and only once every guard condition holds) rewrites the
 /// compose file from the shipped constant and recreates <c>hall9k-postgres</c> when it is not
 /// publishing port 5432 on <c>127.0.0.1</c> alone; a check that stops short of that writes nothing,
-/// and a node whose connection string names a Postgres on another host is left alone entirely. A fake daemon-running probe stands in for
+/// and a node whose connection string names a Postgres on another host is told so and never recreated over (its container is still inspected, read-only). A fake daemon-running probe stands in for
 /// <see cref="Hall9k.Cli.DaemonControl.DaemonProcess.Probe"/>, the same seam
 /// <c>DatabaseDoctorAlreadyRunningContainerTests</c> already uses for the readiness poll — and,
 /// for a successful recreate, so does the readiness probe itself, so this never depends on a real
@@ -149,7 +149,7 @@ public sealed class DatabaseDoctorPortBindingTests : IDisposable
     }
 
     [Fact]
-    public async Task A_node_whose_database_is_on_another_host_is_left_alone_and_told_so()
+    public async Task A_node_whose_database_is_on_another_host_is_told_so_and_its_exposed_container_is_reported_not_recreated()
     {
         await Hall9kDatabase.WriteConfiguredConnectionStringAsync(
             "Host=10.211.55.2;Port=5432;Database=hall9k;Username=postgres;Password=not-the-default", CancellationToken.None);
@@ -160,11 +160,13 @@ public sealed class DatabaseDoctorPortBindingTests : IDisposable
             () => Hall9kDatabase.ResolveFromConfigFile(Hall9kDatabase.ConfigFile), CancellationToken.None));
 
         File.Exists(PostgresRuntime.ComposeFile).Should().BeFalse();
-        runner.Calls.Should().BeEmpty();
+        AssertInspectedButNeverComposed(runner);
         output.Should().Contain("10.211.55.2:5432")
             .And.Contain("not hall9k's own container at 127.0.0.1:5432")
             .And.Contain("does not manage that Postgres")
-            .And.Contain("Postgres on another host");
+            .And.Contain("Postgres on another host")
+            .And.Contain("publishes port 5432 on 0.0.0.0")
+            .And.Contain("Not recreating it");
         output.Should().NotContain("shipped default password", "the password here is not hall9k's default");
     }
 
@@ -179,7 +181,7 @@ public sealed class DatabaseDoctorPortBindingTests : IDisposable
             CancellationToken.None));
 
         output.Should().Contain("That database still uses hall9k's shipped default password, which has to be rotated by hand.");
-        runner.Calls.Should().BeEmpty();
+        AssertInspectedButNeverComposed(runner);
     }
 
     [Fact]
@@ -194,7 +196,15 @@ public sealed class DatabaseDoctorPortBindingTests : IDisposable
         output.Should().Contain("localhost:5433").And.Contain("not hall9k's own container at 127.0.0.1:5432");
         output.Replace("\"Postgres on another host\"", string.Empty).Should()
             .NotContain("another host", "the address is local, only the port is not hall9k's");
-        runner.Calls.Should().BeEmpty();
+        AssertInspectedButNeverComposed(runner);
+        File.Exists(PostgresRuntime.ComposeFile).Should().BeFalse();
+    }
+
+    private static void AssertInspectedButNeverComposed(RecordingProcessRunner runner)
+    {
+        runner.Calls.Should().Contain(call => call.Arguments.Count > 0 && call.Arguments[0] == "inspect",
+            "the inspect is read-only, so an exposed container is reported whatever the connection string says");
+        runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && call.Arguments[0] == "compose");
     }
 
     [Theory]
