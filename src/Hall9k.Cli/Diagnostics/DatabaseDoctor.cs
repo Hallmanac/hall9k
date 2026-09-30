@@ -124,14 +124,19 @@ public static class DatabaseDoctor
     /// wrong at all (security review idea 6be68ee2, secrets-files-network finding 1): does
     /// <c>hall9k-postgres</c> publish port 5432 anywhere but <c>127.0.0.1</c>. Bare <c>"5432:5432"</c>
     /// in a compose file binds Docker to every interface, which put the container's own superuser
-    /// <c>postgres</c> and its public default password on the network. Rewrites
-    /// <see cref="PostgresRuntime.ComposeFile"/> from the shipped constant first, unconditionally —
-    /// so an install that predates the loopback-only pin, or one whose local copy was hand-edited,
-    /// is never diagnosed against its own stale file — then reads what the running or stopped
-    /// container was actually created with via a single <c>docker inspect</c>
-    /// (<see cref="ContainerRuntimeProbe.InspectPortBindingAsync"/>): the compose file cannot roll
-    /// an existing container's binding forward on its own, since Docker only reads it again at
-    /// creation.
+    /// <c>postgres</c> and its public default password on the network. Read-only until it is about
+    /// to recreate: it reads what the running or stopped container was actually created with via a
+    /// single <c>docker inspect</c> (<see cref="ContainerRuntimeProbe.InspectPortBindingAsync"/>),
+    /// because the compose file cannot roll an existing container's binding forward on its own,
+    /// since Docker only reads it again at creation. <see cref="PostgresRuntime.ComposeFile"/> is rewritten from the shipped constant
+    /// only on the one branch that immediately composes from it (see below), so a check that only
+    /// reports never creates or changes it. <c>h9k install</c> and <c>h9k update</c> are what refresh
+    /// it on every run.
+    /// <para>
+    /// A node whose resolved connection string points anywhere but hall9k's own local container
+    /// (<see cref="IsHall9kOwnLocalAddress"/>) is left alone entirely: no <c>docker</c> call, no
+    /// write, one message saying so. That Postgres is not hall9k's to rebind or rotate.
+    /// </para>
     /// <para>
     /// A found drift is recreated automatically — <c>docker compose -f ComposeFile up -d</c>, onto
     /// the container's existing named volume — only when <paramref name="assumeYes"/> is set
@@ -140,38 +145,44 @@ public static class DatabaseDoctor
     /// starting or stopping one) and three facts all hold: the container mounts exactly
     /// <see cref="PostgresRuntime.VolumeName"/> and nothing else, its own compose project's
     /// <c>config_files</c> label names this exact file, and <paramref name="daemonRunning"/> says
-    /// no daemon is running right now. Any one of those failing means either the container was not
-    /// created by this install's own compose file (a hand-created container, a different project
-    /// mounting a differently-named volume — recreating that would either collide or silently
-    /// orphan real data) or a daemon is still holding a connection through the very socket about to
-    /// be torn down. Every other case, remediated or not, prints the exact hand commands: stop the
-    /// daemon, run the compose recreate, start the daemon again — the same order
-    /// <c>h9k update --restart</c>'s own hand-off already runs in the newly installed binary, which
-    /// is what makes the guard's "no daemon running" true there in the first place (that hand-off
-    /// stops the daemon as its own first step, before ever calling this doctor).
+    /// no daemon is running right now. The compose file is rewritten right before that recreate and
+    /// at no other point; a write that fails is reported and the recreate is not run. Any one of
+    /// those three failing means either the container was not created by this install's own compose
+    /// file (a hand-created container, a different project mounting a differently-named volume —
+    /// recreating that would either collide or silently orphan real data) or a daemon is still
+    /// holding a connection through the very socket about to be torn down. Every other case,
+    /// remediated or not, prints the exact hand commands: stop the daemon, run
+    /// <c>h9k doctor --yes</c> (so the recreate goes through the path that writes the file first),
+    /// start the daemon again — the same order <c>h9k update --restart</c>'s own hand-off already
+    /// runs in the newly installed binary, which is what makes the guard's "no daemon running" true
+    /// there in the first place (that hand-off stops the daemon as its own first step, before ever
+    /// calling this doctor).
     /// </para>
     /// <para>
-    /// Takes <paramref name="daemonRunning"/> as an injected probe, the same seam
-    /// <see cref="DiagnoseNotConfiguredAsync"/> already uses for
+    /// Takes <paramref name="daemonRunning"/> and <paramref name="resolveConnectionString"/> as
+    /// injected probes, the same seam <see cref="DiagnoseNotConfiguredAsync"/> already uses for
     /// <paramref name="alreadyRunningContainerProbe"/>: a test substitutes a fake answer instead of
-    /// depending on a real daemon process and pid file.
+    /// depending on a real daemon process and pid file, or on the ambient
+    /// <c>HALL9K_CONNECTION_STRING</c> and <c>config.json</c>.
     /// </para>
     /// </summary>
     public static Task CheckContainerPortBindingAsync(bool assumeYes, CancellationToken cancellationToken) =>
         CheckContainerPortBindingAsync(
             assumeYes, ExternalProcess.Runner,
             () => DaemonProcess.ProbeBootStatus().State != DaemonBootState.NotRunning,
+            () => Hall9kDatabase.Resolve(),
             cancellationToken);
 
     internal static Task CheckContainerPortBindingAsync(
-        bool assumeYes, ProcessRunner runner, Func<bool> daemonRunning, CancellationToken cancellationToken) =>
+        bool assumeYes, ProcessRunner runner, Func<bool> daemonRunning,
+        Func<ConnectionStringResolution> resolveConnectionString, CancellationToken cancellationToken) =>
         CheckContainerPortBindingAsync(
-            assumeYes, runner, daemonRunning,
-            // The compose file this method itself rewrites just above is already this password's
-            // durable record by the time this probe is actually invoked (only after a recreate),
-            // so this reads it back rather than generating a second, different one — the fallback
-            // generation is defensive only, for a file that somehow vanished between that write and
-            // this read.
+            assumeYes, runner, daemonRunning, resolveConnectionString,
+            // The compose file this method rewrites right before its recreate is already this
+            // password's durable record by the time this probe is actually invoked (only after that
+            // recreate), so this reads it back rather than generating a second, different one — the
+            // fallback generation is defensive only, for a file that somehow vanished between that
+            // write and this read.
             token => DatabaseReachability.ProbeAsync(
                 Hall9kDatabase.ConnectionStringWithPassword(
                     PostgresRuntime.ReadPasswordFromComposeFile() ?? PostgresRuntime.GeneratePassword()),
@@ -188,11 +199,27 @@ public static class DatabaseDoctor
     /// </summary>
     internal static async Task CheckContainerPortBindingAsync(
         bool assumeYes, ProcessRunner runner, Func<bool> daemonRunning,
+        Func<ConnectionStringResolution> resolveConnectionString,
         Func<CancellationToken, Task<ReachabilityReport>> readinessProbe,
         TimeSpan readinessTimeout, TimeSpan readinessPollInterval, TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-        await PostgresRuntime.WriteComposeFileAsync(cancellationToken);
+        if (resolveConnectionString().Value is { Length: > 0 } configured
+            && NonLocalEndpointOf(configured) is { } remote)
+        {
+            // Nothing hall9k owns is on the other end, so there is nothing to inspect, rebind or
+            // rotate, and a 127.0.0.1 pin would point the wrong way (a teammate's node whose
+            // Postgres runs on its Mac host, 2026-09-30).
+            AnsiConsole.MarkupLine(
+                $"[yellow]This node's database is at {remote.Host.EscapeMarkup()}:{remote.Port}[/], "
+                + "not hall9k's own container at 127.0.0.1:5432. hall9k does not manage that Postgres, so the loopback-only binding and the "
+                + "default-password rotation do not apply to it; see docs/operations.md's \"Postgres on another "
+                + "host\" section."
+                + (remote.UsesShippedDefaultPassword
+                    ? " That database still uses hall9k's shipped default password, which has to be rotated by hand."
+                    : string.Empty));
+            return;
+        }
 
         if (await ContainerRuntimeProbe.RuntimeStatusAsync(runner, cancellationToken) != ContainerRuntimeStatus.Running)
         {
@@ -230,8 +257,8 @@ public static class DatabaseDoctor
         AnsiConsole.MarkupLine(
             $"[red]{PostgresRuntime.ContainerName} publishes port 5432 on {hostIp.EscapeMarkup()}, not 127.0.0.1[/] "
             + "— anything on the network can reach hall9k's own Postgres, with its known default credentials, "
-            + $"over this. {PostgresRuntime.ComposeFile.EscapeMarkup()} has just been rewritten to bind "
-            + "127.0.0.1 only, but the running container itself keeps its old binding until it is recreated.");
+            + "over this. The running container keeps that binding until it is recreated, whatever the "
+            + "compose file now says.");
 
         bool mountsExactlyPinnedVolume = mountedVolumes.Count == 1
             && string.Equals(mountedVolumes[0], PostgresRuntime.VolumeName, StringComparison.Ordinal);
@@ -239,7 +266,23 @@ public static class DatabaseDoctor
 
         if (assumeYes && mountsExactlyPinnedVolume && labelNamesThisComposeFile && !daemonRunning())
         {
-            AnsiConsole.MarkupLine($"[dim]Recreating it now: {composeUpCommand}[/]");
+            // The one write this check makes, right before the command that composes from the file,
+            // so an install that predates the loopback-only pin, or one whose local copy was
+            // hand-edited, still recreates onto the pinned binding.
+            try
+            {
+                await PostgresRuntime.WriteComposeFileAsync(cancellationToken);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[red]Could not rewrite {PostgresRuntime.ComposeFile.EscapeMarkup()}[/] "
+                    + $"({exception.Message.EscapeMarkup()}), so {PostgresRuntime.ContainerName} was not recreated. "
+                    + "Fix that and run h9k doctor --yes again.");
+                return;
+            }
+
+            AnsiConsole.MarkupLine($"[dim]Rewrote the compose file; recreating it now: {composeUpCommand}[/]");
             bool recreated = await ContainerRuntimeProbe.RecreateFromComposeAsync(runner, cancellationToken);
             if (!recreated)
             {
@@ -313,8 +356,40 @@ public static class DatabaseDoctor
             $"[dim]Not recreating it automatically — {string.Join(" and ", blockedBy)}. Recreate it by hand once "
             + "that is dealt with:[/]\n"
             + "  h9k daemon stop\n"
-            + $"  {composeUpCommand}\n"
+            + "  h9k doctor --yes\n"
             + "  h9k daemon start");
+    }
+
+    /// <summary>
+    /// Whether an endpoint is hall9k's own local container: host <c>localhost</c> or
+    /// <c>127.0.0.1</c> on port 5432. The one test every "is this Postgres ours to start or
+    /// rebind" question in this file asks.
+    /// </summary>
+    internal static bool IsHall9kOwnLocalAddress(string host, int port) =>
+        host is "localhost" or "127.0.0.1" && port == 5432;
+
+    /// <summary>
+    /// The endpoint a connection string points at, when it is not hall9k's own local container,
+    /// with whether its password is the shipped <see cref="Hall9kDatabase.LegacyPassword"/>; null
+    /// for a local endpoint and for a string that does not parse, which stays today's local case
+    /// rather than an exception.
+    /// </summary>
+    private static (string Host, int Port, bool UsesShippedDefaultPassword)? NonLocalEndpointOf(string connectionString)
+    {
+        NpgsqlConnectionStringBuilder builder;
+        try
+        {
+            builder = new NpgsqlConnectionStringBuilder(connectionString);
+        }
+        catch (Exception exception) when (exception is ArgumentException or FormatException)
+        {
+            return null;
+        }
+
+        (string host, int port) = DatabaseReachability.EndpointOf(builder);
+        return IsHall9kOwnLocalAddress(host, port)
+            ? null
+            : (host, port, string.Equals(builder.Password, Hall9kDatabase.LegacyPassword, StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -322,10 +397,17 @@ public static class DatabaseDoctor
     /// exactly <see cref="PostgresRuntime.ComposeFile"/> — the label is the absolute path Compose
     /// was invoked with, so this compares full paths rather than raw strings, and follows the
     /// platform's own case rule (Windows paths compare case-insensitively; every other platform
-    /// this ships on does not) rather than assuming either.
+    /// this ships on does not) rather than assuming either. A label that is not a fully qualified
+    /// path on this platform never matches: resolving it would turn another machine's path (a
+    /// <c>/</c>-rooted one on Windows) into this install's own.
     /// </summary>
     private static bool ComposeConfigFileMatches(string configFilesLabel)
     {
+        if (!Path.IsPathFullyQualified(configFilesLabel))
+        {
+            return false;
+        }
+
         StringComparison comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         return string.Equals(Path.GetFullPath(configFilesLabel), Path.GetFullPath(PostgresRuntime.ComposeFile), comparison);
     }
@@ -941,7 +1023,7 @@ public static class DatabaseDoctor
             + $"({reachability.Detail.EscapeMarkup()})");
 
         bool waitedForStartup = false;
-        bool looksLocal = reachability.Host is "localhost" or "127.0.0.1" && reachability.Port == 5432;
+        bool looksLocal = IsHall9kOwnLocalAddress(reachability.Host, reachability.Port);
         if (looksLocal)
         {
             // Question 4's Docker awareness applies here too, not only to the
@@ -1018,7 +1100,7 @@ public static class DatabaseDoctor
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-        bool looksLocal = reachability.Host is "localhost" or "127.0.0.1" && reachability.Port == 5432;
+        bool looksLocal = IsHall9kOwnLocalAddress(reachability.Host, reachability.Port);
         if (!offerFixes || !looksLocal
             || await ContainerRuntimeProbe.RuntimeStatusAsync(runner, cancellationToken) != ContainerRuntimeStatus.Running)
         {

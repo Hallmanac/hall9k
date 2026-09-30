@@ -12,6 +12,15 @@ public static class DatabaseReachability
 {
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(3);
 
+    /// <summary>
+    /// The host and port a connection string actually reaches, with the defaults Npgsql itself
+    /// applies to a missing one (<c>localhost</c>, 5432), shared so every caller that asks
+    /// "where does this point" answers it the way the probe below does.
+    /// </summary>
+    internal static (string Host, int Port) EndpointOf(NpgsqlConnectionStringBuilder builder) =>
+        (builder.Host is { Length: > 0 } configuredHost ? configuredHost : "localhost",
+            builder.Port is 0 ? 5432 : builder.Port);
+
     public static async Task<ReachabilityReport> ProbeAsync(string connectionString, CancellationToken cancellationToken)
     {
         NpgsqlConnectionStringBuilder builder;
@@ -27,8 +36,7 @@ public static class DatabaseReachability
                 Host: string.Empty, Port: 0, Database: string.Empty);
         }
 
-        string host = builder.Host is { Length: > 0 } configuredHost ? configuredHost : "localhost";
-        int port = builder.Port is 0 ? 5432 : builder.Port;
+        (string host, int port) = EndpointOf(builder);
         string database = builder.Database ?? string.Empty;
 
         // Pooling off, deliberately: a pooled idle connector survives the server side dying
