@@ -134,10 +134,10 @@ public static class DatabaseDoctor
     /// it on every run.
     /// <para>
     /// A node whose resolved connection string points anywhere but hall9k's own local container
-    /// (<see cref="IsHall9kOwnLocalAddress"/>) gets one message saying so, and that Postgres is not
-    /// hall9k's to rebind or rotate. The read-only inspect still runs, so a <c>hall9k-postgres</c>
-    /// container exposed on this machine is reported whatever the connection string says, but
-    /// nothing is written or recreated.
+    /// (<see cref="IsHall9kOwnLocalAddress"/>) is left alone entirely: no <c>docker</c> call, no
+    /// write, one message saying so. That Postgres is not hall9k's to rebind or rotate, and on a
+    /// machine whose docker reaches another machine's engine the name <c>hall9k-postgres</c> may be
+    /// that machine's container, so inspecting it here could report or advise against the wrong one.
     /// </para>
     /// <para>
     /// A found drift is recreated automatically — <c>docker compose -f ComposeFile up -d</c>, onto
@@ -206,16 +206,13 @@ public static class DatabaseDoctor
         TimeSpan readinessTimeout, TimeSpan readinessPollInterval, TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-        bool nodeUsesOwnContainer = true;
         if (resolveConnectionString().Value is { Length: > 0 } configured
             && NonLocalEndpointOf(configured) is { } remote)
         {
-            // Nothing hall9k owns is on the other end, so there is nothing to rebind or rotate
-            // there, and a 127.0.0.1 pin would point the wrong way (a teammate's node whose
-            // Postgres runs on its Mac host, 2026-09-30). The inspect below still runs: it is
-            // read-only, and a hall9k-postgres container that is exposed on this machine is worth
-            // reporting whatever the connection string says. Only the rewrite and recreate stop.
-            nodeUsesOwnContainer = false;
+            // Nothing hall9k owns is on the other end, so there is nothing to inspect, rebind or
+            // rotate, and a 127.0.0.1 pin would point the wrong way (a teammate's node whose
+            // Postgres runs on its Mac host, 2026-09-30). No docker call either: where docker
+            // reaches another machine's engine, hall9k-postgres may be that machine's container.
             AnsiConsole.MarkupLine(
                 $"[yellow]This node's database is at {remote.Host.EscapeMarkup()}:{remote.Port}[/], "
                 + "not hall9k's own container at 127.0.0.1:5432. hall9k does not manage that Postgres, so the loopback-only binding and the "
@@ -224,6 +221,7 @@ public static class DatabaseDoctor
                 + (remote.UsesShippedDefaultPassword
                     ? " That database still uses hall9k's shipped default password, which has to be rotated by hand."
                     : string.Empty));
+            return;
         }
 
         if (await ContainerRuntimeProbe.RuntimeStatusAsync(runner, cancellationToken) != ContainerRuntimeStatus.Running)
@@ -264,15 +262,6 @@ public static class DatabaseDoctor
             + "— anything on the network can reach hall9k's own Postgres, with its known default credentials, "
             + "over this. The running container keeps that binding until it is recreated, whatever the "
             + "compose file now says.");
-
-        if (!nodeUsesOwnContainer)
-        {
-            AnsiConsole.MarkupLine(
-                $"[dim]Not recreating it — this node's connection string does not point at {PostgresRuntime.ContainerName}, "
-                + "so it is not this node's database to swap out from here. Point the connection string back at "
-                + "127.0.0.1:5432 and run h9k doctor --yes to recreate it, or recreate it by hand.[/]");
-            return;
-        }
 
         bool mountsExactlyPinnedVolume = mountedVolumes.Count == 1
             && string.Equals(mountedVolumes[0], PostgresRuntime.VolumeName, StringComparison.Ordinal);
