@@ -20,8 +20,8 @@ namespace Hall9k.Cli.Commands;
 /// whether or not the four database questions that follow it find anything wrong: it is a question
 /// about the container Docker actually created. It is read-only until it is about to recreate that
 /// container (only then does it rewrite the compose file), and it leaves alone a node whose
-/// connection string points at a Postgres that is not hall9k's own local container (with no
-/// <c>docker</c> call at all when that Postgres is on another machine). The database
+/// connection string points at a Postgres that is not hall9k's own local container, with no
+/// <c>docker</c> call at all. The database
 /// check itself is the same four questions any other command runs automatically when it hits an
 /// unreachable database, on demand, whether or not anything is actually broken right now.
 /// </summary>
