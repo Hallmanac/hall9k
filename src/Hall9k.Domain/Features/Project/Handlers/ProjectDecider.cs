@@ -729,10 +729,18 @@ public static class ProjectDecider
     public const int PromptAddendumMaximumLength = 4000;
 
     /// <summary>
-    /// Replaces the whole addendum a project states for one prompt builder. A judgment call, never
-    /// a hard blocker: past <see cref="PromptAddendumMaximumLength"/> this refuses unless
-    /// <paramref name="overCap"/> is set with <paramref name="overCapReason"/> stated, the same
-    /// "acknowledge the consequence" idiom <c>--accept-reduced-review</c> already uses.
+    /// The ceiling <c>--over-cap</c> cannot lift: the escape hatch below it is a judgment call, but
+    /// an addendum past this is refused at set time so the owner learns then, rather than having the
+    /// loader truncate their guidance on every later prompt with only the agent told.
+    /// </summary>
+    public const int PromptAddendumHardMaximumLength = 8000;
+
+    /// <summary>
+    /// Replaces the whole addendum a project states for one prompt builder. A judgment call below
+    /// <see cref="PromptAddendumHardMaximumLength"/>: past <see cref="PromptAddendumMaximumLength"/>
+    /// this refuses unless <paramref name="overCap"/> is set with <paramref name="overCapReason"/>
+    /// stated, the same "acknowledge the consequence" idiom <c>--accept-reduced-review</c> already
+    /// uses. Past the hard ceiling it refuses regardless.
     /// </summary>
     public static ProjectPromptAddendumSet SetPromptAddendum(
         Guid projectId, PromptBuilderKey builder, string? content, bool overCap, string? overCapReason,
@@ -748,6 +756,15 @@ public static class ProjectDecider
         {
             throw new DomainValidationException(
                 $"An addendum needs content — h9k project prompt-addendum remove {builder} clears one instead.");
+        }
+
+        if (trimmed.Length > PromptAddendumHardMaximumLength)
+        {
+            throw new DomainValidationException(
+                $"This addendum is {trimmed.Length} characters, past the {PromptAddendumHardMaximumLength}-character "
+                + "hard limit, which --over-cap cannot lift. It is pasted verbatim after "
+                + $"{builder}'s own rules section on every prompt it composes, so shorten it to "
+                + $"{PromptAddendumHardMaximumLength} characters or fewer.");
         }
 
         bool exceedsCap = trimmed.Length > PromptAddendumMaximumLength;

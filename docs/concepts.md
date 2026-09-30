@@ -108,6 +108,8 @@ prose.
   member's overwrite, delete, or an unsigned push can neither reach another node's prompts nor
   delete or suppress the owner's own guidance. An addendum that runs past the length cap is refused
   unless you accept it with `--over-cap "<reason>"`, and the prompt then says so under its heading.
+  Past 8000 characters `set` refuses even with `--over-cap`, and a file on disk past that (only a
+  forged or replicated one can be) is cut there with a label saying so.
 - **Lessons** are what earlier runs learned, recorded with `h9k learn`. Every implementation,
   follow-up, review, and fix prompt carries a bounded section of this project's active lessons,
   newest first, and the section announces what it held back rather than truncating silently. A

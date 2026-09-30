@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Storage;
 
@@ -34,6 +35,13 @@ public static class ProjectPromptAddendaLoader
     public const string OverCapMarker = "<!-- hall9k:over-cap -->";
 
     /// <summary>
+    /// The line appended after an addendum cut at <see cref="ProjectDecider.PromptAddendumHardMaximumLength"/>,
+    /// so the agent reading the prompt is told its guidance is incomplete.
+    /// </summary>
+    public static readonly string TruncationLabel =
+        $"[Hall9k truncated this addendum at its hard limit of {ProjectDecider.PromptAddendumHardMaximumLength} characters; the rest was not read.]";
+
+    /// <summary>
     /// The addendum for <paramref name="builder"/>, or null when this project has none, has no
     /// home yet, or the daemon has not materialized one here yet. Never throws on a missing file:
     /// an addendum is optional by definition, so its absence is an ordinary outcome, not a failure.
@@ -54,6 +62,28 @@ public static class ProjectPromptAddendaLoader
         string raw = File.ReadAllText(path);
         bool overCap = raw.StartsWith(OverCapMarker, StringComparison.Ordinal);
         string content = (overCap ? raw[OverCapMarker.Length..] : raw).TrimStart('\r', '\n');
-        return content.IsBlank() ? null : new LoadedPromptAddendum(content, overCap);
+        return content.IsBlank()
+            ? null
+            : new LoadedPromptAddendum(Truncate(content), overCap);
+    }
+
+    /// <summary>
+    /// The set-time ceiling enforced again on load, so it only ever bites a forged or replicated
+    /// file: the materialized file is unsigned and its over-cap marker is forgeable.
+    /// </summary>
+    private static string Truncate(string content)
+    {
+        if (content.Length <= ProjectDecider.PromptAddendumHardMaximumLength)
+        {
+            return content;
+        }
+
+        int end = ProjectDecider.PromptAddendumHardMaximumLength;
+        if (char.IsHighSurrogate(content[end - 1]))
+        {
+            end--;
+        }
+
+        return $"{content[..end].TrimEnd()}\n\n{TruncationLabel}";
     }
 }

@@ -38,8 +38,8 @@ public sealed class ProjectPromptAddendumSetCommand : Hall9kAsyncCommand<Project
 
         [CommandOption("--over-cap <REASON>")]
         [Description(
-            "Accept an addendum past the length cap, with this reason recorded on the event — the cap is a "
-            + "judgment call, never a blocker, but it needs a stated why.")]
+            "Accept an addendum past the 4000-character cap, with this reason recorded on the event — the cap "
+            + "is a judgment call, but it needs a stated why, and nothing lifts the 8000-character hard limit.")]
         public string? OverCapReason { get; init; }
     }
 
