@@ -70,6 +70,55 @@ public sealed class OrchestratorFeedSelectionTests
         read.Items.Should().ContainSingle().Which.Sequence.Should().Be(6);
     }
 
+    /// <summary>
+    /// The origin line was 165 characters, past the 160 that free text is clipped at, so the
+    /// sentence has to arrive whole for its unresolved-threads tail to be there at all.
+    /// </summary>
+    private const string OriginSummary =
+        "Hallmanac/arx-platform#2135 moved since your review: 2 replies in 2 threads, 2 new commits and a "
+        + "re-review requested; 3 threads you opened are still unresolved on the pull request";
+
+    [Fact]
+    public async Task A_locally_recorded_response_to_a_review_is_one_urgent_item_carrying_the_whole_summary()
+    {
+        OrchestratorFeedRead read = await Read(
+            [Candidate(5, Response(OriginSummary, replyCount: 2, reReviewNewlyRequested: true))],
+            OrchestratorFeedLevel.Actionable,
+            startedFrom: 0);
+
+        OrchestratorFeedItem item = read.Items.Should().ContainSingle().Subject;
+        item.TaskId.Should().Be(TaskId);
+        item.IsUrgent.Should().BeTrue();
+        item.Description.Should().Be(OriginSummary);
+        OriginSummary.Length.Should().BeGreaterThan(160, "the test is about a line the quote limit would clip");
+    }
+
+    [Fact]
+    public async Task A_replicated_response_to_a_review_raises_no_item()
+    {
+        OrchestratorFeedRead read = await Read(
+            [Candidate(5, Response(OriginSummary, replyCount: 2, reReviewNewlyRequested: true), isReplicated: true)],
+            OrchestratorFeedLevel.Actionable,
+            startedFrom: 0);
+
+        read.Items.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_response_that_is_only_new_commits_is_an_item_but_not_urgent()
+    {
+        OrchestratorFeedRead read = await Read(
+            [Candidate(5, Response("Hallmanac/arx-platform#2135 moved since your review: 2 new commits", 0, false))],
+            OrchestratorFeedLevel.Actionable,
+            startedFrom: 0);
+
+        read.Items.Should().ContainSingle().Which.IsUrgent.Should().BeFalse();
+    }
+
+    private static PullRequestReviewAuthorResponded Response(
+        string summary, int replyCount, bool reReviewNewlyRequested) =>
+        new(Guid.NewGuid(), summary, replyCount, replyCount, 2, true, reReviewNewlyRequested, null, At);
+
     [Fact]
     public async Task An_event_too_new_to_have_settled_is_shown_but_not_drained_past()
     {

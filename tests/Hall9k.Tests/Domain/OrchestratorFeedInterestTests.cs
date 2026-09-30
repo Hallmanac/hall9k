@@ -72,6 +72,8 @@ public sealed class OrchestratorFeedInterestTests
     [InlineData(typeof(RunUnattendedExitFlagged))]
     [InlineData(typeof(RunRecordReconstructed))]
     [InlineData(typeof(RunLaunchHeld))]
+    // A reply to a pull request review the owner left.
+    [InlineData(typeof(PullRequestReviewAuthorResponded))]
     // A message from a person or another node's window.
     [InlineData(typeof(MessageReceived))]
     // A root-key rotation landed on, or was voided from, a project's own ledger.

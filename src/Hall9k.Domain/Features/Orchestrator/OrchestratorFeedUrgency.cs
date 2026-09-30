@@ -7,7 +7,9 @@ namespace Hall9k.Domain.Features.Orchestrator;
 /// <summary>
 /// Which feed items are urgent enough for the feed courier (idea 89471598, piece 3) to dispatch
 /// at once, regardless of its own batching wait — Brian's own words from the walk: "a park, a
-/// dispute, daemon trouble, or a message from a person dispatches at once". A narrower set than
+/// dispute, daemon trouble, or a message from a person dispatches at once" — and, since it is
+/// the reviewer's turn the moment it happens, a reply to a review the owner left or a re-review
+/// asked of them. A narrower set than
 /// <see cref="OrchestratorFeedLevel.Actionable"/>, deliberately: that band's own "gate and run
 /// failures" and "a merge that stays failed" entries are retried automatically and do not need a
 /// human paged the moment they land, while every type named here is a stop with nobody but a
@@ -49,7 +51,17 @@ public static class OrchestratorFeedUrgency
     /// <see cref="OrchestratorFeedInterest.Admits(object)"/> already gates its admission: every
     /// message the feed itself ever shows at all is already a person's or another node's
     /// window's, so a candidate that reaches this method as one is urgent unconditionally.
+    /// <para>
+    /// <see cref="PullRequestReviewAuthorResponded"/> is payload-gated too: a reply in the
+    /// reviewer's threads or a newly requested re-review is someone asking for the reviewer's turn
+    /// and is urgent, while a wake that is only new commits is still an item but waits for the
+    /// courier's batch, so a push followed two minutes later by its replies is not two pages.
+    /// </para>
     /// </summary>
-    public static bool IsUrgent(Type eventType, object eventData) =>
-        eventData is MessageReceived || UrgentTypes.Contains(eventType);
+    public static bool IsUrgent(Type eventType, object eventData) => eventData switch
+    {
+        MessageReceived => true,
+        PullRequestReviewAuthorResponded responded => responded.ReplyCount > 0 || responded.ReReviewNewlyRequested,
+        _ => UrgentTypes.Contains(eventType),
+    };
 }
