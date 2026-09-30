@@ -1277,7 +1277,8 @@ daemon starts on its own carries this addendum too, not only an interactive `h9k
 rebase; its five purely mechanical retry/recovery builders carry no project context today), and
 `mention-follow-up`. `set` replaces the whole file; there is no partial edit.
 Content past a length cap is refused unless accepted with `--over-cap "<reason>"`, which records the
-reason and renders the addendum under a heading that says so.
+reason and renders the addendum under a heading that says so. Past 8000 characters `set` refuses
+regardless of `--over-cap`.
 
 This node's own event stream is the audit trail `show`/`list` read back (who set it and when); the
 ledger is the actual transport, written and read only by the daemon's own sweep, never by a

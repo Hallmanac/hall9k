@@ -1355,6 +1355,34 @@ public sealed class ProjectDeciderTests
         set.Content.Should().Be(tooLong);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SetPromptAddendum_past_the_hard_ceiling_is_refused_with_or_without_over_cap(bool overCap)
+    {
+        string tooLong = new('x', ProjectDecider.PromptAddendumHardMaximumLength + 1);
+
+        Action act = () => ProjectDecider.SetPromptAddendum(
+            DomainId.New(), PromptBuilderKey.Work, tooLong, overCap, overCap ? "needs the room" : null,
+            DomainId.New(), Now);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage($"*{ProjectDecider.PromptAddendumHardMaximumLength}-character hard limit*");
+    }
+
+    [Fact]
+    public void SetPromptAddendum_just_under_the_hard_ceiling_with_over_cap_succeeds()
+    {
+        string nearCeiling = new('x', ProjectDecider.PromptAddendumHardMaximumLength - 1);
+
+        ProjectPromptAddendumSet set = ProjectDecider.SetPromptAddendum(
+            DomainId.New(), PromptBuilderKey.Work, nearCeiling, overCap: true, "needs the room",
+            DomainId.New(), Now);
+
+        set.OverCap.Should().BeTrue();
+        set.Content.Should().Be(nearCeiling);
+    }
+
     [Fact]
     public void SetPromptAddendum_over_cap_without_a_reason_is_refused()
     {

@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Storage;
 using Xunit;
@@ -66,6 +67,47 @@ public sealed class ProjectPromptAddendaLoaderTests : IDisposable
         loaded.Should().NotBeNull();
         loaded!.OverCap.Should().BeTrue();
         loaded.Content.Should().Be("A very long house style, kept anyway.");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_materialized_file_over_the_hard_ceiling_loads_truncated_with_the_label(bool withMarker)
+    {
+        ProjectDetails project = ProjectWithHome();
+        string tooLong = new('x', ProjectDecider.PromptAddendumHardMaximumLength + 500);
+        WriteAddendum(PromptBuilderKey.Agent, withMarker
+            ? $"{ProjectPromptAddendaLoader.OverCapMarker}\n{tooLong}"
+            : tooLong);
+
+        LoadedPromptAddendum? loaded = ProjectPromptAddendaLoader.TryLoad(project, PromptBuilderKey.Agent);
+
+        loaded.Should().NotBeNull();
+        loaded!.OverCap.Should().Be(withMarker);
+        loaded.Content.Should().StartWith(new string('x', ProjectDecider.PromptAddendumHardMaximumLength));
+        loaded.Content.Should().EndWith(ProjectPromptAddendaLoader.TruncationLabel);
+        loaded.Content.Length.Should().Be(
+            ProjectDecider.PromptAddendumHardMaximumLength + 2 + ProjectPromptAddendaLoader.TruncationLabel.Length);
+    }
+
+    [Fact]
+    public void A_file_exactly_at_the_hard_ceiling_loads_unchanged()
+    {
+        ProjectDetails project = ProjectWithHome();
+        string atCeiling = new('x', ProjectDecider.PromptAddendumHardMaximumLength);
+        WriteAddendum(PromptBuilderKey.Agent, $"{ProjectPromptAddendaLoader.OverCapMarker}\n{atCeiling}");
+
+        ProjectPromptAddendaLoader.TryLoad(project, PromptBuilderKey.Agent)!.Content.Should().Be(atCeiling);
+    }
+
+    [Fact]
+    public void The_one_live_addendum_of_1557_characters_loads_unchanged()
+    {
+        ProjectDetails project = ProjectWithHome();
+        string liveSized = string.Join('\n', Enumerable.Repeat(new string('y', 77), 20))[..1557];
+        WriteAddendum(PromptBuilderKey.Agent, liveSized);
+
+        ProjectPromptAddendaLoader.TryLoad(project, PromptBuilderKey.Agent)!.Content.Should().Be(liveSized);
     }
 
     [Fact]
