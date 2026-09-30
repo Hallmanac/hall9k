@@ -70,7 +70,7 @@ public static class DatabaseDoctor
     /// <summary>
     /// Same check, with the "is a daemon running right now" fact injectable — the password
     /// migration's own guard (<see cref="CheckReachabilityAndSchemaAsync(string,ConnectionStringResolution,bool,bool,ProcessRunner,Func{bool},Func{CancellationToken,Task{ReachabilityReport}},TimeSpan,TimeSpan,TimeProvider,CancellationToken,bool)"/>)
-    /// needs the identical seam <see cref="CheckContainerPortBindingAsync(bool,ProcessRunner,Func{bool},CancellationToken)"/>
+    /// needs the identical seam <see cref="CheckContainerPortBindingAsync(bool,ProcessRunner,Func{bool},Func{ConnectionStringResolution},CancellationToken)"/>
     /// already uses, for the same reason: a test asserting the migration's own guard cannot depend
     /// on a real pid file or a real daemon process.
     /// </summary>
@@ -128,14 +128,16 @@ public static class DatabaseDoctor
     /// to recreate: it reads what the running or stopped container was actually created with via a
     /// single <c>docker inspect</c> (<see cref="ContainerRuntimeProbe.InspectPortBindingAsync"/>),
     /// because the compose file cannot roll an existing container's binding forward on its own,
-    /// since Docker only reads it again at creation. <see cref="PostgresRuntime.ComposeFile"/> is rewritten from the shipped constant
-    /// only on the one branch that immediately composes from it (see below), so a check that only
+    /// since Docker only reads it again at creation. <see cref="PostgresRuntime.ComposeFile"/> is
+    /// rewritten from the shipped constant only on the one branch that immediately composes from it (see below), so a check that only
     /// reports never creates or changes it. <c>h9k install</c> and <c>h9k update</c> are what refresh
     /// it on every run.
     /// <para>
     /// A node whose resolved connection string points anywhere but hall9k's own local container
-    /// (<see cref="IsHall9kOwnLocalAddress"/>) is left alone entirely: no <c>docker</c> call, no
-    /// write, one message saying so. That Postgres is not hall9k's to rebind or rotate.
+    /// (<see cref="IsHall9kOwnLocalAddress"/>) gets one message saying so, and that Postgres is not
+    /// hall9k's to rebind or rotate. The read-only inspect still runs, so a <c>hall9k-postgres</c>
+    /// container exposed on this machine is reported whatever the connection string says, but
+    /// nothing is written or recreated.
     /// </para>
     /// <para>
     /// A found drift is recreated automatically — <c>docker compose -f ComposeFile up -d</c>, onto
@@ -204,12 +206,16 @@ public static class DatabaseDoctor
         TimeSpan readinessTimeout, TimeSpan readinessPollInterval, TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
+        bool nodeUsesOwnContainer = true;
         if (resolveConnectionString().Value is { Length: > 0 } configured
             && NonLocalEndpointOf(configured) is { } remote)
         {
-            // Nothing hall9k owns is on the other end, so there is nothing to inspect, rebind or
-            // rotate, and a 127.0.0.1 pin would point the wrong way (a teammate's node whose
-            // Postgres runs on its Mac host, 2026-09-30).
+            // Nothing hall9k owns is on the other end, so there is nothing to rebind or rotate
+            // there, and a 127.0.0.1 pin would point the wrong way (a teammate's node whose
+            // Postgres runs on its Mac host, 2026-09-30). The inspect below still runs: it is
+            // read-only, and a hall9k-postgres container that is exposed on this machine is worth
+            // reporting whatever the connection string says. Only the rewrite and recreate stop.
+            nodeUsesOwnContainer = false;
             AnsiConsole.MarkupLine(
                 $"[yellow]This node's database is at {remote.Host.EscapeMarkup()}:{remote.Port}[/], "
                 + "not hall9k's own container at 127.0.0.1:5432. hall9k does not manage that Postgres, so the loopback-only binding and the "
@@ -218,7 +224,6 @@ public static class DatabaseDoctor
                 + (remote.UsesShippedDefaultPassword
                     ? " That database still uses hall9k's shipped default password, which has to be rotated by hand."
                     : string.Empty));
-            return;
         }
 
         if (await ContainerRuntimeProbe.RuntimeStatusAsync(runner, cancellationToken) != ContainerRuntimeStatus.Running)
@@ -259,6 +264,15 @@ public static class DatabaseDoctor
             + "— anything on the network can reach hall9k's own Postgres, with its known default credentials, "
             + "over this. The running container keeps that binding until it is recreated, whatever the "
             + "compose file now says.");
+
+        if (!nodeUsesOwnContainer)
+        {
+            AnsiConsole.MarkupLine(
+                $"[dim]Not recreating it — this node's connection string does not point at {PostgresRuntime.ContainerName}, "
+                + "so it is not this node's database to swap out from here. Point the connection string back at "
+                + "127.0.0.1:5432 and run h9k doctor --yes to recreate it, or recreate it by hand.[/]");
+            return;
+        }
 
         bool mountsExactlyPinnedVolume = mountedVolumes.Count == 1
             && string.Equals(mountedVolumes[0], PostgresRuntime.VolumeName, StringComparison.Ordinal);
@@ -995,7 +1009,7 @@ public static class DatabaseDoctor
     /// container is never the fix), retry the same probe with the bounded wait the guarded
     /// recreate's own readiness poll already uses, rather than diagnosing "unreachable" from a
     /// single sample. That single-sample diagnosis is the defect this method fixes: the guarded
-    /// recreate (<see cref="CheckContainerPortBindingAsync(bool,ProcessRunner,Func{bool},CancellationToken)"/>)
+    /// recreate (<see cref="CheckContainerPortBindingAsync(bool,ProcessRunner,Func{bool},Func{ConnectionStringResolution},CancellationToken)"/>)
     /// already waits for one clean answer before declaring the container recreated, but the very
     /// next probe — a fresh connection, run moments later by this doctor's next question — could
     /// still catch Postgres transiently dropping it while it finishes starting (field reports
@@ -1488,6 +1502,12 @@ public static class DatabaseDoctor
                         + $"fresh container now could create a new, empty {PostgresRuntime.VolumeName} volume "
                         + "beside real data this could not see to warn about. Retry once Docker is answering "
                         + "reliably.");
+                    return (false, connectionString);
+                case ComposeUpResult.ComposeFileWriteFailed:
+                    AnsiConsole.MarkupLine(
+                        $"[red]Not starting[/] — {PostgresRuntime.ComposeFile.EscapeMarkup()} could not be "
+                        + "rewritten, and bringing up a fresh container from a compose file that might still be "
+                        + "stale could publish Postgres on every interface. Fix that and run h9k doctor again.");
                     return (false, connectionString);
                 case ComposeUpResult.Failed:
                     AnsiConsole.MarkupLine(

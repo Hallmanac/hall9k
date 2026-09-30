@@ -274,8 +274,9 @@ public static class ContainerRuntimeProbe
     }
 
     /// <summary>
-    /// Stands up the platform-owned Postgres for the first time — writes the shipped compose
-    /// definition if <c>h9k install</c> never got the chance to, then brings it up. Looks for
+    /// Stands up the platform-owned Postgres for the first time — rewrites the shipped compose
+    /// definition right before composing from it (keeping the password already recorded there), so
+    /// a stale copy never creates the container bound to every interface, then brings it up. Looks for
     /// any volume carrying the <see cref="FindDataVolumesAsync"/> substring first and refuses
     /// rather than starting whenever one exists that is not itself the pinned
     /// <see cref="PostgresRuntime.VolumeName"/>: this is the one call site that would otherwise
@@ -320,10 +321,17 @@ public static class ContainerRuntimeProbe
             return (ComposeUpResult.LegacyVolumeDetected, legacyVolumes);
         }
 
-        if (!File.Exists(PostgresRuntime.ComposeFile))
+        // Rewritten every time, not only when missing: a fresh container is created from whatever
+        // this file says, so a pre-pin or hand-widened copy would publish 5432 on every interface.
+        try
         {
             await PostgresRuntime.WriteComposeFileAsync(cancellationToken);
         }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return (ComposeUpResult.ComposeFileWriteFailed, []);
+        }
+
         ProcessResult? result = await TryRunAsync(
             runner, "docker", ["compose", "-f", PostgresRuntime.ComposeFile, "up", "-d"],
             PostgresRuntime.ComposeDirectory, cancellationToken);
@@ -409,16 +417,18 @@ public static class ContainerRuntimeProbe
     }
 }
 
-/// <summary>What <see cref="ContainerRuntimeProbe.ComposeUpAsync"/> actually did — four
-/// outcomes, not a <see langword="bool"/>, because <see cref="LegacyVolumeDetected"/> and
-/// <see cref="LegacyVolumeCheckFailed"/> are both refusals a caller must report differently
-/// from an ordinary <c>docker compose up</c> failure: the first's fix is a manual volume
-/// migration (docs/operations.md's Provisioning section), the second's is simply retrying once
-/// Docker answers reliably — neither is a retry of the same <c>docker compose up</c>.</summary>
+/// <summary>What <see cref="ContainerRuntimeProbe.ComposeUpAsync"/> actually did — five
+/// outcomes, not a <see langword="bool"/>, because <see cref="LegacyVolumeDetected"/>,
+/// <see cref="LegacyVolumeCheckFailed"/> and <see cref="ComposeFileWriteFailed"/> are all
+/// refusals a caller must report differently from an ordinary <c>docker compose up</c> failure:
+/// the first's fix is a manual volume migration (docs/operations.md's Provisioning section), the
+/// second's is simply retrying once Docker answers reliably, the third's is making the compose
+/// file's directory writable — none is a retry of the same <c>docker compose up</c>.</summary>
 public enum ComposeUpResult
 {
     Started,
     Failed,
     LegacyVolumeDetected,
     LegacyVolumeCheckFailed,
+    ComposeFileWriteFailed,
 }
