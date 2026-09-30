@@ -458,6 +458,22 @@ public sealed class ContainerRuntimeProbeTests : IDisposable
     }
 
     [Fact]
+    public async Task Inspect_port_binding_reads_dockers_no_value_placeholder_as_a_missing_label()
+    {
+        // The Go template prints "<no value>" for a label the container does not carry, so a
+        // hand-created container's label has to come back null, not as that text.
+        RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("0.0.0.0|<no value>|hall9k-pgdata \n");
+
+        (bool confirmed, string? hostIp, string? label, IReadOnlyList<string> volumes) =
+            await ContainerRuntimeProbe.InspectPortBindingAsync(runner.Runner, CancellationToken.None);
+
+        confirmed.Should().BeTrue();
+        hostIp.Should().Be("0.0.0.0");
+        label.Should().BeNull();
+        volumes.Should().Equal("hall9k-pgdata");
+    }
+
+    [Fact]
     public async Task Inspect_port_binding_is_null_host_ip_when_the_container_publishes_no_such_port()
     {
         // An empty range produces an empty first field — distinct from Docker's own literal
