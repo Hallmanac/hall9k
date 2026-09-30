@@ -17,7 +17,8 @@ namespace Hall9k.Tests.Cli;
 /// publishing port 5432 on <c>127.0.0.1</c> alone; a check that stops short of that writes nothing,
 /// and a node whose connection string names a Postgres on another host is left alone entirely, with no
 /// <c>docker</c> call, because where docker reaches another machine's engine the name
-/// <c>hall9k-postgres</c> may be that machine's container. A fake daemon-running probe stands in for
+/// <c>hall9k-postgres</c> may be that machine's container (a loopback address on another port is this
+/// machine's own Postgres, so its exposed container is still inspected and reported, never recreated). A fake daemon-running probe stands in for
 /// <see cref="Hall9k.Cli.DaemonControl.DaemonProcess.Probe"/>, the same seam
 /// <c>DatabaseDoctorAlreadyRunningContainerTests</c> already uses for the readiness poll — and,
 /// for a successful recreate, so does the readiness probe itself, so this never depends on a real
@@ -189,7 +190,7 @@ public sealed class DatabaseDoctorPortBindingTests : IDisposable
     }
 
     [Fact]
-    public async Task A_local_address_on_another_port_is_named_but_never_called_another_host()
+    public async Task A_local_address_on_another_port_is_named_and_its_exposed_container_is_reported_not_recreated()
     {
         RecordingProcessRunner runner = RunningContainerRunner(hostIp: "0.0.0.0", volumes: "hall9k-pgdata", label: PostgresRuntime.ComposeFile);
 
@@ -200,9 +201,12 @@ public sealed class DatabaseDoctorPortBindingTests : IDisposable
         output.Should().Contain("localhost:5433").And.Contain("not hall9k's own container at 127.0.0.1:5432");
         output.Replace("\"Postgres on another host\"", string.Empty).Should()
             .NotContain("another host", "the address is local, only the port is not hall9k's");
-        runner.Calls.Should().BeEmpty();
-        output.Should().NotContain("not 127.0.0.1").And.NotContain("Point the connection string back")
-            .And.NotContain("known default credentials");
+        runner.Calls.Should().Contain(call => call.Arguments.Count > 0 && call.Arguments[0] == "inspect",
+            "the inspect is read-only, so a container exposed on this machine is reported whatever the port says");
+        runner.Calls.Should().NotContain(call => call.Arguments.Count > 0 && call.Arguments[0] == "compose");
+        File.Exists(PostgresRuntime.ComposeFile).Should().BeFalse();
+        output.Should().Contain("publishes port 5432 on 0.0.0.0").And.Contain("Not recreating it")
+            .And.NotContain("Point the connection string back");
     }
 
     [Theory]
