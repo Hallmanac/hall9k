@@ -385,7 +385,8 @@ public static class ContainerRuntimeProbe
         }
 
         string? portHostIp = fields[0].Length > 0 ? fields[0] : null;
-        string? composeConfigFilesLabel = fields[1].Length > 0 ? fields[1] : null;
+        // Docker's Go template prints "<no value>" for a label the container does not carry.
+        string? composeConfigFilesLabel = fields[1] is { Length: > 0 } and not "<no value>" ? fields[1] : null;
         string[] mountedVolumeNames = fields[2].Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return (true, portHostIp, composeConfigFilesLabel, mountedVolumeNames);
     }
