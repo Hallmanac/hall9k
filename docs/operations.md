@@ -657,8 +657,8 @@ routine event: no reply to a routine one, ever, and anything actionable is repor
 recipe's own start-up step arms nothing to watch for this, and never the `Monitor` tool either:
 once this window registers its presence, the daemon spawns a short-lived, cheap-model feed
 courier the moment this project's feed has undrained items and this window is live, delivering
-them straight into the session through `SendMessage` — a park, a dispute, daemon trouble, or a
-message from a person arrives at once, everything else arrives batched on a wait that shortens
+them straight into the session through `SendMessage` — a park, a dispute, daemon trouble, a
+message from a person, or a reply to a review you left arrives at once, everything else arrives batched on a wait that shortens
 the quieter the project's feed gets — so nothing here polls `h9kd.log` by byte offset or reads it
 as a log at all. `Monitor` was never the answer either: it expires every thirty
 minutes and would otherwise wake the window on every expiry and every re-arm; those events,

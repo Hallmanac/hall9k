@@ -29,10 +29,11 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// <see cref="InteractiveSessionAddress"/> is the reviewer's registered interactive session name
 /// as this observation found it (<c>RunDetails.RegisteredInteractiveSessionName</c> on the run the
 /// review rode on), or null when no session was ever registered against it. It is recorded as the
-/// address the line was FOR, not as a claim that anything was delivered to it: the daemon has no
-/// channel that reaches a live Claude Code session — in this platform an agent sends and the
-/// daemon does not (ORCHESTRATOR-WINDOW.md's R5) — so what a registered session gets is this same
-/// line off the board it already reads, under the task's own needs-you row.
+/// address the line was FOR, not as a claim that anything was delivered to it: the daemon sends
+/// nothing to a session itself (ORCHESTRATOR-WINDOW.md's R5). The line reaches a window two ways,
+/// both reading this event: the board's needs-you row, and the orchestrator feed, where it is an
+/// actionable item (urgent when it carries a reply or a re-review request) that the feed courier
+/// delivers to a live window on the node that recorded it.
 /// </para>
 /// </summary>
 /// <param name="ReplyCount">How many comments the reviewer did not write landed in their own threads since the last observation.</param>

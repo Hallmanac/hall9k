@@ -441,8 +441,8 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             "How much of this project's own history h9k orchestrator feed hands an orchestrator "
             + "window (idea 89471598). Three nested bands, each a superset of the one before it. "
             + "'actionable' is only what somebody is owed: parks and disputes, gate and run failures, "
-            + "a merge that stays failed, daemon trouble, and any message from a person or another "
-            + "node's window. 'transitions' (the default) adds the work's own movement: task state "
+            + "a merge that stays failed, daemon trouble, a reply to a pull request review you left, and "
+            + "any message from a person or another node's window. 'transitions' (the default) adds the work's own movement: task state "
             + "changes, ideas logged or updated, and claims or takeovers involving another node. "
             + "'everything' adds the machinery's own movement, a run's phase changes. A message from a "
             + "person is admitted at every band, including the narrowest. The band decides what the "
@@ -456,7 +456,8 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "89471598, piece 3): the longest the courier ever waits since its last delivery before "
             + "dispatching again, however busy the feed gets — the quieter the feed, the shorter the "
             + "actual wait, down to immediate after ten quiet minutes. Default 60. A park, a dispute, "
-            + "daemon trouble, or a message from a person dispatches at once regardless of this "
+            + "daemon trouble, a message from a person, or a reply to a review you left dispatches at once "
+            + "regardless of this "
             + "ceiling. 'default' clears the override back to the platform default.")]
         public string? CourierMaxWait { get; init; }
 

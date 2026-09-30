@@ -1238,7 +1238,7 @@ The daemon reads the feed on its own now: a short-lived, cheap-model **feed cour
 that project on this node, no courier for it is already running, and a batching wait has
 elapsed. The wait is a ceiling (`h9k project set <name> --courier-max-wait`, sixty seconds by
 default) a busy feed climbs toward and a quiet one drops from — zero after ten quiet minutes — and
-a park, a dispute, daemon trouble, or a message from a person bypasses it outright. A per-day
+a park, a dispute, daemon trouble, a message from a person, or a reply to a review you left bypasses it outright. A per-day
 spawn cap (five hundred by default) guards a storm. The courier's own prompt carries no recipe and
 no AGENTS.md — just the feed items as `--drain` itself would print them, plus the instruction to
 address the orchestrator's own registered session through Claude Code's cross-session mesh

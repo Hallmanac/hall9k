@@ -283,7 +283,7 @@ public sealed class DaemonOptions
     /// reasoning <see cref="OrchestratorPresenceSweepPollInterval"/> already gives: nothing here
     /// reaches the network, only a handful of local queries per registered project, and the
     /// interval is how promptly an urgent item (a park, a dispute, daemon trouble, a message from
-    /// a person) actually reaches a live orchestrator once it dispatches at once regardless of the
+    /// a person, a reply to a review you left) actually reaches a live orchestrator once it dispatches at once regardless of the
     /// wait.
     /// </summary>
     public TimeSpan CourierSweepPollInterval { get; set; } = TimeSpan.FromSeconds(10);

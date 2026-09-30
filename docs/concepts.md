@@ -1226,7 +1226,7 @@ of the one before, set per project with
 
 | Level | What it carries |
 |---|---|
-| `actionable` | Only what somebody is owed: parks and disputes, gate and run failures, a merge that stays failed, daemon trouble, and any message from a person or another node's window. |
+| `actionable` | Only what somebody is owed: parks and disputes, gate and run failures, a merge that stays failed, daemon trouble, a reply to a pull request review you left, and any message from a person or another node's window. |
 | `transitions` *(default)* | Everything `actionable` carries, plus the work's own movement: task state changes (published, working, delivered, done, failed, abandoned), ideas logged or updated, and claims or takeovers involving another node. |
 | `everything` | Everything `transitions` carries, plus the machinery's own movement: a run's phase changes. |
 
@@ -1259,7 +1259,7 @@ presence section above), no courier for that project is already running, and a b
 elapsed since the last one. The wait is what turns a burst of activity into one delivery instead
 of many: it is zero once the feed has been quiet for ten minutes, and ramps up toward a ceiling —
 `h9k project set <name> --courier-max-wait`, sixty seconds by default — the more recently
-something new has landed. A park, a dispute, daemon trouble, or a message from a person
+something new has landed. A park, a dispute, daemon trouble, a message from a person, or a reply to a review you left
 dispatches at once regardless of that wait; a per-day spawn cap (five hundred by default) is the
 backstop against a genuine storm even of those. A manual `h9k orchestrator feed --drain` holds a
 short lease on the project's own cursor while it runs, and the courier never spawns into that
