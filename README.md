@@ -586,8 +586,8 @@ window ever polls `h9kd.log` or asks the feed for news on its own. The daemon ch
 on a short sweep and spawns a courier only when all four of these hold: the feed has undrained
 items at that project's own level, an orchestrator window is live for the project on this node, no
 courier for that project is already running, and a batching wait has elapsed since the last
-delivery. Urgent items skip the wait and dispatch at once (a park, a dispute, daemon trouble, or a
-message from a person); routine movement batches, so a burst of activity becomes one delivery
+delivery. Urgent items skip the wait and dispatch at once (a park, a dispute, daemon trouble, a
+message from a person, or a reply to a review you left); routine movement batches, so a burst of activity becomes one delivery
 rather than many. The daemon, not the courier, advances the feed cursor, and only after the
 courier reports that the send landed, so a courier that fails leaves the same items for the next
 one or for the next manual `--drain`. Two settings tune it:

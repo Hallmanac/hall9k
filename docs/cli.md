@@ -1662,7 +1662,7 @@ A window that is already open does not have to run `feed` again to stay current:
 **feed courier** spawns a short-lived, cheap-model session that delivers a project's undrained feed
 items into the live window and exits, once the feed has something to say, a window is registered
 live for the project on this node, no courier is already running, and a batching wait has elapsed.
-Urgent items (a park, a dispute, daemon trouble, a message from a person) go at once. Two settings
+Urgent items (a park, a dispute, daemon trouble, a message from a person, a reply to a review you left) go at once. Two settings
 tune it: `h9k project set <project> --courier-max-wait <seconds>|default` is that project's ceiling
 on the batching wait (sixty seconds by default), and `h9k config set --model-courier <model>` is the
 node's model for the role, which bottoms out at `claude-sonnet-5-5` and does not clear to the platform

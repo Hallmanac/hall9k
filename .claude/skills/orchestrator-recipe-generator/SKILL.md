@@ -63,7 +63,7 @@ facts" applies to what you write here exactly as it does to the platform's own a
 - No recipe this skill writes arms `tail -F`, a byte-offset log waiter, or the `Monitor` tool for
   any watch, on this machine or any other (idea 89471598, piece 3): the daemon's own feed courier
   now delivers a project's undrained feed items — actionable ones (a park, a dispute, daemon
-  trouble, a message from a person) at once, everything else batched — directly into this
+  trouble, a message from a person, a reply to a review you left) at once, everything else batched — directly into this
   session's own registered orchestrator presence, so nothing here has to poll `h9kd.log` for news.
   Brian's ruling, 2026-09-15, which is why Monitor was never the answer either: it expires every
   thirty minutes and wakes the window on every expiry and every re-arm, and routine monitor events,
@@ -230,7 +230,7 @@ other or from what this skill says next time it runs.
 > wait that lengthens toward its own ceiling the busier the feed gets and shortens to nothing once
 > it has been quiet for a while, so routine activity arrives here already grouped rather than as a
 > reply per event. Anything actionable and human-facing (a park or dispute needing a ruling, a
-> daemon retrying or recovering a run, a message from a person) bypasses that wait outright and is
+> daemon retrying or recovering a run, a message from a person, a reply to a review you left) bypasses that wait outright and is
 > delivered at once; that list deliberately leaves out a gate or run failure, or a merge that
 > stayed failed, both of which already retry themselves automatically and do not need a human paged
 > the instant they land. Read a courier's own delivered message the way a board report reads: grouped
@@ -403,7 +403,7 @@ and budget.
    before this recipe ever runs), the daemon spawns a short-lived, cheap-model courier the moment this project's
    feed has undrained items and this window is live, delivering them straight into this session
    through `SendMessage` rather than waiting for anyone to poll. A park, a dispute, daemon trouble,
-   or a message from a person arrives at once; everything else arrives batched, on a wait that
+   a message from a person, or a reply to a review you left arrives at once; everything else arrives batched, on a wait that
    shortens the quieter this project's feed gets. Nothing here has to distinguish the two kinds or
    read a log for either. If a courier message never arrives for something you would have expected
    to hear about, `h9k orchestrator feed --project <name>` (a plain read, step 4 below) still shows

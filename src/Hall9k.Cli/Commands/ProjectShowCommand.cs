@@ -539,7 +539,8 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         string what = project.OrchestratorFeed.Value switch
         {
             "Actionable" => "parks and disputes, gate and run failures, a merge that stays failed, daemon "
-                + "trouble, and any message from a person or another node's window",
+                + "trouble, a reply to a pull request review you left, and any message from a person or another "
+                + "node's window",
             "Transitions" => "the actionable band, plus task state changes, ideas logged or updated, and "
                 + "claims or takeovers involving another node",
             "Everything" => "the transitions band, plus a run's own phase changes",

@@ -377,12 +377,11 @@ public sealed class PrReviewFollowThroughEngine(
             return FollowThroughOutcome.Skipped;
         }
 
-        // The line goes to the log with the address it was for, which is as far as the daemon can
-        // carry it: nothing here can reach a live Claude Code session — in this platform an agent
-        // sends and the daemon does not (ORCHESTRATOR-WINDOW.md's R5) — so what a registered
-        // session receives is this same line off the board it already reads, under the task's own
-        // needs-you row. Logged with the address rather than without it so an operator can tell
-        // "nobody was registered" from "somebody was, and the board is where they read it".
+        // The line goes to the log with the address it was for. Nothing here reaches a live
+        // session itself (ORCHESTRATOR-WINDOW.md's R5); a window hears of it from the event just
+        // appended, through the orchestrator feed and its courier, and from the task's needs-you
+        // row on the board. Logged with the address rather than without it so an operator can tell
+        // "nobody was registered" from "somebody was, and the feed and board are where they read it".
         logger.LogInformation(
             "Task {TaskId} needs you: {Summary} (addressed to {Session})",
             row.Id, summary, run?.RegisteredInteractiveSessionName ?? "no registered session");
