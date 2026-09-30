@@ -23,8 +23,8 @@ namespace Hall9k.Domain.Features.Orchestrator;
 /// cannot leave a dangling entry behind.
 /// </para>
 /// <para>
-/// <b>Three entries also read something beyond the type</b> (<see cref="Admits(object)"/>), and
-/// all three only ever decide whether the event is an item at all — never which band it lands in,
+/// <b>Four entries also read something beyond the type</b> (<see cref="Admits(object)"/>), and
+/// all four only ever decide whether the event is an item at all — never which band it lands in,
 /// which stays the table's alone. <see cref="MessageReceived"/> is admitted only for a message
 /// from a person or another node's window, never for the JSON payloads the daemon's own reactors
 /// exchange (<see cref="MessageKind.MechanicalKindValues"/>) — the identical rule <c>h9k messages</c>
@@ -35,7 +35,10 @@ namespace Hall9k.Domain.Features.Orchestrator;
 /// daemon rebuilt nothing, so a replicated copy of a teammate's reconstruction is never this
 /// node's own thing to act on — and with it now travelling project-scoped, a backlog of them
 /// landing at once (task: a run stream whose first event is a reconstruction) must not page this
-/// node's own window for work it never touched.
+/// node's own window for work it never touched. <see cref="PullRequestReviewAuthorResponded"/>
+/// takes the same origin gate for the same reason: the watch that recorded it is this node's own,
+/// so a teammate's node holding a replicated copy of the owner's review task has nobody on it to
+/// tell that the owner's review moved.
 /// </para>
 /// </summary>
 public static class OrchestratorFeedInterest
@@ -88,6 +91,12 @@ public static class OrchestratorFeedInterest
         [typeof(RunUnattendedExitFlagged)] = OrchestratorFeedLevel.Actionable,
         [typeof(RunRecordReconstructed)] = OrchestratorFeedLevel.Actionable,
         [typeof(RunLaunchHeld)] = OrchestratorFeedLevel.Actionable,
+
+        // Somebody answered a pull request the owner reviewed (replies, new commits, or a
+        // re-review asked for). The task is NeedsHuman and only the reviewer moves it, so the
+        // board alone leaves a window open on the project unaware — admitted only on the node that
+        // recorded it (see Admits).
+        [typeof(PullRequestReviewAuthorResponded)] = OrchestratorFeedLevel.Actionable,
 
         // A message from a person or another node's window — admitted at every level, which is
         // what the narrowest band means here, and payload-gated to exclude the daemon's own
@@ -187,8 +196,9 @@ public static class OrchestratorFeedInterest
     /// Whether a project reading at <paramref name="level"/> is handed this event. The type's own
     /// band decides, and <see cref="Admits(object)"/> is the payload gate the exceptions named on
     /// this class need — applied here too, so no caller can reach one without the other. Never
-    /// knows whether this event was replicated, so <see cref="RunRecordReconstructed"/>'s own
-    /// origin gate always reads local here — the overload <see cref="OrchestratorFeedSelection"/>
+    /// knows whether this event was replicated, so the origin gates of
+    /// <see cref="RunRecordReconstructed"/> and <see cref="PullRequestReviewAuthorResponded"/>
+    /// always read local here — the overload <see cref="OrchestratorFeedSelection"/>
     /// actually calls threads that through explicitly.
     /// </summary>
     public static bool Admits(object eventData, OrchestratorFeedLevel level) =>
@@ -234,6 +244,9 @@ public static class OrchestratorFeedInterest
         // act on, and never worth paging this node's window over (task: a run stream whose first
         // event is a reconstruction — 14 replays landing on restart must not page the window).
         RunRecordReconstructed => !isReplicated,
+        // The watch that recorded this is this node's own; a replicated copy on a teammate's node
+        // is news about a review that is not theirs.
+        PullRequestReviewAuthorResponded => !isReplicated,
         _ => true,
     };
 }

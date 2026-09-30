@@ -68,6 +68,12 @@ public static class OrchestratorFeedDescription
                 $"{NodeLine(held.RequesterNodeId, labels)}'s own invite match asked this root for an owner-role "
                 + $"member write; it is held for approval (h9k project member approve … {held.InviteId})",
 
+            // ─── A pull request the owner reviewed was answered ────────────────────────────────────
+            // The event's own Summary, the sentence h9k status shows. Daemon-composed from counts and
+            // the repository and number (no author text reaches it), so it is flattened but never
+            // clipped: the clip is for free text, and this line's tail names what is still unresolved.
+            PullRequestReviewAuthorResponded responded => Field(responded.Summary, int.MaxValue),
+
             // ─── Gate and run failures ─────────────────────────────────────────────────────────────
             VerificationFailed failed => $"the verification gates failed: {Join(failed.FailedGates)}",
             SettlingGateRepairCapReached => "the settling-gate repair rounds are spent and the run parked",

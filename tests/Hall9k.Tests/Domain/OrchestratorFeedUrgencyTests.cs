@@ -53,6 +53,22 @@ public sealed class OrchestratorFeedUrgencyTests
         OrchestratorFeedUrgency.IsUrgent(type, UninitializedInstanceOf(type)).Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData(2, false, true)]
+    [InlineData(0, true, true)]
+    [InlineData(1, true, true)]
+    [InlineData(0, false, false)]
+    public void A_response_to_a_review_is_urgent_when_it_carries_a_reply_or_a_re_review_request(
+        int replyCount, bool reReviewNewlyRequested, bool expected)
+    {
+        PullRequestReviewAuthorResponded responded = new(
+            Guid.NewGuid(), "moved since your review", replyCount, replyCount, 2, true, reReviewNewlyRequested,
+            null, At);
+
+        OrchestratorFeedUrgency.IsUrgent(typeof(PullRequestReviewAuthorResponded), responded)
+            .Should().Be(expected);
+    }
+
     [Fact]
     public void A_message_from_a_person_is_urgent()
     {

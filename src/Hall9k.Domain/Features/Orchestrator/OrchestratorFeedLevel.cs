@@ -23,8 +23,8 @@ namespace Hall9k.Domain.Features.Orchestrator;
 public sealed record OrchestratorFeedLevel
 {
     /// <summary>Only what somebody is owed: parks and disputes, gate and run failures, a merge
-    /// that stays failed, daemon trouble, and any message from a person or another node's
-    /// window.</summary>
+    /// that stays failed, daemon trouble, a reply to a pull request review you left, and any message
+    /// from a person or another node's window.</summary>
     public static readonly OrchestratorFeedLevel Actionable = new("Actionable");
 
     /// <summary>The default: <see cref="Actionable"/> plus the work's own movement — task state

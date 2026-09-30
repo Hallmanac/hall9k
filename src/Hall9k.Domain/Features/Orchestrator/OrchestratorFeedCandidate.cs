@@ -20,7 +20,8 @@ namespace Hall9k.Domain.Features.Orchestrator;
 /// producing it itself. Read by <see cref="OrchestratorFeedInterest"/>'s own origin-filtered
 /// entries — <c>RunRecordReconstructed</c> is Actionable on the node that actually rebuilt the
 /// run, but a peer's own copy of that same fact rebuilt nothing and must not page that peer's
-/// window, especially when a whole backlog of them lands at once.
+/// window, especially when a whole backlog of them lands at once. <c>PullRequestReviewAuthorResponded</c>
+/// reads it for the same reason: the watch that recorded it is the reviewing node's own.
 /// </param>
 public sealed record OrchestratorFeedCandidate(
     long Sequence,
