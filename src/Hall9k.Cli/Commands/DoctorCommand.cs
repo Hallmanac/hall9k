@@ -18,8 +18,10 @@ namespace Hall9k.Cli.Commands;
 /// own early-return path below, exactly the moment the generated project <c>AGENTS.md</c> promises
 /// it will. The port-binding check runs unconditionally too, on every invocation of this command,
 /// whether or not the four database questions that follow it find anything wrong: it is a question
-/// about the container Docker actually created, not about the connection string. The database check
-/// itself is the same four questions any other command runs automatically when it hits an
+/// about the container Docker actually created. It is read-only until it is about to recreate that
+/// container (only then does it rewrite the compose file), and it leaves alone a node whose
+/// connection string points at a Postgres that is not hall9k's own local container. The database
+/// check itself is the same four questions any other command runs automatically when it hits an
 /// unreachable database, on demand, whether or not anything is actually broken right now.
 /// </summary>
 public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
@@ -32,12 +34,14 @@ public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
             + "and create the schema, or — if hall9k-postgres is already confirmed running — record "
             + "the connection string that points at it, non-interactively — the shape a script or a "
             + "dispatched agent needs, since there is no terminal there to answer a prompt. Also "
-            + "recreates hall9k-postgres when it is publishing port 5432 on anything but 127.0.0.1, "
-            + "and migrates its password off the shipped default onto a generated one when config.json "
-            + "still names that default — both guarded the same way: only when the container mounts "
+            + "recreates hall9k-postgres when it is publishing port 5432 on anything but 127.0.0.1 "
+            + "(rewriting its compose file right before, and at no other point: without --yes the "
+            + "check writes nothing), and migrates its password off the shipped default onto a "
+            + "generated one when config.json still names that default — both guarded the same way: only when the container mounts "
             + "exactly the pinned hall9k-pgdata volume, was created from this install's own compose "
             + "file, and no daemon is running, otherwise this prints the exact commands to fix it by "
-            + "hand instead.")]
+            + "hand instead. A node whose connection string names a Postgres on another host is "
+            + "left alone: hall9k never rebinds or rotates a database it did not create.")]
         public bool Yes { get; init; }
 
         [CommandOption("--no-configure")]

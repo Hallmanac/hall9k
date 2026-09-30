@@ -261,7 +261,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // to be running on the machine the test suite executes on.
         await DatabaseDoctor.CheckContainerPortBindingAsync(
             assumeYes: false, containerRuntimeRunner ?? ExternalProcess.Runner,
-            () => DaemonProcess.ProbeBootStatus().State != DaemonBootState.NotRunning, cancellationToken);
+            () => DaemonProcess.ProbeBootStatus().State != DaemonBootState.NotRunning,
+            () => Hall9kDatabase.Resolve(), cancellationToken);
 
         if (writeDefaultConnectionStringIfUnconfigured)
         {
