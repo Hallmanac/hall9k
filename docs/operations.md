@@ -393,11 +393,11 @@ above.
 
 A node whose connection string (`HALL9K_CONNECTION_STRING`, or `connectionString` in
 `~/.hall9k/config.json`) names any Postgres other than hall9k's own container at `127.0.0.1:5432`
-is left alone by `h9k doctor`, `h9k install`, and `h9k update`: the port-binding check says so,
-never rewrites the compose file, and never recreates anything. It still inspects the local
-`hall9k-postgres` container, read-only, so one exposed on this machine is reported whatever the
-connection string says. hall9k never rebinds or rotates a database it did not create. If that
-database still uses hall9k's shipped default password, the same message says
+is left alone by `h9k doctor`, `h9k install`, and `h9k update`: the port-binding check makes no
+`docker` call and writes nothing, and says so. It makes no `docker` call because on a machine whose
+docker reaches another machine's engine, the name `hall9k-postgres` may be that machine's
+container. hall9k never rebinds or rotates a database it did not create. If that database still
+uses hall9k's shipped default password, the same message says
 so, and the rotation is yours to do by hand:
 
 - Bind that Postgres to the address the node actually uses, not `0.0.0.0`, so it is not open to
