@@ -2058,7 +2058,9 @@ public static class TaskDecider
         bool reReviewRequested,
         string? headSha,
         int? commitCount,
-        DateTimeOffset observedAt)
+        DateTimeOffset observedAt,
+        string? reviewerReviewId = null,
+        bool reviewerReviewBaselined = false)
     {
         RefuseUnlessFollowingThrough(task, "record an observation of");
         if (reviewerLogin.IsBlank())
@@ -2070,7 +2072,36 @@ public static class TaskDecider
         }
 
         return new PullRequestReviewFollowThroughObserved(
-            task.Id, reviewerLogin, threads, reReviewRequested, headSha, commitCount, observedAt);
+            task.Id, reviewerLogin, threads, reReviewRequested, headSha, commitCount, observedAt,
+            reviewerReviewId, reviewerReviewBaselined);
+    }
+
+    /// <summary>
+    /// Reopens a watch already in progress: the reviewer answered on GitHub by hand, or a recorded
+    /// wake turned out to be false, so the task goes back to Waiting and its needs-you line goes
+    /// with it. Appends the same <see cref="PullRequestReviewFollowThroughOpened"/> the review's own
+    /// finalize does, with the run the follow-through already belongs to, so the watch starts over
+    /// from a fresh baseline and no second event type has to be taught to every reader.
+    /// <para>
+    /// Its own method rather than a widening of <see cref="OpenPrReviewFollowThrough"/>, whose
+    /// Claimed-only guard is load-bearing: a task under a scoped lap is Claimed, and reopening it
+    /// would end that lap from underneath the session working it. The guard here is
+    /// <see cref="AwaitsPrReviewFollowThrough"/>, which does not admit Claimed.
+    /// </para>
+    /// </summary>
+    public static PullRequestReviewFollowThroughOpened ReopenPrReviewFollowThrough(
+        TaskAggregate task, string? headSha, DateTimeOffset openedAt)
+    {
+        RefuseUnlessFollowingThrough(task, "reopen");
+        if (task.PrReviewFollowThroughRunId is not { } runId
+            || task.PrReviewFollowThroughPullRequestUrl is not { Length: > 0 } pullRequestUrl)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id}'s follow-through records no run or pull request to reopen it against "
+                + "(AGENTS.md: never guess at unobserved facts).");
+        }
+
+        return new PullRequestReviewFollowThroughOpened(task.Id, runId, pullRequestUrl, headSha, openedAt);
     }
 
     /// <summary>

@@ -304,6 +304,36 @@ public sealed class PrReviewFollowThroughEngine(
             return FollowThroughOutcome.Concluded;
         }
 
+        // The reviewer's own review, as a poll that could see all of them reads it. A truncated review
+        // page cannot say which review is the reviewer's latest, or whether they have one, so it
+        // neither reopens the watch nor moves the baseline: the last baselined answer is carried
+        // forward untouched until a poll reads the whole picture.
+        SubmittedReview? latestReview = conversation.ReviewsTruncated
+            ? null
+            : conversation.LatestReviewOf(reviewerLogin);
+        if (!conversation.ReviewsTruncated && TryReopenHead(task, latestReview, conversation, out string? reopenHead))
+        {
+            session.Events.Append(
+                row.Id,
+                expectedVersion: fence.Version + 1,
+                TaskDecider.ReopenPrReviewFollowThrough(task, reopenHead, now));
+            if (!await SaveOrLoseTheRaceAsync(session, row.Id, cancellationToken))
+            {
+                return FollowThroughOutcome.Skipped;
+            }
+
+            logger.LogInformation(
+                "Task {TaskId}: {Repository}#{Number} reopened its follow-through (the reviewer's own review "
+                + "{ReviewId} is newer than the baseline, or a recorded re-review wake had no review behind it)",
+                row.Id, repository, number, latestReview?.Id ?? "none");
+            return FollowThroughOutcome.StillWaiting;
+        }
+
+        string? reviewerReviewId = conversation.ReviewsTruncated
+            ? task.PrReviewReviewerReviewId
+            : latestReview?.Id;
+        bool reviewBaselined = !conversation.ReviewsTruncated || task.PrReviewReviewBaselined;
+
         IReadOnlyList<ReviewThread> ownThreads = conversation.ThreadsStartedBy(reviewerLogin);
         bool reReviewRequested = conversation.ReReviewRequestedOf(reviewerLogin);
         // Replies rather than comments (ReplyCountFor): the reviewer's own comments in their own
@@ -328,7 +358,9 @@ public sealed class PrReviewFollowThroughEngine(
             || task.PrReviewReReviewRequested != reReviewRequested
             || task.PrReviewObservedHeadSha != conversation.HeadSha
             || task.PrReviewObservedCommitCount != conversation.CommitCount
-            || task.PrReviewReviewerLogin != reviewerLogin;
+            || task.PrReviewReviewerLogin != reviewerLogin
+            || task.PrReviewReviewBaselined != reviewBaselined
+            || task.PrReviewReviewerReviewId != reviewerReviewId;
 
         // Thread resolution alone no longer ends the follow-through (Decisions Log
         // #178: one pr-review task per pull request per install, and later mentions
@@ -352,7 +384,7 @@ public sealed class PrReviewFollowThroughEngine(
                 expectedVersion: fence.Version + 1,
                 TaskDecider.ObservePrReviewFollowThrough(
                     task, reviewerLogin, watermark, reReviewRequested, conversation.HeadSha,
-                    conversation.CommitCount, now));
+                    conversation.CommitCount, now, reviewerReviewId, reviewBaselined));
             return await SaveOrLoseTheRaceAsync(session, row.Id, cancellationToken)
                 ? FollowThroughOutcome.StillWaiting
                 : FollowThroughOutcome.Skipped;
@@ -362,13 +394,14 @@ public sealed class PrReviewFollowThroughEngine(
         // states as load-bearing: the observation re-baselines the watermark, so the same replies
         // can never fire a second notification on the next tick.
         string summary = activity.Describe(
-            repository, number, watermark.Count(thread => !thread.IsResolved), watermark.Count);
+            repository, number, watermark.Count(thread => !thread.IsResolved), watermark.Count,
+            reviewerHasNoSubmittedReview: reviewBaselined && reviewerReviewId is null);
         session.Events.Append(
             row.Id,
             expectedVersion: fence.Version + 2,
             TaskDecider.ObservePrReviewFollowThrough(
                 task, reviewerLogin, watermark, reReviewRequested, conversation.HeadSha,
-                conversation.CommitCount, now),
+                conversation.CommitCount, now, reviewerReviewId, reviewBaselined),
             TaskDecider.RecordPrReviewAuthorResponse(
                 task, summary, activity.ReplyCount, activity.ThreadsWithReplies, activity.NewCommitCount,
                 activity.HeadMoved, activity.ReReviewNewlyRequested,
@@ -387,6 +420,41 @@ public sealed class PrReviewFollowThroughEngine(
             "Task {TaskId} needs you: {Summary} (addressed to {Session})",
             row.Id, summary, run?.RegisteredInteractiveSessionName ?? "no registered session");
         return FollowThroughOutcome.Surfaced;
+    }
+
+    /// <summary>
+    /// Whether this poll reopens the watch, and the head the reopened watch starts from. Two reasons,
+    /// and a poll that reads a whole review page has at most one of them:
+    /// <list type="bullet">
+    /// <item>
+    /// The reviewer's latest submitted review is not the one the last baselined observation
+    /// recorded: they answered on GitHub by hand. A lone thread reply is an implicit COMMENTED review
+    /// and counts too, which reopens the watch on a reply and is accepted churn: the following first
+    /// look reports whatever is still unanswered. The head is the review's own commit for an
+    /// approval or a changes-requested review, and the head this poll read otherwise, because an
+    /// implicit COMMENTED review carries its thread's commit, which can be older than the head.
+    /// </item>
+    /// <item>
+    /// A NeedsHuman watch whose stored observation recorded a re-review request while the reviewer
+    /// has no submitted review: a false wake an earlier build recorded, which no later poll would
+    /// ever clear on its own. The head is the one the task already records as reviewed.
+    /// </item>
+    /// </list>
+    /// A watch not yet baselined never reopens on the first reason: its first look only records.
+    /// </summary>
+    private static bool TryReopenHead(
+        TaskAggregate task, SubmittedReview? latestReview, ReviewConversation conversation, out string? headSha)
+    {
+        if (latestReview is { } review)
+        {
+            headSha = review.State is "APPROVED" or "CHANGES_REQUESTED" && review.CommitOid is { } commitOid
+                ? commitOid
+                : conversation.HeadSha;
+            return task.PrReviewReviewBaselined && review.Id != task.PrReviewReviewerReviewId;
+        }
+
+        headSha = task.PrReviewReviewedHeadSha;
+        return task.State == TaskState.NeedsHuman && task.PrReviewReReviewRequested;
     }
 
     /// <summary>

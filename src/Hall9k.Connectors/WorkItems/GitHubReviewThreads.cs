@@ -185,6 +185,15 @@ public sealed record ReviewConversation(
         ReviewsTruncated || LatestReviewByLogin.ContainsKey(login);
 
     /// <summary>
+    /// <paramref name="login"/>'s newest submitted review in the page this read carried, or null
+    /// when the page holds none of theirs. Null on a truncated read does not mean they have no
+    /// review (see <see cref="HasReviewed"/>), so a caller that needs "none" checks
+    /// <see cref="ReviewsTruncated"/> first.
+    /// </summary>
+    public SubmittedReview? LatestReviewOf(string login) =>
+        LatestReviewByLogin.TryGetValue(login, out SubmittedReview? review) ? review : null;
+
+    /// <summary>
     /// Whether <paramref name="login"/> is being asked back: a request outstanding on a reviewer
     /// who has already submitted a review. A first request is not a re-review. A DISMISSED review
     /// still counts as submitted, because dismissal does not re-request anyone and the author

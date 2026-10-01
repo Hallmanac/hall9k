@@ -1047,6 +1047,22 @@ public sealed class TaskAggregate
     public int? PrReviewObservedCommitCount { get; private set; }
 
     /// <summary>
+    /// The id of the reviewer's own latest submitted review as the last baselined observation
+    /// recorded it, or null when that observation found them with none. Only meaningful while
+    /// <see cref="PrReviewReviewBaselined"/> is true: the poll compares the review it reads now
+    /// against this to tell a review the reviewer posted by hand from the one the watch opened on.
+    /// </summary>
+    public string? PrReviewReviewerReviewId { get; private set; }
+
+    /// <summary>
+    /// Whether the latest observation recorded the reviewer's review at all. False from
+    /// <see cref="Apply(Events.PullRequestReviewFollowThroughOpened)"/> until the first poll
+    /// after it, and false for a stream whose observations predate the field, so that "not yet
+    /// baselined" is never read as "the reviewer has no review".
+    /// </summary>
+    public bool PrReviewReviewBaselined { get; private set; }
+
+    /// <summary>
     /// What the most recent <see cref="Apply(Events.PullRequestReviewAuthorResponded)"/> said the
     /// author had done, or null when the author has not answered since the review was posted.
     /// The one line every surface shows for a follow-through that needs the reviewer back.
@@ -2370,6 +2386,8 @@ public sealed class TaskAggregate
         PrReviewReReviewRequested = false;
         PrReviewAuthorActivitySummary = null;
         PrReviewObservedCommitCount = null;
+        PrReviewReviewerReviewId = null;
+        PrReviewReviewBaselined = false;
         _prReviewThreads.Clear();
         _prReviewReviewedThreads.Clear();
         PrReviewObservedHeadSha = @event.HeadSha;
@@ -2402,6 +2420,8 @@ public sealed class TaskAggregate
         PrReviewReReviewRequested = @event.ReReviewRequested;
         PrReviewObservedHeadSha = @event.HeadSha;
         PrReviewObservedCommitCount = @event.CommitCount;
+        PrReviewReviewerReviewId = @event.ReviewerReviewId;
+        PrReviewReviewBaselined = @event.ReviewerReviewBaselined;
     }
 
     // Ordered after the observation it rides with, which is why nothing about the watermark is
