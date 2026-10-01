@@ -285,7 +285,11 @@ Every needs-you cause is quoted from a record and carries the command that clear
 lives under `h9k task list`, filterable by project and state, defaulting to live work with
 archived tasks held back behind `--include-archived`, and bounded with a footer saying how many
 rows were held back and how to see them, and under `h9k project list`, which counts every
-project's tasks by attention bucket.
+project's tasks by attention bucket. All three show the viewer's own work: another owner's task is
+composed into a Teammates group that no other count includes, held back by default with one line
+saying how many rows that is, and listed with `--everyone`, where it carries its owner's name, its
+state and its objective but never a cause, phase or next step written in the owner's voice. What is
+not built is an owner filter (show one named teammate's tasks); `--everyone` is all or nothing.
 
 ### The dependency graph
 
