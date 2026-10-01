@@ -362,7 +362,10 @@ first and read and write every path below against it, never against your own wor
 `recipes/settings.json` render on `h9k project init`/`h9k project add` (project mode) or
 `h9k install`/`h9k update` (node mode) — not on any background render loop — so a project or node
 whose home predates this skill, or whose anchor has not been (re-)rendered since, may not have
-them yet. If either is missing, stop and tell the operator to run `h9k project init <name>` (or
+them yet. `h9k install` and `h9k update` also refresh `launch-anchor.md` in the node home and in
+every registered project home that already has one, through the newly installed build; a project
+home's `settings.json` still renders only on `h9k project init` and `h9k project add`. If either
+is missing, stop and tell the operator to run `h9k project init <name>` (or
 `h9k install`) once, first; do not write recipe content that a session will never actually load.
 
 **Never overwrite an existing recipe file.** If `recipes/orchestrator.md` (or any recipe file
