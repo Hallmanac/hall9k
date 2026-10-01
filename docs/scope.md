@@ -651,7 +651,16 @@ arrival wakes them: a standing request holds the wait open without re-announcing
 counts as a re-review only when the reviewer has already submitted a review (a dismissed one
 included), so the original request that was standing when the watch opened never reads as being
 asked back; the review record is read from the pull request's newest hundred reviews, and a login
-absent from a truncated page counts as having reviewed. Only
+absent from a truncated page counts as having reviewed. A review of the reviewer's own
+that lands on GitHub after the watch woke them (an approval, a changes-requested review, or a lone
+thread reply, which GitHub records as its own commented review) reopens the watch: the task returns
+to Waiting and the stale needs-you line clears, and the first look after the reopen reports whatever
+is still unanswered. The reply case is accepted churn. The same reopen clears a false wake an
+earlier build recorded, a needs-you raised by a re-review request while the reviewer had no review
+at all. A truncated review page skips both, since it cannot say which review is the latest or
+whether one exists. While no review of the reviewer's is on the pull request, the Waiting row says
+so instead of "waiting on the pull request's author", and a needs-you line says what moved without
+the words "since your review". Only
 threads the reviewer themselves opened hold it open —
 somebody else's unresolved conversation on the same pull request is not this review's business — and
 the reviewer's login is read back from `gh` every sweep rather than remembered. `h9k task abandon`

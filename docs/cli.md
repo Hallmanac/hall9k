@@ -351,7 +351,12 @@ request is addressed to — and it wakes you on its own, since an author who res
 themselves and asks you back without a word or a push is still asking. A request counts as asking
 you *back* only once you have submitted a review of your own on the pull request, so the first
 request that was standing when the watch opened is not announced. Only the moment it arrives
-wakes you; a request left standing holds the wait open without re-announcing itself. Every thread
+wakes you; a request left standing holds the wait open without re-announcing itself. A review you
+submit on GitHub by hand after the watch woke you (an approval, a changes-requested review, or even
+a lone reply in a thread, which GitHub counts as a commented review) returns the task to Waiting and
+clears its needs-you line; the next look then reports whatever is still unanswered. While you have
+no review on the pull request at all, the Waiting row says "no review of yours is on" it rather than
+"waiting on its author". Every thread
 you opened being resolved no longer ends the wait by itself (Decisions Log #178,
 amending #160): the task stays Waiting until the pull request itself merges or closes, whatever the
 threads say, since a task that closed the moment it had nothing left to watch would leave a later
