@@ -4,7 +4,6 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Infrastructure.Persistence;
 using JasperFx.Events;
 using Marten;
-using Marten.Linq.MatchesSql;
 
 namespace Hall9k.Domain.Features.Tasks.Queries;
 

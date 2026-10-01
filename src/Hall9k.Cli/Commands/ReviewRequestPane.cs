@@ -208,8 +208,16 @@ internal static class ReviewRequestPane
                 continue;
             }
 
+            // The task the daemon attached the mention to is judged from its own row, not from the
+            // covering task the board prefers: the engine attaches to the newest covering task
+            // whoever owns it, so the two can differ (independent pre-PR review, cycle 1, both
+            // lenses, medium).
+            bool attachedToTeammate = mention.TaskId is { } attachedId
+                && rowsByTask.TryGetValue(attachedId, out TaskStatusRow? attachedRow)
+                && attachedRow.IsTeammates;
             ReviewRequestRow row = ComposeMentionRow(
-                mention, project.Name, Covering(mention.Repository, mention.Number, adopted, rowsByTask));
+                mention, project.Name, Covering(mention.Repository, mention.Number, adopted, rowsByTask),
+                attachedToTeammate);
             if (alreadySaid.Add(row.Markup))
             {
                 rendered.Add(row);
@@ -245,7 +253,8 @@ internal static class ReviewRequestPane
 
     /// <summary>
     /// The task covering this pull request right now, if any: a live one wins over a closed one,
-    /// and the newest closed one is what is named when only closed ones exist. Matched on the
+    /// the viewer's own over a teammate's within each, and the newest closed one is what is named
+    /// when only closed ones exist. Matched on the
     /// canonical external reference, case-insensitively — GitHub's own casing for an
     /// <c>owner/repo</c> need not match what a project recorded (the same hazard
     /// <c>ObservedReviewRequest.ComputeId</c> lower-cases for).
@@ -258,7 +267,7 @@ internal static class ReviewRequestPane
     /// back.
     /// </para>
     /// </summary>
-    private static CoveringReview? Covering(
+    internal static CoveringReview? Covering(
         string repository, int number, IReadOnlyList<TaskListItem> adopted,
         IReadOnlyDictionary<Guid, TaskStatusRow> rowsByTask)
     {
@@ -270,17 +279,18 @@ internal static class ReviewRequestPane
             return null;
         }
 
-        // The viewer's own tasks are the only ones this row may name, so one of them is chosen ahead
-        // of a teammate's however old; the pool falls back to every match only to say that a
-        // teammate's task covers the request, without naming it.
+        // A live task of any owner outranks a closed one, so a viewer's old Done task never hides a
+        // teammate's live review of the same pull request. Within each tier the viewer's own task is
+        // chosen ahead of a teammate's however old, because it is the only kind this row may name;
+        // a teammate's is chosen only to say that one covers the request, without naming it.
+        static bool IsLive(TaskListItem task) => task.State != TaskState.Done && task.State != TaskState.Abandoned;
         IReadOnlyList<TaskListItem> own = [.. matching.Where(task => IsViewers(task, rowsByTask))];
-        IReadOnlyList<TaskListItem> pool = own.Count > 0 ? own : matching;
-        TaskListItem? live = pool
-            .Where(task => task.State != TaskState.Done && task.State != TaskState.Abandoned)
-            .OrderByDescending(task => task.AddedAt)
-            .FirstOrDefault();
-        TaskListItem covering = live ?? pool.OrderByDescending(task => task.AddedAt).First();
-        bool coveringIsOwn = own.Count > 0;
+        TaskListItem? live = NewestOrNull(own.Where(IsLive))
+            ?? NewestOrNull(matching.Where(task => IsLive(task) && !own.Contains(task)));
+        TaskListItem covering = live
+            ?? NewestOrNull(own)
+            ?? matching.OrderByDescending(task => task.AddedAt).First();
+        bool coveringIsOwn = own.Contains(covering);
         string stateWord = rowsByTask.TryGetValue(covering.Id, out TaskStatusRow? row)
             ? row.Group.ToString()
             : covering.State.Value;
@@ -292,6 +302,9 @@ internal static class ReviewRequestPane
             covering.Id, live is not null, stateWord, matching.Any(task => task.WasAutoPrReviewCreated), gateParked,
             coveringIsOwn);
     }
+
+    private static TaskListItem? NewestOrNull(IEnumerable<TaskListItem> tasks) =>
+        tasks.OrderByDescending(task => task.AddedAt).FirstOrDefault();
 
     /// <summary>
     /// Whether a task is the viewer's, read from the pane's own composed rows so this pane and the
@@ -343,11 +356,14 @@ internal static class ReviewRequestPane
         string byHand = $"h9k task add --project {project} --from-pr {request.Number}";
         ReviewRequestOutcome outcome = ReviewRequestOutcome.FromInput(request.Outcome.Value);
 
-        if (covering is { Own: false })
+        if (covering is { Own: false } teammates)
         {
             return Informational(
                 request.Repository, request.Number,
-                $"{opening}{age}; a teammate's task already covers it (h9k status --everyone lists it)");
+                teammates.Live
+                    ? $"{opening}{age}; a teammate's task already covers it (h9k status --everyone lists it)"
+                    : $"{opening}{age}; a teammate's task already covered it and is closed — "
+                      + ClosedTaskHold(setting, teammates));
         }
 
         if (covering is { } task)
@@ -450,9 +466,16 @@ internal static class ReviewRequestPane
     /// 2f079bcd) already says in prose for the held cases, but said nowhere per-comment, and never
     /// at all for a refused mint, until this row existed (independent pre-PR review, cycle 1,
     /// adversarial lens, medium).
+    /// <para>
+    /// <paramref name="attachedToTeammate"/> says the task the mention was attached to
+    /// (<see cref="ObservedReviewMention.TaskId"/>) is a teammate's. It changes only how that task
+    /// is worded, never whether the operator is asked: the comment mentioned this viewer's login,
+    /// so a follow-up that was never dispatched is theirs to chase whoever owns the task.
+    /// </para>
     /// </summary>
     internal static ReviewRequestRow ComposeMentionRow(
-        ObservedReviewMention mention, string projectName, CoveringReview? covering)
+        ObservedReviewMention mention, string projectName, CoveringReview? covering,
+        bool attachedToTeammate = false)
     {
         string pullRequest = $"{mention.Repository.EscapeMarkup()}#{mention.Number}";
         string project = projectName.EscapeMarkup();
@@ -475,20 +498,21 @@ internal static class ReviewRequestPane
         // comment, so rendering it the same as an already-answered mention would bury exactly the
         // loss this outcome exists to keep visible (independent pre-PR review, cycle 1, both
         // lenses).
-        if (outcome == ReviewMentionOutcome.AttachedNoFollowUp && covering is { Own: false })
-        {
-            return Informational(
-                mention.Repository, mention.Number,
-                $"{opening}; it was attached to a teammate's task, which is theirs to answer");
-        }
-
         if (outcome == ReviewMentionOutcome.AttachedNoFollowUp)
         {
-            string taskRef = mention.TaskId is { } taskId ? DomainId.Short(taskId) : "its covering task";
+            // Only the viewer's own task is named by id; a teammate's is said to be one, the same
+            // rule every other row follows. A mention with no recorded task is judged by the
+            // covering task instead.
+            string taskRef = mention.TaskId switch
+            {
+                { } taskId when !attachedToTeammate => $"task {DomainId.Short(taskId)}",
+                null when covering is not { Own: false } => "its covering task",
+                _ => "a teammate's task",
+            };
             string detail = mention.OutcomeDetail.IsBlank() ? string.Empty : $" ({mention.OutcomeDetail.EscapeMarkup()})";
             return NeedsYou(
                 mention.Repository, mention.Number,
-                $"{opening}; attached to task {taskRef}, but no follow-up was dispatched to answer it{detail}",
+                $"{opening}; attached to {taskRef}, but no follow-up was dispatched to answer it{detail}",
                 $"h9k pr review {pullRequest} --since-my-review");
         }
 
@@ -508,11 +532,13 @@ internal static class ReviewRequestPane
                 $"h9k task assign {parkedId}");
         }
 
-        if (covering is { Own: false })
+        if (covering is { Own: false } teammates)
         {
             return Informational(
                 mention.Repository, mention.Number,
-                $"{opening}; a teammate's task already covers it (h9k status --everyone lists it)");
+                teammates.Live
+                    ? $"{opening}; a teammate's task already covers it (h9k status --everyone lists it)"
+                    : $"{opening}; a teammate's task already covered it and is closed");
         }
 
         if (covering is { } task)
