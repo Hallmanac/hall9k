@@ -133,12 +133,19 @@ public sealed record PrReviewAuthorActivity(
     /// on a review that posted nothing used to read as (task cc8f819b).
     /// </para>
     /// <para>
+    /// "Since your review" is only said when there is a review of the reviewer's to be since:
+    /// <paramref name="reviewerHasNoSubmittedReview"/> is true when the watch's own observation
+    /// recorded none, and the line then names what moved on the pull request without claiming one.
+    /// </para>
+    /// <para>
     /// A re-review request is the one part it does attribute, because GitHub records who a review
     /// request is addressed TO and that is the reviewer themselves: "a re-review is requested of
     /// you" is read straight off the request, not inferred from anybody's authorship.
     /// </para>
     /// </summary>
-    public string Describe(string repository, int number, int openThreadCount, int openedThreadCount)
+    public string Describe(
+        string repository, int number, int openThreadCount, int openedThreadCount,
+        bool reviewerHasNoSubmittedReview = false)
     {
         List<string> parts = [];
         if (ReplyCount > 0)
@@ -170,7 +177,8 @@ public sealed record PrReviewAuthorActivity(
             _ => $"{string.Join(", ", parts[..^1])} and {parts[^1]}",
         };
 
-        string moved = $"{repository}#{number.ToString(CultureInfo.InvariantCulture)} moved since your review: {what}";
+        string since = reviewerHasNoSubmittedReview ? string.Empty : " since your review";
+        string moved = $"{repository}#{number.ToString(CultureInfo.InvariantCulture)} moved{since}: {what}";
 
         return (openedThreadCount, openThreadCount) switch
         {
