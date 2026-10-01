@@ -120,6 +120,13 @@ public sealed record ReviewThread(
 }
 
 /// <summary>
+/// One submitted review as the provider reported it: the latest a login has on a pull request, as
+/// the review-conversation read folded it. <see cref="CommitOid"/> and <see cref="SubmittedAt"/>
+/// are honestly null where the payload carried none, rather than defaulted.
+/// </summary>
+public sealed record SubmittedReview(string Id, string State, DateTimeOffset? SubmittedAt, string? CommitOid);
+
+/// <summary>
 /// What one look at a pull request's review conversation saw. Everything a posted review's
 /// follow-through needs from the provider, in one read: whether the pull request is still open,
 /// where its head is, how many commits it carries, every review thread, and who still owes a
@@ -131,6 +138,12 @@ public sealed record ReviewThread(
 /// <see cref="ThreadsTruncated"/> says the thread page itself was capped, so a caller counting
 /// threads knows its count is a floor.
 /// </para>
+/// <para>
+/// <see cref="LatestReviewByLogin"/> is the newest submitted review per author out of the
+/// pull request's newest hundred (never a PENDING one, which is nobody's submitted review yet),
+/// keyed case-insensitively; <see cref="ReviewsTruncated"/> says older reviews exist the page did
+/// not carry, so a login missing from the map may still have reviewed.
+/// </para>
 /// </summary>
 public sealed record ReviewConversation(
     bool IsOpen,
@@ -140,7 +153,9 @@ public sealed record ReviewConversation(
     int? CommitCount,
     IReadOnlyList<ReviewThread> Threads,
     IReadOnlyList<string> OutstandingReviewerLogins,
-    bool ThreadsTruncated)
+    bool ThreadsTruncated,
+    IReadOnlyDictionary<string, SubmittedReview> LatestReviewByLogin,
+    bool ReviewsTruncated)
 {
     /// <summary>Every thread <paramref name="login"/> opened, case-insensitively — the only threads a follow-through of that login's review is ever about.</summary>
     public IReadOnlyList<ReviewThread> ThreadsStartedBy(string login) =>
@@ -150,10 +165,33 @@ public sealed record ReviewConversation(
             && string.Equals(thread.StartedByLogin, login, StringComparison.OrdinalIgnoreCase)),
     ];
 
-    /// <summary>Whether <paramref name="login"/> has a review request outstanding right now — the second reason a follow-through stays open.</summary>
-    public bool ReReviewRequestedOf(string login) =>
+    /// <summary>
+    /// Whether <paramref name="login"/> has a review request outstanding right now, which is the
+    /// FIRST half of being asked back and not the whole of it: a standing request on a reviewer who
+    /// has never submitted anything is the original request, and nobody has asked them back.
+    /// </summary>
+    public bool ReviewRequestedOf(string login) =>
         OutstandingReviewerLogins.Any(outstanding =>
             string.Equals(outstanding, login, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Whether <paramref name="login"/> has a submitted review on record, as far as this read can
+    /// tell. When the review page was truncated a login absent from it counts as having reviewed:
+    /// the page holds the newest hundred, so the missing review may simply be older. That can cost
+    /// a false wake and never a missed re-review, the same ceiling discipline
+    /// <see cref="ReviewThread.ReplyCountFor"/> keeps.
+    /// </summary>
+    public bool HasReviewed(string login) =>
+        ReviewsTruncated || LatestReviewByLogin.ContainsKey(login);
+
+    /// <summary>
+    /// Whether <paramref name="login"/> is being asked back: a request outstanding on a reviewer
+    /// who has already submitted a review. A first request is not a re-review. A DISMISSED review
+    /// still counts as submitted, because dismissal does not re-request anyone and the author
+    /// re-requesting afterwards is exactly an ask to come back.
+    /// </summary>
+    public bool ReReviewRequestedOf(string login) =>
+        ReviewRequestedOf(login) && HasReviewed(login);
 }
 
 /// <summary>
@@ -210,6 +248,15 @@ public sealed class GitHubReviewThreads(ProcessRunner? runner = null) : IReviewC
     /// </summary>
     private const int CommentPageSize = 100;
 
+    /// <summary>
+    /// The review page cap. <c>last</c> and not <c>first</c>, because GitHub lists reviews oldest
+    /// first and every lone thread reply is its own COMMENTED review, so on a busy pull request the
+    /// newest hundred are the ones that say whether a reviewer was asked back.
+    /// <c>pageInfo.hasPreviousPage</c> is the truncation signal for that direction. PENDING is left
+    /// out of the states because a draft is not a submitted review.
+    /// </summary>
+    private const int ReviewPageSize = 100;
+
     private static readonly string ConversationQuery =
         $$"""
         query($owner: String!, $name: String!, $number: Int!) {
@@ -233,6 +280,10 @@ public sealed class GitHubReviewThreads(ProcessRunner? runner = null) : IReviewC
                   }
                 }
                 pageInfo { hasNextPage }
+              }
+              reviews(last: {{ReviewPageSize}}, states: [APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED]) {
+                nodes { id state submittedAt author { login } commit { oid } }
+                pageInfo { hasPreviousPage }
               }
               reviewRequests(first: 20) {
                 nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Team { slug } } }
@@ -332,6 +383,11 @@ public sealed class GitHubReviewThreads(ProcessRunner? runner = null) : IReviewC
                 comments));
         }
 
+        JsonElement reviews = pullRequest.TryGetProperty("reviews", out JsonElement reviewsNode)
+            && reviewsNode.ValueKind == JsonValueKind.Object
+                ? reviewsNode
+                : default;
+
         return new ReviewConversation(
             IsOpen: string.Equals(state, "OPEN", StringComparison.OrdinalIgnoreCase),
             IsMerged: merged,
@@ -342,7 +398,70 @@ public sealed class GitHubReviewThreads(ProcessRunner? runner = null) : IReviewC
                 : null,
             Threads: threads,
             OutstandingReviewerLogins: ReadOutstandingReviewerLogins(pullRequest),
-            ThreadsTruncated: truncated);
+            ThreadsTruncated: truncated,
+            LatestReviewByLogin: ReadLatestReviewByLogin(reviews),
+            ReviewsTruncated: reviews.ValueKind == JsonValueKind.Object
+                && reviews.TryGetProperty("pageInfo", out JsonElement reviewPageInfo)
+                && reviewPageInfo.TryGetProperty("hasPreviousPage", out JsonElement hasPreviousPage)
+                && hasPreviousPage.ValueKind == JsonValueKind.True);
+    }
+
+    /// <summary>
+    /// Each author's newest submitted review in the page, by <c>submittedAt</c>, keyed
+    /// case-insensitively the way GitHub treats a login. A review with no author (a deleted
+    /// account) is skipped rather than attributed to anyone (AGENTS.md: never guess at unobserved
+    /// facts), and so is one with no id, which GitHub types as non-null so a missing one is a
+    /// malformed payload. A review with no <c>submittedAt</c> loses to any review that has one.
+    /// </summary>
+    private static IReadOnlyDictionary<string, SubmittedReview> ReadLatestReviewByLogin(JsonElement reviews)
+    {
+        Dictionary<string, SubmittedReview> latest = new(StringComparer.OrdinalIgnoreCase);
+        if (reviews.ValueKind != JsonValueKind.Object
+            || !reviews.TryGetProperty("nodes", out JsonElement nodes)
+            || nodes.ValueKind != JsonValueKind.Array)
+        {
+            return latest;
+        }
+
+        foreach (JsonElement review in nodes.EnumerateArray())
+        {
+            if (review.ValueKind != JsonValueKind.Object
+                || ReadActorLogin(review) is not { } login
+                || ReadString(review, "id") is not { } id)
+            {
+                continue;
+            }
+
+            // The query never asks for PENDING; a draft that arrived anyway is nobody's submitted review.
+            string state = ReadString(review, "state") ?? string.Empty;
+            if (string.Equals(state, "PENDING", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            SubmittedReview candidate = new(
+                id,
+                state,
+                ReadTimestamp(review, "submittedAt"),
+                review.TryGetProperty("commit", out JsonElement commit) && commit.ValueKind == JsonValueKind.Object
+                    ? ReadString(commit, "oid")
+                    : null);
+
+            // The page is oldest first, so on a tie the later node is the newer review.
+            if (!latest.TryGetValue(login, out SubmittedReview? current)
+                || (candidate.SubmittedAt, current.SubmittedAt) switch
+                {
+                    (null, not null) => false,
+                    (not null, null) => true,
+                    (DateTimeOffset newer, DateTimeOffset older) => newer >= older,
+                    _ => true,
+                })
+            {
+                latest[login] = candidate;
+            }
+        }
+
+        return latest;
     }
 
     /// <summary>

@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Tests.Fakes;
 using Xunit;
 
 namespace Hall9k.Tests.Connectors;
@@ -131,15 +132,130 @@ public sealed class GitHubReviewThreadsTests
         ReviewConversation conversation = GitHubReviewThreads.Parse(Payload("""
             "state":"OPEN","merged":false,"closed":false,"headRefOid":"abc123",
             "reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false}},
+            "reviews":{"nodes":[
+              {"id":"R1","state":"COMMENTED","submittedAt":"2026-09-07T13:20:00Z","author":{"login":"brian"},"commit":{"oid":"abc"}}
+            ],"pageInfo":{"hasPreviousPage":false}},
             "reviewRequests":{"nodes":[
               {"requestedReviewer":{"__typename":"User","login":"brian"}},
               {"requestedReviewer":{"__typename":"Team","slug":"platform"}}]}
             """));
 
-        conversation.ReReviewRequestedOf("Brian").Should().BeTrue();
+        conversation.ReviewRequestedOf("Brian").Should().BeTrue();
+        conversation.ReReviewRequestedOf("Brian").Should().BeTrue("brian has reviewed and a request stands again");
         conversation.ReReviewRequestedOf("platform").Should().BeFalse(
             "a team is recorded by its prefixed slug, which cannot collide with a personal login");
         conversation.OutstandingReviewerLogins.Should().Contain("team:platform");
+    }
+
+    [Fact]
+    public void Reviews_are_folded_per_author_to_the_latest_and_recorded_in_full()
+    {
+        ReviewConversation conversation = GitHubReviewThreads.Parse(Payload("""
+            "state":"OPEN","merged":false,"closed":false,"headRefOid":"abc123",
+            "reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false}},
+            "reviews":{"nodes":[
+              {"id":"R2","state":"APPROVED","submittedAt":"2026-09-09T10:00:00Z","author":{"login":"Brian"},"commit":{"oid":"ccc"}},
+              {"id":"R1","state":"CHANGES_REQUESTED","submittedAt":"2026-09-07T10:00:00Z","author":{"login":"brian"},"commit":{"oid":"aaa"}},
+              {"id":"R3","state":"COMMENTED","submittedAt":"2026-09-08T10:00:00Z","author":null,"commit":{"oid":"bbb"}},
+              {"id":"R4","state":"DISMISSED","submittedAt":"2026-09-08T11:00:00Z","author":{"login":"ryan"},"commit":null}
+            ],"pageInfo":{"hasPreviousPage":false}},
+            "reviewRequests":{"nodes":[]}
+            """));
+
+        conversation.ReviewsTruncated.Should().BeFalse();
+        conversation.LatestReviewByLogin.Should().HaveCount(2, "a review with no author is skipped, not attributed");
+        SubmittedReview brians = conversation.LatestReviewByLogin["BRIAN"];
+        brians.Id.Should().Be("R2", "the latest by submittedAt wins whatever order the page lists them in, and logins fold case-insensitively");
+        brians.State.Should().Be("APPROVED");
+        brians.SubmittedAt.Should().Be(DateTimeOffset.Parse("2026-09-09T10:00:00Z"));
+        brians.CommitOid.Should().Be("ccc");
+        conversation.LatestReviewByLogin["ryan"].State.Should().Be("DISMISSED");
+        conversation.LatestReviewByLogin["ryan"].CommitOid.Should().BeNull("an absent commit is recorded as unknown");
+    }
+
+    [Fact]
+    public void A_pending_review_is_nobodys_submitted_review()
+    {
+        ReviewConversation conversation = GitHubReviewThreads.Parse(Payload("""
+            "state":"OPEN","merged":false,"closed":false,"headRefOid":"abc123",
+            "reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false}},
+            "reviews":{"nodes":[
+              {"id":"R1","state":"PENDING","submittedAt":null,"author":{"login":"brian"},"commit":{"oid":"aaa"}}
+            ],"pageInfo":{"hasPreviousPage":false}},
+            "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"User","login":"brian"}}]}
+            """));
+
+        conversation.LatestReviewByLogin.Should().BeEmpty();
+        conversation.ReReviewRequestedOf("brian").Should().BeFalse("a draft is not a review, so the standing request is their first");
+    }
+
+    [Fact]
+    public void A_truncated_review_page_counts_an_absent_requested_login_as_having_reviewed()
+    {
+        ReviewConversation conversation = GitHubReviewThreads.Parse(Payload("""
+            "state":"OPEN","merged":false,"closed":false,"headRefOid":"abc123",
+            "reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false}},
+            "reviews":{"nodes":[
+              {"id":"R9","state":"COMMENTED","submittedAt":"2026-09-09T10:00:00Z","author":{"login":"someone-else"},"commit":{"oid":"aaa"}}
+            ],"pageInfo":{"hasPreviousPage":true}},
+            "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"User","login":"brian"}}]}
+            """));
+
+        conversation.ReviewsTruncated.Should().BeTrue();
+        conversation.ReReviewRequestedOf("brian").Should().BeTrue(
+            "the missing review may be older than the page, and a false wake is cheaper than a missed re-review");
+        conversation.ReReviewRequestedOf("nobody-asked").Should().BeFalse("no request stands on them");
+    }
+
+    [Fact]
+    public void A_standing_request_with_no_review_is_a_first_request_not_a_re_review()
+    {
+        ReviewConversation conversation = GitHubReviewThreads.Parse(Payload("""
+            "state":"OPEN","merged":false,"closed":false,"headRefOid":"abc123",
+            "reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false}},
+            "reviews":{"nodes":[],"pageInfo":{"hasPreviousPage":false}},
+            "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"User","login":"brian"}}]}
+            """));
+
+        conversation.ReviewRequestedOf("brian").Should().BeTrue();
+        conversation.ReReviewRequestedOf("brian").Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("APPROVED")]
+    [InlineData("CHANGES_REQUESTED")]
+    [InlineData("COMMENTED")]
+    [InlineData("DISMISSED")]
+    public void A_request_after_any_submitted_review_including_a_dismissed_one_is_a_re_review(string reviewState)
+    {
+        ReviewConversation conversation = GitHubReviewThreads.Parse(Payload("""
+            "state":"OPEN","merged":false,"closed":false,"headRefOid":"abc123",
+            "reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false}},
+            "reviews":{"nodes":[
+              {"id":"R1","state":"STATE_HERE","submittedAt":"2026-09-07T10:00:00Z","author":{"login":"brian"},"commit":{"oid":"aaa"}}
+            ],"pageInfo":{"hasPreviousPage":false}},
+            "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"User","login":"brian"}}]}
+            """.Replace("STATE_HERE", reviewState, StringComparison.Ordinal)));
+
+        conversation.ReReviewRequestedOf("brian").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task The_read_asks_for_the_newest_hundred_non_pending_reviews()
+    {
+        RecordingProcessRunner runner = RecordingProcessRunner.Succeeding(Payload("""
+            "state":"OPEN","merged":false,"closed":false,"headRefOid":"abc123",
+            "reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false}},
+            "reviews":{"nodes":[],"pageInfo":{"hasPreviousPage":false}},
+            "reviewRequests":{"nodes":[]}
+            """));
+
+        await new GitHubReviewThreads(runner.Runner).ReadAsync("acme/widgets", 42, "/tmp", CancellationToken.None);
+
+        string query = runner.Calls.Single().Arguments.Single(argument => argument.StartsWith("query=", StringComparison.Ordinal));
+        query.Should().Contain("reviews(last: 100, states: [APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED])")
+            .And.Contain("hasPreviousPage")
+            .And.NotContain("PENDING");
     }
 
     /// <summary>
