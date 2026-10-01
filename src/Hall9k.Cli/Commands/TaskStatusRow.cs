@@ -94,8 +94,21 @@ internal sealed record TaskStatusRow(
     /// hides a row carrying this rather than show a needs-you row with no project, no objective,
     /// and a default added time.
     /// </summary>
-    bool PartialHistoryHeld = false)
+    bool PartialHistoryHeld = false,
+    /// <summary>
+    /// Who owns this task when it is a teammate's (<see cref="AttentionBucket.Teammates"/>), as
+    /// <c>MemberLabelResolver</c> names them: a display name, else a declared login, else the
+    /// fingerprint's short form. Empty for the viewer's own task and for a teammate's task whose
+    /// owner root this node cannot resolve at all.
+    /// </summary>
+    string TeammateOwner = "")
 {
+    /// <summary>
+    /// Whether this task is another owner's, which is what every surface that shows a person their
+    /// own work filters on: <c>--everyone</c> is the one door that brings these rows back.
+    /// </summary>
+    public bool IsTeammates => Group == AttentionBucket.Teammates;
+
     /// <summary>
     /// A truncated objective still has to say something; below this the column is noise. A
     /// console too narrow to pay for even this lets the row wrap, which is the better of two
@@ -147,10 +160,18 @@ internal sealed record TaskStatusRow(
         .. PartialHistoryHeld
             ? (string[])["[red]partial history held[/] — its own genesis event never arrived; it will complete once replication catches it up"]
             : [],
+        // A teammate's row says whose it is and nothing else: the phase, facts and attention
+        // beside it are composed only for the viewer's own tasks.
+        .. IsTeammates ? (string[])[TeammateMarkup] : [],
         .. Phase.HasPhase ? (string[])[Phase.Markup] : [],
         .. Facts.Count > 0 ? (string[])[string.Join(" [dim]·[/] ", Facts.Select(fact => $"[dim]{fact.EscapeMarkup()}[/]"))] : [],
         .. Attention.HasCause ? (string[])[Attention.Markup] : [],
     ];
+
+    /// <summary>The line that stands in for a teammate's detail: whose task it is, named the way <c>MemberLabelResolver</c> names them.</summary>
+    private string TeammateMarkup => TeammateOwner.IsBlank()
+        ? "[dim]a teammate's task; its owner is not known on this node[/]"
+        : $"[dim]a teammate's task, owned by {ExternalText.OneLineMarkup(TeammateOwner)}[/]";
 
     /// <summary>
     /// The one detail line a browse surface can afford: the phase where the row has one, the
@@ -330,4 +351,11 @@ internal enum AttentionBucket
 
     /// <summary>Archived, or a state this build does not recognize.</summary>
     Closed,
+
+    /// <summary>
+    /// Another owner's task: one the viewer's owner root may not act on and has not asked to take,
+    /// or one whose owner root is unknown. Checked before every other group so no count of those
+    /// includes it, and hidden from the board by default (<c>--everyone</c> shows it).
+    /// </summary>
+    Teammates,
 }

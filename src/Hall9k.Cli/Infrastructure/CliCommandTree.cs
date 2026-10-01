@@ -168,8 +168,11 @@ public static class CliCommandTree
                     + "single-assignment, so a row sums to the project's task count — this is where you look "
                     + "to see which project is asking for something. An archived project (h9k project "
                     + "remove) is hidden by default; --include-archived shows it too, marked archived with "
-                    + "the date.")
+                    + "the date. The counts are your own work: a teammate's task is counted in none of the "
+                    + "columns and the footer says how many it held back, which --everyone brings back as a "
+                    + "Teammates column.")
                 .WithExample("project", "list")
+                .WithExample("project", "list", "--everyone")
                 .WithExample("project", "list", "--include-archived");
             project.AddCommand<ProjectShowCommand>("show")
                 .WithDescription(
@@ -691,8 +694,13 @@ public static class CliCommandTree
             .WithDescription(
                 "The attention pane: what needs you, what has gone quiet, what is running — bounded and "
                 + "glanceable, with everything else counted in the header. Browsing lives under the nouns "
-                + "(h9k task list, h9k project list); this answers \"what should I look at right now\".")
-            .WithExample("status");
+                + "(h9k task list, h9k project list); this answers \"what should I look at right now\". "
+                + "It shows your own work: the tasks this node's owner may act on, or has asked to take. "
+                + "A teammate's task is held back, counted in no band, and the header says once how many "
+                + "rows that is; --everyone lists them as a Teammates band of their own, which names each "
+                + "owner and never carries a cause or a next step written for the owner.")
+            .WithExample("status")
+            .WithExample("status", "--everyone");
         config.AddCommand<LogsCommand>("logs")
             .WithDescription(
                 "A run's transcript, rendered from the stream-json the agent wrote (or --raw for the "
@@ -1456,8 +1464,10 @@ public static class CliCommandTree
                     + "alongside live and done tasks; ask for them with --state archived, --state closed, or "
                     + "--include-archived. Bounded to the newest 20 by default — the footer says how many were "
                     + "held back and how to see them (--all, --limit <n>), and how many Archived rows the "
-                    + "default hid.")
+                    + "default hid. Like h9k status it shows your own work: a teammate's task is held back "
+                    + "(the footer counts them) until --everyone is passed.")
                 .WithExample("task", "list")
+                .WithExample("task", "list", "--everyone")
                 .WithExample("task", "list", "--project", "hall9k", "--state", "needs-you")
                 .WithExample("task", "list", "--state", "draft")
                 .WithExample("task", "list", "--state", "attention-delivered", "--all")
@@ -1472,7 +1482,9 @@ public static class CliCommandTree
                     + "and what they are waiting on, its external reference, the conversation, and every "
                     + "run with its outcome and pull request. This is the second command of any "
                     + "investigation — h9k status names the task, this says what happened to it. Takes "
-                    + "the full id or an unambiguous fragment.")
+                    + "the full id or an unambiguous fragment. A teammate's task is shown as theirs: it "
+                    + "names its owner, its state, objective, acceptance criteria and runs, and carries no "
+                    + "cause, phase or next step, which are the owner's to read.")
                 .WithExample("task", "show", "28b19893");
             task.AddCommand<TaskPullCommand>("pull")
                 .WithDescription(

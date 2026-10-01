@@ -69,6 +69,9 @@ internal static class TaskStateFilter
         // idea 202383dc, M2a), so this group takes the attention- spelling exactly as the other
         // groups the column shadows already do.
         ["attentionheldelsewhere"] = AttentionBucket.HeldElsewhere,
+        // Another owner's work. A board hides these rows unless --everyone is passed, so selecting
+        // the group without it finds nothing, and the empty-result message says why.
+        ["teammates"] = AttentionBucket.Teammates,
     };
 
     /// <summary>
@@ -81,7 +84,7 @@ internal static class TaskStateFilter
     /// </summary>
     internal const string AttentionSpelling =
         "needs-you, stalled, attention-working, attention-delivered, attention-waiting, queued, "
-        + "blocked, ready, attention-draft, attention-done, closed, attention-heldelsewhere";
+        + "blocked, ready, attention-draft, attention-done, closed, attention-heldelsewhere, teammates";
 
     /// <summary>
     /// The lifecycle vocabulary the Status column prints (Decisions Log #66). Every word here is

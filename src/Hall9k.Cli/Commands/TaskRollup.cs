@@ -21,9 +21,10 @@ internal sealed record TaskRollup(
     int Draft,
     int Done,
     int Closed,
-    int HeldElsewhere = 0)
+    int HeldElsewhere = 0,
+    int Teammates = 0)
 {
-    public static readonly TaskRollup Empty = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    public static readonly TaskRollup Empty = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
     /// <summary>Column headers, in the same order as <see cref="Cells"/>.</summary>
     public static readonly string[] Columns =
@@ -32,8 +33,18 @@ internal sealed record TaskRollup(
         "Closed", "Held elsewhere",
     ];
 
+    /// <summary>
+    /// The one column that is not in <see cref="Columns"/>: another owner's tasks are counted
+    /// apart from every group above, and a surface adds this column only when it was asked to show
+    /// them (<c>--everyone</c>), so a viewer's own rollup never has a cell for work that is not theirs.
+    /// </summary>
+    public const string TeammatesColumn = "Teammates";
+
+    public string TeammatesCell => Cell(Teammates, "grey");
+
     public int Total =>
-        NeedsYou + Stalled + Working + Delivered + Queued + Blocked + Ready + Draft + Done + Closed + HeldElsewhere;
+        NeedsYou + Stalled + Working + Delivered + Queued + Blocked + Ready + Draft + Done + Closed + HeldElsewhere
+        + Teammates;
 
     public static TaskRollup From(IEnumerable<TaskStatusRow> rows)
     {
@@ -65,6 +76,11 @@ internal sealed record TaskRollup(
                 // Closed, which would count a teammate's own live work as archived (idea
                 // 202383dc, M2a).
                 AttentionBucket.HeldElsewhere => rollup with { HeldElsewhere = rollup.HeldElsewhere + 1 },
+                // Explicit for the same reason: the fall-through is Closed, which would count
+                // another owner's live work as archived. Surfaces that hide teammates' rows drop
+                // them before the rollup is built, so this count is only ever non-zero where they
+                // were asked for or where nothing filters them.
+                AttentionBucket.Teammates => rollup with { Teammates = rollup.Teammates + 1 },
                 _ => rollup with { Closed = rollup.Closed + 1 },
             };
         }
@@ -106,6 +122,7 @@ internal sealed record TaskRollup(
         Add(parts, Done, "green", "done");
         Add(parts, Closed, "dim", "closed");
         Add(parts, HeldElsewhere, "grey", "held elsewhere");
+        Add(parts, Teammates, "grey", "teammates'");
 
         return parts.Count > 0 ? string.Join(" · ", parts) : "[dim]no tasks[/]";
     }

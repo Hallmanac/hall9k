@@ -36,7 +36,15 @@ namespace Hall9k.Cli.Commands;
 /// has to run <c>h9k task assign</c> on, and a still-parked task's own mint mention must not read
 /// as already handled.
 /// </param>
-internal sealed record CoveringReview(Guid TaskId, bool Live, string StateWord, bool AutoCreated, bool GateParked);
+/// <param name="Own">
+/// Whether the covering task is the viewer's own. A row names a covering task, its id and its
+/// state, only when it is: a teammate's task covers the request as far as the dedup is concerned,
+/// but its id, its state and any lever against it are that owner's to read, and a line saying
+/// "task 1a2b3c is reviewing" about it would hand this viewer a task they cannot act on. Defaults
+/// true so a caller that cannot tell (no row to read the group from) keeps the pre-existing wording.
+/// </param>
+internal sealed record CoveringReview(
+    Guid TaskId, bool Live, string StateWord, bool AutoCreated, bool GateParked, bool Own = true);
 
 /// <summary>One observed review request as <c>h9k status</c> renders it.</summary>
 /// <param name="NeedsYou">
@@ -262,21 +270,36 @@ internal static class ReviewRequestPane
             return null;
         }
 
-        TaskListItem? live = matching
+        // The viewer's own tasks are the only ones this row may name, so one of them is chosen ahead
+        // of a teammate's however old; the pool falls back to every match only to say that a
+        // teammate's task covers the request, without naming it.
+        IReadOnlyList<TaskListItem> own = [.. matching.Where(task => IsViewers(task, rowsByTask))];
+        IReadOnlyList<TaskListItem> pool = own.Count > 0 ? own : matching;
+        TaskListItem? live = pool
             .Where(task => task.State != TaskState.Done && task.State != TaskState.Abandoned)
             .OrderByDescending(task => task.AddedAt)
             .FirstOrDefault();
-        TaskListItem covering = live ?? matching.OrderByDescending(task => task.AddedAt).First();
+        TaskListItem covering = live ?? pool.OrderByDescending(task => task.AddedAt).First();
+        bool coveringIsOwn = own.Count > 0;
         string stateWord = rowsByTask.TryGetValue(covering.Id, out TaskStatusRow? row)
             ? row.Group.ToString()
             : covering.State.Value;
         // The identical pair AttentionComposer's own needs-you row gates the membership gate's park
         // on: PrReviewGateParked never clears once set, so State == Published is what tells "still
         // parked, never assigned" apart from "parked once, long since assigned and gone Done".
-        bool gateParked = covering.PrReviewGateParked && covering.State == TaskState.Published;
+        bool gateParked = coveringIsOwn && covering.PrReviewGateParked && covering.State == TaskState.Published;
         return new CoveringReview(
-            covering.Id, live is not null, stateWord, matching.Any(task => task.WasAutoPrReviewCreated), gateParked);
+            covering.Id, live is not null, stateWord, matching.Any(task => task.WasAutoPrReviewCreated), gateParked,
+            coveringIsOwn);
     }
+
+    /// <summary>
+    /// Whether a task is the viewer's, read from the pane's own composed rows so this pane and the
+    /// sections below it cannot disagree. A task with no row (a headless one the pane filtered out)
+    /// carries no verdict either way and keeps the pre-existing reading.
+    /// </summary>
+    private static bool IsViewers(TaskListItem task, IReadOnlyDictionary<Guid, TaskStatusRow> rowsByTask) =>
+        !(rowsByTask.TryGetValue(task.Id, out TaskStatusRow? row) && row.IsTeammates);
 
     /// <summary>
     /// One row's words. The order the cases are asked in is the whole behaviour (Decisions Log
@@ -319,6 +342,13 @@ internal static class ReviewRequestPane
             : string.Empty;
         string byHand = $"h9k task add --project {project} --from-pr {request.Number}";
         ReviewRequestOutcome outcome = ReviewRequestOutcome.FromInput(request.Outcome.Value);
+
+        if (covering is { Own: false })
+        {
+            return Informational(
+                request.Repository, request.Number,
+                $"{opening}{age}; a teammate's task already covers it (h9k status --everyone lists it)");
+        }
 
         if (covering is { } task)
         {
@@ -445,6 +475,13 @@ internal static class ReviewRequestPane
         // comment, so rendering it the same as an already-answered mention would bury exactly the
         // loss this outcome exists to keep visible (independent pre-PR review, cycle 1, both
         // lenses).
+        if (outcome == ReviewMentionOutcome.AttachedNoFollowUp && covering is { Own: false })
+        {
+            return Informational(
+                mention.Repository, mention.Number,
+                $"{opening}; it was attached to a teammate's task, which is theirs to answer");
+        }
+
         if (outcome == ReviewMentionOutcome.AttachedNoFollowUp)
         {
             string taskRef = mention.TaskId is { } taskId ? DomainId.Short(taskId) : "its covering task";
@@ -469,6 +506,13 @@ internal static class ReviewRequestPane
                 $"{opening}; task {parkedId} was minted but not assigned by the membership gate "
                 + "(security review idea 6be68ee2, finding 1)",
                 $"h9k task assign {parkedId}");
+        }
+
+        if (covering is { Own: false })
+        {
+            return Informational(
+                mention.Repository, mention.Number,
+                $"{opening}; a teammate's task already covers it (h9k status --everyone lists it)");
         }
 
         if (covering is { } task)

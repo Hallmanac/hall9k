@@ -76,6 +76,15 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
             table.AddColumn(new TableColumn(column).RightAligned());
         }
 
+        // An epic can hold another owner's task. Those are counted in no group above, so the row
+        // would otherwise stop adding up to its tasks without saying why; the column appears only
+        // where some listed epic has one, which leaves a one-owner install's table as it always was.
+        bool anyTeammates = matched.Any(epic => rollups.GetValueOrDefault(epic.Id)?.Teammates > 0);
+        if (anyTeammates)
+        {
+            table.AddColumn(new TableColumn(TaskRollup.TeammatesColumn).RightAligned());
+        }
+
         foreach (EpicDetails epic in matched)
         {
             TaskRollup rollup = rollups.GetValueOrDefault(epic.Id) ?? TaskRollup.Empty;
@@ -85,6 +94,7 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
                 .. project is null ? (string[])[projects.GetValueOrDefault(epic.ProjectId, "?").EscapeMarkup()] : [],
                 epic.Title.EscapeMarkup(),
                 .. rollup.Cells,
+                .. anyTeammates ? (string[])[rollup.TeammatesCell] : [],
             ]);
         }
 

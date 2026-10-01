@@ -11,6 +11,10 @@ public sealed class ProjectListCommand : Hall9kAsyncCommand<ProjectListCommand.S
 {
     public sealed class Settings : CommandSettings
     {
+        [CommandOption("--everyone")]
+        [Description(TeammateRows.EveryoneDescription)]
+        public bool Everyone { get; init; }
+
         [CommandOption("--include-archived")]
         [Description("Show archived projects (h9k project remove) alongside live ones, marked archived with the date")]
         public bool IncludeArchived { get; init; }
@@ -46,8 +50,15 @@ public sealed class ProjectListCommand : Hall9kAsyncCommand<ProjectListCommand.S
             return ExitCodes.Ok;
         }
 
-        IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(
+        // The counts are the viewer's own work: a teammate's task is composed into its own group, so
+        // dropping the rows here keeps it out of every column, and the footer says how many it held
+        // back. Only the projects the table lists are counted, so a hidden task in an archived
+        // project is not reported as hidden from a table that does not show that project either.
+        IReadOnlyList<TaskStatusRow> everyoneRows = await TaskStatusComposer.ComposeAllAsync(
             session, DateTimeOffset.UtcNow, cancellationToken);
+        HashSet<Guid> shownProjectIds = [.. projects.Select(project => project.Id)];
+        (IReadOnlyList<TaskStatusRow> rows, int hiddenTeammates) = TeammateRows.Apply(
+            [.. everyoneRows.Where(row => shownProjectIds.Contains(row.ProjectId))], settings.Everyone);
         Dictionary<Guid, TaskRollup> rollups = rows
             .GroupBy(row => row.ProjectId)
             .ToDictionary(group => group.Key, TaskRollup.From);
@@ -62,6 +73,11 @@ public sealed class ProjectListCommand : Hall9kAsyncCommand<ProjectListCommand.S
             table.AddColumn(new TableColumn(column).RightAligned());
         }
 
+        if (settings.Everyone)
+        {
+            table.AddColumn(new TableColumn(TaskRollup.TeammatesColumn).RightAligned());
+        }
+
         foreach ((ProjectDetails project, TaskRollup rollup) in listed)
         {
             string name = project.IsArchived
@@ -71,7 +87,7 @@ public sealed class ProjectListCommand : Hall9kAsyncCommand<ProjectListCommand.S
                           + $"h9k project cancel-purge {project.Name.EscapeMarkup()})[/]"
                         : string.Empty)
                 : project.Name.EscapeMarkup();
-            table.AddRow([name, .. rollup.Cells]);
+            table.AddRow([name, .. rollup.Cells, .. settings.Everyone ? (string[])[rollup.TeammatesCell] : []]);
         }
 
         AnsiConsole.Write(table);
@@ -88,15 +104,17 @@ public sealed class ProjectListCommand : Hall9kAsyncCommand<ProjectListCommand.S
         AnsiConsole.MarkupLine(
             $"[dim]Settings and recent tasks:[/] h9k project show {first} [dim]· "
             + $"browse its tasks:[/] h9k task list --project {first} --include-archived");
+        if (hiddenTeammates > 0)
+        {
+            AnsiConsole.MarkupLine($"[dim]{TeammateRows.HiddenNote(hiddenTeammates, "h9k project list")}[/]");
+        }
 
         // rows covers every task on this install, but the table above only ever shows whatever
         // projects is filtered to: without --include-archived, an archived project's own
         // needs-you or stalled task must not trigger this footer — the table just told the
         // operator that project is hidden, and h9k status would show the identical row with
         // nothing to act on until it is reactivated.
-        HashSet<Guid> listedProjectIds = [.. projects.Select(project => project.Id)];
-        if (rows.Any(row => listedProjectIds.Contains(row.ProjectId)
-            && row.Group is AttentionBucket.NeedsYou or AttentionBucket.Stalled))
+        if (rows.Any(row => row.Group is AttentionBucket.NeedsYou or AttentionBucket.Stalled))
         {
             AnsiConsole.MarkupLine("[dim]Something is waiting on you — see it with:[/] h9k status");
         }
