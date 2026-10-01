@@ -431,8 +431,10 @@ public sealed class PrReviewFollowThroughEngine(
     /// recorded: they answered on GitHub by hand. A lone thread reply is an implicit COMMENTED review
     /// and counts too, which reopens the watch on a reply and is accepted churn: the following first
     /// look reports whatever is still unanswered. The head is the review's own commit for an
-    /// approval or a changes-requested review, and the head this poll read otherwise, because an
-    /// implicit COMMENTED review carries its thread's commit, which can be older than the head.
+    /// approval or a changes-requested review that names one. Any other review (a comment, or a lone thread reply)
+    /// reviews no code, so the head stays the one the task already records as reviewed: moving it to
+    /// the head this poll read would drop the push the reviewer never read from every surface. A task
+    /// that records no reviewed head falls back to the head this poll read.
     /// </item>
     /// <item>
     /// A NeedsHuman watch whose stored observation recorded a re-review request while the reviewer
@@ -449,7 +451,7 @@ public sealed class PrReviewFollowThroughEngine(
         {
             headSha = review.State is "APPROVED" or "CHANGES_REQUESTED" && review.CommitOid is { } commitOid
                 ? commitOid
-                : conversation.HeadSha;
+                : task.PrReviewReviewedHeadSha ?? conversation.HeadSha;
             return task.PrReviewReviewBaselined && review.Id != task.PrReviewReviewerReviewId;
         }
 
