@@ -1422,8 +1422,12 @@ public static class CliCommandTree
                 .WithDescription(
                     "Take a queued or blocked task back to Published, so no node claims it. Refused while a "
                     + "node holds the lease — that is a running agent. This is the first step of the "
-                    + "edit-after-the-fact path: unassign → draft → revise → publish → assign.")
-                .WithExample("task", "unassign", "28b19893", "--reason", "\"The criteria missed the migration case\"");
+                    + "edit-after-the-fact path: unassign → draft → revise → publish → assign. Another "
+                    + "owner's task is theirs to hand back, so this refuses unless your node's owner may act "
+                    + "on it; an Owner-role member may do it on that owner's behalf with --holder and --reason, "
+                    + "both required together.")
+                .WithExample("task", "unassign", "28b19893", "--reason", "\"The criteria missed the migration case\"")
+                .WithExample("task", "unassign", "28b19893", "--holder", "Taylor", "--reason", "\"Taylor left the project\"");
             task.AddCommand<TaskDraftCommand>("draft")
                 .WithDescription(
                     "Return a published task to Draft so it can be revised. Refused from Queued and Blocked "
@@ -1567,8 +1571,13 @@ public static class CliCommandTree
                     + "and published tasks included — walking away from an idea you have stopped believing in "
                     + "is the same act as walking away from a run that failed. This is the task-level "
                     + "walk-away; it does not itself kill a live headless process — h9k run kill is the "
-                    + "run-level stop, for ending a live session while keeping the task open.")
-                .WithExample("task", "abandon", "28b19893", "--reason", "\"Superseded by the noun-first CLI work\"");
+                    + "run-level stop, for ending a live session while keeping the task open. Another owner's "
+                    + "task is theirs to end, so this refuses unless your node's owner may act on it; an "
+                    + "Owner-role member may end it on that owner's behalf by naming the holder with --holder "
+                    + "and saying why with --reason (both required together; the word unknown names a task "
+                    + "whose owner this node cannot resolve), recorded on the event.")
+                .WithExample("task", "abandon", "28b19893", "--reason", "\"Superseded by the noun-first CLI work\"")
+                .WithExample("task", "abandon", "28b19893", "--holder", "Taylor", "--reason", "\"Taylor asked for this card to be closed\"");
             task.AddCommand<TaskRetryCommand>("retry")
                 .WithDescription(
                     "Requeue a failed task for another run (human-only; Failed tasks only — Abandoned stays terminal). "
@@ -1585,8 +1594,13 @@ public static class CliCommandTree
                     "Resolve a failed task to Done: your attestation that the objective was met even though the run "
                     + "failed (human-only; Failed tasks only). --reason is required — an attestation without a why is "
                     + "a guess. The failure stays on the stream; --pr records where the work landed. "
-                    + "Failed's other exits: h9k task retry (run again), h9k task abandon (walk away).")
+                    + "Failed's other exits: h9k task retry (run again), h9k task abandon (walk away). Another "
+                    + "owner's task is theirs to resolve, so this refuses unless your node's owner may act on "
+                    + "it; an Owner-role member may resolve it on that owner's behalf with --holder (their "
+                    + "label, a root fingerprint prefix of 8 or more hex characters, or the word unknown) and "
+                    + "--reason.")
                 .WithExample("task", "resolve", "28b19893", "--reason", "\"Work merged as PR #7; only the daemon's push step failed\"")
+                .WithExample("task", "resolve", "28b19893", "--holder", "Taylor", "--reason", "\"Merged as PR #7 by Taylor; the push step failed\"")
                 .WithExample("task", "resolve", "28b19893", "--reason", "\"Objective met by hand in the worktree\"", "--pr", "https://github.com/x/y/pull/7");
             task.AddCommand<TaskWorkCommand>("work")
                 .WithDescription(

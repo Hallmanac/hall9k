@@ -66,6 +66,7 @@ public sealed class TaskRetryCommand : Hall9kAsyncCommand<TaskRetryCommand.Setti
         string? branch = previousRun?.Branch.IsNotBlank() == true ? previousRun.Branch : null;
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        await TaskOwnerGuard.AssertMayActAsync(session, task, context, cancellationToken);
         session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.Retry(
             task, previousRunId, branch,
             settings.Reason ?? TaskDecider.DefaultRetryReason,

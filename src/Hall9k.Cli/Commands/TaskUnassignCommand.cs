@@ -1,7 +1,10 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Identity;
+using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
@@ -29,8 +32,18 @@ public sealed class TaskUnassignCommand : Hall9kAsyncCommand<TaskUnassignCommand
         [CommandOption("--reason <REASON>")]
         [Description(
             "Why the task is being taken back; recorded on TaskUnassigned and left unknown when "
-            + "omitted, never inferred")]
+            + "omitted, never inferred. Required with --holder, where it is also recorded as the "
+            + "override's reason")]
         public string? Reason { get; init; }
+
+        [CommandOption("--holder <NAME>")]
+        [Description(
+            "Another owner's task is theirs to hand back, so this refuses unless this node's owner may "
+            + "act on it. An Owner-role member may hand back it on that owner's behalf by naming the "
+            + "holder here (their label, which the refusal names, or at least 8 hex characters "
+            + "of their root fingerprint; the word 'unknown' when the task's owner cannot be "
+            + "resolved on this node) and giving --reason, both required together")]
+        public string? Holder { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -56,8 +69,21 @@ public sealed class TaskUnassignCommand : Hall9kAsyncCommand<TaskUnassignCommand
         bool leaseHeld = await session.LoadAsync<TaskLease>(taskId, cancellationToken) is not null;
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
-        session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.Unassign(
-            task, settings.Reason, leaseHeld, DateTimeOffset.UtcNow, context.OwnerId));
+        TaskOwnerOverrideDecision ownerDecision = await TaskOwnerGuard.AuthorizeAsync(
+            session, task, context, "unassign", settings.Holder, settings.Reason, new GitLedgerChainReader(),
+            new NodeKeyStore(), cancellationToken);
+        TaskUnassigned unassigned = TaskDecider.Unassign(
+            task, settings.Reason, leaseHeld, DateTimeOffset.UtcNow, context.OwnerId);
+        if (ownerDecision.Outcome == TaskOwnerOverrideOutcome.Override)
+        {
+            unassigned = unassigned with
+            {
+                OnBehalfOfOwnerRootFingerprint = ownerDecision.OnBehalfOfRootFingerprint,
+                OverrideReason = ownerDecision.Reason,
+            };
+        }
+
+        session.Events.Append(taskId, expectedVersion: fence.Version + 1, unassigned);
         try
         {
             await session.SaveChangesAsync(cancellationToken);
@@ -73,6 +99,7 @@ public sealed class TaskUnassignCommand : Hall9kAsyncCommand<TaskUnassignCommand
         AnsiConsole.MarkupLine($"[blue]Task {shortId} unassigned[/] — published again, and no node will claim it.");
         AnsiConsole.MarkupLine(
             $"[dim]To edit it:[/] h9k task draft {shortId} [dim]· to start it again:[/] h9k task assign {shortId}");
+        TaskOwnerGuard.AnnounceOverride(ownerDecision, "unassigned");
         return ExitCodes.Ok;
     }
 }

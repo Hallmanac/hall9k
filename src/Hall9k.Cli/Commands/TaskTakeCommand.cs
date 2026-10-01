@@ -824,11 +824,16 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
     /// <summary>
     /// Owner role required (idea 202383dc, item 4) — the identical gate <c>h9k project member
     /// remove</c> and <c>h9k project invite</c> already apply: this node's own root must currently
-    /// hold the owner role in the task's own project chain.
+    /// hold the owner role in the task's own project chain, and this node must be enrolled in that
+    /// root. Shared with <see cref="TaskOwnerGuard"/>, which asks it before an Owner-role member
+    /// overrides another owner's abandon, resolve or unassign; <paramref name="retryCommand"/> and
+    /// <paramref name="action"/> only change the words a refusal uses.
     /// </summary>
-    private static async Task AssertOwnerRoleAsync(
+    internal static async Task AssertOwnerRoleAsync(
         IDocumentSession session, BootstrapContext context, ProjectDetails project, ILedgerChainReader chainReader,
-        NodeKeyStore keyStore, CancellationToken cancellationToken)
+        NodeKeyStore keyStore, CancellationToken cancellationToken,
+        string retryCommand = "h9k task take --force --reason \"...\"",
+        string action = "force a takeover (idea 202383dc, item 4)")
     {
         OwnerAggregate owner = await session.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No owner {context.OwnerId}.");
@@ -847,15 +852,14 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
         {
             throw new DomainValidationException(
                 $"Could not read '{project.Name}'s own ledger chain: {exception.Message} Re-run "
-                + "h9k task take --force --reason \"...\" once the remote is reachable again.");
+                + $"{retryCommand} once the remote is reachable again.");
         }
 
         if (chain.RoleOf(myRoot) != MembershipRole.Owner || !chain.IsEnrolledInOwner(key.Fingerprint, myRoot))
         {
             throw new DomainValidationException(
                 $"This node's own owner ({myRoot}) does not currently hold the owner role in "
-                + $"'{project.Name}' — only an owner-role member's own node may force a takeover "
-                + "(idea 202383dc, item 4).");
+                + $"'{project.Name}': only an owner-role member's own node may {action}.");
         }
     }
 

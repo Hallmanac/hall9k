@@ -1,11 +1,14 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
@@ -33,8 +36,17 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
         public string Id { get; init; } = string.Empty;
 
         [CommandOption("--reason <REASON>")]
-        [Description("Required: why the objective counts as met despite the run failure — the attestation recorded on the stream and shown by h9k task show")]
+        [Description("Required: why the objective counts as met despite the run failure: the attestation recorded on the stream and shown by h9k task show. With --holder it is also recorded as the override's reason")]
         public string? Reason { get; init; }
+
+        [CommandOption("--holder <NAME>")]
+        [Description(
+            "Another owner's task is theirs to resolve, so this refuses unless this node's owner may "
+            + "act on it. An Owner-role member may resolve it on that owner's behalf by naming the "
+            + "holder here (their label, which the refusal names, or at least 8 hex characters "
+            + "of their root fingerprint; the word 'unknown' when the task's owner cannot be "
+            + "resolved on this node) and giving --reason, both required together")]
+        public string? Holder { get; init; }
 
         [CommandOption("--pr <URL>")]
         [Description("Where the work landed, when known (e.g. the merged pull request) — recorded on the task and shown by h9k status. When it names a real pull request on the project's own repository, it also enrolls that pull request in closeout's orphan sweep, so its merge later completes this task's closeout (unblocking dependents, removing the retained worktree) same as any watched run — except on a pr-review task, whose --pr names the pull request it reviewed and is never enrolled")]
@@ -57,6 +69,12 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+
+        // Before anything below touches the run stream or the pull request: a refused resolve of
+        // another owner's task must leave no trace of itself.
+        TaskOwnerOverrideDecision ownerDecision = await TaskOwnerGuard.AuthorizeAsync(
+            session, task, context, "resolve", settings.Holder, settings.Reason, new GitLedgerChainReader(),
+            new NodeKeyStore(), cancellationToken);
         DateTimeOffset resolvedAt = DateTimeOffset.UtcNow;
 
         // Resolved once and threaded into both guards below (independent pre-PR review, cycle 1,
@@ -87,8 +105,18 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
         string? taskStreamPullRequestUrl = SafeTaskStreamPullRequestUrl(
             task, settings.PullRequestUrl, runStreamOutcome, projectRepositoryUrl);
 
-        session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.Resolve(
-            task, settings.Reason ?? string.Empty, taskStreamPullRequestUrl, resolvedAt, context.OwnerId));
+        TaskResolved resolved = TaskDecider.Resolve(
+            task, settings.Reason ?? string.Empty, taskStreamPullRequestUrl, resolvedAt, context.OwnerId);
+        if (ownerDecision.Outcome == TaskOwnerOverrideOutcome.Override)
+        {
+            resolved = resolved with
+            {
+                OnBehalfOfOwnerRootFingerprint = ownerDecision.OnBehalfOfRootFingerprint,
+                OverrideReason = ownerDecision.Reason,
+            };
+        }
+
+        session.Events.Append(taskId, expectedVersion: fence.Version + 1, resolved);
 
         session.Delete<TaskLease>(taskId);
         try
@@ -105,6 +133,7 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
         AnsiConsole.MarkupLineInterpolated(taskStreamPullRequestUrl.IsBlank()
             ? (FormattableString)$"[dim]Task {taskId} resolved to Done — the failure stays on the stream.[/]"
             : $"[dim]Task {taskId} resolved to Done — the failure stays on the stream. PR: {taskStreamPullRequestUrl}[/]");
+        TaskOwnerGuard.AnnounceOverride(ownerDecision, "resolved");
 
         // Told on stderr rather than left to the "nothing is watching this pull request any
         // more" wording on h9k status to teach: a --pr given while the run stream itself is

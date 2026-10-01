@@ -87,6 +87,9 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
                 taskId, version: fence.Version, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        await TaskOwnerGuard.AssertMayActAsync(session, task, context, cancellationToken);
+
         if (task.State != TaskState.Claimed || !task.IsInteractiveClaim || task.CurrentRunId is not { } runId)
         {
             throw new DomainConflictException(
@@ -183,8 +186,6 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
 
             return ExitCodes.Conflict;
         }
-
-        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
         TaskHandedBack handedBack = TaskDecider.HandBack(
             task, runId, run.Branch, settings.Reason, DateTimeOffset.UtcNow, context.OwnerId);
