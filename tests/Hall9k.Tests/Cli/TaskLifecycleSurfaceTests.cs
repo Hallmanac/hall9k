@@ -259,6 +259,26 @@ public sealed class TaskLifecycleSurfaceTests
             .And.NotContain("the merge was observed");
     }
 
+    /// <summary>
+    /// <c>h9k task show</c>'s state gloss falls to "this build does not recognize the recorded state" for any
+    /// word its switch has no arm for. HeldElsewhere and Waiting each shipped without one, so every word
+    /// the vocabulary lists is checked against it here and a new state cannot ship the same way.
+    /// </summary>
+    [Fact]
+    public void The_state_gloss_has_an_arm_for_every_lifecycle_state_word()
+    {
+        TaskStatusRow row = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Draft));
+
+        foreach (LifecycleState state in LifecycleState.All)
+        {
+            TaskShowCommand.StateGloss(row with { State = state }).Should()
+                .NotContain("this build does not recognize the recorded state", $"{state.Word} must have its own gloss");
+        }
+
+        TaskShowCommand.StateGloss(row with { State = LifecycleState.Unknown }).Should()
+            .Contain("this build does not recognize the recorded state");
+    }
+
     [Fact]
     public void A_done_feature_row_that_pushed_and_merged_still_asserts_the_observed_merge()
     {

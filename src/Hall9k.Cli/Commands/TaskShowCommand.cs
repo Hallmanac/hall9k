@@ -982,6 +982,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         "Published" => "[dim](past the readiness gate; not working yet)[/]",
         "Working" => "[dim](a run owns it and has not pushed yet)[/]",
         "Delivered" => "[dim](pushed; the merge has not been observed)[/]",
+        "Waiting" => "[dim](a posted review waiting on the pull request to move; the closeout watcher polls it)[/]",
         "Done" => $"[dim](true closeout: {DoneReason(row.Type, row.PullRequestUrl)})[/]",
         "Failed" => "[dim](a waypoint, not an ending — log #27)[/]",
         "Archived" => "[dim](walked away from)[/]",
