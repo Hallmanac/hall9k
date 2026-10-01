@@ -24,8 +24,8 @@ namespace Hall9k.Domain.Features.Orchestrator;
 /// </para>
 /// <para>
 /// <b>Four entries also read something beyond the type</b> (<see cref="Admits(object)"/>), and
-/// all four only ever decide whether the event is an item at all — never which band it lands in,
-/// which stays the table's alone. <see cref="MessageReceived"/> is admitted only for a message
+/// all four only ever decide whether the event is an item at all, never which band it lands in.
+/// <see cref="MessageReceived"/> is admitted only for a message
 /// from a person or another node's window, never for the JSON payloads the daemon's own reactors
 /// exchange (<see cref="MessageKind.MechanicalKindValues"/>) — the identical rule <c>h9k messages</c>
 /// and <c>h9k status</c>'s own unread count already apply. <see cref="PullRequestAutoMergeAttempted"/>
@@ -39,6 +39,16 @@ namespace Hall9k.Domain.Features.Orchestrator;
 /// takes the same origin gate for the same reason: the watch that recorded it is this node's own,
 /// so a teammate's node holding a replicated copy of the owner's review task has nobody on it to
 /// tell that the owner's review moved.
+/// </para>
+/// <para>
+/// <b>One entry's band depends on more than its type.</b> <see cref="TaskAbandoned"/> and
+/// <see cref="TaskResolved"/> are Transitions on this table, but a replicated one recorded under a
+/// different owner root than this node's, on a task this node's owner root may act on, is
+/// Actionable and urgent at every level: another owner ended the reader's own task, and a window
+/// reading at Actionable would otherwise never hear of it. That reads the event's origin root and
+/// the task's owner, so it is decided in <see cref="OrchestratorFeedSelection"/> through
+/// <see cref="OrchestratorFeedOwnership"/>, not by <see cref="BandOf"/>. The same end recorded under
+/// this owner's own root (one of the owner's other nodes) stays the Transitions line it is here.
 /// </para>
 /// </summary>
 public static class OrchestratorFeedInterest

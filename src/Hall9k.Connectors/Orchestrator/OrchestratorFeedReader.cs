@@ -1,9 +1,12 @@
 using Hall9k.Connectors.Replication;
 using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Replication;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Features.Trust;
 using JasperFx.Events;
 using Marten;
@@ -149,20 +152,30 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        Dictionary<Guid, ReplicationOwnership> resolved = [];
-        MemberLabelLookup labels = await LabelLookupAsync(session, projectId, cancellationToken);
+        IReadOnlyList<OwnerDetails> owners = await session.Query<OwnerDetails>().ToListAsync(cancellationToken);
+        OwnerDetails? thisOwner = owners.FirstOrDefault();
+        MemberLabelLookup labels = await LabelLookupAsync(session, projectId, thisOwner, cancellationToken);
+        OrchestratorFeedViewer viewer = await ViewerAsync(session, thisOwner, cancellationToken);
+        ScopeLookup lookup = new(
+            session,
+            projectId,
+            owners
+                .Where(owner => !string.IsNullOrEmpty(owner.RootFingerprint))
+                .ToDictionary(owner => owner.Id, owner => owner.RootFingerprint!));
         return await OrchestratorFeedSelection.SelectAsync(
             [.. raw.Select(e =>
                 new OrchestratorFeedCandidate(
                     e.Sequence, e.Timestamp, e.EventType, e.Data, e.StreamId,
-                    e.GetHeader(ReplicationEventHeaders.OriginEventId) is not null))],
+                    e.GetHeader(ReplicationEventHeaders.OriginEventId) is not null,
+                    e.GetHeader(ReplicationEventHeaders.OriginOwnerRootFingerprint) as string))],
             projectId,
             level,
             startedFrom,
             settledThrough: now - OrchestratorFeedSelection.SettlingWindow,
             scanWasCapped: raw.Count >= MaxEventsPerRead,
-            (candidate, token) => ScopeOfAsync(session, candidate, resolved, projectId, token),
+            (candidate, token) => ScopeOfAsync(lookup, candidate, token),
             labels,
+            viewer,
             cancellationToken);
     }
 
@@ -174,12 +187,24 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
     /// single-owner-per-install lookup <c>NodeBootstrap.EnsureAsync</c> already relies on.
     /// </summary>
     private static async Task<MemberLabelLookup> LabelLookupAsync(
-        IQuerySession session, Guid projectId, CancellationToken cancellationToken)
+        IQuerySession session, Guid projectId, OwnerDetails? owner, CancellationToken cancellationToken)
     {
         ProjectMemberLabels? labels = await session.LoadAsync<ProjectMemberLabels>(projectId, cancellationToken);
-        OwnerDetails? owner = (await session.Query<OwnerDetails>().Take(1).ToListAsync(cancellationToken))
-            .FirstOrDefault();
         return new MemberLabelLookup(labels, owner?.RootFingerprint);
+    }
+
+    /// <summary>
+    /// Who is reading: this install's owner and the node on this machine, found the way every
+    /// other pane finds them (<c>StatusCommand.WriteIdentityLineAsync</c>).
+    /// </summary>
+    private static async Task<OrchestratorFeedViewer> ViewerAsync(
+        IQuerySession session, OwnerDetails? owner, CancellationToken cancellationToken)
+    {
+        string machineName = Environment.MachineName;
+        NodeDetails? node = (await session.Query<NodeDetails>()
+            .Where(n => n.MachineName == machineName)
+            .Take(1).ToListAsync(cancellationToken)).FirstOrDefault();
+        return new OrchestratorFeedViewer(owner?.RootFingerprint, owner?.Id, node?.Id);
     }
 
     /// <summary>
@@ -187,12 +212,10 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
     /// for the life of the read: a burst of twenty events on one run costs one document load.
     /// </summary>
     private async ValueTask<OrchestratorFeedScope?> ScopeOfAsync(
-        IQuerySession session,
-        OrchestratorFeedCandidate candidate,
-        Dictionary<Guid, ReplicationOwnership> resolved,
-        Guid projectId,
-        CancellationToken cancellationToken)
+        ScopeLookup lookup, OrchestratorFeedCandidate candidate, CancellationToken cancellationToken)
     {
+        IQuerySession session = lookup.Session;
+        Guid projectId = lookup.ProjectId;
         if (candidate.Data is MessageReceived received)
         {
             // A message's own stream belongs to no project at all — the envelope carries this
@@ -222,15 +245,72 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
             return new OrchestratorFeedScope(rotationProjectId, null);
         }
 
-        if (!resolved.TryGetValue(candidate.StreamId, out ReplicationOwnership? owner))
+        if (!lookup.Resolved.TryGetValue(candidate.StreamId, out ReplicationOwnership? owner))
         {
             owner = await ownership.ResolveAsync(session, candidate.StreamId, cancellationToken);
-            resolved[candidate.StreamId] = owner;
+            lookup.Resolved[candidate.StreamId] = owner;
         }
 
-        return owner.ProjectId is { } owningProjectId
-            ? new OrchestratorFeedScope(owningProjectId, owner.TaskId)
+        if (owner.ProjectId is not { } owningProjectId)
+        {
+            return null;
+        }
+
+        // Ownership is asked about only for a replicated event naming a task: a local event is this
+        // node's own work, and the selection reads a scope with no facts as having no opinion.
+        TaskOwnerFacts? facts = candidate.IsReplicated && owner.TaskId is { } taskId
+            ? await OwnerFactsAsync(lookup, taskId, cancellationToken)
             : null;
+        return new OrchestratorFeedScope(owningProjectId, owner.TaskId, facts);
+    }
+
+    /// <summary>
+    /// The facts card C's ownership rule judges for one task, read off its board row the way
+    /// <c>TaskStatusComposer</c> reads them for the viewer's board, so the feed and the board give the
+    /// same answer for the same task. A task with no row on this node has no holder, no assignee and
+    /// an unresolved creator, which reads as an owner nobody can name.
+    /// </summary>
+    private static async Task<TaskOwnerFacts> OwnerFactsAsync(
+        ScopeLookup lookup, Guid taskId, CancellationToken cancellationToken)
+    {
+        if (lookup.Facts.TryGetValue(taskId, out TaskOwnerFacts? cached))
+        {
+            return cached;
+        }
+
+        TaskListItem? row = await lookup.Session.LoadAsync<TaskListItem>(taskId, cancellationToken);
+        TaskOwnerFacts facts;
+        if (row is null)
+        {
+            facts = new TaskOwnerFacts(OwnerRootFact.Absent, OwnerRootFact.Absent, OwnerRootFact.Unresolved);
+        }
+        else
+        {
+            OwnerRootFact? creator = TaskListItemOwnerFacts.NeedsCreator(row)
+                ? (await TaskOwnerFactsReader.ReadCreatorsAsync(
+                    lookup.Session, [taskId], lookup.OwnerRoot, cancellationToken)).GetValueOrDefault(taskId)
+                : null;
+            facts = TaskListItemOwnerFacts.From(row, lookup.OwnerRoot, creator);
+        }
+
+        lookup.Facts[taskId] = facts;
+        return facts;
+    }
+
+    /// <summary>What one read's scope lookups share: the session, this project, the roots this node
+    /// knows its owners by, and the per-read caches that keep a burst of events on one stream or
+    /// task to one load.</summary>
+    private sealed class ScopeLookup(IQuerySession session, Guid projectId, IReadOnlyDictionary<Guid, string> ownerRoots)
+    {
+        public IQuerySession Session { get; } = session;
+
+        public Guid ProjectId { get; } = projectId;
+
+        public Dictionary<Guid, ReplicationOwnership> Resolved { get; } = [];
+
+        public Dictionary<Guid, TaskOwnerFacts> Facts { get; } = [];
+
+        public string? OwnerRoot(Guid ownerId) => ownerRoots.GetValueOrDefault(ownerId);
     }
 
     /// <summary>
