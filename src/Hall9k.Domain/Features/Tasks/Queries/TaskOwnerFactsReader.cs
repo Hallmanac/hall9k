@@ -1,5 +1,6 @@
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Replication;
+using Hall9k.Domain.Infrastructure.Persistence;
 using JasperFx.Events;
 using Marten;
 
@@ -9,11 +10,13 @@ namespace Hall9k.Domain.Features.Tasks.Queries;
 /// Resolves a task's own holder, assignee and creator to the root fingerprints
 /// <see cref="Handlers.TaskOwnerRule"/> judges, from this node's own store, the same way the
 /// receive gate reads them (<c>EventReplicationInbox.ResolveCreatorRootFingerprintAsync</c>): a
-/// task created natively on this node reads its creator through
-/// <see cref="OwnerRootFingerprintResolver"/> (this owner's current root, so a root rewritten by
-/// joining a project does not strand the owner's own earlier tasks), and a task that replicated in reads the verified
-/// <see cref="TaskCreatorRootRecord"/>, which stays unresolved until a direct act from the creator
-/// has confirmed it. Read-only; never backfills the record.
+/// task created natively on this node reads its creator from the root its genesis event was
+/// stamped with (<see cref="EventOriginStampingListener.OwnerRootFingerprintHeader"/>), falling back
+/// to <see cref="OwnerRootFingerprintResolver"/> only for a genesis stamped before any root was
+/// claimed, and a task that replicated in reads the verified <see cref="TaskCreatorRootRecord"/>,
+/// which stays unresolved until a direct act from the creator has confirmed it. The holder and the
+/// assignee are the roots recorded on the task, as the gate reads them, so after an owner's root
+/// changes the guard refuses what peers would drop. Read-only; never backfills the record.
 /// </summary>
 public static class TaskOwnerFactsReader
 {
@@ -73,8 +76,10 @@ public static class TaskOwnerFactsReader
             return OwnerRootFact.Unresolved;
         }
 
-        string? creatorFingerprint =
-            await OwnerRootFingerprintResolver.ResolveAsync(session, task.AddedByOwnerId, cancellationToken);
+        string? stampedFingerprint = genesis.GetHeader(EventOriginStampingListener.OwnerRootFingerprintHeader) as string;
+        string? creatorFingerprint = string.IsNullOrEmpty(stampedFingerprint)
+            ? await OwnerRootFingerprintResolver.ResolveAsync(session, task.AddedByOwnerId, cancellationToken)
+            : stampedFingerprint;
         return string.IsNullOrEmpty(creatorFingerprint)
             ? OwnerRootFact.Unresolved
             : OwnerRootFact.Known(creatorFingerprint);
