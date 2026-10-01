@@ -9,10 +9,19 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// appends — it never rewrites or hides the failure: the stream reads added → claimed →
 /// failed → resolved, and the task shows Done. Failed-only and human-only: no monitor
 /// appends this (never loop on judgment, log #11).
+/// <para>
+/// <paramref name="OnBehalfOfOwnerRootFingerprint"/> and <paramref name="OverrideReason"/> are set
+/// only when an Owner-role member did this to another owner's task through the deliberate
+/// override (<c>--holder</c> with <c>--reason</c>): the root acted on behalf of, null when that
+/// owner was unknown, and why. An owner's own act leaves both empty, and an event written before
+/// they existed replays unchanged.
+/// </para>
 /// </summary>
 public sealed record TaskResolved(
     Guid Id,
     string Reason,
     string? PullRequestUrl,
     DateTimeOffset ResolvedAt,
-    Guid ResolvedByOwnerId);
+    Guid ResolvedByOwnerId,
+    string? OnBehalfOfOwnerRootFingerprint = null,
+    string? OverrideReason = null);

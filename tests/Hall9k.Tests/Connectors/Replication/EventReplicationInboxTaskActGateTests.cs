@@ -5,6 +5,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -433,6 +434,80 @@ public sealed class EventReplicationInboxTaskActGateTests
             memberNodeId, memberNodeId);
 
         verdict.Should().Be(EventReplicationInbox.TaskActVerdict.DroppedAndRefusedPermanently);
+    }
+
+    /// <summary>
+    /// The CLI guard (<see cref="TaskOwnerRule"/>) must say what the receive gate says, so a command
+    /// that refuses is refusing an act the fleet would drop and one that proceeds is proceeding with
+    /// an act the fleet would apply. Every row feeds one set of task facts to both: wherever the gate
+    /// does not answer Held, the rule's may-act answer is the gate's Allowed. Where the gate holds
+    /// (a creator it has not verified), the rule has no answer either and reports the owner unknown.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(TaskActAgreementRows))]
+    public void The_owner_rule_agrees_with_the_receive_gate_for_a_member_role_sender(
+        string? holderRoot, string? assignedRoot, string? creatorRoot, string actingRoot)
+    {
+        Guid taskId = DomainId.New();
+        TaskAggregate task = PublishedUnassignedTask(taskId);
+        if (assignedRoot is not null)
+        {
+            task.Apply(new TaskAssigned(
+                taskId, Guid.NewGuid(), UnmetDependencies: [], Now, Guid.NewGuid(), AssignedOwnerRootFingerprint: assignedRoot));
+        }
+
+        if (holderRoot is not null)
+        {
+            task.Apply(new TaskClaimed(
+                taskId, DomainId.New(), Guid.NewGuid(), LeaseGeneration: 1, DomainId.New(), Now, OwnerRootFingerprint: holderRoot));
+        }
+
+        Guid nodeId = DomainId.New();
+        EventReplicationInbox.TaskActVerdict gate = EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassification.Conditional, typeof(TaskAbandoned), new TaskAbandoned(taskId, null, Now, Guid.NewGuid()),
+            task, new EventReplicationInbox.SenderResolution(actingRoot, MembershipRole.Member, new HashSet<Guid> { nodeId }),
+            nodeId, nodeId, creatorRoot);
+
+        TaskOwnerCheck check = TaskOwnerRule.Decide(
+            actingRoot,
+            new TaskOwnerFacts(
+                OwnerRootFact.KnownOrAbsent(holderRoot),
+                OwnerRootFact.KnownOrAbsent(assignedRoot),
+                creatorRoot is null
+                    ? OwnerRootFact.Unresolved
+                    : OwnerRootFact.Known(creatorRoot)));
+
+        if (gate == EventReplicationInbox.TaskActVerdict.Held)
+        {
+            check.Outcome.Should().Be(TaskOwnerOutcome.Unknown);
+        }
+        else
+        {
+            check.MayAct.Should().Be(gate == EventReplicationInbox.TaskActVerdict.Allowed);
+        }
+    }
+
+    public static TheoryData<string?, string?, string?, string> TaskActAgreementRows()
+    {
+        TheoryData<string?, string?, string?, string> rows = [];
+        string?[] holders = [null, OwnerRoot, MemberRoot];
+        string?[] assignees = [null, OwnerRoot, MemberRoot];
+        string?[] creators = [null, OwnerRoot, MemberRoot];
+        foreach (string? holder in holders)
+        {
+            foreach (string? assignee in assignees)
+            {
+                foreach (string? creator in creators)
+                {
+                    foreach (string acting in new[] { OwnerRoot, MemberRoot, "some-third-root" })
+                    {
+                        rows.Add(holder, assignee, creator, acting);
+                    }
+                }
+            }
+        }
+
+        return rows;
     }
 
     private static EventReplicationInbox.SenderResolution MemberSender(Guid memberNodeId) =>
