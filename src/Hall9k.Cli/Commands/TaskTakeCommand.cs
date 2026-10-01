@@ -124,7 +124,7 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"No project {task.ProjectId}.");
-        await AssertOwnerRoleAsync(session, context, project, chainReader, keyStore, cancellationToken);
+        await AssertOwnerRoleAsync(session, context, project, chainReader, keyStore, cancellationToken: cancellationToken);
 
         MemberLabelLookup labels = await MemberLabelling.LoadAsync(session, project.Id, cancellationToken);
         await PrintEvidenceAsync(session, previousHolderNodeId, project.Id, task.HolderSince, labels, cancellationToken);
@@ -831,9 +831,10 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
     /// </summary>
     internal static async Task AssertOwnerRoleAsync(
         IDocumentSession session, BootstrapContext context, ProjectDetails project, ILedgerChainReader chainReader,
-        NodeKeyStore keyStore, CancellationToken cancellationToken,
+        NodeKeyStore keyStore,
         string retryCommand = "h9k task take --force --reason \"...\"",
-        string action = "force a takeover (idea 202383dc, item 4)")
+        string action = "force a takeover (idea 202383dc, item 4)",
+        CancellationToken cancellationToken = default)
     {
         OwnerAggregate owner = await session.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No owner {context.OwnerId}.");

@@ -38,8 +38,8 @@ public sealed class TaskUnassignCommand : Hall9kAsyncCommand<TaskUnassignCommand
 
         [CommandOption("--holder <NAME>")]
         [Description(
-            "Another owner's task is theirs to hand back, so this refuses unless this node's owner may "
-            + "act on it. An Owner-role member may hand back it on that owner's behalf by naming the "
+            "Another owner's task is theirs to unassign, so this refuses unless this node's owner may "
+            + "act on it. An Owner-role member may unassign it on that owner's behalf by naming the "
             + "holder here (their label, which the refusal names, or at least 8 hex characters "
             + "of their root fingerprint; the word 'unknown' when the task's owner cannot be "
             + "resolved on this node) and giving --reason, both required together")]
