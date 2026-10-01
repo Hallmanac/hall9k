@@ -178,12 +178,27 @@ public static class TaskLifecycleProjectionBackfill
     /// any run record, so the branch key alone could not tell a clean-start retry's stale document
     /// from a task that never had one pending.
     /// </para>
+    /// <para>
+    /// <see cref="TaskListItem.HolderOwnerRootFingerprint"/> and
+    /// <see cref="TaskListItem.PendingTakeRequestedByOwnerRootFingerprint"/> (task: h9k status shows a
+    /// viewer their own work) join this group because the board now asks <c>TaskOwnerRule</c> of each
+    /// row from them. An absent key reads as "no holder" or "no pending request", which is exactly
+    /// wrong for a task that has a live holder or a pending take recorded in its stream: the rule then
+    /// judges that task a teammate's, and the viewer's own held work would vanish from the default
+    /// view. Both are nullable and serialize as explicit nulls, so the key is present on every
+    /// document the current projection wrote. The creator's root has no field here on purpose: it is
+    /// stamped on the genesis event by <c>EventOriginStampingListener</c> after the inline projection
+    /// has already run, so a document written live could never carry it, and the board reads it from
+    /// the stream instead (<c>TaskOwnerFactsReader.ReadCreatorsAsync</c>).
+    /// </para>
     /// </summary>
     private const string StaleListOnlyDocument =
         "(" + StaleDocument
         + " or not jsonb_exists(d.data, 'queuePriorityMarked')"
         + " or not jsonb_exists(d.data, 'followUpBranch')"
-        + " or not jsonb_exists(d.data, 'retryPending'))";
+        + " or not jsonb_exists(d.data, 'retryPending')"
+        + " or not jsonb_exists(d.data, 'holderOwnerRootFingerprint')"
+        + " or not jsonb_exists(d.data, 'pendingTakeRequestedByOwnerRootFingerprint'))";
 
     /// <summary>
     /// Rebuilds every task stream still carrying an out-of-date document and returns the ids it
