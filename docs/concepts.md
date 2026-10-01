@@ -297,6 +297,27 @@ relaunches the oldest held run to test whether the node works again, and once on
 actually records tokens, the hold clears and every run it held resumes in place with no human
 lever needed. See [PLAN.md §16](../PLAN.md), Decisions Log #174.
 
+**Whose board it is.** `h9k status`, `h9k task list` and `h9k project list` show a viewer their own
+work and nothing else by default. A task is yours when this node's owner root may act on it, which is
+the receive gate's own ownership rule (the holder's root, else the assignee's, else the creator's) and
+so the identical answer the task commands give before they refuse another owner's task, or when it is
+waiting on a take your root asked for. A task another owner's fleet holds, is assigned or created, and
+a task whose owner root this node cannot resolve at all, is a teammate's. It is composed into a
+`Teammates` group that is checked before every other group, so no needs-you, stalled or other count
+includes it, and it is held back by default: `h9k status` says once in its header how many rows that is
+and that `--everyone` shows them, and `h9k task list` and `h9k project list` say the same in their
+footers. With `--everyone` the group is a band of its own that names each owner through the project's
+member labels (a teammate with no declared name keeps their short fingerprint) and shows the row's state
+word and objective. It never shows the stored cause, phase or summary, because those are composed once in
+the owner's voice and replicate to every node, so on another owner's screen their "you" is someone else;
+nor a next step, since the commands that act on the task refuse this viewer anyway. `h9k task show` of a
+teammate's task is the same: it names the owner and carries the state, objective, criteria, dependencies
+and runs, and nothing written for them. A node whose owner has claimed no root yet has no one to tell a
+teammate from, so it shows everything as its own. When your own entry in a project's member labels has
+neither a display name nor a declared login and the project has another member, `h9k status` prints one
+line for that project saying teammates see you as a fingerprint, with `h9k owner set --display-name` as
+the lever.
+
 **Attention** is needs-you or not, and it is a column. The cause and the command that clears it
 go on the line beneath, and every cause is quoted from a record rather than inferred.
 Waiting-but-handled situations (a blocker already retried, a pull request the monitor is still
@@ -1617,7 +1638,9 @@ which names the holding node and how long it has held the task, and `--state Hel
 `--state attention-heldelsewhere` selects them. The other node's dispatcher leaves the task alone,
 and a task still waiting in the queue whose holder is another node says so in its facts line until
 the holder clears. `h9k status` only counts held-elsewhere tasks in its header, since nothing about
-them is asked of you.
+them is asked of you. A task held by a teammate's node is a different case from one held by another
+node of your own fleet: it is a teammate's task, and it leaves the board entirely unless `--everyone`
+is passed.
 
 **Asking for a task is `take`, and the holder's project decides how it answers.** `h9k task take
 <id> --reason "..."` asks the holder. A task nobody holds has nothing to negotiate and is
