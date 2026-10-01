@@ -378,4 +378,16 @@ public sealed class PrReviewAuthorActivityTests
                 review => new SubmittedReview("R1", review.State, DateTimeOffset.UnixEpoch, "aaa"),
                 StringComparer.OrdinalIgnoreCase),
             ReviewsTruncated: false);
+
+    [Fact]
+    public void The_line_names_what_moved_without_claiming_a_review_when_the_reviewer_has_none()
+    {
+        PrReviewAuthorActivity activity = new(2, 1, null, false, false);
+
+        string line = activity.Describe(
+            "acme/widgets", 42, openThreadCount: 0, openedThreadCount: 0, reviewerHasNoSubmittedReview: true);
+
+        line.Should().Be("acme/widgets#42 moved: 2 replies in 1 thread.");
+        line.Should().NotContain("since your review");
+    }
 }
