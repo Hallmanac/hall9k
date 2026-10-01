@@ -105,6 +105,15 @@ internal static class TaskPhaseComposer
             1 => "1 of your threads is still open",
             var count => $"{count} of your threads are still open",
         };
+        if (task.PrReviewRecordsNoSubmittedReview)
+        {
+            // Nothing of the owner's is on the pull request to be answered, so "waiting on its
+            // author" would invent a review, and a request standing against them is the original
+            // one (or none) rather than an ask to come back: the line claims neither.
+            return new TaskPhase(
+                $"no review of yours is on {pullRequest} yet", SessionLiveness.NotApplicable, threads);
+        }
+
         // A newly-requested re-review wakes the reviewer now (needs-you, not Waiting), so a
         // WAITING row carrying this flag is a stream the older behaviour left mid-wait — the
         // request was recorded and never surfaced. Rendered anyway, and deliberately: dropping the

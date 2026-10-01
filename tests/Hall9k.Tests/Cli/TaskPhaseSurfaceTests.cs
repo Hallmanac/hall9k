@@ -1486,4 +1486,43 @@ public sealed class TaskPhaseSurfaceTests
         row.Phase.Text.Should().Be("review cycle 2");
         row.Phase.Detail.Should().Be("fix session running");
     }
+
+    private static TaskListItem WaitingReview(bool recordsNoSubmittedReview, bool reReviewRequested)
+    {
+        TaskListItem task = StatusFixtures.Task(
+            TaskState.AwaitingAuthor, DomainId.New(), type: TaskType.PrReview,
+            externalReference: "github-pr:acme/widgets#7");
+        task.PrReviewFollowThroughOpen = true;
+        task.PrReviewFollowThroughPullRequestUrl = "https://github.com/acme/widgets/pull/7";
+        task.PrReviewFollowThroughObserved = true;
+        task.PrReviewOpenThreadCount = 0;
+        task.PrReviewRecordsNoSubmittedReview = recordsNoSubmittedReview;
+        task.PrReviewReReviewRequested = reReviewRequested;
+        return task;
+    }
+
+    /// <summary>
+    /// Origin incident (task 0b2e0457 on #2165): the owner never submitted a review, yet the Waiting row
+    /// read "waiting on the pull request's author" with a re-review suffix, as though a review of theirs
+    /// were being answered. Once the latest observation records no submitted review the line says so and
+    /// claims nothing about a request.
+    /// </summary>
+    [Fact]
+    public void A_waiting_row_whose_observation_records_no_review_says_no_review_is_on_the_pull_request_yet()
+    {
+        TaskStatusRow row = StatusFixtures.Compose(WaitingReview(recordsNoSubmittedReview: true, reReviewRequested: true));
+
+        row.State.Should().Be(LifecycleState.Waiting);
+        row.Phase.Text.Should().Be("no review of yours is on acme/widgets#7 yet");
+        row.Phase.Detail.Should().NotContain("re-review").And.NotContain("author");
+        row.Phase.Text.Should().NotContain("author");
+    }
+
+    [Fact]
+    public void A_waiting_row_with_a_recorded_review_still_waits_on_the_author()
+    {
+        TaskStatusRow row = StatusFixtures.Compose(WaitingReview(recordsNoSubmittedReview: false, reReviewRequested: false));
+
+        row.Phase.Text.Should().Be("waiting on acme/widgets#7's author");
+    }
 }
