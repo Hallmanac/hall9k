@@ -138,47 +138,49 @@ public sealed class TaskAbandonCommandTests : IClassFixture<PostgresFixture>, IA
     }
 
     /// <summary>
-    /// A second fleet node of the same owner has its own owner id and the same root. Each shape
-    /// below is a task another node of this owner holds, was assigned, or created, and none of them
-    /// needs the override.
+    /// An assignment recorded by owner id alone (no fingerprint on the event) resolves through this
+    /// node's own owner row, which is the only owner row a node holds besides ones it has never
+    /// heard of: owner events never replicate.
     /// </summary>
     [Fact]
-    public async Task An_owners_second_fleet_node_abandons_a_held_task_without_the_override()
+    public async Task A_task_assigned_to_this_nodes_own_owner_id_alone_abandons_without_the_override()
     {
         await using IDocumentSession session = _postgres.Store.LightweightSession();
-        (string myRoot, BootstrapContext context) = await EstablishOwnRootAsync(session);
-        Guid siblingOwnerId = await SeedSiblingOwnerAsync(myRoot);
-        Guid taskId = await SeedTaskAsync(context, taskOwnerRoot: null, assignedOwnerId: siblingOwnerId);
-        await using (IDocumentSession seed = _postgres.Store.LightweightSession())
-        {
-            seed.Events.Append(taskId, TaskDecider.Claim(
-                (await seed.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: CancellationToken.None))!,
-                DomainId.New(), siblingOwnerId, DomainId.New(), Now, ownerRootFingerprint: myRoot));
-            await seed.SaveChangesAsync(CancellationToken.None);
-        }
+        (_, BootstrapContext context) = await EstablishOwnRootAsync(session);
+        Guid taskId = await SeedTaskAsync(context, taskOwnerRoot: null, assignedOwnerId: context.OwnerId);
 
         await AssertAbandonsAsOwnActAsync(session, taskId);
     }
 
     [Fact]
-    public async Task An_owners_second_fleet_node_abandons_a_task_assigned_by_owner_id_alone()
-    {
-        await using IDocumentSession session = _postgres.Store.LightweightSession();
-        (string myRoot, BootstrapContext context) = await EstablishOwnRootAsync(session);
-        Guid siblingOwnerId = await SeedSiblingOwnerAsync(myRoot);
-        Guid taskId = await SeedTaskAsync(context, taskOwnerRoot: null, assignedOwnerId: siblingOwnerId);
-
-        await AssertAbandonsAsOwnActAsync(session, taskId);
-    }
-
-    [Fact]
-    public async Task An_owners_second_fleet_node_abandons_an_unassigned_task_with_a_verified_creator_root()
+    public async Task An_unassigned_replicated_task_with_a_verified_creator_root_of_this_owner_abandons_without_the_override()
     {
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         (string myRoot, _) = await EstablishOwnRootAsync(session);
         Guid taskId = await SeedPublishedTaskWithUnverifiedCreatorAsync(creatorRoot: myRoot);
 
         await AssertAbandonsAsOwnActAsync(session, taskId);
+    }
+
+    /// <summary>
+    /// The receive gate judges a natively created, unassigned task against the root its genesis was
+    /// stamped with, so once the owner's root has moved on the guard refuses what peers would drop.
+    /// </summary>
+    [Fact]
+    public async Task A_native_unassigned_task_is_judged_by_the_root_its_genesis_was_stamped_with()
+    {
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        (string stampedRoot, BootstrapContext context) = await EstablishOwnRootAsync(session);
+        Guid taskId = await SeedNativeUnassignedTaskAsync(context);
+        OwnerAggregate owner = (await session.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: CancellationToken.None))!;
+        session.Events.Append(context.OwnerId, OwnerDecider.ClaimRoot(owner, OtherRoot, verified: true, Now));
+        await session.SaveChangesAsync(CancellationToken.None);
+
+        Func<Task> act = () => RunAsync(
+            session, new TaskAbandonCommand.Settings { Id = taskId.ToString(), Reason = "tidying" }, new FakeLedgerChainReader(TrustChain.Empty));
+
+        (await act.Should().ThrowAsync<DomainBusinessRuleException>())
+            .Which.Message.Should().Contain(stampedRoot[..12], "the task belongs to the root its genesis carries, not the owner's current one");
     }
 
     [Fact]
@@ -204,15 +206,6 @@ public sealed class TaskAbandonCommandTests : IClassFixture<PostgresFixture>, IA
             .Select(e => e.Data).OfType<TaskAbandoned>().Single();
         abandoned.OnBehalfOfOwnerRootFingerprint.Should().BeNull();
         abandoned.OverrideReason.Should().BeNull();
-    }
-
-    private async Task<Guid> SeedSiblingOwnerAsync(string root)
-    {
-        Guid ownerId = DomainId.New();
-        await using IDocumentSession session = _postgres.Store.LightweightSession();
-        session.Store(new OwnerDetails { Id = ownerId, RootFingerprint = root });
-        await session.SaveChangesAsync(CancellationToken.None);
-        return ownerId;
     }
 
     private async Task<int> RunAsync(
@@ -267,6 +260,19 @@ public sealed class TaskAbandonCommandTests : IClassFixture<PostgresFixture>, IA
             ClaimedOriginNodeId = DomainId.New(),
             CreatorRootFingerprint = creatorRoot,
         });
+        await session.SaveChangesAsync(CancellationToken.None);
+        return taskId;
+    }
+
+    private async Task<Guid> SeedNativeUnassignedTaskAsync(BootstrapContext context)
+    {
+        Guid projectId = await SeedProjectAsync();
+        Guid taskId = DomainId.New();
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, "Close me out", ["done"], TaskType.Chore, null, null, null, Now, context.OwnerId);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        session.Events.StartStream<TaskAggregate>(taskId, TaskSeed.Publishable(added, added.AddedByOwnerId, Now));
         await session.SaveChangesAsync(CancellationToken.None);
         return taskId;
     }
