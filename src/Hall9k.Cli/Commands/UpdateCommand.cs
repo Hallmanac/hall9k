@@ -73,6 +73,9 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
     /// calls <see cref="InstallCommand.FinishAsync"/>'s own port-binding check makes: it defaults
     /// to the real docker CLI, and a test passes a fake so the check never depends on whatever
     /// Docker happens to be running on the machine the test suite executes on.
+    /// <paramref name="restartChildRunner"/> is the seam for launching the installed <c>h9k</c>
+    /// (the launch-anchor refresh and, with <c>--restart</c>, the restart steps), so a test never
+    /// spawns the payload's stand-in binary.
     /// <paramref name="scratchRoot"/> is the same kind of seam for where the download/extract
     /// scratch directories below are created: it defaults to the real machine-wide
     /// <see cref="Path.GetTempPath"/>, and a test passes a directory unique to itself so its own
@@ -87,6 +90,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
         bool now = false,
         bool linkOntoPath = true,
         ProcessRunner? containerRuntimeRunner = null,
+        RestartChildRunner? restartChildRunner = null,
         string? scratchRoot = null,
         CancellationToken cancellationToken = default)
     {
@@ -223,6 +227,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
                 linkOntoPath,
                 commandName: "update",
                 containerRuntimeRunner: containerRuntimeRunner,
+                restartChildRunner: restartChildRunner,
                 cancellationToken: cancellationToken);
         }
         finally

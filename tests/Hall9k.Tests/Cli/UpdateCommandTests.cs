@@ -3,6 +3,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using FluentAssertions;
 using Hall9k.Cli.Commands;
+using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Installation;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
@@ -386,6 +387,8 @@ public sealed class UpdateCommandTests : IDisposable
             // out to docker — a fake that never answers keeps this test's outcome independent of
             // whatever Docker happens to be running on the machine the test suite executes on.
             containerRuntimeRunner: (_, _, _, _) => Task.FromResult(new ProcessResult(1, string.Empty, "docker not reached in this test")),
+            // The payload's h9k is a stand-in file, and the anchor refresh would otherwise try to run it.
+            restartChildRunner: (_, _, _) => Task.FromResult(RestartStepResult.Exited(ExitCodes.Ok)),
             scratchRoot: scratchRoot,
             cancellationToken: CancellationToken.None);
 

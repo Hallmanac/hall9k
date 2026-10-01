@@ -284,6 +284,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // starts a lean node or project orchestrator window) — the same never-hand-edited
         // discipline as the Postgres compose file just above, not the skill set's
         // publish/shadow/retire one. h9k orchestrator node prints the launch line that reads it.
+        // This write is the running build's render; after the swap the installed CLI re-renders it
+        // (and every registered project home's) below, which is the one that counts on h9k update.
         Directory.CreateDirectory(RecipeLibraryPaths.CanonicalDirectory);
         LaunchAnchorDocument.Write(RecipeLibraryPaths.LaunchAnchorFile);
         // TryReadOperatingSettingsAsync, not the throwing ReadOperatingSettingsAsync: this is the
@@ -454,6 +456,14 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         AnsiConsole.MarkupLineInterpolated(
             $"[green]Installed[/] {version}: h9k and h9kd release binaries in {DaemonRuntime.BinDirectory}");
 
+        // Through the installed CLI and never in this process, for the two reasons the restart
+        // hand-off below already names: this process may be the build the swap just replaced, so
+        // its own render of the anchor is the old one, and reading the project registry from here
+        // is the Marten load-time crash. It runs ahead of the restart hand-off, whether or not
+        // --restart was given, and a failure of it never changes the exit code.
+        RestartChildRunner runChild = restartChildRunner ?? DaemonRestartHandoff.RunInstalledCliAsync;
+        await RefreshLaunchAnchorsAsync(runChild, cancellationToken);
+
         AnsiConsole.MarkupLine(
             "[dim]No background service was registered — the daemon runs on demand (h9k daemon start / stop). "
             + "Start-at-login is a separate, explicit opt-in: h9k daemon autostart enable.[/]");
@@ -482,8 +492,28 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             return ExitCodes.Ok;
         }
 
-        return await RestartThroughNewBinaryAsync(
-            runningBefore, restartChildRunner ?? DaemonRestartHandoff.RunInstalledCliAsync, cancellationToken);
+        return await RestartThroughNewBinaryAsync(runningBefore, runChild, cancellationToken);
+    }
+
+    /// <summary>
+    /// Launches <see cref="LaunchAnchorRefresh.Step"/> in the newly installed <c>h9k</c>. The child
+    /// reports its own registry and write failures and exits zero; this half only covers a child
+    /// that never ran to completion, which is the same outcome from the operator's side (no
+    /// project home's anchor was refreshed), so it prints the same line.
+    /// </summary>
+    private static async Task RefreshLaunchAnchorsAsync(RestartChildRunner runChild, CancellationToken cancellationToken)
+    {
+        RestartStepResult result = await runChild(
+            DaemonRestartHandoff.InstalledCliPath, LaunchAnchorRefresh.Step.Arguments, cancellationToken);
+        switch (result)
+        {
+            case { CouldNotLaunch: { } problem }:
+                LaunchAnchorRefresh.ReportNotRun($"the installed h9k could not be launched: {problem}");
+                break;
+            case { ExitCode: not ExitCodes.Ok }:
+                LaunchAnchorRefresh.ReportNotRun($"{LaunchAnchorRefresh.Step.CommandLine} exited {result.ExitCode}");
+                break;
+        }
     }
 
     /// <summary>

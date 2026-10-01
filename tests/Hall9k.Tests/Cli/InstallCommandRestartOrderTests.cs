@@ -90,7 +90,8 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
         swapHadHappenedAtTheGateCheck.Should().BeFalse(
             "the gate query opens a Marten store, which after the swap would be the new release's store opened "
             + "inside a process running the old one");
-        commandLines.Should().Equal("h9k daemon stop", "h9k doctor --yes --no-configure", "h9k daemon start");
+        commandLines.Should().Equal(
+            "h9k orchestrator refresh-anchors", "h9k daemon stop", "h9k doctor --yes --no-configure", "h9k daemon start");
         swapHadHappenedAtEachChild.Should().AllBeEquivalentTo(
             true, "every step from the stop onward runs in the binary the swap put in place");
     }
@@ -124,7 +125,8 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
 
         exitCode.Should().Be(ExitCodes.Ok);
         gateWasChecked.Should().BeFalse("--now is the override that skips the wait entirely, and it still means that");
-        commandLines.Should().Equal("h9k daemon stop", "h9k doctor --yes --no-configure", "h9k daemon start");
+        commandLines.Should().Equal(
+            "h9k orchestrator refresh-anchors", "h9k daemon stop", "h9k doctor --yes --no-configure", "h9k daemon start");
     }
 
     /// <summary>
@@ -172,14 +174,15 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
         exitCode.Should().Be(ExitCodes.Ok);
         gateWasChecked.Should().BeFalse(
             "there is no daemon supervising a gate for the wait to protect when none was running to begin with");
-        commandLines.Should().Equal("h9k daemon stop", "h9k doctor --yes --no-configure", "h9k daemon start");
+        commandLines.Should().Equal(
+            "h9k orchestrator refresh-anchors", "h9k daemon stop", "h9k doctor --yes --no-configure", "h9k daemon start");
     }
 
     [Fact]
-    public async Task No_restart_swaps_the_binaries_and_never_reaches_the_gate_or_the_child()
+    public async Task No_restart_swaps_the_binaries_and_never_reaches_the_gate_or_a_restart_step()
     {
         bool gateWasChecked = false;
-        bool aChildRan = false;
+        List<string> commandLines = [];
 
         int exitCode = await InstallCommand.FinishAsync(
             _staging,
@@ -193,9 +196,9 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
                 gateWasChecked = true;
                 return Task.FromResult<IReadOnlyList<LiveGate>?>([]);
             },
-            restartChildRunner: (_, _, _) =>
+            restartChildRunner: (_, arguments, _) =>
             {
-                aChildRan = true;
+                commandLines.Add($"h9k {string.Join(' ', arguments)}");
                 return Task.FromResult(RestartStepResult.Exited(ExitCodes.Ok));
             },
             containerRuntimeRunner: RecordingProcessRunner.Failing("docker not reached in this test").Runner,
@@ -204,7 +207,79 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
         exitCode.Should().Be(ExitCodes.Ok);
         TheSwapHasHappened().Should().BeTrue("--no-restart still installs; it only leaves the daemon alone");
         gateWasChecked.Should().BeFalse("there is no restart to hold back");
-        aChildRan.Should().BeFalse();
+        commandLines.Should().Equal(
+            ["h9k orchestrator refresh-anchors"], "the anchor refresh is the only child --no-restart still launches");
+    }
+
+    /// <summary>
+    /// The anchor refresh goes through the installed CLI, so it has to be launched after the swap
+    /// that put that CLI in place, and it must not depend on <c>--restart</c>: a teammate who runs
+    /// only <c>h9k update</c> still needs their project windows' anchors brought current.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task The_anchor_refresh_is_launched_after_the_swap_with_and_without_restart(bool restart)
+    {
+        List<bool> swapHadHappenedAtTheRefresh = [];
+
+        int exitCode = await InstallCommand.FinishAsync(
+            _staging,
+            skillsSource: null,
+            version: "0.0.0-test",
+            restart: restart,
+            noRestart: !restart,
+            now: true,
+            linkOntoPath: false,
+            restartChildRunner: (_, arguments, _) =>
+            {
+                if (arguments is ["orchestrator", "refresh-anchors"])
+                {
+                    swapHadHappenedAtTheRefresh.Add(TheSwapHasHappened());
+                }
+
+                if (arguments is ["daemon", "start"])
+                {
+                    PretendADaemonIsRunning();
+                }
+
+                return Task.FromResult(RestartStepResult.Exited(ExitCodes.Ok));
+            },
+            containerRuntimeRunner: RecordingProcessRunner.Failing("docker not reached in this test").Runner,
+            cancellationToken: CancellationToken.None);
+
+        exitCode.Should().Be(ExitCodes.Ok);
+        swapHadHappenedAtTheRefresh.Should().Equal(
+            [true], "the refresh runs once, in the release the swap put in place and not in the one being replaced");
+    }
+
+    [Theory]
+    [InlineData(true, null)]
+    [InlineData(false, "no h9k there")]
+    public async Task A_refresh_that_did_not_run_says_so_and_leaves_the_exit_code_alone(
+        bool exitedNonzero, string? couldNotLaunch)
+    {
+        string output = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
+        {
+            int exitCode = await InstallCommand.FinishAsync(
+                _staging,
+                skillsSource: null,
+                version: "0.0.0-test",
+                restart: false,
+                noRestart: true,
+                linkOntoPath: false,
+                restartChildRunner: (_, _, _) => Task.FromResult(
+                    exitedNonzero
+                        ? RestartStepResult.Exited(ExitCodes.Error)
+                        : RestartStepResult.NotLaunched(couldNotLaunch ?? string.Empty)),
+                containerRuntimeRunner: RecordingProcessRunner.Failing("docker not reached in this test").Runner,
+                cancellationToken: CancellationToken.None);
+
+            exitCode.Should().Be(ExitCodes.Ok, "a refresh that cannot run never fails the install");
+        });
+
+        output.Should().Contain("No project home's launch anchor was refreshed")
+            .And.Contain("h9k project init <project>");
     }
 
     /// <summary>
