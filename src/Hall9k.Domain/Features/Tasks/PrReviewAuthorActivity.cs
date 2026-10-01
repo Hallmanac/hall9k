@@ -127,12 +127,18 @@ public sealed record PrReviewAuthorActivity(
     /// same either way.
     /// </para>
     /// <para>
+    /// The line ends after what moved when the reviewer opened no threads at all
+    /// (<paramref name="openedThreadCount"/> is zero): "every thread you opened is resolved now"
+    /// would assert a resolution of threads that never existed, which is what a re-review request
+    /// on a review that posted nothing used to read as (task cc8f819b).
+    /// </para>
+    /// <para>
     /// A re-review request is the one part it does attribute, because GitHub records who a review
     /// request is addressed TO and that is the reviewer themselves: "a re-review is requested of
     /// you" is read straight off the request, not inferred from anybody's authorship.
     /// </para>
     /// </summary>
-    public string Describe(string repository, int number, int openThreadCount)
+    public string Describe(string repository, int number, int openThreadCount, int openedThreadCount)
     {
         List<string> parts = [];
         if (ReplyCount > 0)
@@ -164,15 +170,15 @@ public sealed record PrReviewAuthorActivity(
             _ => $"{string.Join(", ", parts[..^1])} and {parts[^1]}",
         };
 
-        string outstanding = openThreadCount switch
-        {
-            0 => "every thread you opened is resolved now",
-            1 => "1 of your threads is still unresolved",
-            _ => $"{openThreadCount.ToString(CultureInfo.InvariantCulture)} of your threads are still unresolved",
-        };
+        string moved = $"{repository}#{number.ToString(CultureInfo.InvariantCulture)} moved since your review: {what}";
 
-        return $"{repository}#{number.ToString(CultureInfo.InvariantCulture)} moved since your review: "
-            + $"{what} — {outstanding}.";
+        return (openedThreadCount, openThreadCount) switch
+        {
+            (<= 0, _) => $"{moved}.",
+            (_, 0) => $"{moved} — every thread you opened is resolved now.",
+            (_, 1) => $"{moved} — 1 of your threads is still unresolved.",
+            _ => $"{moved} — {openThreadCount.ToString(CultureInfo.InvariantCulture)} of your threads are still unresolved.",
+        };
     }
 
     private static string Plural(int count, string one, string many) =>

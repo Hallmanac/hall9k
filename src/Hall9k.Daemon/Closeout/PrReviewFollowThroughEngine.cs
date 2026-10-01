@@ -361,7 +361,8 @@ public sealed class PrReviewFollowThroughEngine(
         // The observation FIRST, then the response — the ordering the response event's own doc
         // states as load-bearing: the observation re-baselines the watermark, so the same replies
         // can never fire a second notification on the next tick.
-        string summary = activity.Describe(repository, number, watermark.Count(thread => !thread.IsResolved));
+        string summary = activity.Describe(
+            repository, number, watermark.Count(thread => !thread.IsResolved), watermark.Count);
         session.Events.Append(
             row.Id,
             expectedVersion: fence.Version + 2,
