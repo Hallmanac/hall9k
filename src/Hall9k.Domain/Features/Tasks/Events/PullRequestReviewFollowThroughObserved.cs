@@ -27,6 +27,15 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// a moved <see cref="HeadSha"/> still says a push happened even when the count of it cannot
 /// be stated.
 /// </para>
+/// <para>
+/// <see cref="ReviewerReviewId"/> is the id of the reviewer's own latest submitted review as this
+/// poll read it, null when they have none, and it is only meaningful when
+/// <see cref="ReviewerReviewBaselined"/> is true. An observation written before this field existed
+/// deserializes with that flag false, which reads as "not yet baselined" and never as "the
+/// reviewer has no review": the null beside a false flag is an absence of knowledge, not an
+/// observation. The next poll's comparison against it is what tells a review the reviewer posted
+/// by hand on GitHub from the one the watch opened on.
+/// </para>
 /// </summary>
 public sealed record PullRequestReviewFollowThroughObserved(
     Guid Id,
@@ -35,4 +44,6 @@ public sealed record PullRequestReviewFollowThroughObserved(
     bool ReReviewRequested,
     string? HeadSha,
     int? CommitCount,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt,
+    string? ReviewerReviewId = null,
+    bool ReviewerReviewBaselined = false);

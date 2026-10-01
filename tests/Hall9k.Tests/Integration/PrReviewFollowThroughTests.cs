@@ -400,6 +400,7 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
             Conversation = FakeConversations.Quiet() with
             {
                 Threads = [FakeConversations.ThreadAnsweredByAThirdParty("t1")],
+                LatestReviewByLogin = FakeConversations.ReviewedBy(ReviewerLogin),
             },
         };
 
@@ -838,5 +839,341 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
 
         sweep.Concluded.Should().Be(1, "the pull request merging is what ends it, not the thread resolving");
         (await ReadTaskAsync(taskId, cts.Token)).State.Should().Be(TaskState.Done);
+    }
+
+    private async Task<IReadOnlyList<object>> EventsAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = postgres.Store.QuerySession();
+        return [.. (await query.Events.FetchStreamAsync(taskId, token: cancellationToken)).Select(@event => @event.Data)];
+    }
+
+    private async Task<TaskAggregate> AggregateAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = postgres.Store.QuerySession();
+        return (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!;
+    }
+
+    private static ReviewConversation WithReview(
+        ReviewConversation conversation, string id, string state, string? commitOid) => conversation with
+        {
+            LatestReviewByLogin = new Dictionary<string, SubmittedReview>(StringComparer.OrdinalIgnoreCase)
+            {
+                [ReviewerLogin] = new SubmittedReview(id, state, Now.AddMinutes(5), commitOid),
+            },
+        };
+
+    /// <summary>
+    /// What a stream recorded before the review baseline existed looks like, for a watch that had
+    /// already woken the reviewer on a re-review request nobody had made: a NeedsHuman task whose
+    /// last observation records the request and carries no review id (task 0b2e0457 on #2165).
+    /// </summary>
+    private async Task SeedRecordedFalseWakeAsync(Guid taskId, Guid ownerId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = postgres.Store.LightweightSession();
+        TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!;
+        PullRequestReviewFollowThroughObserved observed = TaskDecider.ObservePrReviewFollowThrough(
+            task, ReviewerLogin, [], reReviewRequested: true, ReviewedHead, 3, Now.AddHours(-1));
+        task.Apply(observed);
+        PullRequestReviewAuthorResponded responded = TaskDecider.RecordPrReviewAuthorResponse(
+            task, $"{Reference} moved since your review: a re-review requested of you.", 0, 0, null, false, true,
+            null, Now.AddHours(-1));
+        session.Events.Append(taskId, observed, responded);
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    [Fact]
+    public async Task The_first_look_records_the_reviewers_review_without_reopening_even_when_nothing_else_changed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (NodeContext node, Guid taskId, _) = await SeedWaitingReviewAsync(cts.Token);
+        // A watch from before the baseline existed whose last observation already matches what the
+        // pull request says: the only thing that differs is that no review id was ever recorded.
+        await using (IDocumentSession session = postgres.Store.LightweightSession())
+        {
+            TaskAggregate seeded = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.ObservePrReviewFollowThrough(
+                seeded, ReviewerLogin, [], false, ReviewedHead, 3, Now.AddHours(-1)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeConversations conversations = new()
+        {
+            Conversation = WithReview(FakeConversations.Quiet() with { Threads = [] }, "R1", "COMMENTED", ReviewedHead),
+        };
+
+        PrReviewFollowThroughResult sweep = await Engine(node, conversations).FollowThroughOnceAsync(taskId, cts.Token);
+
+        sweep.Surfaced.Should().Be(0);
+        IReadOnlyList<object> events = await EventsAsync(taskId, cts.Token);
+        events.OfType<PullRequestReviewFollowThroughOpened>().Should().ContainSingle("the first look never reopens");
+        PullRequestReviewFollowThroughObserved baseline = events.OfType<PullRequestReviewFollowThroughObserved>().Last();
+        baseline.ReviewerReviewId.Should().Be("R1");
+        baseline.ReviewerReviewBaselined.Should().BeTrue("the observation is written for the review id alone");
+    }
+
+    [Fact]
+    public async Task An_unchanged_review_id_never_reopens_on_later_polls()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (NodeContext node, Guid taskId, _) = await SeedWaitingReviewAsync(cts.Token);
+        FakeConversations conversations = new()
+        {
+            Conversation = WithReview(FakeConversations.Quiet(), "R1", "CHANGES_REQUESTED", ReviewedHead),
+        };
+        PrReviewFollowThroughEngine engine = Engine(node, conversations);
+        await engine.FollowThroughOnceAsync(taskId, cts.Token);
+        long afterBaseline = await StreamVersionAsync(taskId, cts.Token);
+
+        await engine.FollowThroughOnceAsync(taskId, cts.Token);
+        await engine.FollowThroughOnceAsync(taskId, cts.Token);
+
+        (await StreamVersionAsync(taskId, cts.Token)).Should().Be(afterBaseline);
+        (await EventsAsync(taskId, cts.Token)).OfType<PullRequestReviewFollowThroughOpened>().Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// The reviewer answers on GitHub by hand (Brian's usual habit): a submitted review newer than
+    /// the one the watch baselined returns the task to waiting and clears the stale needs-you line.
+    /// An approval or a changes-requested review carries the commit it was posted against, which is
+    /// the head the reopened watch compares pushes to; anything else gets the head this poll read.
+    /// </summary>
+    [Theory]
+    [InlineData("CHANGES_REQUESTED", "cccccccccccc", "cccccccccccc")]
+    [InlineData("APPROVED", "cccccccccccc", "cccccccccccc")]
+    [InlineData("APPROVED", null, "dddddddddddd")]
+    [InlineData("COMMENTED", "cccccccccccc", "dddddddddddd")]
+    public async Task A_newer_review_by_the_reviewer_reopens_the_watch_and_clears_the_needs_you_line(
+        string state, string? commitOid, string expectedHead)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (NodeContext node, Guid taskId, Guid runId) = await SeedWaitingReviewAsync(cts.Token);
+        FakeConversations conversations = new()
+        {
+            Conversation = WithReview(FakeConversations.Quiet(), "R1", "COMMENTED", ReviewedHead),
+        };
+        PrReviewFollowThroughEngine engine = Engine(node, conversations);
+        await engine.FollowThroughOnceAsync(taskId, cts.Token);
+        conversations.Conversation = conversations.Conversation with
+        {
+            Threads = [FakeConversations.ReviewerThread("src/One.cs", 12, "t1", resolved: false, replies: 1)],
+        };
+        (await engine.FollowThroughOnceAsync(taskId, cts.Token)).Surfaced.Should().Be(1);
+        (await ReadTaskAsync(taskId, cts.Token)).State.Should().Be(TaskState.NeedsHuman);
+
+        conversations.Conversation = WithReview(conversations.Conversation, "R2", state, commitOid) with
+        {
+            HeadSha = "dddddddddddd",
+        };
+        PrReviewFollowThroughResult sweep = await engine.FollowThroughOnceAsync(taskId, cts.Token);
+
+        sweep.Surfaced.Should().Be(0);
+        TaskDetails task = await ReadTaskAsync(taskId, cts.Token);
+        task.State.Should().Be(TaskState.AwaitingAuthor);
+        task.PrReviewAuthorActivitySummary.Should().BeNull("the stale needs-you line is cleared");
+        PullRequestReviewFollowThroughOpened reopened =
+            (await EventsAsync(taskId, cts.Token)).OfType<PullRequestReviewFollowThroughOpened>().Last();
+        reopened.RunId.Should().Be(runId);
+        reopened.HeadSha.Should().Be(expectedHead);
+        (await EventsAsync(taskId, cts.Token)).Last().Should().BeOfType<PullRequestReviewFollowThroughOpened>(
+            "the reopen is appended in place of that poll's own observation");
+    }
+
+    /// <summary>
+    /// A lone thread reply by the reviewer is GitHub's implicit COMMENTED review, so it reopens the
+    /// watch too. That churn is accepted: the reply is the reviewer's own act, and the first look
+    /// after the reopen reports whatever is still unanswered in the threads, so nothing is lost.
+    /// </summary>
+    [Fact]
+    public async Task A_thread_reply_by_the_reviewer_reopens_the_watch_and_the_next_look_reports_what_is_unanswered()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (NodeContext node, Guid taskId, _) = await SeedWaitingReviewAsync(cts.Token);
+        FakeConversations conversations = new()
+        {
+            Conversation = WithReview(FakeConversations.Quiet(), "R1", "COMMENTED", ReviewedHead),
+        };
+        PrReviewFollowThroughEngine engine = Engine(node, conversations);
+        await engine.FollowThroughOnceAsync(taskId, cts.Token);
+
+        conversations.Conversation = WithReview(conversations.Conversation, "R2", "COMMENTED", "bbbbbbbbbbbb") with
+        {
+            Threads = [FakeConversations.ReviewerThread("src/One.cs", 12, "t1", resolved: false, replies: 2)],
+        };
+        PrReviewFollowThroughResult reopen = await engine.FollowThroughOnceAsync(taskId, cts.Token);
+        PrReviewFollowThroughResult firstLook = await engine.FollowThroughOnceAsync(taskId, cts.Token);
+
+        reopen.Surfaced.Should().Be(0, "the reopen itself says nothing");
+        firstLook.Surfaced.Should().Be(1, "the first look after a reopen counts every reply still waiting");
+        (await ReadTaskAsync(taskId, cts.Token)).PrReviewAuthorActivitySummary.Should().Contain("2 replies in 1 thread");
+    }
+
+    [Fact]
+    public async Task A_recorded_false_wake_is_cleared_by_the_first_poll_that_sees_it_and_never_loops()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (NodeContext node, Guid taskId, _) = await SeedWaitingReviewAsync(cts.Token);
+        await SeedRecordedFalseWakeAsync(taskId, node.OwnerId, cts.Token);
+        (await ReadTaskAsync(taskId, cts.Token)).State.Should().Be(TaskState.NeedsHuman);
+        FakeConversations conversations = new()
+        {
+            Conversation = FakeConversations.Quiet() with
+            {
+                Threads = [],
+                OutstandingReviewerLogins = [ReviewerLogin],
+                HeadSha = "eeeeeeeeeeee",
+            },
+        };
+        PrReviewFollowThroughEngine engine = Engine(node, conversations);
+
+        await engine.FollowThroughOnceAsync(taskId, cts.Token);
+
+        IReadOnlyList<object> events = await EventsAsync(taskId, cts.Token);
+        PullRequestReviewFollowThroughOpened reopened = events.Last().Should()
+            .BeOfType<PullRequestReviewFollowThroughOpened>("the reopen replaces that poll's own observation").Subject;
+        reopened.HeadSha.Should().Be(ReviewedHead, "the head the task already records as reviewed, not the one this poll read");
+        TaskDetails task = await ReadTaskAsync(taskId, cts.Token);
+        task.State.Should().Be(TaskState.AwaitingAuthor);
+        task.PrReviewAuthorActivitySummary.Should().BeNull();
+        task.PrReviewReReviewRequested.Should().BeFalse();
+
+        // The pull request's head is back where the review left it, so what is left to see is the review itself.
+        conversations.Conversation = conversations.Conversation with { HeadSha = ReviewedHead };
+        await engine.FollowThroughOnceAsync(taskId, cts.Token);
+        long afterBaseline = await StreamVersionAsync(taskId, cts.Token);
+        await engine.FollowThroughOnceAsync(taskId, cts.Token);
+
+        (await EventsAsync(taskId, cts.Token)).OfType<PullRequestReviewFollowThroughOpened>()
+            .Should().HaveCount(2, "the initial open and the one self-heal reopen, never a loop");
+        (await StreamVersionAsync(taskId, cts.Token)).Should().Be(afterBaseline);
+        TaskAggregate aggregate = await AggregateAsync(taskId, cts.Token);
+        aggregate.State.Should().Be(TaskState.AwaitingAuthor);
+        aggregate.PrReviewReviewBaselined.Should().BeTrue();
+        aggregate.PrReviewReviewerReviewId.Should().BeNull();
+        await using IQuerySession query = postgres.Store.QuerySession();
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.PrReviewRecordsNoSubmittedReview.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task A_truncated_review_page_skips_both_the_review_comparison_and_the_self_heal()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (NodeContext falseWakeNode, Guid falseWakeTask, _) = await SeedWaitingReviewAsync(cts.Token);
+        await SeedRecordedFalseWakeAsync(falseWakeTask, falseWakeNode.OwnerId, cts.Token);
+        FakeConversations truncatedWithoutReview = new()
+        {
+            Conversation = FakeConversations.Quiet() with
+            {
+                Threads = [],
+                OutstandingReviewerLogins = [ReviewerLogin],
+                ReviewsTruncated = true,
+            },
+        };
+
+        await Engine(falseWakeNode, truncatedWithoutReview).FollowThroughOnceAsync(falseWakeTask, cts.Token);
+
+        (await EventsAsync(falseWakeTask, cts.Token)).OfType<PullRequestReviewFollowThroughOpened>()
+            .Should().ContainSingle("a truncated page cannot say the reviewer has no review");
+
+        (NodeContext node, Guid taskId, _) = await SeedWaitingReviewAsync(cts.Token);
+        FakeConversations conversations = new()
+        {
+            Conversation = WithReview(FakeConversations.Quiet(), "R1", "COMMENTED", ReviewedHead),
+        };
+        PrReviewFollowThroughEngine engine = Engine(node, conversations);
+        await engine.FollowThroughOnceAsync(taskId, cts.Token);
+        conversations.Conversation = WithReview(conversations.Conversation, "R2", "COMMENTED", ReviewedHead) with
+        {
+            ReviewsTruncated = true,
+        };
+
+        await engine.FollowThroughOnceAsync(taskId, cts.Token);
+
+        (await EventsAsync(taskId, cts.Token)).OfType<PullRequestReviewFollowThroughOpened>()
+            .Should().ContainSingle("a truncated page cannot say which review is the latest");
+        (await AggregateAsync(taskId, cts.Token)).PrReviewReviewerReviewId.Should().Be(
+            "R1", "the baseline is carried forward untouched until a poll reads every review");
+    }
+
+    /// <summary>
+    /// A task under a scoped lap is Claimed, and reopening it would end that lap from underneath the
+    /// session working it. The sweep passes over it, and the decider refuses it
+    /// (<c>TaskDeciderTests</c>) rather than relying on the sweep's own listing.
+    /// </summary>
+    [Fact]
+    public async Task A_task_under_a_scoped_lap_is_never_reopened()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (NodeContext node, Guid taskId, Guid runId) = await SeedWaitingReviewAsync(cts.Token);
+        FakeConversations conversations = new()
+        {
+            Conversation = WithReview(FakeConversations.Quiet(), "R1", "COMMENTED", ReviewedHead),
+        };
+        PrReviewFollowThroughEngine engine = Engine(node, conversations);
+        await engine.FollowThroughOnceAsync(taskId, cts.Token);
+        await using (IDocumentSession session = postgres.Store.LightweightSession())
+        {
+            TaskAggregate waiting = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            // The lap's claim keeps the original run id here so the node check passes and it is the
+            // aggregate's own guard, not a missing run record, that stops the reopen.
+            session.Events.Append(taskId, TaskDecider.ClaimForScopedReviewLap(waiting, node.OwnerId, runId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        conversations.Conversation = WithReview(conversations.Conversation, "R2", "CHANGES_REQUESTED", "bbbbbbbbbbbb");
+        PrReviewFollowThroughResult sweep = await engine.FollowThroughOnceAsync(taskId, cts.Token);
+
+        sweep.Skipped.Should().Be(1);
+        (await EventsAsync(taskId, cts.Token)).OfType<PullRequestReviewFollowThroughOpened>().Should().ContainSingle();
+        (await ReadTaskAsync(taskId, cts.Token)).State.Should().Be(TaskState.Claimed);
+    }
+
+    /// <summary>
+    /// A needs-you line raised while the reviewer has no submitted review names what moved on the
+    /// pull request; "since your review" would assert a review the owner never posted.
+    /// </summary>
+    [Fact]
+    public async Task A_wake_raised_while_the_reviewer_has_no_review_does_not_say_since_your_review()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (NodeContext node, Guid taskId, _) = await SeedWaitingReviewAsync(cts.Token);
+        FakeConversations conversations = new()
+        {
+            Conversation = FakeConversations.Quiet() with
+            {
+                Threads = [FakeConversations.ReviewerThread("src/One.cs", 12, "t1", resolved: false, replies: 2)],
+            },
+        };
+
+        PrReviewFollowThroughResult sweep = await Engine(node, conversations).FollowThroughOnceAsync(taskId, cts.Token);
+
+        sweep.Surfaced.Should().Be(1);
+        string summary = (await ReadTaskAsync(taskId, cts.Token)).PrReviewAuthorActivitySummary!;
+        summary.Should().StartWith($"{Reference} moved: 2 replies in 1 thread").And.NotContain("since your review");
+    }
+
+    [Fact]
+    public async Task An_observation_written_before_the_baseline_deserializes_as_not_yet_baselined()
+    {
+        PullRequestReviewFollowThroughObserved current = new(
+            DomainId.New(), ReviewerLogin, [], false, ReviewedHead, 3, Now, "R1", true);
+        ISerializer serializer = postgres.Store.Options.Serializer();
+        System.Text.Json.Nodes.JsonObject json = System.Text.Json.Nodes.JsonNode.Parse(serializer.ToJson(current))!.AsObject();
+        string[] newFields =
+        [
+            .. json.Select(pair => pair.Key)
+                .Where(key => key.StartsWith("reviewerReview", StringComparison.OrdinalIgnoreCase)),
+        ];
+        foreach (string name in newFields)
+        {
+            json.Remove(name);
+        }
+
+        using MemoryStream stream = new(System.Text.Encoding.UTF8.GetBytes(json.ToJsonString()));
+        PullRequestReviewFollowThroughObserved legacy =
+            (PullRequestReviewFollowThroughObserved)serializer.FromJson(
+                typeof(PullRequestReviewFollowThroughObserved), stream);
+
+        legacy.ReviewerReviewBaselined.Should().BeFalse("an old observation recorded no review baseline at all");
+        legacy.ReviewerReviewId.Should().BeNull();
     }
 }

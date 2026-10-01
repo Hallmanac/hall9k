@@ -1575,6 +1575,85 @@ public sealed class TaskDeciderTests
             "a task parked on an unanswered question is not a review being followed through");
     }
 
+    private static TaskAggregate WaitingPrReviewTask()
+    {
+        TaskAggregate waiting = ClaimedPrReviewTask();
+        waiting.Apply(TaskDecider.OpenPrReviewFollowThrough(
+            waiting, waiting.CurrentRunId!.Value, "https://github.com/acme/widgets/pull/7", "aaa", Now));
+        return waiting;
+    }
+
+    [Fact]
+    public void Reopening_a_needs_you_watch_returns_it_to_waiting_under_the_same_run_and_clears_the_line()
+    {
+        TaskAggregate task = WaitingPrReviewTask();
+        Guid runId = task.PrReviewFollowThroughRunId!.Value;
+        task.Apply(TaskDecider.RecordPrReviewAuthorResponse(
+            task, "acme/widgets#7 moved since your review: 1 reply in 1 thread.", 1, 1, null, false, false,
+            null, Now));
+        task.State.Should().Be(TaskState.NeedsHuman);
+
+        PullRequestReviewFollowThroughOpened reopened = TaskDecider.ReopenPrReviewFollowThrough(task, "bbb", Now);
+        task.Apply(reopened);
+
+        reopened.RunId.Should().Be(runId, "the watch belongs to the run whose review it follows through on");
+        reopened.PullRequestUrl.Should().Be("https://github.com/acme/widgets/pull/7");
+        reopened.HeadSha.Should().Be("bbb");
+        task.State.Should().Be(TaskState.AwaitingAuthor);
+        task.PrReviewAuthorActivitySummary.Should().BeNull("the stale needs-you line goes with the reopen");
+        task.PrReviewReviewBaselined.Should().BeFalse("the reopened watch baselines again on its first look");
+    }
+
+    [Fact]
+    public void Reopening_is_refused_for_a_task_under_a_scoped_lap_and_for_one_not_following_through()
+    {
+        TaskAggregate underLap = WaitingPrReviewTask();
+        underLap.Apply(TaskDecider.ClaimForScopedReviewLap(underLap, Owner, DomainId.New(), Now));
+        underLap.State.Should().Be(TaskState.Claimed);
+
+        Action reopenLap = () => TaskDecider.ReopenPrReviewFollowThrough(underLap, "bbb", Now);
+        Action reopenUnwatched = () => TaskDecider.ReopenPrReviewFollowThrough(ClaimedPrReviewTask(), "bbb", Now);
+        Action reopenDone = () =>
+        {
+            TaskAggregate done = WaitingPrReviewTask();
+            done.Apply(TaskDecider.Complete(done, done.PrReviewFollowThroughRunId!.Value, null, Now));
+            TaskDecider.ReopenPrReviewFollowThrough(done, "bbb", Now);
+        };
+
+        reopenLap.Should().Throw<DomainConflictException>("a lap's own session would lose its claim");
+        reopenUnwatched.Should().Throw<DomainConflictException>();
+        reopenDone.Should().Throw<DomainConflictException>();
+    }
+
+    [Fact]
+    public void Opening_a_follow_through_keeps_its_claimed_only_guard_even_beside_the_reopen()
+    {
+        TaskAggregate waiting = WaitingPrReviewTask();
+
+        Action openWaiting = () => TaskDecider.OpenPrReviewFollowThrough(
+            waiting, waiting.PrReviewFollowThroughRunId!.Value, "https://github.com/acme/widgets/pull/7", "bbb", Now);
+
+        openWaiting.Should().Throw<DomainConflictException>(
+            "only the claim the review was delivered under opens a watch; a waiting one is reopened instead");
+    }
+
+    [Fact]
+    public void An_observation_written_before_the_review_baseline_reads_as_not_yet_baselined()
+    {
+        TaskAggregate task = WaitingPrReviewTask();
+
+        task.Apply(new PullRequestReviewFollowThroughObserved(
+            task.Id, "brian", [], false, "aaa", 3, Now));
+
+        task.PrReviewReviewBaselined.Should().BeFalse("a null review id beside a false flag is an absence of knowledge");
+        task.PrReviewReviewerReviewId.Should().BeNull();
+
+        task.Apply(TaskDecider.ObservePrReviewFollowThrough(task, "brian", [], false, "aaa", 3, Now, null, true));
+
+        task.PrReviewReviewBaselined.Should().BeTrue();
+        task.PrReviewReviewerReviewId.Should().BeNull("the reviewer had no review when it was baselined");
+    }
+
     [Fact]
     public void ReleaseInteractiveClaim_returns_to_queued_and_a_reclaim_bumps_generation_again()
     {

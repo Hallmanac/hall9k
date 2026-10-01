@@ -221,6 +221,13 @@ public sealed class TaskListItem
     public bool PrReviewReReviewRequested { get; set; }
     /// <summary>Whether any poll has looked at the watched pull request yet: what tells "no threads outstanding" from "not looked at".</summary>
     public bool PrReviewFollowThroughObserved { get; set; }
+    /// <summary>
+    /// True when the latest observation recorded that the reviewer has no submitted review on the
+    /// watched pull request (<see cref="TaskAggregate.PrReviewReviewBaselined"/> with no
+    /// <see cref="TaskAggregate.PrReviewReviewerReviewId"/>). False before any baselining, which is
+    /// "not known yet" and never "no review".
+    /// </summary>
+    public bool PrReviewRecordsNoSubmittedReview { get; set; }
     /// <summary>What the author did, as the last <see cref="PullRequestReviewAuthorResponded"/> put it, or null while they have said nothing.</summary>
     public string? PrReviewAuthorActivitySummary { get; set; }
     /// <summary>The registered interactive session the most recent author-response line was addressed to, or null when none was registered.</summary>
@@ -1046,6 +1053,7 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         view.PrReviewFollowThroughObserved = false;
         view.PrReviewOpenThreadCount = 0;
         view.PrReviewReReviewRequested = false;
+        view.PrReviewRecordsNoSubmittedReview = false;
         view.PrReviewAuthorActivitySummary = null;
         view.PrReviewAuthorActivitySessionAddress = null;
         view.State = TaskState.AwaitingAuthor;
@@ -1057,6 +1065,7 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         view.PrReviewFollowThroughObserved = true;
         view.PrReviewOpenThreadCount = @event.Data.Threads.Count(thread => !thread.IsResolved);
         view.PrReviewReReviewRequested = @event.Data.ReReviewRequested;
+        view.PrReviewRecordsNoSubmittedReview = @event.Data is { ReviewerReviewBaselined: true, ReviewerReviewId: null };
     }
 
     public void Apply(IEvent<PullRequestReviewAuthorResponded> @event, TaskListItem view)
@@ -1091,6 +1100,7 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
     {
         view.PrReviewFollowThroughOpen = false;
         view.PrReviewReReviewRequested = false;
+        view.PrReviewRecordsNoSubmittedReview = false;
         view.PrReviewOpenThreadCount = 0;
         view.PrReviewAuthorActivitySummary = null;
         view.PrReviewAuthorActivitySessionAddress = null;
