@@ -96,8 +96,10 @@ internal static class TaskOwnerGuard
         try
         {
             await TaskTakeCommand.AssertOwnerRoleAsync(
-                session, context, project, chainReader, keyStore, cancellationToken,
-                retryCommand: $"h9k task {verb}", action: $"{verb} another owner's task");
+                session, context, project, chainReader, keyStore,
+                retryCommand: $"h9k task {verb} {task.Id} --holder <owner> --reason \"...\"",
+                action: $"{verb} another owner's task",
+                cancellationToken: cancellationToken);
             return OwnerRoleCheck.Passed;
         }
         catch (DomainException exception)

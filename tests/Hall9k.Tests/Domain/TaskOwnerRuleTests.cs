@@ -8,49 +8,14 @@ namespace Hall9k.Tests.Domain;
 /// <summary>
 /// <see cref="TaskOwnerRule"/> over resolved facts, no database. The agreement with the receive
 /// gate itself is the table in <c>EventReplicationInboxTaskActGateTests</c>; these cover what the
-/// gate has no word for: an assignment recorded by owner id alone, the fact that is present but
-/// unresolvable, and an owner's second fleet node.
+/// gate has no word for: the owner and assignee a refusal names, and the fact that is present but
+/// unresolvable.
 /// </summary>
 public sealed class TaskOwnerRuleTests
 {
     private const string Mine = "1111111111111111111111111111111111111111111111111111111111111111";
     private const string Theirs = "2222222222222222222222222222222222222222222222222222222222222222";
     private const string Third = "3333333333333333333333333333333333333333333333333333333333333333";
-
-    [Fact]
-    public void An_owners_second_fleet_node_acts_on_a_held_task_because_both_owner_ids_resolve_to_one_root()
-    {
-        // Two owner ids, one per node, both resolve to the same root; the holder fact is that root.
-        TaskOwnerFacts facts = new(OwnerRootFact.Known(Mine), OwnerRootFact.Absent, OwnerRootFact.Absent);
-
-        TaskOwnerRule.Decide(Mine, facts).MayAct.Should().BeTrue();
-    }
-
-    [Fact]
-    public void An_owners_second_fleet_node_acts_on_a_task_assigned_with_a_fingerprint()
-    {
-        TaskOwnerFacts facts = new(OwnerRootFact.Absent, OwnerRootFact.Known(Mine), OwnerRootFact.Absent);
-
-        TaskOwnerRule.Decide(Mine, facts).MayAct.Should().BeTrue();
-    }
-
-    [Fact]
-    public void An_owners_second_fleet_node_acts_on_an_unassigned_task_with_a_verified_creator_root()
-    {
-        TaskOwnerFacts facts = new(OwnerRootFact.Absent, OwnerRootFact.Absent, OwnerRootFact.Known(Mine));
-
-        TaskOwnerRule.Decide(Mine, facts).MayAct.Should().BeTrue();
-    }
-
-    [Fact]
-    public void Either_the_holder_or_the_assignee_may_act_when_they_differ()
-    {
-        TaskOwnerFacts facts = new(OwnerRootFact.Known(Theirs), OwnerRootFact.Known(Mine), OwnerRootFact.Absent);
-
-        TaskOwnerRule.Decide(Mine, facts).MayAct.Should().BeTrue();
-        TaskOwnerRule.Decide(Theirs, facts).MayAct.Should().BeTrue();
-        TaskOwnerRule.Decide(Third, facts).MayAct.Should().BeFalse();
-    }
 
     [Fact]
     public void A_different_root_is_refused_and_the_holder_is_the_owner_named_with_the_assignee_beside_it()

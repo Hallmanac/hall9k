@@ -1423,7 +1423,7 @@ public static class CliCommandTree
                     "Take a queued or blocked task back to Published, so no node claims it. Refused while a "
                     + "node holds the lease — that is a running agent. This is the first step of the "
                     + "edit-after-the-fact path: unassign → draft → revise → publish → assign. Another "
-                    + "owner's task is theirs to hand back, so this refuses unless your node's owner may act "
+                    + "owner's task is theirs to unassign, so this refuses unless your node's owner may act "
                     + "on it; an Owner-role member may do it on that owner's behalf with --holder and --reason, "
                     + "both required together.")
                 .WithExample("task", "unassign", "28b19893", "--reason", "\"The criteria missed the migration case\"")
