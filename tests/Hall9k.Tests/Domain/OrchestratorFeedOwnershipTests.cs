@@ -213,6 +213,57 @@ public sealed class OrchestratorFeedOwnershipTests
         read.Items.Should().ContainSingle().Which.Sequence.Should().Be(5);
     }
 
+    [Fact]
+    public async Task A_forced_takeover_of_a_task_this_node_held_is_kept_and_one_from_another_holder_is_not()
+    {
+        // The takeover has already moved the board row to the taker by the time the feed reads it.
+        TaskOwnerFacts taken = Facts(new TaskListItem { HolderOwnerRootFingerprint = Theirs });
+
+        OrchestratorFeedRead read = await Read(
+            [
+                Candidate(5, new TaskHolderTakenOver(TaskId, ThisNode, TeammateNode, TeammateOwner, Theirs, "away", TeammateOwner, At), isReplicated: true),
+                Candidate(6, new TaskHolderTakenOver(TaskId, Guid.NewGuid(), TeammateNode, TeammateOwner, Theirs, "away", TeammateOwner, At), isReplicated: true),
+                Candidate(7, new TaskHolderTakenOver(TaskId, null, TeammateNode, TeammateOwner, Theirs, "away", TeammateOwner, At), isReplicated: true),
+            ],
+            OrchestratorFeedLevel.Transitions,
+            ScopeWith(taken));
+
+        read.Items.Should().ContainSingle().Which.Sequence.Should().Be(5);
+    }
+
+    [Fact]
+    public async Task A_release_recorded_by_one_of_the_viewers_own_nodes_that_granted_the_task_away_is_kept()
+    {
+        TaskOwnerFacts granted = Facts(new TaskListItem { HolderOwnerRootFingerprint = Theirs });
+
+        OrchestratorFeedRead read = await Read(
+            [
+                Candidate(5, new TaskHolderReleased(TaskId, At, TeammateNode, TeammateOwner, Theirs), isReplicated: true, origin: Mine),
+                Candidate(6, new TaskHolderReleased(TaskId, At), isReplicated: true, origin: Mine),
+                Candidate(7, new TaskHolderReleased(TaskId, At, TeammateNode, TeammateOwner, Theirs), isReplicated: true, origin: Theirs),
+            ],
+            OrchestratorFeedLevel.Transitions,
+            ScopeWith(granted));
+
+        read.Items.Should().ContainSingle().Which.Sequence.Should().Be(5);
+    }
+
+    [Fact]
+    public async Task An_end_of_a_teammates_task_the_viewers_root_has_a_take_request_pending_on_is_kept_as_the_board_keeps_it()
+    {
+        TaskOwnerFacts teammates = Facts(new TaskListItem { HolderOwnerRootFingerprint = Theirs });
+        OrchestratorFeedCandidate end = Candidate(
+            5, new TaskAbandoned(TaskId, "gone", At, TeammateOwner), isReplicated: true, origin: Theirs);
+
+        OrchestratorFeedRead waiting = await Read(
+            [end], OrchestratorFeedLevel.Transitions, _ => new OrchestratorFeedScope(Project, TaskId, teammates, Mine));
+        OrchestratorFeedRead someoneElsesRequest = await Read(
+            [end], OrchestratorFeedLevel.Transitions, _ => new OrchestratorFeedScope(Project, TaskId, teammates, Theirs));
+
+        waiting.Items.Should().ContainSingle();
+        someoneElsesRequest.Items.Should().BeEmpty();
+    }
+
     [Theory]
     [InlineData("actionable")]
     [InlineData("transitions")]

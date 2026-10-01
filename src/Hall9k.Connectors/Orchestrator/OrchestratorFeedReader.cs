@@ -258,31 +258,34 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
 
         // Ownership is asked about only for a replicated event naming a task: a local event is this
         // node's own work, and the selection reads a scope with no facts as having no opinion.
-        TaskOwnerFacts? facts = candidate.IsReplicated && owner.TaskId is { } taskId
+        TaskOwnership? taskOwnership = candidate.IsReplicated && owner.TaskId is { } taskId
             ? await OwnerFactsAsync(lookup, taskId, cancellationToken)
             : null;
-        return new OrchestratorFeedScope(owningProjectId, owner.TaskId, facts);
+        return new OrchestratorFeedScope(
+            owningProjectId, owner.TaskId, taskOwnership?.Facts, taskOwnership?.PendingTakeRequesterRoot);
     }
 
     /// <summary>
-    /// The facts card C's ownership rule judges for one task, read off its board row the way
+    /// The facts <see cref="TaskViewerRule"/> judges for one task (card C's ownership facts and the
+    /// root of any take request pending on it), read off its board row the way
     /// <c>TaskStatusComposer</c> reads them for the viewer's board, so the feed and the board give the
     /// same answer for the same task. A task with no row on this node has no holder, no assignee and
     /// an unresolved creator, which reads as an owner nobody can name.
     /// </summary>
-    private static async Task<TaskOwnerFacts> OwnerFactsAsync(
+    private static async Task<TaskOwnership> OwnerFactsAsync(
         ScopeLookup lookup, Guid taskId, CancellationToken cancellationToken)
     {
-        if (lookup.Facts.TryGetValue(taskId, out TaskOwnerFacts? cached))
+        if (lookup.Facts.TryGetValue(taskId, out TaskOwnership? cached))
         {
             return cached;
         }
 
         TaskListItem? row = await lookup.Session.LoadAsync<TaskListItem>(taskId, cancellationToken);
-        TaskOwnerFacts facts;
+        TaskOwnership facts;
         if (row is null)
         {
-            facts = new TaskOwnerFacts(OwnerRootFact.Absent, OwnerRootFact.Absent, OwnerRootFact.Unresolved);
+            facts = new TaskOwnership(
+                new TaskOwnerFacts(OwnerRootFact.Absent, OwnerRootFact.Absent, OwnerRootFact.Unresolved), null);
         }
         else
         {
@@ -290,11 +293,21 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
                 ? (await TaskOwnerFactsReader.ReadCreatorsAsync(
                     lookup.Session, [taskId], lookup.OwnerRoot, cancellationToken)).GetValueOrDefault(taskId)
                 : null;
-            facts = TaskListItemOwnerFacts.From(row, lookup.OwnerRoot, creator);
+            facts = new TaskOwnership(
+                TaskListItemOwnerFacts.From(row, lookup.OwnerRoot, creator),
+                row.PendingTakeRequestedByOwnerRootFingerprint);
         }
 
         lookup.Facts[taskId] = facts;
         return facts;
+    }
+
+    /// <summary>One task's ownership facts and the root of the take request pending on it, if any.</summary>
+    private sealed class TaskOwnership(TaskOwnerFacts facts, string? pendingTakeRequesterRoot)
+    {
+        public TaskOwnerFacts Facts { get; } = facts;
+
+        public string? PendingTakeRequesterRoot { get; } = pendingTakeRequesterRoot;
     }
 
     /// <summary>What one read's scope lookups share: the session, this project, the roots this node
@@ -308,7 +321,7 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
 
         public Dictionary<Guid, ReplicationOwnership> Resolved { get; } = [];
 
-        public Dictionary<Guid, TaskOwnerFacts> Facts { get; } = [];
+        public Dictionary<Guid, TaskOwnership> Facts { get; } = [];
 
         public string? OwnerRoot(Guid ownerId) => ownerRoots.GetValueOrDefault(ownerId);
     }

@@ -9,10 +9,11 @@ namespace Hall9k.Domain.Features.Orchestrator;
 
 /// <summary>
 /// The orchestrator feed's interest filter (idea 89471598, piece 2): one table from event type to
-/// the <see cref="OrchestratorFeedLevel"/> band that event belongs to, and nothing else. No model
-/// reads it, no heuristic widens it, and the same event type always lands in the same band on
-/// every node — which is the whole point, because piece 3's courier and a window's own start-up
-/// drain must agree exactly about what an item is.
+/// the <see cref="OrchestratorFeedLevel"/> band that event belongs to, and nothing else but the
+/// exceptions listed below. No model reads it, no heuristic widens it, and an event type lands in
+/// the same band on every node unless one of those exceptions applies, which is the whole point,
+/// because piece 3's courier and a window's own start-up drain must agree exactly about what an
+/// item is.
 /// <para>
 /// <b>An unnamed type is not in the feed at all.</b> Unlike
 /// <see cref="Infrastructure.Persistence.EventScopeRegistry"/>, which a test forces to name every
