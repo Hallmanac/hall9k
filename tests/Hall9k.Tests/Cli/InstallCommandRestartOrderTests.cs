@@ -310,7 +310,8 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
         });
 
         output.Should().Contain("No project home's launch anchor was refreshed")
-            .And.Contain("h9k orchestrator refresh-anchors");
+            .And.Contain("h9k orchestrator refresh-anchors")
+            .And.Contain("h9k project init <project>");
     }
 
     /// <summary>
