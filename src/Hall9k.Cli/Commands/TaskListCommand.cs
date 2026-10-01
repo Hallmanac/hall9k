@@ -240,22 +240,28 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         int hiddenTeammates = 0)
     {
         bool unfiltered = project is null && settings.Epic.IsBlank() && StateDisplay(settings).IsBlank();
+        // Said after an archived or partial-history cause too, so a result that also held teammates'
+        // rows back never reads as the whole board (independent pre-PR review, cycle 1, adversarial
+        // lens, low).
+        string teammatesSuffix = hiddenTeammates > 0
+            ? $" [dim]{TeammateRows.HiddenNote(hiddenTeammates, $"h9k task list{Repeat(settings, project)}")}[/]"
+            : string.Empty;
         if (hiddenArchived > 0)
         {
             return unfiltered
-                ? "[dim]Every task is archived. See them with:[/] h9k task list --include-archived"
+                ? "[dim]Every task is archived. See them with:[/] h9k task list --include-archived" + teammatesSuffix
                 : $"[dim]Every task matching {Filters(settings, project)} is archived. See them with:[/] "
-                  + $"h9k task list --include-archived{Repeat(settings, project)}";
+                  + $"h9k task list --include-archived{Repeat(settings, project)}{teammatesSuffix}";
         }
 
         if (hiddenPartialHistory > 0)
         {
             return unfiltered
                 ? "[dim]Every task has only partial history held — its own genesis event has not "
-                  + "arrived yet. See them with:[/] h9k task list --all"
+                  + "arrived yet. See them with:[/] h9k task list --all" + teammatesSuffix
                 : $"[dim]Every task matching {Filters(settings, project)} has only partial history "
                   + $"held — its own genesis event has not arrived yet. See them with:[/] "
-                  + $"h9k task list --all{Repeat(settings, project)}";
+                  + $"h9k task list --all{Repeat(settings, project)}{teammatesSuffix}";
         }
 
         if (hiddenTeammates > 0)

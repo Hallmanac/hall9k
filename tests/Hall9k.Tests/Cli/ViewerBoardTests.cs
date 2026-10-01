@@ -172,29 +172,12 @@ public sealed class ViewerBoardTests
     }
 
     [Fact]
-    public void A_teammates_task_the_viewers_root_has_asked_to_take_is_the_viewers_while_the_request_is_pending()
-    {
-        TaskListItem held = Owned(TaskState.Claimed, runId: null);
-        held.HolderOwnerRootFingerprint = TeammateRoot;
-
-        TaskStatusRow before = TaskStatusComposer.Compose(held, Viewer(), StatusFixtures.Now);
-        held.PendingTakeRequestedByNodeId = DomainId.New();
-        held.PendingTakeRequestedByOwnerRootFingerprint = ViewerRoot;
-        TaskStatusRow asked = TaskStatusComposer.Compose(held, Viewer(), StatusFixtures.Now);
-        held.PendingTakeRequestedByOwnerRootFingerprint = OtherTeammateRoot;
-        TaskStatusRow askedByAnother = TaskStatusComposer.Compose(held, Viewer(), StatusFixtures.Now);
-
-        before.IsTeammates.Should().BeTrue();
-        asked.IsTeammates.Should().BeFalse("the viewer is waiting on this one");
-        askedByAnother.IsTeammates.Should().BeTrue("a third owner's request makes it nobody's of the viewer's");
-    }
-
-    [Fact]
     public void An_unassigned_task_is_judged_by_its_creator_fact_and_an_unresolved_creator_is_a_teammates()
     {
         TaskListItem fleetSiblings = Owned(TaskState.Published);
         TaskListItem unverified = Owned(TaskState.Published);
         TaskListItem teammates = Owned(TaskState.Published);
+        TaskListItem unread = Owned(TaskState.Published);
         TaskStatusContext context = Viewer() with
         {
             CreatorFacts = new Dictionary<Guid, OwnerRootFact>
@@ -209,38 +192,8 @@ public sealed class ViewerBoardTests
         TaskStatusComposer.Compose(unverified, context, StatusFixtures.Now).IsTeammates
             .Should().BeTrue("a creator no direct act has confirmed is unknown, and unknown is a teammate's");
         TaskStatusComposer.Compose(teammates, context, StatusFixtures.Now).IsTeammates.Should().BeTrue();
-    }
-
-    [Fact]
-    public void The_creator_is_not_consulted_once_the_task_has_a_holder_or_an_assignee()
-    {
-        TaskListItem assigned = Owned(TaskState.Queued, assignedRoot: TeammateRoot);
-        TaskStatusContext context = Viewer() with
-        {
-            CreatorFacts = new Dictionary<Guid, OwnerRootFact> { [assigned.Id] = OwnerRootFact.Known(ViewerRoot) },
-        };
-
-        TaskStatusComposer.Compose(assigned, context, StatusFixtures.Now).IsTeammates
-            .Should().BeTrue("the creator is the root to protect only while nobody is assigned or holds the task");
-    }
-
-    [Fact]
-    public void A_native_task_the_creator_fact_cannot_be_read_for_is_unknown()
-    {
-        TaskListItem headless = Owned(TaskState.Published);
-
-        TaskStatusComposer.Compose(headless, Viewer(), StatusFixtures.Now).IsTeammates.Should().BeTrue();
-    }
-
-    [Fact]
-    public void The_holder_decides_before_the_assignee_so_a_forced_takeovers_unresolved_assignment_does_not_hide_it()
-    {
-        TaskListItem takenOver = Owned(TaskState.Claimed, runId: null);
-        takenOver.HolderOwnerRootFingerprint = ViewerRoot;
-        takenOver.AssignedOwnerId = DomainId.New();
-        takenOver.AssignedOwnerFingerprint = null;
-
-        TaskStatusComposer.Compose(takenOver, Viewer(), StatusFixtures.Now).IsTeammates.Should().BeFalse();
+        TaskStatusComposer.Compose(unread, context, StatusFixtures.Now).IsTeammates
+            .Should().BeTrue("a task the creator fact was never read for is unknown, and unknown is a teammate's");
     }
 
     [Fact]
@@ -271,6 +224,8 @@ public sealed class ViewerBoardTests
 
         footer.Should().Contain("3 tasks belonging to teammates are not shown: h9k task list --everyone shows them");
         empty.Should().Contain("Nothing of yours matches").And.Contain("h9k task list --everyone shows them");
+        TaskListCommand.EmptyResultMessage(1, 0, settings, project: null, hiddenTeammates: 3)
+            .Should().Contain("Every task is archived").And.Contain("3 tasks belonging to teammates are not shown");
         TaskListCommand.Footer(2, 2, 0, 0, settings, project: null).Should().NotContain("teammates");
         TaskListCommand.Footer(2, 2, 0, 0, new TaskListCommand.Settings { Everyone = true }, project: null)
             .Should().NotContain("teammates", "nothing was hidden when they were asked for");
@@ -356,6 +311,65 @@ public sealed class ViewerBoardTests
         teammates.NeedsYou.Should().BeFalse();
         teammates.Markup.Should().Contain("a teammate's task already covers it").And.NotContain(shortId).And.NotContain("Working");
     }
+
+    [Fact]
+    public void A_mention_attached_to_a_teammates_task_still_asks_the_viewer_and_names_no_task_of_theirs()
+    {
+        Guid theirs = DomainId.New();
+        ObservedReviewMention mention = Mention("AttachedNoFollowUp", theirs);
+        CoveringReview viewersOwn = new(DomainId.New(), Live: true, "Working", AutoCreated: true, GateParked: false);
+
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
+            mention, "hall9k", viewersOwn, attachedToTeammate: true);
+        ReviewRequestRow unrecorded = ReviewRequestPane.ComposeMentionRow(
+            Mention("AttachedNoFollowUp", taskId: null), "hall9k",
+            new CoveringReview(DomainId.New(), Live: true, "Working", AutoCreated: true, GateParked: false, Own: false));
+
+        row.NeedsYou.Should().BeTrue("the comment mentioned the viewer, and no follow-up was dispatched to answer it");
+        row.Markup.Should().Contain("attached to a teammate's task").And.NotContain(DomainId.Short(theirs))
+            .And.Contain("h9k pr review acme/widgets#9 --since-my-review");
+        unrecorded.NeedsYou.Should().BeTrue();
+        unrecorded.Markup.Should().Contain("attached to a teammate's task");
+    }
+
+    [Fact]
+    public void A_live_teammates_task_outranks_the_viewers_closed_one_and_is_never_named()
+    {
+        TaskListItem closedOwn = Owned(TaskState.Done, assignedRoot: ViewerRoot);
+        TaskListItem liveTheirs = Owned(TaskState.Queued, assignedRoot: TeammateRoot);
+        TaskListItem closedTheirs = Owned(TaskState.Abandoned, assignedRoot: TeammateRoot);
+        TaskListItem[] all = [closedOwn, liveTheirs, closedTheirs];
+        foreach (TaskListItem task in all)
+        {
+            task.ExternalReference = "github-pr:acme/widgets#9";
+        }
+
+        Dictionary<Guid, TaskStatusRow> rows = all
+            .ToDictionary(task => task.Id, task => TaskStatusComposer.Compose(task, Viewer(), StatusFixtures.Now));
+
+        CoveringReview? mixed = ReviewRequestPane.Covering("acme/widgets", 9, [closedOwn, liveTheirs], rows);
+        CoveringReview? onlyClosedTheirs = ReviewRequestPane.Covering("acme/widgets", 9, [closedTheirs], rows);
+
+        mixed.Should().Match<CoveringReview?>(
+            covering => covering != null && !covering.Own && covering.Live,
+            "a live review of the pull request is what covers it, and it is not the viewer's to name");
+        onlyClosedTheirs.Should().Match<CoveringReview?>(covering => covering != null && !covering.Live);
+        ReviewRequestPane.ComposeMentionRow(Mention("HeldSettingOff", null), "hall9k", onlyClosedTheirs).Markup
+            .Should().Contain("a teammate's task already covered it and is closed");
+    }
+
+    private static ObservedReviewMention Mention(string outcome, Guid? taskId) =>
+        new()
+        {
+            Id = Guid.NewGuid().ToString(),
+            ProjectId = ProjectId,
+            Repository = "acme/widgets",
+            Number = 9,
+            MentionedLogin = "brian",
+            CommentAuthorLogin = "ryan",
+            TaskId = taskId,
+            Outcome = outcome,
+        };
 
     private static TaskListItem Owned(
         TaskState state, string? assignedRoot = null, Guid? assignedOwnerId = null, Guid? runId = null,

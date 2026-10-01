@@ -106,14 +106,16 @@ public sealed class ProjectListCommand : Hall9kAsyncCommand<ProjectListCommand.S
             + $"browse its tasks:[/] h9k task list --project {first} --include-archived");
         if (hiddenTeammates > 0)
         {
-            AnsiConsole.MarkupLine($"[dim]{TeammateRows.HiddenNote(hiddenTeammates, "h9k project list")}[/]");
+            // The suggested command repeats --include-archived when it was given, so the rows it
+            // brings back are counted over the same projects the note's number was.
+            string command = settings.IncludeArchived ? "h9k project list --include-archived" : "h9k project list";
+            AnsiConsole.MarkupLine($"[dim]{TeammateRows.HiddenNote(hiddenTeammates, command)}[/]");
         }
 
-        // rows covers every task on this install, but the table above only ever shows whatever
-        // projects is filtered to: without --include-archived, an archived project's own
-        // needs-you or stalled task must not trigger this footer — the table just told the
-        // operator that project is hidden, and h9k status would show the identical row with
-        // nothing to act on until it is reactivated.
+        // rows is already narrowed to the projects the table shows: without --include-archived, an
+        // archived project's own needs-you or stalled task must not trigger this footer — the table
+        // just told the operator that project is hidden, and h9k status would show the identical row
+        // with nothing to act on until it is reactivated.
         if (rows.Any(row => row.Group is AttentionBucket.NeedsYou or AttentionBucket.Stalled))
         {
             AnsiConsole.MarkupLine("[dim]Something is waiting on you — see it with:[/] h9k status");
