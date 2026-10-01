@@ -647,7 +647,11 @@ before the watcher's first look is caught by that look rather than absorbed into
 re-review request wakes the reviewer on its own — it is the one thing the watch reads that is an
 explicit ask *of* them, and an author who resolves the threads themselves and asks them back
 without a word or a push would otherwise leave both sides waiting on the other — and only its
-arrival wakes them: a standing request holds the wait open without re-announcing itself. Only
+arrival wakes them: a standing request holds the wait open without re-announcing itself. A request
+counts as a re-review only when the reviewer has already submitted a review (a dismissed one
+included), so the original request that was standing when the watch opened never reads as being
+asked back; the review record is read from the pull request's newest hundred reviews, and a login
+absent from a truncated page counts as having reviewed. Only
 threads the reviewer themselves opened hold it open —
 somebody else's unresolved conversation on the same pull request is not this review's business — and
 the reviewer's login is read back from `gh` every sweep rather than remembered. `h9k task abandon`

@@ -1086,7 +1086,9 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
     /// <summary>
     /// What an author leaves behind when they click re-request review and nothing else: the
     /// reviewer's thread exactly as they left it, no reply, no resolution, no push. The one shape
-    /// that summons a scoped lap with an empty packet in BOTH halves.
+    /// that summons a scoped lap with an empty packet in BOTH halves. The reviewer's own submitted
+    /// review is in the conversation, because a request standing on a reviewer who never reviewed
+    /// is the first request and not a re-request (task cc8f819b).
     /// </summary>
     private static string ConversationWithNothingButAReReviewRequest() =>
         """
@@ -1098,6 +1100,9 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
              "comments":{"totalCount":1,"nodes":[
                {"author":{"login":"brian"},"body":"the fence is checked after the read","createdAt":"2026-09-07T13:20:00Z"}]}}
           ],"pageInfo":{"hasNextPage":false}},
+          "reviews":{"nodes":[
+            {"id":"R1","state":"COMMENTED","submittedAt":"2026-09-07T13:20:00Z","author":{"login":"brian"},"commit":{"oid":"0f1e2d3c4b5a"}}
+          ],"pageInfo":{"hasPreviousPage":false}},
           "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"User","login":"brian"}}]}
         }}}}
         """;

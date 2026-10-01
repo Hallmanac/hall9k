@@ -348,7 +348,9 @@ did not write it: your own follow-up comment in your own thread never flags the 
 says the pull request moved rather than naming an author, since the counts do not say who wrote
 them. A re-review request is the one part that names you, because GitHub records who a review
 request is addressed to — and it wakes you on its own, since an author who resolves your threads
-themselves and asks you back without a word or a push is still asking. Only the moment it arrives
+themselves and asks you back without a word or a push is still asking. A request counts as asking
+you *back* only once you have submitted a review of your own on the pull request, so the first
+request that was standing when the watch opened is not announced. Only the moment it arrives
 wakes you; a request left standing holds the wait open without re-announcing itself. Every thread
 you opened being resolved no longer ends the wait by itself (Decisions Log #178,
 amending #160): the task stays Waiting until the pull request itself merges or closes, whatever the

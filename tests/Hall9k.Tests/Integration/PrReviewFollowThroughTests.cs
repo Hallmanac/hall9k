@@ -74,7 +74,16 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
             CommitCount: 3,
             Threads: [ReviewerThread("src/One.cs", 12, "t1", resolved: false, replies: 0)],
             OutstandingReviewerLogins: [],
-            ThreadsTruncated: false);
+            ThreadsTruncated: false,
+            LatestReviewByLogin: new Dictionary<string, SubmittedReview>(),
+            ReviewsTruncated: false);
+
+        /// <summary>The reviewer's own submitted review, which is what makes a standing request an ask to come BACK.</summary>
+        public static IReadOnlyDictionary<string, SubmittedReview> ReviewedBy(
+            string login, string state = "COMMENTED") => new Dictionary<string, SubmittedReview>(StringComparer.OrdinalIgnoreCase)
+            {
+                [login] = new SubmittedReview("R1", state, Now.AddHours(-2), ReviewedHead),
+            };
 
         /// <summary>
         /// One of the reviewer's threads: its opener is the reviewer's own comment, which is what
@@ -149,7 +158,8 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
     /// and carries this node's id, which is what makes the watch this node's.
     /// </summary>
     private async Task<(NodeContext Node, Guid TaskId, Guid RunId)> SeedWaitingReviewAsync(
-        CancellationToken cancellationToken, Guid? nodeIdOnRun = null, string? registeredSession = null)
+        CancellationToken cancellationToken, Guid? nodeIdOnRun = null, string? registeredSession = null,
+        string? openedAtHead = ReviewedHead)
     {
         DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
@@ -177,7 +187,7 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
         TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now.AddDays(-1));
         task.Apply(claimed);
         PullRequestReviewFollowThroughOpened opened = TaskDecider.OpenPrReviewFollowThrough(
-            task, runId, PullRequestUrl, ReviewedHead, Now.AddHours(-2));
+            task, runId, PullRequestUrl, openedAtHead, Now.AddHours(-2));
         task.Apply(opened);
         session.Events.StartStream<TaskAggregate>(taskId, [added, published, assigned, claimed, opened]);
 
@@ -525,6 +535,7 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
             {
                 Threads = [FakeConversations.ReviewerThread("src/One.cs", 12, "t1", resolved: true, replies: 0)],
                 OutstandingReviewerLogins = [ReviewerLogin],
+                LatestReviewByLogin = FakeConversations.ReviewedBy(ReviewerLogin),
             },
         };
 
@@ -557,6 +568,7 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
             {
                 Threads = [FakeConversations.ReviewerThread("src/One.cs", 12, "t1", resolved: true, replies: 0)],
                 OutstandingReviewerLogins = [ReviewerLogin],
+                LatestReviewByLogin = FakeConversations.ReviewedBy(ReviewerLogin),
             },
         };
         PrReviewFollowThroughEngine engine = Engine(node, conversations);
@@ -567,6 +579,93 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
         again.Surfaced.Should().Be(0, "one ask wakes the reviewer once");
         again.Concluded.Should().Be(0, "and the standing request still holds the wait open");
         (await ReadTaskAsync(taskId, cts.Token)).PrReviewReReviewRequested.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Origin incident (2026-09-30 and 2026-10-01, arx-platform #2176 and #2165): the watch opened
+    /// with the re-review baseline false, the reviewer had never submitted a review so their FIRST
+    /// request still stood, and the first look read that as being asked back. Both ways a watch can
+    /// open while that request stands: a walk closed without posting (no head recorded) and a
+    /// mention follow-up (the verdict's head recorded).
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData(ReviewedHead)]
+    public async Task A_follow_through_opened_while_the_original_request_stands_does_not_read_it_as_a_re_review(
+        string? openedAtHead)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (NodeContext node, Guid taskId, _) = await SeedWaitingReviewAsync(cts.Token, openedAtHead: openedAtHead);
+        FakeConversations conversations = new()
+        {
+            Conversation = FakeConversations.Quiet() with
+            {
+                Threads = [],
+                OutstandingReviewerLogins = [ReviewerLogin],
+            },
+        };
+
+        PrReviewFollowThroughResult sweep = await Engine(node, conversations).FollowThroughOnceAsync(taskId, cts.Token);
+
+        sweep.Surfaced.Should().Be(0, "nobody has asked a reviewer who never reviewed to come back");
+        TaskDetails task = await ReadTaskAsync(taskId, cts.Token);
+        task.State.Should().Be(TaskState.AwaitingAuthor);
+        task.PrReviewReReviewRequested.Should().BeFalse();
+        task.PrReviewAuthorActivitySummary.Should().BeNullOrEmpty();
+        await using IQuerySession query = postgres.Store.QuerySession();
+        (await query.Events.FetchStreamAsync(taskId, token: cts.Token))
+            .Select(@event => @event.Data)
+            .OfType<PullRequestReviewAuthorResponded>()
+            .Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A DISMISSED review is still a submitted one: dismissal re-requests nobody, so a request that
+    /// lands afterwards is the author asking the reviewer back, and it wakes them on the first look
+    /// that sees it.
+    /// </summary>
+    [Fact]
+    public async Task A_re_request_after_the_reviewers_own_dismissed_review_wakes_them_on_the_first_look()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (NodeContext node, Guid taskId, _) = await SeedWaitingReviewAsync(cts.Token, openedAtHead: null);
+        FakeConversations conversations = new()
+        {
+            Conversation = FakeConversations.Quiet() with
+            {
+                Threads = [],
+                OutstandingReviewerLogins = [ReviewerLogin],
+                LatestReviewByLogin = FakeConversations.ReviewedBy(ReviewerLogin, "DISMISSED"),
+            },
+        };
+
+        PrReviewFollowThroughResult sweep = await Engine(node, conversations).FollowThroughOnceAsync(taskId, cts.Token);
+
+        sweep.Surfaced.Should().Be(1);
+        TaskDetails task = await ReadTaskAsync(taskId, cts.Token);
+        task.State.Should().Be(TaskState.NeedsHuman);
+        task.PrReviewAuthorActivitySummary.Should().Be(
+            $"{Reference} moved since your review: a re-review requested of you.",
+            "the reviewer opened no threads, so there are none to call resolved");
+    }
+
+    [Fact]
+    public async Task A_truncated_review_page_that_does_not_show_the_reviewer_still_wakes_them_on_a_standing_request()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (NodeContext node, Guid taskId, _) = await SeedWaitingReviewAsync(cts.Token);
+        FakeConversations conversations = new()
+        {
+            Conversation = FakeConversations.Quiet() with
+            {
+                OutstandingReviewerLogins = [ReviewerLogin],
+                ReviewsTruncated = true,
+            },
+        };
+
+        PrReviewFollowThroughResult sweep = await Engine(node, conversations).FollowThroughOnceAsync(taskId, cts.Token);
+
+        sweep.Surfaced.Should().Be(1, "a truncated read may cost a false wake but never a missed re-review");
     }
 
     [Fact]
