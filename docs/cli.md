@@ -1695,7 +1695,7 @@ miss in the sections above.
 |---|---|
 | `h9k task register-session\|verify\|deliver\|delegate\|handback\|release --force` | Proceeds even though the claim's interactive session was recorded on another machine this one cannot check, which attests that you confirmed by hand that it has exited. |
 | `h9k task handback --reason "<why>"` | Records why a headless agent is finishing the task, on the stream and in the follow-up's context. |
-| `h9k task unassign --reason "<why>"` | Records why the task is being taken back, and leaves it unknown when omitted rather than inferring one. |
+| `h9k task unassign --reason "<why>"` | Records why the task is being taken back, and leaves it unknown when omitted rather than inferring one. Refused on another owner's task unless an Owner-role member passes `--holder <name>` with `--reason`, the same override `h9k task abandon` takes. |
 | `h9k project remove --reason "<why>"` | Records why a project is being archived, and leaves it unknown when omitted. |
 | `h9k epic close --reason "<why>"` | States why the epic is done, which is required because closing without a reason is exactly the automatic close this platform never does. |
 | `h9k epic list --state open\|closed\|all` | Filters epics by their state, and shows only the open ones by default. |

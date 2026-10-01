@@ -834,6 +834,7 @@ h9k task set-private <id> on|off                  # idea 8c5993c5: pre-8c5993c5 
 h9k task scope <id> private|fleet|team            # idea 8c5993c5: set this task's own replication scope directly; refused only if already at that scope, or already team and asked narrower (team is one-way)
 h9k task share <id>                               # idea 8c5993c5: sugar for scope team, without publishing — the door for sharing a draft before it is ready to publish (idea 18464daa); idempotent no-op once already team
 h9k task unassign <id>                            # back to Published (refused while leased)
+# abandon, resolve and unassign refuse another owner's task; an Owner-role member adds --holder <name> --reason <text>
 h9k task draft <id>                               # Published back to Draft, so it can be revised
 ```
 
