@@ -19,7 +19,16 @@ so posting a review under their login as their review is exactly what this skill
 
 ## Before you start
 
-1. **Find the report.** `h9k task show <id>` on the parked task prints the run's park reason,
+1. **Check the task is this operator's.** A pr-review task belongs to one owner, and this skill
+   posts under the login of whoever runs it, so a teammate's task is never walked from here.
+   Compare the "Assigned to" row of `h9k task show <id>` with the "Owner" row of `h9k owner show`.
+   When they differ, or when the "Assigned to" row reports that this node has no local record of
+   the declared owner id, stop before posting anything and tell the operator in one line whose task
+   it is (for example, "This review task is assigned to Sam, not to you, so I have not posted
+   anything."). When the row reads "nobody", you cannot tell from here: say that and ask. Only the
+   operator's explicit ask, in this window and in their own words, changes that, and the
+   *Other owners' work* section of this window's recipe says how.
+2. **Find the report.** `h9k task show <id>` on the parked task prints the run's park reason,
    which names the file directly: `review-1-findings.md` under the run's directory for the
    original review, or `mention-followup-addendum.md` under a later run's own directory when this
    park is a mention follow-up's addendum (idea 2f079bcd — a GitHub comment tagged the install's
@@ -30,9 +39,9 @@ so posting a review under their login as their review is exactly what this skill
    repeats or replaces those findings. An addendum on its own carries only a "You were asked"
    section (see "Answering a tagged comment" below); walk any earlier report's own findings first
    (the "Process" steps below), then the addendum's tagged comment.
-2. **Confirm nothing has been posted.** The run wrote only local files — no comment, no review,
+3. **Confirm nothing has been posted.** The run wrote only local files — no comment, no review,
    no reaction exists on the pull request yet. Nothing here assumes otherwise.
-3. **Know the target.** The task's external reference (`h9k task show`) names the pull request:
+4. **Know the target.** The task's external reference (`h9k task show`) names the pull request:
    `owner/repo#number`. Every `gh` call below is scoped to it.
 
 ## Process
