@@ -59,6 +59,10 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
             + "surfaces one of these, not even --state archived.")]
         public bool All { get; init; }
 
+        [CommandOption("--everyone")]
+        [Description(TeammateRows.EveryoneDescription)]
+        public bool Everyone { get; init; }
+
         [CommandOption("--include-archived")]
         [Description(
             "Also show Archived rows in an otherwise-unfiltered view. Archived means a human walked away "
@@ -109,15 +113,19 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
             .Where(row => epicId is null || row.EpicId == epicId)
             .Where(row => states.Count == 0 || states.Any(state => TaskStateFilter.Matches(row, state)))];
 
+        // Teammates first, ahead of the archived and partial-history defaults, for the reason
+        // TaskStatusComposer.Group checks them first: another owner's task is that group whatever
+        // else is true of it, so it is counted as hidden for being theirs and for nothing else.
+        (IReadOnlyList<TaskStatusRow> viewable, int hiddenTeammates) = TeammateRows.Apply(candidates, settings.Everyone);
         (IReadOnlyList<TaskStatusRow> visible, int hiddenArchived) =
-            ApplyArchivedDefault(candidates, states, settings.IncludeArchived);
+            ApplyArchivedDefault(viewable, states, settings.IncludeArchived);
         (IReadOnlyList<TaskStatusRow> visiblePastPartialHistory, int hiddenPartialHistory) =
             ApplyPartialHistoryDefault(visible, settings.All);
 
         List<TaskStatusRow> matched = [.. visiblePastPartialHistory.OrderByDescending(row => row.AddedAt)];
         if (matched.Count == 0)
         {
-            AnsiConsole.MarkupLine(EmptyResultMessage(hiddenArchived, hiddenPartialHistory, settings, project));
+            AnsiConsole.MarkupLine(EmptyResultMessage(hiddenArchived, hiddenPartialHistory, settings, project, hiddenTeammates));
             return ExitCodes.Ok;
         }
 
@@ -125,7 +133,8 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         List<TaskStatusRow> shown = [.. matched.Take(limit)];
 
         AnsiConsole.Write(Rows(shown, scoped: project is not null, AnsiConsole.Profile.Width, DateTimeOffset.UtcNow));
-        AnsiConsole.MarkupLine(Footer(matched.Count, shown.Count, hiddenArchived, hiddenPartialHistory, settings, project));
+        AnsiConsole.MarkupLine(Footer(
+            matched.Count, shown.Count, hiddenArchived, hiddenPartialHistory, settings, project, hiddenTeammates));
         return ExitCodes.Ok;
     }
 
@@ -227,7 +236,8 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
     /// explicitly rather than folded into "drop a filter".
     /// </summary>
     internal static string EmptyResultMessage(
-        int hiddenArchived, int hiddenPartialHistory, Settings settings, ProjectDetails? project)
+        int hiddenArchived, int hiddenPartialHistory, Settings settings, ProjectDetails? project,
+        int hiddenTeammates = 0)
     {
         bool unfiltered = project is null && settings.Epic.IsBlank() && StateDisplay(settings).IsBlank();
         if (hiddenArchived > 0)
@@ -248,6 +258,12 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
                   + $"h9k task list --all{Repeat(settings, project)}";
         }
 
+        if (hiddenTeammates > 0)
+        {
+            return $"[dim]Nothing of yours matches {Filters(settings, project)}. "
+                + $"{TeammateRows.HiddenNote(hiddenTeammates, $"h9k task list{Repeat(settings, project)}")}[/]";
+        }
+
         return $"[dim]No tasks match {Filters(settings, project)}. Drop a filter, or browse everything:[/] "
             + "h9k task list --all --include-archived";
     }
@@ -258,10 +274,12 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
     /// hid Archived rows, how many and the flag that shows those too.
     /// </summary>
     internal static string Footer(
-        int matched, int shown, int hiddenArchived, int hiddenPartialHistory, Settings settings, ProjectDetails? project)
+        int matched, int shown, int hiddenArchived, int hiddenPartialHistory, Settings settings, ProjectDetails? project,
+        int hiddenTeammates = 0)
     {
         string scope = $"{shown} of {matched}{Scope(settings, project)}, newest first"
-            + $"{ArchivedNote(hiddenArchived)}{PartialHistoryNote(hiddenPartialHistory)}";
+            + $"{ArchivedNote(hiddenArchived)}{PartialHistoryNote(hiddenPartialHistory)}"
+            + TeammatesNote(hiddenTeammates, settings, project);
         int held = matched - shown;
         return held > 0
             ? $"[dim]{scope} · {held} held back — see them with:[/] h9k task list --all"
@@ -287,6 +305,15 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
             ? $" · {hiddenPartialHistory} partial history hidden — see with --all"
             : string.Empty;
 
+    /// <summary>
+    /// What the default view held back for being another owner's, in <see cref="TeammateRows.HiddenNote"/>'s
+    /// words, so the list says it once the way <c>h9k status</c> does and names the flag that shows them.
+    /// </summary>
+    private static string TeammatesNote(int hiddenTeammates, Settings settings, ProjectDetails? project) =>
+        hiddenTeammates > 0
+            ? $" · {TeammateRows.HiddenNote(hiddenTeammates, $"h9k task list{Repeat(settings, project)}")}"
+            : string.Empty;
+
     private static string ArchivedHint(int hiddenArchived, Settings settings, ProjectDetails? project) =>
         hiddenArchived > 0
             ? $" [dim]· see them with:[/] h9k task list --include-archived{Repeat(settings, project)}"
@@ -297,7 +324,8 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         (project is null ? string.Empty : $" --project {project.Name.EscapeMarkup()}")
         + (settings.Epic.IsNotBlank() ? $" --epic {settings.Epic.EscapeMarkup()}" : string.Empty)
         + (StateDisplay(settings) is { Length: > 0 } states ? $" --state {states.EscapeMarkup()}" : string.Empty)
-        + (settings.IncludeArchived ? " --include-archived" : string.Empty);
+        + (settings.IncludeArchived ? " --include-archived" : string.Empty)
+        + (settings.Everyone ? " --everyone" : string.Empty);
 
     /// <summary>
     /// The narrowing filters, for messages that suggest dropping one to widen the result.

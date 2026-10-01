@@ -59,6 +59,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         // "why am I looking at this" is the same answer on both screens.
         TaskStatusRow? row = await TaskStatusComposer.ComposeOneAsync(session, details, now, cancellationToken);
 
+        // Another owner's task is shown as theirs (see WriteTeammateTaskAsync), before any of the
+        // sections below: nearly every one of them quotes a cause or names a command written for
+        // whoever owns the task, and this viewer is not that person.
+        if (row is { IsTeammates: true })
+        {
+            await WriteTeammateTaskAsync(session, details, row, labels, cancellationToken);
+            return ExitCodes.Ok;
+        }
+
         // Whether the task has truly closed out — the merge observed, or a task that never
         // pushed anything closed by hand — the same bar the header's own Draft/pre-approval row
         // below reads. Raw TaskState.IsTerminal is the wrong test for this: TaskCompleted sets
@@ -745,6 +754,93 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         }
 
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// A teammate's task, in the words that are true for a reader who does not own it: its state
+    /// word, its objective, who owns it (through <see cref="MemberLabelResolver"/>), what it was
+    /// asked to do and what it is waiting on, and its runs. Left out on purpose are the phase and
+    /// attention lines, the derived facts, every "Next:" hint and every lever: the cause and the
+    /// summary were composed once, in the owner's voice, and replicated here, so on this screen
+    /// their "you" is somebody else, and a command named beside them is a command the owner
+    /// guards. The task commands refuse this viewer anyway; not printing the lever keeps the
+    /// screen from offering what will be refused.
+    /// </summary>
+    private static async Task WriteTeammateTaskAsync(
+        IQuerySession session, TaskDetails details, TaskStatusRow row, MemberLabelLookup labels,
+        CancellationToken cancellationToken)
+    {
+        Table standing = new Table().Border(TableBorder.None).HideHeaders();
+        standing.AddColumns("k", "v");
+        standing.AddRow("[bold]State[/]", $"{row.StateMarkup} {StateGloss(row)}");
+        AnsiConsole.Write(standing);
+
+        Table header = new Table().Border(TableBorder.None).HideHeaders();
+        header.AddColumns("k", "v");
+        header.AddRow("[bold]Objective[/]", ExternalText.OneLineMarkup(details.Objective));
+        header.AddRow("Type", details.Type.Value.EscapeMarkup());
+        header.AddRow("Id", $"[dim]{details.Id}[/]");
+        header.AddRow("Owner", row.TeammateOwner.IsBlank()
+            ? "[dim]a teammate; this node cannot resolve which one[/]"
+            : $"{ExternalText.OneLineMarkup(row.TeammateOwner)} [dim](a teammate)[/]");
+        header.AddRow("Assigned to", await AssigneeMarkupAsync(session, details, labels, cancellationToken));
+        if (details.PullRequestUrl.IsNotBlank())
+        {
+            header.AddRow("PR", $"[link]{details.PullRequestUrl.EscapeMarkup()}[/]");
+        }
+
+        AnsiConsole.Write(header);
+
+        AnsiConsole.MarkupLine("\n[bold]Acceptance criteria[/]");
+        if (details.AcceptanceCriteria.Count == 0)
+        {
+            AnsiConsole.MarkupLine("  [dim]none recorded[/]");
+        }
+
+        foreach (string criterion in details.AcceptanceCriteria)
+        {
+            AnsiConsole.MarkupLine($"  • {criterion.EscapeMarkup()}");
+        }
+
+        if (details.BlockedBy.Count > 0)
+        {
+            IReadOnlyList<TaskDependency> dependencies = await TaskDependencyQuery.LoadAsync(
+                session, details.BlockedBy, cancellationToken);
+            AnsiConsole.MarkupLine("\n[bold]Blocked by[/]");
+            foreach (TaskDependency dependency in dependencies)
+            {
+                AnsiConsole.MarkupLine(
+                    $"  {TaskStatusComposer.DependencyMark(dependency, details.StackedOnTaskId)} "
+                    + $"[dim]{TaskListCommand.ShortId(dependency.Id)}[/] "
+                    + $"{ExternalText.OneLineMarkup(dependency.Objective)} "
+                    + $"({TaskStatusComposer.State(dependency).Markup})");
+            }
+        }
+
+        IReadOnlyList<RunListItem> runs = await session.Query<RunListItem>()
+            .Where(r => r.TaskId == details.Id)
+            .OrderBy(r => r.DispatchedAt)
+            .ToListAsync(cancellationToken);
+        if (runs.Count > 0)
+        {
+            AnsiConsole.MarkupLine("\n[bold]Runs[/]");
+            Table runsTable = new Table().Border(TableBorder.Rounded);
+            runsTable.AddColumns("Run", "State", "Dispatched", "PR");
+            foreach (RunListItem run in runs)
+            {
+                runsTable.AddRow(
+                    $"[dim]{TaskListCommand.ShortId(run.Id)}[/]",
+                    run.State.Value.EscapeMarkup(),
+                    run.DispatchedAt.ToLocalTime().ToString("g").EscapeMarkup(),
+                    (run.PullRequestUrl ?? "-").EscapeMarkup());
+            }
+
+            AnsiConsole.Write(runsTable);
+        }
+
+        AnsiConsole.MarkupLine(
+            "\n[dim]This is a teammate's task, so only what is recorded about it is shown here: what "
+            + "happens next is its owner's call.[/]");
     }
 
     /// <summary>

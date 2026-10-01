@@ -5,12 +5,15 @@ using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Documents;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
@@ -89,6 +92,24 @@ namespace Hall9k.Cli.Commands;
 /// answers, rather than the fingerprint's own bare short prefix. Null on every construction that
 /// never bothered to compute one, the same optional-and-absent shape the fields above use.
 /// </param>
+/// <param name="ViewerRoot">
+/// The owner root fingerprint of the node this command runs on, which is who "the viewer" is when a
+/// task is judged theirs or a teammate's (<see cref="TaskViewerRule"/>). Null when this node's owner
+/// has claimed no root yet, which mirrors <c>TaskOwnerGuard</c>: with no root there is nothing a
+/// teammate could be told apart from, so no row is a teammate's.
+/// </param>
+/// <param name="OwnerRootsById">
+/// The root each local owner record currently claims, keyed by owner id, so an assignment recorded
+/// by owner id alone resolves the way <see cref="OwnerRootFingerprintResolver"/> resolves it for the
+/// commands. An owner absent from it reads as one this node has never heard of.
+/// </param>
+/// <param name="CreatorFacts">
+/// The creator fact of each task whose creator decides ownership (no holder, no assignee), keyed by
+/// task id, read the way the commands read it (<see cref="TaskOwnerFactsReader.ReadCreatorsAsync"/>):
+/// the verified <see cref="TaskCreatorRootRecord"/> of a replicated task, else the root a task this
+/// node wrote was stamped with. It is not on the row because no projection can carry the stamp, and
+/// it is what keeps a fleet sibling's unassigned task from reading as a teammate's.
+/// </param>
 internal sealed record TaskStatusContext(
     IReadOnlyDictionary<Guid, RunDetails> Runs,
     IReadOnlyDictionary<Guid, RunActivity> Activity,
@@ -104,7 +125,10 @@ internal sealed record TaskStatusContext(
     IReadOnlyDictionary<Guid, TaskHolderClaimHold>? HolderClaimHolds = null,
     IReadOnlyDictionary<string, string>? OwnersByFingerprint = null,
     IReadOnlyDictionary<Guid, bool>? GateSetUnaccepted = null,
-    IReadOnlyDictionary<Guid, ProjectMemberLabels>? ProjectMemberLabelsById = null);
+    IReadOnlyDictionary<Guid, ProjectMemberLabels>? ProjectMemberLabelsById = null,
+    string? ViewerRoot = null,
+    IReadOnlyDictionary<Guid, string>? OwnerRootsById = null,
+    IReadOnlyDictionary<Guid, OwnerRootFact>? CreatorFacts = null);
 
 /// <summary>
 /// The one truth about how a task reads. Every surface that shows a task — h9k status,
@@ -212,6 +236,9 @@ internal static class TaskStatusComposer
             p => p.Id, p => !GateSetAcceptance.Decide(p.AcceptedVerifyCommands, p.VerifyCommands).Proceed);
         IReadOnlyList<OwnerDetails> ownerDetails = await session.Query<OwnerDetails>().ToListAsync(cancellationToken);
         Dictionary<Guid, string> owners = ownerDetails.ToDictionary(o => o.Id, o => o.Name);
+        Dictionary<Guid, string> ownerRootsById = ownerDetails
+            .Where(o => o.RootFingerprint.IsNotBlank())
+            .ToDictionary(o => o.Id, o => o.RootFingerprint!);
         Dictionary<string, string> ownersByFingerprint = ownerDetails
             .Where(o => o.RootFingerprint is not null)
             .GroupBy(o => o.RootFingerprint!)
@@ -239,6 +266,22 @@ internal static class TaskStatusComposer
         OperatingSettings operatingSettings =
             (await PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken)).Settings;
 
+        // Who the viewer is, found the way every other pane finds this machine's own node
+        // (StatusCommand.WriteIdentityLineAsync) and the way TaskOwnerGuard finds its acting owner:
+        // this machine's node, its owner, that owner's root.
+        string machineName = Environment.MachineName;
+        Guid? viewerOwnerId = (await session.Query<NodeDetails>()
+            .Where(n => n.MachineName == machineName)
+            .Take(1).ToListAsync(cancellationToken)).FirstOrDefault()?.OwnerId;
+        string? viewerRoot = viewerOwnerId is { } ownerId
+            ? ownerRootsById.GetValueOrDefault(ownerId)
+            : null;
+        Guid[] creatorTaskIds = [.. tasks.Where(TaskListItemOwnerFacts.NeedsCreator).Select(task => task.Id)];
+        IReadOnlyDictionary<Guid, OwnerRootFact> creatorFacts = viewerRoot is null
+            ? new Dictionary<Guid, OwnerRootFact>()
+            : await TaskOwnerFactsReader.ReadCreatorsAsync(
+                session, creatorTaskIds, ownerId => ownerRootsById.GetValueOrDefault(ownerId), cancellationToken);
+
         return new TaskStatusContext(
             runs,
             activity,
@@ -254,7 +297,10 @@ internal static class TaskStatusComposer
             await ReadHolderClaimHoldsAsync(session, tasks, now, cancellationToken),
             ownersByFingerprint,
             gateSetUnaccepted,
-            projectMemberLabelsById);
+            projectMemberLabelsById,
+            viewerRoot,
+            ownerRootsById,
+            creatorFacts);
     }
 
     /// <summary>
@@ -343,6 +389,14 @@ internal static class TaskStatusComposer
         RunDetails? run = task.CurrentRunId is { } runId ? context.Runs.GetValueOrDefault(runId) : null;
         LifecycleState state = State(task, run, context);
 
+        // A teammate's task is told apart before anything else is composed: its stored cause, phase
+        // and lever are written in its owner's voice ("your review", "needs you") and replicate to
+        // every node, so composing them here would hand this viewer a line addressed to somebody else.
+        if (ViewerCheck(task, context) is { IsViewers: false } teammate)
+        {
+            return ComposeTeammate(task, run, state, context, teammate.Owner);
+        }
+
         bool onThisMachine = run is not null
             && context.NodeMachines.GetValueOrDefault(run.NodeId) == context.MachineName;
         SessionLiveness session = Observe(run, onThisMachine, context.Sessions, context.MachineName);
@@ -370,7 +424,7 @@ internal static class TaskStatusComposer
             context.MachineName,
             held,
             project);
-        AttentionBucket group = Group(task, run, state, attention, stalled);
+        AttentionBucket group = Group(task, run, state, attention, stalled, teammates: false);
 
         // idea 202383dc: an owner can place a task on one of their own nodes — advisory to
         // dispatch only, so it rides beside the assignee's own name rather than replacing it.
@@ -418,6 +472,68 @@ internal static class TaskStatusComposer
             ExternalReference: task.ExternalReference ?? string.Empty,
             SecondaryExternalReference: task.SecondaryExternalReference ?? string.Empty,
             PartialHistoryHeld: IsPartialHistoryHeld(task));
+    }
+
+    /// <summary>
+    /// Whether the viewer may call this task their own, by <see cref="TaskViewerRule"/> over the
+    /// facts the row carries: the identical ownership rule the task commands ask, so the board and
+    /// the commands cannot disagree about whose task it is. Null when this node's owner has no root
+    /// to compare against, which reads as the viewer's (<see cref="TaskStatusContext.ViewerRoot"/>).
+    /// </summary>
+    private static TaskViewerCheck? ViewerCheck(TaskListItem task, TaskStatusContext context)
+    {
+        if (context.ViewerRoot is not { Length: > 0 } viewerRoot)
+        {
+            return null;
+        }
+
+        TaskOwnerFacts facts = TaskListItemOwnerFacts.From(
+            task,
+            ownerId => context.OwnerRootsById?.GetValueOrDefault(ownerId),
+            context.CreatorFacts?.GetValueOrDefault(task.Id));
+        return TaskViewerRule.Decide(viewerRoot, facts, task.PendingTakeRequestedByOwnerRootFingerprint);
+    }
+
+    /// <summary>
+    /// A teammate's row: its state word, its objective and who owns it, and nothing the owner's own
+    /// voice wrote. No phase, no attention cause or lever, no derived facts and no queue hold are
+    /// composed, because every one of them either quotes a summary stored once in the owner's
+    /// words or names an act only the owner may take. The owner is named through
+    /// <see cref="MemberLabelResolver"/>, so a teammate with no declared name keeps their
+    /// fingerprint label, and an owner this node cannot resolve is said to be unknown rather than
+    /// guessed at.
+    /// </summary>
+    private static TaskStatusRow ComposeTeammate(
+        TaskListItem task, RunDetails? run, LifecycleState state, TaskStatusContext context, TaskOwnerCheck owner)
+    {
+        AttentionBucket group = Group(task, run, state, TaskAttention.None, stalled: false, teammates: true);
+        string ownerLabel = owner.OwnerRootFingerprint is { } fingerprint
+            ? ExternalText.OneLine(RelayedText.Truncate(
+                MemberLabelResolver.LabelForFingerprint(
+                    context.ProjectMemberLabelsById?.GetValueOrDefault(task.ProjectId), fingerprint),
+                MemberLabelResolver.RenderLimit))
+            : string.Empty;
+        return new TaskStatusRow(
+            task.Id,
+            task.ProjectId,
+            task.EpicId,
+            state,
+            run?.State ?? RunState.Unknown,
+            TaskPhase.None,
+            TaskAttention.None,
+            group,
+            [],
+            context.Projects.GetValueOrDefault(task.ProjectId) ?? "?",
+            task.Objective,
+            task.Type.Value,
+            string.Empty,
+            task.PullRequestUrl ?? string.Empty,
+            Stalled: false,
+            Priority(group, state),
+            task.AddedAt,
+            Assignee: ownerLabel,
+            PartialHistoryHeld: IsPartialHistoryHeld(task),
+            TeammateOwner: ownerLabel);
     }
 
     /// <summary>
@@ -820,8 +936,17 @@ internal static class TaskStatusComposer
     /// reads the board in.
     /// </summary>
     private static AttentionBucket Group(
-        TaskListItem task, RunDetails? run, LifecycleState state, TaskAttention attention, bool stalled)
+        TaskListItem task, RunDetails? run, LifecycleState state, TaskAttention attention, bool stalled,
+        bool teammates)
     {
+        // Before every other group, including Stalled and NeedsYou: a teammate's task is neither
+        // stalled nor waiting on this viewer whatever its recorded run says, so no count of those
+        // groups may include it.
+        if (teammates)
+        {
+            return AttentionBucket.Teammates;
+        }
+
         if (stalled)
         {
             return AttentionBucket.Stalled;
@@ -912,6 +1037,8 @@ internal static class TaskStatusComposer
         AttentionBucket.Ready => 7,
         AttentionBucket.Draft => 8,
         AttentionBucket.Done => 9,
+        // Below Closed: another owner's work is the last thing this viewer's board has to say.
+        AttentionBucket.Teammates => 11,
         _ => 10,
     };
 

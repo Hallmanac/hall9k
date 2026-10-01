@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Globalization;
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
@@ -46,7 +47,12 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// <summary>Rows per section before the pane stops listing and points at the browse surface.</summary>
     private const int PerSection = 8;
 
-    public sealed class Settings : CommandSettings;
+    public sealed class Settings : CommandSettings
+    {
+        [CommandOption("--everyone")]
+        [Description(TeammateRows.EveryoneDescription)]
+        public bool Everyone { get; init; }
+    }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
@@ -78,6 +84,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
 
         await WriteIdentityLineAsync(session, cancellationToken);
         await WriteProjectsNeedingInviteAsync(session, cancellationToken);
+        await WriteOwnerLabelNudgesAsync(session, cancellationToken);
         await WriteOrchestratorLineAsync(session, cancellationToken);
         await WriteMessagesLineAsync(session, cancellationToken);
         await WriteReplicatedEventsIgnoredSendersAsync(session, cancellationToken);
@@ -92,23 +99,35 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         // it from a tail event with no project, no objective, and a default added time — is never
         // shown here: h9k status carries no --all to ask for it back (TaskListCommand's own
         // ApplyPartialHistoryDefault is where that ask lives), so this pane simply never has one.
-        IReadOnlyList<TaskStatusRow> rows = (await TaskStatusComposer.ComposeAllAsync(
+        IReadOnlyList<TaskStatusRow> everyoneRows = (await TaskStatusComposer.ComposeAllAsync(
                 session, DateTimeOffset.UtcNow, cancellationToken))
             .Where(row => !row.PartialHistoryHeld)
             .ToList();
-        if (rows.Count == 0)
+
+        // The pane is the viewer's own work: a teammate's row is composed into its own group, so
+        // dropping it here keeps it out of every band and every count below, and the header says
+        // once how many it is holding back.
+        (IReadOnlyList<TaskStatusRow> rows, int hiddenTeammates) = TeammateRows.Apply(everyoneRows, settings.Everyone);
+        if (everyoneRows.Count == 0)
         {
             // Printed before the "nothing tracked" line rather than after the header below,
             // because an install with no tasks at all is exactly where this feature's state is
             // load-bearing (Decisions Log #161): a review request GitHub has made of this login
             // that nothing minted a task for leaves a board with no rows on it and a request
             // waiting, which is the origin incident's own shape.
-            await WriteAutoPrReviewAsync(session, rows, DateTimeOffset.UtcNow, cancellationToken);
+            await WriteAutoPrReviewAsync(session, everyoneRows, DateTimeOffset.UtcNow, cancellationToken);
             AnsiConsole.MarkupLine("[dim]Nothing tracked yet. Draft some work with h9k task add.[/]");
             return ExitCodes.Ok;
         }
 
-        AnsiConsole.MarkupLine($"[bold]h9k status[/] · {TaskRollup.From(rows).Summary()}");
+        string summary = rows.Count == 0
+            ? "[dim]no tasks of yours[/]"
+            : TaskRollup.From(rows).Summary();
+        AnsiConsole.MarkupLine($"[bold]h9k status[/] · {summary}");
+        if (hiddenTeammates > 0)
+        {
+            AnsiConsole.MarkupLine($"[dim]{TeammateRows.HiddenNote(hiddenTeammates, "h9k status")}[/]");
+        }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -205,7 +224,9 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             AnsiConsole.MarkupLineInterpolated($"[dim]launch hold: unavailable ({exception.Message})[/]");
         }
 
-        await WriteAutoPrReviewAsync(session, rows, now, cancellationToken);
+        // The unfiltered rows, because the review-request pane names a task covering a request only
+        // when that task is the viewer's own, and can only tell that from the row's own group.
+        await WriteAutoPrReviewAsync(session, everyoneRows, now, cancellationToken);
         await WriteCooperativeTakeAsync(session, now, cancellationToken);
         await WriteOwnerActAsync(session, now, cancellationToken);
 
@@ -304,6 +325,12 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
                     + "publish and assign:[/] h9k task list --state draft [dim]·[/] h9k task list --state ready");
             }
         }
+
+        // Not counted in `listed`: another owner's work never makes this pane say something needs
+        // the viewer, and it prints below the "nothing needs you" line above, never above it.
+        Section(rows, AttentionBucket.Teammates, "teammates",
+            "[grey]Teammates[/] [dim](other owners' work, shown because you asked; none of it is yours to act on)[/]",
+            now, flags: " --everyone");
 
         AnsiConsole.MarkupLine(
             "\n[dim]Browse it all:[/] h9k task list --include-archived "
@@ -472,6 +499,82 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]join status: unavailable ({exception.Message})[/]");
         }
+    }
+
+    /// <summary>
+    /// One line per project where this node's own owner is a bare fingerprint to everyone else: their
+    /// own entry in the project's member labels has neither a display name nor a declared GitHub
+    /// login, and the project has at least one other member to read it. A teammate's pane names this
+    /// owner's tasks through the same labels (<see cref="MemberLabelResolver"/>), so without a name
+    /// they read as a string of hex.
+    /// Silent for a project the labels have not been swept for yet, for one this owner is the only
+    /// member of, and for an owner with no root claimed.
+    /// </summary>
+    private static async Task WriteOwnerLabelNudgesAsync(IQuerySession session, CancellationToken cancellationToken)
+    {
+        try
+        {
+            string machineName = Environment.MachineName;
+            NodeDetails? node = (await session.Query<NodeDetails>()
+                .Where(n => n.MachineName == machineName)
+                .Take(1).ToListAsync(cancellationToken)).FirstOrDefault();
+            OwnerDetails? owner = node is null
+                ? null
+                : await session.LoadAsync<OwnerDetails>(node.OwnerId, cancellationToken);
+            if (owner?.RootFingerprint is not { Length: > 0 } ownRoot)
+            {
+                return;
+            }
+
+            IReadOnlyList<ProjectDetails> projects = await session.Query<ProjectDetails>()
+                .Where(project => !project.IsArchived)
+                .ToListAsync(cancellationToken);
+            List<(string ProjectName, ProjectMemberLabels? Labels)> labelled = [];
+            foreach (ProjectDetails project in projects.OrderBy(project => project.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                labelled.Add((project.Name, await session.LoadAsync<ProjectMemberLabels>(project.Id, cancellationToken)));
+            }
+
+            foreach (string line in OwnerLabelNudgeLines(labelled, ownRoot))
+            {
+                AnsiConsole.MarkupLine(line);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]member labels: unavailable ({exception.Message})[/]");
+        }
+    }
+
+    /// <summary>
+    /// The nudge lines themselves, apart from the database so the condition and the wording are
+    /// provable without one: a project earns a line only when the owner's own entry exists and names
+    /// nobody, and another member's entry sits beside it.
+    /// </summary>
+    internal static IReadOnlyList<string> OwnerLabelNudgeLines(
+        IEnumerable<(string ProjectName, ProjectMemberLabels? Labels)> projects, string ownRootFingerprint)
+    {
+        List<string> lines = [];
+        foreach ((string projectName, ProjectMemberLabels? labels) in projects)
+        {
+            ProjectMemberLabel? own = labels?.Labels.FirstOrDefault(label => label.RootFingerprint == ownRootFingerprint);
+            if (labels is null
+                || own is null
+                || own.DisplayName.HasValue
+                || own.DeclaredLogin.IsNotBlank()
+                || !labels.Labels.Any(label => label.RootFingerprint != ownRootFingerprint))
+            {
+                continue;
+            }
+
+            string seenAs = ExternalText.OneLine(MemberLabelResolver.LabelForFingerprint(labels, ownRootFingerprint));
+            lines.Add(
+                $"[yellow]{projectName.EscapeMarkup()}[/] [dim]teammates see this owner as a fingerprint "
+                + $"({seenAs.EscapeMarkup()}): no display name or GitHub login is declared here. Name yourself "
+                + $"with:[/] h9k owner set --display-name \"<name>\" --project {projectName.EscapeMarkup()}");
+        }
+
+        return lines;
     }
 
     /// <summary>
@@ -1451,9 +1554,10 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// Status-column word selects the column now (Brian's ruling, 2026-08-22), which would send
     /// a reader who was promised "N more of these" to a different set of rows.
     /// </param>
+    /// <param name="flags">Any further flag the hint needs for that command to reach the same rows, such as <c>--everyone</c> for the Teammates group.</param>
     private static int Section(
         IReadOnlyList<TaskStatusRow> rows, AttentionBucket bucket, string stateWord, string heading,
-        DateTimeOffset now, bool inServiceOrder = false)
+        DateTimeOffset now, bool inServiceOrder = false, string flags = "")
     {
         IReadOnlyList<TaskStatusRow> matching = SectionRows(rows, bucket, inServiceOrder);
         if (matching.Count == 0)
@@ -1467,7 +1571,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         int held = matching.Count - Math.Min(matching.Count, PerSection);
         if (held > 0)
         {
-            AnsiConsole.MarkupLine($"[dim]  … and {held} more — see them with:[/] h9k task list --state {stateWord}");
+            AnsiConsole.MarkupLine($"[dim]  … and {held} more — see them with:[/] h9k task list --state {stateWord}{flags}");
         }
 
         return matching.Count;
