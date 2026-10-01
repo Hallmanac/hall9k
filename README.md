@@ -562,6 +562,10 @@ says so, rather than blocking on a window that does not exist yet.
 Neither window is rendered by the platform beyond one tiny file. `h9k install`, `h9k project add`,
 `h9k project init`, and a project-home render each write a `recipes/launch-anchor.md`: a
 platform-owned, always-overwritten handoff, small enough to cost almost nothing on every turn one.
+`h9k install` and `h9k update` also refresh it in the node home and in every registered project
+home that already has one, through the newly installed build, so a project window never launches on
+an anchor older than the installed build; a project home's `settings.json` still renders only on
+`h9k project init` and `h9k project add`.
 Its whole job is to look for a `.new` file beside each recipe file (written whenever the
 `orchestrator-recipe-generator` skill regenerates one, never as a silent overwrite), then read
 `recipes/orchestrator.md` and follow it. The recipe itself and the scoped session recipes are

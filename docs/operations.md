@@ -593,7 +593,7 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 ├── skills/                     the canonical skill set, published by h9k install
 ├── templates/                  the canonical prompt-template set, published by h9k install (PLAN.md §16 #175)
 ├── recipes/                    the node orchestrator window's own recipe ([README's Orchestrator windows](../README.md#orchestrator-windows))
-│   ├── launch-anchor.md        platform-owned, overwritten outright on every install/update
+│   ├── launch-anchor.md        platform-owned, overwritten outright on every install/update (which also refreshes every registered project home's anchor)
 │   ├── settings.json           platform-owned the same way — rides the launch line as --settings
 │   ├── orchestrator-recipe-generator/  the generator skill, published beside the anchor it writes for
 │   └── orchestrator.md         written once by that skill; never overwritten, only .new beside it

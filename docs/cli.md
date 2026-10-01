@@ -1633,7 +1633,8 @@ the winner and why. See [operations.md](operations.md#who-gets-the-next-free-slo
 `h9k orchestrator register --project --session --pid [--cli] [--replace]` ·
 `h9k orchestrator deregister --project --pid` · `h9k orchestrator status [--project]` ·
 `h9k orchestrator feed --project <name> [--drain] [--since <time>]` ·
-`h9k orchestrator launch-text show | set` · `h9k orchestrator measure`
+`h9k orchestrator launch-text show | set` · `h9k orchestrator measure` ·
+`h9k orchestrator refresh-anchors`
 
 Never launches anything — the design's own explicit refusal to have Hall9k spawn an interactive
 session. `node`/`project` print that window's daemon liveness, its launch text (the exact line to
@@ -1652,7 +1653,11 @@ what each one carries. `launch-text show`/`set` reads and replaces the launch
 line for a given agent CLI (`--cli`, default `claude-code`) — the node's own in the platform
 config file, a project's own with `--project` — and `measure` runs a
 fixed, cheap-model, non-interactive probe against it so a "lean window" claim is a number, not an
-adjective. The recipe content itself (what the window is, its start-up sequence, how it spawns
+adjective. `refresh-anchors` re-renders `recipes/launch-anchor.md` in the node home and in every
+registered project home that already has one; `h9k install` and `h9k update` run it through the newly
+installed binary after the swap, so a project window never launches on an anchor older than the
+installed build, and an unreadable registry or unwritable home is reported and skipped rather than
+failing the install. The recipe content itself (what the window is, its start-up sequence, how it spawns
 scoped sessions) is never platform-rendered — only a tiny, always-overwritten hand-off file is —
 written instead by the `orchestrator-recipe-generator` skill, which `h9k install` and
 `h9k project add`/`init` publish and seed. See
