@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Tasks;
 using Xunit;
 
@@ -141,7 +142,7 @@ public sealed class PrReviewAuthorActivityTests
 
         activity.HeadMoved.Should().BeTrue();
         activity.NewCommitCount.Should().Be(2);
-        activity.Describe("acme/widgets", 42, openThreadCount: 1).Should().Contain("2 new commits");
+        activity.Describe("acme/widgets", 42, openThreadCount: 1, openedThreadCount: 1).Should().Contain("2 new commits");
     }
 
     [Fact]
@@ -156,7 +157,7 @@ public sealed class PrReviewAuthorActivityTests
 
         activity.HeadMoved.Should().BeTrue("the head moved, which is the observation");
         activity.NewCommitCount.Should().BeNull("its size cannot honestly be called a number of new commits");
-        activity.Describe("acme/widgets", 42, openThreadCount: 1).Should().Contain("the count is not readable");
+        activity.Describe("acme/widgets", 42, openThreadCount: 1, openedThreadCount: 1).Should().Contain("the count is not readable");
     }
 
     [Fact]
@@ -202,7 +203,7 @@ public sealed class PrReviewAuthorActivityTests
         string line = new PrReviewAuthorActivity(
                 ReplyCount: 5, ThreadsWithReplies: 5, NewCommitCount: 3, HeadMoved: true,
                 ReReviewNewlyRequested: false)
-            .Describe("AgelessRx/arx-platform", 2023, openThreadCount: 5);
+            .Describe("AgelessRx/arx-platform", 2023, openThreadCount: 5, openedThreadCount: 5);
 
         line.Should().Be(
             "AgelessRx/arx-platform#2023 moved since your review: 5 replies in 5 threads and "
@@ -217,7 +218,7 @@ public sealed class PrReviewAuthorActivityTests
         string line = new PrReviewAuthorActivity(
                 ReplyCount: 1, ThreadsWithReplies: 1, NewCommitCount: null, HeadMoved: false,
                 ReReviewNewlyRequested: false)
-            .Describe("acme/widgets", 42, openThreadCount: 0);
+            .Describe("acme/widgets", 42, openThreadCount: 0, openedThreadCount: 3);
 
         line.Should().Contain("1 reply in 1 thread")
             .And.Contain("every thread you opened is resolved now");
@@ -246,7 +247,7 @@ public sealed class PrReviewAuthorActivityTests
         activity.ReReviewNewlyRequested.Should().BeTrue();
         activity.ReplyCount.Should().Be(0, "nobody wrote a word");
         activity.HeadMoved.Should().BeFalse("nobody pushed anything");
-        activity.Describe("acme/widgets", 42, openThreadCount: 0).Should().Be(
+        activity.Describe("acme/widgets", 42, openThreadCount: 0, openedThreadCount: 1).Should().Be(
             "acme/widgets#42 moved since your review: a re-review requested of you — every thread "
             + "you opened is resolved now.");
     }
@@ -301,10 +302,80 @@ public sealed class PrReviewAuthorActivityTests
         string line = new PrReviewAuthorActivity(
                 ReplyCount: 2, ThreadsWithReplies: 2, NewCommitCount: 4, HeadMoved: true,
                 ReReviewNewlyRequested: true)
-            .Describe("acme/widgets", 42, openThreadCount: 2);
+            .Describe("acme/widgets", 42, openThreadCount: 2, openedThreadCount: 2);
 
         line.Should().Be(
             "acme/widgets#42 moved since your review: 2 replies in 2 threads, 4 new commits and "
             + "a re-review requested of you — 2 of your threads are still unresolved.");
     }
+
+    /// <summary>
+    /// A reviewer who opened no thread has none to resolve, so "every thread you opened is
+    /// resolved now" would assert something that never happened (task cc8f819b, the d2f8a84a and
+    /// 0b2e0457 lines). The line ends after what moved.
+    /// </summary>
+    [Fact]
+    public void The_line_ends_after_what_moved_when_the_reviewer_opened_no_threads()
+    {
+        string line = new PrReviewAuthorActivity(
+                ReplyCount: 0, ThreadsWithReplies: 0, NewCommitCount: null, HeadMoved: false,
+                ReReviewNewlyRequested: true)
+            .Describe("o/r", 7, openThreadCount: 0, openedThreadCount: 0);
+
+        line.Should().Be("o/r#7 moved since your review: a re-review requested of you.");
+    }
+
+    [Fact]
+    public void The_resolved_clause_appears_only_when_the_reviewer_opened_at_least_one_thread()
+    {
+        PrReviewAuthorActivity activity = new(
+            ReplyCount: 0, ThreadsWithReplies: 0, NewCommitCount: null, HeadMoved: false,
+            ReReviewNewlyRequested: true);
+
+        activity.Describe("o/r", 7, openThreadCount: 0, openedThreadCount: 1)
+            .Should().Be("o/r#7 moved since your review: a re-review requested of you — every thread you opened is resolved now.");
+        activity.Describe("o/r", 7, openThreadCount: 1, openedThreadCount: 1)
+            .Should().EndWith("— 1 of your threads is still unresolved.");
+    }
+
+    /// <summary>
+    /// The comparison fed the way the sweep feeds it: the reviewer's standing first request, with
+    /// no review of theirs on the pull request, reads false on both looks and so never wakes them.
+    /// </summary>
+    [Fact]
+    public void A_standing_first_request_is_never_a_transition_because_it_never_reads_as_a_re_review()
+    {
+        ReviewConversation conversation = Conversation(outstanding: ["brian"], reviews: []);
+
+        PrReviewAuthorActivity activity = PrReviewAuthorActivity.Between(
+            before: [], after: [], headBefore: null, headAfter: "aaa", commitsBefore: null, commitsAfter: 3,
+            reReviewBefore: false, reReviewAfter: conversation.ReReviewRequestedOf("brian"));
+
+        activity.ReReviewNewlyRequested.Should().BeFalse();
+        activity.Any.Should().BeFalse();
+    }
+
+    [Fact]
+    public void A_request_landing_after_the_reviewers_own_submitted_review_is_a_transition()
+    {
+        ReviewConversation conversation = Conversation(
+            outstanding: ["brian"], reviews: [("brian", "DISMISSED")]);
+
+        PrReviewAuthorActivity activity = PrReviewAuthorActivity.Between(
+            before: [], after: [], headBefore: null, headAfter: "aaa", commitsBefore: null, commitsAfter: 3,
+            reReviewBefore: false, reReviewAfter: conversation.ReReviewRequestedOf("brian"));
+
+        activity.ReReviewNewlyRequested.Should().BeTrue();
+        activity.Any.Should().BeTrue();
+    }
+
+    private static ReviewConversation Conversation(
+        string[] outstanding, (string Login, string State)[] reviews) => new(
+            IsOpen: true, IsMerged: false, IsClosed: false, HeadSha: "aaa", CommitCount: 3,
+            Threads: [], OutstandingReviewerLogins: outstanding, ThreadsTruncated: false,
+            LatestReviewByLogin: reviews.ToDictionary(
+                review => review.Login,
+                review => new SubmittedReview("R1", review.State, DateTimeOffset.UnixEpoch, "aaa"),
+                StringComparer.OrdinalIgnoreCase),
+            ReviewsTruncated: false);
 }
