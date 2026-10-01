@@ -80,6 +80,7 @@ public sealed class LaunchAnchorRefreshTests : IDisposable
 
         output.Split('\n').Where(line => line.Contains("No project home's launch anchor was refreshed"))
             .Should().ContainSingle().Which.Should().Contain("h9k orchestrator refresh-anchors")
+            .And.Contain("h9k project init <project>")
             .And.Contain("connection refused second line of the driver's message");
         File.Exists(RecipeLibraryPaths.LaunchAnchorFile).Should().BeTrue(
             "the node's own anchor needs no registry, so an unreadable one does not hold it back");

@@ -40,7 +40,8 @@ public static class LaunchAnchorRefresh
     /// whatever the reason: the registry would not read, or the refresh never ran.</summary>
     public static string DescribeNoneRefreshed(string reason) =>
         $"No project home's launch anchor was refreshed ({reason.ReplaceLineEndings(" ")}). "
-        + "Run h9k orchestrator refresh-anchors to try again.";
+        + "Run h9k orchestrator refresh-anchors to try again, or h9k project init <project> "
+        + "(with --keep-repo-path if the repository path should stay as it is) for a home that never rendered its recipe files.";
 
     /// <summary>Prints the line <see cref="DescribeNoneRefreshed"/> words, for the process that
     /// launched the refresh and found it did not run to completion.</summary>
