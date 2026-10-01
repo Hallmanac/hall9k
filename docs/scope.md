@@ -655,7 +655,7 @@ absent from a truncated page counts as having reviewed. A review of the reviewer
 that lands on GitHub after the watch woke them (an approval, a changes-requested review, or a lone
 thread reply, which GitHub records as its own commented review) reopens the watch: the task returns
 to Waiting and the stale needs-you line clears, and the first look after the reopen reports whatever
-is still unanswered. The reply case is accepted churn. The same reopen clears a false wake an
+is still unanswered. A reply reviews no code, so a reopen it causes keeps the head the task already records as reviewed, and a push the reviewer never read stays visible. The reply case is accepted churn. The same reopen clears a false wake an
 earlier build recorded, a needs-you raised by a re-review request while the reviewer had no review
 at all. A truncated review page skips both, since it cannot say which review is the latest or
 whether one exists. While no review of the reviewer's is on the pull request, the Waiting row says

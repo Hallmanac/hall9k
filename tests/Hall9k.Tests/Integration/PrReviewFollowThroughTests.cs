@@ -935,13 +935,15 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
     /// The reviewer answers on GitHub by hand (Brian's usual habit): a submitted review newer than
     /// the one the watch baselined returns the task to waiting and clears the stale needs-you line.
     /// An approval or a changes-requested review carries the commit it was posted against, which is
-    /// the head the reopened watch compares pushes to; anything else gets the head this poll read.
+    /// the head the reopened watch compares pushes to; anything else reviews no code, so the reopened
+    /// watch keeps the head the task already records as reviewed and the push the reviewer never read
+    /// stays visible.
     /// </summary>
     [Theory]
     [InlineData("CHANGES_REQUESTED", "cccccccccccc", "cccccccccccc")]
     [InlineData("APPROVED", "cccccccccccc", "cccccccccccc")]
-    [InlineData("APPROVED", null, "dddddddddddd")]
-    [InlineData("COMMENTED", "cccccccccccc", "dddddddddddd")]
+    [InlineData("APPROVED", null, ReviewedHead)]
+    [InlineData("COMMENTED", "cccccccccccc", ReviewedHead)]
     public async Task A_newer_review_by_the_reviewer_reopens_the_watch_and_clears_the_needs_you_line(
         string state, string? commitOid, string expectedHead)
     {
