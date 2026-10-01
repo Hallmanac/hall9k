@@ -25,6 +25,14 @@ public sealed class TaskListItem
     public string? ClaimedByOwnerRootFingerprint { get; set; }
     /// <summary>Mirrors <see cref="TaskDetails.ClaimedAt"/>.</summary>
     public DateTimeOffset? ClaimedAt { get; set; }
+    /// <summary>
+    /// Mirrors <see cref="TaskAggregate.HolderOwnerRootFingerprint"/>: the owner root of the node that
+    /// holds this task now, which is what <see cref="Handlers.TaskOwnerRule"/> reads first. Not
+    /// <see cref="ClaimedByOwnerRootFingerprint"/>, which an interactive claim sets too while the
+    /// aggregate deliberately records no holder for it, and which a release never clears. Carried here
+    /// so the board asks the receive gate's own question of a row without loading the stream.
+    /// </summary>
+    public string? HolderOwnerRootFingerprint { get; set; }
     /// <summary>The h9k task work claim's own tell (<see cref="TaskAggregate.IsInteractiveClaim"/>'s mirror): the sentinel node id an operator's claim records rather than a real node's.</summary>
     public bool IsInteractiveClaim => ClaimedByNodeId == Guid.Empty;
     private ReplicationScope? _scope;
@@ -313,6 +321,8 @@ public sealed class TaskListItem
     public Guid? PendingTakeRequestedByNodeId { get; set; }
     /// <summary>See <see cref="TaskAggregate.PendingTakeRequestedByOwnerId"/>'s own doc.</summary>
     public Guid? PendingTakeRequestedByOwnerId { get; set; }
+    /// <summary>See <see cref="TaskAggregate.PendingTakeRequestedByOwnerFingerprint"/>'s own doc: the one fact about who asked that a peer verified, which the board compares with its own owner root.</summary>
+    public string? PendingTakeRequestedByOwnerRootFingerprint { get; set; }
     /// <summary>See <see cref="TaskAggregate.PendingTakeReason"/>'s own doc.</summary>
     public string? PendingTakeReason { get; set; }
     /// <summary>See <see cref="TaskAggregate.PendingTakeRequestedAt"/>'s own doc — h9k status measures the take-timeout from this.</summary>
@@ -718,6 +728,13 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         view.LeaseGeneration = @event.Data.LeaseGeneration;
         view.ClaimedByNodeId = @event.Data.NodeId;
         view.ClaimedByOwnerRootFingerprint = @event.Data.OwnerRootFingerprint;
+        // Mirrors TaskAggregate.Apply(TaskClaimed): an interactive claim carries the Guid.Empty
+        // sentinel and records no holder, so it must not make this row's holder a root either.
+        if (@event.Data.NodeId != Guid.Empty)
+        {
+            view.HolderOwnerRootFingerprint = @event.Data.OwnerRootFingerprint;
+        }
+
         view.ClaimedAt = @event.Data.ClaimedAt;
         view.CurrentRunId = @event.Data.RunId;
         view.State = TaskState.Claimed;
@@ -757,6 +774,7 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
 
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
+        view.HolderOwnerRootFingerprint = @event.Data.NewHolderOwnerRootFingerprint;
         view.AssignedOwnerId = @event.Data.NewHolderOwnerId;
         view.AssignedOwnerFingerprint = null;
         // Only when a placement already named some node — mirrors
@@ -785,6 +803,7 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         // request the taker itself just satisfied.
         view.PendingTakeRequestedByNodeId = null;
         view.PendingTakeRequestedByOwnerId = null;
+        view.PendingTakeRequestedByOwnerRootFingerprint = null;
         view.PendingTakeReason = null;
         view.PendingTakeRequestedAt = null;
     }
@@ -800,6 +819,10 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
     /// </summary>
     public void Apply(IEvent<TaskHolderReleased> @event, TaskListItem view)
     {
+        // Mirrors TaskAggregate.Apply(TaskHolderReleased): whatever the release was for, nobody holds
+        // the task after it.
+        view.HolderOwnerRootFingerprint = null;
+
         if (@event.Data.GrantedToNodeId is not null)
         {
             view.ClaimedByNodeId = null;
@@ -821,6 +844,7 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
 
         view.PendingTakeRequestedByNodeId = null;
         view.PendingTakeRequestedByOwnerId = null;
+        view.PendingTakeRequestedByOwnerRootFingerprint = null;
         view.PendingTakeReason = null;
         view.PendingTakeRequestedAt = null;
     }
@@ -830,6 +854,7 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
     {
         view.PendingTakeRequestedByNodeId = @event.Data.RequesterNodeId;
         view.PendingTakeRequestedByOwnerId = @event.Data.RequesterOwnerId;
+        view.PendingTakeRequestedByOwnerRootFingerprint = @event.Data.RequesterOwnerFingerprint;
         view.PendingTakeReason = @event.Data.Reason;
         view.PendingTakeRequestedAt = @event.Data.RequestedAt;
     }
@@ -839,6 +864,7 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
     {
         view.PendingTakeRequestedByNodeId = null;
         view.PendingTakeRequestedByOwnerId = null;
+        view.PendingTakeRequestedByOwnerRootFingerprint = null;
         view.PendingTakeReason = null;
         view.PendingTakeRequestedAt = null;
     }
