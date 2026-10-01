@@ -40,7 +40,7 @@ public static class LaunchAnchorRefresh
     /// whatever the reason: the registry would not read, or the refresh never ran.</summary>
     public static string DescribeNoneRefreshed(string reason) =>
         $"No project home's launch anchor was refreshed ({reason.ReplaceLineEndings(" ")}). "
-        + "Run h9k project init <project> to render a project's anchor.";
+        + "Run h9k orchestrator refresh-anchors to try again.";
 
     /// <summary>Prints the line <see cref="DescribeNoneRefreshed"/> words, for the process that
     /// launched the refresh and found it did not run to completion.</summary>
@@ -90,7 +90,7 @@ public static class LaunchAnchorRefresh
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
                 AnsiConsole.MarkupLineInterpolated(
-                    $"[yellow]Could not refresh the launch anchor in project home {registered.HomeDirectory} for {registered.ProjectName} ({exception.Message.ReplaceLineEndings(" ")}). Run h9k project init {registered.ProjectName} to render it.[/]");
+                    $"[yellow]Could not refresh the launch anchor in project home {registered.HomeDirectory} for {registered.ProjectName} ({exception.Message.ReplaceLineEndings(" ")}). Run h9k orchestrator refresh-anchors to try again, or h9k project init {registered.ProjectName} if that home never rendered its recipe files.[/]");
             }
         }
 

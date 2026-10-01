@@ -67,7 +67,7 @@ public sealed class LaunchAnchorRefreshTests : IDisposable
     }
 
     [Fact]
-    public async Task A_registry_that_cannot_be_read_prints_one_line_naming_project_init_and_succeeds()
+    public async Task A_registry_that_cannot_be_read_prints_one_line_naming_the_refresh_command_and_succeeds()
     {
         string output = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
         {
@@ -79,7 +79,7 @@ public sealed class LaunchAnchorRefreshTests : IDisposable
         });
 
         output.Split('\n').Where(line => line.Contains("No project home's launch anchor was refreshed"))
-            .Should().ContainSingle().Which.Should().Contain("h9k project init <project>")
+            .Should().ContainSingle().Which.Should().Contain("h9k orchestrator refresh-anchors")
             .And.Contain("connection refused second line of the driver's message");
         File.Exists(RecipeLibraryPaths.LaunchAnchorFile).Should().BeTrue(
             "the node's own anchor needs no registry, so an unreadable one does not hold it back");

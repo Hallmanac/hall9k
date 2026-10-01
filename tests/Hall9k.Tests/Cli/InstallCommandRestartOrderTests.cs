@@ -91,9 +91,12 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
             "the gate query opens a Marten store, which after the swap would be the new release's store opened "
             + "inside a process running the old one");
         commandLines.Should().Equal(
-            "h9k orchestrator refresh-anchors", "h9k daemon stop", "h9k doctor --yes --no-configure", "h9k daemon start");
+            "h9k daemon stop", "h9k doctor --yes --no-configure", "h9k daemon start", "h9k orchestrator refresh-anchors");
         swapHadHappenedAtEachChild.Should().AllBeEquivalentTo(
             true, "every step from the stop onward runs in the binary the swap put in place");
+        commandLines.Last().Should().Be(
+            "h9k orchestrator refresh-anchors",
+            "the refresh reads the project registry, which a schema-changing release only allows once the doctor step has run");
     }
 
     [Fact]
@@ -126,7 +129,7 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
         exitCode.Should().Be(ExitCodes.Ok);
         gateWasChecked.Should().BeFalse("--now is the override that skips the wait entirely, and it still means that");
         commandLines.Should().Equal(
-            "h9k orchestrator refresh-anchors", "h9k daemon stop", "h9k doctor --yes --no-configure", "h9k daemon start");
+            "h9k daemon stop", "h9k doctor --yes --no-configure", "h9k daemon start", "h9k orchestrator refresh-anchors");
     }
 
     /// <summary>
@@ -175,7 +178,7 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
         gateWasChecked.Should().BeFalse(
             "there is no daemon supervising a gate for the wait to protect when none was running to begin with");
         commandLines.Should().Equal(
-            "h9k orchestrator refresh-anchors", "h9k daemon stop", "h9k doctor --yes --no-configure", "h9k daemon start");
+            "h9k daemon stop", "h9k doctor --yes --no-configure", "h9k daemon start", "h9k orchestrator refresh-anchors");
     }
 
     [Fact]
@@ -214,12 +217,13 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
     /// <summary>
     /// The anchor refresh goes through the installed CLI, so it has to be launched after the swap
     /// that put that CLI in place, and it must not depend on <c>--restart</c>: a teammate who runs
-    /// only <c>h9k update</c> still needs their project windows' anchors brought current.
+    /// only <c>h9k update</c> still needs their project windows' anchors brought current. The
+    /// <c>--restart</c> ordering is proved by
+    /// <see cref="The_live_gate_wait_runs_before_the_swap_and_the_child_sequence_after_it"/>, so only
+    /// the <c>--no-restart</c> boundary earns a case here.
     /// </summary>
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task The_anchor_refresh_is_launched_after_the_swap_with_and_without_restart(bool restart)
+    [Fact]
+    public async Task The_anchor_refresh_is_launched_after_the_swap_under_no_restart()
     {
         List<bool> swapHadHappenedAtTheRefresh = [];
 
@@ -227,20 +231,14 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
             _staging,
             skillsSource: null,
             version: "0.0.0-test",
-            restart: restart,
-            noRestart: !restart,
-            now: true,
+            restart: false,
+            noRestart: true,
             linkOntoPath: false,
             restartChildRunner: (_, arguments, _) =>
             {
                 if (arguments is ["orchestrator", "refresh-anchors"])
                 {
                     swapHadHappenedAtTheRefresh.Add(TheSwapHasHappened());
-                }
-
-                if (arguments is ["daemon", "start"])
-                {
-                    PretendADaemonIsRunning();
                 }
 
                 return Task.FromResult(RestartStepResult.Exited(ExitCodes.Ok));
@@ -251,6 +249,39 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
         exitCode.Should().Be(ExitCodes.Ok);
         swapHadHappenedAtTheRefresh.Should().Equal(
             [true], "the refresh runs once, in the release the swap put in place and not in the one being replaced");
+    }
+
+    /// <summary>
+    /// A hand-off that fails partway still gets the refresh: a failed daemon start says nothing
+    /// about whether the anchors can be re-rendered, and the node's own anchor needs no registry.
+    /// </summary>
+    [Fact]
+    public async Task A_failed_restart_step_still_runs_the_anchor_refresh_and_keeps_its_own_exit_code()
+    {
+        List<string> commandLines = [];
+
+        int exitCode = await InstallCommand.FinishAsync(
+            _staging,
+            skillsSource: null,
+            version: "0.0.0-test",
+            restart: true,
+            noRestart: false,
+            now: true,
+            linkOntoPath: false,
+            restartChildRunner: (_, arguments, _) =>
+            {
+                commandLines.Add($"h9k {string.Join(' ', arguments)}");
+                return Task.FromResult(
+                    arguments is ["doctor", ..]
+                        ? RestartStepResult.Exited(ExitCodes.Error)
+                        : RestartStepResult.Exited(ExitCodes.Ok));
+            },
+            containerRuntimeRunner: RecordingProcessRunner.Failing("docker not reached in this test").Runner,
+            cancellationToken: CancellationToken.None);
+
+        exitCode.Should().Be(ExitCodes.Error);
+        commandLines.Should().Equal(
+            "h9k daemon stop", "h9k doctor --yes --no-configure", "h9k orchestrator refresh-anchors");
     }
 
     [Theory]
@@ -279,7 +310,7 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
         });
 
         output.Should().Contain("No project home's launch anchor was refreshed")
-            .And.Contain("h9k project init <project>");
+            .And.Contain("h9k orchestrator refresh-anchors");
     }
 
     /// <summary>

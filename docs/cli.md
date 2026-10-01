@@ -1655,7 +1655,7 @@ config file, a project's own with `--project` — and `measure` runs a
 fixed, cheap-model, non-interactive probe against it so a "lean window" claim is a number, not an
 adjective. `refresh-anchors` re-renders `recipes/launch-anchor.md` in the node home and in every
 registered project home that already has one; `h9k install` and `h9k update` run it through the newly
-installed binary after the swap, so a project window never launches on an anchor older than the
+installed binary after the swap (and, under `--restart`, after the doctor step, so the registry read sees the migrated schema), so a project window never launches on an anchor older than the
 installed build, and an unreadable registry or unwritable home is reported and skipped rather than
 failing the install. The recipe content itself (what the window is, its start-up sequence, how it spawns
 scoped sessions) is never platform-rendered — only a tiny, always-overwritten hand-off file is —
