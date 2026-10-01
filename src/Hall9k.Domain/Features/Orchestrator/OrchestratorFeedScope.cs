@@ -13,4 +13,13 @@ namespace Hall9k.Domain.Features.Orchestrator;
 /// case the selection asks about ownership; null everywhere else, which the selection reads as "no
 /// ownership opinion" rather than as an unknown owner.
 /// </param>
-public sealed record OrchestratorFeedScope(Guid ProjectId, Guid? TaskId, TaskOwnerFacts? OwnerFacts = null);
+/// <param name="PendingTakeRequesterRoot">
+/// The owner root of whoever has a take request pending on <see cref="TaskId"/>, read off the same
+/// board row; the viewer's board counts a task its root is waiting on as the viewer's, so the feed
+/// does too.
+/// </param>
+public sealed record OrchestratorFeedScope(
+    Guid ProjectId,
+    Guid? TaskId,
+    TaskOwnerFacts? OwnerFacts = null,
+    string? PendingTakeRequesterRoot = null);

@@ -1241,7 +1241,7 @@ anywhere, and nothing is lost by not reading the feed. There is exactly one trut
 happened, and the feed is a way of reading it.
 
 **The filter is one deterministic table from event type to level**, with no model anywhere in it:
-the same event always lands in the same band on every node. Three nested bands, each a superset
+an event lands in the same band on every node, apart from the exceptions described below. Three nested bands, each a superset
 of the one before, set per project with
 `h9k project set <name> --orchestrator-feed actionable|transitions|everything`:
 
@@ -1266,10 +1266,12 @@ silent and adding it is a decision somebody makes.
 
 **A teammate's activity reaches the feed only when it concerns you.** A project shared with other
 owners replicates their tasks' events onto this node, and the feed keeps out every replicated item
-about a task your owner root may not act on, at every level, by the same ownership rule the task
-commands and `h9k status` apply (a task whose owner this node cannot resolve counts as a teammate's).
-Three kinds stay because you are a party to them: a take request made by your root, a take refusal
-that names your node or your owner, and a holder release granted to your root. Messages, root
+about a task your owner root may not act on, at every level, by the same rule `h9k status`
+applies (the ownership rule the task commands use, plus a task your root has a take request pending
+on; a task whose owner this node cannot resolve counts as a teammate's). Some kinds stay because
+you are a party to them: a take request made by your root, a take refusal that names your node or
+your owner, a holder release granted to your root or recorded by one of your own nodes handing the
+task to someone else, and a forced takeover of a task your node was holding. Messages, root
 rotations, ideas and anything not about a task are unchanged, and the cursor still moves past what
 was left out.
 
