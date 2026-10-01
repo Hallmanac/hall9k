@@ -1264,6 +1264,21 @@ An event type the table does not name is not in the feed at all. That is deliber
 what an orchestrator would want to know, not a mirror of the log, so a new event type ships
 silent and adding it is a decision somebody makes.
 
+**A teammate's activity reaches the feed only when it concerns you.** A project shared with other
+owners replicates their tasks' events onto this node, and the feed keeps out every replicated item
+about a task your owner root may not act on, at every level, by the same ownership rule the task
+commands and `h9k status` apply (a task whose owner this node cannot resolve counts as a teammate's).
+Three kinds stay because you are a party to them: a take request made by your root, a take refusal
+that names your node or your owner, and a holder release granted to your root. Messages, root
+rotations, ideas and anything not about a task are unchanged, and the cursor still moves past what
+was left out.
+
+**One entry's level depends on more than its type.** When another owner's root abandons or resolves
+a task your owner root may act on, the item is shown at every level, `actionable` included, as an
+urgent item that names who did it and gives the reason they recorded (or says none was recorded).
+The same end made by one of your own fleet's nodes is not that: it keeps its ordinary place in
+`transitions`.
+
 Depth: [PLAN.md §16](../PLAN.md), Decisions Log #241.
 
 ## The feed courier
@@ -1281,7 +1296,7 @@ elapsed since the last one. The wait is what turns a burst of activity into one 
 of many: it is zero once the feed has been quiet for ten minutes, and ramps up toward a ceiling —
 `h9k project set <name> --courier-max-wait`, sixty seconds by default — the more recently
 something new has landed. A park, a dispute, daemon trouble, a message from a person, or a reply to a review you left
-dispatches at once regardless of that wait; a per-day spawn cap (five hundred by default) is the
+dispatches at once regardless of that wait, as does another owner ending one of your tasks; a per-day spawn cap (five hundred by default) is the
 backstop against a genuine storm even of those. A manual `h9k orchestrator feed --drain` holds a
 short lease on the project's own cursor while it runs, and the courier never spawns into that
 window.

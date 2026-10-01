@@ -1246,7 +1246,9 @@ to wording composes for it. `--drain` advances the cursor after printing, `--sin
 without moving it, and the two are refused together. The filter is one deterministic table from
 event type to level, with no model in it, and the level is a per-project setting
 (`h9k project set <name> --orchestrator-feed actionable|transitions|everything`, default
-`transitions`); a message from a person is admitted at every level. The feed keeps no store of
+`transitions`); a message from a person is admitted at every level. A teammate's replicated activity on a task
+your owner root may not act on is left out, and another owner abandoning or resolving your task is admitted
+at every level as an urgent item. The feed keeps no store of
 its own — a cursor over this node's own event log plus a filter — so nothing is buffered and
 nothing is lost by not reading it.
 

@@ -1651,7 +1651,9 @@ cost or "not measured"; with no project named and more than one registered, `pro
 block per project rather than guessing. `feed` is what a window runs at start-up to learn what
 happened while none was live: everything past that project's own cursor that its
 `--orchestrator-feed` band admits, oldest first, grouped by task, each written as one plain line
-by the feed's own table of event type to wording. `--drain` moves the cursor after printing; without it the same items
+by the feed's own table of event type to wording. A teammate's replicated activity on a task your owner root
+may not act on is left out, and another owner abandoning or resolving one of your own tasks is shown at every
+band as an urgent item naming who did it and why. `--drain` moves the cursor after printing; without it the same items
 come back, which is what makes a plain read repeatable. `--since` reads history and never moves
 the cursor, so two windows catching up cannot consume each other's news, and the two flags are
 refused together. It is a cursor over this node's own event log plus a filter, never a second
