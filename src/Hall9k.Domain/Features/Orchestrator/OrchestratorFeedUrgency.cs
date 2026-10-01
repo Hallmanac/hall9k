@@ -58,8 +58,18 @@ public static class OrchestratorFeedUrgency
     /// courier's batch, so a push followed two minutes later by its replies is not two pages.
     /// </para>
     /// </summary>
-    public static bool IsUrgent(Type eventType, object eventData) => eventData switch
+    public static bool IsUrgent(Type eventType, object eventData) => IsUrgent(eventType, eventData, endsViewersTask: false);
+
+    /// <summary>
+    /// The same answer for a candidate the selection has also judged against the viewer's ownership:
+    /// <paramref name="endsViewersTask"/> is true when another root ended a task this node's owner
+    /// root may act on (<see cref="OrchestratorFeedOwnership"/>). That is the one entry whose urgency
+    /// depends on more than its type, and the selection hands over the answer it already reached
+    /// rather than this deciding it a second time.
+    /// </summary>
+    public static bool IsUrgent(Type eventType, object eventData, bool endsViewersTask) => eventData switch
     {
+        TaskAbandoned or TaskResolved when endsViewersTask => true,
         MessageReceived => true,
         PullRequestReviewAuthorResponded responded => responded.ReplyCount > 0 || responded.ReReviewNewlyRequested,
         _ => UrgentTypes.Contains(eventType),

@@ -3,6 +3,8 @@ using Hall9k.Connectors.Orchestrator;
 using Hall9k.Connectors.Replication;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Orchestrator;
+using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -228,6 +230,90 @@ public sealed class OrchestratorFeedTests : IClassFixture<PostgresFixture>, IAsy
         feed.Items.Should().ContainSingle()
             .Which.Description.Should().Be(
                 $"{shortId} a message from abcdef012345: are you still on the stacked pair?");
+    }
+
+    private const string ThisRoot = "1111111111111111111111111111111111111111111111111111111111111111";
+    private const string TeammateRoot = "2222222222222222222222222222222222222222222222222222222222222222";
+
+    /// <summary>
+    /// The viewer's board rows, read through the real store: a task this node's owner holds keeps its
+    /// replicated items, and a task whose owner this node cannot resolve loses them while the cursor
+    /// still passes both.
+    /// </summary>
+    [Fact]
+    public async Task A_replicated_item_on_a_task_whose_owner_cannot_be_resolved_is_left_out_and_the_cursor_still_passes_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid ownerId = await SeedOwnerAsync(ThisRoot, cts.Token);
+        Guid projectId = await SeedProjectAsync(ownerId, cts.Token);
+        Guid ownTaskId = await SeedTaskAsync(projectId, ownerId, cts.Token);
+        Guid unknownOwnersTaskId = await SeedTaskAsync(projectId, DomainId.New(), cts.Token);
+        await AppendReplicatedAsync(
+            ownTaskId, new TaskFailed(ownTaskId, DomainId.New(), "own failure", Now), TeammateRoot, cts.Token);
+        await AppendReplicatedAsync(
+            unknownOwnersTaskId, new TaskFailed(unknownOwnersTaskId, DomainId.New(), "their failure", Now),
+            TeammateRoot, cts.Token);
+
+        OrchestratorFeedReader reader = new(new ReplicationProjectResolver());
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+
+        OrchestratorFeedRead read = await reader.ReadUndrainedAsync(
+            session, projectId, OrchestratorFeedLevel.Transitions, PastTheSettlingWindow, cts.Token);
+
+        read.Items.Select(item => item.Description).Should().Contain("the task failed: own failure")
+            .And.NotContain("the task failed: their failure");
+        read.Items.Where(item => item.TaskId == unknownOwnersTaskId).Select(item => item.Description)
+            .Should().OnlyContain(description => description == "published and ready to assign",
+                "only the task's own local events remain, never what a teammate's root replicated");
+        read.DrainableThroughSequence.Should().BeGreaterThan(OrchestratorFeedCursor.NeverDrained);
+    }
+
+    [Fact]
+    public async Task Another_root_ending_this_owners_task_is_urgent_at_the_narrowest_band_and_this_roots_own_end_is_not()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid ownerId = await SeedOwnerAsync(ThisRoot, cts.Token);
+        Guid projectId = await SeedProjectAsync(ownerId, cts.Token);
+        Guid endedByTeammate = await SeedTaskAsync(projectId, ownerId, cts.Token);
+        Guid endedByFleet = await SeedTaskAsync(projectId, ownerId, cts.Token);
+        await AppendReplicatedAsync(
+            endedByTeammate, new TaskAbandoned(endedByTeammate, "superseded", Now, DomainId.New()),
+            TeammateRoot, cts.Token);
+        await AppendReplicatedAsync(
+            endedByFleet, new TaskAbandoned(endedByFleet, "mine", Now, DomainId.New()), ThisRoot, cts.Token);
+
+        OrchestratorFeedReader reader = new(new ReplicationProjectResolver());
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+
+        OrchestratorFeedRead read = await reader.ReadUndrainedAsync(
+            session, projectId, OrchestratorFeedLevel.Actionable, PastTheSettlingWindow, cts.Token);
+
+        OrchestratorFeedItem item = read.Items.Should().ContainSingle().Subject;
+        item.TaskId.Should().Be(endedByTeammate);
+        item.IsUrgent.Should().BeTrue();
+        item.Description.Should().Be($"{TeammateRoot[..12]} abandoned this task: superseded");
+    }
+
+    private async Task<Guid> SeedOwnerAsync(string rootFingerprint, CancellationToken cancellationToken)
+    {
+        Guid ownerId = DomainId.New();
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        session.Events.StartStream<OwnerAggregate>(ownerId, new OwnerRegistered(ownerId, "Owner", null, Now));
+        session.Events.Append(ownerId, new OwnerRootClaimed(ownerId, rootFingerprint, Verified: true, Now));
+        await session.SaveChangesAsync(cancellationToken);
+        return ownerId;
+    }
+
+    /// <summary>Appends an event the way the replication inbox does: carrying the origin headers a
+    /// peer's own event arrives with.</summary>
+    private async Task AppendReplicatedAsync(
+        Guid streamId, object @event, string originRootFingerprint, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        JasperFx.Events.StreamAction action = session.Events.Append(streamId, @event);
+        action.Events[^1].SetHeader(ReplicationEventHeaders.OriginEventId, DomainId.New().ToString());
+        action.Events[^1].SetHeader(ReplicationEventHeaders.OriginOwnerRootFingerprint, originRootFingerprint);
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     /// <summary>

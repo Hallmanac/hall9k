@@ -55,7 +55,15 @@ public static class OrchestratorFeedSelection
     /// </param>
     /// <param name="scopeOf">
     /// Which project and task an admitted candidate belongs to, or null when it belongs to no
-    /// project this reader can see. Called once per admitted candidate, never for a rejected one.
+    /// project this reader can see. Called once per admitted candidate, never for a rejected one;
+    /// the one other candidate it is asked about is another root's end of a task
+    /// (<see cref="OrchestratorFeedOwnership.IsEndFromAnotherRoot"/>), whose band the level may not
+    /// admit but whose answer decides whether it is an urgent item after all.
+    /// </param>
+    /// <param name="viewer">
+    /// Who is reading, so a replicated event about a task the reader's owner root may not act on can
+    /// be told from the reader's own (<see cref="OrchestratorFeedOwnership"/>). Null reads as no
+    /// opinion: nothing is filtered and no end is paged.
     /// </param>
     public static async Task<OrchestratorFeedRead> SelectAsync(
         IReadOnlyList<OrchestratorFeedCandidate> candidates,
@@ -66,6 +74,7 @@ public static class OrchestratorFeedSelection
         bool scanWasCapped,
         Func<OrchestratorFeedCandidate, CancellationToken, ValueTask<OrchestratorFeedScope?>> scopeOf,
         MemberLabelLookup? labels,
+        OrchestratorFeedViewer? viewer,
         CancellationToken cancellationToken)
     {
         List<OrchestratorFeedItem> items = [];
@@ -88,7 +97,10 @@ public static class OrchestratorFeedSelection
                 stillSettled = false;
             }
 
-            if (!OrchestratorFeedInterest.Admits(candidate.EventType, candidate.Data, level, candidate.IsReplicated))
+            bool endedByAnotherRoot = OrchestratorFeedOwnership.IsEndFromAnotherRoot(candidate, viewer);
+            bool admittedByBand = OrchestratorFeedInterest.Admits(
+                candidate.EventType, candidate.Data, level, candidate.IsReplicated);
+            if (!admittedByBand && !endedByAnotherRoot)
             {
                 continue;
             }
@@ -106,9 +118,24 @@ public static class OrchestratorFeedSelection
                 continue;
             }
 
+            // Another owner ending this owner's own task is the one item whose band is not the
+            // table's: it is shown at every level and pages the courier, and it names who did it.
+            bool endsViewersTask = endedByAnotherRoot && OrchestratorFeedOwnership.EndsViewersTask(scope, viewer);
+            if (endsViewersTask && candidate.OriginOwnerRootFingerprint is { } originRoot)
+            {
+                description = OrchestratorFeedDescription.EndedByAnotherRoot(candidate.Data, originRoot, labels)
+                    ?? description;
+            }
+            else if (!admittedByBand || OrchestratorFeedOwnership.IsTeammatesActivity(candidate, scope, viewer))
+            {
+                // The cursor has already moved past this one, so dropping it costs nothing a later
+                // read would pay again.
+                continue;
+            }
+
             items.Add(new OrchestratorFeedItem(
                 candidate.Sequence, candidate.At, scope.TaskId, description,
-                OrchestratorFeedUrgency.IsUrgent(candidate.EventType, candidate.Data)));
+                OrchestratorFeedUrgency.IsUrgent(candidate.EventType, candidate.Data, endsViewersTask)));
         }
 
         return new OrchestratorFeedRead(items, drainableThrough, scanWasCapped);

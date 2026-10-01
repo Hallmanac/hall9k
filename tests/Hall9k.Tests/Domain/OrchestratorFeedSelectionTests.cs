@@ -140,6 +140,7 @@ public sealed class OrchestratorFeedSelectionTests
             scanWasCapped: false,
             (_, _) => ValueTask.FromResult<OrchestratorFeedScope?>(new OrchestratorFeedScope(Project, TaskId)),
             labels: null,
+            viewer: null,
             CancellationToken.None);
 
         read.Items.Should().HaveCount(2, "an item too new to drain past is still news worth printing");
@@ -168,6 +169,7 @@ public sealed class OrchestratorFeedSelectionTests
             scanWasCapped: false,
             (_, _) => ValueTask.FromResult<OrchestratorFeedScope?>(new OrchestratorFeedScope(Project, TaskId)),
             labels: null,
+            viewer: null,
             CancellationToken.None);
 
         read.DrainableThroughSequence.Should().Be(5);
@@ -211,6 +213,7 @@ public sealed class OrchestratorFeedSelectionTests
             scanWasCapped: false,
             (_, _) => ValueTask.FromResult<OrchestratorFeedScope?>(new OrchestratorFeedScope(OtherProject, TaskId)),
             labels: null,
+            viewer: null,
             CancellationToken.None);
 
         read.Items.Should().BeEmpty();
@@ -229,6 +232,7 @@ public sealed class OrchestratorFeedSelectionTests
             scanWasCapped: false,
             (_, _) => ValueTask.FromResult<OrchestratorFeedScope?>(null),
             labels: null,
+            viewer: null,
             CancellationToken.None);
 
         read.Items.Should().BeEmpty();
@@ -263,6 +267,7 @@ public sealed class OrchestratorFeedSelectionTests
                 return ValueTask.FromResult<OrchestratorFeedScope?>(new OrchestratorFeedScope(Project, TaskId));
             },
             labels: null,
+            viewer: null,
             CancellationToken.None);
 
         asked.Should().Equal(5);
@@ -288,5 +293,6 @@ public sealed class OrchestratorFeedSelectionTests
             scanWasCapped: false,
             (_, _) => ValueTask.FromResult<OrchestratorFeedScope?>(new OrchestratorFeedScope(Project, TaskId)),
             labels: null,
+            viewer: null,
             CancellationToken.None);
 }

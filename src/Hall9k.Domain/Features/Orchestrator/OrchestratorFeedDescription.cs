@@ -209,6 +209,34 @@ public static class OrchestratorFeedDescription
     }
 
     /// <summary>
+    /// The sentence for another owner ending this node's owner's task: who did it, named through the
+    /// project's member labels by the root the event was recorded under, and why. A reason the event
+    /// carries wins, then the override reason an owner-role member must give to act on another
+    /// owner's task, and a task ended with neither says so plainly. Null for any other event.
+    /// </summary>
+    public static string? EndedByAnotherRoot(object eventData, string originRootFingerprint, MemberLabelLookup? lookup = null)
+    {
+        string actor = (lookup ?? MemberLabelLookup.Empty).LabelForFingerprint(originRootFingerprint);
+        return eventData switch
+        {
+            TaskAbandoned abandoned => EndLine(actor, "abandoned this task", abandoned.Reason, abandoned.OverrideReason),
+            TaskResolved resolved =>
+                EndLine(actor, "closed this task as done by hand", resolved.Reason, resolved.OverrideReason),
+            _ => null,
+        };
+    }
+
+    private static string EndLine(string actor, string verb, string? reason, string? overrideReason)
+    {
+        string? recorded = reason.IsNotBlank()
+            ? reason
+            : overrideReason;
+        return recorded.IsNotBlank()
+            ? $"{actor} {verb}: {Quote(recorded)}"
+            : $"{actor} {verb}; no reason was recorded";
+    }
+
+    /// <summary>
     /// A received message, named by who sent it and what kind it is. A handoff carries no body of
     /// its own — the note travels on the task's stream and this envelope is only the nudge (see
     /// <see cref="MessageKind.Handoff"/>) — so quoting a body there would quote nothing.

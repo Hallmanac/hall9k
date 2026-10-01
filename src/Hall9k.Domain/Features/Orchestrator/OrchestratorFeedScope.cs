@@ -1,3 +1,5 @@
+using Hall9k.Domain.Features.Tasks;
+
 namespace Hall9k.Domain.Features.Orchestrator;
 
 /// <summary>
@@ -5,4 +7,10 @@ namespace Hall9k.Domain.Features.Orchestrator;
 /// <see cref="OrchestratorFeedSelection"/> asks its caller for, because answering it means
 /// reading documents and the selection itself reads nothing.
 /// </summary>
-public sealed record OrchestratorFeedScope(Guid ProjectId, Guid? TaskId);
+/// <param name="OwnerFacts">
+/// The facts card C's ownership rule judges for <see cref="TaskId"/>, read off the task's board row
+/// the way the viewer's board reads them. Supplied only for a replicated event naming a task, the one
+/// case the selection asks about ownership; null everywhere else, which the selection reads as "no
+/// ownership opinion" rather than as an unknown owner.
+/// </param>
+public sealed record OrchestratorFeedScope(Guid ProjectId, Guid? TaskId, TaskOwnerFacts? OwnerFacts = null);

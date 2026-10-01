@@ -1,7 +1,7 @@
 namespace Hall9k.Domain.Features.Orchestrator;
 
 /// <summary>
-/// One raw event handed to <see cref="OrchestratorFeedSelection"/>, reduced to the five things
+/// One raw event handed to <see cref="OrchestratorFeedSelection"/>, reduced to the six things
 /// the selection and its caller's scope lookup actually read. Kept separate from Marten's own
 /// <c>IEvent</c> so the selection — the whole of what a drain decides — stays a pure function a
 /// unit test can drive without a database.
@@ -23,10 +23,19 @@ namespace Hall9k.Domain.Features.Orchestrator;
 /// window, especially when a whole backlog of them lands at once. <c>PullRequestReviewAuthorResponded</c>
 /// reads it for the same reason: the watch that recorded it is the reviewing node's own.
 /// </param>
+/// <param name="OriginOwnerRootFingerprint">
+/// The owner root of whoever recorded this event, from the
+/// <c>Hall9k.Domain.Features.Replication.ReplicationEventHeaders.OriginOwnerRootFingerprint</c>
+/// header a replicated event carries; null for a node's own event or one with no such header. What
+/// <see cref="OrchestratorFeedOwnership.IsEndFromAnotherRoot"/> reads to tell another owner ending a
+/// task from this owner's own fleet doing it, which an older build that never recorded an
+/// on-behalf-of root on the event still gets right.
+/// </param>
 public sealed record OrchestratorFeedCandidate(
     long Sequence,
     DateTimeOffset At,
     Type EventType,
     object Data,
     Guid StreamId,
-    bool IsReplicated);
+    bool IsReplicated,
+    string? OriginOwnerRootFingerprint = null);
