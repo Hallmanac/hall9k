@@ -40,6 +40,7 @@ public sealed class TaskDraftCommand : Hall9kAsyncCommand<TaskDraftCommand.Setti
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        await TaskOwnerGuard.AssertMayActAsync(session, task, context, cancellationToken);
         session.Events.Append(taskId, TaskDecider.ReturnToDraft(
             task, settings.Reason, DateTimeOffset.UtcNow, context.OwnerId));
         await session.SaveChangesAsync(cancellationToken);

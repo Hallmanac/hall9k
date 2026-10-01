@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
+using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -9,6 +11,7 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
@@ -29,25 +32,58 @@ public sealed class TaskAbandonCommand : Hall9kAsyncCommand<TaskAbandonCommand.S
         [CommandOption("--reason <REASON>")]
         [Description(
             "Why this task is being walked away from; recorded on TaskAbandoned and left unknown "
-            + "when omitted, never inferred (Decisions Log #27)")]
+            + "when omitted, never inferred (Decisions Log #27). Required with --holder, where it "
+            + "is also recorded as the override's reason")]
         public string? Reason { get; init; }
+
+        [CommandOption("--holder <NAME>")]
+        [Description(
+            "Another owner's task is theirs to end, so this refuses unless this node's owner may "
+            + "act on it. An Owner-role member may end it on that owner's behalf by naming the "
+            + "holder here (their label, which the refusal names, or at least 8 hex characters "
+            + "of their root fingerprint; the word 'unknown' when the task's owner cannot be "
+            + "resolved on this node) and giving --reason, both required together")]
+        public string? Holder { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
+        return await RunAsync(store, session, settings, new GitLedgerChainReader(), new NodeKeyStore(), cancellationToken);
+    }
 
+    /// <summary>Testable core: the chain read and the key store are the seams the Owner-role check of an override needs.</summary>
+    internal static async Task<int> RunAsync(
+        IDocumentStore store,
+        IDocumentSession session,
+        Settings settings,
+        ILedgerChainReader chainReader,
+        NodeKeyStore keyStore,
+        CancellationToken cancellationToken)
+    {
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Id, cancellationToken);
         TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        TaskOwnerOverrideDecision ownerDecision = await TaskOwnerGuard.AuthorizeAsync(
+            session, task, context, "abandon", settings.Holder, settings.Reason, chainReader, keyStore, cancellationToken);
         DateTimeOffset abandonedAt = DateTimeOffset.UtcNow;
         bool releasesHolder = task.HolderNodeId == context.NodeId;
+        TaskAbandoned abandoned = TaskDecider.Abandon(task, settings.Reason, abandonedAt, context.OwnerId);
+        if (ownerDecision.Outcome == TaskOwnerOverrideOutcome.Override)
+        {
+            abandoned = abandoned with
+            {
+                OnBehalfOfOwnerRootFingerprint = ownerDecision.OnBehalfOfRootFingerprint,
+                OverrideReason = ownerDecision.Reason,
+            };
+        }
+
         object[] taskEvents = releasesHolder
-            ? [TaskDecider.Abandon(task, settings.Reason, abandonedAt, context.OwnerId), TaskDecider.ReleaseHolder(task, abandonedAt)]
-            : [TaskDecider.Abandon(task, settings.Reason, abandonedAt, context.OwnerId)];
+            ? [abandoned, TaskDecider.ReleaseHolder(task, abandonedAt)]
+            : [abandoned];
         session.Events.Append(taskId, taskEvents);
         session.Delete<TaskLease>(taskId);
 
@@ -116,6 +152,7 @@ public sealed class TaskAbandonCommand : Hall9kAsyncCommand<TaskAbandonCommand.S
         }
 
         AnsiConsole.MarkupLine($"[dim]Task {taskId} abandoned.[/]");
+        TaskOwnerGuard.AnnounceOverride(ownerDecision, "abandoned");
         return ExitCodes.Ok;
     }
 
@@ -130,7 +167,7 @@ public sealed class TaskAbandonCommand : Hall9kAsyncCommand<TaskAbandonCommand.S
     /// the ledger holder without ever clearing the tracker assignee).
     /// </summary>
     private static async Task MirrorTrackerReleaseBestEffortAsync(
-        Marten.DocumentStore store, BootstrapContext context, TaskAggregate task, CancellationToken cancellationToken)
+        IDocumentStore store, BootstrapContext context, TaskAggregate task, CancellationToken cancellationToken)
     {
         if (task.ExternalReference is null)
         {
@@ -164,7 +201,7 @@ public sealed class TaskAbandonCommand : Hall9kAsyncCommand<TaskAbandonCommand.S
     }
 
     private static async Task StorePendingTrackerReleaseMirrorAsync(
-        Marten.DocumentStore store,
+        IDocumentStore store,
         TaskAggregate task,
         BootstrapContext context,
         string failureReason,
@@ -195,7 +232,7 @@ public sealed class TaskAbandonCommand : Hall9kAsyncCommand<TaskAbandonCommand.S
     /// next sweep").
     /// </summary>
     private static async Task ReleaseLedgerHolderBestEffortAsync(
-        Marten.DocumentStore store,
+        IDocumentStore store,
         BootstrapContext context,
         TaskAggregate task,
         CancellationToken cancellationToken)
@@ -264,7 +301,7 @@ public sealed class TaskAbandonCommand : Hall9kAsyncCommand<TaskAbandonCommand.S
     /// revisits it.
     /// </summary>
     private static async Task StorePendingReleaseAsync(
-        Marten.DocumentStore store,
+        IDocumentStore store,
         TaskAggregate task,
         BootstrapContext context,
         string failureReason,

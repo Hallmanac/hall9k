@@ -68,6 +68,7 @@ public sealed class TaskSetPreApprovedCommand : Hall9kAsyncCommand<TaskSetPreApp
             && (await session.LoadAsync<RunDetails>(currentRunId, cancellationToken))?.State == RunState.Completed;
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        await TaskOwnerGuard.AssertMayActAsync(session, task, context, cancellationToken);
         TaskPreApprovedSet set = TaskDecider.SetPreApproved(
             task, requested, DateTimeOffset.UtcNow, context.OwnerId, taskClosedOut);
         session.Events.Append(taskId, set);

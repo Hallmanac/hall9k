@@ -38,6 +38,7 @@ public sealed class TaskShareCommand : Hall9kAsyncCommand<TaskShareCommand.Setti
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        await TaskOwnerGuard.AssertMayActAsync(session, task, context, cancellationToken);
         TaskScopeSet? set = TaskDecider.Share(task, DateTimeOffset.UtcNow, context.OwnerId);
         if (set is not null)
         {

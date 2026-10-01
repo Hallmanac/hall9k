@@ -43,6 +43,7 @@ public sealed class TaskSetPrivateCommand : Hall9kAsyncCommand<TaskSetPrivateCom
 
         bool isPrivate = ParseBool(settings.Value);
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        await TaskOwnerGuard.AssertMayActAsync(session, task, context, cancellationToken);
         TaskScopeSet set = TaskDecider.SetPrivate(task, isPrivate, DateTimeOffset.UtcNow, context.OwnerId);
         session.Events.Append(taskId, set);
         await session.SaveChangesAsync(cancellationToken);

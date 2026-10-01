@@ -97,6 +97,7 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        await TaskOwnerGuard.AssertMayActAsync(session, task, context, cancellationToken);
 
         // The self-release lever criterion 3 calls for (idea 202383dc, A3b): a task the ledger
         // still names this node the holder of, but that is no longer TaskState.Claimed at all —

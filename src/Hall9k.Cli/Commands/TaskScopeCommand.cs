@@ -44,6 +44,7 @@ public sealed class TaskScopeCommand : Hall9kAsyncCommand<TaskScopeCommand.Setti
 
         ReplicationScope scope = ScopeInput.Parse(settings.Scope);
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        await TaskOwnerGuard.AssertMayActAsync(session, task, context, cancellationToken);
         TaskScopeSet set = TaskDecider.SetScope(task, scope, DateTimeOffset.UtcNow, context.OwnerId);
         session.Events.Append(taskId, set);
         await session.SaveChangesAsync(cancellationToken);
