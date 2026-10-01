@@ -238,6 +238,8 @@ internal static class DispatchedSessionCommandClassification
             // ---- orchestrator (wholesale except feed) ----
             [typeof(OrchestratorNodeCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "orchestrator node"),
             [typeof(OrchestratorProjectCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "orchestrator project"),
+            [typeof(OrchestratorRefreshAnchorsCommand.Settings)] =
+                (DispatchedSessionAccess.Refused, "orchestrator refresh-anchors"),
             [typeof(OrchestratorRegisterCommand.Settings)] = (DispatchedSessionAccess.Refused, "orchestrator register"),
             [typeof(OrchestratorDeregisterCommand.Settings)] = (DispatchedSessionAccess.Refused, "orchestrator deregister"),
             [typeof(OrchestratorStatusCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "orchestrator status"),

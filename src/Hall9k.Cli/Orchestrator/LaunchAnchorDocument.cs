@@ -22,6 +22,12 @@ namespace Hall9k.Cli.Orchestrator;
 /// hall9k project's own), for exactly the interim window between install and this skill's first
 /// run.
 /// </para>
+/// <para>
+/// <c>h9k install</c> and <c>h9k update</c> also refresh it in the node home and in every registered
+/// project home that already has one (<see cref="LaunchAnchorRefresh"/>), so a project window never
+/// launches on an anchor older than the installed build. A project home's <c>settings.json</c> still
+/// renders only on <c>h9k project init</c> and <c>h9k project add</c>.
+/// </para>
 /// </summary>
 public static class LaunchAnchorDocument
 {

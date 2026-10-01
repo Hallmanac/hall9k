@@ -877,6 +877,16 @@ public static class CliCommandTree
                     + "prints per project rather than prompting. Never launches.")
                 .WithExample("orchestrator", "project")
                 .WithExample("orchestrator", "project", "hall9k");
+            orchestrator.AddCommand<OrchestratorRefreshAnchorsCommand>("refresh-anchors")
+                .WithDescription(
+                    "Re-render the launch anchor (recipes/launch-anchor.md) in the node home and in every "
+                    + "registered project home that already has one, from this build. h9k install and h9k "
+                    + "update run it through the newly installed binary after the swap, so a project window "
+                    + "never launches on an anchor older than the installed build; running it by hand is "
+                    + "only needed to repair one. A home with no anchor is left without one (h9k project "
+                    + "init renders the whole set), and a project home's settings.json is not touched. An "
+                    + "unreadable registry or an unwritable home is reported and skipped, never a failure.")
+                .WithExample("orchestrator", "refresh-anchors");
             orchestrator.AddCommand<OrchestratorRegisterCommand>("register")
                 .WithDescription(
                     "Declare this window the live orchestrator for a project on this node, recording its "
