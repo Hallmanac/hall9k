@@ -459,10 +459,17 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // Through the installed CLI and never in this process, for the two reasons the restart
         // hand-off below already names: this process may be the build the swap just replaced, so
         // its own render of the anchor is the old one, and reading the project registry from here
-        // is the Marten load-time crash. It runs ahead of the restart hand-off, whether or not
-        // --restart was given, and a failure of it never changes the exit code.
+        // is the Marten load-time crash. It runs whether or not --restart was given, and a failure
+        // of it never changes the exit code. Under --restart it waits until the hand-off has run
+        // the doctor step: the child reads the project registry through a create-only store, which
+        // refuses a release whose schema change has not been applied yet, so refreshing ahead of
+        // the doctor would skip every project home on exactly the updates most likely to change the
+        // anchor (independent pre-PR review, cycle 1, adversarial lens).
         RestartChildRunner runChild = restartChildRunner ?? DaemonRestartHandoff.RunInstalledCliAsync;
-        await RefreshLaunchAnchorsAsync(runChild, cancellationToken);
+        if (!restartAfterSwap)
+        {
+            await RefreshLaunchAnchorsAsync(runChild, cancellationToken);
+        }
 
         AnsiConsole.MarkupLine(
             "[dim]No background service was registered — the daemon runs on demand (h9k daemon start / stop). "
@@ -2271,6 +2278,12 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     {
         int handoff = await DaemonRestartHandoff.RunAsync(
             DaemonRestartHandoff.InstalledCliPath, runningBefore, runChild, cancellationToken);
+
+        // After the doctor step, so the registry read sees the migrated schema, and whatever the
+        // hand-off returned: a failed daemon start has no bearing on whether the anchors can be
+        // re-rendered, and the node's own anchor never needed the registry at all.
+        await RefreshLaunchAnchorsAsync(runChild, cancellationToken);
+
         if (handoff != ExitCodes.Ok)
         {
             return handoff;
