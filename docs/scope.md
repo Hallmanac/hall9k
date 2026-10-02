@@ -731,7 +731,11 @@ dispatch does — that reads the tagged comment against the review already done 
 beside the report, naming the pull request, who tagged the install, and the first line of their
 comment in the needs-you line itself. A peer node still attaches the mention to the task's own
 stream, but never claims it or launches a run, naming `h9k pr review --since-my-review` as the
-manual lever instead. A comment id already handled never fires again, and a comment the install's
+manual lever instead. The one mention that never dispatches a lap at all is the pull request's own
+author answering your review on a task already waiting on it: it is recorded with its own outcome,
+not counted toward the cap, and shown as a needs-you row with the reply's first three non-blank lines
+(at most 300 characters, quoted as text, never in a prompt), a link to the comment and
+`h9k pr review <pull-request> --since-my-review`; the row leaves once the task is Done or Abandoned. A comment id already handled never fires again, and a comment the install's
 own login wrote never counts. `--auto-pr-review off` silences mentions exactly as it silences
 review requests, with no separate switch for either trigger.
 
