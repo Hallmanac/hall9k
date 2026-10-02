@@ -245,7 +245,7 @@ public sealed class VoiceSkillPromptSeamTests : IDisposable
         string unnamed = MentionFollowUpPromptBuilder.Build(
             "acme/web", 7, _worktreePath, "main", SomeMention(), priorReport: null, project: SomeProject());
 
-        named.Should().Contain($"{SomeMention().AuthorLogin} wrote a comment on it that tags @brian");
+        named.Should().Contain($"{SomeMention().AuthorLogin} wrote a comment on this pull request that tags @brian");
         named.Should().NotContain("tagged this install");
         unnamed.Should().Contain("that tags this install's own login, and this run")
             .And.NotContain("which is this install's own login");

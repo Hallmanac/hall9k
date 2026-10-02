@@ -51,6 +51,34 @@ public sealed class PrReviewEngineUnitTests : IDisposable
     }
 
     [Fact]
+    public void The_park_line_of_an_answer_only_task_says_it_answers_the_comment_on_the_owners_own_pull_request()
+    {
+        string reason = PrReviewEngine.ComposeMentionFollowUpParkReason(
+            answersOwnPullRequest: true, "AgelessRx/arx-platform#2166", "taylor-dennison",
+            "@Hallmanac just curious what the motivating factor is here?", "/runs/r1/mention-followup-addendum.md",
+            unwalkedReportNote: string.Empty);
+
+        reason.Should().Contain("AgelessRx/arx-platform#2166: answers taylor-dennison's comment on your own pull request")
+            .And.Contain("just curious what the motivating factor is here?")
+            .And.Contain("Drafted reply and analysis: /runs/r1/mention-followup-addendum.md")
+            .And.Contain("Walk it with walk-pr-review-findings")
+            .And.Contain("only on the owner's explicit go")
+            .And.NotContain("tagged you")
+            .And.NotContainEquivalentOf("review complete");
+    }
+
+    [Fact]
+    public void The_park_line_of_a_follow_up_on_a_task_that_reviewed_keeps_its_tagged_you_wording()
+    {
+        string reason = PrReviewEngine.ComposeMentionFollowUpParkReason(
+            answersOwnPullRequest: false, "acme/web#7", "ryan", "@brian one more thing", "/runs/r1/addendum.md",
+            unwalkedReportNote: string.Empty);
+
+        reason.Should().StartWith("acme/web#7: ryan tagged you")
+            .And.Contain("Addendum: /runs/r1/addendum.md");
+    }
+
+    [Fact]
     public void A_dispatched_session_whose_process_is_still_alive_is_still_live()
     {
         FakeProcessManager processes = new();

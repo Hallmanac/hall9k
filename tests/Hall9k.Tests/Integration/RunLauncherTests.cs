@@ -9,6 +9,7 @@ using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Review;
+using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.PrReviewPreflight;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
@@ -4813,6 +4814,175 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             + "AutoPrReviewEngine's own lease-free ClaimForMentionFollowUp claim, and writing it here left "
             + "RunSupervisor.RefreshAdoptedLeaseAsync and the startup expiry sweep both reading this live "
             + "session as ownerless");
+    }
+
+    /// <summary>
+    /// Decision dce39370, from AgelessRx/arx-platform#2166: a task minted to answer a comment on the
+    /// owner's own pull request is dispatched as the bounded answer lap on its very first claim, with
+    /// no pending-follow-up flag, no prior report and no earlier run. The model pre-flight still sits
+    /// in front of the checkout, so a safe verdict is seeded exactly as it is for any follow-up.
+    /// </summary>
+    [Fact]
+    public async Task A_task_minted_to_answer_a_comment_on_the_owners_own_pull_request_dispatches_the_answer_lap_not_a_review()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, TaskClaimed claimed) = await SeedAnswerOnlyClaimedTaskAsync(store, node, 914, cts.Token);
+        await SeedSafePrReviewPreflightAsync(store, taskId, node.NodeId, headRefOid: string.Empty, cts.Token);
+
+        RecordingProcessRunner gh = GhSignedInAs(
+            "brian", PullRequestPreflightJson.Replace("901", "914", StringComparison.Ordinal));
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(
+            taskId, claimed.RunId, node.NodeId, node.OwnerId, claimed.LeaseGeneration, cts.Token);
+
+        executor.Request.Should().NotBeNull();
+        executor.Request!.Prompt.Should().Contain("# Mention follow-up: acme/web#914")
+            .And.Contain("what is the motivating factor?")
+            .And.Contain("that same login wrote the pull request")
+            .And.NotContain("You already reviewed")
+            .And.NotContain("Your own review, already delivered");
+        executor.Request.MaxTurns.Should().Be(
+            new DaemonOptions().PrReviewMentionFollowUpMaxTurns,
+            "the bounded answer lap's own turn cap, never the review role's unbounded one");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(claimed.RunId, cts.Token))!;
+        run.PrReviewMentionCommentId.Should().Be("IC_2166", "the run records the one comment it answers");
+    }
+
+    /// <summary>
+    /// A second mention landing before the first dispatch moves <c>task.LatestMention*</c> to itself, but
+    /// the lap this task was minted for answers the comment that minted it, read off the mint's own
+    /// outcome row.
+    /// </summary>
+    [Fact]
+    public async Task An_answer_only_dispatch_answers_the_comment_that_minted_it_not_a_later_mention()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, TaskClaimed claimed) = await SeedAnswerOnlyClaimedTaskAsync(store, node, 916, cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate aggregate = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.ObservePrReviewMention(
+                aggregate, "https://github.com/acme/web/pull/916", "IC_LATER", "ryan", "@brian and what about tests?",
+                "https://github.com/acme/web/pull/916#issuecomment-IC_LATER", Now.AddMinutes(1), Now.AddMinutes(1)));
+            session.Store(new ObservedReviewMention
+            {
+                Id = ObservedReviewMention.ComputeId(node.NodeId, DomainId.New(), "acme/web", 916, "brian", "IC_2166"),
+                ObservingNodeId = node.NodeId, Repository = "acme/web", Number = 916, MentionedLogin = "brian",
+                CommentId = "IC_2166", CommentAuthorLogin = "ryan", CommentBody = "@brian what is the motivating factor?",
+                CommentUrl = "https://github.com/acme/web/pull/916#issuecomment-IC_2166", CommentCreatedAt = Now,
+                ObservedAt = Now, Outcome = ReviewMentionOutcome.AnswerOnlyTaskCreated, TaskId = taskId,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await SeedSafePrReviewPreflightAsync(store, taskId, node.NodeId, headRefOid: string.Empty, cts.Token);
+        RecordingProcessRunner gh = GhSignedInAs(
+            "brian", PullRequestPreflightJson.Replace("901", "916", StringComparison.Ordinal));
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(
+            taskId, claimed.RunId, node.NodeId, node.OwnerId, claimed.LeaseGeneration, cts.Token);
+
+        executor.Request.Should().NotBeNull();
+        executor.Request!.Prompt.Should().Contain("what is the motivating factor?").And.NotContain("what about tests?");
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(claimed.RunId, cts.Token))!.PrReviewMentionCommentId.Should().Be("IC_2166");
+    }
+
+    /// <summary>
+    /// A first dispatch whose own login cannot be read must not hand an answer-only task back to the
+    /// queue, where the dispatcher would claim it again at once and loop on the same refusal, and must
+    /// never fall through to the two-lens review. It fails, visibly, and a retry is the answer lap.
+    /// </summary>
+    [Fact]
+    public async Task An_answer_only_task_whose_login_cannot_be_read_fails_visibly_instead_of_returning_to_the_queue()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, TaskClaimed claimed) = await SeedAnswerOnlyClaimedTaskAsync(store, node, 915, cts.Token);
+
+        string pullRequestJson = PullRequestPreflightJson.Replace("901", "915", StringComparison.Ordinal);
+        RecordingProcessRunner gh = new(arguments => arguments.Contains("user")
+            ? new ProcessResult(1, string.Empty, "HTTP 502: Bad Gateway")
+            : new ProcessResult(0, pullRequestJson, string.Empty));
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(
+            taskId, claimed.RunId, node.NodeId, node.OwnerId, claimed.LeaseGeneration, cts.Token);
+
+        executor.Request.Should().BeNull("no session of any kind starts, least of all the two-lens review");
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Failed);
+        task.FailureReason.Should().Contain("The answer to ryan's comment on your own pull request was not started")
+            .And.Contain("could not be read, so there is no way to tell whether the comment tags it. Nothing was reviewed or posted")
+            .And.Contain("h9k task retry");
+        IReadOnlyList<JasperFx.Events.IEvent> events = await query.Events.FetchStreamAsync(taskId, token: cts.Token);
+        events.Select(@event => @event.Data).OfType<PullRequestReviewMentionFollowUpSkipped>().Should().BeEmpty(
+            "the claim is not handed back to a queue that would claim it again");
+    }
+
+    /// <summary>A freshly minted answer-only pr-review task for <c>acme/web#number</c>, claimed once and holding its lease: the shape the first dispatch of one finds.</summary>
+    private async Task<(Guid TaskId, TaskClaimed Claimed)> SeedAnswerOnlyClaimedTaskAsync(
+        DocumentStore store, NodeContext node, int number, CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string pullRequestUrl = $"https://github.com/acme/web/pull/{number}";
+        await using IDocumentSession session = store.LightweightSession();
+        ProjectRegistered registered = ProjectDecider.Register(
+            projectId, node.OwnerId, DomainId.New(), $"pr-review-answer-only-{taskId:N}",
+            $"/tmp/pr-review-answer-only-repo-{taskId:N}", new Uri("https://github.com/acme/web"), "main", Now);
+        session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+        (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(
+                taskId, projectId, $"Answer ryan's comment on your own pull request acme/web#{number}",
+                ["The drafted reply is walked with the owner (walk-pr-review-findings) and posted only on the owner's explicit go."],
+                TaskType.PrReview, null, null,
+                new ExternalReference(WorkItemProvider.GitHubPullRequest, $"acme/web#{number}"), Now, node.OwnerId),
+            node.OwnerId, Now);
+        PullRequestReviewMentionObserved observed = new(
+            taskId, pullRequestUrl, "IC_2166", "ryan", "@brian what is the motivating factor?",
+            $"{pullRequestUrl}#issuecomment-IC_2166", Now, Now, MintedTask: true, MentionedLogin: "brian",
+            AnswerOnly: true);
+        aggregate.Apply(observed);
+        TaskClaimed claimed = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, DomainId.New(), Now);
+        aggregate.Apply(claimed);
+
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, observed, claimed]);
+        session.Store(new TaskLease
+        {
+            Id = taskId, NodeId = node.NodeId, LeaseGeneration = claimed.LeaseGeneration, HeartbeatAt = Now,
+        });
+        await session.SaveChangesAsync(cancellationToken);
+        return (taskId, claimed);
     }
 
     /// <summary>
