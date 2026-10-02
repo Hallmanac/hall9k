@@ -59,7 +59,9 @@ public static class MentionFollowUpPromptBuilder
             file, "intro",
             Params(
                 ("CommentAuthor", OneLine(comment.AuthorLogin)),
-                ("TaggedLogin", taggedLogin.IsNotBlank() ? $"@{OneLine(taggedLogin)}" : "this install's own login"))));
+                ("TaggedLogin", taggedLogin.IsNotBlank()
+                    ? $"@{OneLine(taggedLogin)}, which is this install's own login"
+                    : "this install's own login"))));
         prompt.AppendLine();
 
         prompt.AppendLine(PromptTemplates.Load(file, "the-comment-heading"));

@@ -247,7 +247,8 @@ public sealed class VoiceSkillPromptSeamTests : IDisposable
 
         named.Should().Contain($"{SomeMention().AuthorLogin} wrote a comment on it that tags @brian");
         named.Should().NotContain("tagged this install");
-        unnamed.Should().Contain("that tags this install's own login");
+        unnamed.Should().Contain("that tags this install's own login, and this run")
+            .And.NotContain("which is this install's own login");
     }
 
     [Fact]

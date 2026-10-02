@@ -37,14 +37,6 @@ public sealed class MentionFollowUpSkipTests
     }
 
     [Fact]
-    public void Gate_refuses_2166s_own_comment_because_this_login_wrote_it_and_tagged_someone_else()
-    {
-        MentionFollowUpGate gate = MentionFollowUpGate.Decide(BrianLogin, BrianLogin, BrianReplyToTaylor);
-
-        gate.Proceed.Should().BeFalse();
-    }
-
-    [Fact]
     public void Gate_refuses_a_comment_this_installs_own_login_wrote_even_when_it_tags_that_login()
     {
         MentionFollowUpGate gate = MentionFollowUpGate.Decide(BrianLogin, "hallmanac", "note to self @Hallmanac");

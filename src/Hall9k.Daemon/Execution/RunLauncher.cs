@@ -175,7 +175,7 @@ public sealed class RunLauncher(
                     session, task.RunIds, cancellationToken);
                 await LaunchPrReviewMentionFollowUpAsync(
                     taskId, runId, nodeId, ownerId, leaseGeneration, dispatchingNodeId ?? nodeId, comment,
-                    priorReviewRunId, cancellationToken);
+                    priorReviewRunId, knownOwnLogin: null, cancellationToken);
                 return;
             }
 
@@ -989,14 +989,21 @@ public sealed class RunLauncher(
     /// <para>
     /// Before anything else, the stored comment is checked against this install's own login
     /// (<see cref="MentionFollowUpGate"/>): it must tag that login and must not be written by it.
-    /// A comment that fails, or a login that cannot be read, launches nothing; the claim is given
-    /// back through <see cref="PullRequestReviewMentionFollowUpSkipped"/> and the returned
+    /// A comment that fails launches nothing; the claim is given back through
+    /// <see cref="PullRequestReviewMentionFollowUpSkipped"/> and the returned
     /// <see cref="MentionFollowUpLaunch"/> says so, so the caller does not count it as a follow-up.
+    /// <paramref name="knownOwnLogin"/> is the login the caller's own sweep just read successfully,
+    /// so the direct claim does not make a second <c>gh api user</c> call that could fail on its
+    /// own; the pending claim after a pre-flight has no such login and passes null, which reads it
+    /// here. A read that fails is a launch failure, never a skip: a skip is permanent (the comment
+    /// id is already deduplicated and the pending flag clears), and an unread identity says nothing
+    /// about who the comment tagged.
     /// </para>
     /// </summary>
     public async Task<MentionFollowUpLaunch> LaunchPrReviewMentionFollowUpAsync(
         Guid taskId, Guid runId, Guid nodeId, Guid ownerId, int leaseGeneration, Guid dispatchingNodeId,
-        PullRequestMentionComment comment, Guid? priorReviewRunId, CancellationToken cancellationToken)
+        PullRequestMentionComment comment, Guid? priorReviewRunId, string? knownOwnLogin,
+        CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
         TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
@@ -1029,16 +1036,30 @@ public sealed class RunLauncher(
             // that reaches a launch (the direct claim and the pending claim after a pre-flight)
             // comes through this method, and neither the event's recorded tagged login (absent on
             // an older node's event) nor the observing install's own sweep is something this
-            // owner's install can lean on. A login that cannot be read skips as well: an unread
-            // identity proves nothing about who was tagged.
-            GitHubLoginRead ownLogin = await new GitHubReviewAssignments(processRunner)
-                .ReadCurrentLoginAsync(project.RepositoryPath, cancellationToken);
-            MentionFollowUpGate gate = MentionFollowUpGate.Decide(ownLogin.Login, comment.AuthorLogin, comment.Body);
+            // owner's install can lean on.
+            string? ownLogin = knownOwnLogin;
+            if (ownLogin.IsBlank())
+            {
+                GitHubLoginRead read = await new GitHubReviewAssignments(processRunner)
+                    .ReadCurrentLoginAsync(project.RepositoryPath, cancellationToken);
+                if (read.Login.IsBlank())
+                {
+                    await RecordLaunchFailureAsync(
+                        taskId, runId, leaseGeneration,
+                        "this install's own GitHub login could not be read, so there is no way to tell whether "
+                        + $"the comment tags it: {read.Error}",
+                        cancellationToken);
+                    return MentionFollowUpLaunch.Handled;
+                }
+
+                ownLogin = read.Login;
+            }
+
+            MentionFollowUpGate gate = MentionFollowUpGate.Decide(ownLogin, comment.AuthorLogin, comment.Body);
             if (!gate.Proceed)
             {
-                string skipReason = ownLogin.Error is { } readError ? $"{gate.Reason} ({readError})" : gate.Reason;
-                await SkipMentionFollowUpAsync(taskId, runId, leaseGeneration, comment.CommentId, skipReason, cancellationToken);
-                return new MentionFollowUpLaunch(skipReason);
+                await SkipMentionFollowUpAsync(taskId, runId, leaseGeneration, comment.CommentId, gate.Reason, cancellationToken);
+                return new MentionFollowUpLaunch(gate.Reason);
             }
 
             PullRequestFacts? facts = await FetchOpenPullRequestFactsAsync(task, project, processRunner, cancellationToken);
@@ -1141,7 +1162,7 @@ public sealed class RunLauncher(
                 // The drafted reply this session produces is written first-person as the owner, so
                 // the seam names their own voice skill when they have one (#193).
                 voiceSkill: (await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken))?.VoiceSkill,
-                taggedLogin: ownLogin.Login);
+                taggedLogin: ownLogin);
 
             LogIfOverCapAddendum(runId, project, PromptBuilderKey.MentionFollowUp);
 
