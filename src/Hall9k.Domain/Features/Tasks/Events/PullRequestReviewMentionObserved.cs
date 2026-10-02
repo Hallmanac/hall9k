@@ -43,6 +43,14 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// <c>RunLauncher.LaunchPrReviewMentionFollowUpAsync</c> re-runs the match against the stored
 /// body rather than trusting this field.
 /// </para>
+/// <para>
+/// <see cref="AnswerOnly"/> is true only on the event that minted a task for a comment on a pull
+/// request the install's own login authored (decision dce39370): that task never runs the two-lens
+/// review, and every dispatch of it is the bounded mention answer lap. Like
+/// <see cref="MintedTask"/> it is set by <c>AutoPrReviewEngine.CreateFromMentionAsync</c> alone and
+/// defaults false, so an attach never carries it and a stream written before this field existed
+/// reads as a full review.
+/// </para>
 /// </summary>
 public sealed record PullRequestReviewMentionObserved(
     Guid Id,
@@ -55,4 +63,5 @@ public sealed record PullRequestReviewMentionObserved(
     DateTimeOffset ObservedAt,
     long? CommentDatabaseId = null,
     bool MintedTask = false,
-    string? MentionedLogin = null);
+    string? MentionedLogin = null,
+    bool AnswerOnly = false);

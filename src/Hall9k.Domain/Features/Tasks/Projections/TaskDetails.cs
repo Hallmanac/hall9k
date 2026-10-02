@@ -582,6 +582,8 @@ public sealed class TaskDetails
     public DateTimeOffset? LatestMentionCreatedAt { get; set; }
     /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionCommentDatabaseId"/> — the numeric REST id, set only for an inline review-comment-thread reply.</summary>
     public long? LatestMentionCommentDatabaseId { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.AnswersMentionOnly"/> ; the task answers one comment on the owner's own pull request and never runs the two-lens review.</summary>
+    public bool AnswersMentionOnly { get; set; }
     /// <summary>Mirrors <see cref="TaskAggregate.PendingMentionFollowUpAfterPreflight"/> — see its own doc.</summary>
     public bool PendingMentionFollowUpAfterPreflight { get; set; }
 }
@@ -1640,6 +1642,10 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.LatestMentionUrl = @event.Data.CommentUrl;
         view.LatestMentionCreatedAt = @event.Data.CommentCreatedAt;
         view.LatestMentionCommentDatabaseId = @event.Data.CommentDatabaseId;
+        if (@event.Data.MintedTask && @event.Data.AnswerOnly)
+        {
+            view.AnswersMentionOnly = true;
+        }
     }
 
     /// <summary>

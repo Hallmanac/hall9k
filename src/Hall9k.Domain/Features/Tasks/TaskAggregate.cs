@@ -903,6 +903,15 @@ public sealed class TaskAggregate
     public long? LatestMentionCommentDatabaseId { get; private set; }
 
     /// <summary>
+    /// Whether this task was minted to answer one GitHub comment on a pull request the install's own
+    /// login authored (decision dce39370), rather than to review that pull request: set by the minting
+    /// <see cref="Events.PullRequestReviewMentionObserved"/> and never cleared. Every dispatch of such
+    /// a task, a retry and the one after a skipped or deferred launch included, is the bounded mention
+    /// answer lap or nothing; it never runs the two-lens review.
+    /// </summary>
+    public bool AnswersMentionOnly { get; private set; }
+
+    /// <summary>
     /// The state this task held immediately before the claim that started the current mention
     /// follow-up attempt, kept so <see cref="Events.PullRequestReviewMentionFollowUpSkipped"/> can
     /// give the claim back. A claim made while a pre-flight's own requeue was pending
@@ -2383,6 +2392,12 @@ public sealed class TaskAggregate
         LatestMentionUrl = @event.CommentUrl;
         LatestMentionCreatedAt = @event.CommentCreatedAt;
         LatestMentionCommentDatabaseId = @event.CommentDatabaseId;
+        // Only the minting event can carry it (see the event's own doc), and nothing ever clears it:
+        // every later dispatch of this task is still the answer lap, never the two-lens review.
+        if (@event.MintedTask && @event.AnswerOnly)
+        {
+            AnswersMentionOnly = true;
+        }
     }
 
     // The claim that started a mention follow-up is given back (see the event's own doc): the
