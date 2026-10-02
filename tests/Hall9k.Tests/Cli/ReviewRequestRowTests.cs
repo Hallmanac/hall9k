@@ -3,6 +3,7 @@ using Hall9k.Cli.Commands;
 using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Infrastructure.Ids;
 using Spectre.Console;
 using Xunit;
@@ -504,6 +505,92 @@ public sealed class ReviewRequestRowTests
 
         row.NeedsYou.Should().BeTrue();
         row.Markup.Should().Contain("recorded by a newer build");
+    }
+
+    /// <summary>
+    /// The pull request's author answering the owner's review on a task following it through: the
+    /// row says so, shows who replied and the reply's opening lines, links the comment, and offers
+    /// the re-review lever. It is read from what the mention already records.
+    /// </summary>
+    [Fact]
+    public void An_author_reply_is_a_needs_you_row_with_the_reply_the_link_and_the_re_review_lever()
+    {
+        ObservedReviewMention mention = ObservedMention("AuthorReplied");
+        mention.CommentAuthorLogin = "taylor-dennison";
+        mention.CommentBody = "@brian fixed in abc123\n\n  \nplease look again\n\nthird line\nfourth line is not shown";
+
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "arx-platform", covering: null);
+
+        row.NeedsYou.Should().BeTrue();
+        row.Markup.Should().Contain("the pull request's author answered your review on acme/widgets#2033");
+        row.Markup.Should().Contain("taylor-dennison replied");
+        row.Markup.Should().Contain("[link=https://github.com/acme/widgets/pull/2033#issuecomment-1]the comment[/]");
+        row.Markup.Should().Contain("fixed in abc123").And.Contain("please look again").And.Contain("third line");
+        row.Markup.Should().NotContain("fourth line");
+        row.Markup.Should().Contain("h9k pr review acme/widgets#2033 --since-my-review");
+        row.Markup.Should().NotContain("already covers it");
+    }
+
+    [Fact]
+    public void An_author_reply_is_quoted_as_data_with_markup_escaped_and_control_characters_removed()
+    {
+        ObservedReviewMention mention = ObservedMention("AuthorReplied");
+        mention.CommentBody = "[red]loud[/] \u001b[2Jcleared \u202Ereversed";
+
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "arx-platform", covering: null);
+
+        row.Markup.Should().Contain("[[red]]loud[[/]]", "a commenter's brackets are text, never markup");
+        row.Markup.Should().NotContain("\u001b").And.NotContain("\u202E");
+        Action render = () => AnsiConsole.Create(new AnsiConsoleSettings()).MarkupLine(row.Markup);
+        render.Should().NotThrow("the whole row must still be valid markup");
+    }
+
+    [Fact]
+    public void An_author_replys_excerpt_is_the_first_three_non_blank_lines_and_at_most_three_hundred_characters()
+    {
+        string longLine = new('x', 400);
+
+        IReadOnlyList<string> lines = ReviewRequestPane.AuthorReplyExcerpt($"one\r\n\r\n  two  \n\t\nthree\nfour");
+        IReadOnlyList<string> cut = ReviewRequestPane.AuthorReplyExcerpt(longLine);
+
+        lines.Should().Equal("one", "two", "three");
+        string.Concat(cut).Length.Should().BeLessThanOrEqualTo(ReviewRequestPane.AuthorReplyExcerptMaxLength);
+        cut.Single().Should().EndWith("…");
+    }
+
+    [Fact]
+    public void An_author_reply_with_no_text_still_offers_the_row()
+    {
+        ObservedReviewMention mention = ObservedMention("AuthorReplied");
+        mention.CommentBody = string.Empty;
+
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "arx-platform", covering: null);
+
+        row.NeedsYou.Should().BeTrue();
+        row.Markup.Should().Contain("--since-my-review");
+    }
+
+    /// <summary>
+    /// The row leaves the board with the task that was following the pull request through, and no
+    /// earlier: a lap running on it (Claimed) or a task waiting on the author does not remove it.
+    /// </summary>
+    [Theory]
+    [InlineData("AwaitingAuthor", true)]
+    [InlineData("NeedsHuman", true)]
+    [InlineData("Claimed", true)]
+    [InlineData("Done", false)]
+    [InlineData("Abandoned", false)]
+    public void An_author_reply_stays_on_the_board_only_while_its_task_is_still_open(string state, bool shown)
+    {
+        TaskState taskState = state;
+
+        ReviewRequestPane.IsFollowingThrough(taskState).Should().Be(shown);
+    }
+
+    [Fact]
+    public void An_author_reply_whose_task_cannot_be_found_leaves_the_board()
+    {
+        ReviewRequestPane.IsFollowingThrough(null).Should().BeFalse();
     }
 
     private static ObservedReviewMention ObservedMention(string outcome)

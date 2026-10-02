@@ -334,6 +334,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 "Comment by",
                 $"{(mentionAuthorLogin ?? "unknown").EscapeMarkup()} at {when} "
                 + $"[dim](comment {mentionCommentId.EscapeMarkup()}{replyIdSuffix.EscapeMarkup()})[/]");
+            // The comment's own link, so the reply (an author's answer to the review is shown as a
+            // row and never run) is one click from here. Sanitised and escaped like the body below,
+            // since the url is stored text a mention row recorded verbatim.
+            string? mentionUrl = answeredMention?.CommentUrl ?? details.LatestMentionUrl;
+            if (mentionUrl.IsNotBlank())
+            {
+                header.AddRow("Comment link", ExternalText.OneLineMarkup(mentionUrl));
+            }
+
             header.AddRow(
                 "Tagged login",
                 mentionTaggedLogin.IsNotBlank()
