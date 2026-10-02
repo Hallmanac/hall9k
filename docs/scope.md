@@ -735,6 +735,19 @@ manual lever instead. A comment id already handled never fires again, and a comm
 own login wrote never counts. `--auto-pr-review off` silences mentions exactly as it silences
 review requests, with no separate switch for either trigger.
 
+Which tasks "cover" a pull request is asked of both triggers by one owner-scoped rule, the one the
+task commands apply: a task is this install's own when its holder, else its assignee, else its
+creator is this owner's root, and a task this node cannot attribute to a known owner counts as
+another owner's. A teammate's replicated review of the same pull request therefore never covers a
+review request to you, and a mention of your login on a pull request only a teammate's review covers
+is never appended to that task and never claims it, launches on it, or mints a second one. The
+Owner-role pass-through the receive gate gives a sender does not extend to a claim the daemon makes
+by itself; overriding another owner's task stays a human act with a stated reason
+(`h9k task abandon --holder --reason` and its siblings). The mention is recorded with its own
+outcome and shows as a needs-you row with a link to the comment and no command, since the reply
+happens on GitHub. A node whose owner has no root fingerprint yet has no team a task could belong
+to instead, so every task on it counts as its own, as it does for the CLI.
+
 On a public repository, unattended minting requires the request's or mention's own author to be a
 declared hall9k team member — matched on their numeric GitHub id, never their login — while a
 private or internal one keeps the collaborator behaviour above with no membership check at all

@@ -445,6 +445,16 @@ it or launches a run; `h9k pr review --since-my-review` is the manual lever it l
 comment id already handled never fires again, and a comment the install's own login wrote
 never counts. `--auto-pr-review off` silences mentions too; there is no separate switch.
 
+Both triggers count only your own tasks as covering a pull request, by the rule the task commands
+apply (the holder, else the assignee, else the creator; a task whose owner this node cannot resolve
+counts as another owner's). A mention on a pull request only a teammate's live review covers is
+never appended to that task and never claims or launches anything, whatever role your owner holds:
+the Owner-role override stays a human act with a stated reason. It is recorded with its own outcome
+and shows in `h9k status` as a needs-you row naming who mentioned which login, with a link to the
+comment, and no command, because the pull request is a teammate's review and the reply happens on
+GitHub. A review request to you on a pull request a teammate's review covers mints your own task,
+and a teammate's closed review never counts as yours having already answered a standing request.
+
 On a public repository, a review request or mention must come from a declared hall9k team member
 before it mints and starts a task unattended — the bar is team membership, never GitHub collaborator
 status, and it is matched on the author's numeric GitHub id, never their login. A private or
