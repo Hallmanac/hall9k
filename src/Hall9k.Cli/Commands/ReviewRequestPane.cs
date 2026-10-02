@@ -1,3 +1,5 @@
+using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project;
@@ -215,6 +217,15 @@ internal static class ReviewRequestPane
             bool attachedToTeammate = mention.TaskId is { } attachedId
                 && rowsByTask.TryGetValue(attachedId, out TaskStatusRow? attachedRow)
                 && attachedRow.IsTeammates;
+            // An author's reply leaves the board with the task that was following the pull request
+            // through; every other held mention keeps its lifetime, since a recorded mention is
+            // never deleted and nothing else says it was answered.
+            if (ReviewMentionOutcome.FromInput(mention.Outcome.Value) == ReviewMentionOutcome.AuthorReplied
+                && !IsFollowingThrough(adopted.FirstOrDefault(task => task.Id == mention.TaskId)?.State))
+            {
+                continue;
+            }
+
             ReviewRequestRow row = ComposeMentionRow(
                 mention, project.Name, Covering(mention.Repository, mention.Number, adopted, rowsByTask),
                 attachedToTeammate);
@@ -284,7 +295,7 @@ internal static class ReviewRequestPane
         // teammate's live review of the same pull request. Within each tier the viewer's own task is
         // chosen ahead of a teammate's however old, because it is the only kind this row may name;
         // a teammate's is chosen only to say that one covers the request, without naming it.
-        static bool IsLive(TaskListItem task) => task.State != TaskState.Done && task.State != TaskState.Abandoned;
+        static bool IsLive(TaskListItem task) => IsFollowingThrough(task.State);
         IReadOnlyList<TaskListItem> own = [.. matching.Where(task => IsViewers(task, rowsByTask))];
         TaskListItem? live = NewestOrNull(own.Where(IsLive))
             ?? NewestOrNull(matching.Where(task => IsLive(task) && !own.Contains(task)));
@@ -303,6 +314,14 @@ internal static class ReviewRequestPane
             covering.Id, live is not null, stateWord, own.Any(task => task.WasAutoPrReviewCreated), gateParked,
             coveringIsOwn);
     }
+
+    /// <summary>
+    /// Whether a task is still open, which is how long an author's reply stays on the board: until
+    /// the task is Done or Abandoned (or gone from the store), the two ends of following a pull
+    /// request through. A task nobody can find is not following anything.
+    /// </summary>
+    internal static bool IsFollowingThrough(TaskState? state) =>
+        state is { IsTerminal: false };
 
     private static TaskListItem? NewestOrNull(IEnumerable<TaskListItem> tasks) =>
         tasks.OrderByDescending(task => task.AddedAt).FirstOrDefault();
@@ -498,6 +517,16 @@ internal static class ReviewRequestPane
         string byHand = $"h9k task add --project {project} --from-pr {mention.Number}";
         ReviewMentionOutcome outcome = ReviewMentionOutcome.FromInput(mention.Outcome.Value);
 
+        // The pull request's author answering this owner's review is its own row, ahead of the
+        // covering-task branches: the task is the owner's own and following the pull request
+        // through, which is exactly why no run was dispatched, so "already covers it" would say
+        // nothing about the reply the row exists to show. Whether it is still on the board at all is
+        // decided by the caller, from the task's own state.
+        if (outcome == ReviewMentionOutcome.AuthorReplied)
+        {
+            return ComposeAuthorReplyRow(mention, pullRequest);
+        }
+
         // Checked before the covering-task branch below, deliberately: the covering task genuinely
         // does cover the pull request, but no run of its own was ever dispatched to answer THIS
         // comment, so rendering it the same as an already-answered mention would bury exactly the
@@ -612,6 +641,64 @@ internal static class ReviewRequestPane
             mention.Repository, mention.Number,
             $"{opening}; what became of it was recorded by a newer build and cannot be read here",
             byHand);
+    }
+
+    /// <summary>The most characters of a reply the row quotes, whatever the three lines add up to.</summary>
+    internal const int AuthorReplyExcerptMaxLength = 300;
+
+    /// <summary>How many non-blank lines of a reply the row quotes.</summary>
+    private const int AuthorReplyExcerptMaxLines = 3;
+
+    /// <summary>
+    /// The pull request's author answering this owner's review: who replied, the reply's opening
+    /// lines quoted, a link to it, and the one command that turns "fixed, look again" into a
+    /// re-review. Composed from what the mention already records, so it costs no gh call and no
+    /// model call, and the reply is shown as quoted data only: nothing the commenter wrote is
+    /// read as markup, and nothing here ever reaches a prompt.
+    /// </summary>
+    private static ReviewRequestRow ComposeAuthorReplyRow(ObservedReviewMention mention, string pullRequest)
+    {
+        string author = mention.CommentAuthorLogin.IsBlank()
+            ? "the author"
+            : ExternalText.OneLineMarkup(mention.CommentAuthorLogin);
+        string link = mention.CommentUrl.IsBlank()
+            ? string.Empty
+            : $" ([link={ExternalText.OneLineMarkup(mention.CommentUrl)}]the comment[/])";
+        string quoted = string.Concat(AuthorReplyExcerpt(mention.CommentBody)
+            .Select(line => $"\n    [dim]>[/] {line.EscapeMarkup()}"));
+
+        return new ReviewRequestRow(
+            NeedsYou: true,
+            $"[red bold]NEEDS YOU[/] [red]the pull request's author answered your review on {pullRequest}: "
+            + $"{author} replied{link}.[/]{quoted}\n    [dim]Take it with:[/] "
+            + $"h9k pr review {pullRequest} --since-my-review",
+            mention.Repository,
+            mention.Number);
+    }
+
+    /// <summary>
+    /// A reply's opening lines as quoted data: the first three non-blank lines, each trimmed, and
+    /// at most <see cref="AuthorReplyExcerptMaxLength"/> characters across all of them (an
+    /// ellipsis where the rest was). The text is made safe for a terminal first, so a control or
+    /// layout-override character is dropped rather than obeyed, and a tab is folded to a space;
+    /// markup escaping is the caller's, after the cut, since escaping first would count a bracket
+    /// as two characters.
+    /// </summary>
+    internal static IReadOnlyList<string> AuthorReplyExcerpt(string? body)
+    {
+        if (body.IsBlank())
+        {
+            return [];
+        }
+
+        string opening = string.Join(
+            '\n',
+            ExternalText.ForTerminal(body)
+                .Split('\n')
+                .Select(line => line.Replace('\t', ' ').Trim())
+                .Where(line => line.Length > 0)
+                .Take(AuthorReplyExcerptMaxLines));
+        return RelayedText.Truncate(opening, AuthorReplyExcerptMaxLength).Split('\n');
     }
 
     /// <summary>
