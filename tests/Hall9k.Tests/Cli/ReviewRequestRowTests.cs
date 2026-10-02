@@ -456,6 +456,39 @@ public sealed class ReviewRequestRowTests
         row.Markup.Should().Contain($"task {DomainId.Short(taskId)} already covers it (Working)");
     }
 
+    [Fact]
+    public void A_teammate_covered_mention_whose_teammate_task_has_closed_is_informational()
+    {
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
+            ObservedMention("CoveredByTeammate"), "arx-platform",
+            new CoveringReview(DomainId.New(), Live: false, "Done", AutoCreated: false, GateParked: false, Own: false));
+
+        row.NeedsYou.Should().BeFalse("nothing is left running that the reply could be waiting on, and a recorded mention is never deleted");
+        row.Markup.Should().Contain("a teammate's task already covered it and is closed");
+    }
+
+    /// <summary>
+    /// The engine answers a request only with a task of this viewer's own, so a teammate's task
+    /// beside a held or off request never hides the lever: nothing will review it for this viewer.
+    /// </summary>
+    [Theory]
+    [InlineData("HeldSettingOff", "auto pr-review is off here")]
+    [InlineData("HeldBeforeCutoff", "predates auto pr-review's start on this install")]
+    public void A_request_a_teammates_task_covers_is_still_a_needs_you_row_when_the_engine_held_it(
+        string outcome, string cause)
+    {
+        ReviewRequestRow row = ReviewRequestPane.Compose(
+            Observed(ReviewRequestOutcome.FromInput(outcome), Now.AddMinutes(-5)),
+            "arx-platform",
+            new AutoPrReviewSetting(AutoPrReviewSpeed.Off, Recorded: true),
+            new CoveringReview(DomainId.New(), Live: true, "Working", AutoCreated: true, GateParked: false, Own: false),
+            Now);
+
+        row.NeedsYou.Should().BeTrue();
+        row.Markup.Should().Contain(cause).And.Contain("h9k task add --project arx-platform --from-pr 2033");
+        row.Markup.Should().NotContain("teammate's");
+    }
+
     /// <summary>
     /// Never dropped the way this outcome used to be (independent pre-PR review, cycle 1,
     /// adversarial lens): the identical treatment <see cref="ReviewRequestOutcome.Unknown"/> gets

@@ -904,7 +904,10 @@ public sealed class AutoPrReviewEngine(
             .ToListAsync(cancellationToken);
         // Only this owner's own task covers a request addressed to this owner: a teammate's live
         // review of the same pull request is a different owner's work, so it neither answers the
-        // request nor holds the mint back (OwnerScopedCoverage). Which of this owner's tasks is
+        // request nor holds the mint back (OwnerScopedCoverage). A task this node cannot yet
+        // attribute to any owner does cover it, because it may be this owner's own (a parked mint
+        // a fleet peer made, whose creator's root has not arrived), and minting over it is the
+        // duplicate the fleet-leader hold exists to prevent. Which of this owner's tasks is
         // returned is part of whether an Info line is owed at all
         // (AutoPrReviewObservation.IsReportable), so it is the newest, the same task h9k status'
         // own pane names as the covering one: an arbitrary pick over two rows could name a
@@ -912,7 +915,7 @@ public sealed class AutoPrReviewEngine(
         (string? thisOwnerRoot, IReadOnlyList<CoveringTaskCandidate> likelyCandidates) =
             await OwnerScopedCoverage.ReadAsync(session, node.OwnerId, liveLikely, cancellationToken);
         ReviewCoverage likelyCoverage = OwnerScopedCoverage.Decide(thisOwnerRoot, likelyCandidates);
-        if (likelyCoverage is { Kind: ReviewCoverageKind.Own, Task: { } likelyCovering })
+        if (likelyCoverage is { Kind: ReviewCoverageKind.Own or ReviewCoverageKind.Unattributable, Task: { } likelyCovering })
         {
             return new MintAttempt(ReviewRequestOutcome.AlreadyCovered, likelyCovering.Id, null);
         }
@@ -1198,11 +1201,12 @@ public sealed class AutoPrReviewEngine(
                 "NOT (d.data ->> 'type' = ? AND d.data ->> 'state' = ?)",
                 TaskType.PrReview.Value, TaskState.Done.Value))
             .ToListAsync(cancellationToken);
-        // This owner's own task only, and its newest, for the same two reasons the fast path in
-        // DecideAsync gives.
+        // This owner's own task, or one this node cannot attribute, and its newest, for the same
+        // reasons the fast path in DecideAsync gives.
         (string? thisOwnerRoot, IReadOnlyList<CoveringTaskCandidate> liveCandidates) =
             await OwnerScopedCoverage.ReadAsync(session, node.OwnerId, liveCovering, cancellationToken);
-        if (OwnerScopedCoverage.Decide(thisOwnerRoot, liveCandidates) is { Kind: ReviewCoverageKind.Own, Task: { } existing })
+        if (OwnerScopedCoverage.Decide(thisOwnerRoot, liveCandidates)
+            is { Kind: ReviewCoverageKind.Own or ReviewCoverageKind.Unattributable, Task: { } existing })
         {
             return new MintAttempt(ReviewRequestOutcome.AlreadyCovered, existing.Id, null, actor);
         }
@@ -1224,8 +1228,9 @@ public sealed class AutoPrReviewEngine(
         // says nothing about whether this feature already covered any request at all (independent
         // pre-PR review, cycle 1, adversarial lens: the note below states "auto-created" and this
         // query is what has to make that true rather than assumed).
-        // A closed task of another owner's holds nothing back from this one: only this owner's own
-        // earlier review makes a standing request a request already answered.
+        // A closed task of another owner's holds nothing back from this one: only an earlier review
+        // that is this owner's, or that this node cannot attribute to anyone else, makes a standing
+        // request a request already answered.
         IReadOnlyList<TaskListItem> closedAutoCreated = await session.Query<TaskListItem>()
             .Where(task => task.ExternalReference == canonical)
             .Where(task => task.WasAutoPrReviewCreated)
@@ -1235,7 +1240,7 @@ public sealed class AutoPrReviewEngine(
             .ToListAsync(cancellationToken);
         (string? closedOwnerRoot, IReadOnlyList<CoveringTaskCandidate> closedCandidates) =
             await OwnerScopedCoverage.ReadAsync(session, node.OwnerId, closedAutoCreated, cancellationToken);
-        TaskListItem? previousReview = OwnerScopedCoverage.NewestOwn(closedOwnerRoot, closedCandidates);
+        TaskListItem? previousReview = OwnerScopedCoverage.NewestMaybeOwn(closedOwnerRoot, closedCandidates);
 
         if (previousReview is not null
             && !await IsGenuineReRequestAsync(session, previousReview, actor.RequestedAt, cancellationToken))
@@ -2043,8 +2048,9 @@ public sealed class AutoPrReviewEngine(
             { } known when known == ReviewMentionOutcome.AttachedNoFollowUp =>
                 $"attached to task {task}, no follow-up dispatched",
             { } known when known == ReviewMentionOutcome.CoveredByTeammate =>
-                "nothing was claimed, appended or created: the only task covering this pull request is "
-                + "another owner's, so the mention is recorded here and answered on GitHub",
+                "nothing was claimed, appended or created: the only live task covering this pull request is "
+                + "another owner's, or one this node cannot yet attribute to this owner, so the mention is "
+                + "recorded here and answered on GitHub",
             { } known when known == ReviewMentionOutcome.HeldSettingOff =>
                 "nothing was created: auto pr-review is off here, so this one is yours to take by hand",
             { } known when known == ReviewMentionOutcome.HeldBeforeCutoff =>
@@ -2063,8 +2069,11 @@ public sealed class AutoPrReviewEngine(
     /// four questions in, minus the actor-timeline read a mention has no equivalent of (the
     /// comment's own <c>createdAt</c> already IS the fact both the cutoff and the record need):
     /// <list type="number">
-    /// <item>Is a live pr-review task already covering this pull request? Attach rather than mint —
-    /// never a second task per pull request per install. Attaching always records the mention on
+    /// <item>Is a live task already covering this pull request? If it is this owner's, attach rather
+    /// than mint, never a second task per pull request per install. If only another owner's covers
+    /// it (or one this node cannot attribute to this owner), record the mention against no task
+    /// (<see cref="ReviewMentionOutcome.CoveredByTeammate"/>), ahead of the cutoff and the setting:
+    /// nothing is claimed, appended or minted. Attaching always records the mention on
     /// the task's own stream; whether it ALSO dispatches a follow-up lap is gated by the identical
     /// cutoff and setting checks below, computed once here and handed in — a covering task must
     /// never buy an attach-triggered launch a mint on the same comment could not (independent
@@ -2105,7 +2114,7 @@ public sealed class AutoPrReviewEngine(
             // Decided ahead of the cutoff and the setting, because nothing here starts anything for
             // either to hold back: the pull request is a teammate's review, and this mention is
             // recorded, not appended to their task.
-            case { Kind: ReviewCoverageKind.Teammate }:
+            case { Kind: ReviewCoverageKind.Teammate or ReviewCoverageKind.Unattributable }:
                 return CoveredByTeammate();
         }
 
@@ -2532,7 +2541,7 @@ public sealed class AutoPrReviewEngine(
                 return await AttachMentionAsync(
                     session, existing, setting, pastCutoff, candidate, login, comment, isPrivate, membershipSetting,
                     cancellationToken);
-            case { Kind: ReviewCoverageKind.Teammate }:
+            case { Kind: ReviewCoverageKind.Teammate or ReviewCoverageKind.Unattributable }:
                 return CoveredByTeammate();
         }
 
