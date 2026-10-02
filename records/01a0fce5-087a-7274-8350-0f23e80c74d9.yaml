@@ -41,3 +41,7 @@ context: |-
   ## Challenge applied 2026-10-02 (cell B pair 1)
 
   Verdicts in verdict-opus.md and verdict-fable.md beside this file; the window merged both. Notes for the build, not criteria: the follow-through poll (PrReviewFollowThroughEngine around 351) may also flag a thread reply that mentions the owner, so the board can show it on both the task row and the mention pane; that is acceptable, do not dedupe. An author reply landing between a pre-flight requeue and its follow-up launch reaches the pending-follow-up prompt through LatestMention*; that window exists today for every no-dispatch attach and this card neither widens nor closes it. 9c12bed2 overlaps at one call site (ObservePrReviewMention's signature): a rebase matter, not a blocker.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-10-02 16:50:54Z
