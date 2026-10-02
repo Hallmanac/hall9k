@@ -608,6 +608,88 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
     }
 
     /// <summary>
+    /// Decision dce39370, from AgelessRx/arx-platform#2166: a teammate's one question on a pull request
+    /// this install's own login wrote mints a task that answers it, never the two-lens review of the
+    /// owner's own work. The login matches the pull request's author case-insensitively, and the
+    /// objective, criterion and recorded outcome all say which shape ran.
+    /// </summary>
+    [Fact]
+    public async Task A_mention_on_a_pull_request_this_install_wrote_mints_an_answer_only_task()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-answer-only-test";
+        const int number = 4210;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-answer-only", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_1", "taylor-dennison", "@brian just curious what the motivating factor is here?", Now.AddMinutes(5))],
+            pullRequestAuthor: ("BRIAN", 99, "OWNER"));
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("normal speed never launches"), gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem minted = (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token)).Single();
+        minted.Type.Should().Be(TaskType.PrReview);
+        minted.Objective.Should().Be($"Answer taylor-dennison's comment on your own pull request {repository}#{number}");
+        minted.Objective.Should().NotContain("Review pull request");
+        minted.WasAutoPrReviewCreated.Should().BeTrue("the mint caps and convergence count it like any other auto-pr-review task");
+
+        TaskDetails details = (await query.LoadAsync<TaskDetails>(minted.Id, cts.Token))!;
+        details.AnswersMentionOnly.Should().BeTrue("every dispatch of this task is the answer lap, never the review");
+        details.AcceptanceCriteria.Should().ContainSingle().Which.Should().Contain("posted only on the owner's explicit go");
+        details.LatestMentionCommentId.Should().Be("IC_1");
+
+        ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
+        observed.Outcome.Should().Be(ReviewMentionOutcome.AnswerOnlyTaskCreated);
+        observed.TaskId.Should().Be(minted.Id);
+    }
+
+    /// <summary>The mirror of the test above: the same mention on a pull request someone else wrote still mints the full review exactly as it did before this rule.</summary>
+    [Fact]
+    public async Task A_mention_on_a_pull_request_someone_else_wrote_still_mints_the_full_review()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-someone-elses-test";
+        const int number = 4211;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-someone-elses", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_1", "ryan", "@brian what do you think of this approach?", Now.AddMinutes(5))],
+            pullRequestAuthor: ("taylor-dennison", 7, "MEMBER"));
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("normal speed never launches"), gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem minted = (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token)).Single();
+        minted.Objective.Should().Be($"Review pull request {repository}#{number}");
+        (await query.LoadAsync<TaskDetails>(minted.Id, cts.Token))!.AnswersMentionOnly.Should().BeFalse();
+        ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
+        observed.Outcome.Should().Be(ReviewMentionOutcome.TaskCreated);
+    }
+
+    /// <summary>
     /// The membership gate's own park (security review idea 6be68ee2, finding 1): a mention on a
     /// public repository, with the COMMENT's own author not among the project's declared members,
     /// still mints the pr-review task through the identical Add and Publish <see cref="TaskDecider"/>
@@ -642,7 +724,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
             [("IC_1", "ryan", "@brian what do you think of this approach?", Now.AddMinutes(5))],
-            isPrivate: false, pullRequestAuthor: ("brian", memberAccountId, "OWNER"),
+            isPrivate: false, pullRequestAuthor: ("taylor-dennison", memberAccountId, "MEMBER"),
             commentAuthorAccountId: strangerAccountId);
         AutoPrReviewEngine engine = new(
             store, node,
@@ -661,7 +743,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             memberAccountId,
             "the park card names the pull request's own author, GitHub's own reading of it, even though this "
             + "park was actually caused by the tagging comment's own author (ryan) failing the gate");
-        minted.PrReviewGateParkedAuthorLogin.Should().Be("brian");
+        minted.PrReviewGateParkedAuthorLogin.Should().Be("taylor-dennison");
         minted.PrReviewGateParkedTitle.Should().Be(
             "Add rate limiting", "the card names the pull request's own title, never the platform-authored objective");
         minted.PrReviewGateParkedIsPrivate.Should().BeFalse();
@@ -677,6 +759,49 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
         observed.Outcome.Should().Be(ReviewMentionOutcome.TaskCreatedParked);
         observed.TaskId.Should().Be(minted.Id);
+    }
+
+    /// <summary>
+    /// The park above, on a pull request this install's own login wrote: the same membership gate
+    /// holds the mint unassigned (a stranger's comment is exactly as unattended-unsafe on the owner's
+    /// pull request), and the held task is still the answer-only shape, so <c>h9k task assign</c>
+    /// runs the answer lap and never the review.
+    /// </summary>
+    [Fact]
+    public async Task A_non_member_mention_on_a_pull_request_this_install_wrote_parks_the_answer_only_task()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-answer-park-test";
+        const int number = 4302;
+        const long memberAccountId = 111;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-answer-park", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_1", "ryan", "@brian what do you think of this approach?", Now.AddMinutes(5))],
+            isPrivate: false, pullRequestAuthor: ("brian", memberAccountId, "OWNER"), commentAuthorAccountId: 999);
+        AutoPrReviewEngine engine = new(
+            store, node,
+            NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("a parked task is never launched"), gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
+            enrolledNodes: MemberSnapshot(projectId, node, memberAccountId), clock: new FixedClock(Now));
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem minted = (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token)).Single();
+        minted.State.Should().Be(TaskState.Published);
+        minted.PrReviewGateParked.Should().BeTrue();
+        (await query.LoadAsync<TaskDetails>(minted.Id, cts.Token))!.AnswersMentionOnly.Should().BeTrue();
+        ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
+        observed.Outcome.Should().Be(ReviewMentionOutcome.AnswerOnlyTaskCreatedParked);
     }
 
     /// <summary>

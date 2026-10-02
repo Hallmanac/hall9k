@@ -2037,7 +2037,9 @@ public sealed class AutoPrReviewEngine(
             DescribeMentionOutcome(decision.Outcome, decision.Detail, decision.TaskId));
 
         return decision.Outcome == ReviewMentionOutcome.TaskCreated
-            || decision.Outcome == ReviewMentionOutcome.TaskCreatedParked;
+            || decision.Outcome == ReviewMentionOutcome.TaskCreatedParked
+            || decision.Outcome == ReviewMentionOutcome.AnswerOnlyTaskCreated
+            || decision.Outcome == ReviewMentionOutcome.AnswerOnlyTaskCreatedParked;
     }
 
     /// <summary>
@@ -2059,6 +2061,13 @@ public sealed class AutoPrReviewEngine(
                 $"task {task} is created but not assigned: its author is not a declared hall9k team member "
                 + "on a repository the membership gate covers — h9k task assign is the human go "
                 + "(security review idea 6be68ee2, finding 1)",
+            { } known when known == ReviewMentionOutcome.AnswerOnlyTaskCreated =>
+                $"task {task} is created and answering this comment on the owner's own pull request, "
+                + "with no review of it",
+            { } known when known == ReviewMentionOutcome.AnswerOnlyTaskCreatedParked =>
+                $"task {task} is created to answer this comment on the owner's own pull request, with no "
+                + "review of it, but not assigned: the membership gate holds it, and h9k task assign is the "
+                + "human go",
             { } known when known == ReviewMentionOutcome.Attached =>
                 $"attached to task {task}",
             { } known when known == ReviewMentionOutcome.AttachedNoFollowUp =>
@@ -2100,7 +2109,8 @@ public sealed class AutoPrReviewEngine(
     /// <item>Does the comment postdate this project's own cutoff? The no-backfill guard outranks
     /// the setting, exactly as it does on the request side.</item>
     /// <item>Is the setting off here? Then the row is theirs to act on.</item>
-    /// <item>Mint.</item>
+    /// <item>Mint, as a full review, or as the bounded answer lap alone when this install's own login
+    /// wrote the pull request (<see cref="MentionRouting"/>).</item>
     /// </list>
     /// </summary>
     private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)?> DecideMentionAsync(
@@ -2124,16 +2134,18 @@ public sealed class AutoPrReviewEngine(
             await OwnerScopedCoverage.ReadAsync(session, node.OwnerId, liveLikely, cancellationToken);
 
         bool pastCutoff = AutoPrReviewCutoff.StartsOnItsOwn(comment.CreatedAt, cutoff);
-        switch (OwnerScopedCoverage.Decide(thisOwnerRoot, likelyCandidates))
+        ReviewCoverage likelyCoverage = OwnerScopedCoverage.Decide(thisOwnerRoot, likelyCandidates);
+        MentionRoute route = MentionRouting.Decide(likelyCoverage, prAuthor?.Login, login);
+        switch (route)
         {
-            case { Kind: ReviewCoverageKind.Own, Task: { } likelyCovering }:
+            case MentionRoute.Attach when likelyCoverage.Task is { } likelyCovering:
                 return await AttachMentionAsync(
                     session, likelyCovering, setting, pastCutoff, candidate, login, comment, prAuthor, isPrivate,
                     membershipSetting, cancellationToken);
             // Decided ahead of the cutoff and the setting, because nothing here starts anything for
             // either to hold back: the pull request is a teammate's review, and this mention is
             // recorded, not appended to their task.
-            case { Kind: ReviewCoverageKind.Teammate or ReviewCoverageKind.Unattributable }:
+            case MentionRoute.CoveredByTeammate:
                 return CoveredByTeammate();
         }
 
@@ -2218,8 +2230,8 @@ public sealed class AutoPrReviewEngine(
         {
             return await CreateFromMentionAsync(
                 session, project, setting, repository, candidate, login, comment, prAuthor, pastCutoff,
-                parked: gate == MembershipGateDecision.Park, isPrivate, membershipSetting,
-                cancellationToken);
+                parked: gate == MembershipGateDecision.Park, answerOnly: route == MentionRoute.MintAnswer,
+                isPrivate, membershipSetting, cancellationToken);
         }
         catch (DomainException exception)
         {
@@ -2541,6 +2553,12 @@ public sealed class AutoPrReviewEngine(
         return run?.State == RunState.ReviewParked;
     }
 
+    private static readonly string[] MentionReviewCriteria =
+    [
+        "The findings report is walked with the owner (walk-pr-review-findings) and every finding is directed.",
+        "The report's own \"You were asked\" section answers the tagged comment that minted this task.",
+    ];
+
     /// <summary>
     /// One fresh pr-review task for a mention on a pull request no live task covers (idea 2f079bcd,
     /// decision 2) — the mirror of <see cref="CreateOneAsync"/>, minus the re-request-genuineness
@@ -2548,11 +2566,19 @@ public sealed class AutoPrReviewEngine(
     /// no "same standing request" a later sweep could ever confuse a fresh comment with. A Done or
     /// Abandoned task's own prior coverage is exactly as silent here as it is on the request side —
     /// nothing about a closed-out earlier review blocks a fresh mint.
+    /// <para>
+    /// <paramref name="answerOnly"/> is <see cref="MentionRouting"/>'s verdict that this install's own
+    /// login wrote the pull request (decision dce39370): everything above and below this mint, the
+    /// cutoff, the setting, the membership gate, the fleet hold, the hourly cap and the launch hold,
+    /// is unchanged, and only what the task is differs. Its objective, criterion and provenance say it
+    /// answers the comment, and its mention event marks it so every dispatch of it is the answer lap
+    /// (<c>RunLauncher.LaunchAsync</c>), never the two-lens review.
+    /// </para>
     /// </summary>
     private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)?> CreateFromMentionAsync(
         IDocumentSession session, ProjectDetails project, AutoPrReviewSetting setting, string repository,
         ReviewRequestedPullRequest candidate, string login, PullRequestMentionComment comment,
-        PullRequestAuthor? prAuthor, bool pastCutoff, bool parked, bool? isPrivate,
+        PullRequestAuthor? prAuthor, bool pastCutoff, bool parked, bool answerOnly, bool? isPrivate,
         ReviewMembershipGateSetting membershipSetting, CancellationToken cancellationToken)
     {
         WorkItemImporter importer = await WorkItemConnections.ImporterAsync(session, cancellationToken, processRunner: processRunner);
@@ -2587,21 +2613,25 @@ public sealed class AutoPrReviewEngine(
 
         DateTimeOffset now = _clock.GetUtcNow();
         // Platform-authored, never the pull request's own title — see CreateOneAsync's identical
-        // comment (security review idea 6be68ee2, finding 1).
-        string objective = $"Review pull request {imported.Reference.Reference}";
+        // comment (security review idea 6be68ee2, finding 1). An answer-only task (decision dce39370:
+        // the pull request is the owner's own) says it answers the comment and never that it reviews
+        // anything.
+        string objective = answerOnly
+            ? MentionRouting.AnswerObjective(comment.AuthorLogin, imported.Reference.Reference)
+            : $"Review pull request {imported.Reference.Reference}";
 
-        string provenance = $"GitHub mention observed: {comment.AuthorLogin} tagged {login} in a comment on "
-            + $"this pull request at {comment.CreatedAt:yyyy-MM-dd HH:mm:ss}Z.";
+        string provenance = answerOnly
+            ? MentionRouting.AnswerProvenance(comment.AuthorLogin, login, comment.CreatedAt)
+            : $"GitHub mention observed: {comment.AuthorLogin} tagged {login} in a comment on "
+                + $"this pull request at {comment.CreatedAt:yyyy-MM-dd HH:mm:ss}Z.";
         string? linkedContext = await LinkedWorkItemImport.TryImportContextAsync(
             session, project, imported, cancellationToken, processRunner: processRunner);
         string composedAdditional = linkedContext.IsNotBlank() ? $"{linkedContext}\n\n{provenance}" : provenance;
         string agentContext = ComposePrReviewContext(imported, composedAdditional);
 
-        string[] criteria =
-        [
-            "The findings report is walked with the owner (walk-pr-review-findings) and every finding is directed.",
-            "The report's own \"You were asked\" section answers the tagged comment that minted this task.",
-        ];
+        string[] criteria = answerOnly
+            ? [MentionRouting.AnswerCriterion]
+            : [.. MentionReviewCriteria];
 
         Guid taskId = DomainId.New();
         TaskAdded added = TaskDecider.Add(
@@ -2611,7 +2641,7 @@ public sealed class AutoPrReviewEngine(
         PullRequestReviewMentionObserved observed = new(
             taskId, imported.Url?.ToString() ?? candidate.Url, comment.CommentId, comment.AuthorLogin,
             comment.Body, comment.Url, comment.CreatedAt, now, comment.DatabaseId, MintedTask: true,
-            MentionedLogin: login);
+            MentionedLogin: login, AnswerOnly: answerOnly);
 
         TaskAggregate task = new();
         task.Apply(added);
@@ -2658,8 +2688,8 @@ public sealed class AutoPrReviewEngine(
                 taskId, repository, candidate.Number);
 
             return (
-                ReviewMentionOutcome.TaskCreatedParked, taskId,
-                "published but unassigned by the membership gate — h9k task assign to run it");
+                answerOnly ? ReviewMentionOutcome.AnswerOnlyTaskCreatedParked : ReviewMentionOutcome.TaskCreatedParked,
+                taskId, "published but unassigned by the membership gate — h9k task assign to run it");
         }
 
         string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
@@ -2736,7 +2766,7 @@ public sealed class AutoPrReviewEngine(
         }
 
         return (
-            ReviewMentionOutcome.TaskCreated, taskId,
+            answerOnly ? ReviewMentionOutcome.AnswerOnlyTaskCreated : ReviewMentionOutcome.TaskCreated, taskId,
             deferral ?? (launchImmediately ? "started immediately, ceiling-exempt" : null));
     }
 }
