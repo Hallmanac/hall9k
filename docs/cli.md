@@ -441,7 +441,7 @@ already done and parks an addendum beside the report — walked with the `walk-p
 skill exactly like the original report, including its own new step: show the drafted reply, take
 edits, and post it only on the owner's explicit go, under their own login, in the exact thread the
 mention came from. A peer node still attaches the mention to the task's own stream but never claims
-it or launches a run; `h9k pr review --since-my-review` is the manual lever it leaves standing. A
+it or launches a run; `h9k pr review --since-my-review` is the manual lever it leaves standing. When the comment's author is the pull request's own author and the task is already waiting on the pull request, no lap is dispatched on any node: `h9k status` shows a needs-you row saying the author answered your review, with the reply's first three non-blank lines (at most 300 characters, shown as quoted text), a link to the comment and `h9k pr review <pull-request> --since-my-review`, and the row leaves once the task is Done or Abandoned. A
 comment id already handled never fires again, and a comment the install's own login wrote
 never counts. `--auto-pr-review off` silences mentions too; there is no separate switch.
 
