@@ -1101,6 +1101,15 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         view.State = TaskState.NeedsHuman;
     }
 
+    // Mirrors TaskAggregate.Apply(PullRequestReviewMentionFollowUpSkipped): the claim is given back
+    // with the facts the event carries.
+    public void Apply(IEvent<PullRequestReviewMentionFollowUpSkipped> @event, TaskListItem view)
+    {
+        view.State = @event.Data.ReturnedToState;
+        view.CurrentRunId = @event.Data.ReturnedToRunId;
+        view.ClaimedByNodeId = @event.Data.ReturnedToNodeId;
+    }
+
     // Mirrors TaskAggregate.Apply(PullRequestReviewMentionObserved) — state untouched, same reasoning.
     public void Apply(IEvent<PullRequestReviewMentionObserved> @event, TaskListItem view)
     {

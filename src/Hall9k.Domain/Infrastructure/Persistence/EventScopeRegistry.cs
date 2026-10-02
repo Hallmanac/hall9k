@@ -64,6 +64,7 @@ public static class EventScopeRegistry
         [typeof(PullRequestReviewFollowThroughOpened)] = EventScope.ProjectScoped,
         [typeof(PullRequestReviewGateParked)] = EventScope.ProjectScoped,
         [typeof(PullRequestReviewLapOpened)] = EventScope.ProjectScoped,
+        [typeof(PullRequestReviewMentionFollowUpSkipped)] = EventScope.ProjectScoped,
         [typeof(PullRequestReviewMentionObserved)] = EventScope.ProjectScoped,
         [typeof(PullRequestReviewVerdictDelivered)] = EventScope.ProjectScoped,
         [typeof(QuestionAsked)] = EventScope.ProjectScoped,

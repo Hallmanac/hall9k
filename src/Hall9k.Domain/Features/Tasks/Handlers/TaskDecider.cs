@@ -2217,7 +2217,7 @@ public static class TaskDecider
     public static PullRequestReviewMentionObserved ObservePrReviewMention(
         TaskAggregate task, string pullRequestUrl, string commentId, string commentAuthorLogin,
         string commentBody, string commentUrl, DateTimeOffset commentCreatedAt, DateTimeOffset observedAt,
-        long? commentDatabaseId = null)
+        long? commentDatabaseId = null, string? mentionedLogin = null)
     {
         if (task.Type != TaskType.PrReview)
         {
@@ -2236,7 +2236,44 @@ public static class TaskDecider
 
         return new PullRequestReviewMentionObserved(
             task.Id, pullRequestUrl, commentId, commentAuthorLogin, commentBody, commentUrl, commentCreatedAt,
-            observedAt, commentDatabaseId);
+            observedAt, commentDatabaseId, MentionedLogin: mentionedLogin);
+    }
+
+    /// <summary>
+    /// Gives back the claim a mention follow-up took, before any session launched, because the
+    /// stored comment was not for this install's own login (or that login could not be read).
+    /// Returns the task to the state it held before the follow-up was first claimed: the
+    /// aggregate's own pre-claim copy when it is still a real stop, and the wait the pull
+    /// request's follow-through is in when a pre-flight's requeue has since moved the task onto
+    /// the queue (the claim after a requeue never saw the state the first claim left).
+    /// <para>
+    /// Refused unless <paramref name="runId"/> is still the claim the task is holding, so a skip
+    /// that arrives after a newer claim never undoes it.
+    /// </para>
+    /// </summary>
+    public static PullRequestReviewMentionFollowUpSkipped SkipPrReviewMentionFollowUp(
+        TaskAggregate task, Guid runId, string commentId, string reason, DateTimeOffset skippedAt)
+    {
+        if (task.State != TaskState.Claimed || task.CurrentRunId != runId)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value} under run {task.CurrentRunId?.ToString() ?? "none"}, "
+                + $"not claimed by run {runId}, so that run's mention follow-up claim is not this task's "
+                + "to give back.");
+        }
+
+        TaskState before = task.StateBeforeLatestClaim ?? TaskState.Queued;
+        bool leftOnTheQueue = before == TaskState.Queued || before == TaskState.Blocked;
+        TaskState returnedTo = (leftOnTheQueue && task.PrReviewFollowThroughOpen, task.PrReviewAuthorActivitySummary.IsNotBlank()) switch
+        {
+            (true, true) => TaskState.NeedsHuman,
+            (true, false) => TaskState.AwaitingAuthor,
+            _ => before,
+        };
+
+        return new PullRequestReviewMentionFollowUpSkipped(
+            task.Id, runId, commentId, reason, returnedTo, task.CurrentRunIdBeforeLatestClaim,
+            task.ClaimedByNodeIdBeforeLatestClaim, skippedAt);
     }
 
     /// <summary>
