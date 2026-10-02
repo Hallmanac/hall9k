@@ -419,6 +419,44 @@ public sealed class ReviewRequestRowTests
     }
 
     /// <summary>
+    /// The origin case, AgelessRx/arx-platform#2166: a teammate mentioned this viewer's login on a
+    /// pull request only another owner's task covers. The daemon touched nothing, so the row is the
+    /// whole answer, and the covering teammate's task must not turn it into the informational line.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void A_mention_a_teammates_task_covered_is_a_needs_you_row_with_no_lever_and_a_link_to_the_comment(bool covered)
+    {
+        CoveringReview? covering = covered
+            ? new CoveringReview(DomainId.New(), Live: true, "Parked", AutoCreated: false, GateParked: false, Own: false)
+            : null;
+
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
+            ObservedMention("CoveredByTeammate"), "arx-platform", covering);
+
+        row.NeedsYou.Should().BeTrue("a person asked this viewer something, and no task of theirs is answering it");
+        row.Markup.Should().Contain("a comment from ryan mentioned brian on acme/widgets#2033");
+        row.Markup.Should().Contain("this pull request is a teammate's review, so the reply happens on GitHub");
+        row.Markup.Should().Contain("[link=https://github.com/acme/widgets/pull/2033#issuecomment-1]the comment[/]");
+        row.Markup.Should().NotContain("Take it with", "every by-hand lever that exists is blind to whose task covers the pull request");
+        row.Markup.Should().NotContain("already covers it");
+    }
+
+    [Fact]
+    public void A_teammate_covered_mention_the_viewer_has_since_taken_a_task_for_is_informational()
+    {
+        Guid taskId = DomainId.New();
+
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
+            ObservedMention("CoveredByTeammate"), "arx-platform",
+            new CoveringReview(taskId, Live: true, "Working", AutoCreated: false, GateParked: false));
+
+        row.NeedsYou.Should().BeFalse();
+        row.Markup.Should().Contain($"task {DomainId.Short(taskId)} already covers it (Working)");
+    }
+
+    /// <summary>
     /// Never dropped the way this outcome used to be (independent pre-PR review, cycle 1,
     /// adversarial lens): the identical treatment <see cref="ReviewRequestOutcome.Unknown"/> gets
     /// on the request side, rather than the row silently vanishing.

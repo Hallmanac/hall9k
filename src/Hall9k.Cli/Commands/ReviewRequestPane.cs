@@ -209,9 +209,9 @@ internal static class ReviewRequestPane
             }
 
             // The task the daemon attached the mention to is judged from its own row, not from the
-            // covering task the board prefers: the engine attaches to the newest covering task
-            // whoever owns it, so the two can differ (independent pre-PR review, cycle 1, both
-            // lenses, medium).
+            // covering task the board prefers: a mention recorded before the engine began
+            // answering to the owner rule attached to the newest covering task whoever owned it,
+            // so the two can differ (independent pre-PR review, cycle 1, both lenses, medium).
             bool attachedToTeammate = mention.TaskId is { } attachedId
                 && rowsByTask.TryGetValue(attachedId, out TaskStatusRow? attachedRow)
                 && attachedRow.IsTeammates;
@@ -532,6 +532,23 @@ internal static class ReviewRequestPane
                 $"h9k task assign {parkedId}");
         }
 
+        // Ahead of the informational teammate-covered branch below, which would otherwise say a
+        // teammate's task "already covers it" and bury the one fact that matters: the daemon saw a
+        // mention of this viewer's login, decided it was not its to act on, and recorded it
+        // against no task at all. The row offers no by-hand lever, because the ones that exist
+        // (h9k task add --from-pr, h9k pr review) are blind to whose task covers the pull request
+        // and would attach to or refuse around the teammate's own; the reply is theirs to write on
+        // GitHub. A task of the viewer's own that has covered it since is judged below instead.
+        if (outcome == ReviewMentionOutcome.CoveredByTeammate && covering is not { Own: true })
+        {
+            string commentLink = mention.CommentUrl.IsBlank()
+                ? string.Empty
+                : $" ([link={mention.CommentUrl.EscapeMarkup()}]the comment[/])";
+            return NeedsYouWithoutLever(
+                mention.Repository, mention.Number,
+                $"{opening}; this pull request is a teammate's review, so the reply happens on GitHub{commentLink}");
+        }
+
         if (covering is { Own: false } teammates)
         {
             return Informational(
@@ -615,6 +632,14 @@ internal static class ReviewRequestPane
         new(
             NeedsYou: true,
             $"[red bold]NEEDS YOU[/] [red]{cause}.[/] [dim]Take it with:[/] {lever}",
+            repository,
+            number);
+
+    /// <summary>A needs-you row for something the viewer has to read and answer elsewhere, so no command is offered.</summary>
+    private static ReviewRequestRow NeedsYouWithoutLever(string repository, int number, string cause) =>
+        new(
+            NeedsYou: true,
+            $"[red bold]NEEDS YOU[/] [red]{cause}.[/]",
             repository,
             number);
 
