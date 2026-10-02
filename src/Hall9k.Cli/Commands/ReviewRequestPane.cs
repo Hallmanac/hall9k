@@ -148,15 +148,17 @@ internal static class ReviewRequestPane
         // retried (ObservedReviewMention's own class doc: a comment id already decided is never
         // re-decided) — the needs-you row an operator has to act on is only possible if one of
         // these is surfaced somewhere, and until now nothing in Hall9k did (independent pre-PR
-        // review, cycle 1, adversarial lens). Excludes only the two outcomes that need nothing
-        // further: TaskCreated (a fresh task is reviewing) and Attached (a follow-up lap was
-        // actually dispatched to answer this exact comment) — every other outcome, including one
+        // review, cycle 1, adversarial lens). Excludes only the outcomes that need nothing further:
+        // TaskCreated (a fresh task is reviewing), AnswerOnlyTaskCreated (a fresh task is answering a
+        // comment on the owner's own pull request) and Attached (a follow-up lap was actually
+        // dispatched to answer this exact comment) — every other outcome, including one
         // this build cannot even read, is surfaced rather than silently dropped (independent
         // pre-PR review, cycle 1, adversarial lens, low: a row whose outcome reads as Unknown used
         // to vanish here with nothing shown at all).
         IReadOnlyList<ObservedReviewMention> unresolvedMentions = [.. (await session.Query<ObservedReviewMention>()
             .ToListAsync(cancellationToken))
             .Where(mention => mention.Outcome != ReviewMentionOutcome.TaskCreated
+                && mention.Outcome != ReviewMentionOutcome.AnswerOnlyTaskCreated
                 && mention.Outcome != ReviewMentionOutcome.Attached)];
         if (observed.Count == 0 && unresolvedMentions.Count == 0)
         {
