@@ -1,7 +1,10 @@
 using FluentAssertions;
 using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Domain.Features.AutoPrReview;
+using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -567,5 +570,82 @@ public sealed class AutoPrReviewObservationTests
             priorAttachedCount: 1, mostRecentAttachedAt: RequestedAt, now: RequestedAt.AddMinutes(30),
             cap: 3, cooldown: TimeSpan.FromMinutes(30))
             .Should().BeNull("the leader had the whole cooldown to answer, and the cap is not yet reached");
+    }
+
+    /// <summary>
+    /// The pull request's author answering this owner's review, on a task already following it
+    /// through, gets a row and no run. The decision reads the task through
+    /// <see cref="TaskDecider.AwaitsPrReviewFollowThrough"/> exactly as the engine does, so these
+    /// tests build the real aggregate states rather than a stand-in boolean.
+    /// </summary>
+    [Fact]
+    public void The_pull_request_authors_reply_on_a_task_following_it_through_is_a_row_and_no_run()
+    {
+        TaskAggregate task = FollowingThroughTask();
+
+        AutoPrReviewObservation.IsPullRequestAuthorReply(
+            "taylor-dennison", "taylor-dennison", TaskDecider.AwaitsPrReviewFollowThrough(task))
+            .Should().BeTrue();
+    }
+
+    [Fact]
+    public void The_author_is_matched_case_insensitively_because_github_logins_are()
+    {
+        AutoPrReviewObservation.IsPullRequestAuthorReply("Taylor-Dennison", "taylor-dennison", awaitsFollowThrough: true)
+            .Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_mention_from_anyone_other_than_the_pull_requests_author_is_not_an_author_reply()
+    {
+        AutoPrReviewObservation.IsPullRequestAuthorReply("taylor-dennison", "ryan", awaitsFollowThrough: true)
+            .Should().BeFalse("it takes the ordinary follow-up path, exactly as today");
+    }
+
+    [Fact]
+    public void The_authors_mention_on_a_task_holding_an_unwalked_report_is_not_an_author_reply()
+    {
+        TaskAggregate task = ClaimedTaskWithAnUnwalkedReport();
+
+        TaskDecider.AwaitsPrReviewFollowThrough(task).Should().BeFalse("the report parks on the run stream while the task stays Claimed");
+        AutoPrReviewObservation.IsPullRequestAuthorReply(
+            "taylor-dennison", "taylor-dennison", TaskDecider.AwaitsPrReviewFollowThrough(task))
+            .Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("  ")]
+    public void A_pull_request_whose_author_could_not_be_read_never_matches(string? author)
+    {
+        AutoPrReviewObservation.IsPullRequestAuthorReply(author, author, awaitsFollowThrough: true)
+            .Should().BeFalse("an unobserved author is never guessed at");
+    }
+
+    private static readonly DateTimeOffset At = new(2026, 10, 2, 12, 0, 0, TimeSpan.Zero);
+    private static readonly Guid Owner = DomainId.New();
+
+    private static TaskAggregate ClaimedTaskWithAnUnwalkedReport()
+    {
+        TaskAggregate task = new();
+        task.Apply(TaskDecider.Add(
+            DomainId.New(), DomainId.New(), "Review pull request acme/widgets#42",
+            ["The findings report is walked with the owner (walk-pr-review-findings) and every finding is directed."],
+            TaskType.PrReview, agentContext: "Imported from github-pr:acme/widgets#42.", constraints: null,
+            externalReference: new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/widgets#42"),
+            addedAt: At, addedByOwnerId: Owner));
+        task.Apply(TaskDecider.Publish(task, TaskDependencyGraph.Empty, At, Owner));
+        task.Apply(TaskDecider.Assign(task, Owner, [], At, Owner));
+        task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), At));
+        return task;
+    }
+
+    private static TaskAggregate FollowingThroughTask()
+    {
+        TaskAggregate task = ClaimedTaskWithAnUnwalkedReport();
+        task.Apply(TaskDecider.OpenPrReviewFollowThrough(
+            task, task.CurrentRunId!.Value, "https://github.com/acme/widgets/pull/42", headSha: null, At));
+        return task;
     }
 }

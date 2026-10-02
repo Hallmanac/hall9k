@@ -151,6 +151,22 @@ internal static class AutoPrReviewObservation
         enrolledNodeIds is null || enrolledNodeIds.Append(thisNodeId).Min() == thisNodeId;
 
     /// <summary>
+    /// Whether a mention on this owner's own task is the pull request's author answering the
+    /// review, which gets a row and no run: the comment's author is the pull request's author
+    /// (matched by login, case-insensitively, since the sweep reads no account id for either side
+    /// of this and GitHub logins are case-insensitive) and the task is following its pull request
+    /// through (<paramref name="awaitsFollowThrough"/>, <c>TaskDecider.AwaitsPrReviewFollowThrough</c>).
+    /// A task holding an unwalked report is not following anything through yet, so an author's
+    /// mention there still takes the ordinary follow-up path, and a mention from anyone else always
+    /// does. A pull request whose author could not be read (a null or blank login) is never matched.
+    /// </summary>
+    public static bool IsPullRequestAuthorReply(
+        string? pullRequestAuthorLogin, string? commentAuthorLogin, bool awaitsFollowThrough) =>
+        awaitsFollowThrough
+        && pullRequestAuthorLogin.IsNotBlank()
+        && string.Equals(pullRequestAuthorLogin.Trim(), commentAuthorLogin?.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Whether <c>AttachMentionAsync</c>'s own bounded follow-up dispatch is held for this task —
     /// the LIFETIME cap or the cooldown between laps (task 7ae690f5, Opus verdict 2026-09-27) —
     /// decided purely over facts already on the per-node <see cref="ObservedReviewMention"/> rows
@@ -2047,6 +2063,9 @@ public sealed class AutoPrReviewEngine(
                 $"attached to task {task}",
             { } known when known == ReviewMentionOutcome.AttachedNoFollowUp =>
                 $"attached to task {task}, no follow-up dispatched",
+            { } known when known == ReviewMentionOutcome.AuthorReplied =>
+                $"recorded on task {task}: the pull request's author answered the review, so it is shown as a "
+                + "row and no follow-up is dispatched",
             { } known when known == ReviewMentionOutcome.CoveredByTeammate =>
                 "nothing was claimed, appended or created: the only live task covering this pull request is "
                 + "another owner's, or one this node cannot yet attribute to this owner, so the mention is "
@@ -2109,8 +2128,8 @@ public sealed class AutoPrReviewEngine(
         {
             case { Kind: ReviewCoverageKind.Own, Task: { } likelyCovering }:
                 return await AttachMentionAsync(
-                    session, likelyCovering, setting, pastCutoff, candidate, login, comment, isPrivate, membershipSetting,
-                    cancellationToken);
+                    session, likelyCovering, setting, pastCutoff, candidate, login, comment, prAuthor, isPrivate,
+                    membershipSetting, cancellationToken);
             // Decided ahead of the cutoff and the setting, because nothing here starts anything for
             // either to hold back: the pull request is a teammate's review, and this mention is
             // recorded, not appended to their task.
@@ -2216,7 +2235,12 @@ public sealed class AutoPrReviewEngine(
     /// second task (idea 2f079bcd, decision 2). The attach itself — recording the mention on the
     /// task's own stream — always happens: it costs nothing and keeps the record honest whatever
     /// the setting says, exactly as an observed review request is recorded whatever the setting
-    /// says. Dispatching the bounded follow-up lap is a second, separate decision, gated on all of:
+    /// says. The one exception to dispatching is the pull request's own author answering this
+    /// owner's review on a task already following it through
+    /// (<see cref="AutoPrReviewObservation.IsPullRequestAuthorReply"/>): that is recorded as
+    /// <see cref="ReviewMentionOutcome.AuthorReplied"/> and surfaced as a row, and none of the
+    /// gates below is asked, since nothing is dispatched. Otherwise dispatching the bounded
+    /// follow-up lap is a second, separate decision, gated on all of:
     /// <list type="number">
     /// <item>the task is currently eligible for one at all
     /// (<see cref="TaskDecider.AwaitsPrReviewMentionFollowUp"/>: the report is already parked and
@@ -2252,8 +2276,9 @@ public sealed class AutoPrReviewEngine(
     /// </summary>
     private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)?> AttachMentionAsync(
         IDocumentSession session, TaskListItem existing, AutoPrReviewSetting setting, bool pastCutoff,
-        ReviewRequestedPullRequest candidate, string login, PullRequestMentionComment comment, bool? isPrivate,
-        ReviewMembershipGateSetting membershipSetting, CancellationToken cancellationToken)
+        ReviewRequestedPullRequest candidate, string login, PullRequestMentionComment comment,
+        PullRequestAuthor? prAuthor, bool? isPrivate, ReviewMembershipGateSetting membershipSetting,
+        CancellationToken cancellationToken)
     {
         StreamState? fence = await session.Events.FetchStreamStateAsync(existing.Id, cancellationToken);
         if (fence is null)
@@ -2284,6 +2309,21 @@ public sealed class AutoPrReviewEngine(
         PullRequestReviewMentionObserved observed = TaskDecider.ObservePrReviewMention(
             task, candidate.Url, comment.CommentId, comment.AuthorLogin, comment.Body, comment.Url,
             comment.CreatedAt, now, comment.DatabaseId, mentionedLogin: login);
+
+        // The pull request's author answering this owner's own review gets a row and no run, decided
+        // ahead of the cutoff, the setting and the membership gate because none of them has anything
+        // to hold back: nothing is claimed or launched either way. It is recorded under its own
+        // outcome rather than Attached, so the follow-up lifetime cap never counts it.
+        if (AutoPrReviewObservation.IsPullRequestAuthorReply(
+            prAuthor?.Login, comment.AuthorLogin, TaskDecider.AwaitsPrReviewFollowThrough(task)))
+        {
+            session.Events.Append(existing.Id, expectedVersion: fence.Version + 1, observed);
+            await session.SaveChangesAsync(cancellationToken);
+            return (
+                ReviewMentionOutcome.AuthorReplied, existing.Id,
+                "recorded; the pull request's own author answered the review, so it is shown as a row and "
+                + "no follow-up was dispatched");
+        }
 
         bool reportParkedAwaitingWalk = await IsReportParkedAwaitingWalkAsync(session, task, cancellationToken);
         if (!TaskDecider.AwaitsPrReviewMentionFollowUp(task, reportParkedAwaitingWalk))
@@ -2539,8 +2579,8 @@ public sealed class AutoPrReviewEngine(
         {
             case { Kind: ReviewCoverageKind.Own, Task: { } existing }:
                 return await AttachMentionAsync(
-                    session, existing, setting, pastCutoff, candidate, login, comment, isPrivate, membershipSetting,
-                    cancellationToken);
+                    session, existing, setting, pastCutoff, candidate, login, comment, prAuthor, isPrivate,
+                    membershipSetting, cancellationToken);
             case { Kind: ReviewCoverageKind.Teammate or ReviewCoverageKind.Unattributable }:
                 return CoveredByTeammate();
         }

@@ -11,7 +11,7 @@ namespace Hall9k.Domain.Features.AutoPrReview;
 /// is no "already covered" here (a comment id is only ever ATTACHED to this owner's live task,
 /// minted a fresh one, or recorded against no task when only another owner's covers the pull
 /// request, never rediscovered the way a standing request is), and there are outcomes
-/// (<see cref="Attached"/>, <see cref="CoveredByTeammate"/>) the request side has no counterpart
+/// (<see cref="Attached"/>, <see cref="CoveredByTeammate"/>, <see cref="AuthorReplied"/>) the request side has no counterpart
 /// for at all.
 /// </summary>
 [JsonConverter(typeof(ReviewMentionOutcomeJsonConverter))]
@@ -58,6 +58,17 @@ public sealed record ReviewMentionOutcome
     /// </summary>
     public static readonly ReviewMentionOutcome CoveredByTeammate = new("CoveredByTeammate");
 
+    /// <summary>
+    /// The pull request's own author answered this owner's review: the comment's author is the pull
+    /// request's author, and this owner's own pr-review task is following the pull request through
+    /// (<c>TaskDecider.AwaitsPrReviewFollowThrough</c>). The mention is recorded on the task's own
+    /// stream and shown as a row with the reply's opening lines and a link, and nothing is claimed
+    /// or launched for it: reading one comment does not need a run that analyzes the whole pull
+    /// request. It is not an <see cref="Attached"/> outcome, so it never counts toward the mention
+    /// follow-up lifetime cap or its cooldown.
+    /// </summary>
+    public static readonly ReviewMentionOutcome AuthorReplied = new("AuthorReplied");
+
     /// <summary>Nothing was minted: this project explicitly recorded <c>--auto-pr-review off</c>.</summary>
     public static readonly ReviewMentionOutcome HeldSettingOff = new("HeldSettingOff");
 
@@ -84,6 +95,7 @@ public sealed record ReviewMentionOutcome
         "attached" => Attached,
         "attachednofollowup" => AttachedNoFollowUp,
         "coveredbyteammate" => CoveredByTeammate,
+        "authorreplied" => AuthorReplied,
         "heldsettingoff" => HeldSettingOff,
         "heldbeforecutoff" => HeldBeforeCutoff,
         "mintfailed" => MintFailed,
