@@ -1,0 +1,48 @@
+hall9k-task-record: 1
+task-id: 01a0f96f-9ec1-7401-8f4e-44db5f6b4783
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#674
+objective: A mention seen by a teammate's install never claims or launches on a task assigned to another owner
+criteria:
+  - |-
+    A mention follow-up is claimed or dispatched only on a task that is this owner's by the rule the CLI task commands apply (TaskOwnerRule: holder, else assignee, else creator). A task this node cannot attribute to a known owner counts as another owner's. This holds on every path that attaches a mention, including the canonical re-check inside the mention mint (AutoPrReviewEngine.cs around 2469)
+  - |-
+    Unit tests over the covering-task decision, with no database, no branch, and no GitHub, reproduce the #2166 case: a mention of this install's login on a pull request whose only live pr-review task is another owner's decides the teammate row, with no claim and no event on that task. When both an own and a teammate's live task cover the pull request, the decision attaches to the own task whichever is newer
+  - A daemon-originated mention claim on another owner's task is refused even when this install's owner holds the Owner role; the Owner-role override stays a human act with a stated reason (h9k task abandon --holder --reason and its siblings), and this ruling is recorded in the decisions log (Brian, 2026-10-02)
+  - |-
+    A mention on a pull request whose only covering task belongs to another owner is recorded with its own outcome. It is shown to this owner as a needs-you mention row (ComposeMentionRow, ahead of its informational teammate-covered branch) naming who mentioned which login on which pull request, with a link to the comment, and offering no by-hand lever: the row's text says the pull request is a teammate's review and the reply happens on GitHub. The mention is never appended to the teammate's task stream, never claimed, and never minted (Brian, 2026-10-02: no lever, the smaller change)
+  - On the review-request side, no covering-task check (the fast path around 897, the canonical dedup around 1190, and the re-mint guard around 1222) counts another owner's task; both sides use one owner-scoped helper. A unit test shows a request to this owner on a pull request a teammate's live review covers decides mint
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/5f6b4783-a-mention-seen-by-a-teammate-s
+published: 2026-10-02 14:19:47Z
+context: |-
+  The mention path claims and launches on a task without asking whose task it is. AutoPrReviewEngine.AttachMentionAsync finds the covering task by the pull request's external reference alone (AutoPrReviewEngine.cs:2067-2076). Its gates (2241-2380) never look at the assignee or owner root. TaskDecider.ClaimForMentionFollowUp (TaskDecider.cs:2280) documents that it does no owner identity check. The v0.11.3 owner-root rule (TaskOwnerRule, 5bacf6fa1/95e7e900b/baef0c975) is applied only in CLI commands, never in the daemon. The receive gate (EventReplicationInbox.EvaluateTaskActVerdict, v0.11.0) protects only the receiving ledger and always lets an Owner-role sender's act through, so it cannot stop a teammate's node from claiming and launching on its own machine.
+
+  Shape to weigh: apply the same TaskOwnerRule the CLI uses at the attach and claim seam. A teammate's mention that lands on another owner's task should be recorded (or routed to that teammate as their own item) without a claim. The Owner-role pass-through never covers a daemon-originated claim on another owner's task: Brian ruled this at the walk (2026-10-02), following his 2026-10-01 cross-owner ruling that an Owner-role override happens only on an explicit human ask with a reason.
+
+  ## Motivating case: AgelessRx/arx-platform#2166, pr-review task bc7d2572 (2026-10-01 EDT)
+
+  - bc7d2572 is Brian's (Hallmanac) pr-review task for #2166, scope Team, assigned to Brian Hall. It had been parked merge-ready since about noon.
+  - 11:49 Taylor Dennison (taylor-dennison) asked a question on the PR.
+  - 17:21:23 Brian replied as Hallmanac, mentioning @taylor-dennison (issue comment 5940862269). The comment answered Taylor; nothing in it was for Brian.
+  - 17:23 feed: "bc7d2572 claimed by TaylorDenny as a deliberate kick-off; a run is starting". Taylor's install had a real mention of its own login, found Brian's replicated task by external reference with no owner filter, and claimed it through TaskDecider.ClaimForMentionFollowUp. That claim carries the empty node id, so the feed (OrchestratorFeedDescription.cs:124-125) labelled it a deliberate kick-off. That label is wrong.
+  - 17:26 feed: "bc7d2572 claimed by node ef6ab27d". The order here is inferred from the code: Taylor's safe pre-flight requeued the task with PendingMentionFollowUpAfterPreflight (RunSupervisor.cs:352-357), still assigned to Brian. Brian's dispatcher claimed it and took the pending-follow-up branch (RunLauncher.cs:163-180).
+  - 17:27 parked with a mention-followup addendum, run 01a0f95c-a4cc-7362-a7c8-bfd6ba613d3a, reading "Tagged by Hallmanac". The session found no question for Brian and drafted nothing.
+
+  Evidence comes from a code trace at v0.11.3 (e03c7d7e6). Mention match and self-author filter: src/Hall9k.Connectors/WorkItems/GitHubReviewAssignments.cs:439-440, 482-484. Attach: src/Hall9k.Daemon/AutoPrReview/AutoPrReviewEngine.cs:2058-2409, with the covering-task lookup at 2067-2076. Receive gate: src/Hall9k.Connectors/Replication/EventReplicationInbox.cs:2013, Owner-role pass-through around 2045-2048.
+
+
+  ## Added 2026-10-02 (Brian, f894d344 discovery questions 2 and 3)
+
+  Criterion four is the discovery's decision-order step 3 (notes/discovery-f894d344-2026-10-01/report.md in the project home): for #2166 it gives Taylor a row reading that Hallmanac mentioned taylor-dennison, and gives Brian's board nothing. Criterion five folds in the request-side sibling, a code-reading finding with no observed incident: scope.md says a teammate's review of the same pull request is a different owner's work and is never touched. Both lookups should share one owner-scoped helper rather than two copies of the rule.
+
+
+
+  ## Challenge applied 2026-10-02
+
+  Verdict in this task's journal.md (challenge 7aae9fee). Criteria 1, 2, and 5 replaced with the verdict's text. Brian ruled criterion 4's lever out: the existing levers (h9k task add --from-pr refusing at TaskAddCommand.cs:1041 and 1167, h9k pr review attaching at PullRequestReviewCommand.cs:301) are owner-blind in this case, so the row offers none rather than widening this fix to those guards.
