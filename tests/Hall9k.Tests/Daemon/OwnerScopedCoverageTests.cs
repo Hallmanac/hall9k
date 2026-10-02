@@ -70,20 +70,11 @@ public sealed class OwnerScopedCoverageTests
         OwnerScopedCoverage.Decide(Mine, []).Should().Be(ReviewCoverage.Uncovered);
     }
 
-    [Fact]
-    public void A_request_to_this_owner_on_a_pull_request_a_teammates_live_review_covers_decides_mint()
-    {
-        // The request side mints unless the decision is Own, so a teammate's live task must never be Own.
-        ReviewCoverage coverage = OwnerScopedCoverage.Decide(Mine, [Covering(HeldBy(Theirs), TimeSpan.FromHours(2))]);
-
-        coverage.Kind.Should().NotBe(ReviewCoverageKind.Own);
-    }
-
     [Theory]
     [InlineData(OwnerFactState.Unresolved, OwnerFactState.Absent, OwnerFactState.Known)]
     [InlineData(OwnerFactState.Absent, OwnerFactState.Unresolved, OwnerFactState.Known)]
     [InlineData(OwnerFactState.Absent, OwnerFactState.Absent, OwnerFactState.Unresolved)]
-    public void A_task_this_node_cannot_attribute_to_a_known_owner_counts_as_another_owners(
+    public void A_task_this_node_cannot_attribute_to_a_known_owner_is_never_this_owners_to_act_on_but_is_not_a_teammates_either(
         OwnerFactState holder, OwnerFactState assignee, OwnerFactState creator)
     {
         // A creator that is this root's own never rescues a holder or assignee that cannot be read.
@@ -91,20 +82,28 @@ public sealed class OwnerScopedCoverageTests
 
         OwnerScopedCoverage.IsOwn(Mine, facts).Should().BeFalse();
         OwnerScopedCoverage.Decide(Mine, [Covering(facts, TimeSpan.FromHours(1))]).Kind
-            .Should().Be(ReviewCoverageKind.Teammate);
+            .Should().Be(ReviewCoverageKind.Unattributable, "it may be this owner's own, so a request must not mint over it");
     }
 
     [Fact]
-    public void A_task_with_neither_holder_nor_assignee_is_the_creators()
+    public void An_unattributable_task_outranks_a_known_teammates_and_yields_to_an_own_one()
     {
-        OwnerScopedCoverage.IsOwn(Mine, new(OwnerRootFact.Absent, OwnerRootFact.Absent, OwnerRootFact.Known(Mine)))
-            .Should().BeTrue();
-        OwnerScopedCoverage.IsOwn(Mine, new(OwnerRootFact.Absent, OwnerRootFact.Absent, OwnerRootFact.Known(Theirs)))
-            .Should().BeFalse();
+        CoveringTaskCandidate unattributable = Covering(
+            new(OwnerRootFact.Absent, OwnerRootFact.Absent, OwnerRootFact.Unresolved), TimeSpan.FromHours(9));
+        CoveringTaskCandidate teammates = Covering(HeldBy(Theirs), TimeSpan.FromHours(1));
+        CoveringTaskCandidate own = Covering(HeldBy(Mine), TimeSpan.FromHours(20));
+
+        ReviewCoverage withTeammate = OwnerScopedCoverage.Decide(Mine, [teammates, unattributable]);
+        ReviewCoverage withOwn = OwnerScopedCoverage.Decide(Mine, [teammates, unattributable, own]);
+
+        withTeammate.Kind.Should().Be(ReviewCoverageKind.Unattributable);
+        withTeammate.Task.Should().BeSameAs(unattributable.Task);
+        withOwn.Kind.Should().Be(ReviewCoverageKind.Own);
+        withOwn.Task.Should().BeSameAs(own.Task);
     }
 
     [Fact]
-    public void A_holder_who_is_not_this_owner_outranks_an_assignment_to_this_owner()
+    public void An_assignment_to_this_owner_counts_even_when_someone_else_holds_the_task()
     {
         TaskOwnerFacts facts = new(OwnerRootFact.Known(Theirs), OwnerRootFact.Known(Mine), OwnerRootFact.Absent);
 
@@ -128,6 +127,17 @@ public sealed class OwnerScopedCoverageTests
 
         OwnerScopedCoverage.NewestOwn(Mine, [teammatesClosed]).Should().BeNull();
         OwnerScopedCoverage.NewestOwn(Mine, [teammatesClosed, ownClosed]).Should().BeSameAs(ownClosed.Task);
+    }
+
+    [Fact]
+    public void A_closed_task_this_node_cannot_attribute_still_counts_as_a_review_that_may_be_this_owners()
+    {
+        CoveringTaskCandidate unattributable = Covering(
+            new(OwnerRootFact.Absent, OwnerRootFact.Absent, OwnerRootFact.Unresolved), TimeSpan.FromHours(2));
+        CoveringTaskCandidate teammatesClosed = Covering(HeldBy(Theirs), TimeSpan.FromHours(1));
+
+        OwnerScopedCoverage.NewestMaybeOwn(Mine, [teammatesClosed, unattributable]).Should().BeSameAs(unattributable.Task);
+        OwnerScopedCoverage.NewestMaybeOwn(Mine, [teammatesClosed]).Should().BeNull();
     }
 
     public enum OwnerFactState

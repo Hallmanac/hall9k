@@ -737,8 +737,10 @@ review requests, with no separate switch for either trigger.
 
 Which tasks "cover" a pull request is asked of both triggers by one owner-scoped rule, the one the
 task commands apply: a task is this install's own when its holder, else its assignee, else its
-creator is this owner's root, and a task this node cannot attribute to a known owner counts as
-another owner's. A teammate's replicated review of the same pull request therefore never covers a
+creator is this owner's root. A task this node cannot attribute to a known owner is never acted on,
+but it may be this owner's own (a parked mint whose creator's root has not arrived yet), so a review
+request counts it as covering the pull request instead of minting a duplicate, and a mention is
+recorded against no task. A teammate's replicated review of the same pull request therefore never covers a
 review request to you, and a mention of your login on a pull request only a teammate's review covers
 is never appended to that task and never claims it, launches on it, or mints a second one. The
 Owner-role pass-through the receive gate gives a sender does not extend to a claim the daemon makes

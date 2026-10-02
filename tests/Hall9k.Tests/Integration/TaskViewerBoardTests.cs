@@ -155,7 +155,7 @@ public sealed class TaskViewerBoardTests : IClassFixture<PostgresFixture>, IAsyn
         ReviewRequestRow ownRow = pane.Requests.Single(request => request.Number == 11);
         ReviewRequestRow teammatesRow = pane.Requests.Single(request => request.Number == 12);
         ownRow.Markup.Should().Contain(DomainId.Short(mine));
-        teammatesRow.Markup.Should().Contain("a teammate's task already covers it")
+        teammatesRow.Markup.Should().Contain("a task this install cannot yet tell from a teammate's already covers it")
             .And.NotContain(DomainId.Short(theirs));
     }
 

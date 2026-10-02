@@ -8,9 +8,11 @@ namespace Hall9k.Domain.Features.AutoPrReview;
 /// 2f079bcd) — the outcome attached to every <see cref="ObservedReviewMention"/>, the same
 /// closed-vocabulary shape <see cref="ReviewRequestOutcome"/> already uses for the review-request
 /// trigger, kept as a separate type because a mention's own outcomes are not the request's: there
-/// is no "already covered" here (a comment id is only ever ATTACHED to a live task or minted a
-/// fresh one, never rediscovered the way a standing request is), and there is an outcome
-/// (<see cref="Attached"/>) the request side has no counterpart for at all.
+/// is no "already covered" here (a comment id is only ever ATTACHED to this owner's live task,
+/// minted a fresh one, or recorded against no task when only another owner's covers the pull
+/// request, never rediscovered the way a standing request is), and there are outcomes
+/// (<see cref="Attached"/>, <see cref="CoveredByTeammate"/>) the request side has no counterpart
+/// for at all.
 /// </summary>
 [JsonConverter(typeof(ReviewMentionOutcomeJsonConverter))]
 public sealed record ReviewMentionOutcome
@@ -47,9 +49,10 @@ public sealed record ReviewMentionOutcome
     public static readonly ReviewMentionOutcome AttachedNoFollowUp = new("AttachedNoFollowUp");
 
     /// <summary>
-    /// The only live pr-review task covering this pull request belongs to another owner (the rule
-    /// the CLI task commands apply, <c>TaskOwnerRule</c>, with a task this node cannot attribute
-    /// counting as another owner's), so nothing was claimed, launched, appended to that task's
+    /// The only live task covering this pull request (matched by its external reference, whatever
+    /// its type) belongs to another owner (the rule the CLI task commands apply,
+    /// <c>TaskOwnerRule</c>, with a task this node cannot attribute never counting as this
+    /// owner's), so nothing was claimed, launched, appended to that task's
     /// stream or minted. The mention is recorded against no task and surfaced as a needs-you row:
     /// the pull request is a teammate's review, and the reply happens on GitHub.
     /// </summary>

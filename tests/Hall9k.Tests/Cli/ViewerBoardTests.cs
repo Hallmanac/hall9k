@@ -309,7 +309,7 @@ public sealed class ViewerBoardTests
 
         own.Markup.Should().Contain(shortId);
         teammates.NeedsYou.Should().BeFalse();
-        teammates.Markup.Should().Contain("a teammate's task already covers it").And.NotContain(shortId).And.NotContain("Working");
+        teammates.Markup.Should().Contain("a task this install cannot yet tell from a teammate's already covers it").And.NotContain(shortId).And.NotContain("Working");
     }
 
     [Fact]
@@ -356,6 +356,28 @@ public sealed class ViewerBoardTests
         onlyClosedTheirs.Should().Match<CoveringReview?>(covering => covering != null && !covering.Live);
         ReviewRequestPane.ComposeMentionRow(Mention("HeldSettingOff", null), "hall9k", onlyClosedTheirs).Markup
             .Should().Contain("a teammate's task already covered it and is closed");
+    }
+
+    [Fact]
+    public void A_teammates_closed_auto_created_task_does_not_make_the_viewers_row_promise_a_hold()
+    {
+        TaskListItem closedOwn = Owned(TaskState.Done, assignedRoot: ViewerRoot);
+        TaskListItem closedTheirs = Owned(TaskState.Done, assignedRoot: TeammateRoot);
+        closedTheirs.WasAutoPrReviewCreated = true;
+        TaskListItem[] all = [closedOwn, closedTheirs];
+        foreach (TaskListItem task in all)
+        {
+            task.ExternalReference = "github-pr:acme/widgets#9";
+        }
+
+        Dictionary<Guid, TaskStatusRow> rows = all
+            .ToDictionary(task => task.Id, task => TaskStatusComposer.Compose(task, Viewer(), StatusFixtures.Now));
+
+        CoveringReview? covering = ReviewRequestPane.Covering("acme/widgets", 9, all, rows);
+
+        covering.Should().Match<CoveringReview?>(
+            review => review != null && review.Own && !review.AutoCreated,
+            "the engine's re-mint guard counts only this owner's auto-created tasks, so the pane must too");
     }
 
     private static ObservedReviewMention Mention(string outcome, Guid? taskId) =>

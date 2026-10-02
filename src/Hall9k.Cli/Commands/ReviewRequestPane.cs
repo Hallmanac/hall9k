@@ -259,12 +259,13 @@ internal static class ReviewRequestPane
     /// <c>owner/repo</c> need not match what a project recorded (the same hazard
     /// <c>ObservedReviewRequest.ComputeId</c> lower-cases for).
     /// <para>
-    /// <see cref="CoveringReview.AutoCreated"/> is asked of every task matching the reference
-    /// rather than only of the one this row names, because that is the shape of the engine guard
-    /// it stands in for: <c>CreateOneAsync</c>'s re-mint guard looks for <em>any</em> terminal
-    /// auto-created task on the reference, so a closed hand-adopted task that happens to be the
-    /// newest must not make the row promise a mint the older auto-created one beside it holds
-    /// back.
+    /// <see cref="CoveringReview.AutoCreated"/> is asked of every one of the viewer's own tasks
+    /// matching the reference rather than only of the one this row names, because that is the shape
+    /// of the engine guard it stands in for: <c>CreateOneAsync</c>'s re-mint guard looks for
+    /// <em>any</em> terminal auto-created task of this owner's on the reference, so a closed
+    /// hand-adopted task that happens to be the newest must not make the row promise a mint the
+    /// older auto-created one beside it holds back, and a teammate's auto-created one holds
+    /// nothing back at all.
     /// </para>
     /// </summary>
     internal static CoveringReview? Covering(
@@ -299,7 +300,7 @@ internal static class ReviewRequestPane
         // parked, never assigned" apart from "parked once, long since assigned and gone Done".
         bool gateParked = coveringIsOwn && covering.PrReviewGateParked && covering.State == TaskState.Published;
         return new CoveringReview(
-            covering.Id, live is not null, stateWord, matching.Any(task => task.WasAutoPrReviewCreated), gateParked,
+            covering.Id, live is not null, stateWord, own.Any(task => task.WasAutoPrReviewCreated), gateParked,
             coveringIsOwn);
     }
 
@@ -356,17 +357,7 @@ internal static class ReviewRequestPane
         string byHand = $"h9k task add --project {project} --from-pr {request.Number}";
         ReviewRequestOutcome outcome = ReviewRequestOutcome.FromInput(request.Outcome.Value);
 
-        if (covering is { Own: false } teammates)
-        {
-            return Informational(
-                request.Repository, request.Number,
-                teammates.Live
-                    ? $"{opening}{age}; a teammate's task already covers it (h9k status --everyone lists it)"
-                    : $"{opening}{age}; a teammate's task already covered it and is closed — "
-                      + ClosedTaskHold(setting, teammates));
-        }
-
-        if (covering is { } task)
+        if (covering is { Own: true } task)
         {
             string id = DomainId.Short(task.TaskId);
             return Informational(
@@ -374,6 +365,20 @@ internal static class ReviewRequestPane
                 task.Live
                     ? $"{opening}{age}; task {id} is created and reviewing ({task.StateWord})"
                     : $"{opening}{age}; task {id} already covered it ({task.StateWord}) — {ClosedTaskHold(setting, task)}");
+        }
+
+        // A teammate's task covers nothing for this viewer, because the engine answers a request
+        // only with a task of the viewer's own (OwnerScopedCoverage), so it never outranks the
+        // held and needs-you outcomes below: the lever those name is still the viewer's. Only the
+        // outcome the engine records when a task it cannot tell from the viewer's own covers the
+        // request, which this pane reads as a teammate's, is worded here, because nothing will
+        // start for it and nothing is asked of anyone.
+        if (covering is { Own: false } && outcome == ReviewRequestOutcome.AlreadyCovered)
+        {
+            return Informational(
+                request.Repository, request.Number,
+                $"{opening}{age}; a task this install cannot yet tell from a teammate's already covers it "
+                + "(h9k status --everyone lists it)");
         }
 
         if (outcome == ReviewRequestOutcome.HeldBeforeCutoff)
@@ -539,7 +544,11 @@ internal static class ReviewRequestPane
         // (h9k task add --from-pr, h9k pr review) are blind to whose task covers the pull request
         // and would attach to or refuse around the teammate's own; the reply is theirs to write on
         // GitHub. A task of the viewer's own that has covered it since is judged below instead.
-        if (outcome == ReviewMentionOutcome.CoveredByTeammate && covering is not { Own: true })
+        // It stays a needs-you row only while a teammate's task is still live (or none can be
+        // found at all): once that review has closed, nothing is left running that the reply could
+        // be waiting on, so the closed-teammate line below says so informationally instead of the
+        // row staying red for good, since a recorded mention is never deleted.
+        if (outcome == ReviewMentionOutcome.CoveredByTeammate && covering is null or { Own: false, Live: true })
         {
             string commentLink = mention.CommentUrl.IsBlank()
                 ? string.Empty
