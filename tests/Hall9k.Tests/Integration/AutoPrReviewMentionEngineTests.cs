@@ -1642,6 +1642,58 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
     }
 
     /// <summary>
+    /// The pull request's own author answering this owner's review, on a task already following the
+    /// pull request through, is recorded on the task and shown as a row, and nothing is claimed or
+    /// launched for it: <see cref="RefusingExecutor"/> and <see cref="RefusingWorktreeManager"/>
+    /// prove structurally that no session was attempted, and the reply is not an
+    /// <see cref="ReviewMentionOutcome.Attached"/> outcome, so it never counts toward the
+    /// follow-up lifetime cap. The author is matched by login, case-insensitively.
+    /// </summary>
+    [Fact]
+    public async Task The_pull_request_authors_reply_on_a_task_following_it_through_is_recorded_and_launches_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-author-reply-test";
+        const int number = 4411;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-author-reply", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+        Guid watchedTaskId = await SeedWaitingReviewAsync(store, node, projectId, repository, number, cts.Token);
+
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_1", "Taylor-Dennison", "@brian fixed in abc123, please look again", Now.AddMinutes(5))],
+            pullRequestAuthor: ("taylor-dennison", 4411L, "MEMBER"));
+        AutoPrReviewEngine engine = new(
+            store, node,
+            NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("an author's reply never launches a session"), gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
+            clock: new FixedClock(Now));
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails watched = (await query.LoadAsync<TaskDetails>(watchedTaskId, cts.Token))!;
+        watched.LatestMentionCommentId.Should().Be("IC_1", "the reply is recorded on the task's own stream");
+        watched.LatestMentionUrl.Should().Contain("issuecomment-IC_1", "the comment's link is recorded for h9k task show");
+        watched.State.Should().Be(TaskState.AwaitingAuthor, "nothing claimed the task");
+
+        ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
+        observed.Outcome.Should().Be(ReviewMentionOutcome.AuthorReplied);
+        observed.TaskId.Should().Be(watchedTaskId);
+        observed.CommentBody.Should().Contain("please look again");
+        (await query.Query<ObservedReviewMention>().Where(mention => mention.TaskId == watchedTaskId).ToListAsync(cts.Token))
+            .Should().NotContain(
+                mention => mention.Outcome == ReviewMentionOutcome.Attached,
+                "an author's reply is not a dispatched follow-up lap, so the lifetime cap never counts it");
+    }
+
+    /// <summary>
     /// The fleet-coordination hold applies to a fresh mint from a mention too (task 7ae690f5): a
     /// lower-ranked peer exists, and the comment is still inside the default hold on the first
     /// sweep, so this node holds — nothing minted, and the comment left unrecorded exactly as
