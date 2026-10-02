@@ -46,3 +46,7 @@ context: |-
   ## Challenge applied 2026-10-02
 
   Verdict in this task's journal.md (challenge 7aae9fee). Criteria 1, 2, and 5 replaced with the verdict's text. Brian ruled criterion 4's lever out: the existing levers (h9k task add --from-pr refusing at TaskAddCommand.cs:1041 and 1167, h9k pr review attaching at PullRequestReviewCommand.cs:301) are owner-blind in this case, so the row offers none rather than widening this fix to those guards.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-10-02 15:42:24Z
