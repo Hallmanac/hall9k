@@ -33,6 +33,21 @@ public sealed record ReviewMentionOutcome
     /// </summary>
     public static readonly ReviewMentionOutcome TaskCreatedParked = new("TaskCreatedParked");
 
+    /// <summary>
+    /// The pull request was authored by this install's own login and no live task of this owner's
+    /// covered it, so a pr-review task was minted, published and assigned to answer this one comment
+    /// with the bounded mention answer lap, never the two-lens review of the owner's own work
+    /// (decision dce39370).
+    /// </summary>
+    public static readonly ReviewMentionOutcome AnswerOnlyTaskCreated = new("AnswerOnlyTaskCreated");
+
+    /// <summary>
+    /// <see cref="AnswerOnlyTaskCreated"/>, held by the membership gate exactly as
+    /// <see cref="TaskCreatedParked"/> is: published but never assigned, with <c>h9k task assign</c>
+    /// the human go. Once assigned it still runs the answer lap and never the two-lens review.
+    /// </summary>
+    public static readonly ReviewMentionOutcome AnswerOnlyTaskCreatedParked = new("AnswerOnlyTaskCreatedParked");
+
     /// <summary>A live pr-review task already covered this pull request, and a bounded follow-up lap was dispatched to answer this exact comment.</summary>
     public static readonly ReviewMentionOutcome Attached = new("Attached");
 
@@ -92,6 +107,8 @@ public sealed record ReviewMentionOutcome
     {
         "taskcreated" => TaskCreated,
         "taskcreatedparked" => TaskCreatedParked,
+        "answeronlytaskcreated" => AnswerOnlyTaskCreated,
+        "answeronlytaskcreatedparked" => AnswerOnlyTaskCreatedParked,
         "attached" => Attached,
         "attachednofollowup" => AttachedNoFollowUp,
         "coveredbyteammate" => CoveredByTeammate,

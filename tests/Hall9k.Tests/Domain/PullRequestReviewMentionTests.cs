@@ -68,6 +68,35 @@ public sealed class PullRequestReviewMentionTests
     }
 
     [Fact]
+    public void A_minting_event_marked_answer_only_makes_the_task_answer_only_for_good()
+    {
+        TaskAggregate task = QueuedPrReviewTask();
+
+        task.Apply(new PullRequestReviewMentionObserved(
+            task.Id, "https://github.com/acme/widgets/pull/42", "IC_1", "ryan", "@brian?", "url", Now, Now,
+            MintedTask: true, MentionedLogin: "brian", AnswerOnly: true));
+        task.Apply(TaskDecider.ObservePrReviewMention(
+            task, "https://github.com/acme/widgets/pull/42", "IC_2", "ryan", "@brian again?", "url", Now, Now));
+
+        task.AnswersMentionOnly.Should().BeTrue("a later attach never turns an answer-only task back into a review");
+    }
+
+    [Fact]
+    public void A_task_minted_for_a_full_review_or_adopted_by_hand_is_not_answer_only()
+    {
+        TaskAggregate minted = QueuedPrReviewTask();
+        minted.Apply(new PullRequestReviewMentionObserved(
+            minted.Id, "https://github.com/acme/widgets/pull/42", "IC_1", "ryan", "@brian?", "url", Now, Now,
+            MintedTask: true, MentionedLogin: "brian"));
+        TaskAggregate adopted = QueuedPrReviewTask();
+        adopted.Apply(TaskDecider.ObservePrReviewMention(
+            adopted, "https://github.com/acme/widgets/pull/42", "IC_1", "ryan", "@brian?", "url", Now, Now));
+
+        minted.AnswersMentionOnly.Should().BeFalse();
+        adopted.AnswersMentionOnly.Should().BeFalse();
+    }
+
+    [Fact]
     public void ObservePrReviewMention_refuses_a_task_that_is_not_pr_review()
     {
         TaskAggregate task = new();
