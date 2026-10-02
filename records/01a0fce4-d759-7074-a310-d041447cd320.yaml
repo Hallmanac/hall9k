@@ -1,0 +1,63 @@
+hall9k-task-record: 1
+task-id: 01a0fce4-d759-7074-a310-d041447cd320
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#676
+objective: A GitHub comment that mentions this install's login on a pull request this same login authored starts a short answer lap that drafts a reply, never a full independent review of the owner's own pull request.
+criteria:
+  - When a comment mentioning this install's login sits on a pull request whose author is that same login, and no live pr-review task **of this owner** covers it, auto pr-review mints a pr-review task whose automatic run is the bounded mention answer lap (`MentionFollowUpPromptBuilder` with no prior report), not the two-lens review. The no-backfill cutoff, the setting, the membership gate on the comment's author, the hourly mint cap, the fleet mint hold, the launch hold, and the spend budget all apply exactly as they do to any mention mint today. Every dispatch of that task, including a retry and the one after a skipped or deferred launch, is the answer lap or nothing; it never runs the two-lens review.
+  - The minted task's platform-authored objective, its park line, `h9k task show`, and the answer lap's prompt say it answers `<author>`'s comment on the owner's own pull request. None says "Review pull request", and no mention follow-up prompt with no readable prior report says a review already happened. Its acceptance criterion is that the drafted reply is walked with walk-pr-review-findings and posted only on the owner's go.
+  - A mention on a pull request someone else wrote, and a mention on a pull request an own live pr-review task already covers (a build task whose pull request this is never counts), behave exactly as they do today (full-review mint, and attach plus the existing follow-up gates).
+  - |-
+    `ObservedReviewMention` and the daemon's "observed a mention" log line record the answer-only mint as its own outcome, so `h9k status` and the log show which shape ran.
+  - |-
+    Unit tests over the decision, with no database, no branch, and no GitHub: own pull request leads to the answer-only mint; someone else's pull request leads to today's mint; an own covering task leads to today's attach. The pull request's author is matched to this install's login case-insensitively, the comparison the self-author filter (TryBuildMatch) already uses, with no new `gh` call.
+  - |-
+    `docs/operations.md`'s mention rows say that a mention on your own pull request gets an answer lap, never a review of your own work, and why: the review-request trigger can never reach the author, and the author already holds the context the 2f079bcd ruling wanted the review to supply.
+dependencies: [01a0f96f-9ec1-7401-8f4e-44db5f6b4783, 01a0f96f-ae0b-7363-a06e-9a419c12bed2]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/447cd320-a-github-comment-that-mentions
+published: 2026-10-02 14:32:16Z
+context: |-
+  Read the mentioning comment before anything is claimed: who wrote it, who it tags, and whether it asks anything of this install's owner. Decide from that whether a claim and a task run are needed at all. A full run that analyzes the whole pull request just to read one comment is the wrong default. Motivating case: arx-platform#2166 / bc7d2572 on 2026-10-01, where Brian's reply tagging @taylor-dennison woke his own review task and ran a follow-up that found nothing.
+
+  Motivating case: AgelessRx/arx-platform#2166, authored by Hallmanac and built by hall9k task
+  01a0eb4f. At 2026-10-01 11:49 EDT taylor-dennison asked "@Hallmanac just curious what the
+  motivating factor is here?". The mention minted pr-review task bc7d2572, whose full two-lens review
+  of Brian's own pull request recorded $6.33 across three sessions in order to answer one question.
+  The narrow follow-up lap that later ran on the same task recorded $0.19.
+
+  Where it lives (origin/main e03c7d7e6):
+  - `AutoPrReviewEngine.DecideMentionAsync` (around 2058) and `CreateFromMentionAsync` (around 2450)
+    decide and mint. `PullRequestMentionSearch.Author` already carries the pull request's author
+    login and account id, read in the same GraphQL call, so no new `gh` call is needed.
+  - `RunLauncher.LaunchPrReviewMentionFollowUpAsync` (around 990) already accepts a null
+    `priorReviewRunId` and builds the prompt with no prior report. The pending-follow-up branch
+    around 163-180 is the existing route from a requeued pr-review task into that lap.
+  - `TaskDecider.AwaitsPrReviewMentionFollowUp` / `ClaimForMentionFollowUp` assume a prior report or
+    follow-through. A freshly minted answer-only task has neither, so the build decides how the first
+    dispatch reaches the answer lap (for example, a field on the mint's
+    `PullRequestReviewMentionObserved` that the pr-review dispatch reads). It must keep the model
+    pre-flight over the diff in front of the checkout, exactly as today.
+  - Check how the mention-followup template's opening reads with no prior report ("a review that
+    already happened" would be false here).
+
+  Scope boundaries: do not change the owner-scoped lookup. That is 5f6b4783, and this card is
+  blocked on it. Do not change which login the record names. That is 9c12bed2. No model call before
+  the claim (parked in the discovery report with a trigger). Idea 5fc064ac (the reviewer denied a
+  Write of mention-answer.md and a Read of the voice explainer) may bear on this lap's draft quality.
+  Read its state before building.
+
+  Cut 2026-10-02 from idea f894d344 after Brian's discussion of daemon versus agent judgment (notes/discussion-daemon-vs-agent-2026-10-02.md): rules first, no model call before the claim. Full discovery report: notes/discovery-f894d344-2026-10-01/report.md in the project home.
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  C:\Users\Hallm\.hall9k\projects\hall9k (recorded on another node's own operating system — not a directory here)
+
+
+
+  ## Challenge applied 2026-10-02
+
+  Verdict in this task's journal.md (challenge c490dcbc). Criteria 1, 2, 3, 5, and 6 revised; 9c12bed2 added as a second blocker because its pre-launch skip clears the pending follow-up flag, and an answer route riding that flag would fall through to the two-lens review after a skip. Both cards edit RunLauncher's pending branch, the launch method, and the mention-followup template. The decision this card states was recorded by the orchestrator from an attended shell (decision dce39370); the build does not record it. Idea 5fc064ac's Read denial (voice explainer unreachable under BuildForPrReview) lowers this lap's draft quality but does not block it.
