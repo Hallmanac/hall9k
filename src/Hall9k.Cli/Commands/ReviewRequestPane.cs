@@ -521,10 +521,18 @@ internal static class ReviewRequestPane
         // covering-task branches: the task is the owner's own and following the pull request
         // through, which is exactly why no run was dispatched, so "already covers it" would say
         // nothing about the reply the row exists to show. Whether it is still on the board at all is
-        // decided by the caller, from the task's own state.
+        // decided by the caller, from the task's own state. A teammate's task is the one exception
+        // to "your review": the reply answered their review, so the viewer is told it exists and
+        // is not handed a lever for a review they never wrote (independent pre-PR review, cycle 1,
+        // both lenses).
         if (outcome == ReviewMentionOutcome.AuthorReplied)
         {
-            return ComposeAuthorReplyRow(mention, pullRequest);
+            return attachedToTeammate
+                ? Informational(
+                    mention.Repository, mention.Number,
+                    $"the pull request's author replied on {pullRequest}, to a teammate's review "
+                    + "(h9k status --everyone lists their task)")
+                : ComposeAuthorReplyRow(mention, pullRequest);
         }
 
         // Checked before the covering-task branch below, deliberately: the covering task genuinely
