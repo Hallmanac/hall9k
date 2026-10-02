@@ -986,8 +986,15 @@ public sealed class RunLauncher(
     /// liveness check both reading a live session as ownerless, and a daemon restart longer than
     /// the lease timeout requeued the task out from under a session that was still running.
     /// </para>
+    /// <para>
+    /// Before anything else, the stored comment is checked against this install's own login
+    /// (<see cref="MentionFollowUpGate"/>): it must tag that login and must not be written by it.
+    /// A comment that fails, or a login that cannot be read, launches nothing; the claim is given
+    /// back through <see cref="PullRequestReviewMentionFollowUpSkipped"/> and the returned
+    /// <see cref="MentionFollowUpLaunch"/> says so, so the caller does not count it as a follow-up.
+    /// </para>
     /// </summary>
-    public async Task LaunchPrReviewMentionFollowUpAsync(
+    public async Task<MentionFollowUpLaunch> LaunchPrReviewMentionFollowUpAsync(
         Guid taskId, Guid runId, Guid nodeId, Guid ownerId, int leaseGeneration, Guid dispatchingNodeId,
         PullRequestMentionComment comment, Guid? priorReviewRunId, CancellationToken cancellationToken)
     {
@@ -999,7 +1006,7 @@ public sealed class RunLauncher(
         if (task is null || project is null)
         {
             logger.LogError("Cannot launch mention follow-up run {RunId}: task or project missing", runId);
-            return;
+            return MentionFollowUpLaunch.Handled;
         }
 
         // refuseAbandonedTask: true for the identical reason LaunchAsync's own fence carries it
@@ -1012,11 +1019,28 @@ public sealed class RunLauncher(
             session, logger, taskId, runId, leaseGeneration, "to launch a mention follow-up", cancellationToken,
             refuseAbandonedTask: true))
         {
-            return;
+            return MentionFollowUpLaunch.Handled;
         }
 
         try
         {
+            // This install's own login must be the one the stored comment tags, and the comment
+            // must not be its own: re-checked here, on the comment as stored, because every path
+            // that reaches a launch (the direct claim and the pending claim after a pre-flight)
+            // comes through this method, and neither the event's recorded tagged login (absent on
+            // an older node's event) nor the observing install's own sweep is something this
+            // owner's install can lean on. A login that cannot be read skips as well: an unread
+            // identity proves nothing about who was tagged.
+            GitHubLoginRead ownLogin = await new GitHubReviewAssignments(processRunner)
+                .ReadCurrentLoginAsync(project.RepositoryPath, cancellationToken);
+            MentionFollowUpGate gate = MentionFollowUpGate.Decide(ownLogin.Login, comment.AuthorLogin, comment.Body);
+            if (!gate.Proceed)
+            {
+                string skipReason = ownLogin.Error is { } readError ? $"{gate.Reason} ({readError})" : gate.Reason;
+                await SkipMentionFollowUpAsync(taskId, runId, leaseGeneration, comment.CommentId, skipReason, cancellationToken);
+                return new MentionFollowUpLaunch(skipReason);
+            }
+
             PullRequestFacts? facts = await FetchOpenPullRequestFactsAsync(task, project, processRunner, cancellationToken);
             if (facts is null)
             {
@@ -1024,7 +1048,7 @@ public sealed class RunLauncher(
                     taskId, runId, leaseGeneration,
                     $"{task.ExternalReference} is no longer open — nothing to read a mention follow-up against.",
                     cancellationToken);
-                return;
+                return MentionFollowUpLaunch.Handled;
             }
 
             // The identical foreign-repository guard LaunchAsync's own isPrReview branch runs
@@ -1044,7 +1068,7 @@ public sealed class RunLauncher(
                     + $"({projectRepository}). A pr-review task's worktree is always cut from the project it "
                     + $"was adopted against, so reviewing a pull request from another repository needs a "
                     + $"project registered against {facts.Repository} instead.", cancellationToken);
-                return;
+                return MentionFollowUpLaunch.Handled;
             }
 
             // The identical pre-flight gate LaunchAsync's own isPrReview branch requires (idea
@@ -1056,7 +1080,7 @@ public sealed class RunLauncher(
                 session, task, project, facts, dispatchingNodeId, runId, leaseGeneration, isMentionFollowUp: true,
                 cancellationToken))
             {
-                return;
+                return MentionFollowUpLaunch.Handled;
             }
 
             await CleanUpPreviousPrReviewWorktreesAsync(taskId, project, cancellationToken);
@@ -1075,7 +1099,7 @@ public sealed class RunLauncher(
                 await DispatchPrReviewPreflightAsync(
                     task, project, facts with { HeadRefOid = exception.ObservedHeadOid }, dispatchingNodeId, runId,
                     leaseGeneration, isMentionFollowUp: true, cancellationToken);
-                return;
+                return MentionFollowUpLaunch.Handled;
             }
 
             await RenderKnowledgeDocumentsIntoAsync(session, project, worktree.Path, runId, cancellationToken);
@@ -1116,7 +1140,8 @@ public sealed class RunLauncher(
                 priorReport: priorReport, project: project,
                 // The drafted reply this session produces is written first-person as the owner, so
                 // the seam names their own voice skill when they have one (#193).
-                voiceSkill: (await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken))?.VoiceSkill);
+                voiceSkill: (await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken))?.VoiceSkill,
+                taggedLogin: ownLogin.Login);
 
             LogIfOverCapAddendum(runId, project, PromptBuilderKey.MentionFollowUp);
 
@@ -1136,7 +1161,7 @@ public sealed class RunLauncher(
                 await using IDocumentSession retireSession = store.LightweightSession();
                 retireSession.Events.Append(runId, new RunSuperseded(runId, leaseGeneration, DateTimeOffset.UtcNow));
                 await retireSession.SaveChangesAsync(cancellationToken);
-                return;
+                return MentionFollowUpLaunch.Handled;
             }
 
             // SkipPermissions is hardcoded false, never project.SkipPermissions, and
@@ -1172,11 +1197,55 @@ public sealed class RunLauncher(
             await startSession.SaveChangesAsync(cancellationToken);
 
             supervisor.StartMonitoring(runId, runDirectory, taskId, agent.ProcessId, agent.StartedAt, cancellationToken);
+            return MentionFollowUpLaunch.Handled;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogError(exception, "Mention follow-up launch failed for run {RunId}", runId);
             await RecordLaunchFailureAsync(taskId, runId, leaseGeneration, exception.Message, cancellationToken);
+            return MentionFollowUpLaunch.Handled;
+        }
+    }
+
+    /// <summary>
+    /// Gives back the claim a mention follow-up took when the stored comment is not for this
+    /// install: the skip is recorded on the task stream, which returns the task to the state it
+    /// held before the claim and clears the pending follow-up flag, and the claim's lease goes
+    /// with it. No run stream exists yet at this point, so there is nothing of its own to retire.
+    /// Fenced the same way <see cref="RecordLaunchFailureAsync"/> is: a newer claim that landed
+    /// first owns the task, and this stale skip must not undo it.
+    /// </summary>
+    private async Task SkipMentionFollowUpAsync(
+        Guid taskId, Guid runId, int leaseGeneration, string commentId, string reason,
+        CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        (TaskAggregate Task, long Version)? fenced =
+            await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
+        if (fenced is not { } current
+            || !await GenerationFence.AllowsAsync(
+                session, logger, taskId, runId, leaseGeneration, nameof(PullRequestReviewMentionFollowUpSkipped),
+                cancellationToken))
+        {
+            return;
+        }
+
+        logger.LogInformation(
+            "Task {TaskId}: skipping mention follow-up run {RunId} for comment {CommentId}: {Reason}",
+            taskId, runId, commentId, reason);
+        try
+        {
+            session.Events.Append(
+                taskId, expectedVersion: current.Version + 1,
+                TaskDecider.SkipPrReviewMentionFollowUp(current.Task, runId, commentId, reason, DateTimeOffset.UtcNow));
+            session.Delete<TaskLease>(taskId);
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is DomainConflictException or EventStreamUnexpectedMaxEventIdException)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: could not give back mention follow-up run {RunId}'s claim, a newer change owns the task: {Message}",
+                taskId, runId, exception.Message);
         }
     }
 

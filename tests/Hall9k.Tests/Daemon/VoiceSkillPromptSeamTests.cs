@@ -231,6 +231,25 @@ public sealed class VoiceSkillPromptSeamTests : IDisposable
         without.Should().NotContain(VoiceLeadIn);
     }
 
+    /// <summary>
+    /// The prompt names who wrote the comment and which login it tagged as two separate facts, so
+    /// it never reads as the author having tagged this install unless the launch's own check said
+    /// the tagged login is this install's.
+    /// </summary>
+    [Fact]
+    public void The_mention_follow_up_names_the_comment_author_and_the_tagged_login_separately()
+    {
+        string named = MentionFollowUpPromptBuilder.Build(
+            "acme/web", 7, _worktreePath, "main", SomeMention(), priorReport: null, project: SomeProject(),
+            taggedLogin: "brian");
+        string unnamed = MentionFollowUpPromptBuilder.Build(
+            "acme/web", 7, _worktreePath, "main", SomeMention(), priorReport: null, project: SomeProject());
+
+        named.Should().Contain($"{SomeMention().AuthorLogin} wrote a comment on it that tags @brian");
+        named.Should().NotContain("tagged this install");
+        unnamed.Should().Contain("that tags this install's own login");
+    }
+
     [Fact]
     public void The_mention_follow_up_splices_the_project_addendum_after_its_rules_when_the_daemon_has_materialized_one()
     {

@@ -166,7 +166,7 @@ so posting a review under their login as their review is exactly what this skill
    - **Post only on explicit go**, as a reply in the *exact* thread the mention came from — a
      review-comment thread reply when the comment was one, a plain issue comment otherwise —
      never a new thread, and never anywhere else on the pull request. `h9k task show` tells you
-     which: its "Tagged by" row names a **reply id** only when the tagged comment was an inline
+     which: its "Comment by" row names a **reply id** only when the tagged comment was an inline
      review-comment-thread reply — that numeric id is what the REST reply endpoint's own
      `in_reply_to` takes. The comment id shown beside it is GraphQL's own node id (`PRRC_…`),
      never REST's — sending it to `in_reply_to` 404s (`resolve-review-threads`'s own doc carries

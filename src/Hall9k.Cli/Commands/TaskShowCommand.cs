@@ -28,7 +28,7 @@ namespace Hall9k.Cli.Commands;
 
 public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Settings>
 {
-    /// <summary>The mentioning comment's own body is externally authored and unbounded; this is what the "Tagged by" row quotes of it.</summary>
+    /// <summary>The mentioning comment's own body is externally authored and unbounded; this is what the "Comment by" row quotes of it.</summary>
     private const int MentionBodyMaxLength = 200;
 
     public sealed class Settings : CommandSettings
@@ -324,10 +324,21 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             string replyIdSuffix = mentionCommentDatabaseId is { } databaseId
                 ? $", reply id {databaseId}"
                 : string.Empty;
+            // Two rows, because the comment's author and the login it tagged are different people
+            // (a teammate's comment that tags someone else can attach to this task): one row under
+            // one label reads as the author tagging this install, which is a claim only the tagged
+            // login can back. An older node's event records no tagged login, which is said as
+            // unrecorded, never filled in with this install's own.
+            string? mentionTaggedLogin = answeredMention?.MentionedLogin ?? details.LatestMentionTaggedLogin;
             header.AddRow(
-                "Tagged by",
+                "Comment by",
                 $"{(mentionAuthorLogin ?? "unknown").EscapeMarkup()} at {when} "
                 + $"[dim](comment {mentionCommentId.EscapeMarkup()}{replyIdSuffix.EscapeMarkup()})[/]");
+            header.AddRow(
+                "Tagged login",
+                mentionTaggedLogin.IsNotBlank()
+                    ? mentionTaggedLogin.EscapeMarkup()
+                    : "[dim]not recorded (the node that observed it predates this field)[/]");
             if (mentionBody.IsNotBlank())
             {
                 // Bounded, unlike ExternalText.OneLineMarkup alone: a mentioning comment is

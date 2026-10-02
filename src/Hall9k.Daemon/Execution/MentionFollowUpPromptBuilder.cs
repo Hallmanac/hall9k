@@ -39,10 +39,16 @@ public static class MentionFollowUpPromptBuilder
     /// text that preference exists for — and it is a draft the owner reads and decides on rather
     /// than anything this session posts, so it names the explainer context.
     /// </param>
+    /// <param name="taggedLogin">
+    /// The login the comment tags, which the launch has already verified is this install's own
+    /// (<c>MentionFollowUpGate</c>). Named apart from the comment's author so the prompt never
+    /// reads as though the author tagged this install unless the check said so; null reads as
+    /// "this install's own login" without naming it.
+    /// </param>
     public static string Build(
         string repository, int number, string worktreePath, string baseBranch,
         PullRequestMentionComment comment, string? priorReport, ProjectDetails project,
-        VoiceSkillName? voiceSkill = null)
+        VoiceSkillName? voiceSkill = null, string? taggedLogin = null)
     {
         const string file = $"{TemplateDirectory}/build.md";
         StringBuilder prompt = new();
@@ -50,7 +56,10 @@ public static class MentionFollowUpPromptBuilder
         prompt.AppendLine(PromptTemplates.Load(file, "title", Params(("RepoAndNumber", $"{repository}#{number}"))));
         prompt.AppendLine();
         prompt.AppendLine(PromptTemplates.Load(
-            file, "intro", Params(("CommentAuthor", OneLine(comment.AuthorLogin)))));
+            file, "intro",
+            Params(
+                ("CommentAuthor", OneLine(comment.AuthorLogin)),
+                ("TaggedLogin", taggedLogin.IsNotBlank() ? $"@{OneLine(taggedLogin)}" : "this install's own login"))));
         prompt.AppendLine();
 
         prompt.AppendLine(PromptTemplates.Load(file, "the-comment-heading"));
