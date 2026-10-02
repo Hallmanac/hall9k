@@ -1138,10 +1138,7 @@ public sealed class PrReviewEngine(
         RunDetails? previousRun = previousRunId != Guid.Empty
             ? await session.LoadAsync<RunDetails>(previousRunId, cancellationToken)
             : null;
-        string unwalkedReportNote = previousRun is { State: var previousState } && previousState == RunState.ReviewParked
-            ? $" Its own findings report is also still parked and unwalked: "
-              + $"{RunPaths.ReviewFindingsFile(RunPaths.ResolveCurrentDirectory(previousRun.RunDirectory), 1)}."
-            : string.Empty;
+        string unwalkedReportNote = ComposeUnwalkedReportNote(task.AnswersMentionOnly, previousRun);
 
         session.Events.Append(runId, new ReviewParked(
             runId,
@@ -1154,6 +1151,23 @@ public sealed class PrReviewEngine(
         logger.LogInformation(
             "Run {RunId}: pr-review mention follow-up ready and parked for the human — {Path}", runId, addendumPath);
     }
+
+    /// <summary>
+    /// The sentence a mention follow-up's park line appends when the previous run is still parked and
+    /// unwalked. An answer-only task never wrote a findings report (its earlier lap parked a drafted
+    /// reply, not a review), so there is no review-1-findings.md to point at: what is stranded is the
+    /// earlier lap's own reply.
+    /// </summary>
+    internal static string ComposeUnwalkedReportNote(bool answersOwnPullRequest, RunDetails? previousRun) =>
+        (previousRun, answersOwnPullRequest) switch
+        {
+            ({ State: var state }, true) when state == RunState.ReviewParked =>
+                " The earlier drafted reply is also still parked and unwalked.",
+            ({ State: var state }, false) when state == RunState.ReviewParked =>
+                " Its own findings report is also still parked and unwalked: "
+                + $"{RunPaths.ReviewFindingsFile(RunPaths.ResolveCurrentDirectory(previousRun.RunDirectory), 1)}.",
+            _ => string.Empty,
+        };
 
     /// <summary>
     /// The needs-you line a mention follow-up lap parks with, which the board and <c>h9k task show</c>

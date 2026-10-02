@@ -633,7 +633,8 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             pullRequestAuthor: ("BRIAN", 99, "OWNER"));
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("normal speed never launches"), gh),
-            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
+            clock: new FixedClock(Now));
 
         await engine.PollOnceAsync(cts.Token);
 
@@ -676,7 +677,8 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             pullRequestAuthor: ("taylor-dennison", 7, "MEMBER"));
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("normal speed never launches"), gh),
-            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
+            clock: new FixedClock(Now));
 
         await engine.PollOnceAsync(cts.Token);
 

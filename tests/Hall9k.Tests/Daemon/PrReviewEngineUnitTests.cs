@@ -5,6 +5,7 @@ using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -76,6 +77,19 @@ public sealed class PrReviewEngineUnitTests : IDisposable
 
         reason.Should().StartWith("acme/web#7: ryan tagged you")
             .And.Contain("Addendum: /runs/r1/addendum.md");
+    }
+
+    [Fact]
+    public void An_answer_only_task_never_points_at_a_findings_report_it_does_not_have()
+    {
+        RunDetails parked = new() { State = RunState.ReviewParked, RunDirectory = "/runs/r1" };
+
+        string note = PrReviewEngine.ComposeUnwalkedReportNote(answersOwnPullRequest: true, parked);
+
+        note.Should().Contain("earlier drafted reply").And.NotContain("review-1-findings");
+        PrReviewEngine.ComposeUnwalkedReportNote(answersOwnPullRequest: false, parked)
+            .Should().Contain("findings report").And.Contain("review-1-findings");
+        PrReviewEngine.ComposeUnwalkedReportNote(answersOwnPullRequest: true, previousRun: null).Should().BeEmpty();
     }
 
     [Fact]
