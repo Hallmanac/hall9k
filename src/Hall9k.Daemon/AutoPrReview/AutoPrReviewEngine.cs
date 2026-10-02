@@ -2078,7 +2078,7 @@ public sealed class AutoPrReviewEngine(
         if (likelyCovering is not null)
         {
             return await AttachMentionAsync(
-                session, likelyCovering, setting, pastCutoff, candidate, comment, isPrivate, membershipSetting,
+                session, likelyCovering, setting, pastCutoff, candidate, login, comment, isPrivate, membershipSetting,
                 cancellationToken);
         }
 
@@ -2216,7 +2216,7 @@ public sealed class AutoPrReviewEngine(
     /// </summary>
     private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)?> AttachMentionAsync(
         IDocumentSession session, TaskListItem existing, AutoPrReviewSetting setting, bool pastCutoff,
-        ReviewRequestedPullRequest candidate, PullRequestMentionComment comment, bool? isPrivate,
+        ReviewRequestedPullRequest candidate, string login, PullRequestMentionComment comment, bool? isPrivate,
         ReviewMembershipGateSetting membershipSetting, CancellationToken cancellationToken)
     {
         StreamState? fence = await session.Events.FetchStreamStateAsync(existing.Id, cancellationToken);
@@ -2235,7 +2235,7 @@ public sealed class AutoPrReviewEngine(
         DateTimeOffset now = _clock.GetUtcNow();
         PullRequestReviewMentionObserved observed = TaskDecider.ObservePrReviewMention(
             task, candidate.Url, comment.CommentId, comment.AuthorLogin, comment.Body, comment.Url,
-            comment.CreatedAt, now, comment.DatabaseId);
+            comment.CreatedAt, now, comment.DatabaseId, mentionedLogin: login);
 
         bool reportParkedAwaitingWalk = await IsReportParkedAwaitingWalkAsync(session, task, cancellationToken);
         if (!TaskDecider.AwaitsPrReviewMentionFollowUp(task, reportParkedAwaitingWalk))
@@ -2404,9 +2404,10 @@ public sealed class AutoPrReviewEngine(
         long claimedVersion = fence.Version + 2;
         await session.SaveChangesAsync(cancellationToken);
 
+        MentionFollowUpLaunch launch;
         try
         {
-            await launcher.LaunchPrReviewMentionFollowUpAsync(
+            launch = await launcher.LaunchPrReviewMentionFollowUpAsync(
                 existing.Id, runId, claimed.NodeId, node.OwnerId, claimed.LeaseGeneration, node.NodeId, comment,
                 priorReviewRunId, cancellationToken);
         }
@@ -2422,9 +2423,15 @@ public sealed class AutoPrReviewEngine(
             throw;
         }
 
-        return (
-            ReviewMentionOutcome.Attached, existing.Id,
-            "attached, and a bounded follow-up lap was dispatched to answer it");
+        // Recorded as no follow-up, never Attached: the lifetime cap counts Attached rows, and a
+        // comment the launch refused spent none of it (the claim was already given back).
+        return launch.Skipped
+            ? (
+                ReviewMentionOutcome.AttachedNoFollowUp, existing.Id,
+                $"recorded; the follow-up was refused before it launched: {RelayedText.OneLine(launch.SkipReason ?? string.Empty)}")
+            : (
+                ReviewMentionOutcome.Attached, existing.Id,
+                "attached, and a bounded follow-up lap was dispatched to answer it");
     }
 
     /// <summary>
@@ -2482,7 +2489,7 @@ public sealed class AutoPrReviewEngine(
             // known true and setting.IsOn already known on here — DecideMentionAsync only reaches
             // this method after both gates passed.
             return await AttachMentionAsync(
-                session, existing, setting, pastCutoff, candidate, comment, isPrivate, membershipSetting,
+                session, existing, setting, pastCutoff, candidate, login, comment, isPrivate, membershipSetting,
                 cancellationToken);
         }
 
@@ -2511,7 +2518,8 @@ public sealed class AutoPrReviewEngine(
 
         PullRequestReviewMentionObserved observed = new(
             taskId, imported.Url?.ToString() ?? candidate.Url, comment.CommentId, comment.AuthorLogin,
-            comment.Body, comment.Url, comment.CreatedAt, now, comment.DatabaseId, MintedTask: true);
+            comment.Body, comment.Url, comment.CreatedAt, now, comment.DatabaseId, MintedTask: true,
+            MentionedLogin: login);
 
         TaskAggregate task = new();
         task.Apply(added);

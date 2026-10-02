@@ -3992,6 +3992,16 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
     }
 
+    /// <summary>
+    /// gh as a mention follow-up's gate sees it: <c>gh api user</c> answers this install's own
+    /// login, which the launch reads before anything else, and every other call gets the pull
+    /// request JSON.
+    /// </summary>
+    private static RecordingProcessRunner GhSignedInAs(string login, string pullRequestJson) =>
+        new(arguments => arguments.Contains("user")
+            ? new ProcessResult(0, login + "\n", string.Empty)
+            : new ProcessResult(0, pullRequestJson, string.Empty));
+
     private const string PullRequestPreflightJson = """
         {
           "number": 901,
@@ -4308,8 +4318,8 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 906, cts.Token);
 
-        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(
-            PullRequestPreflightJson.Replace("901", "906", StringComparison.Ordinal));
+        RecordingProcessRunner gh = GhSignedInAs(
+            "brian", PullRequestPreflightJson.Replace("901", "906", StringComparison.Ordinal));
         CapturingExecutor executor = new();
         RefusingWorktreeManager worktrees = new();
         MergedInspector inspector = new();
@@ -4583,6 +4593,89 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// AgelessRx/arx-platform#2166 from the task owner's side: a mention that tags another login
+    /// reached this owner's task and, after a teammate's pre-flight, this install claimed the
+    /// pending follow-up. The launch re-checks the stored comment against this install's own login,
+    /// starts no session, records the skip, clears the pending flag, and hands the task back to the
+    /// state it held before the claim.
+    /// </summary>
+    [Fact]
+    public async Task A_pending_mention_follow_up_for_a_comment_that_tags_another_login_is_skipped_and_the_task_handed_back()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid reviewRunId = DomainId.New();
+        TaskClaimed ownersClaim;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"pr-review-mention-skip-{taskId:N}",
+                $"/tmp/pr-review-mention-skip-repo-{taskId:N}", new Uri("https://github.com/acme/web"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Review pull request acme/web#912", ["every finding names a file and line"],
+                    TaskType.PrReview, null, null,
+                    new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#912"), Now, node.OwnerId),
+                node.OwnerId, Now);
+            TaskClaimed reviewClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, reviewRunId, Now);
+            aggregate.Apply(reviewClaim);
+            PullRequestReviewFollowThroughOpened waiting = TaskDecider.OpenPrReviewFollowThrough(
+                aggregate, reviewRunId, "https://github.com/acme/web/pull/912", headSha: null, Now);
+            aggregate.Apply(waiting);
+            PullRequestReviewMentionObserved observed = TaskDecider.ObservePrReviewMention(
+                aggregate, "https://github.com/acme/web/pull/912", "IC_2166", "ryan", "@taylor can you confirm?",
+                "https://github.com/acme/web/pull/912#issuecomment-IC_2166", Now, Now, mentionedLogin: "taylor");
+            aggregate.Apply(observed);
+            TaskClaimed teammatesClaim = TaskDecider.ClaimForMentionFollowUp(
+                aggregate, node.OwnerId, DomainId.New(), Now, reportParkedAwaitingWalk: false);
+            aggregate.Apply(teammatesClaim);
+            TaskRequeued requeued = TaskDecider.Requeue(aggregate, RequeueReason.PrReviewPreflightSafeMentionFollowUp, Now);
+            aggregate.Apply(requeued);
+            ownersClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, DomainId.New(), Now);
+            aggregate.Apply(ownersClaim);
+
+            session.Events.StartStream<TaskAggregate>(
+                taskId, [.. lifecycle, reviewClaim, waiting, observed, teammatesClaim, requeued, ownersClaim]);
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = ownersClaim.LeaseGeneration, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RecordingProcessRunner gh = GhSignedInAs(
+            "brian", PullRequestPreflightJson.Replace("901", "912", StringComparison.Ordinal));
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(
+            taskId, ownersClaim.RunId, node.NodeId, node.OwnerId, ownersClaim.LeaseGeneration, cts.Token);
+
+        executor.Request.Should().BeNull("a comment that does not tag this install's own login never starts a session");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.AwaitingAuthor, "the claim is given back to the state the task held before it");
+        task.PendingMentionFollowUpAfterPreflight.Should().BeFalse();
+        task.CurrentRunId.Should().Be(reviewRunId);
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull();
+        IReadOnlyList<JasperFx.Events.IEvent> events = await query.Events.FetchStreamAsync(taskId, token: cts.Token);
+        events.Select(@event => @event.Data).OfType<PullRequestReviewMentionFollowUpSkipped>().Should().ContainSingle()
+            .Which.Reason.Should().Contain("does not tag brian");
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 1, both lenses, finding 2 (RunLauncher.cs:998 /
     /// RunSupervisor.cs:254): once a pre-flight dispatched to gate a mention follow-up's own
     /// checkout comes back safe, the very next claim must answer the mentioning comment through
@@ -4636,8 +4729,8 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
         await SeedSafePrReviewPreflightAsync(store, taskId, node.NodeId, headRefOid: string.Empty, cts.Token);
 
-        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(
-            PullRequestPreflightJson.Replace("901", "910", StringComparison.Ordinal));
+        RecordingProcessRunner gh = GhSignedInAs(
+            "brian", PullRequestPreflightJson.Replace("901", "910", StringComparison.Ordinal));
         CapturingExecutor executor = new();
         StubWorktreeManager worktrees = new();
         MergedInspector inspector = new();
