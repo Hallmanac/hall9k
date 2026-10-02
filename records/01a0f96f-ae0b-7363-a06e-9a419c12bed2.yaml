@@ -1,0 +1,45 @@
+hall9k-task-record: 1
+task-id: 01a0f96f-ae0b-7363-a06e-9a419c12bed2
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#675
+objective: A mention follow-up runs only when this install's own login is the one the comment tags, and the record says which login was tagged
+criteria:
+  - PullRequestReviewMentionObserved records the mentioned login alongside the comment author
+  - |-
+    Before any mention follow-up session launches, on every path that reaches one (the pending follow-up after pre-flight and the direct follow-up after ClaimForMentionFollowUp, both through RunLauncher.LaunchPrReviewMentionFollowUpAsync), the daemon re-checks the stored comment against this install's own login: the comment must tag that login and must not be written by it. This holds even when the recorded tagged login is missing, as on an event from an older node. When either check fails, or the login cannot be read, no session starts. A skip is recorded, the pending follow-up flag clears, and the task returns to the state it held before the claim
+  - h9k task show and the mention-followup prompt name the comment author and the tagged login separately, and neither claims the author tagged this install unless it did
+  - |-
+    A unit test, with no database, no branch, and no GitHub, replays #2166 from the task owner's side: a mention attached to this owner's task that tags another login, or was written by this install's own login, is skipped before launch with the skip recorded and no session started (Brian, 2026-10-02)
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/9c12bed2-a-mention-follow-up-runs-only
+published: 2026-10-02 14:21:37Z
+context: |-
+  A mention follow-up never checks that this install's own login was the one tagged. PullRequestReviewMentionObserved (src/Hall9k.Domain/Features/Tasks/Events/PullRequestReviewMentionObserved.cs:39-48) records the comment's author, not the mentioned login. RunLauncher's pending-follow-up branch (RunLauncher.cs:163-180) rebuilds the comment from the task's latest-mention fields without re-applying the self-author filter (GitHubReviewAssignments.cs:482-484) or checking who was tagged. The prompt template (.claude/templates/mention-followup-prompt-builder/build.md:4) then tells the session the author "tagged this install's own login". The "Tagged by" row in h9k task show (TaskShowCommand.cs:328) shows the author under a label that reads as the tagged login.
+
+  ## Motivating case: AgelessRx/arx-platform#2166, pr-review task bc7d2572 (2026-10-01 EDT)
+
+  - bc7d2572 is Brian's (Hallmanac) pr-review task for #2166, scope Team, assigned to Brian Hall. It had been parked merge-ready since about noon.
+  - 11:49 Taylor Dennison (taylor-dennison) asked a question on the PR.
+  - 17:21:23 Brian replied as Hallmanac, mentioning @taylor-dennison (issue comment 5940862269). The comment answered Taylor; nothing in it was for Brian.
+  - 17:23 feed: "bc7d2572 claimed by TaylorDenny as a deliberate kick-off; a run is starting". Taylor's install had a real mention of its own login, found Brian's replicated task by external reference with no owner filter, and claimed it through TaskDecider.ClaimForMentionFollowUp. That claim carries the empty node id, so the feed (OrchestratorFeedDescription.cs:124-125) labelled it a deliberate kick-off. That label is wrong.
+  - 17:26 feed: "bc7d2572 claimed by node ef6ab27d". The order here is inferred from the code: Taylor's safe pre-flight requeued the task with PendingMentionFollowUpAfterPreflight (RunSupervisor.cs:352-357), still assigned to Brian. Brian's dispatcher claimed it and took the pending-follow-up branch (RunLauncher.cs:163-180).
+  - 17:27 parked with a mention-followup addendum, run 01a0f95c-a4cc-7362-a7c8-bfd6ba613d3a, reading "Tagged by Hallmanac". The session found no question for Brian and drafted nothing.
+
+  Evidence comes from a code trace at v0.11.3 (e03c7d7e6). Mention match and self-author filter: src/Hall9k.Connectors/WorkItems/GitHubReviewAssignments.cs:439-440, 482-484. Attach: src/Hall9k.Daemon/AutoPrReview/AutoPrReviewEngine.cs:2058-2409, with the covering-task lookup at 2067-2076. Receive gate: src/Hall9k.Connectors/Replication/EventReplicationInbox.cs:2013, Owner-role pass-through around 2045-2048.
+
+
+
+  ## Walked 2026-10-02 (Brian)
+
+  One task, stacked on nothing, buildable alongside 5f6b4783 (the only overlap is where the mention event is recorded). This card stays needed after 5f6b4783: that fix only protects installs running the new version, and a teammate on an older daemon (Ryan is on 0.10.50) could still attach a stray mention to this owner's task, so the pre-launch re-check is this owner's own guard regardless of teammates' versions.
+
+
+
+  ## Challenge applied 2026-10-02
+
+  Verdict in this task's journal.md (challenge abf9d530): criterion 2 replaced. The tagged login is derived by the observing install (GitHub's mention data does not carry it), so the new event field is nullable for older nodes' events, and the pre-launch check re-runs the mention match on the stored body rather than trusting the field. No skip event exists today; add one.
