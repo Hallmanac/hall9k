@@ -2409,7 +2409,7 @@ public sealed class AutoPrReviewEngine(
         {
             launch = await launcher.LaunchPrReviewMentionFollowUpAsync(
                 existing.Id, runId, claimed.NodeId, node.OwnerId, claimed.LeaseGeneration, node.NodeId, comment,
-                priorReviewRunId, cancellationToken);
+                priorReviewRunId, knownOwnLogin: login, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

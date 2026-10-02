@@ -1,7 +1,7 @@
 ===title===
 # Mention follow-up: {{RepoAndNumber}}
 ===intro===
-You already reviewed this pull request. Since that review, {{CommentAuthor}} wrote a comment on it that tags {{TaggedLogin}}, which is this install's own login, and this run exists to answer that one comment — nothing else about the pull request has changed enough to warrant a fresh review.
+You already reviewed this pull request. Since that review, {{CommentAuthor}} wrote a comment on it that tags {{TaggedLogin}}, and this run exists to answer that one comment — nothing else about the pull request has changed enough to warrant a fresh review.
 ===the-comment-heading===
 ## The comment you were tagged in
 ===the-comment-body===

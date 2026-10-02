@@ -4331,11 +4331,61 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         PullRequestMentionComment comment = new(
             "IC_1", "ryan", "@brian one more thing", "https://github.com/acme/web/pull/906#issuecomment-IC_1", Now);
         await launcher.LaunchPrReviewMentionFollowUpAsync(
-            taskId, runId, node.NodeId, node.OwnerId, 1, node.NodeId, comment, priorReviewRunId: null, cts.Token);
+            taskId, runId, node.NodeId, node.OwnerId, 1, node.NodeId, comment, priorReviewRunId: null, knownOwnLogin: null, cts.Token);
 
         executor.Request.Should().NotBeNull("with no verdict on record the site dispatches a pre-flight instead of refusing outright");
         executor.Request!.Prompt.Should().Contain(PrReviewPreflightVerdictParser.Marker,
             "RefusingWorktreeManager throwing on any checkout proves the mention follow-up's own checkout never ran");
+    }
+
+    /// <summary>
+    /// A <c>gh api user</c> that fails when the follow-up launches is a launch failure, never a
+    /// skip: a skip is permanent (the comment id is already deduplicated), and an unread identity
+    /// says nothing about who the comment tagged. A caller that already holds the login its own
+    /// sweep read passes it in and never makes the second read at all.
+    /// </summary>
+    [Fact]
+    public async Task A_mention_follow_up_whose_login_read_fails_is_a_launch_failure_not_a_skip_unless_the_caller_knows_the_login()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid failedTaskId, Guid failedRunId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 913, cts.Token);
+        (Guid knownTaskId, Guid knownRunId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 913, cts.Token);
+
+        string pullRequestJson = PullRequestPreflightJson.Replace("901", "913", StringComparison.Ordinal);
+        RecordingProcessRunner gh = new(arguments => arguments.Contains("user")
+            ? new ProcessResult(1, string.Empty, "HTTP 502: Bad Gateway")
+            : new ProcessResult(0, pullRequestJson, string.Empty));
+        CapturingExecutor executor = new();
+        RefusingWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+        PullRequestMentionComment comment = new(
+            "IC_3", "ryan", "@brian one more thing", "https://github.com/acme/web/pull/913#issuecomment-IC_3", Now);
+
+        MentionFollowUpLaunch failed = await launcher.LaunchPrReviewMentionFollowUpAsync(
+            failedTaskId, failedRunId, node.NodeId, node.OwnerId, 1, node.NodeId, comment,
+            priorReviewRunId: null, knownOwnLogin: null, cts.Token);
+
+        failed.Skipped.Should().BeFalse("an unread login must not be recorded as a permanent refusal");
+        executor.Request.Should().BeNull("with no identity to match the comment against, no session starts");
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<JasperFx.Events.IEvent> events = await query.Events.FetchStreamAsync(failedTaskId, token: cts.Token);
+        events.Select(@event => @event.Data).OfType<PullRequestReviewMentionFollowUpSkipped>().Should().BeEmpty();
+        events.Select(@event => @event.Data).OfType<TaskFailed>().Should().ContainSingle()
+            .Which.Reason.Should().Contain("could not be read");
+
+        MentionFollowUpLaunch known = await launcher.LaunchPrReviewMentionFollowUpAsync(
+            knownTaskId, knownRunId, node.NodeId, node.OwnerId, 1, node.NodeId, comment,
+            priorReviewRunId: null, knownOwnLogin: "brian", cts.Token);
+
+        known.Skipped.Should().BeFalse();
+        executor.Request.Should().NotBeNull(
+            "the login the sweep already read stands in for the second read, so a failing gh api user cannot stop the launch");
     }
 
     /// <summary>
@@ -4443,7 +4493,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
-        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 914, cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 913, cts.Token);
 
         string prView = """
             {
