@@ -572,6 +572,8 @@ public sealed class TaskDetails
     public string? LatestMentionCommentId { get; set; }
     /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionAuthorLogin"/> — who wrote the mentioning comment.</summary>
     public string? LatestMentionAuthorLogin { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionTaggedLogin"/> — the login the comment tagged; null when an older node recorded it.</summary>
+    public string? LatestMentionTaggedLogin { get; set; }
     /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionBody"/> — the mentioning comment's own text, verbatim.</summary>
     public string? LatestMentionBody { get; set; }
     /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionUrl"/> — where the mentioning comment lives on GitHub.</summary>
@@ -1614,6 +1616,17 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.State = TaskState.NeedsHuman;
     }
 
+    // Mirrors TaskAggregate.Apply(PullRequestReviewMentionFollowUpSkipped) — the claim is given back
+    // with the facts the event carries.
+    public void Apply(IEvent<PullRequestReviewMentionFollowUpSkipped> @event, TaskDetails view)
+    {
+        view.State = @event.Data.ReturnedToState;
+        view.CurrentRunId = @event.Data.ReturnedToRunId;
+        view.ClaimedByNodeId = @event.Data.ReturnedToNodeId;
+        view.RunIds.Remove(@event.Data.RunId);
+        view.PendingMentionFollowUpAfterPreflight = false;
+    }
+
     // Mirrors TaskAggregate.Apply(PullRequestReviewMentionObserved): state is never touched here,
     // for the identical reason — a mention attaches to whatever state the task is already in, and
     // whether it also earns a mint, a claim, or a dispatched follow-up is a separate decision the
@@ -1622,6 +1635,7 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
     {
         view.LatestMentionCommentId = @event.Data.CommentId;
         view.LatestMentionAuthorLogin = @event.Data.CommentAuthorLogin;
+        view.LatestMentionTaggedLogin = @event.Data.MentionedLogin;
         view.LatestMentionBody = @event.Data.CommentBody;
         view.LatestMentionUrl = @event.Data.CommentUrl;
         view.LatestMentionCreatedAt = @event.Data.CommentCreatedAt;

@@ -86,6 +86,9 @@ public static class TaskActClassificationRegistry
         [typeof(PullRequestReviewFollowThroughOpened)] = TaskActClassification.MemberSafe,
         [typeof(PullRequestReviewGateParked)] = TaskActClassification.MemberSafe,
         [typeof(PullRequestReviewLapOpened)] = TaskActClassification.MemberSafe,
+        // Giving back a mention follow-up's claim moves the task's state and run exactly as a
+        // requeue does, so a forged copy from a sender who holds nothing must not apply.
+        [typeof(PullRequestReviewMentionFollowUpSkipped)] = TaskActClassification.Conditional,
         [typeof(PullRequestReviewMentionObserved)] = TaskActClassification.MemberSafe,
         [typeof(PullRequestReviewVerdictDelivered)] = TaskActClassification.MemberSafe,
 

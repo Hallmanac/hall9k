@@ -35,6 +35,14 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// review's own twin the moment a mention ever landed on it, breaking
 /// <c>PullRequestReviewDuplicateRule.IsRival</c>'s invariant that a hand-adopted task is never one.
 /// </para>
+/// <para>
+/// <see cref="MentionedLogin"/> is the login the comment tagged, as the observing install derived
+/// it: GitHub's own comment data names only the author, so this is the install's own login at
+/// the moment its sweep matched the body against it. Null on an event an older node wrote before
+/// this field existed, which is why the pre-launch check in
+/// <c>RunLauncher.LaunchPrReviewMentionFollowUpAsync</c> re-runs the match against the stored
+/// body rather than trusting this field.
+/// </para>
 /// </summary>
 public sealed record PullRequestReviewMentionObserved(
     Guid Id,
@@ -46,4 +54,5 @@ public sealed record PullRequestReviewMentionObserved(
     DateTimeOffset CommentCreatedAt,
     DateTimeOffset ObservedAt,
     long? CommentDatabaseId = null,
-    bool MintedTask = false);
+    bool MintedTask = false,
+    string? MentionedLogin = null);

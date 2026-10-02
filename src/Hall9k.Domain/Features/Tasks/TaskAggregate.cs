@@ -795,7 +795,7 @@ public sealed class TaskAggregate
     /// always what the gate actually matched against; for a mention-triggered park it is one of
     /// two signals the gate combines with the mentioning comment's own author (never recorded on
     /// this card — see <c>PullRequestReviewMentionObserved</c> and <c>h9k task show</c>'s own
-    /// "Tagged by" row), so a park this field reads as a declared member can still have been
+    /// "Comment by" and "Tagged login" rows), so a park this field reads as a declared member can still have been
     /// caused by the comment's own author failing the gate instead.
     /// </summary>
     public long? PrReviewGateParkedAuthorAccountId { get; private set; }
@@ -880,8 +880,15 @@ public sealed class TaskAggregate
     /// </summary>
     public string? LatestMentionCommentId { get; private set; }
 
-    /// <summary>See <see cref="LatestMentionCommentId"/>.</summary>
+    /// <summary>See <see cref="LatestMentionCommentId"/> — who WROTE the comment, never who it tagged; that is <see cref="LatestMentionTaggedLogin"/>.</summary>
     public string? LatestMentionAuthorLogin { get; private set; }
+
+    /// <summary>
+    /// See <see cref="LatestMentionCommentId"/> — the login the comment tagged, as the observing
+    /// install derived it; null on a mention an older node recorded before the event carried it,
+    /// which a reader must treat as unknown rather than as this install's own login.
+    /// </summary>
+    public string? LatestMentionTaggedLogin { get; private set; }
 
     /// <summary>See <see cref="LatestMentionCommentId"/>.</summary>
     public string? LatestMentionBody { get; private set; }
@@ -894,6 +901,21 @@ public sealed class TaskAggregate
 
     /// <summary>See <see cref="LatestMentionCommentId"/> — the numeric REST id, set only for an inline review-comment-thread reply, the one shape the REST reply endpoint's own <c>in_reply_to</c> accepts; null for every other comment shape, or a mention observed before this field existed.</summary>
     public long? LatestMentionCommentDatabaseId { get; private set; }
+
+    /// <summary>
+    /// The state this task held immediately before the claim that started the current mention
+    /// follow-up attempt, kept so <see cref="Events.PullRequestReviewMentionFollowUpSkipped"/> can
+    /// give the claim back. A claim made while a pre-flight's own requeue was pending
+    /// (<see cref="PendingMentionFollowUpAfterPreflight"/>) leaves it alone: that requeue is a
+    /// stop on the way to the same follow-up, not the state the task held before it.
+    /// </summary>
+    public TaskState? StateBeforeLatestClaim { get; private set; }
+
+    /// <summary>See <see cref="StateBeforeLatestClaim"/> — the run the task named as current before that claim.</summary>
+    public Guid? CurrentRunIdBeforeLatestClaim { get; private set; }
+
+    /// <summary>See <see cref="StateBeforeLatestClaim"/> — the node the task named as claiming it before that claim.</summary>
+    public Guid? ClaimedByNodeIdBeforeLatestClaim { get; private set; }
 
     /// <summary>
     /// The run a human reviewer's own review lap is riding on (<c>h9k pr review</c>, Decisions
@@ -1553,6 +1575,15 @@ public sealed class TaskAggregate
 
     public void Apply(TaskClaimed @event)
     {
+        bool isMentionFollowUpRequeueStop = PendingMentionFollowUpAfterPreflight
+            && (State == TaskState.Queued || State == TaskState.Blocked);
+        if (!isMentionFollowUpRequeueStop)
+        {
+            StateBeforeLatestClaim = State;
+            CurrentRunIdBeforeLatestClaim = CurrentRunId;
+            ClaimedByNodeIdBeforeLatestClaim = ClaimedByNodeId;
+        }
+
         LeaseGeneration = @event.LeaseGeneration;
         ClaimedByNodeId = @event.NodeId;
         CurrentRunId = @event.RunId;
@@ -2347,10 +2378,24 @@ public sealed class TaskAggregate
     {
         LatestMentionCommentId = @event.CommentId;
         LatestMentionAuthorLogin = @event.CommentAuthorLogin;
+        LatestMentionTaggedLogin = @event.MentionedLogin;
         LatestMentionBody = @event.CommentBody;
         LatestMentionUrl = @event.CommentUrl;
         LatestMentionCreatedAt = @event.CommentCreatedAt;
         LatestMentionCommentDatabaseId = @event.CommentDatabaseId;
+    }
+
+    // The claim that started a mention follow-up is given back (see the event's own doc): the
+    // pre-claim facts come from the event itself, so this fold never depends on what the claim
+    // overwrote. The claim's own run id leaves the history too, since no run stream was ever
+    // opened under it.
+    public void Apply(PullRequestReviewMentionFollowUpSkipped @event)
+    {
+        State = @event.ReturnedToState;
+        CurrentRunId = @event.ReturnedToRunId;
+        ClaimedByNodeId = @event.ReturnedToNodeId;
+        _runIds.Remove(@event.RunId);
+        PendingMentionFollowUpAfterPreflight = false;
     }
 
     public void Apply(PullRequestReviewLapOpened @event)

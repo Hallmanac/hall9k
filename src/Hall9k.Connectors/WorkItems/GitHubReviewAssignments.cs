@@ -439,6 +439,9 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
     private static Regex MentionPattern(string login) => new(
         $@"@{Regex.Escape(login)}(?![A-Za-z0-9-])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
+    /// <summary>Whether <paramref name="body"/> tags <paramref name="login"/>, by the same boundary rule the sweep's own match applies (<see cref="MentionPattern"/>).</summary>
+    public static bool MentionsLogin(string body, string login) => MentionPattern(login).IsMatch(body);
+
     /// <summary>
     /// One <c>{ nodes: [...] }</c> collection's own mentioning comments, appended to
     /// <paramref name="found"/> — the shared walk <see cref="ParseMentionComments"/> runs over
