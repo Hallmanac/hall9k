@@ -45,18 +45,33 @@ public static class MentionFollowUpPromptBuilder
     /// reads as though the author tagged this install unless the check said so; null reads as
     /// "this install's own login" without naming it.
     /// </param>
+    /// <param name="ownPullRequest">
+    /// True when the tagged login also wrote the pull request (decision dce39370): the opening then
+    /// says this is an answer for the owner and not a review of their own work. Whatever this is, a
+    /// prompt carrying no prior report never says a review already happened.
+    /// </param>
     public static string Build(
         string repository, int number, string worktreePath, string baseBranch,
         PullRequestMentionComment comment, string? priorReport, ProjectDetails project,
-        VoiceSkillName? voiceSkill = null, string? taggedLogin = null)
+        VoiceSkillName? voiceSkill = null, string? taggedLogin = null, bool ownPullRequest = false)
     {
         const string file = $"{TemplateDirectory}/build.md";
         StringBuilder prompt = new();
 
+        // The opening says a review already happened only when a report of it is on the page: a prompt
+        // with nothing to quote has no earlier review it can honestly point at, whichever way that came
+        // about (an own pull request's answer lap never had one).
+        string intro = (ownPullRequest, priorReport.IsNotBlank()) switch
+        {
+            (true, _) => "intro-own-pull-request",
+            (false, true) => "intro",
+            (false, false) => "intro-no-report",
+        };
+
         prompt.AppendLine(PromptTemplates.Load(file, "title", Params(("RepoAndNumber", $"{repository}#{number}"))));
         prompt.AppendLine();
         prompt.AppendLine(PromptTemplates.Load(
-            file, "intro",
+            file, intro,
             Params(
                 ("CommentAuthor", OneLine(comment.AuthorLogin)),
                 ("TaggedLogin", taggedLogin.IsNotBlank()
@@ -78,16 +93,18 @@ public static class MentionFollowUpPromptBuilder
         }
 
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "prior-report-heading"));
-        prompt.AppendLine();
         if (priorReport.IsNotBlank())
         {
+            prompt.AppendLine(PromptTemplates.Load(file, "prior-report-heading"));
+            prompt.AppendLine();
             prompt.AppendLine(PromptTemplates.Load(file, "prior-report-present"));
             prompt.AppendLine();
             prompt.AppendLine(Block(priorReport));
         }
         else
         {
+            prompt.AppendLine(PromptTemplates.Load(file, "prior-report-absent-heading"));
+            prompt.AppendLine();
             prompt.AppendLine(PromptTemplates.Load(file, "prior-report-absent"));
         }
 

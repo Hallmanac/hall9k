@@ -1145,18 +1145,38 @@ public sealed class PrReviewEngine(
 
         session.Events.Append(runId, new ReviewParked(
             runId,
-            $"{pullRequestName}: {answeredMention?.CommentAuthorLogin ?? "someone"} tagged you"
-            + (firstCommentLine.IsNotBlank() ? $" — \"{firstCommentLine}\"" : string.Empty)
-            + $". Addendum: {addendumPath}."
-            + unwalkedReportNote
-            + " Walk it with walk-pr-review-findings — show the drafted reply, "
-            + "take any edits, and post it only on the owner's explicit go — then resolve with "
-            + "h9k review resolve --merge-ready.",
+            ComposeMentionFollowUpParkReason(
+                task.AnswersMentionOnly, pullRequestName, answeredMention?.CommentAuthorLogin ?? "someone",
+                firstCommentLine, addendumPath, unwalkedReportNote),
             DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(
             "Run {RunId}: pr-review mention follow-up ready and parked for the human — {Path}", runId, addendumPath);
+    }
+
+    /// <summary>
+    /// The needs-you line a mention follow-up lap parks with, which the board and <c>h9k task show</c>
+    /// read. A task minted to answer a comment on the owner's own pull request (decision dce39370)
+    /// says it answers that author's comment on the owner's own pull request, because there is no
+    /// review here to find findings in, only a drafted reply to walk; every other follow-up keeps its
+    /// "tagged you" wording.
+    /// </summary>
+    internal static string ComposeMentionFollowUpParkReason(
+        bool answersOwnPullRequest, string pullRequestName, string commentAuthorLogin, string firstCommentLine,
+        string addendumPath, string unwalkedReportNote)
+    {
+        string opening = answersOwnPullRequest
+            ? $"{pullRequestName}: answers {commentAuthorLogin}'s comment on your own pull request"
+            : $"{pullRequestName}: {commentAuthorLogin} tagged you";
+        string addendumLabel = answersOwnPullRequest ? "Drafted reply and analysis" : "Addendum";
+        return opening
+            + (firstCommentLine.IsNotBlank() ? $" — \"{firstCommentLine}\"" : string.Empty)
+            + $". {addendumLabel}: {addendumPath}."
+            + unwalkedReportNote
+            + " Walk it with walk-pr-review-findings — show the drafted reply, "
+            + "take any edits, and post it only on the owner's explicit go — then resolve with "
+            + "h9k review resolve --merge-ready.";
     }
 
     private async Task ComposeReportAndParkAsync(

@@ -1,5 +1,6 @@
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Closeout;
@@ -165,12 +166,38 @@ public sealed class RunLauncher(
             // never answered). Delegates entirely: LaunchPrReviewMentionFollowUpAsync re-reads the
             // pull request, re-runs the identical foreign-repository and pre-flight gates the rest
             // of this branch runs below, and cuts its own checkout.
-            if (isPrReview && task.PendingMentionFollowUpAfterPreflight)
+            //
+            // A task minted to answer a comment on the owner's own pull request takes this same road
+            // on every dispatch (decision dce39370), keyed on the task's own mark rather than on the
+            // pending flag: that flag is a one-shot a skipped launch clears, and a first dispatch, a
+            // retry and the one after a deferred launch all have to be the answer lap or nothing,
+            // never the two-lens review below.
+            if (isPrReview && (task.PendingMentionFollowUpAfterPreflight || task.AnswersMentionOnly))
             {
-                PullRequestMentionComment comment = new(
-                    task.LatestMentionCommentId ?? string.Empty, task.LatestMentionAuthorLogin ?? string.Empty,
-                    task.LatestMentionBody ?? string.Empty, task.LatestMentionUrl ?? string.Empty,
-                    task.LatestMentionCreatedAt ?? DateTimeOffset.UtcNow, task.LatestMentionCommentDatabaseId);
+                // An answer-only task's own dispatch answers the comment that minted it, read off the
+                // outcome row recorded for that mint rather than task.LatestMention*, which a second
+                // mention landing before this dispatch moves to a comment this lap was never minted
+                // for (the identical hazard the full review's mint addendum reads around). A pending
+                // follow-up has already been aimed at the newer comment it was claimed for, so it
+                // keeps the latest. Falls back to the latest when the row is not stored yet, which is
+                // the case at "now" speed, where this dispatch runs before the sweep records it.
+                ObservedReviewMention? mintingMention = task.AnswersMentionOnly && !task.PendingMentionFollowUpAfterPreflight
+                    ? await session.Query<ObservedReviewMention>()
+                        .Where(mention => mention.TaskId == taskId)
+                        .Where(mention => mention.MatchesSql(
+                            "d.data ->> 'outcome' IN (?, ?)",
+                            ReviewMentionOutcome.AnswerOnlyTaskCreated.Value,
+                            ReviewMentionOutcome.AnswerOnlyTaskCreatedParked.Value))
+                        .FirstOrDefaultAsync(cancellationToken)
+                    : null;
+                PullRequestMentionComment comment = mintingMention is not null
+                    ? new(
+                        mintingMention.CommentId, mintingMention.CommentAuthorLogin, mintingMention.CommentBody,
+                        mintingMention.CommentUrl, mintingMention.CommentCreatedAt, mintingMention.CommentDatabaseId)
+                    : new(
+                        task.LatestMentionCommentId ?? string.Empty, task.LatestMentionAuthorLogin ?? string.Empty,
+                        task.LatestMentionBody ?? string.Empty, task.LatestMentionUrl ?? string.Empty,
+                        task.LatestMentionCreatedAt ?? DateTimeOffset.UtcNow, task.LatestMentionCommentDatabaseId);
                 Guid? priorReviewRunId = await OriginalReviewRunResolver.ResolveAsync(
                     session, task.RunIds, cancellationToken);
                 await LaunchPrReviewMentionFollowUpAsync(
@@ -1046,7 +1073,8 @@ public sealed class RunLauncher(
             MentionFollowUpGate gate = MentionFollowUpGate.Decide(ownLogin, comment.AuthorLogin, comment.Body);
             if (!gate.Proceed)
             {
-                await SkipMentionFollowUpAsync(taskId, runId, leaseGeneration, comment.CommentId, gate.Reason, cancellationToken);
+                await SkipMentionFollowUpAsync(
+                    task, taskId, runId, leaseGeneration, comment, gate.Reason, cancellationToken);
                 return new MentionFollowUpLaunch(gate.Reason);
             }
 
@@ -1150,7 +1178,7 @@ public sealed class RunLauncher(
                 // The drafted reply this session produces is written first-person as the owner, so
                 // the seam names their own voice skill when they have one (#193).
                 voiceSkill: (await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken))?.VoiceSkill,
-                taggedLogin: ownLogin);
+                taggedLogin: ownLogin, ownPullRequest: task.AnswersMentionOnly);
 
             LogIfOverCapAddendum(runId, project, PromptBuilderKey.MentionFollowUp);
 
@@ -1261,8 +1289,8 @@ public sealed class RunLauncher(
     /// first owns the task, and this stale skip must not undo it.
     /// </summary>
     private async Task SkipMentionFollowUpAsync(
-        Guid taskId, Guid runId, int leaseGeneration, string commentId, string reason,
-        CancellationToken cancellationToken)
+        TaskDetails task, Guid taskId, Guid runId, int leaseGeneration, PullRequestMentionComment comment,
+        string reason, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
         (TaskAggregate Task, long Version)? fenced =
@@ -1277,12 +1305,28 @@ public sealed class RunLauncher(
 
         logger.LogInformation(
             "Task {TaskId}: skipping mention follow-up run {RunId} for comment {CommentId}: {Reason}",
-            taskId, runId, commentId, reason);
+            taskId, runId, comment.CommentId, reason);
         try
         {
-            session.Events.Append(
-                taskId, expectedVersion: current.Version + 1,
-                TaskDecider.SkipPrReviewMentionFollowUp(current.Task, runId, commentId, reason, DateTimeOffset.UtcNow));
+            PullRequestReviewMentionFollowUpSkipped skipped = TaskDecider.SkipPrReviewMentionFollowUp(
+                current.Task, runId, comment.CommentId, reason, DateTimeOffset.UtcNow);
+            // An answer-only task has nothing else to run: giving its claim back to the queue would let
+            // the dispatcher claim it again at once and loop on the same refusal, and a full review is
+            // the one thing it must never fall through to. It fails instead, visibly, and a retry is the
+            // answer lap again. A claim given back to a parked or waiting state (a later mention
+            // attaching to a task already answered) still returns there, exactly as any other task's.
+            if (task.AnswersMentionOnly
+                && (skipped.ReturnedToState == TaskState.Queued || skipped.ReturnedToState == TaskState.Blocked))
+            {
+                await RecordLaunchFailureAsync(
+                    taskId, runId, leaseGeneration,
+                    $"The answer to {RelayedText.OneLine(comment.AuthorLogin).Trim()}'s comment on your own "
+                    + $"pull request was not started: {reason.TrimEnd('.')}. Nothing was reviewed or posted. "
+                    + "h9k task retry runs the answer lap again.", cancellationToken);
+                return;
+            }
+
+            session.Events.Append(taskId, expectedVersion: current.Version + 1, skipped);
             session.Delete<TaskLease>(taskId);
             await session.SaveChangesAsync(cancellationToken);
         }
