@@ -61,7 +61,3 @@ context: |-
   ## Challenge applied 2026-10-02
 
   Verdict in this task's journal.md (challenge c490dcbc). Criteria 1, 2, 3, 5, and 6 revised; 9c12bed2 added as a second blocker because its pre-launch skip clears the pending follow-up flag, and an answer route riding that flag would fall through to the two-lens review after a skip. Both cards edit RunLauncher's pending branch, the launch method, and the mention-followup template. The decision this card states was recorded by the orchestrator from an attended shell (decision dce39370); the build does not record it. Idea 5fc064ac's Read denial (voice explainer unreachable under BuildForPrReview) lowers this lap's draft quality but does not block it.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-10-02 16:50:45Z
