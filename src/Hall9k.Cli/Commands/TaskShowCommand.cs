@@ -343,6 +343,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 header.AddRow("Comment link", ExternalText.OneLineMarkup(mentionUrl));
             }
 
+            if (details.AnswersMentionOnly)
+            {
+                // Said as its own row because the objective names the comment's author but not what
+                // does and does not run: this task never reviews the owner's own pull request.
+                header.AddRow(
+                    "Answers",
+                    "this comment on your own pull request; only the drafted reply runs, never a review "
+                    + "of your own work");
+            }
+
             header.AddRow(
                 "Tagged login",
                 mentionTaggedLogin.IsNotBlank()
