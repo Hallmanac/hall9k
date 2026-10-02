@@ -995,9 +995,11 @@ public sealed class RunLauncher(
     /// <paramref name="knownOwnLogin"/> is the login the caller's own sweep just read successfully,
     /// so the direct claim does not make a second <c>gh api user</c> call that could fail on its
     /// own; the pending claim after a pre-flight has no such login and passes null, which reads it
-    /// here. A read that fails is a launch failure, never a skip: a skip is permanent (the comment
-    /// id is already deduplicated and the pending flag clears), and an unread identity says nothing
-    /// about who the comment tagged.
+    /// here, retrying a failed read a bounded number of times so one transient gh failure does not
+    /// cost the comment. A read that still fails after that is recorded as a skip, which returns the
+    /// task to the state it held before the claim and clears the pending flag; failing the task
+    /// instead would turn an unreadable identity into a manual retry, a worse outcome than the
+    /// state the task held before it was claimed.
     /// </para>
     /// </summary>
     public async Task<MentionFollowUpLaunch> LaunchPrReviewMentionFollowUpAsync(
@@ -1037,23 +1039,9 @@ public sealed class RunLauncher(
             // comes through this method, and neither the event's recorded tagged login (absent on
             // an older node's event) nor the observing install's own sweep is something this
             // owner's install can lean on.
-            string? ownLogin = knownOwnLogin;
-            if (ownLogin.IsBlank())
-            {
-                GitHubLoginRead read = await new GitHubReviewAssignments(processRunner)
-                    .ReadCurrentLoginAsync(project.RepositoryPath, cancellationToken);
-                if (read.Login.IsBlank())
-                {
-                    await RecordLaunchFailureAsync(
-                        taskId, runId, leaseGeneration,
-                        "this install's own GitHub login could not be read, so there is no way to tell whether "
-                        + $"the comment tags it: {read.Error}",
-                        cancellationToken);
-                    return MentionFollowUpLaunch.Handled;
-                }
-
-                ownLogin = read.Login;
-            }
+            string? ownLogin = knownOwnLogin.IsBlank()
+                ? await ReadOwnLoginWithRetryAsync(taskId, runId, project.RepositoryPath, cancellationToken)
+                : knownOwnLogin;
 
             MentionFollowUpGate gate = MentionFollowUpGate.Decide(ownLogin, comment.AuthorLogin, comment.Body);
             if (!gate.Proceed)
@@ -1226,6 +1214,42 @@ public sealed class RunLauncher(
             await RecordLaunchFailureAsync(taskId, runId, leaseGeneration, exception.Message, cancellationToken);
             return MentionFollowUpLaunch.Handled;
         }
+    }
+
+    /// <summary>
+    /// How many times a mention follow-up's launch reads this install's own login before giving up
+    /// on it, and the pause after each failed attempt. Bounded so a gh that is genuinely down
+    /// cannot hold the launch, and enough to ride out one transient failure.
+    /// </summary>
+    private const int OwnLoginReadAttempts = 3;
+
+    private static readonly TimeSpan OwnLoginReadRetryDelay = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>
+    /// This install's own login for a mention follow-up that was not handed one, or null when every
+    /// attempt failed (the gate then records a skip). The last failure is logged, since the skip's
+    /// own reason cannot carry gh's wording.
+    /// </summary>
+    private async Task<string?> ReadOwnLoginWithRetryAsync(
+        Guid taskId, Guid runId, string workingDirectory, CancellationToken cancellationToken)
+    {
+        GitHubReviewAssignments assignments = new(processRunner);
+        GitHubLoginRead read = await assignments.ReadCurrentLoginAsync(workingDirectory, cancellationToken);
+        for (int attempt = 1; read.Login.IsBlank() && attempt < OwnLoginReadAttempts; attempt++)
+        {
+            await Task.Delay(OwnLoginReadRetryDelay * attempt, cancellationToken);
+            read = await assignments.ReadCurrentLoginAsync(workingDirectory, cancellationToken);
+        }
+
+        if (read.Login.IsBlank())
+        {
+            logger.LogWarning(
+                "Task {TaskId}: mention follow-up run {RunId} could not read this install's own login after "
+                + "{Attempts} attempts: {Error}",
+                taskId, runId, OwnLoginReadAttempts, read.Error);
+        }
+
+        return read.Login;
     }
 
     /// <summary>

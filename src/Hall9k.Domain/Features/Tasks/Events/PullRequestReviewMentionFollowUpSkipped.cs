@@ -3,7 +3,7 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// <summary>
 /// A mention follow-up was claimed for this pr-review task and then refused before any session
 /// launched, because the stored comment did not tag this install's own login, was written by it,
-/// or this install's login could not be read to tell. The claim is given back: the task returns
+/// or this install's login could not be read to tell even after the launch retried the read. The claim is given back: the task returns
 /// to the state it held before the follow-up was first claimed, and
 /// <see cref="TaskAggregate.PendingMentionFollowUpAfterPreflight"/> clears so the next dispatch
 /// does not try the same comment again.
