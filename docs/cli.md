@@ -445,6 +445,12 @@ it or launches a run; `h9k pr review --since-my-review` is the manual lever it l
 comment id already handled never fires again, and a comment the install's own login wrote
 never counts. `--auto-pr-review off` silences mentions too; there is no separate switch.
 
+A mention on a pull request your own login wrote never mints a review of your own work. It mints a
+pr-review task whose only run is the bounded answer lap: it reads the one comment against the
+checkout and drafts a reply for you to walk, because the review-request trigger can never reach a
+pull request's author and you already hold the context a review would supply. Every gate above
+applies to it unchanged, and `h9k status` and the daemon log record it as its own outcome.
+
 Both triggers count only your own tasks as covering a pull request, by the rule the task commands
 apply (the holder, else the assignee, else the creator). A task whose owner this node cannot yet
 resolve is never acted on, but it is not known to be a teammate's either, so a review request treats

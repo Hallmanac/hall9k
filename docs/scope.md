@@ -739,6 +739,13 @@ not counted toward the cap, and shown as a needs-you row with the reply's first 
 own login wrote never counts. `--auto-pr-review off` silences mentions exactly as it silences
 review requests, with no separate switch for either trigger.
 
+A mention on a pull request this install's own login wrote is the one exception to "mints the
+identical task type a review request does": the task it mints runs only the bounded answer lap,
+which drafts a reply to that one comment for the owner to walk, and never the two-lens review of the
+owner's own work (decision `dce39370`). The review-request trigger can never reach a pull request's
+author, and the author already holds the context the review would have supplied. The cutoff, the
+setting, the membership gate, the mint cap and the holds apply to it exactly as to any mention mint.
+
 Which tasks "cover" a pull request is asked of both triggers by one owner-scoped rule, the one the
 task commands apply: a task is this install's own when its holder, else its assignee, else its
 creator is this owner's root. A task this node cannot attribute to a known owner is never acted on,
