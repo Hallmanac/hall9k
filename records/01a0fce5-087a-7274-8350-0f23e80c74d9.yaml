@@ -1,0 +1,43 @@
+hall9k-task-record: 1
+task-id: 01a0fce5-087a-7274-8350-0f23e80c74d9
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#677
+objective: When a pull request's author replies, mentioning this owner, on a pr-review task this owner is following through, the owner sees a row with the reply's opening lines and a link to it, and no session runs
+criteria:
+  - A mention whose comment author is the pull request's author, on this owner's own pr-review task that is following its pull request through (follow-through open, state AwaitingAuthor or NeedsHuman, the state TaskDecider.AwaitsPrReviewFollowThrough admits), is recorded on the task with its own mention outcome and shown as a row on this owner's board, and no follow-up lap, pre-flight, or other session is claimed or launched for it; the reply is not counted toward the mention follow-up cap
+  - The row says the pull request's author answered your review, shows who replied, the reply's first three non-blank lines (at most 300 characters), and a link to the comment, read from what the mention already records with no new gh call, and offers h9k pr review <pull request> --since-my-review; no model call composes it. The row leaves the board once the task is no longer following the pull request through (Done or Abandoned), while today's held-mention rows keep their current lifetime
+  - The reply's text is shown as quoted data, markup-escaped and with control characters replaced, on the row and in h9k task show (which also gains the comment's link), and is never placed into any prompt by this path
+  - A mention from anyone other than the pull request's author, and a pull request author's mention on a task with an unwalked report, behave exactly as they do today
+  - Unit tests over the decision and the row, with no database, no branch, and no GitHub, cover the author-reply case (row, no run), the row leaving once the task closes, and both unchanged cases. The decision is a pure function beside the existing mention gates (AutoPrReviewObservation), tested in the suite that needs no Postgres fixture. The pull request's author comes from the PullRequestAuthor the mention sweep already holds (threaded into AttachMentionAsync) and is matched against the comment author's login case-insensitively, with no new gh call
+  - docs/operations.md's mention row and its pr approve row (around line 1875, which still says a mention dispatches its own follow-up automatically) say that a pull request author answering your review gets a row, not a run, and why
+dependencies: [01a0f96f-9ec1-7401-8f4e-44db5f6b4783]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/e80c74d9-when-a-pull-request-s-author-r
+published: 2026-10-02 14:39:27Z
+context: |-
+  Read the mentioning comment before anything is claimed: who wrote it, who it tags, and whether it asks anything of this install's owner. Decide from that whether a claim and a task run are needed at all. A full run that analyzes the whole pull request just to read one comment is the wrong default. Motivating case: arx-platform#2166 / bc7d2572 on 2026-10-01, where Brian's reply tagging @taylor-dennison woke his own review task and ran a follow-up that found nothing.
+
+  Brian, 2026-10-02 (f894d344 discovery question 1): the three follow-up laps on 2026-09-29 (AgelessRx/arx-platform #2170, #2172, #2174, Taylor answering Brian's reviews, $5.28 recorded) were not useful as runs; what was useful was knowing what Taylor had replied. So this card keeps a view of the reply and drops the run. Brian chose option A: the reply's own opening lines, no model call. Option B, a short summary written by a tool-less model call, is a possible follow-on only if Brian asks for it; do not build it here. Where it lives: AutoPrReviewEngine.AttachMentionAsync and its dispatch gates (around 2241-2380 at e03c7d7e6); PullRequestMentionSearch.Author already carries the author's login and account id. Blocked on 5f6b4783, which owner-scopes the same attach lookup; cut from a main that has it. Sibling card 447cd320 changes the mint branch, not attach, and can run in parallel with this one. Discovery report: notes/discovery-f894d344-2026-10-01/report.md in the project home.
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  C:\Users\Hallm\.hall9k\projects\hall9k (recorded on another node's own operating system — not a directory here)
+
+
+
+  ## Walked 2026-10-02 (Brian)
+
+  One task, blocked on 5f6b4783 and not stacked, parallel with 447cd320. Criteria as cut, with the re-review lever added to criterion 2 so a reply like "fixed, look again" is one command from a re-review.
+
+
+
+  Window edit 2026-10-02 from the 447cd320 challenge: the sweep reads no GitHub account id (only gh api user -q .login), so matching is by login; h9k decide record refuses from an unattended run, so the decision is recorded by the orchestrator (decision 9b75fdf0), not the build.
+
+
+
+  ## Challenge applied 2026-10-02 (cell B pair 1)
+
+  Verdicts in verdict-opus.md and verdict-fable.md beside this file; the window merged both. Notes for the build, not criteria: the follow-through poll (PrReviewFollowThroughEngine around 351) may also flag a thread reply that mentions the owner, so the board can show it on both the task row and the mention pane; that is acceptable, do not dedupe. An author reply landing between a pre-flight requeue and its follow-up launch reaches the pending-follow-up prompt through LatestMention*; that window exists today for every no-dispatch attach and this card neither widens nor closes it. 9c12bed2 overlaps at one call site (ObservePrReviewMention's signature): a rebase matter, not a blocker.
