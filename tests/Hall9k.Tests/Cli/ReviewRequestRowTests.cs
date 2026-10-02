@@ -541,8 +541,21 @@ public sealed class ReviewRequestRowTests
 
         row.Markup.Should().Contain("[[red]]loud[[/]]", "a commenter's brackets are text, never markup");
         row.Markup.Should().NotContain("\u001b").And.NotContain("\u202E");
-        Action render = () => AnsiConsole.Create(new AnsiConsoleSettings()).MarkupLine(row.Markup);
+        Action render = () => Rendered(row.Markup);
         render.Should().NotThrow("the whole row must still be valid markup");
+    }
+
+    [Fact]
+    public void An_author_reply_on_a_teammates_task_is_informational_and_offers_no_lever()
+    {
+        ObservedReviewMention mention = ObservedMention("AuthorReplied");
+
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
+            mention, "arx-platform", covering: null, attachedToTeammate: true);
+
+        row.NeedsYou.Should().BeFalse();
+        row.Markup.Should().Contain("to a teammate's review");
+        row.Markup.Should().NotContain("answered your review").And.NotContain("--since-my-review");
     }
 
     [Fact]
