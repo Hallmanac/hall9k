@@ -177,19 +177,31 @@ public sealed class RunLauncher(
                 // An answer-only task's own dispatch answers the comment that minted it, read off the
                 // outcome row recorded for that mint rather than task.LatestMention*, which a second
                 // mention landing before this dispatch moves to a comment this lap was never minted
-                // for (the identical hazard the full review's mint addendum reads around). A pending
-                // follow-up has already been aimed at the newer comment it was claimed for, so it
-                // keeps the latest. Falls back to the latest when the row is not stored yet, which is
-                // the case at "now" speed, where this dispatch runs before the sweep records it.
-                ObservedReviewMention? mintingMention = task.AnswersMentionOnly && !task.PendingMentionFollowUpAfterPreflight
-                    ? await session.Query<ObservedReviewMention>()
+                // for (the identical hazard the full review's mint addendum reads around). The pending
+                // flag cannot say which comment that is: the task's own first pre-flight sets it too,
+                // so every real first launch carries it. The one case where the latest comment IS the
+                // right one is a follow-up an attach actually claimed for it, whose own pre-flight
+                // requeued this dispatch, and that comment's own row says so (Attached, never
+                // AttachedNoFollowUp, which means no lap was dispatched for it). Falls back to the
+                // latest when no row is stored yet, which is the case at "now" speed, where this
+                // dispatch runs before the sweep records it.
+                ObservedReviewMention? mintingMention = null;
+                if (task.AnswersMentionOnly)
+                {
+                    IReadOnlyList<ObservedReviewMention> answerRows = await session.Query<ObservedReviewMention>()
                         .Where(mention => mention.TaskId == taskId)
                         .Where(mention => mention.MatchesSql(
-                            "d.data ->> 'outcome' IN (?, ?)",
+                            "d.data ->> 'outcome' IN (?, ?, ?)",
                             ReviewMentionOutcome.AnswerOnlyTaskCreated.Value,
-                            ReviewMentionOutcome.AnswerOnlyTaskCreatedParked.Value))
-                        .FirstOrDefaultAsync(cancellationToken)
-                    : null;
+                            ReviewMentionOutcome.AnswerOnlyTaskCreatedParked.Value,
+                            ReviewMentionOutcome.Attached.Value))
+                        .ToListAsync(cancellationToken);
+                    mintingMention = answerRows.FirstOrDefault(mention =>
+                            mention.Outcome == ReviewMentionOutcome.Attached
+                            && mention.CommentId == task.LatestMentionCommentId)
+                        ?? answerRows.FirstOrDefault(mention => mention.Outcome != ReviewMentionOutcome.Attached);
+                }
+
                 PullRequestMentionComment comment = mintingMention is not null
                     ? new(
                         mintingMention.CommentId, mintingMention.CommentAuthorLogin, mintingMention.CommentBody,

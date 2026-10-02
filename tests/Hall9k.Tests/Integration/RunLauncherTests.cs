@@ -4862,15 +4862,19 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     /// <summary>
     /// A second mention landing before the first dispatch moves <c>task.LatestMention*</c> to itself, but
     /// the lap this task was minted for answers the comment that minted it, read off the mint's own
-    /// outcome row.
+    /// outcome row. Both dispatch shapes are covered: a claim that finds no pending flag, and the one
+    /// after the task's own safe pre-flight, which sets it and is the shape every real first launch has.
     /// </summary>
-    [Fact]
-    public async Task An_answer_only_dispatch_answers_the_comment_that_minted_it_not_a_later_mention()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task An_answer_only_dispatch_answers_the_comment_that_minted_it_not_a_later_mention(bool afterOwnPreflight)
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
-        (Guid taskId, TaskClaimed claimed) = await SeedAnswerOnlyClaimedTaskAsync(store, node, 916, cts.Token);
+        (Guid taskId, TaskClaimed claimed) = await SeedAnswerOnlyClaimedTaskAsync(
+            store, node, 916, cts.Token, afterOwnPreflight);
         await using (IDocumentSession session = store.LightweightSession())
         {
             TaskAggregate aggregate = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
@@ -4906,6 +4910,65 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         executor.Request!.Prompt.Should().Contain("what is the motivating factor?").And.NotContain("what about tests?");
         await using IQuerySession query = store.QuerySession();
         (await query.LoadAsync<RunDetails>(claimed.RunId, cts.Token))!.PrReviewMentionCommentId.Should().Be("IC_2166");
+    }
+
+    /// <summary>
+    /// The one case where an answer-only dispatch answers a later comment: an attach claimed a
+    /// follow-up lap for it (its own row says <c>Attached</c>) and that lap's pre-flight requeued this
+    /// dispatch. The minting comment was answered by the earlier lap, so answering it again would
+    /// leave the newer comment unanswered.
+    /// </summary>
+    [Fact]
+    public async Task An_answer_only_dispatch_after_an_attached_follow_up_answers_the_attached_comment()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, TaskClaimed claimed) = await SeedAnswerOnlyClaimedTaskAsync(
+            store, node, 917, cts.Token, afterOwnPreflight: true);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate aggregate = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.ObservePrReviewMention(
+                aggregate, "https://github.com/acme/web/pull/917", "IC_LATER", "ryan", "@brian and what about tests?",
+                "https://github.com/acme/web/pull/917#issuecomment-IC_LATER", Now.AddMinutes(1), Now.AddMinutes(1)));
+            foreach ((string commentId, string body, ReviewMentionOutcome outcome) in new[]
+            {
+                ("IC_2166", "@brian what is the motivating factor?", ReviewMentionOutcome.AnswerOnlyTaskCreated),
+                ("IC_LATER", "@brian and what about tests?", ReviewMentionOutcome.Attached),
+            })
+            {
+                session.Store(new ObservedReviewMention
+                {
+                    Id = ObservedReviewMention.ComputeId(node.NodeId, DomainId.New(), "acme/web", 917, "brian", commentId),
+                    ObservingNodeId = node.NodeId, Repository = "acme/web", Number = 917, MentionedLogin = "brian",
+                    CommentId = commentId, CommentAuthorLogin = "ryan", CommentBody = body,
+                    CommentUrl = $"https://github.com/acme/web/pull/917#issuecomment-{commentId}", CommentCreatedAt = Now,
+                    ObservedAt = Now, Outcome = outcome, TaskId = taskId,
+                });
+            }
+
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await SeedSafePrReviewPreflightAsync(store, taskId, node.NodeId, headRefOid: string.Empty, cts.Token);
+        RecordingProcessRunner gh = GhSignedInAs(
+            "brian", PullRequestPreflightJson.Replace("901", "917", StringComparison.Ordinal));
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(
+            taskId, claimed.RunId, node.NodeId, node.OwnerId, claimed.LeaseGeneration, cts.Token);
+
+        executor.Request.Should().NotBeNull();
+        executor.Request!.Prompt.Should().Contain("what about tests?").And.NotContain("what is the motivating factor?");
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(claimed.RunId, cts.Token))!.PrReviewMentionCommentId.Should().Be("IC_LATER");
     }
 
     /// <summary>
@@ -4950,7 +5013,8 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
     /// <summary>A freshly minted answer-only pr-review task for <c>acme/web#number</c>, claimed once and holding its lease: the shape the first dispatch of one finds.</summary>
     private async Task<(Guid TaskId, TaskClaimed Claimed)> SeedAnswerOnlyClaimedTaskAsync(
-        DocumentStore store, NodeContext node, int number, CancellationToken cancellationToken)
+        DocumentStore store, NodeContext node, int number, CancellationToken cancellationToken,
+        bool afterOwnPreflight = false)
     {
         Guid taskId = DomainId.New();
         Guid projectId = DomainId.New();
@@ -4973,10 +5037,22 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             $"{pullRequestUrl}#issuecomment-IC_2166", Now, Now, MintedTask: true, MentionedLogin: "brian",
             AnswerOnly: true);
         aggregate.Apply(observed);
-        TaskClaimed claimed = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, DomainId.New(), Now);
-        aggregate.Apply(claimed);
+        TaskClaimed firstClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, DomainId.New(), Now);
+        aggregate.Apply(firstClaim);
+        List<object> events = [.. lifecycle, observed, firstClaim];
+        TaskClaimed claimed = firstClaim;
+        if (afterOwnPreflight)
+        {
+            // The shape every real first launch has: the first claim only sent the pull request to the
+            // pre-flight, whose safe verdict requeued the task with the pending-follow-up flag set.
+            TaskRequeued requeued = TaskDecider.Requeue(aggregate, RequeueReason.PrReviewPreflightSafeMentionFollowUp, Now);
+            aggregate.Apply(requeued);
+            claimed = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, DomainId.New(), Now);
+            aggregate.Apply(claimed);
+            events.AddRange([requeued, claimed]);
+        }
 
-        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, observed, claimed]);
+        session.Events.StartStream<TaskAggregate>(taskId, [.. events]);
         session.Store(new TaskLease
         {
             Id = taskId, NodeId = node.NodeId, LeaseGeneration = claimed.LeaseGeneration, HeartbeatAt = Now,
