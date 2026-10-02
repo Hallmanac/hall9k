@@ -46,6 +46,15 @@ public sealed record ReviewMentionOutcome
     /// </summary>
     public static readonly ReviewMentionOutcome AttachedNoFollowUp = new("AttachedNoFollowUp");
 
+    /// <summary>
+    /// The only live pr-review task covering this pull request belongs to another owner (the rule
+    /// the CLI task commands apply, <c>TaskOwnerRule</c>, with a task this node cannot attribute
+    /// counting as another owner's), so nothing was claimed, launched, appended to that task's
+    /// stream or minted. The mention is recorded against no task and surfaced as a needs-you row:
+    /// the pull request is a teammate's review, and the reply happens on GitHub.
+    /// </summary>
+    public static readonly ReviewMentionOutcome CoveredByTeammate = new("CoveredByTeammate");
+
     /// <summary>Nothing was minted: this project explicitly recorded <c>--auto-pr-review off</c>.</summary>
     public static readonly ReviewMentionOutcome HeldSettingOff = new("HeldSettingOff");
 
@@ -71,6 +80,7 @@ public sealed record ReviewMentionOutcome
         "taskcreatedparked" => TaskCreatedParked,
         "attached" => Attached,
         "attachednofollowup" => AttachedNoFollowUp,
+        "coveredbyteammate" => CoveredByTeammate,
         "heldsettingoff" => HeldSettingOff,
         "heldbeforecutoff" => HeldBeforeCutoff,
         "mintfailed" => MintFailed,

@@ -2311,8 +2311,11 @@ public static class TaskDecider
     /// <see cref="AwaitsPrReviewMentionFollowUp"/> admits, but headless like
     /// <see cref="ClaimDeliberately"/>'s own automatic dispatch: a GitHub mention is the daemon's
     /// own go signal, not a human sitting at a terminal running <c>h9k pr review</c>, so
-    /// <c>InteractiveMode</c> is false and there is no assigned-owner identity check — the caller
-    /// is always the sweep's own node owner, exactly as an auto-created mint already is.
+    /// <c>InteractiveMode</c> is false and there is no assigned-owner identity check here, so the
+    /// caller must already have established that the task is its own by <see cref="TaskOwnerRule"/>:
+    /// <c>AutoPrReviewEngine.AttachMentionAsync</c> does, and refuses a task of another owner's
+    /// even when this node's owner holds the Owner role, which only a human's explicit act with a
+    /// reason may override.
     /// </summary>
     public static TaskClaimed ClaimForMentionFollowUp(
         TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt, bool reportParkedAwaitingWalk,

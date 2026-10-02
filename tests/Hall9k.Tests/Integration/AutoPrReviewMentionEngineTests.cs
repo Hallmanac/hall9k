@@ -9,6 +9,7 @@ using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.AutoPrReview;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.PrReviewPreflight;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
@@ -502,6 +503,63 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         await session.SaveChangesAsync(cancellationToken);
     }
 
+    private const string TeammateRoot = "2222222222222222222222222222222222222222222222222222222222222222";
+
+    /// <summary>This install's owner root, claimed on first use: <see cref="NodeBootstrapSeed"/> shares one owner across the class, so a root already claimed by an earlier test is read back rather than claimed again.</summary>
+    private static async Task<string> EnsureOwnRootAsync(
+        DocumentStore store, NodeContext node, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        OwnerAggregate owner = (await session.Events.AggregateStreamAsync<OwnerAggregate>(node.OwnerId, token: cancellationToken))!;
+        if (!string.IsNullOrEmpty(owner.RootFingerprint))
+        {
+            return owner.RootFingerprint;
+        }
+
+        const string ownRoot = "1111111111111111111111111111111111111111111111111111111111111111";
+        session.Events.Append(node.OwnerId, OwnerDecider.ClaimRoot(owner, ownRoot, verified: true, Now));
+        await session.SaveChangesAsync(cancellationToken);
+        return ownRoot;
+    }
+
+    /// <summary>
+    /// A live pr-review task of another owner's, held by that owner's node and waiting on its pull
+    /// request: the shape <see cref="SeedWaitingReviewAsync"/> seeds for this install, replicated in
+    /// from a teammate, and the shape AgelessRx/arx-platform#2166 had when a teammate's install
+    /// claimed it.
+    /// </summary>
+    private static async Task<Guid> SeedTeammatesWaitingReviewAsync(
+        DocumentStore store, Guid projectId, string repository, int number, CancellationToken cancellationToken)
+    {
+        Guid teammateOwnerId = DomainId.New();
+        Guid taskId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, $"Review pull request {repository}#{number}",
+            ["The findings report is walked with the owner (walk-pr-review-findings) and every finding is directed."],
+            TaskType.PrReview, null, null,
+            new ExternalReference(WorkItemProvider.GitHubPullRequest, $"{repository}#{number}"), Now.AddHours(-6),
+            teammateOwnerId);
+        TaskAggregate task = new();
+        task.Apply(added);
+        TaskPublished published = TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now.AddHours(-6), teammateOwnerId);
+        task.Apply(published);
+        TaskAssigned assigned = TaskDecider.Assign(
+            task, teammateOwnerId, [], Now.AddHours(-6), teammateOwnerId, assignedOwnerRootFingerprint: TeammateRoot);
+        task.Apply(assigned);
+        Guid runId = DomainId.New();
+        TaskClaimed claimed = TaskDecider.Claim(
+            task, DomainId.New(), teammateOwnerId, runId, Now.AddHours(-6), ownerRootFingerprint: TeammateRoot);
+        task.Apply(claimed);
+        PullRequestReviewFollowThroughOpened opened = TaskDecider.OpenPrReviewFollowThrough(
+            task, runId, $"https://github.com/{repository}/pull/{number}", headSha: null, Now.AddHours(-5));
+        task.Apply(opened);
+
+        session.Events.StartStream<TaskAggregate>(taskId, [added, published, assigned, claimed, opened]);
+        await session.SaveChangesAsync(cancellationToken);
+        return taskId;
+    }
+
     // -------------------------------------------------------------------------------------
     // The tests themselves.
     // -------------------------------------------------------------------------------------
@@ -775,6 +833,57 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         await using IQuerySession query = store.QuerySession();
         (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token))
             .Should().BeEmpty("the install's own comment is never a trigger");
+    }
+
+    /// <summary>
+    /// AgelessRx/arx-platform#2166: a mention of this install's login on a pull request whose only
+    /// live pr-review task is another owner's used to find that task by external reference alone and
+    /// claim it. Now nothing is claimed, launched, appended or minted: the mention is recorded
+    /// against no task, for the board to surface. <see cref="RefusingExecutor"/> and
+    /// <see cref="RefusingWorktreeManager"/> prove nothing launched, and the stream's own version
+    /// proves nothing was appended to it.
+    /// </summary>
+    [Fact]
+    public async Task A_mention_on_a_pull_request_only_a_teammates_task_covers_is_recorded_and_touches_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        string ownRoot = await EnsureOwnRootAsync(store, node, cts.Token);
+        ownRoot.Should().NotBe(TeammateRoot);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-teammate-covered-test";
+        const int number = 4210;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-teammate-covered", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+        Guid teammatesTask = await SeedTeammatesWaitingReviewAsync(store, projectId, repository, number, cts.Token);
+        await SeedSafePrReviewPreflightAsync(store, teammatesTask, node.NodeId, cts.Token);
+
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_1", "ryan", "@brian any thoughts on the rate limiter?", Now.AddMinutes(5))]);
+        AutoPrReviewEngine engine = new(
+            store, node,
+            NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("a teammate's task is never launched on"), gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
+            clock: new FixedClock(Now));
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<TaskListItem> tasks = await query.Query<TaskListItem>()
+            .Where(task => task.ProjectId == projectId).ToListAsync(cts.Token);
+        tasks.Should().ContainSingle("nothing is minted over a teammate's task").Which.Id.Should().Be(teammatesTask);
+        tasks[0].LatestMentionCommentId.Should().BeNull("the mention is never appended to the teammate's task");
+        tasks[0].State.Should().Be(TaskState.AwaitingAuthor, "nothing claimed it");
+        (await query.Events.FetchStreamStateAsync(teammatesTask, token: cts.Token))!.Version.Should().Be(5);
+
+        ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
+        observed.Outcome.Should().Be(ReviewMentionOutcome.CoveredByTeammate);
+        observed.TaskId.Should().BeNull();
     }
 
     [Fact]

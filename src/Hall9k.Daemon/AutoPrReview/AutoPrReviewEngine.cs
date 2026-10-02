@@ -895,20 +895,24 @@ public sealed class AutoPrReviewEngine(
         // of the canonical check, never a replacement for it, so the import and the exact-match
         // dedup still run regardless of what this finds.
         string guessedReference = $"{WorkItemProvider.GitHubPullRequest.Value}:{repository}#{candidate.Number}";
-        TaskListItem? likelyCovering = await session.Query<TaskListItem>()
+        IReadOnlyList<TaskListItem> liveLikely = await session.Query<TaskListItem>()
             .Where(task => task.MatchesSql("lower(d.data ->> 'externalReference') = lower(?)", guessedReference))
             .Where(task => task.MatchesSql("d.data ->> 'state' <> ?", TaskState.Abandoned.Value))
             .Where(task => task.MatchesSql(
                 "NOT (d.data ->> 'type' = ? AND d.data ->> 'state' = ?)",
                 TaskType.PrReview.Value, TaskState.Done.Value))
-            // Newest first, the same task h9k status' own pane names as the covering one: which
-            // task this returns is now part of whether an Info line is owed at all
-            // (AutoPrReviewObservation.IsReportable), and an unordered FirstOrDefault over two
-            // rows could name a different one per tick — a line per tick for a request whose
-            // answer never changed.
-            .OrderByDescending(task => task.AddedAt)
-            .FirstOrDefaultAsync(cancellationToken);
-        if (likelyCovering is not null)
+            .ToListAsync(cancellationToken);
+        // Only this owner's own task covers a request addressed to this owner: a teammate's live
+        // review of the same pull request is a different owner's work, so it neither answers the
+        // request nor holds the mint back (OwnerScopedCoverage). Which of this owner's tasks is
+        // returned is part of whether an Info line is owed at all
+        // (AutoPrReviewObservation.IsReportable), so it is the newest, the same task h9k status'
+        // own pane names as the covering one: an arbitrary pick over two rows could name a
+        // different one per tick, a line per tick for a request whose answer never changed.
+        (string? thisOwnerRoot, IReadOnlyList<CoveringTaskCandidate> likelyCandidates) =
+            await OwnerScopedCoverage.ReadAsync(session, node.OwnerId, liveLikely, cancellationToken);
+        ReviewCoverage likelyCoverage = OwnerScopedCoverage.Decide(thisOwnerRoot, likelyCandidates);
+        if (likelyCoverage is { Kind: ReviewCoverageKind.Own, Task: { } likelyCovering })
         {
             return new MintAttempt(ReviewRequestOutcome.AlreadyCovered, likelyCovering.Id, null);
         }
@@ -1187,17 +1191,18 @@ public sealed class AutoPrReviewEngine(
             cancellationToken);
 
         string canonical = imported.Reference.ToString();
-        TaskListItem? existing = await session.Query<TaskListItem>()
+        IReadOnlyList<TaskListItem> liveCovering = await session.Query<TaskListItem>()
             .Where(task => task.ExternalReference == canonical)
             .Where(task => task.MatchesSql("d.data ->> 'state' <> ?", TaskState.Abandoned.Value))
             .Where(task => task.MatchesSql(
                 "NOT (d.data ->> 'type' = ? AND d.data ->> 'state' = ?)",
                 TaskType.PrReview.Value, TaskState.Done.Value))
-            // Newest first for the same reason the fast path above orders: this task's id is
-            // recorded against the request and decides whether a line is owed next tick.
-            .OrderByDescending(task => task.AddedAt)
-            .FirstOrDefaultAsync(cancellationToken);
-        if (existing is not null)
+            .ToListAsync(cancellationToken);
+        // This owner's own task only, and its newest, for the same two reasons the fast path in
+        // DecideAsync gives.
+        (string? thisOwnerRoot, IReadOnlyList<CoveringTaskCandidate> liveCandidates) =
+            await OwnerScopedCoverage.ReadAsync(session, node.OwnerId, liveCovering, cancellationToken);
+        if (OwnerScopedCoverage.Decide(thisOwnerRoot, liveCandidates) is { Kind: ReviewCoverageKind.Own, Task: { } existing })
         {
             return new MintAttempt(ReviewRequestOutcome.AlreadyCovered, existing.Id, null, actor);
         }
@@ -1219,14 +1224,18 @@ public sealed class AutoPrReviewEngine(
         // says nothing about whether this feature already covered any request at all (independent
         // pre-PR review, cycle 1, adversarial lens: the note below states "auto-created" and this
         // query is what has to make that true rather than assumed).
-        TaskListItem? previousReview = await session.Query<TaskListItem>()
+        // A closed task of another owner's holds nothing back from this one: only this owner's own
+        // earlier review makes a standing request a request already answered.
+        IReadOnlyList<TaskListItem> closedAutoCreated = await session.Query<TaskListItem>()
             .Where(task => task.ExternalReference == canonical)
             .Where(task => task.WasAutoPrReviewCreated)
             .Where(task => task.MatchesSql(
                 "d.data ->> 'type' = ? AND d.data ->> 'state' IN (?, ?)",
                 TaskType.PrReview.Value, TaskState.Done.Value, TaskState.Abandoned.Value))
-            .OrderByDescending(task => task.AddedAt)
-            .FirstOrDefaultAsync(cancellationToken);
+            .ToListAsync(cancellationToken);
+        (string? closedOwnerRoot, IReadOnlyList<CoveringTaskCandidate> closedCandidates) =
+            await OwnerScopedCoverage.ReadAsync(session, node.OwnerId, closedAutoCreated, cancellationToken);
+        TaskListItem? previousReview = OwnerScopedCoverage.NewestOwn(closedOwnerRoot, closedCandidates);
 
         if (previousReview is not null
             && !await IsGenuineReRequestAsync(session, previousReview, actor.RequestedAt, cancellationToken))
@@ -2010,6 +2019,14 @@ public sealed class AutoPrReviewEngine(
             || decision.Outcome == ReviewMentionOutcome.TaskCreatedParked;
     }
 
+    /// <summary>
+    /// A mention on a pull request that only another owner's live task covers: recorded against no
+    /// task at all, so the teammate's stream never hears of it, nothing is claimed and nothing is
+    /// minted. The row it surfaces on this owner's board says the reply happens on GitHub.
+    /// </summary>
+    private static (ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail) CoveredByTeammate() =>
+        (ReviewMentionOutcome.CoveredByTeammate, null, null);
+
     private static string DescribeMentionOutcome(ReviewMentionOutcome outcome, string? detail, Guid? taskId)
     {
         string task = taskId is { } id ? DomainId.Short(id) : "none";
@@ -2025,6 +2042,9 @@ public sealed class AutoPrReviewEngine(
                 $"attached to task {task}",
             { } known when known == ReviewMentionOutcome.AttachedNoFollowUp =>
                 $"attached to task {task}, no follow-up dispatched",
+            { } known when known == ReviewMentionOutcome.CoveredByTeammate =>
+                "nothing was claimed, appended or created: the only task covering this pull request is "
+                + "another owner's, so the mention is recorded here and answered on GitHub",
             { } known when known == ReviewMentionOutcome.HeldSettingOff =>
                 "nothing was created: auto pr-review is off here, so this one is yours to take by hand",
             { } known when known == ReviewMentionOutcome.HeldBeforeCutoff =>
@@ -2065,21 +2085,28 @@ public sealed class AutoPrReviewEngine(
         // never trusted as "nothing exists" on its own, only as a cheap check in front of the
         // canonical dedup CreateFromMentionAsync still runs after importing.
         string guessedReference = $"{WorkItemProvider.GitHubPullRequest.Value}:{repository}#{candidate.Number}";
-        TaskListItem? likelyCovering = await session.Query<TaskListItem>()
+        IReadOnlyList<TaskListItem> liveLikely = await session.Query<TaskListItem>()
             .Where(task => task.MatchesSql("lower(d.data ->> 'externalReference') = lower(?)", guessedReference))
             .Where(task => task.MatchesSql("d.data ->> 'state' <> ?", TaskState.Abandoned.Value))
             .Where(task => task.MatchesSql(
                 "NOT (d.data ->> 'type' = ? AND d.data ->> 'state' = ?)",
                 TaskType.PrReview.Value, TaskState.Done.Value))
-            .OrderByDescending(task => task.AddedAt)
-            .FirstOrDefaultAsync(cancellationToken);
+            .ToListAsync(cancellationToken);
+        (string? thisOwnerRoot, IReadOnlyList<CoveringTaskCandidate> likelyCandidates) =
+            await OwnerScopedCoverage.ReadAsync(session, node.OwnerId, liveLikely, cancellationToken);
 
         bool pastCutoff = AutoPrReviewCutoff.StartsOnItsOwn(comment.CreatedAt, cutoff);
-        if (likelyCovering is not null)
+        switch (OwnerScopedCoverage.Decide(thisOwnerRoot, likelyCandidates))
         {
-            return await AttachMentionAsync(
-                session, likelyCovering, setting, pastCutoff, candidate, login, comment, isPrivate, membershipSetting,
-                cancellationToken);
+            case { Kind: ReviewCoverageKind.Own, Task: { } likelyCovering }:
+                return await AttachMentionAsync(
+                    session, likelyCovering, setting, pastCutoff, candidate, login, comment, isPrivate, membershipSetting,
+                    cancellationToken);
+            // Decided ahead of the cutoff and the setting, because nothing here starts anything for
+            // either to hold back: the pull request is a teammate's review, and this mention is
+            // recorded, not appended to their task.
+            case { Kind: ReviewCoverageKind.Teammate }:
+                return CoveredByTeammate();
         }
 
         if (!pastCutoff)
@@ -2230,6 +2257,18 @@ public sealed class AutoPrReviewEngine(
         if (task is null)
         {
             return (ReviewMentionOutcome.MintFailed, null, "the covering task's own stream could not be read");
+        }
+
+        // The claim seam's own owner check, over the stream as it stands now rather than the board
+        // row the caller chose from: nothing below appends to, claims or launches on a task this
+        // owner does not hold, whoever asked. TaskDecider.ClaimForMentionFollowUp does no identity
+        // check of its own, and the Owner-role override a human may use from the CLI is never
+        // applied to a claim the daemon makes by itself.
+        string? thisOwnerRoot = await OwnerRootFingerprintResolver.ResolveAsync(
+            session, node.OwnerId, cancellationToken);
+        if (!OwnerScopedCoverage.IsOwn(thisOwnerRoot, await TaskOwnerFactsReader.ReadAsync(session, task, cancellationToken)))
+        {
+            return CoveredByTeammate();
         }
 
         DateTimeOffset now = _clock.GetUtcNow();
@@ -2473,24 +2512,28 @@ public sealed class AutoPrReviewEngine(
             cancellationToken);
 
         string canonical = imported.Reference.ToString();
-        TaskListItem? existing = await session.Query<TaskListItem>()
+        IReadOnlyList<TaskListItem> liveCovering = await session.Query<TaskListItem>()
             .Where(task => task.ExternalReference == canonical)
             .Where(task => task.MatchesSql("d.data ->> 'state' <> ?", TaskState.Abandoned.Value))
             .Where(task => task.MatchesSql(
                 "NOT (d.data ->> 'type' = ? AND d.data ->> 'state' = ?)",
                 TaskType.PrReview.Value, TaskState.Done.Value))
-            .OrderByDescending(task => task.AddedAt)
-            .FirstOrDefaultAsync(cancellationToken);
-        if (existing is not null)
+            .ToListAsync(cancellationToken);
+        (string? thisOwnerRoot, IReadOnlyList<CoveringTaskCandidate> liveCandidates) =
+            await OwnerScopedCoverage.ReadAsync(session, node.OwnerId, liveCovering, cancellationToken);
+        // The canonical dedup caught a live task the guessed-reference fast path in
+        // DecideMentionAsync missed (a casing mismatch), and answers to the same owner rule: attach
+        // to this owner's own, never mint over or attach to a teammate's. pastCutoff is already
+        // known true and setting.IsOn already known on here: DecideMentionAsync only reaches this
+        // method after both gates passed.
+        switch (OwnerScopedCoverage.Decide(thisOwnerRoot, liveCandidates))
         {
-            // The canonical dedup caught a live task the guessed-reference fast path in
-            // DecideMentionAsync missed (a casing mismatch) — attach, the same discipline
-            // CreateOneAsync's own identical canonical re-check follows. pastCutoff is already
-            // known true and setting.IsOn already known on here — DecideMentionAsync only reaches
-            // this method after both gates passed.
-            return await AttachMentionAsync(
-                session, existing, setting, pastCutoff, candidate, login, comment, isPrivate, membershipSetting,
-                cancellationToken);
+            case { Kind: ReviewCoverageKind.Own, Task: { } existing }:
+                return await AttachMentionAsync(
+                    session, existing, setting, pastCutoff, candidate, login, comment, isPrivate, membershipSetting,
+                    cancellationToken);
+            case { Kind: ReviewCoverageKind.Teammate }:
+                return CoveredByTeammate();
         }
 
         DateTimeOffset now = _clock.GetUtcNow();
