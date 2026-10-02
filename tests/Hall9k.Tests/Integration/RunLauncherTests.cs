@@ -4339,13 +4339,13 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
-    /// A <c>gh api user</c> that fails when the follow-up launches is a launch failure, never a
-    /// skip: a skip is permanent (the comment id is already deduplicated), and an unread identity
-    /// says nothing about who the comment tagged. A caller that already holds the login its own
-    /// sweep read passes it in and never makes the second read at all.
+    /// A <c>gh api user</c> that keeps failing when the follow-up launches is retried a bounded
+    /// number of times and then recorded as a skip, which hands the task back to the state it held
+    /// before the claim rather than failing it. A caller that already holds the login its own sweep
+    /// read passes it in and never makes the second read at all.
     /// </summary>
     [Fact]
-    public async Task A_mention_follow_up_whose_login_read_fails_is_a_launch_failure_not_a_skip_unless_the_caller_knows_the_login()
+    public async Task A_mention_follow_up_whose_login_stays_unreadable_is_retried_then_skipped_unless_the_caller_knows_the_login()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
@@ -4371,19 +4371,22 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             failedTaskId, failedRunId, node.NodeId, node.OwnerId, 1, node.NodeId, comment,
             priorReviewRunId: null, knownOwnLogin: null, cts.Token);
 
-        failed.Skipped.Should().BeFalse("an unread login must not be recorded as a permanent refusal");
+        failed.Skipped.Should().BeTrue("a login that stays unreadable is recorded as a skip, not left claimed");
+        gh.Calls.Count(call => call.Arguments.Contains("user")).Should().Be(3, "the read is retried a bounded number of times");
         executor.Request.Should().BeNull("with no identity to match the comment against, no session starts");
         await using IQuerySession query = store.QuerySession();
         IReadOnlyList<JasperFx.Events.IEvent> events = await query.Events.FetchStreamAsync(failedTaskId, token: cts.Token);
-        events.Select(@event => @event.Data).OfType<PullRequestReviewMentionFollowUpSkipped>().Should().BeEmpty();
-        events.Select(@event => @event.Data).OfType<TaskFailed>().Should().ContainSingle()
+        events.Select(@event => @event.Data).OfType<TaskFailed>().Should().BeEmpty("an unread login must not fail the task");
+        events.Select(@event => @event.Data).OfType<PullRequestReviewMentionFollowUpSkipped>().Should().ContainSingle()
             .Which.Reason.Should().Contain("could not be read");
+        (await query.LoadAsync<TaskDetails>(failedTaskId, cts.Token))!.State.Should().NotBe(TaskState.Failed);
 
         MentionFollowUpLaunch known = await launcher.LaunchPrReviewMentionFollowUpAsync(
             knownTaskId, knownRunId, node.NodeId, node.OwnerId, 1, node.NodeId, comment,
             priorReviewRunId: null, knownOwnLogin: "brian", cts.Token);
 
         known.Skipped.Should().BeFalse();
+        gh.Calls.Count(call => call.Arguments.Contains("user")).Should().Be(3, "a known login makes no further read");
         executor.Request.Should().NotBeNull(
             "the login the sweep already read stands in for the second read, so a failing gh api user cannot stop the launch");
     }
@@ -4493,7 +4496,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
-        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 913, cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, 914, cts.Token);
 
         string prView = """
             {
