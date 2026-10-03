@@ -1258,6 +1258,78 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
     }
 
     /// <summary>
+    /// An answer-only task ends at resolve (decision dce39370), so a later comment on the same own
+    /// pull request finds no live task: it mints a fresh answer-only task beside the Done one rather
+    /// than attaching to the finished task or being dropped.
+    /// </summary>
+    [Fact]
+    public async Task A_mention_on_an_own_pull_request_whose_answer_only_task_is_done_mints_a_fresh_answer_only_task()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-answer-only-done-test";
+        const int number = 4212;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-answer-only-done", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+
+        Guid doneTaskId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAdded added = TaskDecider.Add(
+                doneTaskId, projectId, $"Answer taylor-dennison's comment on your own pull request {repository}#{number}",
+                ["answer"], TaskType.PrReview, null, null,
+                new ExternalReference(WorkItemProvider.GitHubPullRequest, $"{repository}#{number}"),
+                Now.AddDays(-2), node.OwnerId);
+            PullRequestReviewMentionObserved observed = new(
+                doneTaskId, $"https://github.com/{repository}/pull/{number}", "IC_0", "taylor-dennison",
+                "@brian why?", "https://example.test/IC_0", Now.AddDays(-2), Now.AddDays(-2),
+                MintedTask: true, MentionedLogin: "brian", AnswerOnly: true);
+            TaskAggregate task = new();
+            task.Apply(added);
+            task.Apply(observed);
+            TaskPublished published = TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now.AddDays(-2), node.OwnerId);
+            task.Apply(published);
+            TaskAssigned assigned = TaskDecider.Assign(task, node.OwnerId, [], Now.AddDays(-2), node.OwnerId);
+            task.Apply(assigned);
+            TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, DomainId.New(), Now.AddDays(-2));
+            task.Apply(claimed);
+            TaskCompleted completed = (TaskCompleted)TaskDecider.ConcludeDeliveredPrReview(
+                task, task.CurrentRunId!.Value, $"https://github.com/{repository}/pull/{number}", null,
+                Now.AddDays(-2).AddHours(1));
+            task.Apply(completed);
+            session.Events.StartStream<TaskAggregate>(doneTaskId, [added, observed, published, assigned, claimed, completed]);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_1", "taylor-dennison", "@brian one more question", Now.AddMinutes(5))],
+            pullRequestAuthor: ("BRIAN", 99, "OWNER"));
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("normal speed never launches"), gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
+            clock: new FixedClock(Now));
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<TaskListItem> tasks = await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token);
+        tasks.Should().HaveCount(2, "the Done task stays, and a fresh one mints beside it");
+        tasks.Should().Contain(task => task.Id == doneTaskId && task.State == TaskState.Done);
+        TaskListItem fresh = tasks.Single(task => task.Id != doneTaskId);
+        fresh.LatestMentionCommentId.Should().Be("IC_1");
+        (await query.LoadAsync<TaskDetails>(fresh.Id, cts.Token))!.AnswersMentionOnly.Should().BeTrue();
+        ObservedReviewMention observedMention = (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
+        observedMention.Outcome.Should().Be(ReviewMentionOutcome.AnswerOnlyTaskCreated);
+        observedMention.TaskId.Should().Be(fresh.Id);
+    }
+
+    /// <summary>
     /// The mint-or-attach decision, decision 2's own core: a mention on a pull request a live task
     /// already covers attaches to it — recording <see cref="PullRequestReviewMentionObserved"/> on
     /// that task's own stream — and, because the task is waiting on its pull request

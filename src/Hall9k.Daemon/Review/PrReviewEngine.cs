@@ -1440,15 +1440,16 @@ public sealed class PrReviewEngine(
         //
         // Done stays the answer for a pr-review task whose own reference cannot be read: there is
         // genuinely nothing to poll, so waiting would park it forever on a watch nothing performs.
+        //
+        // The one exception is an answer-only task (decision dce39370), which TaskDecider ends as
+        // Done at resolve with the pull request URL on the completion: it answers one comment on
+        // the owner's own pull request, so nothing watches that pull request afterwards.
+        object? ending = null;
         if (fenced is { } current && current.Task.State == TaskState.Claimed)
         {
-            session.Events.Append(
-                taskId,
-                expectedVersion: current.Version + 1,
-                pullRequestUrl is not null
-                    ? TaskDecider.OpenPrReviewFollowThrough(
-                        current.Task, runId, pullRequestUrl, ReviewedHeadShaOf(task), now)
-                    : TaskDecider.Complete(current.Task, runId, pullRequestUrl, now));
+            ending = TaskDecider.ConcludeDeliveredPrReview(
+                current.Task, runId, pullRequestUrl, ReviewedHeadShaOf(task), now);
+            session.Events.Append(taskId, expectedVersion: current.Version + 1, ending);
         }
 
         session.Events.Append(runId, new RunCompleted(runId, now));
@@ -1468,9 +1469,13 @@ public sealed class PrReviewEngine(
         logger.LogInformation(
             "Run {RunId} task {TaskId}: pull-request review delivered — {Ending}",
             runId, taskId,
-            pullRequestUrl is not null
-                ? "the task now waits on the pull request's author, and the closeout watcher polls it"
-                : "task complete, no readable pull-request reference left to watch");
+            ending switch
+            {
+                PullRequestReviewFollowThroughOpened => "the task now waits on the pull request's author, and the closeout watcher polls it",
+                TaskCompleted when pullRequestUrl is not null => "task complete, an answer-only task ends at resolve and nothing watches the pull request afterwards",
+                TaskCompleted => "task complete, no readable pull-request reference left to watch",
+                _ => "no task transition appended, the task was no longer claimed under this run",
+            });
     }
 
     /// <summary>
