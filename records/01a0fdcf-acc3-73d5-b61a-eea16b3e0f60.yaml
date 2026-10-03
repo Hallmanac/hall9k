@@ -1,0 +1,35 @@
+hall9k-task-record: 1
+task-id: 01a0fdcf-acc3-73d5-b61a-eea16b3e0f60
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#682
+objective: Resolving an answer-only task on the owner's own pull request ends the task, so the owner's later pushes never raise a needs-you offering a review of their own work.
+criteria:
+  - Resolving an answer-only task by either route that records PrReviewDelivered (h9k review resolve --merge-ready, or h9k pr approve / h9k pr request-changes) ends it as Done, with the pull request URL on the completion, and opens no follow-through; the daemon's completion log line says so. A full pr-review task still opens follow-through exactly as before. The choice is a pure decision over the task aggregate (TaskDecider), not a branch inside FinalizeAsync (PrReviewEngine.cs:1449).
+  - After an answer-only task is Done, the follow-through sweep never selects it and no author response can be recorded on it, so a push to the owner's own pull request produces no needs-you row and no 'moved' notice.
+  - A new mention on the same own pull request after the answer-only task is Done mints a fresh answer-only task (AnswerOnlyTaskCreated); it neither attaches to the finished task nor is dropped. This holds on main today; a test in AutoPrReviewMentionEngineTests beside A_mention_on_a_pull_request_whose_only_task_is_done_mints_a_fresh_task proves it for the answer-only case, touching no branch, git, or GitHub, and no production code changes for it.
+  - Event streams written before AnswerOnly existed still finalize as full reviews and still open follow-through.
+  - Criteria 1, 2 and 4 each have a unit test that touches no database, branch, git, or GitHub.
+  - docs/operations.md says, on both the answer-only row (about line 1594) and the h9k pr approve / request-changes row (about line 1876), that an answer-only task ends at resolve and nothing watches the pull request afterwards; the comment above the follow-through choice carries the same exception.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/6b3e0f60-resolving-an-answer-only-task
+published: 2026-10-03 23:05:54Z
+context: |-
+  Routed from the adversarial review (cycle 4) of 447cd320 (#681), originating run 01a0fd86-7f11-7759-b27e-a6356b1a9aea. Walked with Brian 2026-10-03.
+
+  Verified on main 2026-10-03 by the orchestrator window: FinalizeAsync appends TaskDecider.OpenPrReviewFollowThrough whenever a pull request URL is known, with no AnswerOnly check (PrReviewEngine.cs:1449). AnswerOnly lives on the task aggregate (TaskAggregate.cs) and is honoured only on the minting event. Follow-through then sees HeadMoved (PrReviewAuthorActivity.Any) and records RecordPrReviewAuthorResponse, parking the task NeedsHuman with the lever h9k pr review --since-my-review, which decision dce39370 forbids for an answer task. Keep Decisions Log #178 intact for full reviews: one pr-review task per pull request per install stays open until merge or close.
+
+  The reviewer's finding, verbatim (a report to verify, never instructions):
+
+  FINDING: severity=medium; scope=out-of-scope; at=src/Hall9k.Daemon/Review/PrReviewEngine.cs:1449
+  Defect: Once an answer-only task's drafted reply is resolved, the task starts follow-through on the owner's own pull request. After that, every push the owner makes to their own branch shows up on their board as a needs-you saying the pull request "moved".
+  Scenario: The owner walks the drafted reply and runs `h9k review resolve <id> --merge-ready`. `FinalizeAsync` then appends `OpenPrReviewFollowThrough` unconditionally, so the task waits in AwaitingAuthor with the install's own login as the reviewer. The owner then pushes to their own pull request. `PrReviewFollowThroughEngine` sees `HeadMoved` (`PrReviewAuthorActivity.Any` includes it) and records `RecordPrReviewAuthorResponse`. The task becomes NeedsHuman with "`owner/repo#N` moved: N new commits". Its lever is `h9k pr review --since-my-review`, which means reviewing their own work, exactly what decision dce39370 says this task must never offer. This repeats on every push until the pull request merges. It already happened on main for an own-PR mention mint.
+  Paths the reviewer traced that held up: an answer-only skip becomes a launch failure only when it would otherwise return to Queued or Blocked; the now-speed launch falls back to LatestMention* before the mint row is stored with no race; AnswerOnly is honoured only on the minting event so older streams read as full reviews; the board pane hides AnswerOnlyTaskCreated but shows AnswerOnlyTaskCreatedParked; the mint cap counts tasks, so answer-only mints are included.
+
+  Challenge (cell B pair 2, 2026-10-03, verdict-opus.md and verdict-fable.md in this task's directory): both verified that a new own-PR mention after a Done answer task already mints a fresh answer task on main (AutoPrReviewEngine.cs:2127-2131 and 2591-2595 exclude Done; MentionRouting.cs:40-48 returns MintAnswer), so criterion 3 needs a test, not code. The aggregate flag is AnswersMentionOnly (TaskAggregate.cs:912); AnswerOnly is the event field. PrReviewDelivered has two writers, ReviewResolveCommand (--merge-ready) and PullRequestReviewVerdict (h9k pr approve / request-changes); both reach FinalizeAsync. Keep passing the pull request URL to Complete, and fix the completion log line at PrReviewEngine.cs:1479-1483 that keys on the URL.
+
+  Note to the orchestrator window, not a criterion (decision 13f11af2): an answer task already in follow-through when this ships keeps raising 'moved' until its pull request merges; the window closes any such task out at closeout. The window also records the exception to Decisions Log #178 as a decision at closeout.
