@@ -33,7 +33,3 @@ context: |-
   Challenge (cell B pair 2, 2026-10-03, verdict-opus.md and verdict-fable.md in this task's directory): both verified that a new own-PR mention after a Done answer task already mints a fresh answer task on main (AutoPrReviewEngine.cs:2127-2131 and 2591-2595 exclude Done; MentionRouting.cs:40-48 returns MintAnswer), so criterion 3 needs a test, not code. The aggregate flag is AnswersMentionOnly (TaskAggregate.cs:912); AnswerOnly is the event field. PrReviewDelivered has two writers, ReviewResolveCommand (--merge-ready) and PullRequestReviewVerdict (h9k pr approve / request-changes); both reach FinalizeAsync. Keep passing the pull request URL to Complete, and fix the completion log line at PrReviewEngine.cs:1479-1483 that keys on the URL.
 
   Note to the orchestrator window, not a criterion (decision 13f11af2): an answer task already in follow-through when this ships keeps raising 'moved' until its pull request merges; the window closes any such task out at closeout. The window also records the exception to Decisions Log #178 as a decision at closeout.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-10-03 23:06:01Z
