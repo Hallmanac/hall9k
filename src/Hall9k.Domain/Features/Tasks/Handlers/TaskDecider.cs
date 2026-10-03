@@ -2035,6 +2035,27 @@ public static class TaskDecider
     }
 
     /// <summary>
+    /// What a delivered pr-review verdict does to the task once the review is resolved: the
+    /// follow-through event for a full review whose pull request can be read, and
+    /// <see cref="Complete"/> (with the pull request URL, when known) for the two tasks that have
+    /// nothing to watch. One is a pr-review task whose own reference cannot be read. The other is
+    /// an answer-only task (<see cref="TaskAggregate.AnswersMentionOnly"/>), which answers one
+    /// comment on the owner's own pull request and ends at resolve: nothing watches that pull
+    /// request afterwards, so the owner's later pushes never raise a needs-you offering a review of
+    /// their own work (decision dce39370). Full reviews are untouched: Decisions Log #178 keeps
+    /// one open pr-review task per pull request per install until it merges or closes.
+    /// <para>
+    /// The flag is the aggregate's, set only by the minting event, so a stream written before
+    /// answer-only tasks existed never carries it and still opens follow-through.
+    /// </para>
+    /// </summary>
+    public static object ConcludeDeliveredPrReview(
+        TaskAggregate task, Guid runId, string? pullRequestUrl, string? headSha, DateTimeOffset concludedAt) =>
+        pullRequestUrl is not null && !task.AnswersMentionOnly
+            ? OpenPrReviewFollowThrough(task, runId, pullRequestUrl, headSha, concludedAt)
+            : Complete(task, runId, pullRequestUrl, concludedAt);
+
+    /// <summary>
     /// Whether this task is one the closeout watcher's follow-through sweep should poll: a
     /// pr-review task with a posted review still being followed through, sitting in one of the
     /// two states that wait rather than work. Asked from the domain so the sweep's own query and
