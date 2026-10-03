@@ -449,7 +449,7 @@ A mention on a pull request your own login wrote never mints a review of your ow
 pr-review task whose only run is the bounded answer lap: it reads the one comment against the
 checkout and drafts a reply for you to walk, because the review-request trigger can never reach a
 pull request's author and you already hold the context a review would supply. Every gate above
-applies to it unchanged, and `h9k status` and the daemon log record it as its own outcome.
+applies to it unchanged, and `h9k status` and the daemon log record it as its own outcome. Resolving the drafted reply ends the task as Done, and nothing watches the pull request afterwards, so your later pushes raise no needs-you row.
 
 Both triggers count only your own tasks as covering a pull request, by the rule the task commands
 apply (the holder, else the assignee, else the creator). A task whose owner this node cannot yet
