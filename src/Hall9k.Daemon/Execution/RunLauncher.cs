@@ -1284,9 +1284,10 @@ public sealed class RunLauncher(
     private static readonly TimeSpan OwnLoginReadRetryDelay = TimeSpan.FromMilliseconds(500);
 
     /// <summary>
-    /// This install's own login for a mention follow-up that was not handed one, or null when every
-    /// attempt failed (the gate then records a skip). The last failure is logged, since the skip's
-    /// own reason cannot carry gh's wording.
+    /// This install's own login for a mention-driven launch that was not handed one (a follow-up, or
+    /// the first review of a task a mention minted), or null when every attempt failed (the gate then
+    /// records a skip, or the mint's addendum is left off). The last failure is logged, since the
+    /// gate's own reason cannot carry gh's wording.
     /// </summary>
     private async Task<string?> ReadOwnLoginWithRetryAsync(
         Guid taskId, Guid runId, string workingDirectory, CancellationToken cancellationToken)
@@ -1302,7 +1303,7 @@ public sealed class RunLauncher(
         if (read.Login.IsBlank())
         {
             logger.LogWarning(
-                "Task {TaskId}: mention follow-up run {RunId} could not read this install's own login after "
+                "Task {TaskId}: mention-driven run {RunId} could not read this install's own login after "
                 + "{Attempts} attempts: {Error}",
                 taskId, runId, OwnLoginReadAttempts, read.Error);
         }
