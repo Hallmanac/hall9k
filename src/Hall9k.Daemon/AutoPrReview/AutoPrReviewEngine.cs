@@ -1665,8 +1665,20 @@ public sealed class AutoPrReviewEngine(
             .Where(task => task.MatchesSql("d.data ->> 'state' NOT IN (?, ?)", TerminalStates[0], TerminalStates[1]))
             .ToListAsync(cancellationToken);
 
+        // Only this install's own tasks: a teammate's replicated review of the same pull request
+        // carries their login, and the recall this sweep reads from GitHub is about this one, so
+        // concluding theirs would append to a stream that is theirs alone. A task this node cannot
+        // yet attribute to an owner is left alone too.
+        (string? thisOwnerRoot, IReadOnlyList<CoveringTaskCandidate> candidates) =
+            await OwnerScopedCoverage.ReadAsync(
+                query, node.OwnerId,
+                [.. watched.Where(task => string.Equals(task.AutoPrReviewAssigneeLogin, login, StringComparison.OrdinalIgnoreCase))],
+                cancellationToken);
+
         int recalled = 0;
-        foreach (TaskListItem watchedTask in watched)
+        foreach (TaskListItem watchedTask in candidates
+            .Where(candidate => OwnerScopedCoverage.IsOwn(thisOwnerRoot, candidate.Facts))
+            .Select(candidate => candidate.Task))
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (watchedTask.ExternalReference is not { } reference
