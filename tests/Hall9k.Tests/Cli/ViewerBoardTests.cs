@@ -45,6 +45,7 @@ public sealed class ViewerBoardTests
         ownHeld.ClaimedByNodeId = run.NodeId;
         ownHeld.HolderOwnerRootFingerprint = ViewerRoot;
         ownHeld.AssignedOwnerFingerprint = TeammateRoot;
+        ownHeld.AssigneeOwnerFingerprint = ownHeld.AssignedOwnerFingerprint;
 
         TaskListItem teammateHeld = Owned(TaskState.Claimed, runId: runId);
         teammateHeld.HolderOwnerRootFingerprint = TeammateRoot;
@@ -401,7 +402,9 @@ public sealed class ViewerBoardTests
             state, runId: runId, pullRequest: pullRequest, objective: objective, projectId: ProjectId,
             claimedByNodeId: state == TaskState.Claimed ? DomainId.New() : null);
         task.AssignedOwnerFingerprint = assignedRoot;
+        task.AssigneeOwnerFingerprint = task.AssignedOwnerFingerprint;
         task.AssignedOwnerId = assignedOwnerId ?? (assignedRoot is null ? null : DomainId.New());
+        task.AssigneeOwnerId = task.AssignedOwnerId;
         return task;
     }
 

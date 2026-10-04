@@ -8,6 +8,14 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// guard reads <see cref="AssignedOwnerId"/> — a node claims only its own owner's work.
 /// <see cref="UnmetDependencies"/> is the dependency set as observed at assignment time:
 /// empty means Queued, anything else means Blocked until each one reaches true closeout.
+/// <para>
+/// Naming trap: despite its name this event is the go signal ("queued for"), not a statement of
+/// who holds the task. <see cref="TaskAggregate.AssignedOwnerId"/> means "queued for", and
+/// every historical <see cref="TaskAssigned"/> replays to Queued, so the wire shape cannot change.
+/// Who holds a task at any stage is its assignee (<see cref="TaskAggregate.AssigneeOwnerId"/>),
+/// recorded by <see cref="TaskAssigneeSet"/> and <see cref="TaskAssigneeCleared"/> and also set
+/// by this event, so the two agree whenever a task is queued.
+/// </para>
 /// </summary>
 /// <param name="AssignedOwnerRootFingerprint">
 /// The assigned owner's cross-node root fingerprint beside <see cref="AssignedOwnerId"/>'s local

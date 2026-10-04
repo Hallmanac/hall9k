@@ -104,7 +104,7 @@ public sealed class TaskListItemOwnerRootProjectionTests
 
         // Holder first, and an unresolvable assignee does not hide it.
         row.HolderOwnerRootFingerprint = Mine;
-        row.AssignedOwnerId = DomainId.New();
+        row.AssigneeOwnerId = DomainId.New();
         TaskOwnerFacts held = TaskListItemOwnerFacts.From(row, noOwners, creator);
         held.Holder.RootFingerprint.Should().Be(Mine);
         held.Assigned.State.Should().Be(OwnerRootFactState.Unresolved);
@@ -112,14 +112,14 @@ public sealed class TaskListItemOwnerRootProjectionTests
         TaskListItemOwnerFacts.NeedsCreator(row).Should().BeFalse();
 
         row.HolderOwnerRootFingerprint = null;
-        row.AssignedOwnerFingerprint = Theirs;
+        row.AssigneeOwnerFingerprint = Theirs;
         TaskListItemOwnerFacts.From(row, noOwners, creator).Assigned.RootFingerprint.Should().Be(Theirs);
 
-        row.AssignedOwnerFingerprint = null;
+        row.AssigneeOwnerFingerprint = null;
         TaskListItemOwnerFacts.From(row, _ => Mine, creator).Assigned.RootFingerprint
             .Should().Be(Mine, "an assignment by owner id resolves through this node's own owner table");
 
-        row.AssignedOwnerId = null;
+        row.AssigneeOwnerId = null;
         TaskListItemOwnerFacts.NeedsCreator(row).Should().BeTrue();
         TaskListItemOwnerFacts.From(row, noOwners, creator).Creator.RootFingerprint.Should().Be(Theirs);
         TaskListItemOwnerFacts.From(row, noOwners, creator: null).Creator.State

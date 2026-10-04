@@ -45,7 +45,7 @@ public sealed class OrchestratorFeedOwnershipTests
             ? Theirs
             : null;
 
-    private static TaskOwnerFacts Own() => Facts(new TaskListItem { AssignedOwnerFingerprint = Mine });
+    private static TaskOwnerFacts Own() => Facts(new TaskListItem { AssigneeOwnerFingerprint = Mine });
 
     private static TaskOwnerFacts Facts(TaskListItem row, OwnerRootFact? creator = null) =>
         TaskListItemOwnerFacts.From(row, OwnerRoot, creator);
@@ -56,7 +56,7 @@ public sealed class OrchestratorFeedOwnershipTests
         { "the viewer's own task", Own(), true },
         {
             "a fleet sibling's task, by a second owner id on the same root",
-            Facts(new TaskListItem { AssignedOwnerId = SiblingOwner }),
+            Facts(new TaskListItem { AssigneeOwnerId = SiblingOwner }),
             true
         },
         { "a task the viewer holds", Facts(new TaskListItem { HolderOwnerRootFingerprint = Mine }), true },
@@ -66,10 +66,10 @@ public sealed class OrchestratorFeedOwnershipTests
             true
         },
         { "a teammate's held task", Facts(new TaskListItem { HolderOwnerRootFingerprint = Theirs }), false },
-        { "a teammate's assigned task", Facts(new TaskListItem { AssignedOwnerFingerprint = Theirs }), false },
+        { "a teammate's assigned task", Facts(new TaskListItem { AssigneeOwnerFingerprint = Theirs }), false },
         {
             "a teammate's assigned task known only by owner id",
-            Facts(new TaskListItem { AssignedOwnerId = TeammateOwner }),
+            Facts(new TaskListItem { AssigneeOwnerId = TeammateOwner }),
             false
         },
         {
@@ -84,7 +84,7 @@ public sealed class OrchestratorFeedOwnershipTests
         },
         {
             "a task assigned to an owner this node has never heard of",
-            Facts(new TaskListItem { AssignedOwnerId = UnknownOwner }),
+            Facts(new TaskListItem { AssigneeOwnerId = UnknownOwner }),
             false
         },
     };
