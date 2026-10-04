@@ -1355,6 +1355,251 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     /// <summary>
+    /// A node that has not yet updated to the build that knows <see cref="TaskAssigneeSet"/> sees it as a
+    /// type it does not know: it skips the event without storing it, keeps applying every later event
+    /// from the same origin, and so keeps the creator fallback for that task. Once that node does
+    /// update, the skipped event cannot be taken back: the stream already holds a later event from the
+    /// same origin, so re-delivering it is refused as out of order. This pins that outcome, which is why
+    /// every node of every member must update before anyone assigns or hands off to another member; a
+    /// repair for the lagging node is out of scope. The unknown type is simulated by the name the
+    /// envelope carries, which is all an older build ever sees of a type it has no class for.
+    /// </summary>
+    [Fact]
+    public async Task A_node_that_does_not_know_the_assignee_event_skips_it_keeps_applying_later_events_and_refuses_it_once_it_does()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid originNode = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, originNode, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("origin");
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+
+        const string ownerRoot = "owner-a-root-fingerprint";
+        string originKeyLine = $"ssh-ed25519 AAAAFAKE{originNode:N} test";
+        TrustChain trustChain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                [ownerRoot] = new TrustedOwner(
+                    ownerRoot, "ssh-ed25519 AAAAFAKEownerA test",
+                    [new TrustedNode(originNode.ToString(), originKeyLine, NodeKeyStore.Fingerprint(originKeyLine), Now)]),
+            },
+            [new ProjectMember(ownerRoot, MembershipRole.Owner, Now)]);
+
+        await using DocumentStore storeB = OpenStoreB();
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                projectId,
+                new ProjectRegistered(projectId, ownerId, DomainId.New(), "Shared Project", "/repo-b", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        async Task<int> DeliverAsync(EventReplicationCodec.ReplicatedEventRecord record, int atSecond)
+        {
+            await using (IDocumentSession session = _postgres.Store.LightweightSession())
+            {
+                await MessageOutbox.QueueAsync(
+                    session, originNode, projectId, ownerRoot, MessageAudience.Project, about: null,
+                    MessageKind.Events, EventReplicationCodec.EncodeBatch([record]), Now.AddSeconds(atSecond), cts.Token);
+                await messageOutbox.FlushAsync(
+                    session, RepositoryPath, originNode, projectId, "shared-project-key", adoptUnassigned: false,
+                    committer, signingKey, Now.AddSeconds(atSecond), cts.Token);
+            }
+
+            await using IDocumentSession read = storeB.LightweightSession();
+            return (await replicationInbox.ReadFromAsync(
+                read, RepositoryPath, originNode, projectId, DomainId.New(), "owner-b-fingerprint",
+                Now.AddSeconds(atSecond + 1), trustChain, cts.Token)).EventsApplied;
+        }
+
+        Guid taskId = DomainId.New();
+        TaskAdded genesis = TaskDecider.Add(
+            taskId, projectId, "Hold it", ["it is held"], TaskType.Chore, null, null, null, Now.AddSeconds(1), ownerId);
+        (await DeliverAsync(
+            new(taskId, typeof(TaskAdded).FullName!, JsonSerializer.Serialize(genesis, jsonOptions),
+                DomainId.New(), OriginSequence: 1, originNode, ownerRoot, Now.AddSeconds(1), projectId), 2))
+            .Should().Be(1, "the draft itself is an ordinary event every build knows");
+
+        Guid assigneeEventId = DomainId.New();
+        string assigneeJson = JsonSerializer.Serialize(
+            new TaskAssigneeSet(taskId, DomainId.New(), "teammate-root", Now.AddSeconds(3), ownerId), jsonOptions);
+        (await DeliverAsync(
+            new(taskId, typeof(TaskAssigneeSet).FullName! + "FromANewerBuild", assigneeJson,
+                assigneeEventId, OriginSequence: 2, originNode, ownerRoot, Now.AddSeconds(3), projectId), 4))
+            .Should().Be(0, "a type this build has no class for is skipped, never stored and never applied");
+
+        (await DeliverAsync(
+            new(taskId, typeof(TaskPublished).FullName!, JsonSerializer.Serialize(new TaskPublished(taskId, Now.AddSeconds(5), ownerId), jsonOptions),
+                DomainId.New(), OriginSequence: 3, originNode, ownerRoot, Now.AddSeconds(5), projectId), 6))
+            .Should().Be(1, "later events from the same origin keep applying past the skipped one");
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.LoadAsync<ReplicatedEventRecord>(assigneeEventId, cts.Token)).Should().BeNull();
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            task.State.Should().Be(TaskState.Published);
+            task.AssigneeOwnerId.Should().BeNull("this node never learned the hold, so it keeps the creator fallback for the task");
+        }
+
+        // The node updates and the same event arrives again under the name it now knows.
+        (await DeliverAsync(
+            new(taskId, typeof(TaskAssigneeSet).FullName!, assigneeJson,
+                assigneeEventId, OriginSequence: 2, originNode, ownerRoot, Now.AddSeconds(7), projectId), 8))
+            .Should().Be(0, "the stream already holds sequence 3 from this origin, so sequence 2 is refused as out of order");
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            task.AssigneeOwnerId.Should().BeNull("the lagging node permanently lacks the hold; repairing it is out of scope");
+        }
+
+        // The control: on a node that does know the type, the same event delivered in order applies.
+        Guid knownTaskId = DomainId.New();
+        TaskAdded knownGenesis = TaskDecider.Add(
+            knownTaskId, projectId, "Hold it too", ["it is held"], TaskType.Chore, null, null, null, Now.AddSeconds(9), ownerId);
+        (await DeliverAsync(
+            new(knownTaskId, typeof(TaskAdded).FullName!, JsonSerializer.Serialize(knownGenesis, jsonOptions),
+                DomainId.New(), OriginSequence: 4, originNode, ownerRoot, Now.AddSeconds(9), projectId), 10))
+            .Should().Be(1);
+        Guid holder = DomainId.New();
+        (await DeliverAsync(
+            new(knownTaskId, typeof(TaskAssigneeSet).FullName!,
+                JsonSerializer.Serialize(new TaskAssigneeSet(knownTaskId, holder, "teammate-root", Now.AddSeconds(11), ownerId), jsonOptions),
+                DomainId.New(), OriginSequence: 5, originNode, ownerRoot, Now.AddSeconds(11), projectId), 12))
+            .Should().Be(1, "a build that knows the type applies it in order");
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            TaskAggregate known = (await session.Events.AggregateStreamAsync<TaskAggregate>(knownTaskId, token: cts.Token))!;
+            known.AssigneeOwnerId.Should().Be(holder);
+            known.AssigneeOwnerFingerprint.Should().Be("teammate-root");
+            known.State.Should().Be(TaskState.Draft);
+        }
+    }
+
+    /// <summary>
+    /// The hand-off reaches every peer through the receive gate: a Member-role assignee who is not the
+    /// task's creator hands a draft to a teammate and every node applies it, where
+    /// <see cref="TaskAssigned"/>'s own rule would have dropped it for naming another root. The same
+    /// member, no longer the assignee, cannot take it back.
+    /// </summary>
+    [Fact]
+    public async Task A_member_assignee_hands_a_draft_to_a_teammate_and_a_peer_applies_it_but_not_the_take_back()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid ownerNode = DomainId.New();
+        Guid memberNode = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, ownerNode, cts.Token);
+        await SeedNodeFileAsync(ledger, memberNode, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("origin");
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+
+        const string ownerRoot = "owner-a-root-fingerprint";
+        const string memberRoot = "member-m-root-fingerprint";
+        const string teammateRoot = "teammate-t-root-fingerprint";
+        string ownerKeyLine = $"ssh-ed25519 AAAAFAKE{ownerNode:N} test";
+        string memberKeyLine = $"ssh-ed25519 AAAAFAKE{memberNode:N} test";
+        TrustChain trustChain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                [ownerRoot] = new TrustedOwner(
+                    ownerRoot, "ssh-ed25519 AAAAFAKEownerA test",
+                    [new TrustedNode(ownerNode.ToString(), ownerKeyLine, NodeKeyStore.Fingerprint(ownerKeyLine), Now)]),
+                [memberRoot] = new TrustedOwner(
+                    memberRoot, "ssh-ed25519 AAAAFAKEmemberM test",
+                    [new TrustedNode(memberNode.ToString(), memberKeyLine, NodeKeyStore.Fingerprint(memberKeyLine), Now)]),
+            },
+            [
+                new ProjectMember(ownerRoot, MembershipRole.Owner, Now),
+                new ProjectMember(memberRoot, MembershipRole.Member, Now),
+            ]);
+
+        await using DocumentStore storeB = OpenStoreB();
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                projectId,
+                new ProjectRegistered(projectId, ownerId, DomainId.New(), "Shared Project", "/repo-b", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        async Task<int> DeliverAsync(Guid fromNode, string fromRoot, EventReplicationCodec.ReplicatedEventRecord record, int atSecond)
+        {
+            await using (IDocumentSession session = _postgres.Store.LightweightSession())
+            {
+                await MessageOutbox.QueueAsync(
+                    session, fromNode, projectId, fromRoot, MessageAudience.Project, about: null,
+                    MessageKind.Events, EventReplicationCodec.EncodeBatch([record]), Now.AddSeconds(atSecond), cts.Token);
+                await messageOutbox.FlushAsync(
+                    session, RepositoryPath, fromNode, projectId, "shared-project-key", adoptUnassigned: false,
+                    committer, signingKey, Now.AddSeconds(atSecond), cts.Token);
+            }
+
+            await using IDocumentSession read = storeB.LightweightSession();
+            return (await replicationInbox.ReadFromAsync(
+                read, RepositoryPath, fromNode, projectId, DomainId.New(), "owner-b-fingerprint",
+                Now.AddSeconds(atSecond + 1), trustChain, cts.Token)).EventsApplied;
+        }
+
+        Guid taskId = DomainId.New();
+        TaskAdded genesis = TaskDecider.Add(
+            taskId, projectId, "Hold it", ["it is held"], TaskType.Chore, null, null, null, Now.AddSeconds(1), ownerId);
+        (await DeliverAsync(
+            ownerNode, ownerRoot,
+            new(taskId, typeof(TaskAdded).FullName!, JsonSerializer.Serialize(genesis, jsonOptions),
+                DomainId.New(), OriginSequence: 1, ownerNode, ownerRoot, Now.AddSeconds(1), projectId), 2)).Should().Be(1);
+
+        // The owner lays the draft on the member: an Owner-role act, always applied.
+        (await DeliverAsync(
+            ownerNode, ownerRoot,
+            new(taskId, typeof(TaskAssigneeSet).FullName!,
+                JsonSerializer.Serialize(new TaskAssigneeSet(taskId, DomainId.New(), memberRoot, Now.AddSeconds(3), ownerId), jsonOptions),
+                DomainId.New(), OriginSequence: 2, ownerNode, ownerRoot, Now.AddSeconds(3), projectId), 4)).Should().Be(1);
+
+        // The member, the assignee and not the creator, hands it to a teammate.
+        Guid teammate = DomainId.New();
+        (await DeliverAsync(
+            memberNode, memberRoot,
+            new(taskId, typeof(TaskAssigneeSet).FullName!,
+                JsonSerializer.Serialize(new TaskAssigneeSet(taskId, teammate, teammateRoot, Now.AddSeconds(5), DomainId.New()), jsonOptions),
+                DomainId.New(), OriginSequence: 1, memberNode, memberRoot, Now.AddSeconds(5), projectId), 6))
+            .Should().Be(1, "the current assignee may hand the task to another member, and every peer applies it");
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            task.AssigneeOwnerFingerprint.Should().Be(teammateRoot);
+            task.State.Should().Be(TaskState.Draft);
+        }
+
+        // Having handed it away, the member holds nothing and is not the creator: taking it back is refused.
+        (await DeliverAsync(
+            memberNode, memberRoot,
+            new(taskId, typeof(TaskAssigneeSet).FullName!,
+                JsonSerializer.Serialize(new TaskAssigneeSet(taskId, DomainId.New(), memberRoot, Now.AddSeconds(7), DomainId.New()), jsonOptions),
+                DomainId.New(), OriginSequence: 2, memberNode, memberRoot, Now.AddSeconds(7), projectId), 8))
+            .Should().Be(0, "a member who is neither the assignee nor the creator cannot take a held draft");
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!
+                .AssigneeOwnerFingerprint.Should().Be(teammateRoot);
+        }
+    }
+
+    /// <summary>
     /// The forged-forward shape proved above, repeated with a plain
     /// <see cref="TaskActClassification.MemberSafe"/> Task/Run act (<see cref="TaskCompleted"/>)
     /// rather than a Conditional one (independent pre-PR review, cycle 8, terminal lap): before the

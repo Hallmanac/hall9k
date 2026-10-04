@@ -1973,12 +1973,12 @@ public sealed class EventReplicationInbox(
     /// sender: an owner-role sender's act always applies; a non-owner (member-role) sender's is
     /// judged by <paramref name="classification"/> against <paramref name="task"/>'s own CURRENT
     /// state —
-    /// <see cref="TaskAggregate.AssignedOwnerFingerprint"/> and
-    /// <see cref="TaskAggregate.HolderOwnerRootFingerprint"/>, resolved by the caller from the task's
+    /// <see cref="TaskAggregate.AssigneeOwnerFingerprint"/> (who holds the task at any stage, not the
+    /// owner it is queued for) and <see cref="TaskAggregate.HolderOwnerRootFingerprint"/>, resolved by the caller from the task's
     /// own aggregate stream at apply time, never a projection. <paramref name="task"/> is null only
     /// when the caller could not resolve the task at all (a Run act whose own referenced task has
     /// never replicated here) — read as <see cref="TaskActVerdict.Held"/>, the identical answer a
-    /// null <see cref="TaskAggregate.AssignedOwnerFingerprint"/>/<c>HolderOwnerRootFingerprint"</c>
+    /// null <see cref="TaskAggregate.AssigneeOwnerFingerprint"/>/<see cref="TaskAggregate.HolderOwnerRootFingerprint"/>
     /// pair already gets for a task this node HAS seen: neither state is distinguishable, from this
     /// node's own knowledge alone, from the authorizing fact simply not having arrived yet
     /// (<c>OwnerRootFingerprintResolver</c> returning null for an owner with no local
@@ -2058,15 +2058,18 @@ public sealed class EventReplicationInbox(
                 }
 
                 TaskAssigned assigned = (TaskAssigned)eventData;
-                // A holder is a separate lock from assignment (TaskHolderTakenOver's own Apply
-                // clears AssignedOwnerFingerprint to null the moment it sets one), so a null
+                // The assignee is read here, not the owner the task is queued for: a draft a
+                // member has laid hold of is theirs before any TaskAssigned exists, so a different
+                // member's go signal on it is a reassignment and refuses exactly as it does on a
+                // queued task. A holder is a separate lock from assignment (TaskHolderTakenOver's own
+                // Apply clears the fingerprint to null the moment it sets one), so a null
                 // assignment fingerprint alone never means "free to reassign" — it also means
                 // "currently held by someone else" whenever a holder is recorded (independent
                 // pre-PR review, cycle 1, conformance lens, medium: the earlier version of this
                 // check let a forged TaskAssigned with no placement hijack an owner-held task the
                 // moment TaskHolderTakenOver had cleared its assignment).
-                bool freeToReassign = (task.AssignedOwnerFingerprint is null
-                        || task.AssignedOwnerFingerprint == sender.RootFingerprint)
+                bool freeToReassign = (task.AssigneeOwnerFingerprint is null
+                        || task.AssigneeOwnerFingerprint == sender.RootFingerprint)
                     && (task.HolderOwnerRootFingerprint is null
                         || task.HolderOwnerRootFingerprint == sender.RootFingerprint);
                 bool targetsOwnRoot = assigned.AssignedOwnerRootFingerprint == sender.RootFingerprint;
@@ -2088,12 +2091,12 @@ public sealed class EventReplicationInbox(
                     return TaskActVerdict.Held;
                 }
 
-                if (task.AssignedOwnerFingerprint == sender.RootFingerprint)
+                if (task.AssigneeOwnerFingerprint == sender.RootFingerprint)
                 {
                     return TaskActVerdict.Allowed;
                 }
 
-                return task.AssignedOwnerFingerprint is null
+                return task.AssigneeOwnerFingerprint is null
                     ? TaskActVerdict.Held
                     : Refuse(originNodeId, senderNodeId);
             }
@@ -2115,6 +2118,13 @@ public sealed class EventReplicationInbox(
                     : Refuse(originNodeId, senderNodeId);
             }
 
+            case TaskActClassification.Conditional when eventType == typeof(TaskAssigneeSet):
+                return EvaluateAssigneeSetVerdict(
+                    (TaskAssigneeSet)eventData, task, sender, creatorRootFingerprint, originNodeId, senderNodeId);
+
+            case TaskActClassification.Conditional when eventType == typeof(TaskAssigneeCleared):
+                return EvaluateAssigneeClearedVerdict(task, sender, originNodeId, senderNodeId);
+
             case TaskActClassification.Conditional when PreAssignmentCapableConditionalTypes.Contains(eventType):
                 // TaskPublished and TaskReturnedToDraft only ever fire on an unassigned task by
                 // construction (Draft and Published are both pre-assignment states);
@@ -2131,9 +2141,9 @@ public sealed class EventReplicationInbox(
                 return task switch
                 {
                     null => TaskActVerdict.Held,
-                    _ when task.AssignedOwnerFingerprint == sender.RootFingerprint
+                    _ when task.AssigneeOwnerFingerprint == sender.RootFingerprint
                         || task.HolderOwnerRootFingerprint == sender.RootFingerprint => TaskActVerdict.Allowed,
-                    { AssignedOwnerFingerprint: null, HolderOwnerRootFingerprint: null } => creatorRootFingerprint switch
+                    { AssigneeOwnerFingerprint: null, HolderOwnerRootFingerprint: null } => creatorRootFingerprint switch
                     {
                         null => TaskActVerdict.Held,
                         _ when creatorRootFingerprint == sender.RootFingerprint => TaskActVerdict.Allowed,
@@ -2149,13 +2159,13 @@ public sealed class EventReplicationInbox(
                     return TaskActVerdict.Held;
                 }
 
-                if (task.AssignedOwnerFingerprint == sender.RootFingerprint
+                if (task.AssigneeOwnerFingerprint == sender.RootFingerprint
                     || task.HolderOwnerRootFingerprint == sender.RootFingerprint)
                 {
                     return TaskActVerdict.Allowed;
                 }
 
-                return task.AssignedOwnerFingerprint is null && task.HolderOwnerRootFingerprint is null
+                return task.AssigneeOwnerFingerprint is null && task.HolderOwnerRootFingerprint is null
                     ? TaskActVerdict.Held
                     : Refuse(originNodeId, senderNodeId);
             }
@@ -2163,12 +2173,86 @@ public sealed class EventReplicationInbox(
             default:
                 throw new InvalidOperationException($"Unhandled task act classification {classification}.");
         }
-
-        static TaskActVerdict Refuse(Guid originNodeId, Guid senderNodeId) =>
-            originNodeId == senderNodeId
-                ? TaskActVerdict.DroppedAndRefusedPermanently
-                : TaskActVerdict.DroppedWithoutRecording;
     }
+
+    /// <summary>
+    /// A Member-role sender's <see cref="TaskAssigneeSet"/>, judged by the same rule the CLI applies
+    /// (<c>h9k task assign</c>), and deliberately not by <see cref="TaskAssigned"/>'s own
+    /// <c>targetsOwnRoot</c> rule, which would drop a hand-off on every peer: the sender must be the
+    /// task's ledger holder, its assignee, or with neither its creator, to name anyone at all, a
+    /// hand-off to another member included, which is <see cref="TaskOwnerRule"/>'s own answer; any
+    /// other member may only take an unassigned Published task for itself. A task held by another
+    /// root's ledger lock refuses outright, and one held by the sender's own is theirs to assign. An
+    /// owner-role sender never reaches this (its act always applies).
+    /// <para>
+    /// A task whose assignee is recorded by owner id alone, with no fingerprint to compare, refuses a
+    /// Member rather than reading as free: this node cannot tell whose it is. No recorded assignee
+    /// and no known creator holds, like every other fact not yet arrived.
+    /// </para>
+    /// </summary>
+    private static TaskActVerdict EvaluateAssigneeSetVerdict(
+        TaskAssigneeSet set, TaskAggregate? task, SenderResolution sender, string? creatorRootFingerprint,
+        Guid originNodeId, Guid senderNodeId)
+    {
+        if (task is null)
+        {
+            return TaskActVerdict.Held;
+        }
+
+        if (task.HolderOwnerRootFingerprint is not null)
+        {
+            return task.HolderOwnerRootFingerprint == sender.RootFingerprint
+                ? TaskActVerdict.Allowed
+                : Refuse(originNodeId, senderNodeId);
+        }
+
+        if (task.AssigneeOwnerId is not null)
+        {
+            return task.AssigneeOwnerFingerprint == sender.RootFingerprint
+                ? TaskActVerdict.Allowed
+                : Refuse(originNodeId, senderNodeId);
+        }
+
+        bool takesForItself = set.AssigneeOwnerRootFingerprint == sender.RootFingerprint
+            && task.State == TaskState.Published;
+        return takesForItself
+            ? TaskActVerdict.Allowed
+            : creatorRootFingerprint switch
+            {
+                null => TaskActVerdict.Held,
+                _ when creatorRootFingerprint == sender.RootFingerprint => TaskActVerdict.Allowed,
+                _ => Refuse(originNodeId, senderNodeId),
+            };
+    }
+
+    /// <summary>
+    /// A Member-role sender's <see cref="TaskAssigneeCleared"/>: allowed only from the current
+    /// ledger holder or the current assignee, as <see cref="TaskOwnerRule"/> reads them, since a
+    /// creator who handed the task away no longer holds it. An Owner-role override never reaches
+    /// this. A task with no recorded assignee holds, because the assignment this act releases may
+    /// simply not have arrived here yet.
+    /// </summary>
+    private static TaskActVerdict EvaluateAssigneeClearedVerdict(
+        TaskAggregate? task, SenderResolution sender, Guid originNodeId, Guid senderNodeId) =>
+        task switch
+        {
+            null => TaskActVerdict.Held,
+            { AssigneeOwnerId: null } => TaskActVerdict.Held,
+            { HolderOwnerRootFingerprint: { } holder } => holder == sender.RootFingerprint
+                ? TaskActVerdict.Allowed
+                : Refuse(originNodeId, senderNodeId),
+            _ when task.AssigneeOwnerFingerprint == sender.RootFingerprint => TaskActVerdict.Allowed,
+            _ => Refuse(originNodeId, senderNodeId),
+        };
+
+    /// <summary>
+    /// A definite mismatch: dropped for good when the sender is the origin itself, held when it merely
+    /// relayed somebody else's act, so the true origin's own delivery can still arrive.
+    /// </summary>
+    private static TaskActVerdict Refuse(Guid originNodeId, Guid senderNodeId) =>
+        originNodeId == senderNodeId
+            ? TaskActVerdict.DroppedAndRefusedPermanently
+            : TaskActVerdict.DroppedWithoutRecording;
 
     /// <summary>
     /// The <see cref="TaskCreatorRootRecord.CreatorRootFingerprint"/> to judge a
