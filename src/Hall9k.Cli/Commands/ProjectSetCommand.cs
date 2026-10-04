@@ -222,7 +222,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "'default' clears the override so the daemon decides fresh every sweep from "
             + "gh repo view --json isPrivate — required on a public repository, not required on a "
             + "private or internal one. A non-member's request still mints the pr-review task; it is "
-            + "published but left unassigned, so h9k task assign is the human go that starts it. Recorded "
+            + "published but left unassigned, so h9k task queue is the human go that starts it. Recorded "
             + "on this node only: it does not yet replicate to a teammate's node.")]
         public string? ReviewRequiresMembership { get; init; }
 
@@ -425,9 +425,9 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "own tracker identity (the Jira accountId recorded on the registered connection, or the "
             + "login gh is authenticated as; never an email, never a display name, never typed), so two "
             + "teammates' installs cannot both run the same card. Every claim door re-reads the assignee "
-            + "field fresh: the dispatcher, h9k task work, and h9k task start. h9k task assign warns and "
+            + "field fresh: the dispatcher, h9k task work, and h9k task start. h9k task queue warns and "
             + "assigns anyway, since the tracker stays the go signal and the task simply waits in the "
-            + "queue — or takes the item outright with h9k task assign --take, which writes this "
+            + "queue — or takes the item outright with h9k task queue --take, which writes this "
             + "install's own identity into an item NOBODY holds so the gate then passes on its own, one "
             + "command moving the tracker and the board together (an item somebody else holds is refused; "
             + "no flag takes one from another person). A task with no linked item, an untracked one, and "
@@ -1065,8 +1065,8 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 + "hands out work, so two teammates' installs cannot both run the same card. h9k task "
                 + "assign still assigns and warns; the dispatcher, h9k task work and h9k task start "
                 + "refuse. There is no override flag, and a tracker this install cannot read holds the "
-                + "claim rather than releasing it. From an interactive terminal, h9k task assign offers "
-                + "to take an item nobody holds — h9k task assign --take does it without asking — so "
+                + "claim rather than releasing it. From an interactive terminal, h9k task queue offers "
+                + "to take an item nobody holds — h9k task queue --take does it without asking — so "
                 + "satisfying the gate stays one command rather than a second trip to the tracker; that "
                 + "is the one place Hall9k writes to your board, and only ever onto an item nobody "
                 + "holds.[/]");

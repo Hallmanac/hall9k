@@ -35,7 +35,7 @@ namespace Hall9k.Cli.Commands;
 /// identical pair <c>AttentionComposer</c>'s own needs-you row already gates on. A mention row
 /// checks this ahead of the ordinary "already covers it" case (independent pre-PR review, cycle 1,
 /// conformance lens): a task that merely exists is not the same fact as a task an operator still
-/// has to run <c>h9k task assign</c> on, and a still-parked task's own mint mention must not read
+/// has to run <c>h9k task queue</c> on, and a still-parked task's own mint mention must not read
 /// as already handled.
 /// </param>
 /// <param name="Own">
@@ -562,8 +562,8 @@ internal static class ReviewRequestPane
 
         // Checked ahead of the ordinary covering-task branch below (independent pre-PR review,
         // cycle 1, conformance lens): a still-parked task genuinely does exist for this pull
-        // request, but the membership gate never assigned it, so telling the reader "already
-        // covers it" would bury the one thing the row exists to say — h9k task assign is still
+        // request, but the membership gate never queued it, so telling the reader "already
+        // covers it" would bury the one thing the row exists to say — h9k task queue is still
         // theirs to run. AttentionComposer's own needs-you row already names the park's own facts
         // in full; this row only has to point at the task and the lever.
         if (covering is { GateParked: true } parkedTask)
@@ -571,9 +571,9 @@ internal static class ReviewRequestPane
             string parkedId = DomainId.Short(parkedTask.TaskId);
             return NeedsYou(
                 mention.Repository, mention.Number,
-                $"{opening}; task {parkedId} was minted but not assigned by the membership gate "
+                $"{opening}; task {parkedId} was minted but not queued by the membership gate "
                 + "(security review idea 6be68ee2, finding 1)",
-                $"h9k task assign {parkedId}");
+                $"h9k task queue {parkedId}");
         }
 
         // Ahead of the informational teammate-covered branch below, which would otherwise say a

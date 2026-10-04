@@ -322,7 +322,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             {
                 AnsiConsole.MarkupLine(
                     "[dim]Drafts and published tasks are counted above; neither dispatches until you "
-                    + "publish and assign:[/] h9k task list --state draft [dim]·[/] h9k task list --state ready");
+                    + "publish and queue:[/] h9k task list --state draft [dim]·[/] h9k task list --state ready");
             }
         }
 

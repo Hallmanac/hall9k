@@ -353,7 +353,7 @@ public sealed class TrackerAssignmentTake
 
     /// <summary>
     /// The read on its own, for a caller deciding whether a take is worth offering at all — an
-    /// interactive <c>h9k task assign</c> with no <c>--take</c>, which offers only on an item the
+    /// interactive <c>h9k task queue</c> with no <c>--take</c>, which offers only on an item the
     /// tracker shows assigned to nobody. Exactly <see cref="TrackerClaimGate.CheckAsync"/>, reached
     /// through this class so a caller needs one seam rather than two.
     /// </summary>

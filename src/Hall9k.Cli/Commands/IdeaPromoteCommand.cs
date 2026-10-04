@@ -160,7 +160,7 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
         }
 
         // No doorbell: what promotion produces is a draft, and a draft is invisible to the
-        // dispatcher until a human publishes and assigns it (Decisions Log #34).
+        // dispatcher until a human publishes and queues it (Decisions Log #34).
         Announce(idea, taskId, destinationProjectId, project, seed, settings.Objective.IsNotBlank());
         return ExitCodes.Ok;
     }
@@ -261,6 +261,6 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
         AnsiConsole.MarkupLine(
             $"  h9k task revise {taskShortId} --criteria \"…\"   [dim]— publishing needs at least one[/]");
         AnsiConsole.MarkupLine($"  h9k task publish {taskShortId}              [dim]— the readiness gate[/]");
-        AnsiConsole.MarkupLine($"  h9k task assign {taskShortId}               [dim]— the go signal[/]");
+        AnsiConsole.MarkupLine($"  h9k task queue {taskShortId}               [dim]— the go signal[/]");
     }
 }

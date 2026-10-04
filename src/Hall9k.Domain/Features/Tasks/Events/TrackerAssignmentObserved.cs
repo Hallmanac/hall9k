@@ -4,7 +4,7 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// The go signal a <c>tracker-assignee</c> claim gate actually saw (idea 64c75e43): at the moment
 /// this task's claim was let through, the tracker reported the linked item assigned to this
 /// install's own tracker identity. Recorded at every door that passes the gate — the dispatcher's
-/// own claim, <c>h9k task work</c>, <c>h9k task start</c>, and <c>h9k task assign</c> — so the
+/// own claim, <c>h9k task work</c>, <c>h9k task start</c>, and <c>h9k task queue</c> — so the
 /// stream carries the evidence the claim rested on rather than only the claim.
 /// <para>
 /// <see cref="AssigneeIdentity"/> is what the tracker's assignee field held, as the tracker

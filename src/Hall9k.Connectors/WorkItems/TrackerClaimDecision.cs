@@ -28,7 +28,7 @@ public enum TrackerClaimVerdict
 
 /// <summary>
 /// One gate check's whole answer, and the one place its sentences are written (idea 64c75e43):
-/// the warning <c>h9k task assign</c> prints, the identical refusal <c>h9k task work</c> and
+/// the warning <c>h9k task queue</c> prints, the identical refusal <c>h9k task work</c> and
 /// <c>h9k task start</c> exit 70 with, the line the daemon logs, and the one-clause reason a held
 /// task's row reads on <c>h9k status</c>, <c>h9k task show</c> and <c>h9k project show</c> — in
 /// the same voice <c>DispatchPressure.ReasonLine</c> uses for the concurrency ceiling.
@@ -99,8 +99,8 @@ public sealed record TrackerClaimDecision(
 
     /// <summary>
     /// The one sentence every door says: what the tracker showed, that this project's claim gate
-    /// is what turns that into a wait, and the lever that ends it. <c>h9k task assign</c> prints
-    /// it as a warning and assigns anyway — the tracker stays the single go signal, so the task
+    /// is what turns that into a wait, and the lever that ends it. <c>h9k task queue</c> prints
+    /// it as a warning and queues anyway — the tracker stays the single go signal, so the task
     /// simply waits in the queue — while <c>h9k task work</c> and <c>h9k task start</c> refuse
     /// with it, word for word, because there the human is asking to start the work now.
     /// </summary>

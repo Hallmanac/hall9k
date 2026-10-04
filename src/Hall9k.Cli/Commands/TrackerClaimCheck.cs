@@ -9,8 +9,8 @@ using Spectre.Console;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// The claim gate as the CLI doors use it (idea 64c75e43): <c>h9k task assign</c> and
-/// <c>h9k task publish --assign</c>, which warn and assign anyway, and
+/// The claim gate as the CLI doors use it (idea 64c75e43): <c>h9k task queue</c> and
+/// <c>h9k task publish --queue</c>, which warn and assign anyway, and
 /// <c>h9k task work</c>/<c>h9k task start</c>, which refuse with the identical sentence. One
 /// place, so the two behaviours cannot drift into two different readings of the same tracker
 /// answer, and so the refusal an agent has to self-correct from is worded once.
@@ -78,8 +78,8 @@ internal static class TrackerClaimCheck
     }
 
     /// <summary>
-    /// The gate applied at a door that only queues work — <c>h9k task assign</c> and
-    /// <c>h9k task publish --assign</c>. It never refuses: the tracker's assignment is the go
+    /// The gate applied at a door that only queues work — <c>h9k task queue</c> and
+    /// <c>h9k task publish --queue</c>. It never refuses: the tracker's assignment is the go
     /// signal, so assigning is still the right act — it puts the task in the queue the gate lets
     /// it out of the moment the item is assigned. What this adds is that the human is told, now,
     /// that the task will sit there until then, and what to do about it.
@@ -178,7 +178,7 @@ internal static class TrackerClaimCheck
 
     /// <summary>
     /// The claim gate at the one door that can <em>satisfy</em> it rather than only report it
-    /// (idea 64c75e43, Decisions Log #143): <c>h9k task assign --take</c> reads the linked item
+    /// (idea 64c75e43, Decisions Log #143): <c>h9k task queue --take</c> reads the linked item
     /// fresh and, when the tracker shows it assigned to nobody, writes this install's own tracker
     /// identity into its assignee field so the gate then passes on its own.
     /// <para>

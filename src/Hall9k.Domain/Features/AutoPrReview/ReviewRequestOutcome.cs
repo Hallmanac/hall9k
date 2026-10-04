@@ -25,10 +25,10 @@ public sealed record ReviewRequestOutcome
     public static readonly ReviewRequestOutcome TaskCreated = new("TaskCreated");
 
     /// <summary>
-    /// A pr-review task was minted and published, but deliberately never assigned — the membership
+    /// A pr-review task was minted and published, but deliberately never queued — the membership
     /// gate found the pull request's own author was not a declared hall9k team member (or was a
     /// Bot) on a repository the gate covers (security review idea 6be68ee2, finding 1). An
-    /// unassigned task never dispatches; <c>h9k task assign</c> is the human go.
+    /// unqueued task never dispatches; <c>h9k task queue</c> is the human go.
     /// </summary>
     public static readonly ReviewRequestOutcome TaskCreatedParked = new("TaskCreatedParked");
 

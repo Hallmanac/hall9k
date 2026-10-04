@@ -32,15 +32,15 @@ namespace Hall9k.Cli.Commands;
 /// <summary>
 /// A deliberate human kick-off (task 8a56af78-h9k, "Take the Wheel" epic 9272e514, start-it-mine
 /// mode): dispatches a Published, Queued, or already-Blocked task on the spot, headless, instead of waiting for the
-/// dispatcher's own ceiling and ordering to reach it. On a Published task assigned to nobody, this
-/// assigns it to the operator's own owner and claims it in the same atomic event append
+/// dispatcher's own ceiling and ordering to reach it. On a Published task nobody holds, this
+/// queues it for the operator's own owner and claims it in the same atomic event append
 /// <c>h9k task work</c>'s own Published entry already uses (task 688a1ccf-h9k) — the task is never
 /// observably Queued in between. Unmet dependencies warn rather than refuse outright, the same
 /// shape <c>h9k task work</c>'s claim shares (task 0ac72cb8-h9k): the platform advises, naming
 /// every open blocker, and <c>--acknowledge-unmet-dependencies</c> is the human's recorded
 /// override to start anyway (the idea's own ruling, fcaded0b: "the platform advises rather than
 /// refuses"). An already-Blocked
-/// task — assigned by a plain <c>h9k task assign</c>, or landed there by a handed-back or retried
+/// task — assigned by a plain <c>h9k task queue</c>, or landed there by a handed-back or retried
 /// deliberate claim — shares that same warn-and-acknowledge shape
 /// (<see cref="TaskAggregate.AcknowledgedUnmetDependencyIds"/>, task 45136b29's R7 ruling, task
 /// 0ac72cb8-h9k), and an acknowledgment this task already carries from an earlier claim on the
@@ -359,7 +359,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         else if (task.State == TaskState.Blocked)
         {
             // The acknowledgment override applies at the moment of assignment, not to a task
-            // already sitting Blocked from an ordinary h9k task assign — but that is a statement
+            // already sitting Blocked from an ordinary h9k task queue — but that is a statement
             // about when the human is asked, not about which command can ask (task 0ac72cb8-h9k,
             // review finding fixing this task's own third acceptance criterion: "a later handback,
             // retry, or human-initiated dispatch of the same task with the same still-open
@@ -374,8 +374,8 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(taskDetails.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {task.Id}'s project no longer exists.");
 
-        // The same archived-project refusal TaskAssignCommand.AppendAsync gives h9k task assign
-        // and h9k task publish --assign (task: a project can be archived, listed as archived,
+        // The same archived-project refusal TaskAssignCommand.AppendAsync gives h9k task queue
+        // and h9k task publish --queue (task: a project can be archived, listed as archived,
         // reactivated, and renamed) — this door claims a task the identical way, calling
         // TaskDecider.Assign/ClaimDeliberately directly rather than through AppendAsync, so it
         // never inherited that guard on its own.
@@ -411,7 +411,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         }
 
         // The claim gate (idea 64c75e43), read fresh and refused with the identical sentence
-        // h9k task assign warns with — h9k task work's own door, applied here for the same
+        // h9k task queue warns with — h9k task work's own door, applied here for the same
         // reason: this command starts the work now, so a card the tracker says somebody else
         // holds is a claim this install must not take. Exits 70 through
         // DomainBusinessRuleException: a standing project rule, not a bad command line.
@@ -724,7 +724,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 + "The platform advises rather than refuses here: "
                 + $"h9k task start {task.Id} --acknowledge-unmet-dependencies to start it anyway, once you have "
                 // A period, not ", or": DescribeUnmetDependencyAdvice's own text only reads as a
-                // second alternative (h9k task assign ... or) when every blocker can still close
+                // second alternative (h9k task queue ... or) when every blocker can still close
                 // out on its own — when one is dead it returns a full declarative sentence
                 // instead, and splicing that after a hardcoded "or" here left it dangling
                 // (adversarial review, cycle 1, on h9k task start).
@@ -746,7 +746,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     /// one" is true about re-entering an already-live claim, which this still never does, but it is
     /// not a reason to withhold a carried-forward acknowledgment from a fresh claim, which is all a
     /// Blocked entry here ever is). The task was already assigned — by an ordinary
-    /// <c>h9k task assign</c>, or by an earlier deliberate claim that was handed back or retried —
+    /// <c>h9k task queue</c>, or by an earlier deliberate claim that was handed back or retried —
     /// so no assignment travels here, unlike <see cref="PrepareDeliberateClaimFromPublished"/>'s
     /// just-assigned case; only <see cref="TaskDecider.ClaimDeliberately"/> is ever appended.
     /// Mirrors <see cref="TaskWorkCommand.PrepareInteractiveClaimFromBlocked"/> exactly: refuses,

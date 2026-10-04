@@ -513,7 +513,7 @@ internal static class TaskPhaseComposer
         if (task.State == TaskState.Queued)
         {
             // A row here is Delivered, not Published (State() above maps a pushed Queued task to
-            // Delivered) — so PublishedFacts' own "assigned and ready as {rank}" line never
+            // Delivered) — so PublishedFacts' own "queued and ready as {rank}" line never
             // composes for it, and this is the only place a follow-up lap's rank is said at all
             // (independent pre-PR review, cycle 1, both lenses). The claim gate is named ahead of
             // the ceiling for the same reason PublishedFacts orders them that way: a reopened

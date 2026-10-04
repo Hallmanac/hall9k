@@ -10,7 +10,7 @@ namespace Hall9k.Domain.Features.Project;
 /// stream recorded and cannot say whether anything recorded one at all.
 /// <para>
 /// <see cref="Default"/> is <see cref="AutoPrReviewSpeed.Normal"/>: a project that never chose
-/// mints, publishes and assigns a pr-review task for every review GitHub requests of this
+/// mints, publishes and queues a pr-review task for every review GitHub requests of this
 /// install's own login, at the ordinary queue speed. Origin incident (2026-09-08): the feature
 /// sat installed and silent on both nodes for three days because it was a per-project opt-in
 /// defaulting to off and nothing surfaced that state — four review requests, two of them from

@@ -141,7 +141,7 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
                 + "state the daemon may still act on — "
                 + string.Join(", ", blocking.Select(task => $"{DomainId.Short(task.Id)} ({task.State.Value})"))
                 + $". Resolve them first (h9k task show <id>) — unassign a queued or blocked one "
-                + "(h9k task unassign), answer a needs-human one, retry or resolve a failed one — then "
+                + "(h9k task dequeue), answer a needs-human one, retry or resolve a failed one — then "
                 + $"{(settings.Purge ? "purge" : "archive")} again.");
         }
 

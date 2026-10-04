@@ -59,7 +59,7 @@ public sealed class EpicShowCommand : Hall9kAsyncCommand<EpicShowCommand.Setting
                   + $"{(project?.Name ?? epic.ProjectId.ToString()).EscapeMarkup()} --objective \"…\" --epic {TaskListCommand.ShortId(epic.Id)} "
                   + $"[dim]for a new task, or for an existing draft:[/] h9k task revise <id> --epic {TaskListCommand.ShortId(epic.Id)} "
                   + $"[dim](revision is Draft-only — a Published task returns with[/] h9k task draft <id> "
-                  + $"[dim]alone; an assigned task (Queued or Blocked) needs[/] h9k task unassign <id> && h9k task draft <id> "
+                  + $"[dim]alone; an assigned task (Queued or Blocked) needs[/] h9k task dequeue <id> && h9k task draft <id> "
                   + $"[dim]first)[/]"
                 : "\n[bold]Tasks[/] [dim]none — and it's closed, so nothing can join it now.[/]");
             return ExitCodes.Ok;

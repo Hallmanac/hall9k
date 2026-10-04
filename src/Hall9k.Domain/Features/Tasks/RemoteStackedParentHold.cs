@@ -28,7 +28,7 @@ public static class RemoteStackedParentHold
         state == RemoteParentState.ClosedUnmerged
             ? $"Pull request #{pullRequestNumber}, which this task is stacked on, closed without merging — its "
               + "branch is a base nothing further arrives on, so there is nothing left here to stack on. Point "
-              + "the edge at a live pull request or drop it: h9k task unassign, then h9k task draft, then "
+              + "the edge at a live pull request or drop it: h9k task dequeue, then h9k task draft, then "
               + "h9k task revise --stacked-on-pull-request <number> or --clear-stacked-on."
             : null;
 }

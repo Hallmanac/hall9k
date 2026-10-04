@@ -30,7 +30,7 @@ public enum HumanWaitKind
 /// <summary>
 /// One phase's elapsed time, honest about three different reasons a number might be missing
 /// (task: h9k task show tells a task's passage in time). <see cref="Applicable"/> false means
-/// the phase's own precondition never happened at all (a task never assigned has no queued
+/// the phase's own precondition never happened at all (a task never queued has no queued
 /// phase) — the caller omits the row entirely rather than printing a zero. <see cref="Applicable"/>
 /// true with a null <see cref="Elapsed"/> means the phase's own boundary event could not be
 /// found even though the phase plainly happened — an older stream missing a field, or a

@@ -84,7 +84,7 @@ public sealed class TaskTableLayoutTests
 
         string list = string.Join("\n", Render(TaskListCommand.Rows(published, scoped: true, width, Now), width));
 
-        list.Should().Contain("not assigned").And.Contain("the dispatcher has not claimed it yet");
+        list.Should().Contain("not queued").And.Contain("the dispatcher has not claimed it yet");
         list.Should().Contain("building", "the phase line is what a Working row is distinguished by");
         // The run vocabulary is the summary line's material, never the Status column's.
         list.Should().NotContain("Queued").And.NotContain("Running");

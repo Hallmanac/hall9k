@@ -335,8 +335,8 @@ internal static class AutoPrReviewObservation
             { } known when known == ReviewRequestOutcome.TaskCreated =>
                 $"task {task} is created and reviewing",
             { } known when known == ReviewRequestOutcome.TaskCreatedParked =>
-                $"task {task} is created but not assigned: its author is not a declared hall9k team member "
-                + "on a repository the membership gate covers — h9k task assign is the human go "
+                $"task {task} is created but not queued: its author is not a declared hall9k team member "
+                + "on a repository the membership gate covers — h9k task queue is the human go "
                 + "(security review idea 6be68ee2, finding 1)",
             { } known when known == ReviewRequestOutcome.AlreadyCovered =>
                 $"task {task} already covers it; nothing new was created",
@@ -1361,7 +1361,7 @@ public sealed class AutoPrReviewEngine(
         // The membership gate's own park (security review idea 6be68ee2, finding 1): Add and
         // Publish land exactly as they do for a member's request, but Assign never runs — an
         // unassigned task never dispatches (no worktree, branch, or session exists), so this is
-        // the pre-checkout park and h9k task assign is the human go. Speed is meaningless to a
+        // the pre-checkout park and h9k task queue is the human go. Speed is meaningless to a
         // task nothing will claim, so the speed handling below is skipped outright, not merely
         // downgraded. The task is still this owner's to answer for, so the assignee is recorded
         // (TaskAssigneeSet) even though nothing is queued: a teammate's node must not read the
@@ -1396,7 +1396,7 @@ public sealed class AutoPrReviewEngine(
 
             return new MintAttempt(
                 ReviewRequestOutcome.TaskCreatedParked, taskId,
-                "published and held but not queued by the membership gate — h9k task assign to run it", actor);
+                "published and held but not queued by the membership gate — h9k task queue to run it", actor);
         }
 
         TaskAssigned assigned = TaskDecider.Assign(
@@ -1513,7 +1513,7 @@ public sealed class AutoPrReviewEngine(
     /// no other reader of this sweep needs them: one small, targeted <c>gh pr view</c> beside the
     /// import <see cref="CreateOneAsync"/> already pays for every mint, member and non-member
     /// alike. Best-effort — a failed or unreadable read leaves every field null/false rather than
-    /// failing the park itself, since the park's own go (<c>h9k task assign</c>) does not depend on
+    /// failing the park itself, since the park's own go (<c>h9k task queue</c>) does not depend on
     /// any of them.
     /// </summary>
     private sealed record PullRequestGateParkFacts(string? HeadOwner, bool IsCrossRepository, int? ChangedFileCount)
@@ -2076,15 +2076,15 @@ public sealed class AutoPrReviewEngine(
             { } known when known == ReviewMentionOutcome.TaskCreated =>
                 $"task {task} is created and reviewing",
             { } known when known == ReviewMentionOutcome.TaskCreatedParked =>
-                $"task {task} is created but not assigned: its author is not a declared hall9k team member "
-                + "on a repository the membership gate covers — h9k task assign is the human go "
+                $"task {task} is created but not queued: its author is not a declared hall9k team member "
+                + "on a repository the membership gate covers — h9k task queue is the human go "
                 + "(security review idea 6be68ee2, finding 1)",
             { } known when known == ReviewMentionOutcome.AnswerOnlyTaskCreated =>
                 $"task {task} is created and answering this comment on the owner's own pull request, "
                 + "with no review of it",
             { } known when known == ReviewMentionOutcome.AnswerOnlyTaskCreatedParked =>
                 $"task {task} is created to answer this comment on the owner's own pull request, with no "
-                + "review of it, but not assigned: the membership gate holds it, and h9k task assign is the "
+                + "review of it, but not queued: the membership gate holds it, and h9k task queue is the "
                 + "human go",
             { } known when known == ReviewMentionOutcome.Attached =>
                 $"attached to task {task}",
@@ -2674,7 +2674,7 @@ public sealed class AutoPrReviewEngine(
 
         // The membership gate's own park (security review idea 6be68ee2, finding 1) — the
         // identical shape CreateOneAsync's own review-requested path follows: Add and Publish
-        // land, Assign never runs, and h9k task assign is the human go. The author named here is
+        // land, Assign never runs, and h9k task queue is the human go. The author named here is
         // the pull request's own (independent pre-PR review, cycle 3, conformance lens — the gate
         // above now matches on both the comment's own author and the pull request's, so this card
         // carries the same "GitHub's own reading of the pull request's author" its own doc always
@@ -2714,7 +2714,7 @@ public sealed class AutoPrReviewEngine(
 
             return (
                 answerOnly ? ReviewMentionOutcome.AnswerOnlyTaskCreatedParked : ReviewMentionOutcome.TaskCreatedParked,
-                taskId, "published and held but not queued by the membership gate — h9k task assign to run it");
+                taskId, "published and held but not queued by the membership gate — h9k task queue to run it");
         }
 
         TaskAssigned assigned = TaskDecider.Assign(

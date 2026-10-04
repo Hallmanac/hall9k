@@ -737,7 +737,7 @@ internal static class TaskStatusComposer
 
     /// <summary>
     /// The same word for a task seen from a dependent's side, so the blocker list on
-    /// <c>h9k task show</c> and <c>h9k task assign</c> spells a blocker exactly as that blocker's
+    /// <c>h9k task show</c> and <c>h9k task queue</c> spells a blocker exactly as that blocker's
     /// own row does. Closeout is read from the dependency rule itself
     /// (<see cref="TaskDependency.IsClosedOut"/>, the merge the closeout monitor observed), which
     /// is the point: a blocker whose pull request is open reads Delivered on both screens instead
@@ -762,7 +762,7 @@ internal static class TaskStatusComposer
     /// because that method's honesty rests on it — a blocker that never pushed is spelt Done there
     /// while the dependency rule still refuses it, and the mark is the whole of what says so, so a
     /// screen that prints the word without the mark prints a contradiction. Origin incident
-    /// (2026-08-22, pre-PR review cycle 4): <c>h9k task assign</c> listed a hand-resolved blocker
+    /// (2026-08-22, pre-PR review cycle 4): <c>h9k task queue</c> listed a hand-resolved blocker
     /// as "(Done)" directly under the sentence saying it had not closed out.
     /// <para>
     /// Four answers rather than three once a stacked edge is in play, for the same reason: the

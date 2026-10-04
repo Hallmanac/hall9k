@@ -12,7 +12,7 @@ namespace Hall9k.Cli.Commands;
 
 /// <summary>
 /// Published -> Draft: the explicit revert that reopens a task for revision (Decisions Log
-/// #34). The ceremony is the point — a Published task promises a human may assign it at any
+/// #34). The ceremony is the point — a Published task promises a human may queue it at any
 /// moment, so leaving that promise is something you say out loud.
 /// </summary>
 public sealed class TaskDraftCommand : Hall9kAsyncCommand<TaskDraftCommand.Settings>
