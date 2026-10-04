@@ -428,9 +428,14 @@ internal static class TaskStatusComposer
 
         // idea 202383dc: an owner can place a task on one of their own nodes — advisory to
         // dispatch only, so it rides beside the assignee's own name rather than replacing it.
-        string assigneeDisplay = task.AssignedOwnerId is { } assigneeOwnerId
-            ? AssigneeDisplay(assigneeOwnerId, task.AssignedOwnerFingerprint, context, task.ProjectId)
+        string assigneeDisplay = task.AssigneeOwnerId is { } assigneeOwnerId
+            ? AssigneeDisplay(assigneeOwnerId, task.AssigneeOwnerFingerprint, context, task.ProjectId)
             : string.Empty;
+        if (assigneeDisplay.IsNotBlank() && task.State.IsPreDispatch)
+        {
+            assigneeDisplay = $"{assigneeDisplay} · not queued";
+        }
+
         if (task.PlacedOnNodeId is { } placedOnNodeId)
         {
             assigneeDisplay = assigneeDisplay.IsBlank()

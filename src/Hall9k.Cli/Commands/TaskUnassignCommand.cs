@@ -19,7 +19,9 @@ namespace Hall9k.Cli.Commands;
 /// <summary>
 /// Queued or Blocked -> Published: takes a task back out of the dispatcher's sight (Decisions
 /// Log #34). Refused while a node holds the lease — that is a running agent, and pulling the
-/// contract out from under it is the race the lifecycle exists to prevent.
+/// contract out from under it is the race the lifecycle exists to prevent. On a Draft, or a
+/// Published task that is not queued, it only lets go of the assignee
+/// (<see cref="TaskAssigneeCleared"/>), and nothing moves for the dispatcher.
 /// </summary>
 public sealed class TaskUnassignCommand : Hall9kAsyncCommand<TaskUnassignCommand.Settings>
 {
@@ -72,9 +74,31 @@ public sealed class TaskUnassignCommand : Hall9kAsyncCommand<TaskUnassignCommand
         TaskOwnerOverrideDecision ownerDecision = await TaskOwnerGuard.AuthorizeAsync(
             session, task, context, "unassign", settings.Holder, settings.Reason, new GitLedgerChainReader(),
             new NodeKeyStore(), cancellationToken);
+        bool overridden = ownerDecision.Outcome == TaskOwnerOverrideOutcome.Override;
+
+        // Lets go of a hold on a task nothing has queued; a task with no assignee falls through to
+        // TaskDecider.Unassign below, which says why there is nothing to do.
+        if (ReleasesAssigneeOnly(task))
+        {
+            session.Events.Append(
+                taskId, expectedVersion: fence.Version + 1,
+                ClearAssignee(task, settings.Reason, context.OwnerId, ownerDecision));
+            await SaveAsync(
+                session,
+                $"Task {taskId} changed while letting go of it, so nothing was released. Check h9k task show, "
+                + "then re-run this command if it still has an assignee.",
+                cancellationToken);
+
+            string clearedShortId = TaskListCommand.ShortId(taskId);
+            AnsiConsole.MarkupLine(
+                $"[blue]Task {clearedShortId} let go[/] - nobody holds it now, so it falls back to its creator.");
+            TaskOwnerGuard.AnnounceOverride(ownerDecision, "unassigned");
+            return ExitCodes.Ok;
+        }
+
         TaskUnassigned unassigned = TaskDecider.Unassign(
             task, settings.Reason, leaseHeld, DateTimeOffset.UtcNow, context.OwnerId);
-        if (ownerDecision.Outcome == TaskOwnerOverrideOutcome.Override)
+        if (overridden)
         {
             unassigned = unassigned with
             {
@@ -84,16 +108,11 @@ public sealed class TaskUnassignCommand : Hall9kAsyncCommand<TaskUnassignCommand
         }
 
         session.Events.Append(taskId, expectedVersion: fence.Version + 1, unassigned);
-        try
-        {
-            await session.SaveChangesAsync(cancellationToken);
-        }
-        catch (EventStreamUnexpectedMaxEventIdException)
-        {
-            throw new DomainConflictException(
-                $"Task {taskId} changed while unassigning — a node may have just claimed it. " +
-                "Check h9k status; re-run this command only if it is still Queued or Blocked.");
-        }
+        await SaveAsync(
+            session,
+            $"Task {taskId} changed while unassigning — a node may have just claimed it. "
+            + "Check h9k status; re-run this command only if it is still Queued or Blocked.",
+            cancellationToken);
 
         string shortId = TaskListCommand.ShortId(taskId);
         AnsiConsole.MarkupLine($"[blue]Task {shortId} unassigned[/] — published again, and no node will claim it.");
@@ -101,5 +120,42 @@ public sealed class TaskUnassignCommand : Hall9kAsyncCommand<TaskUnassignCommand
             $"[dim]To edit it:[/] h9k task draft {shortId} [dim]· to start it again:[/] h9k task assign {shortId}");
         TaskOwnerGuard.AnnounceOverride(ownerDecision, "unassigned");
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Whether this unassign only lets go of a hold: a Draft, or a Published task that is not queued,
+    /// that has an assignee. Anything queued unassigns through <see cref="TaskUnassigned"/>, which
+    /// clears the owner it is queued for in the same event.
+    /// </summary>
+    internal static bool ReleasesAssigneeOnly(TaskAggregate task) =>
+        task.State.IsPreDispatch && task.AssigneeOwnerId is not null;
+
+    /// <summary>
+    /// The event that lets go of the hold, stamped with the override when an Owner-role member did it
+    /// to another owner's task (<c>--holder</c> with <c>--reason</c>).
+    /// </summary>
+    internal static TaskAssigneeCleared ClearAssignee(
+        TaskAggregate task, string? reason, Guid clearedByOwnerId, TaskOwnerOverrideDecision ownerDecision)
+    {
+        TaskAssigneeCleared cleared = TaskDecider.ClearAssignee(task, reason, DateTimeOffset.UtcNow, clearedByOwnerId);
+        return ownerDecision.Outcome == TaskOwnerOverrideOutcome.Override
+            ? cleared with
+            {
+                OnBehalfOfOwnerRootFingerprint = ownerDecision.OnBehalfOfRootFingerprint,
+                OverrideReason = ownerDecision.Reason,
+            }
+            : cleared;
+    }
+
+    private static async Task SaveAsync(IDocumentSession session, string conflictMessage, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            throw new DomainConflictException(conflictMessage);
+        }
     }
 }

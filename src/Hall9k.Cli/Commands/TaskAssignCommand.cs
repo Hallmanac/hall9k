@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Owner;
@@ -21,7 +22,10 @@ namespace Hall9k.Cli.Commands;
 /// <summary>
 /// The dispatch trigger (Decisions Log #34). Publishing says the task is ready; assigning
 /// says it should run now, and on whose nodes. It is always a human's explicit act — the
-/// platform never assigns on its own.
+/// platform never assigns on its own. On a Draft it lays hold of the task without queueing it
+/// (<see cref="TaskAssigneeSet"/>): the draft stays a draft and no dispatcher ever sees it. So does a
+/// hand-off of a Published task to another member by a member who is not Owner-role, since every peer
+/// refuses that member's <see cref="TaskAssigned"/> naming anyone else.
 /// </summary>
 public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Settings>
 {
@@ -69,6 +73,26 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
             + "forced or cooperative take that moves the task to another node records that node as "
             + "the new placement on its own, with no second --node needed.")]
         public FlagValue<string> Node { get; init; } = new();
+
+        [CommandOption("--reason <REASON>")]
+        [Description(
+            "Why an Owner-role member is assigning another owner's task. Required with --holder, where it "
+            + "is the override's reason; recorded on the assignee event when the task is a Draft, and "
+            + "printed for a Published task, whose assignment event has no field for it")]
+        public string? Reason { get; init; }
+
+        [CommandOption("--holder <NAME>")]
+        [Description(
+            "A task somebody else holds is theirs to assign: this refuses unless this node's owner may "
+            + "act on it, which is its assignee, or with none its creator, who may hand it to any member "
+            + "(a Member who is neither may only take an unassigned Published task for themselves; a "
+            + "Member handing a Published task to another member records the hold and queues nothing, "
+            + "so that member starts it themselves). An "
+            + "Owner-role member may assign it on that owner's behalf by naming the holder here (their "
+            + "label, which the refusal names, or at least 8 hex characters of their root fingerprint; "
+            + "the word 'unknown' when the task's owner cannot be resolved on this node) and giving "
+            + "--reason, both required together")]
+        public string? Holder { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -111,6 +135,22 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
                     "More than one owner is registered, so who this task is for cannot be inferred. "
                     + "Name them: h9k task assign <id> <owner>");
 
+        // A task that is not Draft or Published never reaches the guard: TaskDecider.Assign refuses it
+        // below with the reason and the h9k task unassign that releases it, which is the answer a
+        // hand-off on a queued task needs, whoever's it is.
+        TaskOwnerOverrideDecision ownerDecision = task.State.IsPreDispatch
+            ? await AuthorizeAssignAsync(
+                session, task, context, owner, settings.Holder, settings.Reason, new GitLedgerChainReader(),
+                new NodeKeyStore(), cancellationToken)
+            : TaskOwnerOverrideDecision.OwnAct;
+
+        if (task.State == TaskState.Draft
+            || await IsHoldOnlyHandOffAsync(
+                session, task, context, owner, ownerDecision, new GitLedgerChainReader(), new NodeKeyStore(), cancellationToken))
+        {
+            return await AssignHoldAsync(session, task, owner, context, settings, ownerDecision, cancellationToken);
+        }
+
         Optional<Guid?> placement = await ResolvePlacementAsync(
             session, settings.Node, owner.RootFingerprint, owner.Id == context.OwnerId, task.ProjectId, context.NodeId,
             new GitLedgerChainReader(), cancellationToken);
@@ -135,7 +175,117 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
             assigned, owner, session, cancellationToken, task.StackedOnTaskId,
             StackedParentDeclaration.From(task));
         await ReportTrackerAsync(store, session, task, take, decision, cancellationToken);
+        TaskOwnerGuard.AnnounceOverride(ownerDecision, "assigned");
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Whether a Published task handed to another owner can only be recorded as a hold. A
+    /// <see cref="TaskAssigned"/> naming another root is the go signal for that owner's nodes, and every
+    /// peer applies it only from an Owner-role sender, so a member who is not one would fork the stream
+    /// by sending it. An Owner-role member, and an override already granted on the Owner role, keep the
+    /// queueing assignment they always had.
+    /// </summary>
+    internal static async Task<bool> IsHoldOnlyHandOffAsync(
+        IDocumentSession session, TaskAggregate task, BootstrapContext context, OwnerDetails target,
+        TaskOwnerOverrideDecision ownerDecision, ILedgerChainReader chainReader, NodeKeyStore keyStore,
+        CancellationToken cancellationToken) =>
+        task.State == TaskState.Published
+        && target.Id != context.OwnerId
+        && ownerDecision.Outcome != TaskOwnerOverrideOutcome.Override
+        && !await TaskOwnerGuard.MayQueueForAnotherOwnerAsync(
+            session, task, context, chainReader, keyStore, cancellationToken);
+
+    /// <summary>
+    /// A Draft is laid hold of, not dispatched, and so is a Published task handed to another member by
+    /// one who may not queue it: the assignee is recorded and the task keeps its state. <c>--node</c>
+    /// and <c>--take</c> belong to the go signal, so they are refused here rather than quietly dropped.
+    /// </summary>
+    private static async Task<int> AssignHoldAsync(
+        IDocumentSession session, TaskAggregate task, OwnerDetails assignee, BootstrapContext context,
+        Settings settings, TaskOwnerOverrideDecision ownerDecision, CancellationToken cancellationToken)
+    {
+        string state = task.State.Value;
+        if (settings.Node.IsSet || settings.Take)
+        {
+            throw new DomainValidationException(
+                $"Task {task.Id} is {state} and this assignment only records who holds it, so --node and --take, "
+                + "which belong to queueing a task for your own nodes, are refused. "
+                + (task.State == TaskState.Draft
+                    ? $"Publish it first (h9k task publish {task.Id}), or drop the flag."
+                    : $"{assignee.Name} can queue it on their own nodes once they hold it; drop the flag."));
+        }
+
+        TaskAssigneeSet? set = await AppendAssigneeAsync(session, task, assignee, context.OwnerId, ownerDecision, cancellationToken);
+        await session.SaveChangesAsync(cancellationToken);
+
+        string shortId = TaskListCommand.ShortId(task.Id);
+        AnsiConsole.MarkupLine(set is null
+            ? $"[yellow]Task {shortId} is already assigned to {assignee.Name.EscapeMarkup()}[/]. Nothing changed."
+            : $"[green]Task {shortId} assigned to {assignee.Name.EscapeMarkup()}[/]: still {state}, so nothing is "
+                + "queued and no dispatcher sees it.");
+        AnsiConsole.MarkupLine(
+            task.State == TaskState.Draft
+                ? $"[dim]To release it:[/] h9k task unassign {shortId} [dim]· to make it ready:[/] h9k task publish {shortId}"
+                : $"[dim]To release it:[/] h9k task unassign {shortId} [dim]· to queue it:[/] the holder runs h9k task assign {shortId}");
+        TaskOwnerGuard.AnnounceOverride(ownerDecision, "assigned");
+        return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Who may assign <paramref name="task"/> to <paramref name="target"/>: a member takes an
+    /// unassigned, unheld Published task for itself, as <c>h9k task start</c> does and the receive gate
+    /// allows; otherwise the root <see cref="TaskOwnerRule"/> permits (the task's assignee, or with
+    /// none its creator) may assign it to any member, itself included, and any other refusal can be
+    /// overridden by an Owner-role member with <paramref name="holder"/> and <paramref name="reason"/>
+    /// (<see cref="TaskOwnerGuard.AuthorizeAsync"/>). A Draft is never taken by someone who is not
+    /// its owner: only the first arm is Published-only.
+    /// </summary>
+    internal static async Task<TaskOwnerOverrideDecision> AuthorizeAssignAsync(
+        IDocumentSession session, TaskAggregate task, BootstrapContext context, OwnerDetails target,
+        string? holder, string? reason, ILedgerChainReader chainReader, NodeKeyStore keyStore,
+        CancellationToken cancellationToken)
+    {
+        bool takesFreePublishedTask = target.Id == context.OwnerId
+            && task.State == TaskState.Published
+            && task.AssigneeOwnerId is null
+            && task.HolderOwnerRootFingerprint is null;
+        return takesFreePublishedTask
+            ? TaskOwnerOverrideDecision.OwnAct
+            : await TaskOwnerGuard.AuthorizeAsync(
+                session, task, context, "assign", holder, reason, chainReader, keyStore, cancellationToken);
+    }
+
+    /// <summary>
+    /// Appends <see cref="TaskAssigneeSet"/> onto an open session (the caller saves), or nothing when
+    /// <paramref name="assignee"/> already holds the task. A hand-off to another member needs a root
+    /// fingerprint to name: every peer judges the hold by root, never by this node's local owner id.
+    /// </summary>
+    internal static async Task<TaskAssigneeSet?> AppendAssigneeAsync(
+        IDocumentSession session, TaskAggregate task, OwnerDetails assignee, Guid setByOwnerId,
+        TaskOwnerOverrideDecision ownerDecision, CancellationToken cancellationToken)
+    {
+        await RefuseArchivedProjectAsync(session, task, cancellationToken);
+
+        bool assigneeIsActor = assignee.Id == setByOwnerId;
+        if (!assigneeIsActor && assignee.RootFingerprint.IsBlank())
+        {
+            throw new DomainValidationException(
+                $"This node has no root fingerprint for {assignee.Name}, so a teammate's node could not tell whose "
+                + "task this is. Hand the task to a member this node can resolve to a root.");
+        }
+
+        bool overridden = ownerDecision.Outcome == TaskOwnerOverrideOutcome.Override;
+        TaskAssigneeSet? set = TaskDecider.SetAssignee(
+            task, assignee.Id, assignee.RootFingerprint, assigneeIsActor, DateTimeOffset.UtcNow, setByOwnerId,
+            overridden ? ownerDecision.OnBehalfOfRootFingerprint : null,
+            overridden ? ownerDecision.Reason : null);
+        if (set is not null)
+        {
+            session.Events.Append(task.Id, set);
+        }
+
+        return set;
     }
 
     /// <summary>
@@ -456,6 +606,25 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
     }
 
     /// <summary>
+    /// An archived project's own tasks stay exactly as they are (task: a project can be archived,
+    /// listed as archived, reactivated, and renamed) — refused here rather than left to the
+    /// dispatcher's own belt-and-suspenders skip, since assigning is the one act that would otherwise
+    /// move this task to Queued, the very state h9k project remove already refused to archive over.
+    /// Shared by h9k task publish --assign, which calls <see cref="AppendAsync"/> in the same
+    /// transaction it publishes in, and by laying hold of a draft.
+    /// </summary>
+    private static async Task RefuseArchivedProjectAsync(
+        IQuerySession session, TaskAggregate task, CancellationToken cancellationToken)
+    {
+        if (await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken) is { IsArchived: true } project)
+        {
+            throw new DomainValidationException(
+                $"Project '{project.Name}' is archived, so its tasks cannot be assigned. Reactivate it "
+                + $"first: h9k project reactivate {project.Name}");
+        }
+    }
+
+    /// <summary>
     /// Appends the assignment onto an open session (the caller saves), so h9k task publish can
     /// offer assignment in the same transaction it publishes in. Dependencies are read here
     /// rather than passed in: where the task lands — Queued or Blocked — is decided by whether
@@ -469,18 +638,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         CancellationToken cancellationToken,
         Optional<Guid?> placeOnNode = default)
     {
-        // An archived project's own tasks stay exactly as they are (task: a project can be
-        // archived, listed as archived, reactivated, and renamed) — refused here rather than left
-        // to the dispatcher's own belt-and-suspenders skip, since assigning is the one act that
-        // would otherwise move this task to Queued, the very state h9k project remove already
-        // refused to archive over. Shared by h9k task publish --assign, which calls this same
-        // method in the same transaction it publishes in.
-        if (await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken) is { IsArchived: true } project)
-        {
-            throw new DomainValidationException(
-                $"Project '{project.Name}' is archived, so its tasks cannot be assigned. Reactivate it "
-                + $"first: h9k project reactivate {project.Name}");
-        }
+        await RefuseArchivedProjectAsync(session, task, cancellationToken);
 
         IReadOnlyList<TaskDependency> dependencies = await TaskDependencyQuery.LoadAsync(
             session, task.BlockedBy, cancellationToken);

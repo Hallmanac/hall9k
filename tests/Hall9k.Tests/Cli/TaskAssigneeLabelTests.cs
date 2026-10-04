@@ -25,9 +25,11 @@ public sealed class TaskAssigneeLabelTests
     {
         Guid projectId = DomainId.New();
         Guid foreignNodeId = DomainId.New();
-        TaskListItem task = StatusFixtures.Task(TaskState.Published, projectId: projectId);
+        TaskListItem task = StatusFixtures.Task(TaskState.Queued, projectId: projectId);
         task.AssignedOwnerId = DomainId.New();
+        task.AssigneeOwnerId = task.AssignedOwnerId;
         task.AssignedOwnerFingerprint = Fingerprint;
+        task.AssigneeOwnerFingerprint = task.AssignedOwnerFingerprint;
         ProjectMemberLabels labels = new()
         {
             Id = projectId,
@@ -48,9 +50,11 @@ public sealed class TaskAssigneeLabelTests
     {
         Guid projectId = DomainId.New();
         Guid foreignNodeId = DomainId.New();
-        TaskListItem task = StatusFixtures.Task(TaskState.Published, projectId: projectId);
+        TaskListItem task = StatusFixtures.Task(TaskState.Queued, projectId: projectId);
         task.AssignedOwnerId = DomainId.New();
+        task.AssigneeOwnerId = task.AssignedOwnerId;
         task.AssignedOwnerFingerprint = Fingerprint;
+        task.AssigneeOwnerFingerprint = task.AssignedOwnerFingerprint;
         ProjectMemberLabels labels = new()
         {
             Id = projectId,
@@ -72,9 +76,11 @@ public sealed class TaskAssigneeLabelTests
     public void This_machines_own_owner_keeps_the_local_name_rather_than_a_project_label()
     {
         Guid projectId = DomainId.New();
-        TaskListItem task = StatusFixtures.Task(TaskState.Published, projectId: projectId);
+        TaskListItem task = StatusFixtures.Task(TaskState.Queued, projectId: projectId);
         task.AssignedOwnerId = DomainId.New();
+        task.AssigneeOwnerId = task.AssignedOwnerId;
         task.AssignedOwnerFingerprint = Fingerprint;
+        task.AssigneeOwnerFingerprint = task.AssignedOwnerFingerprint;
         ProjectMemberLabels labels = new()
         {
             Id = projectId,

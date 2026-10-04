@@ -317,6 +317,11 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         IReadOnlyList<TaskDependency>? unmetAtEntry = null;
         if (task.State == TaskState.Published)
         {
+            // A Published task has no queued-for owner to compare, but a member may already hold it
+            // (its assignee): starting it would queue it for this operator in the same append.
+            await TaskOwnerGuard.AssertNotHeldByAnotherOwnerAsync(
+                session, task, context, ownerRootFingerprint,
+                "a deliberate kick-off only starts your own owner's work.", cancellationToken);
             dependencies = await TaskDependencyQuery.LoadAsync(session, task.BlockedBy, cancellationToken);
         }
         else if (task.State != TaskState.Queued && task.State != TaskState.Blocked)

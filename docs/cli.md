@@ -147,6 +147,21 @@ down without a forced take; run with no owner argument against a task already as
 changes only the placement. A bare `--node` with nothing named clears an existing placement, and a
 forced takeover or cooperative grant that moves a placed task to another node records that node as
 the new placement on its own (idea 202383dc: an owner can place a task on one node of their fleet).
+On a Draft, `assign` only lays hold of the task: it records the assignee (who holds the task at any
+stage, apart from the owner it is queued for), the task stays a Draft, and no dispatcher ever sees it.
+`unassign` on a Draft, or on a Published task that is not queued, lets go of that hold and the task falls
+back to its creator. The task's assignee, or with none its creator, may hand it to any member with
+`assign <id> <member>`; any other member may only take an unassigned Published task for themselves, and
+an Owner-role member may override any other refusal with `--holder` and `--reason`. A hand-off of a
+Published task by a member who is not Owner-role only records the hold and queues nothing, because every
+peer refuses such a member's queueing assignment for anyone else; the new holder then runs `assign` on it
+themselves to queue it for their own nodes. A hand-off on a queued
+task refuses and names `unassign`, and naming another member on a draft still at Fleet scope refuses and
+names `h9k task share`, since a teammate would never receive it. `h9k task show` and the board say
+`Assigned to <name> · not queued` for a held Draft or Published task. `start`, `work` and
+`publish --assign` refuse a task another owner holds. Every node of every member must be updated before
+anyone assigns or hands off to another member: a node that does not know the assignee events skips them
+and keeps the creator fallback for that task.
 The path back for an edit is `unassign → draft → revise → publish → assign`.
 `set-session-cap <id> <cap>` overrides how many agent sessions this task's own run may hold
 simultaneously — settable any time, even mid-run — in place of the node's global default.

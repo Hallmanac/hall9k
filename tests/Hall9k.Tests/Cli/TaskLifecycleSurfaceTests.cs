@@ -560,6 +560,7 @@ public sealed class TaskLifecycleSurfaceTests
         Guid ownerId = DomainId.New();
         TaskListItem assigned = StatusFixtures.Task(TaskState.Queued);
         assigned.AssignedOwnerId = ownerId;
+        assigned.AssigneeOwnerId = assigned.AssignedOwnerId;
 
         StatusFixtures.Compose(assigned, owners: new Dictionary<Guid, string> { [ownerId] = "Brian" })
             .Assignee.Should().Be("Brian");

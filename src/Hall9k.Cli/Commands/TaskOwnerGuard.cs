@@ -9,6 +9,7 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Bootstrap;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
 using Spectre.Console;
@@ -80,6 +81,56 @@ internal static class TaskOwnerGuard
         return decision.Outcome == TaskOwnerOverrideOutcome.Refused
             ? throw new DomainBusinessRuleException(decision.Message ?? string.Empty)
             : decision;
+    }
+
+    /// <summary>
+    /// Refuses a command that would queue a Published task for this node's owner when another owner
+    /// holds it, by its assignee: <c>h9k task start</c>, <c>h9k task work</c> and
+    /// <c>h9k task publish --assign</c> each take an unassigned Published task for the operator in the
+    /// same append, which is exactly what laying hold of a draft must stop. Appends nothing. A task
+    /// nobody holds, or this owner holds, passes.
+    /// </summary>
+    /// <param name="consequence">What this command would otherwise have done, finishing the sentence the refusal starts.</param>
+    public static async Task AssertNotHeldByAnotherOwnerAsync(
+        IDocumentSession session, TaskAggregate task, BootstrapContext context, string? ownerRootFingerprint,
+        string consequence, CancellationToken cancellationToken)
+    {
+        if (!TaskDecider.IsHeldByAnotherOwner(task, context.OwnerId, ownerRootFingerprint))
+        {
+            return;
+        }
+
+        OwnerDetails? holder = task.AssigneeOwnerId is { } holderOwnerId
+            ? await session.LoadAsync<OwnerDetails>(holderOwnerId, cancellationToken)
+            : null;
+        string? holderLabel = holder?.Name;
+        if (holderLabel is null && !string.IsNullOrEmpty(ownerRootFingerprint) && !string.IsNullOrEmpty(task.AssigneeOwnerFingerprint))
+        {
+            MemberLabelLookup labels = await MemberLabelling.LoadAsync(
+                session, task.ProjectId, ownerRootFingerprint, cancellationToken);
+            holderLabel = Label(labels, task.AssigneeOwnerFingerprint);
+        }
+
+        throw new DomainConflictException(
+            $"Task {DomainId.Short(task.Id)} is assigned to {holderLabel ?? "another owner"}; {consequence} "
+            + $"They can release it with h9k task unassign {DomainId.Short(task.Id)}, or an Owner-role member "
+            + "can do so on their behalf with --holder and --reason.");
+    }
+
+    /// <summary>
+    /// Whether this node's owner may queue a task for another owner: the receive gate applies a
+    /// <c>TaskAssigned</c> naming another root only from an Owner-role sender, so a member who is not
+    /// one has to record a hold instead. A node whose owner has no root fingerprint yet has nothing a
+    /// teammate could reach or fork, so it is let through, as <see cref="AssertMayActAsync"/> does.
+    /// </summary>
+    public static async Task<bool> MayQueueForAnotherOwnerAsync(
+        IDocumentSession session, TaskAggregate task, BootstrapContext context, ILedgerChainReader chainReader,
+        NodeKeyStore keyStore, CancellationToken cancellationToken)
+    {
+        string? actingRoot = await OwnerRootFingerprintResolver.ResolveAsync(session, context.OwnerId, cancellationToken);
+        return string.IsNullOrEmpty(actingRoot)
+            || (await CheckOwnerRoleAsync(session, task, context, "assign", chainReader, keyStore, cancellationToken))
+                .Outcome == OwnerRoleCheckOutcome.Passed;
     }
 
     /// <summary>Says on the terminal that an override was recorded, so it is never mistaken for the owner's own act.</summary>

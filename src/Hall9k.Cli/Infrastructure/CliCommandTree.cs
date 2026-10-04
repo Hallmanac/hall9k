@@ -1376,12 +1376,22 @@ public static class CliCommandTree
                     + "nobody holds it, so one command moves the tracker and the board together and the gate "
                     + "passes on its own — an item somebody else holds is refused and nothing is written, "
                     + "and nothing here ever transitions the item, though a team's own board automation may "
-                    + "react to the assignment.")
+                    + "react to the assignment. On a Draft it only lays hold of the task: the assignee is "
+                    + "recorded, the task stays a Draft, and no dispatcher ever sees it. Who may assign: the "
+                    + "task's own assignee (or, with none, its creator) may hand it to any member, itself "
+                    + "included; any other member may only take an unassigned Published task for themselves. "
+                    + "A member who is not Owner-role handing a Published task to another member only records "
+                    + "the hold and queues nothing, and the new holder runs assign on it to queue it. "
+                    + "Naming another member on a draft that is still Fleet scope refuses and names h9k task "
+                    + "share, and a hand-off on a queued task refuses and names h9k task unassign. An "
+                    + "Owner-role member may override any other refusal with --holder and --reason, both "
+                    + "required together.")
                 .WithExample("task", "assign", "28b19893")
                 .WithExample("task", "assign", "28b19893", "brian")
                 .WithExample("task", "assign", "28b19893", "brian", "--take")
                 .WithExample("task", "assign", "28b19893", "brian", "--node", "a1b2c3d4")
-                .WithExample("task", "assign", "28b19893", "--node");
+                .WithExample("task", "assign", "28b19893", "--node")
+                .WithExample("task", "assign", "28b19893", "taylor", "--holder", "Ryan", "--reason", "\"Ryan is out this week\"");
             task.AddCommand<TaskSetSessionCapCommand>("set-session-cap")
                 .WithDescription(
                     "Override how many agent sessions this task's own run may hold simultaneously (Decisions Log "
@@ -1441,7 +1451,9 @@ public static class CliCommandTree
                 .WithExample("task", "set-private", "28b19893", "off");
             task.AddCommand<TaskUnassignCommand>("unassign")
                 .WithDescription(
-                    "Take a queued or blocked task back to Published, so no node claims it. Refused while a "
+                    "Take a queued or blocked task back to Published, so no node claims it. On a Draft, or a "
+                    + "Published task that is not queued, it lets go of the assignee instead and the task falls "
+                    + "back to its creator. Refused while a "
                     + "node holds the lease — that is a running agent. This is the first step of the "
                     + "edit-after-the-fact path: unassign → draft → revise → publish → assign. Another "
                     + "owner's task is theirs to unassign, so this refuses unless your node's owner may act "

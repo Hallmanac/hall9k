@@ -299,7 +299,9 @@ lever needed. See [PLAN.md §16](../PLAN.md), Decisions Log #174.
 
 **Whose board it is.** `h9k status`, `h9k task list` and `h9k project list` show a viewer their own
 work and nothing else by default. A task is yours when this node's owner root may act on it, which is
-the receive gate's own ownership rule (the holder's root, else the assignee's, else the creator's) and
+the receive gate's own ownership rule (the holder's root, else the assignee's, else the creator's; the
+assignee is whoever laid hold of the task at any stage, which a Draft or Published task can have without
+being queued) and
 so the identical answer the task commands give before they refuse another owner's task, or when it is
 waiting on a take your root asked for. A task another owner's fleet holds, is assigned or created, and
 a task whose owner root this node cannot resolve at all, is a teammate's. It is composed into a
