@@ -27,10 +27,28 @@ no .NET SDK bootstraps from that release directly; see [docs/INSTALL.md](INSTALL
 walkthrough (it is written to be followed by an AI agent as much as by a human) and the
 [README's Install section](../README.md#install) for the one-liners.
 
+**Tags publish as pre-releases, and clearing one is what releases it.** Every tag
+`release.yml` publishes is a GitHub pre-release. A release reaches `h9k update` and the bootstrap
+scripts only once it is cleared, with the plain GitHub CLI command:
+
+```bash
+gh release edit vX.Y.Z --prerelease=false --latest
+```
+
+Until then GitHub's "latest release" does not move, and that is all a tag-less
+`gh release download` (the bootstrap scripts) and `h9k update` on its default channel ever see.
+A node can opt in to every published release, cleared or not, with
+`h9k config set --release-channel all` (`h9k config show` prints the current channel; the
+default is `cleared`). On the `all` channel the release with the highest version wins, not the
+newest one created. The setting is read at each lookup, so it needs no daemon restart. A missing
+or unreadable config file, or a channel value that is neither word, falls back to `cleared` with a
+one-line warning. Either way, `h9k update` installs a release only once this platform's archive and
+`checksums.txt` are both attached to it, and says so when they are not.
+
 The mechanism, in short:
 
 - The bootstrap scripts (`scripts/install.sh`, `scripts/install.ps1`) fetch the latest release
-  for the current platform via `gh`, **verify its checksum** against the release's own
+  for the current platform via `gh` (the latest cleared release, per above), **verify its checksum** against the release's own
   `checksums.txt`, **ask consent**, unpack it, and run the release's own
   `h9k install --from-release <payload>` — the same idempotent publish-and-refresh
   `h9k install` has always done (Decisions Log #31), just fed from a downloaded, checksum-verified
@@ -41,7 +59,7 @@ The mechanism, in short:
   needs attention (almost always: a Postgres connection string — see [Postgres](#postgres) below)
   rather than declaring victory silently.
 - **`h9k update`** is the one-command path for a machine that already has `h9k`: it fetches the
-  latest release for the platform via `gh`, verifies its artifact attestation (pinned to the
+  latest release for the platform via `gh` (cleared, unless the node's channel is `all`), verifies its artifact attestation (pinned to the
   resolved tag and to the release workflow) and then the checksum, refusing to install an archive
   that fails either check, republishes binaries and the skill set through the same
   `--from-release` finish, and offers to restart onto the fresh binaries whether or not a daemon
@@ -1082,6 +1100,7 @@ h9k config set --message-poll-active-min 10 --message-poll-active-max 20   # the
 h9k config set --message-poll-idle-min 60 --message-poll-idle-max 90       # and while this node has nothing to send, read, or hold
 h9k config set --lesson-prompt-max-lessons 15               # how many recorded lessons any one dispatched prompt carries
 h9k config set --lesson-prompt-max-characters 4000          # and how many characters of lesson text
+h9k config set --release-channel all                       # let h9k update see pre-releases too (default: cleared)
 ```
 
 The four review-cycle caps (Decisions Log #112) — the conformance and adversarial track cycle
@@ -1198,6 +1217,7 @@ the file alone.
 | `inviteExpiryHours` | `--invite-expiry-hours` | none | 72 |
 | `lessonPromptMaxLessons` | `--lesson-prompt-max-lessons` | none | 15 |
 | `lessonPromptMaxCharacters` | `--lesson-prompt-max-characters` | none | 4000 |
+| `releaseChannel` | `--release-channel` (`cleared` or `all`) | none | `cleared` |
 | `launchTexts` | none; `h9k orchestrator launch-text set` writes it | none | none; `launch-text show` prints a computed default |
 
 Every other `Hall9k__` option in the tables above has no flag and no dedicated key in this table.

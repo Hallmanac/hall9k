@@ -192,6 +192,12 @@ jobs:
       # published release (isDraft false) means the first run finished, so this run has nothing
       # left to do. A `gh release view` failure — no release yet, or a network blip — falls
       # through to create, exactly as before this guard existed.
+      #
+      # Every tag publishes as a pre-release (Decisions Log 0ecc3701): GitHub's latest release,
+      # which is all a tag-less `gh release download` and h9k update's cleared channel ever see,
+      # excludes pre-releases, so a release reaches teammates only once Brian clears it with
+      # `gh release edit <tag> --prerelease=false --latest`. A pre-release still has isDraft
+      # false, so the guard above holds for it.
       - name: Create release
         working-directory: release-assets
         env:
@@ -207,4 +213,5 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes \
+            --prerelease \
             hall9k-*.tar.gz hall9k-*.zip checksums.txt
