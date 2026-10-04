@@ -543,7 +543,7 @@ public sealed class TaskAggregate
     /// assignment too (<see cref="Apply(Events.TaskAssigned)"/>, mirroring
     /// <see cref="TaskAssigned.AssignedOwnerRootFingerprint"/>) — both are the assigning node's own
     /// statement of who it means, and a task assigned on one node of an owner must be claimable by
-    /// every other node of that same owner (idea f72138e1: <c>h9k task assign</c> on one node left
+    /// every other node of that same owner (idea f72138e1: <c>h9k task queue</c> on one node left
     /// the free slot on a second node of the same owner silently unclaimed for ten minutes). Cleared
     /// by every other door onto <see cref="AssignedOwnerId"/> — an unassign, a forced takeover — so
     /// a stale fingerprint from an earlier assignment never survives to misdescribe a later,
@@ -803,7 +803,7 @@ public sealed class TaskAggregate
     /// assigned (security review idea 6be68ee2, finding 1): true the moment
     /// <see cref="Apply(Events.PullRequestReviewGateParked)"/> lands, alongside the deterministic
     /// facts <see cref="PrReviewGateParkedAuthorLogin"/> through <see cref="PrReviewGateParkedChangedFileCount"/>
-    /// the park card names — never cleared afterward, since <c>h9k task assign</c> is the human go
+    /// the park card names — never cleared afterward, since <c>h9k task queue</c> is the human go
     /// that ends the park and the fact that it once was one still explains why the task sat
     /// unassigned in the meantime.
     /// </summary>
@@ -853,7 +853,7 @@ public sealed class TaskAggregate
     /// <see cref="Apply(Events.PrReviewPreflightParked)"/> lands, alongside
     /// <see cref="PrReviewPreflightParkedSurfaces"/> through <see cref="PrReviewPreflightParkedReason"/>
     /// the park card names. Cleared by <see cref="Apply(TaskAssigned)"/>, the human go that ends
-    /// the park (<c>h9k task assign</c>): that assignment's own next dispatch always runs a fresh
+    /// the park (<c>h9k task queue</c>): that assignment's own next dispatch always runs a fresh
     /// pre-flight (<c>RunLauncher.EnsurePrReviewPreflightSafeAsync</c> never trusts a stale unsafe
     /// verdict), which either records a new, safe verdict or parks again — leaving this flag set
     /// past that point would show a stale "unsafe" card if the task later returned to
@@ -1464,6 +1464,20 @@ public sealed class TaskAggregate
     /// </summary>
     public void Apply(TaskPlacementChanged @event) => PlacedOnNodeId = @event.PlacedOnNodeId;
 
+    // A dequeue, an interactive release and a pre-flight park stop the go and keep the hold: the
+    // assignee fields stay as TaskAssigned set them. Every event written before those markers existed
+    // carries none, replays as false, and clears the assignee with the queued-for owner as it always did.
+    private void ReleaseAssigneeUnlessKept(bool keepsAssignee)
+    {
+        if (keepsAssignee)
+        {
+            return;
+        }
+
+        AssigneeOwnerId = null;
+        AssigneeOwnerFingerprint = null;
+    }
+
     // Unassigning returns the task to the state it was assigned from, dependency bookkeeping
     // and all: the unmet set is only meaningful for an assigned task, and the next assignment
     // recomputes it against the dependencies as they stand then.
@@ -1471,8 +1485,7 @@ public sealed class TaskAggregate
     {
         AssignedOwnerId = null;
         AssignedOwnerFingerprint = null;
-        AssigneeOwnerId = null;
-        AssigneeOwnerFingerprint = null;
+        ReleaseAssigneeUnlessKept(@event.KeepsAssignee);
         PlacedOnNodeId = null;
         _unmetDependencies.Clear();
         _deadDependencies.Clear();
@@ -1999,8 +2012,7 @@ public sealed class TaskAggregate
 
         AssignedOwnerId = null;
         AssignedOwnerFingerprint = null;
-        AssigneeOwnerId = null;
-        AssigneeOwnerFingerprint = null;
+        ReleaseAssigneeUnlessKept(@event.KeepsAssignee);
         PlacedOnNodeId = null;
         _unmetDependencies.Clear();
         _deadDependencies.Clear();
@@ -2418,8 +2430,7 @@ public sealed class TaskAggregate
 
         AssignedOwnerId = null;
         AssignedOwnerFingerprint = null;
-        AssigneeOwnerId = null;
-        AssigneeOwnerFingerprint = null;
+        ReleaseAssigneeUnlessKept(@event.KeepsAssignee);
         PlacedOnNodeId = null;
         _unmetDependencies.Clear();
         _deadDependencies.Clear();
@@ -2437,7 +2448,7 @@ public sealed class TaskAggregate
         // Recomputed fresh from this event's own flag, the identical "never OR-accumulated"
         // treatment Apply(TaskRequeued) gives it (that Apply's own doc): an unsafe verdict for a
         // pre-flight gating a mention follow-up's own checkout still owes that mention an answer,
-        // so the next h9k task assign must reach LaunchPrReviewMentionFollowUpAsync rather than an
+        // so the next h9k task queue must reach LaunchPrReviewMentionFollowUpAsync rather than an
         // unrequested full review (independent pre-PR review, cycle 7, adversarial lens) — without
         // this, the flag stayed at whatever TaskRequeued last set it to (false on a first attempt),
         // Apply(TaskAssigned) never touches it either, and the mentioning comment was never

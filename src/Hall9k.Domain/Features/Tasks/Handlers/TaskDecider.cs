@@ -339,9 +339,9 @@ public static class TaskDecider
                 $"Task {task.Id} is {task.State.Value}, not Draft — only a draft publishes. " + task.State switch
                 {
                     var state when state == TaskState.Published =>
-                        $"It is already published; assign it with h9k task assign {task.Id}.",
+                        $"It is already published; queue it with h9k task queue {task.Id}.",
                     var state when state.IsAssigned =>
-                        $"Return it to Draft first: h9k task unassign {task.Id} && h9k task draft {task.Id}.",
+                        $"Return it to Draft first: h9k task dequeue {task.Id} && h9k task draft {task.Id}.",
                     _ => "It has already been dispatched, and unassign and draft are both refused from here. "
                         + "Work that has run gets a new task, not a second publication.",
                 });
@@ -703,7 +703,7 @@ public static class TaskDecider
 
     /// <summary>
     /// Revision is Draft-only (Decisions Log #34), because every later state carries a promise
-    /// editing would break: Published promises a human may assign it at any moment and that it
+    /// editing would break: Published promises a human may queue it at any moment and that it
     /// satisfies the readiness contract; assigned promises a node may read it at any moment,
     /// and revising a claimable task races the dispatcher. The revert ceremony
     /// (unassign -> draft -> revise -> publish -> assign) is deliberate, not accidental friction.
@@ -779,7 +779,7 @@ public static class TaskDecider
                     var state when state == TaskState.Published =>
                         $"Return it to Draft first: h9k task draft {task.Id}.",
                     var state when state.IsAssigned =>
-                        $"Unassign it, then return it to Draft: h9k task unassign {task.Id} && h9k task draft {task.Id}.",
+                        $"Dequeue it, then return it to Draft: h9k task dequeue {task.Id} && h9k task draft {task.Id}.",
                     _ => "A task that has already run gets a new task, not a rewritten contract. "
                         + "h9k task revise --queue-first and --clear-interactive-mode are the two "
                         + "exceptions, and each still needs something left to change.",
@@ -1147,7 +1147,7 @@ public static class TaskDecider
             throw new DomainConflictException(
                 $"Task {task.Id} is {task.State.Value} — only a published task returns to Draft. " +
                 (task.State.IsAssigned
-                    ? $"It is assigned; unassign it first: h9k task unassign {task.Id}."
+                    ? $"It is queued; dequeue it first: h9k task dequeue {task.Id}."
                     : "A task that has already run cannot be edited back into a draft; add a new one."));
         }
 
@@ -1155,11 +1155,13 @@ public static class TaskDecider
     }
 
     /// <summary>
-    /// The dispatch trigger, and the only way a task becomes claimable (Decisions Log #34).
-    /// Always an explicit human act: no monitor and no CLI convenience appends this without
-    /// being asked. Dependencies decide where it lands — Queued when every one has reached
-    /// true closeout, Blocked otherwise — and the claim guard reads the assigned owner, so a
-    /// node runs only its own owner's work.
+    /// The go signal, and the only way a task becomes claimable (Decisions Log #34): the event
+    /// <c>h9k task queue</c> appends, named <see cref="TaskAssigned"/> for the wire's sake (see its own
+    /// naming-trap note). Always an explicit act: no monitor queues a task unasked, though the
+    /// callers that claim it in the same append, <c>h9k task start</c>, <c>h9k task work</c> and
+    /// <c>h9k pr review</c>, and both auto-pr-review mints, are go acts of their own. Dependencies
+    /// decide where it lands: Queued when every one has reached true closeout, Blocked otherwise.
+    /// The claim guard reads the queued-for owner, so a node runs only its own owner's work.
     /// </summary>
     public static TaskAssigned Assign(
         TaskAggregate task,
@@ -1173,18 +1175,18 @@ public static class TaskDecider
         if (task.State != TaskState.Published)
         {
             throw new DomainConflictException(
-                $"Task {task.Id} is {task.State.Value} — only a published task is assignable. " + task.State switch
+                $"Task {task.Id} is {task.State.Value} — only a published task can be queued. " + task.State switch
                 {
                     var state when state == TaskState.Draft => $"Publish it first: h9k task publish {task.Id}.",
                     var state when state.IsAssigned =>
-                        $"It is already assigned; unassign it first: h9k task unassign {task.Id}.",
+                        $"It is already queued; dequeue it first: h9k task dequeue {task.Id}.",
                     _ => "Its story has already ended.",
                 });
         }
 
         if (assignedOwnerId == Guid.Empty)
         {
-            throw new DomainValidationException("An assignment names the owner whose nodes may claim the task.");
+            throw new DomainValidationException("Queueing a task names the owner whose nodes may claim it.");
         }
 
         if (task.BlockedBy.Except(dependencies.Select(dependency => dependency.Id)).ToArray() is { Length: > 0 } unresolved)
@@ -1216,14 +1218,14 @@ public static class TaskDecider
     }
 
     /// <summary>
-    /// Changes an already-assigned task's advisory node placement in place (idea 202383dc: an
+    /// Changes an already-queued task's advisory node placement in place (idea 202383dc: an
     /// owner can place a task on one of their own nodes), without touching the owner, the
     /// dependency snapshot, or the state — <see cref="Assign"/> itself is Published-only and
     /// refuses to run again on a task already Queued or Blocked, so this is the door
-    /// <c>h9k task assign &lt;id&gt; --node</c> uses once the task is past its first assignment.
+    /// <c>h9k task assign &lt;id&gt; --node</c> uses once the task is past its first queueing.
     /// State-agnostic on purpose, the same way <see cref="TaskAggregate.MaxComplianceReviewCycles"/>'s
     /// own override is: placement is advisory routing, never a lifecycle gate, so there is nothing
-    /// here for a live run to race. Refused only when nothing is assigned at all — there is no
+    /// here for a live run to race. Refused only when nothing is queued at all — there is no
     /// owner's fleet to place this task within.
     /// </summary>
     public static TaskPlacementChanged SetPlacement(
@@ -1232,7 +1234,7 @@ public static class TaskDecider
         if (task.AssignedOwnerId is null)
         {
             throw new DomainConflictException(
-                $"Task {task.Id} is not assigned to anyone — assign it first: h9k task assign {task.Id}.");
+                $"Task {task.Id} is not queued for anyone — queue it first: h9k task queue {task.Id}.");
         }
 
         return new TaskPlacementChanged(task.Id, placedOnNodeId, changedAt, changedByOwnerId);
@@ -1242,26 +1244,41 @@ public static class TaskDecider
     /// Queued or Blocked -> Published: takes the task back out of the dispatcher's sight so it
     /// can be revised. Refused while a lease is held — a node is running it, and pulling the
     /// contract out from under a live agent is exactly the race the lifecycle exists to
-    /// prevent. Let the run finish, or abandon the task.
+    /// prevent. Let the run finish, or abandon the task. This is <c>h9k task unassign</c> on a
+    /// queued task: the go stops and the assignee goes with it.
     /// </summary>
     public static TaskUnassigned Unassign(
-        TaskAggregate task, string? reason, bool leaseHeld, DateTimeOffset unassignedAt, Guid unassignedByOwnerId)
+        TaskAggregate task, string? reason, bool leaseHeld, DateTimeOffset unassignedAt, Guid unassignedByOwnerId) =>
+        TakeOutOfQueue(task, reason, leaseHeld, keepsAssignee: false, unassignedAt, unassignedByOwnerId);
+
+    /// <summary>
+    /// Queued or Blocked -> Published, keeping the assignee: <c>h9k task dequeue</c> stops the go and
+    /// nothing else, so whoever held the task still does, and it can be queued again with
+    /// <c>h9k task queue</c>. The same refusals as <see cref="Unassign"/>, and the same
+    /// <see cref="TaskUnassigned"/> on the wire, marked with <see cref="TaskUnassigned.KeepsAssignee"/>.
+    /// </summary>
+    public static TaskUnassigned Dequeue(
+        TaskAggregate task, string? reason, bool leaseHeld, DateTimeOffset dequeuedAt, Guid dequeuedByOwnerId) =>
+        TakeOutOfQueue(task, reason, leaseHeld, keepsAssignee: true, dequeuedAt, dequeuedByOwnerId);
+
+    private static TaskUnassigned TakeOutOfQueue(
+        TaskAggregate task, string? reason, bool leaseHeld, bool keepsAssignee, DateTimeOffset at, Guid byOwnerId)
     {
         if (!task.State.IsAssigned)
         {
             throw new DomainConflictException(
-                $"Task {task.Id} is {task.State.Value} — only an assigned task (Queued or Blocked) unassigns." +
-                (task.State == TaskState.Published ? " It is already published and unassigned." : string.Empty));
+                $"Task {task.Id} is {task.State.Value} — only a queued task (Queued or Blocked) leaves the queue." +
+                (task.State == TaskState.Published ? " It is already published and not queued." : string.Empty));
         }
 
         if (leaseHeld)
         {
             throw new DomainConflictException(
-                $"Task {task.Id} is leased by a node right now — unassigning it would pull the contract out " +
-                "from under a running agent. Let the run finish, or abandon the task.");
+                $"Task {task.Id} is leased by a node right now — taking it out of the queue would pull the contract " +
+                "out from under a running agent. Let the run finish, or abandon the task.");
         }
 
-        return new TaskUnassigned(task.Id, reason, unassignedAt, unassignedByOwnerId);
+        return new TaskUnassigned(task.Id, reason, at, byOwnerId, KeepsAssignee: keepsAssignee);
     }
 
     /// <summary>
@@ -1273,7 +1290,7 @@ public static class TaskDecider
     /// <para>
     /// A Queued or later task is refused, because its assignee is the owner it is queued for and
     /// splitting the two would break what dispatch reads: the way to hand one off is
-    /// <c>h9k task unassign</c> first. A draft below team scope cannot reach another member's node
+    /// <c>h9k task dequeue</c> first. A draft below team scope cannot reach another member's node
     /// at all, so naming someone else on one is refused with the command that widens it.
     /// </para>
     /// </summary>
@@ -1295,7 +1312,7 @@ public static class TaskDecider
                 "handed to someone. " + task.State switch
                 {
                     var state when state.IsAssigned =>
-                        $"It is queued for its assignee; release it first with h9k task unassign {task.Id}, then assign it.",
+                        $"It is queued for its assignee; take it out of the queue first with h9k task dequeue {task.Id}, then assign it.",
                     _ => "Its story has already moved past assignment.",
                 });
         }
@@ -1332,7 +1349,7 @@ public static class TaskDecider
             throw new DomainConflictException(
                 $"Task {task.Id} is {task.State.Value}: only a Draft or a Published task that is not queued clears " +
                 "an assignee this way." + (task.State.IsAssigned
-                    ? $" A queued task releases it through h9k task unassign {task.Id}."
+                    ? $" A queued task releases it through h9k task unassign {task.Id}, which also takes it out of the queue."
                     : string.Empty));
         }
 
@@ -1346,7 +1363,7 @@ public static class TaskDecider
 
     /// <summary>
     /// Whether some other owner holds this task, by its assignee: the check <c>h9k task start</c>,
-    /// <c>h9k task work</c> and <c>h9k task publish --assign</c> make before they would queue a
+    /// <c>h9k task work</c> and <c>h9k task publish --queue</c> make before they would queue a
     /// Published task for the operator, which a hold by someone else forbids. A task nobody holds is
     /// not held by another owner.
     /// </summary>
@@ -1481,7 +1498,7 @@ public static class TaskDecider
     /// <summary>
     /// The claim guard is one rule and there is no other path to a claim (Decisions Log #34):
     /// the task is Queued <em>and</em> its assigned owner is this node's owner. Queued is only
-    /// reachable through an explicit human assignment whose dependencies are all closed out,
+    /// reachable through an explicit human queueing whose dependencies are all closed out,
     /// so both halves of "should this run, and on whose nodes" are answered before a node ever
     /// looks at the task.
     /// <para>
@@ -1593,7 +1610,7 @@ public static class TaskDecider
         }
 
         return new PrReviewPreflightParked(
-            task.Id, surfaces, headRefOid, verdict, reason, parkedAt, isMentionFollowUp);
+            task.Id, surfaces, headRefOid, verdict, reason, parkedAt, isMentionFollowUp, KeepsAssignee: true);
     }
 
     /// <summary>
@@ -1733,7 +1750,7 @@ public static class TaskDecider
     /// item 4). Absence is never checked here — that is the operator's own judgment, not something
     /// this decider detects — so the only guard is that there is a live claim to take at all:
     /// a task in every other state has no holder for this to override, and <see cref="Claim"/> (or
-    /// <c>h9k task assign</c>) is the door for it instead.
+    /// <c>h9k task queue</c>) is the door for it instead.
     /// </summary>
     public static TaskHolderTakenOver TakeOver(
         TaskAggregate task, Guid newHolderNodeId, Guid newHolderOwnerId, string? newHolderOwnerRootFingerprint,
@@ -1929,7 +1946,9 @@ public static class TaskDecider
     /// releases this way — because everything else that separates a releasable claim from a
     /// refused one (a node's headless claim, a claim already handed off, uncommitted or
     /// committed work in the worktree) is checked by the caller before this decider is ever
-    /// reached, the same caller for both forms of release.
+    /// reached, the same caller for both forms of release. The task keeps its assignee
+    /// (<see cref="TaskInteractiveClaimUnassigned.KeepsAssignee"/>): it leaves the queue, not the
+    /// hold, and <c>h9k task unassign</c> is what lets go of that.
     /// </summary>
     public static TaskInteractiveClaimUnassigned ReleaseInteractiveClaimUnassigned(
         TaskAggregate task, DateTimeOffset releasedAt, bool keepInteractive = false)
@@ -1944,7 +1963,7 @@ public static class TaskDecider
                     : string.Empty));
         }
 
-        return new TaskInteractiveClaimUnassigned(task.Id, releasedAt, !keepInteractive);
+        return new TaskInteractiveClaimUnassigned(task.Id, releasedAt, !keepInteractive, KeepsAssignee: true);
     }
 
     /// <summary>

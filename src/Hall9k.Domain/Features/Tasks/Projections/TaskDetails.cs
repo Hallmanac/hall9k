@@ -899,8 +899,12 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
     {
         view.AssignedOwnerId = null;
         view.AssignedOwnerFingerprint = null;
-        view.AssigneeOwnerId = null;
-        view.AssigneeOwnerFingerprint = null;
+        // A dequeue, a release and a park stop the go but keep the hold; an event with no marker clears it.
+        if (!@event.Data.KeepsAssignee)
+        {
+            view.AssigneeOwnerId = null;
+            view.AssigneeOwnerFingerprint = null;
+        }
         view.PlacedOnNodeId = null;
         view.AssignedAt = null;
         view.UnmetDependencies = [];
@@ -924,8 +928,12 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
 
         view.AssignedOwnerId = null;
         view.AssignedOwnerFingerprint = null;
-        view.AssigneeOwnerId = null;
-        view.AssigneeOwnerFingerprint = null;
+        // A dequeue, a release and a park stop the go but keep the hold; an event with no marker clears it.
+        if (!@event.Data.KeepsAssignee)
+        {
+            view.AssigneeOwnerId = null;
+            view.AssigneeOwnerFingerprint = null;
+        }
         view.PlacedOnNodeId = null;
         view.AssignedAt = null;
         view.UnmetDependencies = [];
@@ -956,8 +964,12 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
 
         view.AssignedOwnerId = null;
         view.AssignedOwnerFingerprint = null;
-        view.AssigneeOwnerId = null;
-        view.AssigneeOwnerFingerprint = null;
+        // A dequeue, a release and a park stop the go but keep the hold; an event with no marker clears it.
+        if (!@event.Data.KeepsAssignee)
+        {
+            view.AssigneeOwnerId = null;
+            view.AssigneeOwnerFingerprint = null;
+        }
         view.PlacedOnNodeId = null;
         view.AssignedAt = null;
         view.UnmetDependencies = [];
