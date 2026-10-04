@@ -1,0 +1,26 @@
+hall9k-task-record: 1
+task-id: 01a10805-adf7-7773-8d20-d2c7f12a1393
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#693
+objective: Every hall9k tag publishes as a GitHub pre-release, and every node sees only releases Brian has cleared unless its person opts in to all of them, through one shared release lookup
+criteria:
+  - .github/workflows/release.yml's gh release create publishes the release as a pre-release. The existing re-run guard (skip when isDraft is false) still holds.
+  - The latest-release lookup that UpdateCommand.ResolveLatestTagAsync performs today moves into Hall9k.Connectors, together with the ReleasePlatform RID and asset-name table it needs, so the daemon can call it. h9k update calls the moved lookup, and on the cleared channel it installs the same release it would today whenever that release's assets are complete.
+  - |-
+    A durable per-node setting, h9k config set --release-channel <cleared|all> (shown by h9k config show; default cleared), selects what the lookup returns: cleared returns GitHub's latest release, which excludes pre-releases; all returns the published release with the highest version by BuildVersionOrdering, pre-release or not, never by creation date. Drafts never count. Nothing but the shared lookup and h9k config show reads the setting, and the lookup reads it at each call, so a change takes effect without a daemon restart. A missing or unreadable config file, or an unrecognized channel value, resolves to cleared with a one-line warning; it never fails h9k update and never stops the daemon from starting.
+  - The lookup returns a release only when its asset list carries this platform's archive and checksums.txt. When they are missing, it returns a distinct "not yet complete" result rather than the tag, and h9k update says so.
+  - |-
+    The lookup's result tells success apart from each failure: gh missing, gh failing or signed out, a timeout, and unparseable output. h9k update keeps its current messages for each one.
+  - |-
+    docs/operations.md's "Installing on a bare machine" section says three things: tags publish as pre-releases; a release reaches h9k update and the bootstrap scripts only once cleared with gh release edit <tag> --prerelease=false --latest; and --release-channel all opts a node in to every release.
+  - Unit tests cover the channel selection, the incomplete-asset case, and each failure class over a fake gh. Per the house rule, there are no tests that touch GitHub.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/f12a1393-every-hall9k-tag-publishes-as
+published: 2026-10-04 17:50:55Z
+context: |-
+  Card 1 of idea 93c1d24d (ideas/93c1d24d-*/workspace/report.md and draft-task.md). Governing decisions, recorded 2026-10-04: 0ecc3701 (every tag publishes as a pre-release; teammates see only cleared releases), 8c039759 (--release-channel cleared|all, default cleared, read only in the shared lookup), 457cd074 (clearing is plain gh release edit; no h9k wrapper). Card 2 (the hourly daemon notice) will stack on this card later; do none of it here. Release readers on main are exactly h9k update, scripts/install.sh, and scripts/install.ps1; the scripts cannot share the C# lookup, and their tag-less gh release download already resolves GitHub's latest, which excludes pre-releases, so they need no code change. gh release list --json has no assets field, so the all channel needs a list call plus a view of the chosen tag. A pre-release keeps isDraft false (the re-run guard still holds) and is never marked latest. Release assets: five per release since v0.10.46 (checksums.txt plus four platform archives, including win-arm64); a release counts only when this platform's archive and checksums.txt are present. The cell B pair 8 challenge (verdict-opus.md and verdict-fable.md in this task's directory) confirmed the cited sites on origin/main at 57593e802. Brian's Parallels VM keeps its daemon stopped by rule. Note to the orchestrator window (not a criterion): when this card merges, the window updates the project-home skills/patch-release skill by hand with this rollout: Brian's nodes install the first gated tag pinned (HALL9K_RELEASE_TAG, or install.ps1 -Tag), set --release-channel all, smoke-test, and only then is the tag cleared; every node is set to all before the next cut is posted to it. Tests: unit tests over the existing fake gh in UpdateCommandTests; no branches, git, or GitHub.
