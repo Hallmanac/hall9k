@@ -1,5 +1,6 @@
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
+using Hall9k.Connectors.Releases;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -126,6 +127,19 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
         int inviteExpiryHours = configured.InviteExpiryHours ?? OperatingSettings.DefaultInviteExpiryHours;
         string inviteExpiryOrigin = configured.InviteExpiryHours is null ? "default" : "config file";
         table.AddRow("invite-expiry-hours", $"{inviteExpiryHours}h ({inviteExpiryOrigin})".EscapeMarkup());
+
+        // Not part of the report either: the shared release lookup reads the file fresh at each
+        // call and no DaemonOptions field binds it, so there is no environment-variable tier. The
+        // value shown is the one ReleaseChannelSetting.Interpret resolves, the same function the
+        // lookup acts on, so a hand-edited value that falls back to cleared says so here too.
+        ReleaseChannelResolution releaseChannel = ReleaseChannelSetting.Interpret(
+            configured.ReleaseChannel, Hall9kDatabase.ConfigFile);
+        string releaseChannelOrigin = configured.ReleaseChannel is null
+            ? "default"
+            : releaseChannel.Warning is null
+                ? "config file"
+                : $"config file value '{configured.ReleaseChannel}' is not cleared or all, so cleared applies";
+        table.AddRow("release-channel", $"{releaseChannel.Channel.Value} ({releaseChannelOrigin})".EscapeMarkup());
 
         // Not part of the report either, on the same reasoning: LessonPromptFeed reads the config
         // file fresh at every prompt composition rather than binding through DaemonOptions, so a
