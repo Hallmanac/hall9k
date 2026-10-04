@@ -640,6 +640,11 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         IReadOnlyList<TaskDependency>? unmetAtEntry = null;
         if (task.State == TaskState.Published)
         {
+            // See TaskStartCommand.ClaimAndCutAsync's identical check: a held Published task is not
+            // the operator's to queue and claim in one append.
+            await TaskOwnerGuard.AssertNotHeldByAnotherOwnerAsync(
+                session, task, context, ownerRootFingerprint,
+                "an operator claims only their own owner's work.", cancellationToken);
             dependencies = await TaskDependencyQuery.LoadAsync(session, task.BlockedBy, cancellationToken);
         }
         else if (task.State != TaskState.Queued && task.State != TaskState.Blocked)

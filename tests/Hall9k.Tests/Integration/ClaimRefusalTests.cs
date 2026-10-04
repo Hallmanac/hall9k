@@ -862,6 +862,52 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
     }
 
     // ── h9k task work ──
+    /// <summary>
+    /// A Published task somebody else has laid hold of (<see cref="TaskAssigneeSet"/>) is not the
+    /// operator's to queue and claim in one append: <c>h9k task start</c> and <c>h9k task work</c> both
+    /// take an unassigned Published task for the operator, and a hold by another owner stops that.
+    /// </summary>
+    [Theory]
+    [InlineData("start")]
+    [InlineData("work")]
+    public async Task A_published_task_another_owner_holds_is_refused_by_start_and_work_and_nothing_is_appended(string command)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        Guid taskId = DomainId.New();
+        Guid operatorId = DomainId.New();
+        Guid holderId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Store(new ProjectDetails { Id = projectId, RepositoryPath = "/dev/null", BaseBranch = "main" });
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Held by Ryan before anyone queues it", ["it is done"], TaskType.Chore,
+                null, null, null, WorkClaimNow, holderId);
+            TaskAggregate task = new();
+            task.Apply(added);
+            TaskPublished published = TaskDecider.Publish(task, TaskDependencyGraph.Empty, WorkClaimNow, holderId);
+            seed.Events.StartStream<TaskAggregate>(
+                taskId, added, published, new TaskAssigneeSet(taskId, holderId, "ryan-root", WorkClaimNow, holderId));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        Func<Task> act = command == "start"
+            ? () => StartAsync(store, taskId, operatorId, acknowledgeUnmetDependencies: false, cts.Token)
+            : () => WorkAsync(store, taskId, operatorId, cts.Token);
+
+        await act.Should().ThrowAsync<DomainConflictException>()
+            .WithMessage("*is assigned to*")
+            .Where(exception => exception.Message.Contains("h9k task unassign"));
+
+        await using IQuerySession verify = store.QuerySession();
+        (await verify.Events.FetchStreamStateAsync(taskId, token: cts.Token))!.Version
+            .Should().Be(3, "the refusal is up front, so no assignment or claim reached the stream");
+        (await verify.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!.State
+            .Should().Be(TaskState.Published);
+    }
+
     private static readonly DateTimeOffset WorkClaimNow = new(2026, 9, 2, 12, 0, 0, TimeSpan.Zero);
     [Fact]
     public async Task A_draft_task_is_refused_and_told_to_publish_first_by_task_work()

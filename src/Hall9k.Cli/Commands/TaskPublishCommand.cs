@@ -135,6 +135,15 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         // first would tell a human (or an agent reading the message to self-correct) about a
         // state change the failed transaction never made.
         OwnerDetails? assignee = await ChooseAssigneeAsync(session, settings, cancellationToken);
+        if (assignee is not null)
+        {
+            // Nothing is saved yet, so a refusal here leaves the task a Draft with nothing appended.
+            await TaskOwnerGuard.AssertNotHeldByAnotherOwnerAsync(
+                session, task, context,
+                await OwnerRootFingerprintResolver.ResolveAsync(session, context.OwnerId, cancellationToken),
+                "publishing it with --assign would queue it over their hold.", cancellationToken);
+        }
+
         TaskAssigned? assigned = assignee is null
             ? null
             : await TaskAssignCommand.AppendAsync(session, task, assignee, context.OwnerId, cancellationToken);

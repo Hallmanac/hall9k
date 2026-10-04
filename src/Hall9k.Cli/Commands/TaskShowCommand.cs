@@ -2802,13 +2802,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 : "an unrecorded owner";
 
     /// <summary>
-    /// Whose nodes may claim this task. Unassigned is a fact, not a gap: nothing dispatches
-    /// until a human assigns it (Decisions Log #34).
+    /// Who holds this task: its assignee (<see cref="TaskDetails.AssigneeOwnerId"/>), which on a
+    /// Queued or later task is the owner whose nodes may claim it and on a Draft or Published task
+    /// is a hold that dispatches nothing, said so with "not queued". Unassigned is a fact, not a
+    /// gap: nothing dispatches until a human assigns it (Decisions Log #34).
     /// <para>
-    /// A recorded <see cref="TaskDetails.AssignedOwnerFingerprint"/> — a cooperative grant's own
+    /// A recorded <see cref="TaskDetails.AssigneeOwnerFingerprint"/> — a cooperative grant's own
     /// (idea 20723ef8), or an ordinary cross-node assignment's (idea f72138e1) — is what actually
     /// decides whose task this is once one is recorded: the self-declared
-    /// <see cref="TaskDetails.AssignedOwnerId"/> Guid is the assigning node's own local claim,
+    /// <see cref="TaskDetails.AssigneeOwnerId"/> Guid is the assigning node's own local claim,
     /// never verifiable against a different real owner's id, since Owner events never replicate.
     /// So a fingerprint match against the Guid's own local record wins outright; a mismatch (or no
     /// local record for that Guid at all) falls back to a reverse lookup by the fingerprint
@@ -2826,23 +2828,26 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// catch, and says so.
     /// </para>
     /// </summary>
-    private static async Task<string> AssigneeMarkupAsync(
+    internal static async Task<string> AssigneeMarkupAsync(
         IQuerySession session, TaskDetails details, MemberLabelLookup labels, CancellationToken cancellationToken)
     {
-        if (details.AssignedOwnerId is not { } ownerId)
+        if (details.AssigneeOwnerId is not { } ownerId)
         {
             return "[dim]nobody — an unassigned task never dispatches[/]";
         }
 
         OwnerDetails? owner = await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken);
-        string? fingerprint = details.AssignedOwnerFingerprint;
+        string? fingerprint = details.AssigneeOwnerFingerprint;
         OwnerDetails? trueOwner = fingerprint is null || (owner is not null && owner.RootFingerprint == fingerprint)
             ? null
             : await session.Query<OwnerDetails>()
                 .Where(candidate => candidate.RootFingerprint == fingerprint)
                 .FirstOrDefaultAsync(cancellationToken);
 
-        return AssigneeMarkup(ownerId, owner, fingerprint, trueOwner, labels);
+        string markup = AssigneeMarkup(ownerId, owner, fingerprint, trueOwner, labels);
+        return details.State.IsPreDispatch
+            ? $"{markup} [dim]· not queued[/]"
+            : markup;
     }
 
     /// <summary>
@@ -2851,7 +2856,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// owner records, what the "Assigned to" row says.
     /// </summary>
     /// <param name="owner">The locally-resolved owner for <paramref name="ownerId"/>, if this install has one.</param>
-    /// <param name="fingerprint"><see cref="TaskDetails.AssignedOwnerFingerprint"/>, or null on an assignment recorded before that field existed.</param>
+    /// <param name="fingerprint"><see cref="TaskDetails.AssigneeOwnerFingerprint"/>, or null on an assignment recorded before that field existed.</param>
     /// <param name="trueOwner">
     /// A local owner whose own root fingerprint actually matches <paramref name="fingerprint"/>,
     /// when <paramref name="owner"/> either does not exist or disagrees with it — null whenever
