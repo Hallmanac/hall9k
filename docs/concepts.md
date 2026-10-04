@@ -159,6 +159,13 @@ idea reaches one of its two terminal states only by an explicit, separate human 
 the note's first sentence as the objective and concluding in the same breath, for the common case
 where a single idea deserved a single task and nothing more is coming.
 
+An idea has a project and, separately, an **assignee**: `h9k idea move <id> <project>` says where it
+belongs, and `h9k idea assign <id> [<member>]` says who has laid hold of it, visibly to your fleet or the
+team, before any task exists. Capturing an idea never assigns its creator; an idea nobody holds is its
+creator's. Only the assignee, or the creator when there is none, may conclude, archive or promote it or hand
+it to another member, and an Owner-role member may override with `--holder` and `--reason`. Cutting a task
+from an idea stays open to any member and never copies the assignee onto the task.
+
 A task maps to one primary external work item: a GitHub issue or a Jira card. **Content belongs to
 the external system; everything operational belongs to the task.** The task carries the
 agent-facing context, the run history, the dependencies, the pull requests, the token economics,

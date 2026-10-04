@@ -375,7 +375,11 @@ against Jira.
 ### Ideas
 
 Capture with one command and one argument, a discovery workspace per idea, revision with full
-history, and assignment to a project after the fact. `h9k task add --from-idea` cuts a draft task
+history, and moving it to a project after the fact (`h9k idea move`). A member can also lay hold of an
+idea before any task exists (`h9k idea assign`, `h9k idea unassign`), visibly to the fleet or the team, and
+only its assignee, or its creator when nobody holds it, may conclude, archive or promote it; the CLI and every
+node's receive gate judge that by one rule over verified owner roots, with the Owner-role override
+(`--holder` and `--reason`) for anything else. `h9k task add --from-idea` cuts a draft task
 from an idea through the ordinary add door — repeatable, so one idea fans out into any number of
 tasks, each cut needing its own objective, with provenance recorded in both directions and `h9k
 idea show` listing the whole fan-out and each task's current state. `h9k idea promote` survives as
@@ -1196,7 +1200,7 @@ reactivating a project with a purge still pending is refused, naming the cancel 
 project cannot go live again while a sweep is still scheduled to destroy it. The same reasoning
 refuses new work a purge-pending project would otherwise carry to the deadline and lose along with
 everything else: `h9k task add`, `h9k idea add`, `h9k epic add`, `h9k idea promote`,
-`h9k idea assign`, and `h9k pr review` all refuse against a project with a purge scheduled, naming
+`h9k idea move`, and `h9k pr review` all refuse against a project with a purge scheduled, naming
 the deadline and the cancel command. A daemon sweep,
 alongside the closeout and auto-pr-review sweeps, checks for due purges on start and on its own
 poll interval, so a purge whose deadline passed while the daemon was down fires on the next start
