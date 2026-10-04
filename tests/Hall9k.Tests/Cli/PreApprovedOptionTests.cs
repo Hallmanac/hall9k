@@ -79,10 +79,10 @@ public sealed class PreApprovedOptionTests
     [Fact]
     public void The_bare_flag_does_not_swallow_the_option_after_it()
     {
-        TaskPublishCommand.Settings settings = Parse("28b19893", "--pre-approved", "--no-assign");
+        TaskPublishCommand.Settings settings = Parse("28b19893", "--pre-approved", "--no-queue");
 
         PreApprovalInput.FromFlag(settings.PreApproved).Should().Be(PreApprovalMode.On);
-        settings.NoAssign.Should().BeTrue();
+        settings.NoQueue.Should().BeTrue();
     }
 
     [Fact]
@@ -93,7 +93,19 @@ public sealed class PreApprovedOptionTests
 
         TaskDecider.VetPreApprovalMode(PreApprovalInput.FromFlag(settings.PreApproved), DomainId.New())
             .Should().Be(PreApprovalMode.AfterHumanReview);
-        settings.NoAssign.Should().BeTrue();
+        settings.NoQueue.Should().BeTrue("--no-assign is --no-queue's earlier name and stays accepted as its alias");
+    }
+
+    [Fact]
+    public void Queue_is_a_bare_flag_and_assign_is_still_recognised_so_that_it_can_refuse()
+    {
+        TaskPublishCommand.Settings queue = Parse("28b19893", "--queue");
+        TaskPublishCommand.Settings assign = Parse("28b19893", "--assign");
+
+        queue.Queue.Should().BeTrue();
+        queue.Assign.IsSet.Should().BeFalse();
+        assign.Assign.IsSet.Should().BeTrue("--assign must parse so the command can point at --queue instead of failing as unknown");
+        assign.Queue.Should().BeFalse();
     }
 
     /// <summary>

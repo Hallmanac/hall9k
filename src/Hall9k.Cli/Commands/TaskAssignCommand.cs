@@ -20,12 +20,12 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// The dispatch trigger (Decisions Log #34). Publishing says the task is ready; assigning
-/// says it should run now, and on whose nodes. It is always a human's explicit act — the
-/// platform never assigns on its own. On a Draft it lays hold of the task without queueing it
-/// (<see cref="TaskAssigneeSet"/>): the draft stays a draft and no dispatcher ever sees it. So does a
-/// hand-off of a Published task to another member by a member who is not Owner-role, since every peer
-/// refuses that member's <see cref="TaskAssigned"/> naming anyone else.
+/// Lays hold of a task: records who holds it at any stage before it runs, and never dispatches
+/// (Decisions Log #34, and the assign/queue split that names each verb for the board column it lands
+/// in). On a Draft or a Published task it appends <see cref="TaskAssigneeSet"/> and the task keeps its
+/// state, so no dispatcher ever sees it; <c>h9k task queue</c> is the go signal. Also the hand-off: the
+/// assignee may name another member. Against a task that is already queued, <c>--node</c> alone keeps
+/// changing its placement (<see cref="TaskPlacementChanged"/>), the one thing assign still does there.
 /// </summary>
 public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Settings>
 {
@@ -37,30 +37,32 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
 
         [CommandArgument(1, "[OWNER]")]
         [Description(
-            "Owner whose nodes may claim the task: their name, an unambiguous fragment of it or of "
+            "Member who holds the task: their name, an unambiguous fragment of it or of "
             + "their email, or their id. Omit it only when the platform has exactly one owner, "
-            + "which is then who it goes to")]
+            + "which is then who holds it")]
         public string? Owner { get; init; }
 
         [CommandOption("--take")]
         [Description(
             "In a project whose claim gate is tracker-assignee, take the linked Jira card or GitHub "
-            + "issue for this install's own tracker identity as part of assigning, so one command "
-            + "moves the tracker and the board together and the gate then passes on its own. Reads "
+            + "issue for this install's own tracker identity as part of laying hold of the task, so one "
+            + "command moves the tracker and the board together and the gate then passes on its own. Only "
+            + "for yourself: it refuses when the task is being handed to another member. Reads "
             + "the item fresh first and writes ONLY when it shows no assignee: an item somebody "
             + "else holds is refused (exit 70) and nothing is written, and there is no flag that "
             + "takes one from another person. Already yours records the observation and proceeds. "
             + "The write is a FIELD UPDATE and never a transition — the item's status is not "
             + "touched — but be aware that a team's own automation (a Jira board rule, a GitHub "
-            + "workflow) may react to an assignment. Without this flag an interactive run offers "
-            + "the same take on an unassigned item, and a non-interactive one warns and proceeds "
-            + "without writing anything")]
+            + "workflow) may react to an assignment. Assign never offers it on its own; h9k task queue "
+            + "does, because the claim gate is read when a task is queued")]
         public bool Take { get; init; }
 
         [CommandOption("--node [NODE]")]
         [Description(
-            "Places this task on one of the owner's own nodes (its id, or an unambiguous fragment): "
-            + "only that node's own dispatcher claims it, and every other node of the same owner "
+            "Changes where a task that is already queued runs, and only that: the task's own placement "
+            + "moves to one of the owner's own nodes (its id, or an unambiguous fragment). A task that is "
+            + "not queued yet is placed by h9k task queue --node instead, which assign refuses to do. "
+            + "Only that node's own dispatcher claims it, and every other node of the same owner "
             + "stands down without a forced take. The owner's own fleet is their root node, the one "
             + "whose key established it in this project's ledger, plus every node currently vouched "
             + "into it (a root never needs h9k node vouch against itself). Refused for a node "
@@ -77,17 +79,14 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         [CommandOption("--reason <REASON>")]
         [Description(
             "Why an Owner-role member is assigning another owner's task. Required with --holder, where it "
-            + "is the override's reason; recorded on the assignee event when the task is a Draft, and "
-            + "printed for a Published task, whose assignment event has no field for it")]
+            + "is the override's reason; recorded on the assignee event")]
         public string? Reason { get; init; }
 
         [CommandOption("--holder <NAME>")]
         [Description(
-            "A task somebody else holds is theirs to assign: this refuses unless this node's owner may "
+            "A task somebody else holds is theirs to hand off: this refuses unless this node's owner may "
             + "act on it, which is its assignee, or with none its creator, who may hand it to any member "
-            + "(a Member who is neither may only take an unassigned Published task for themselves; a "
-            + "Member handing a Published task to another member records the hold and queues nothing, "
-            + "so that member starts it themselves). An "
+            + "(a Member who is neither may only take an unassigned Published task for themselves). An "
             + "Owner-role member may assign it on that owner's behalf by naming the holder here (their "
             + "label, which the refusal names, or at least 8 hex characters of their root fingerprint; "
             + "the word 'unknown' when the task's owner cannot be resolved on this node) and giving "
@@ -106,23 +105,21 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
-        // TaskDecider.Assign is Published-only and refuses to run again once a task is Queued or
-        // Blocked ("already assigned; unassign it first") — so a --node against an already-assigned
-        // task, with no owner named alongside it, changes placement in place instead of attempting
-        // (and failing) a full reassignment nobody asked for.
+        // Assign only records who holds a task, so against one that is already queued the one thing it
+        // still does is change placement: a --node with no owner named alongside it moves the task in
+        // place (TaskPlacementChanged) rather than attempting a hand-off the queue refuses anyway.
         if (task.AssignedOwnerId is { } assignedOwnerId && settings.Owner.IsBlank() && settings.Node.IsSet)
         {
-            // --take assigns a tracker item as part of landing a fresh assignment (TakeBeforeAssigningAsync,
-            // below) — this branch never reaches that door, so a --take alongside a placement-only
-            // change would otherwise be silently dropped rather than doing what it was asked
-            // (self-review, this session).
+            // --take rides on laying hold of a task (AssignHoldAsync, below) — this branch never reaches
+            // that door, so a --take alongside a placement-only change would otherwise be silently
+            // dropped rather than doing what it was asked (self-review, this session).
             if (settings.Take)
             {
                 throw new DomainValidationException(
-                    "--take only ever runs as part of a fresh assignment, and this task is already assigned "
+                    "--take only ever runs as part of laying hold of a task, and this task is already queued "
                     + "— --node alone changes only its placement here and never touches the tracker. Drop "
-                    + "--take, or unassign and reassign with both --node and --take together if you meant a "
-                    + "fresh assignment.");
+                    + $"--take, or dequeue the task (h9k task dequeue {TaskListCommand.ShortId(task.Id)}) and "
+                    + "assign it again with --take if you meant to take the card.");
             }
 
             return await ChangePlacementOnlyAsync(session, task, assignedOwnerId, context, settings.Node, cancellationToken);
@@ -132,113 +129,101 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
             ? await OwnerResolver.ResolveAsync(session, settings.Owner, cancellationToken)
             : await OwnerResolver.SoleOwnerAsync(session, cancellationToken)
                 ?? throw new DomainValidationException(
-                    "More than one owner is registered, so who this task is for cannot be inferred. "
-                    + "Name them: h9k task assign <id> <owner>");
+                    "More than one owner is registered, so who holds this task cannot be inferred. "
+                    + "Name them: h9k task assign <id> <member>");
 
-        // A task that is not Draft or Published never reaches the guard: TaskDecider.Assign refuses it
-        // below with the reason and the h9k task unassign that releases it, which is the answer a
-        // hand-off on a queued task needs, whoever's it is.
+        // A task that is not Draft or Published never reaches the guard: TaskDecider.SetAssignee refuses
+        // it below with the reason and the h9k task dequeue that takes it out of the queue, which is the
+        // answer a hand-off on a queued task needs, whoever's it is.
         TaskOwnerOverrideDecision ownerDecision = task.State.IsPreDispatch
             ? await AuthorizeAssignAsync(
                 session, task, context, owner, settings.Holder, settings.Reason, new GitLedgerChainReader(),
                 new NodeKeyStore(), cancellationToken)
             : TaskOwnerOverrideDecision.OwnAct;
 
-        if (task.State == TaskState.Draft
-            || await IsHoldOnlyHandOffAsync(
-                session, task, context, owner, ownerDecision, new GitLedgerChainReader(), new NodeKeyStore(), cancellationToken))
-        {
-            return await AssignHoldAsync(session, task, owner, context, settings, ownerDecision, cancellationToken);
-        }
-
-        Optional<Guid?> placement = await ResolvePlacementAsync(
-            session, settings.Node, owner.RootFingerprint, owner.Id == context.OwnerId, task.ProjectId, context.NodeId,
-            new GitLedgerChainReader(), cancellationToken);
-        TaskAssigned assigned = await AppendAsync(
-            session, task, owner, context.OwnerId, cancellationToken, placement);
-
-        // Composed above, committed below, and the tracker written to in between — the order is the
-        // whole of "one command moves the tracker and the board together". TaskDecider.Assign has
-        // already refused a task that cannot be assigned at all (a draft, an abandoned one) by the
-        // time anything is written to somebody's board, and the take is the only part of this
-        // command that can refuse the assignment: it throws before the save, so a take that could
-        // not have the item leaves the task exactly as it was. Everything else about the gate is
-        // read after the commit instead, because the tracker is the go signal and a task waiting in
-        // the queue is the design (Decisions Log #142, #143).
-        (TrackerTake? take, TrackerClaimDecision? decision) = await TakeBeforeAssigningAsync(
-            store, session, task, settings.Take, trackerAssignmentTake: null, Offer(), cancellationToken);
-
-        await session.SaveChangesAsync(cancellationToken);
-        await Doorbell.RingAsync($"task-assigned:{taskId}", cancellationToken);
-
-        await AnnounceAsync(
-            assigned, owner, session, cancellationToken, task.StackedOnTaskId,
-            StackedParentDeclaration.From(task));
-        await ReportTrackerAsync(store, session, task, take, decision, cancellationToken);
-        TaskOwnerGuard.AnnounceOverride(ownerDecision, "assigned");
-        return ExitCodes.Ok;
+        return await AssignHoldAsync(store, session, task, owner, context, settings, ownerDecision, cancellationToken);
     }
 
     /// <summary>
-    /// Whether a Published task handed to another owner can only be recorded as a hold. A
-    /// <see cref="TaskAssigned"/> naming another root is the go signal for that owner's nodes, and every
-    /// peer applies it only from an Owner-role sender, so a member who is not one would fork the stream
-    /// by sending it. An Owner-role member, and an override already granted on the Owner role, keep the
-    /// queueing assignment they always had.
-    /// </summary>
-    internal static async Task<bool> IsHoldOnlyHandOffAsync(
-        IDocumentSession session, TaskAggregate task, BootstrapContext context, OwnerDetails target,
-        TaskOwnerOverrideDecision ownerDecision, ILedgerChainReader chainReader, NodeKeyStore keyStore,
-        CancellationToken cancellationToken) =>
-        task.State == TaskState.Published
-        && target.Id != context.OwnerId
-        && ownerDecision.Outcome != TaskOwnerOverrideOutcome.Override
-        && !await TaskOwnerGuard.MayQueueForAnotherOwnerAsync(
-            session, task, context, chainReader, keyStore, cancellationToken);
-
-    /// <summary>
-    /// A Draft is laid hold of, not dispatched, and so is a Published task handed to another member by
-    /// one who may not queue it: the assignee is recorded and the task keeps its state. <c>--node</c>
-    /// and <c>--take</c> belong to the go signal, so they are refused here rather than quietly dropped.
+    /// Records the assignee and leaves the task in its state, so a Draft or a Published task is laid hold
+    /// of and never dispatched. <c>--node</c> belongs to queueing, so it is refused here rather than
+    /// quietly dropped; <c>--take</c> belongs to the hold, but only for the member running the command.
+    /// A Published task's output says it is not queued and names <c>h9k task queue</c>.
     /// </summary>
     private static async Task<int> AssignHoldAsync(
-        IDocumentSession session, TaskAggregate task, OwnerDetails assignee, BootstrapContext context,
-        Settings settings, TaskOwnerOverrideDecision ownerDecision, CancellationToken cancellationToken)
+        IDocumentStore store, IDocumentSession session, TaskAggregate task, OwnerDetails assignee,
+        BootstrapContext context, Settings settings, TaskOwnerOverrideDecision ownerDecision,
+        CancellationToken cancellationToken)
     {
         string state = task.State.Value;
-        if (settings.Node.IsSet || settings.Take)
+        string shortId = TaskListCommand.ShortId(task.Id);
+        bool heldByActor = assignee.Id == context.OwnerId;
+        if (settings.Node.IsSet)
         {
             throw new DomainValidationException(
-                $"Task {task.Id} is {state} and this assignment only records who holds it, so --node and --take, "
-                + "which belong to queueing a task for your own nodes, are refused. "
+                $"Task {task.Id} is {state} and assigning it only records who holds it, so --node, which "
+                + "places a task that runs on one of your own nodes, is refused. "
                 + (task.State == TaskState.Draft
-                    ? $"Publish it first (h9k task publish {task.Id}), or drop the flag."
-                    : $"{assignee.Name} can queue it on their own nodes once they hold it; drop the flag."));
+                    ? $"Publish it first (h9k task publish {shortId}), then h9k task queue {shortId} --node."
+                    : $"Place it when you queue it: h9k task queue {shortId} --node."));
+        }
+
+        if (settings.Take && !heldByActor)
+        {
+            throw new DomainValidationException(
+                $"--take puts this install's own tracker identity on the linked card, which only makes sense for "
+                + $"a task you hold yourself, and this one is going to {assignee.Name}. Drop --take; "
+                + "they can take the card when they hold it.");
         }
 
         TaskAssigneeSet? set = await AppendAssigneeAsync(
             session, task, assignee, context.OwnerId, ownerDecision, DateTimeOffset.UtcNow, cancellationToken);
+
+        // Composed before the save and written to the tracker in between, the order the take has always
+        // had: it is the only part of this command that can refuse, and it throws before anything is saved.
+        (TrackerTake? take, TrackerClaimDecision? decision) = settings.Take
+            ? await TakeBeforeAssigningAsync(
+                store, session, task, take: true, trackerAssignmentTake: null, offer: null, cancellationToken)
+            : (null, null);
         await session.SaveChangesAsync(cancellationToken);
 
-        string shortId = TaskListCommand.ShortId(task.Id);
-        AnsiConsole.MarkupLine(set is null
-            ? $"[yellow]Task {shortId} is already assigned to {assignee.Name.EscapeMarkup()}[/]. Nothing changed."
-            : $"[green]Task {shortId} assigned to {assignee.Name.EscapeMarkup()}[/]: still {state}, so nothing is "
-                + "queued and no dispatcher sees it.");
-        // Once the task is handed to someone else, publish, revise and unassign belong to its new holder: the
-        // receive gate refuses this member's act on it, so the hint must not point them at it.
-        bool heldByActor = assignee.Id == context.OwnerId;
-        AnsiConsole.MarkupLine(
-            (heldByActor, task.State == TaskState.Draft) switch
-            {
-                (true, true) => $"[dim]To release it:[/] h9k task unassign {shortId} [dim]· to make it ready:[/] h9k task publish {shortId}",
-                (true, false) => $"[dim]To release it:[/] h9k task unassign {shortId} [dim]· to queue it:[/] h9k task assign {shortId}",
-                (false, true) => $"[dim]It is {assignee.Name.EscapeMarkup()}'s now: they can revise and publish it, or release it with[/] h9k task unassign {shortId}",
-                (false, false) => $"[dim]It is {assignee.Name.EscapeMarkup()}'s now: they can queue it with[/] h9k task assign {shortId}[dim], or release it with[/] h9k task unassign {shortId}",
-            });
+        foreach (string line in HoldOutcomeLines(task.State, shortId, assignee.Name.EscapeMarkup(), heldByActor, set is null))
+        {
+            AnsiConsole.MarkupLine(line);
+        }
+
+        if (settings.Take)
+        {
+            await ReportTrackerAsync(store, session, task, take, decision, cancellationToken);
+        }
+
         TaskOwnerGuard.AnnounceOverride(ownerDecision, "assigned");
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// What assign says once it has recorded the assignee: the result, then the next step. A Published
+    /// task's lines say it is not queued and give <c>h9k task queue</c>, because assigning never starts
+    /// anything and a reader who still expects it to must be told so where they are looking. Once a task
+    /// is handed to someone else, publish, revise and unassign belong to its new holder (the receive gate
+    /// refuses this member's act on it), so the hint never points the giver at them. The names arrive
+    /// already escaped for markup.
+    /// </summary>
+    internal static IReadOnlyList<string> HoldOutcomeLines(
+        TaskState state, string shortId, string assigneeName, bool heldByActor, bool unchanged) =>
+    [
+        unchanged
+            ? $"[yellow]Task {shortId} is already assigned to {assigneeName}[/]. Nothing changed."
+            : $"[green]Task {shortId} assigned to {assigneeName}[/]: still {state.Value}, so it is "
+                + "not queued and no dispatcher sees it.",
+        (heldByActor, state == TaskState.Draft) switch
+        {
+            (true, true) => $"[dim]To release it:[/] h9k task unassign {shortId} [dim]· to make it ready:[/] h9k task publish {shortId}",
+            (true, false) => $"[dim]Not queued: nothing runs until[/] h9k task queue {shortId} [dim]· to release it:[/] h9k task unassign {shortId}",
+            (false, true) => $"[dim]It is {assigneeName}'s now: they can revise and publish it, or release it with[/] h9k task unassign {shortId}",
+            (false, false) => $"[dim]Not queued: it is {assigneeName}'s now, and nothing runs until they queue it with[/] h9k task queue {shortId}[dim], or release it with[/] h9k task unassign {shortId}",
+        },
+    ];
 
     /// <summary>
     /// Who may assign <paramref name="task"/> to <paramref name="target"/>: a member takes an
@@ -339,7 +324,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
             return take
                 ? throw new DomainNotFoundException(
                     $"--take needs this task's project to know whether its claim gate is on and where its "
-                    + $"repository is, and no project {task.ProjectId} is recorded on this install. Assign "
+                    + $"repository is, and no project {task.ProjectId} is recorded on this install. Run it "
                     + "without --take, or repair the project record first (h9k project list).")
                 : (null, null);
         }
@@ -351,7 +336,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
                     "--take assigns the linked Jira card or GitHub issue to this install so this "
                     + $"project's claim gate passes on its own, and {WhyNotGated(project, task)} There is "
                     + "nothing for a take to unlock here, and Hall9k does not write to a tracker it was "
-                    + $"not asked to: assign without --take{NotGatedRemedy(project, task)}.")
+                    + $"not asked to: run it without --take{NotGatedRemedy(project, task)}.")
                 : (null, null);
         }
 
@@ -379,11 +364,11 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
     /// The question names the item and the tracker, and says what saying yes buys, because that is
     /// what makes it answerable: a bare "take it?" leaves a human guessing whether it writes to
     /// their team's board. It defaults to no, the same default
-    /// <c>h9k task publish</c>'s own assignment offer takes — a write to somebody else's system is
+    /// <c>h9k task publish</c>'s own queueing offer takes — a write to somebody else's system is
     /// never the answer a bare Enter should give.
     /// </para>
     /// </summary>
-    private static TrackerClaimCheck.TakeOffer? Offer() =>
+    internal static TrackerClaimCheck.TakeOffer? Offer() =>
         AnsiConsole.Profile.Capabilities.Interactive
             ? decision => AnsiConsole.Confirm(
                 $"{decision.Tracker.EscapeMarkup()} shows {decision.Item.EscapeMarkup()} assigned to "
@@ -428,7 +413,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
     /// happened, the read's warning when the gate was read but nothing taken, and otherwise a fresh
     /// read — the behaviour every path had before <c>--take</c> existed.
     /// </summary>
-    private static async Task ReportTrackerAsync(
+    internal static async Task ReportTrackerAsync(
         IDocumentStore store,
         IQuerySession session,
         TaskAggregate task,
@@ -462,10 +447,10 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
     }
 
     /// <summary>
-    /// The claim gate, read after the assignment has landed and never allowed to refuse it (idea
-    /// 64c75e43): the tracker's assignment is the go signal, so assigning is still the right act
+    /// The claim gate, read after the queueing has landed and never allowed to refuse it (idea
+    /// 64c75e43): the tracker's assignment is the go signal, so queueing is still the right act
     /// — it puts the task in the queue the gate lets it out of the moment the item is assigned.
-    /// Shared with <c>h9k task publish --assign</c>, which queues work the same way.
+    /// Shared with <c>h9k task publish --queue</c>, which queues work the same way.
     /// <para>
     /// Best-effort about the project itself: a task whose project document has gone missing is a
     /// record disagreeing with itself, and failing the assignment over it would be this command
@@ -618,7 +603,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
     /// listed as archived, reactivated, and renamed) — refused here rather than left to the
     /// dispatcher's own belt-and-suspenders skip, since assigning is the one act that would otherwise
     /// move this task to Queued, the very state h9k project remove already refused to archive over.
-    /// Shared by h9k task publish --assign, which calls <see cref="AppendAsync"/> in the same
+    /// Shared by h9k task queue and h9k task publish --queue, which call <see cref="AppendAsync"/> in the same
     /// transaction it publishes in, and by laying hold of a draft.
     /// </summary>
     private static async Task RefuseArchivedProjectAsync(
@@ -627,14 +612,14 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         if (await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken) is { IsArchived: true } project)
         {
             throw new DomainValidationException(
-                $"Project '{project.Name}' is archived, so its tasks cannot be assigned. Reactivate it "
+                $"Project '{project.Name}' is archived, so its tasks cannot be queued or assigned. Reactivate it "
                 + $"first: h9k project reactivate {project.Name}");
         }
     }
 
     /// <summary>
-    /// Appends the assignment onto an open session (the caller saves), so h9k task publish can
-    /// offer assignment in the same transaction it publishes in. Dependencies are read here
+    /// Appends the go signal onto an open session (the caller saves), so h9k task publish --queue can
+    /// queue in the same transaction it publishes in. Dependencies are read here
     /// rather than passed in: where the task lands — Queued or Blocked — is decided by whether
     /// each blocker has reached true closeout at this moment.
     /// </summary>
@@ -677,7 +662,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         if (stackedParent is { IsRemote: true, RemoteState: { ReleasesChild: false } remoteState })
         {
             AnsiConsole.MarkupLine(
-                $"[yellow]Task {shortId} assigned to {owner.Name.EscapeMarkup()}[/] — blocked on pull request "
+                $"[yellow]Task {shortId} queued for {owner.Name.EscapeMarkup()}[/] — blocked on pull request "
                 + $"#{stackedParent.PullRequestNumber}, which it is stacked on and which was last observed "
                 + $"{remoteState.Describe()}. It dispatches once that pull request is observed open; the "
                 + "closeout watcher's own sweep looks on its cadence.");
@@ -688,7 +673,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         if (assigned.UnmetDependencies.Count == 0)
         {
             AnsiConsole.MarkupLine(
-                $"[green]Task {shortId} assigned to {owner.Name.EscapeMarkup()}[/] — queued; "
+                $"[green]Task {shortId} queued for {owner.Name.EscapeMarkup()}[/] — "
                 + "the next dispatch cycle on one of their nodes claims it.");
             AnnouncePlacement(assigned);
             return;
@@ -697,7 +682,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         IReadOnlyList<TaskDependency> unmet = await TaskDependencyQuery.LoadAsync(
             session, assigned.UnmetDependencies, cancellationToken);
         AnsiConsole.MarkupLine(
-            $"[yellow]Task {shortId} assigned to {owner.Name.EscapeMarkup()}[/] — blocked on "
+            $"[yellow]Task {shortId} queued for {owner.Name.EscapeMarkup()}[/] — blocked on "
             + $"{assigned.UnmetDependencies.Count} dependency(ies) that have not closed out:");
         // The lifecycle word rather than the persisted one (Decisions Log #66), and the mark that
         // word depends on, exactly as h9k task show pairs them. A blocker whose pull request is

@@ -23,7 +23,8 @@ namespace Hall9k.Cli.Commands;
 /// <summary>
 /// The readiness gate (Decisions Log #34). Publishing is the quality decision, not the go
 /// signal: it says the contract is complete and the dependency graph is sane, after which the
-/// task is immutable and assignable. Starting it is a separate, explicit act.
+/// task is immutable and can be queued. Queueing it is a separate, explicit act, which
+/// <c>--queue</c> performs in the same transaction.
 /// </summary>
 public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.Settings>
 {
@@ -33,18 +34,28 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         [Description("Task id (full, or an unambiguous fragment)")]
         public string Id { get; init; } = string.Empty;
 
+        [CommandOption("--queue")]
+        [Description(
+            "Queue the task in the same breath, so it dispatches: publish and the go signal land in one "
+            + "transaction, for the task's assignee, or for you when it has none (you then become its "
+            + "assignee). It takes no owner argument, and it refuses when another member is the "
+            + "assignee, naming them and their hand-off (h9k task assign <id> <member>). This is the "
+            + "same explicit TaskAssigned event h9k task queue appends, never a silent one")]
+        public bool Queue { get; init; }
+
         [CommandOption("--assign [OWNER]")]
         [Description(
-            "Assign the task in the same breath, so it dispatches: the owner's name, an unambiguous "
-            + "fragment, or their id — or the bare flag when the platform has exactly one owner. This "
-            + "is the same explicit TaskAssigned event h9k task assign appends, never a silent one")]
+            "Refused: --assign no longer means queue. Queueing at publish is --queue, and laying hold "
+            + "of a task without queueing it is h9k task assign. The flag stays recognised for one "
+            + "minor release only so that it can point you at --queue instead of failing as unknown")]
         public FlagValue<string> Assign { get; init; } = new();
 
-        [CommandOption("--no-assign")]
+        [CommandOption("--no-queue|--no-assign")]
         [Description(
-            "Publish and stop there, without being asked about assignment. Use it in scripts: an "
-            + "interactive terminal is otherwise offered the single-owner assignment as a convenience")]
-        public bool NoAssign { get; init; }
+            "Publish and stop there, without being asked whether to queue. Use it in scripts: an "
+            + "interactive terminal is otherwise offered the queueing as a convenience. --no-assign is "
+            + "this flag's earlier name and is still accepted")]
+        public bool NoQueue { get; init; }
 
         [CommandOption("--no-existing-item")]
         [Description(
@@ -100,9 +111,11 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
-        if (settings.Assign.IsSet && settings.NoAssign)
+        RefuseRetiredAssignFlag(settings);
+
+        if (settings.Queue && settings.NoQueue)
         {
-            throw new DomainValidationException("--assign and --no-assign say opposite things; pass one.");
+            throw new DomainValidationException("--queue and --no-queue say opposite things; pass one.");
         }
 
         using var store = CliStore.Open();
@@ -130,24 +143,14 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         session.Events.Append(taskId, published);
         task.Apply(published);
 
-        // Resolve the assignee and commit before announcing anything. Both steps can still throw
-        // — a bare --assign with several owners registered, a name that matches nobody — and the
-        // session is then disposed unsaved, leaving the task a Draft. Announcing the publish
-        // first would tell a human (or an agent reading the message to self-correct) about a
-        // state change the failed transaction never made.
-        OwnerDetails? assignee = await ChooseAssigneeAsync(session, settings, cancellationToken);
-        if (assignee is not null)
-        {
-            // Nothing is saved yet, so a refusal here leaves the task a Draft with nothing appended.
-            await TaskOwnerGuard.AssertNotHeldByAnotherOwnerAsync(
-                session, task, context,
-                await OwnerRootFingerprintResolver.ResolveAsync(session, context.OwnerId, cancellationToken),
-                "publishing it with --assign would queue it over their hold.", cancellationToken);
-        }
-
-        TaskAssigned? assigned = assignee is null
+        // Decide who it queues for and commit before announcing anything. Both steps can still throw
+        // — another member holds the task — and the session is then disposed unsaved, leaving the task
+        // a Draft. Announcing the publish first would tell a human (or an agent reading the message to
+        // self-correct) about a state change the failed transaction never made.
+        OwnerDetails? queuedFor = await ChooseQueueAsync(session, task, context, settings, cancellationToken);
+        TaskAssigned? queued = queuedFor is null
             ? null
-            : await TaskAssignCommand.AppendAsync(session, task, assignee, context.OwnerId, cancellationToken);
+            : await TaskAssignCommand.AppendAsync(session, task, queuedFor, context.OwnerId, cancellationToken);
 
         await session.SaveChangesAsync(cancellationToken);
 
@@ -207,7 +210,7 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
                 store, taskId, shortId, project, context, criteriaChanged: false, cancellationToken);
         }
 
-        if (assignee is null || assigned is null)
+        if (queuedFor is null || queued is null)
         {
             // h9k task work is refused outright for a pr-review task (TaskWorkCommand.ClaimAndCutAsync:
             // "it has no diff of its own for an interactive session to build"), so the hint is
@@ -220,7 +223,7 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             // it would tell the human to acknowledge a dependency the dispatcher will not ask them
             // about (task: a stacked pull-request edge exists as an explicit opt-in dependency).
             // A remote stacked parent counts here too (task: a stacked child can stand on a pull
-            // request another install owns): it holds the assignment Blocked with no dependency
+            // request another install owns): it holds the queueing Blocked with no dependency
             // behind it, so a hint that named the plain claim would send a human at a command the
             // claim guard refuses.
             bool hasOpenDependency = task.AwaitsRemoteStackedParent
@@ -232,17 +235,17 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
                     ? $" [dim](or h9k task work {shortId} --acknowledge-unmet-dependencies to claim across the open dependency yourself)[/]"
                     : $" [dim](or h9k task work {shortId} to claim and work it yourself)[/]";
             AnsiConsole.MarkupLine(
-                $"[dim]It is ready to assign but will not run until you say so:[/] h9k task assign {shortId}"
+                $"[dim]It is ready but not queued, so it will not run until you say so:[/] h9k task queue {shortId}"
                 + interactiveClaimHint);
             return ExitCodes.Ok;
         }
 
         await Doorbell.RingAsync($"task-assigned:{taskId}", cancellationToken);
         await TaskAssignCommand.AnnounceAsync(
-            assigned, assignee, session, cancellationToken, task.StackedOnTaskId,
+            queued, queuedFor, session, cancellationToken, task.StackedOnTaskId,
             StackedParentDeclaration.From(task));
 
-        // The same claim-gate warning h9k task assign gives, since this is the same act (idea
+        // The same claim-gate warning h9k task queue gives, since this is the same act (idea
         // 64c75e43) — and read here, at the very end, rather than beside the assignment above,
         // because on a tracking project the item this reads is created by TrackInBacklogAsync
         // moments earlier: an issue the platform just filed is assigned to nobody, which is
@@ -257,6 +260,24 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         }
 
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// <c>--assign</c> refuses for one minor release with a pointer to <c>--queue</c> (decision f951013c),
+    /// and is never kept as a silent alias for it: its old meaning, publish and queue in one step, is
+    /// exactly what the assign/queue split ended, so quietly honouring it would keep the confusion alive.
+    /// Run before anything is read or appended.
+    /// </summary>
+    internal static void RefuseRetiredAssignFlag(Settings settings)
+    {
+        if (settings.Assign.IsSet)
+        {
+            throw new DomainValidationException(
+                "--assign no longer queues a task, and publish takes no owner now: assigning only records who "
+                + "holds a task. To publish and queue in one step, run h9k task publish <id> --queue (it queues "
+                + "for the task's assignee, or for you when it has none). To record who holds the task, run "
+                + "h9k task assign <id> <member>.");
+        }
     }
 
     /// <summary>
@@ -503,39 +524,34 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
     }
 
     /// <summary>
-    /// Who to assign to, or null for "nobody yet". The flag is an explicit answer either way.
-    /// The interactive offer exists only where it cannot be wrong: exactly one owner is
-    /// registered, so "assign it" has one possible meaning. With more than one owner it is
-    /// never offered — deciding whose nodes run a task is the human's call, and a prompt that
-    /// guessed would be the multi-owner mistake IDEA-task-assignment exists to avoid.
+    /// Who the task queues for, or null for "not queued". Queueing is the assignee's act, so the answer
+    /// is always the owner running the command, and a task another member holds refuses it:
+    /// <c>--queue</c> says so outright, naming the hand-off, and the interactive offer is simply not made.
+    /// The offer exists only for a human at a terminal and answers no by default, and
+    /// <c>--no-queue</c> suppresses it for scripts.
     /// </summary>
-    private static async Task<OwnerDetails?> ChooseAssigneeAsync(
-        IQuerySession session, Settings settings, CancellationToken cancellationToken)
+    private static async Task<OwnerDetails?> ChooseQueueAsync(
+        IDocumentSession session, TaskAggregate task, BootstrapContext context, Settings settings,
+        CancellationToken cancellationToken)
     {
-        if (settings.NoAssign)
+        if (settings.NoQueue || (!settings.Queue && !AnsiConsole.Profile.Capabilities.Interactive))
         {
             return null;
         }
 
-        if (settings.Assign.IsSet)
+        OwnerDetails actor = await session.LoadAsync<OwnerDetails>(context.OwnerId, cancellationToken)
+            ?? throw new DomainNotFoundException($"This node's owner {context.OwnerId} is not registered.");
+        if (settings.Queue)
         {
-            return settings.Assign.Value.IsNotBlank()
-                ? await OwnerResolver.ResolveAsync(session, settings.Assign.Value, cancellationToken)
-                : await OwnerResolver.SoleOwnerAsync(session, cancellationToken)
-                    ?? throw new DomainValidationException(
-                        "More than one owner is registered, so a bare --assign cannot say who this task "
-                        + "is for. Name them: h9k task publish <id> --assign <owner>");
+            // Nothing is saved yet, so a refusal here leaves the task a Draft with nothing appended.
+            await TaskOwnerGuard.AssertAssigneeMayQueueAsync(
+                session, task, context, actor.RootFingerprint, cancellationToken);
+            return actor;
         }
 
-        if (!AnsiConsole.Profile.Capabilities.Interactive)
-        {
-            return null;
-        }
-
-        OwnerDetails? sole = await OwnerResolver.SoleOwnerAsync(session, cancellationToken);
-        return sole is not null && AnsiConsole.Confirm(
-            $"Assign it to {sole.Name.EscapeMarkup()} now, so it can dispatch?", defaultValue: false)
-            ? sole
+        return !TaskDecider.IsHeldByAnotherOwner(task, context.OwnerId, actor.RootFingerprint)
+            && AnsiConsole.Confirm("Queue it for you now, so it can dispatch?", defaultValue: false)
+            ? actor
             : null;
     }
 }

@@ -79,7 +79,7 @@ public sealed class UsageErrorTests
 
     [Theory]
     [InlineData(new[] { "task", "publish" }, new[] { "task", "publish" })]
-    [InlineData(new[] { "task", "publish", "--assign" }, new[] { "task", "publish" })]
+    [InlineData(new[] { "task", "publish", "--queue" }, new[] { "task", "publish" })]
     [InlineData(new[] { "--version" }, new string[0])]
     [InlineData(new string[0], new string[0])]
     public void The_command_path_stops_at_the_first_option(string[] arguments, string[] expected) =>

@@ -42,12 +42,12 @@ namespace Hall9k.Cli.Commands;
 /// --unassign takes the same untouched claim straight to Published instead of back to the queue,
 /// in the single <see cref="Hall9k.Domain.Features.Tasks.Events.TaskInteractiveClaimUnassigned"/>
 /// event rather than release's own <see cref="Hall9k.Domain.Features.Tasks.Events.TaskRequeued"/>
-/// followed by a separate h9k task unassign — so the Queued/Blocked state the two-step path would
+/// followed by a separate h9k task dequeue — so the Queued/Blocked state the two-step path would
 /// pass through is never written to the stream at all, and the dispatcher can never claim the
 /// task in the gap between them (this task's own origin: the dispatcher claimed a released task
 /// within seconds at ceiling 4, cd7e0202, 2026-09-04). Every other refusal above still applies
 /// unchanged — --unassign only changes which event this decider produces once the claim is found
-/// releasable.
+/// releasable. The task keeps its assignee, as a dequeue does: it leaves the queue, not the hold.
 /// </para>
 /// <para>
 /// A second, unrelated meaning lives here too (idea 202383dc, A3b, criterion 3): a task this node
@@ -80,7 +80,7 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         public bool KeepInteractive { get; init; }
 
         [CommandOption("--unassign")]
-        [Description("Take the claim straight to Published (unassigned) instead of back to the dispatch queue, in one atomic act — the dispatcher never sees this task claimable in between, closing the race a separate release then h9k task unassign cannot avoid")]
+        [Description("Take the claim straight to Published instead of back to the dispatch queue, in one atomic act, keeping the task's assignee as h9k task dequeue does — the dispatcher never sees this task claimable in between, closing the race a separate release then h9k task dequeue cannot avoid. The task is no longer queued; h9k task queue puts it back, and h9k task unassign lets go of the assignee")]
         public bool Unassign { get; init; }
     }
 
@@ -178,7 +178,7 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
 
         // --unassign appends the one TaskInteractiveClaimUnassigned event instead of
         // TaskRequeued: the task goes straight from Claimed to Published on this single append,
-        // so the Queued/Blocked state a plain release then h9k task unassign would pass through
+        // so the Queued/Blocked state a plain release then h9k task dequeue would pass through
         // is never written to the stream at all — nothing for the dispatcher to ever see and
         // claim in between (this task's own acceptance criteria; cd7e0202, 2026-09-04).
         if (settings.Unassign)
@@ -224,11 +224,11 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
             // TaskInteractiveClaimUnassigned always lands Published, unconditionally — the same
             // "there is no unmet set left to matter to" reasoning
             // TaskAggregate.Apply(TaskUnassigned) already carries, since the task is leaving
-            // assignment altogether rather than requeuing back into it.
+            // the queue altogether rather than requeuing back into it. The assignee stays.
             AnsiConsole.MarkupLine(
-                $"[blue]Task {taskId} released and unassigned[/] — published again, and no node will claim it.");
+                $"[blue]Task {taskId} released and taken out of the queue[/] — published again, still assigned to its holder, and no node will claim it.");
             AnsiConsole.MarkupLine(
-                $"[dim]To edit it:[/] h9k task draft {taskId} [dim]· to start it again:[/] h9k task assign {taskId}");
+                $"[dim]To edit it:[/] h9k task draft {taskId} [dim]· to run it again:[/] h9k task queue {taskId} [dim]· to let go of it:[/] h9k task unassign {taskId}");
         }
         else
         {

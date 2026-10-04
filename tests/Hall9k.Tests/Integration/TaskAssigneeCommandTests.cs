@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
+using Hall9k.Cli.Infrastructure;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
@@ -24,6 +25,7 @@ using Hall9k.Tests.TestSupport;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Spectre.Console.Cli;
 using Xunit;
 
 namespace Hall9k.Tests.Integration;
@@ -159,19 +161,24 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     }
 
     [Fact]
-    public async Task A_members_hand_off_of_a_published_task_to_another_member_is_a_hold_not_a_queueing_assignment()
+    public async Task Queue_is_the_assignees_act_alone_and_a_refusal_names_the_assignees_hand_off()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid taskId = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, publish: true);
+        Guid heldByRyan = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _ryan, publish: true);
+        Guid heldByMe = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, heldBy: Me, publish: true);
+        Guid free = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, publish: true);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
-        TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
-        async Task<bool> HoldOnly(OwnerDetailsSeed target) => await TaskAssignCommand.IsHoldOnlyHandOffAsync(
-            session, task, _me, await target.LoadAsync(session, cts.Token), TaskOwnerOverrideDecision.OwnAct, _chain,
-            new NodeKeyStore(), cts.Token);
+        OwnerDetails actor = (await session.LoadAsync<OwnerDetails>(_me.OwnerId, cts.Token))!;
+        async Task Queue(Guid id) => await TaskQueueCommand.AuthorizeAsync(
+            session, (await session.Events.AggregateStreamAsync<TaskAggregate>(id, token: cts.Token))!, _me, actor,
+            cts.Token);
 
-        (await HoldOnly(_ryan)).Should().BeTrue("every peer refuses a Member's queueing assignment naming another root");
-        (await HoldOnly(Me)).Should().BeFalse("a member queues the task for their own nodes, which peers apply");
+        Func<Task> another = () => Queue(heldByRyan);
+        (await another.Should().ThrowAsync<DomainConflictException>()).Which.Message
+            .Should().Contain("Ryan").And.Contain($"h9k task assign {DomainId.Short(heldByRyan)} <member>");
+        await Queue(heldByMe);
+        await Queue(free);
     }
 
     [Fact]
@@ -233,7 +240,7 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     }
 
     [Fact]
-    public async Task Start_work_and_publish_assign_refuse_a_task_another_owner_holds_through_the_shared_check()
+    public async Task Start_work_and_publish_queue_refuse_a_task_another_owner_holds_through_the_shared_check()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         Guid held = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _ryan);
@@ -395,6 +402,115 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
 
         await session.SaveChangesAsync(cancellationToken);
         return taskId;
+    }
+
+    /// <summary>
+    /// The real command tree, end to end against the store: assign only records the hold (the task stays
+    /// Published and nothing is claimable), queue is the go signal and makes the actor the assignee when
+    /// nobody held it, dequeue keeps the hold, unassign lets go of it, and publish refuses the retired
+    /// <c>--assign</c> without touching the draft.
+    /// </summary>
+    [Fact]
+    public async Task The_real_commands_walk_assign_then_queue_then_dequeue_then_unassign()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using ScopedConnectionString connection = new(_postgres.ConnectionString);
+        Guid taskId = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, publish: true);
+        string id = taskId.ToString();
+
+        (await RunCliAsync(cts.Token, "task", "assign", id, _me.OwnerId.ToString())).Should().BeNull();
+        TaskAggregate held = await ReadAsync(taskId, cts.Token);
+        held.State.Should().Be(TaskState.Published, "assign records ownership only");
+        held.AssigneeOwnerId.Should().Be(_me.OwnerId);
+        held.AssignedOwnerId.Should().BeNull();
+
+        (await RunCliAsync(cts.Token, "task", "queue", id)).Should().BeNull();
+        TaskAggregate queued = await ReadAsync(taskId, cts.Token);
+        queued.State.Should().Be(TaskState.Queued);
+        queued.AssignedOwnerId.Should().Be(_me.OwnerId);
+        queued.AssigneeOwnerId.Should().Be(_me.OwnerId);
+
+        (await RunCliAsync(cts.Token, "task", "queue", id, "--node")).Should().BeOfType<DomainConflictException>()
+            .Which.Message.Should().Contain($"h9k task assign {DomainId.Short(taskId)} --node", "placement of a queued task is assign's");
+
+        (await RunCliAsync(cts.Token, "task", "dequeue", id)).Should().BeNull();
+        TaskAggregate dequeued = await ReadAsync(taskId, cts.Token);
+        dequeued.State.Should().Be(TaskState.Published);
+        dequeued.AssignedOwnerId.Should().BeNull();
+        dequeued.AssigneeOwnerId.Should().Be(_me.OwnerId, "dequeue keeps the assignee");
+
+        (await RunCliAsync(cts.Token, "task", "queue", id)).Should().BeNull();
+        (await RunCliAsync(cts.Token, "task", "unassign", id)).Should().BeNull();
+        TaskAggregate released = await ReadAsync(taskId, cts.Token);
+        released.State.Should().Be(TaskState.Published);
+        released.AssigneeOwnerId.Should().BeNull("unassign on a queued task dequeues and clears the assignee in one append");
+    }
+
+    [Fact]
+    public async Task Queue_with_nobody_holding_the_task_makes_the_actor_the_assignee_and_another_holder_refuses_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using ScopedConnectionString connection = new(_postgres.ConnectionString);
+        Guid free = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, publish: true);
+        Guid heldByRyan = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _ryan, publish: true);
+
+        (await RunCliAsync(cts.Token, "task", "queue", free.ToString())).Should().BeNull();
+        TaskAggregate queuedFree = await ReadAsync(free, cts.Token);
+        queuedFree.State.Should().Be(TaskState.Queued);
+        queuedFree.AssigneeOwnerId.Should().Be(_me.OwnerId, "the actor became the assignee through the same TaskAssigned");
+
+        await using IQuerySession before = _postgres.Store.QuerySession();
+        long versionBefore = (await before.Events.FetchStreamStateAsync(heldByRyan, token: cts.Token))!.Version;
+        Exception? refusal = await RunCliAsync(cts.Token, "task", "queue", heldByRyan.ToString());
+
+        refusal.Should().BeOfType<DomainConflictException>().Which.Message
+            .Should().Contain("Ryan").And.Contain("h9k task assign").And.Contain("<member>");
+        (await before.Events.FetchStreamStateAsync(heldByRyan, token: cts.Token))!.Version
+            .Should().Be(versionBefore, "a refused queue appends nothing");
+        (await ReadAsync(heldByRyan, cts.Token)).State.Should().Be(TaskState.Published);
+    }
+
+    [Fact]
+    public async Task Publish_assign_refuses_and_leaves_the_draft_untouched_while_publish_queue_publishes_and_queues()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using ScopedConnectionString connection = new(_postgres.ConnectionString);
+        Guid refused = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token);
+        Guid queuedAtPublish = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token);
+
+        Exception? refusal = await RunCliAsync(cts.Token, "task", "publish", refused.ToString(), "--assign");
+
+        refusal.Should().BeOfType<DomainValidationException>().Which.Message.Should().Contain("--queue");
+        (await ReadAsync(refused, cts.Token)).State.Should().Be(TaskState.Draft);
+
+        (await RunCliAsync(cts.Token, "task", "publish", queuedAtPublish.ToString(), "--queue")).Should().BeNull();
+        TaskAggregate queued = await ReadAsync(queuedAtPublish, cts.Token);
+        queued.State.Should().Be(TaskState.Queued, "publish --queue publishes and queues in one transaction");
+        queued.AssigneeOwnerId.Should().Be(_me.OwnerId);
+    }
+
+    private async Task<TaskAggregate> ReadAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = _postgres.Store.QuerySession();
+        return (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!;
+    }
+
+    /// <summary>Runs one command through the shipped tree and returns what it threw, or null when it succeeded.</summary>
+    private static async Task<Exception?> RunCliAsync(CancellationToken cancellationToken, params string[] arguments)
+    {
+        CommandApp app = new();
+        // Never the real process environment: this test process can itself inherit the dispatched-session
+        // marker from the run that is building it, which would refuse every command before it ran.
+        app.Configure(config => CliCommandTree.Configure(config, _ => null));
+        try
+        {
+            await app.RunAsync(arguments, cancellationToken);
+            return null;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return exception is CommandRuntimeException { InnerException: { } inner } ? inner : exception;
+        }
     }
 
     private async Task<Guid> SeedQueuedAsync(CancellationToken cancellationToken)
