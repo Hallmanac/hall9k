@@ -17,6 +17,19 @@ public sealed class IdeaAggregate
     /// <summary>Whose thought this is. Ideas are owner-scoped from the first keystroke.</summary>
     public Guid OwnerId { get; private set; }
     public string Text { get; private set; } = string.Empty;
+    /// <summary>
+    /// The member who has laid hold of this idea (<see cref="IdeaAssigneeSet"/>), or null when nobody has:
+    /// capturing an idea never assigns its creator, and <see cref="Tasks.Handlers.TaskOwnerRule"/> falls
+    /// back to the creator, who is <see cref="OwnerId"/> on the node that captured it. Only the
+    /// assignee, or the creator when there is none, decides the idea's fate.
+    /// </summary>
+    public Guid? AssigneeOwnerId { get; private set; }
+    /// <summary>
+    /// <see cref="AssigneeOwnerId"/>'s own cross-node root fingerprint, the pairing every peer's
+    /// receive gate compares in place of a local owner id. Null when nobody holds the idea or the
+    /// assigning node's own record of that owner had no root yet.
+    /// </summary>
+    public string? AssigneeOwnerFingerprint { get; private set; }
     /// <summary>Null until an idea turns out to belong somewhere; an honest absence, not a gap.</summary>
     public Guid? ProjectId { get; private set; }
     public IdeaState State { get; private set; } = IdeaState.Unknown;
@@ -85,6 +98,18 @@ public sealed class IdeaAggregate
     }
 
     public void Apply(IdeaAssignedToProject @event) => ProjectId = @event.ProjectId;
+
+    public void Apply(IdeaAssigneeSet @event)
+    {
+        AssigneeOwnerId = @event.AssigneeOwnerId;
+        AssigneeOwnerFingerprint = @event.AssigneeOwnerRootFingerprint;
+    }
+
+    public void Apply(IdeaAssigneeCleared @event)
+    {
+        AssigneeOwnerId = null;
+        AssigneeOwnerFingerprint = null;
+    }
 
     public void Apply(IdeaTaskCut @event) => cutTaskIds.Add(@event.TaskId);
 

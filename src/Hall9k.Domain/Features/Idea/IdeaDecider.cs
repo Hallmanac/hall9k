@@ -72,7 +72,8 @@ public static class IdeaDecider
 
     /// <summary>
     /// Where the idea turned out to belong — set when capture did not know, or changed when it
-    /// guessed wrong. Nothing about the idea's text or workspace moves; only the binding.
+    /// guessed wrong (<c>h9k idea move</c>). Nothing about the idea's text or workspace moves; only
+    /// the binding. Who holds the idea is a different fact entirely, <see cref="SetAssignee"/>.
     /// </summary>
     public static IdeaAssignedToProject AssignToProject(
         IdeaAggregate idea, Guid projectId, DateTimeOffset assignedAt, Guid assignedByOwnerId)
@@ -91,6 +92,62 @@ public static class IdeaDecider
         }
 
         return new IdeaAssignedToProject(idea.Id, projectId, idea.ProjectId, assignedAt, assignedByOwnerId);
+    }
+
+    /// <summary>
+    /// A member lays hold of an idea, or hands it to another member (card D of idea 8d0b724b). Who
+    /// may is not decided here: the CLI asks <see cref="Tasks.Handlers.TaskOwnerRule"/> over verified
+    /// owner roots first, and every peer's receive gate asks the same rule. Returns null when
+    /// <paramref name="assigneeOwnerId"/> already holds the idea with the same root, so the caller
+    /// appends nothing. Naming another member on an idea below team scope is refused, because that
+    /// member would never receive it.
+    /// </summary>
+    public static IdeaAssigneeSet? SetAssignee(
+        IdeaAggregate idea,
+        Guid assigneeOwnerId,
+        string? assigneeRootFingerprint,
+        bool assigneeIsActor,
+        DateTimeOffset setAt,
+        Guid setByOwnerId,
+        string? onBehalfOfOwnerRootFingerprint = null,
+        string? overrideReason = null)
+    {
+        RequireCaptured(idea, "assign");
+
+        if (assigneeOwnerId == Guid.Empty)
+        {
+            throw new DomainValidationException("An assignment names the member who holds the idea.");
+        }
+
+        if (!assigneeIsActor && !idea.Scope.IsAtLeast(ReplicationScope.Team))
+        {
+            throw new DomainConflictException(
+                $"Idea {idea.Id} is {idea.Scope.Value} scope, so another member would never receive it. Share it "
+                + $"with the team first: h9k idea share {idea.Id}.");
+        }
+
+        return idea.AssigneeOwnerId == assigneeOwnerId && idea.AssigneeOwnerFingerprint == assigneeRootFingerprint
+            ? null
+            : new IdeaAssigneeSet(
+                idea.Id, assigneeOwnerId, assigneeRootFingerprint, setAt, setByOwnerId,
+                onBehalfOfOwnerRootFingerprint, overrideReason);
+    }
+
+    /// <summary>
+    /// The assignee lets go of an idea; it falls back to its creator. Refused when nobody holds it,
+    /// so there is nothing to record.
+    /// </summary>
+    public static IdeaAssigneeCleared ClearAssignee(
+        IdeaAggregate idea, string? reason, DateTimeOffset clearedAt, Guid clearedByOwnerId)
+    {
+        RequireCaptured(idea, "unassign");
+
+        if (idea.AssigneeOwnerId is null)
+        {
+            throw new DomainConflictException($"Idea {idea.Id} has no assignee, so there is nothing to clear.");
+        }
+
+        return new IdeaAssigneeCleared(idea.Id, reason, clearedAt, clearedByOwnerId);
     }
 
     /// <summary>

@@ -11,9 +11,16 @@ namespace Hall9k.Domain.Features.Idea;
 /// <c>h9k idea archive</c> replaces <c>h9k idea discard</c> outright rather than standing beside
 /// it as a second name for the same act.
 /// </para>
+/// <para>
+/// Decided by the same rule as <see cref="IdeaConcluded"/>: the idea's assignee, or its creator when
+/// it has none, or an Owner-role member through the override, which fills
+/// <paramref name="OnBehalfOfOwnerRootFingerprint"/> and <paramref name="OverrideReason"/>.
+/// </para>
 /// </summary>
 public sealed record IdeaArchived(
     Guid Id,
     string Reason,
     DateTimeOffset ArchivedAt,
-    Guid ArchivedByOwnerId);
+    Guid ArchivedByOwnerId,
+    string? OnBehalfOfOwnerRootFingerprint = null,
+    string? OverrideReason = null);

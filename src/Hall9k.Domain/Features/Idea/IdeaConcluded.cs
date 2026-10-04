@@ -12,9 +12,19 @@ namespace Hall9k.Domain.Features.Idea;
 /// survives as sugar over cutting one task and concluding in the same breath; every other path
 /// to concluding goes through this event directly.
 /// </para>
+/// <para>
+/// Only the idea's assignee, or its creator when it has none, may conclude it. A conclude by anyone
+/// else is refused at the CLI and by every peer's receive gate, unless an Owner-role member did it
+/// through the deliberate override (<c>--holder</c> with <c>--reason</c>), in which case
+/// <paramref name="OnBehalfOfOwnerRootFingerprint"/> names whose idea it was (null when that owner was
+/// unknown) and <paramref name="OverrideReason"/> says why. An owner's own act leaves both empty, and
+/// an event written before they existed replays unchanged.
+/// </para>
 /// </summary>
 public sealed record IdeaConcluded(
     Guid Id,
     string Reason,
     DateTimeOffset ConcludedAt,
-    Guid ConcludedByOwnerId);
+    Guid ConcludedByOwnerId,
+    string? OnBehalfOfOwnerRootFingerprint = null,
+    string? OverrideReason = null);

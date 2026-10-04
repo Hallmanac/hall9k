@@ -480,6 +480,10 @@ public static class EventScopeRegistry
         // not a different scope).
         [typeof(IdeaArchived)] = EventScope.ProjectScoped,
         [typeof(IdeaAssignedToProject)] = EventScope.ProjectScoped,
+        // Who holds an idea (card D of idea 8d0b724b): travels with the idea, so every node that
+        // holds a copy judges a conclude or archive by the same assignee.
+        [typeof(IdeaAssigneeCleared)] = EventScope.ProjectScoped,
+        [typeof(IdeaAssigneeSet)] = EventScope.ProjectScoped,
         [typeof(IdeaCaptured)] = EventScope.ProjectScoped,
         [typeof(IdeaConcluded)] = EventScope.ProjectScoped,
         [typeof(IdeaDiscarded)] = EventScope.ProjectScoped,
