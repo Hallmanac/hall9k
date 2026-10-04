@@ -201,7 +201,7 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
             (await TaskOwnerGuard.AuthorizeAsync(
                 session, task, _me, "unassign", holder: null, reason: null, _chain, new NodeKeyStore(), cts.Token))
                 .Outcome.Should().Be(TaskOwnerOverrideOutcome.OwnAct, "the assignee may let go of its own hold");
-            session.Events.Append(taskId, TaskUnassignCommand.ClearAssignee(task, null, _me.OwnerId, TaskOwnerOverrideDecision.OwnAct));
+            session.Events.Append(taskId, TaskUnassignCommand.ClearAssignee(task, null, _me.OwnerId, TaskOwnerOverrideDecision.OwnAct, Now));
             await session.SaveChangesAsync(cts.Token);
         }
 
@@ -345,7 +345,7 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
             session, task, _me, await target.LoadAsync(session, cancellationToken), holder: null, reason: null,
             _chain, new NodeKeyStore(), cancellationToken);
         TaskAssigneeSet? set = await TaskAssignCommand.AppendAssigneeAsync(
-            session, task, await target.LoadAsync(session, cancellationToken), _me.OwnerId, decision, cancellationToken);
+            session, task, await target.LoadAsync(session, cancellationToken), _me.OwnerId, decision, Now, cancellationToken);
         await session.SaveChangesAsync(cancellationToken);
         return set;
     }

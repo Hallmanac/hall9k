@@ -216,7 +216,8 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
                     : $"{assignee.Name} can queue it on their own nodes once they hold it; drop the flag."));
         }
 
-        TaskAssigneeSet? set = await AppendAssigneeAsync(session, task, assignee, context.OwnerId, ownerDecision, cancellationToken);
+        TaskAssigneeSet? set = await AppendAssigneeAsync(
+            session, task, assignee, context.OwnerId, ownerDecision, DateTimeOffset.UtcNow, cancellationToken);
         await session.SaveChangesAsync(cancellationToken);
 
         string shortId = TaskListCommand.ShortId(task.Id);
@@ -224,10 +225,17 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
             ? $"[yellow]Task {shortId} is already assigned to {assignee.Name.EscapeMarkup()}[/]. Nothing changed."
             : $"[green]Task {shortId} assigned to {assignee.Name.EscapeMarkup()}[/]: still {state}, so nothing is "
                 + "queued and no dispatcher sees it.");
+        // Once the task is handed to someone else, publish, revise and unassign belong to its new holder: the
+        // receive gate refuses this member's act on it, so the hint must not point them at it.
+        bool heldByActor = assignee.Id == context.OwnerId;
         AnsiConsole.MarkupLine(
-            task.State == TaskState.Draft
-                ? $"[dim]To release it:[/] h9k task unassign {shortId} [dim]· to make it ready:[/] h9k task publish {shortId}"
-                : $"[dim]To release it:[/] h9k task unassign {shortId} [dim]· to queue it:[/] the holder runs h9k task assign {shortId}");
+            (heldByActor, task.State == TaskState.Draft) switch
+            {
+                (true, true) => $"[dim]To release it:[/] h9k task unassign {shortId} [dim]· to make it ready:[/] h9k task publish {shortId}",
+                (true, false) => $"[dim]To release it:[/] h9k task unassign {shortId} [dim]· to queue it:[/] h9k task assign {shortId}",
+                (false, true) => $"[dim]It is {assignee.Name.EscapeMarkup()}'s now: they can revise and publish it, or release it with[/] h9k task unassign {shortId}",
+                (false, false) => $"[dim]It is {assignee.Name.EscapeMarkup()}'s now: they can queue it with[/] h9k task assign {shortId}[dim], or release it with[/] h9k task unassign {shortId}",
+            });
         TaskOwnerGuard.AnnounceOverride(ownerDecision, "assigned");
         return ExitCodes.Ok;
     }
@@ -263,7 +271,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
     /// </summary>
     internal static async Task<TaskAssigneeSet?> AppendAssigneeAsync(
         IDocumentSession session, TaskAggregate task, OwnerDetails assignee, Guid setByOwnerId,
-        TaskOwnerOverrideDecision ownerDecision, CancellationToken cancellationToken)
+        TaskOwnerOverrideDecision ownerDecision, DateTimeOffset now, CancellationToken cancellationToken)
     {
         await RefuseArchivedProjectAsync(session, task, cancellationToken);
 
@@ -277,7 +285,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
 
         bool overridden = ownerDecision.Outcome == TaskOwnerOverrideOutcome.Override;
         TaskAssigneeSet? set = TaskDecider.SetAssignee(
-            task, assignee.Id, assignee.RootFingerprint, assigneeIsActor, DateTimeOffset.UtcNow, setByOwnerId,
+            task, assignee.Id, assignee.RootFingerprint, assigneeIsActor, now, setByOwnerId,
             overridden ? ownerDecision.OnBehalfOfRootFingerprint : null,
             overridden ? ownerDecision.Reason : null);
         if (set is not null)
