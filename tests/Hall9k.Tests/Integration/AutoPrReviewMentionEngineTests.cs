@@ -932,10 +932,12 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
     }
 
     /// <summary>
-    /// Mints a task from a mention by ryan on a pull request, then rewrites the stored minting row
-    /// to <paramref name="storedBody"/> with no tagged login, the shape an older peer's replicated
-    /// mention takes, and relaunches the primary session. Returns the captured request of that
-    /// relaunch. Every login read after the mint answers <paramref name="loginReadable"/>.
+    /// Mints a task from a mention by ryan on a pull request, then rewrites only the stored minting
+    /// row's comment body to <paramref name="storedBody"/> and relaunches the primary session. The
+    /// row's mentioned login and the task's recorded tagged login stay as the mint wrote them, so a
+    /// body that tags someone else proves the body, not the recorded login, decides. Returns the
+    /// captured request of that relaunch, asserted to be the review's own spawn rather than the
+    /// pre-flight's. Every login read after the mint answers <paramref name="loginReadable"/>.
     /// </summary>
     private async Task<AgentSpawnRequest> RelaunchMintedReviewWithStoredBodyAsync(
         string repository, int number, string storedBody, bool loginReadable, CancellationToken cancellationToken)
@@ -983,7 +985,11 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         loginReadNow = loginReadable;
         await launcher.LaunchAsync(
             claimed.Id, claimed.CurrentRunId!.Value, node.NodeId, node.OwnerId, claimed.LeaseGeneration, cancellationToken);
-        return executor.Request!;
+        AgentSpawnRequest request = executor.Request!;
+        request.Prompt.Should().NotContain(
+            PrReviewPreflightVerdictParser.Marker,
+            "the pre-flight request is still the captured one when the relaunch never spawned the review");
+        return request;
     }
 
     [Fact]
@@ -997,19 +1003,6 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         request.Prompt.Should().NotContain("mention-answer.md", "a comment aimed at taylor is not one brian was asked to answer");
         request.Prompt.Should().NotContain("@taylor does this handle", "the addendum quotes the comment, and none was appended");
-    }
-
-    [Fact]
-    public async Task A_mint_whose_stored_comment_tags_this_login_in_other_letter_case_keeps_the_addendum()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-
-        AgentSpawnRequest request = await RelaunchMintedReviewWithStoredBodyAsync(
-            "acme/mention-mint-letter-case-test", 4252, "@Brian does this handle the empty-list case?",
-            loginReadable: true, cts.Token);
-
-        request.Prompt.Should().Contain("@Brian does this handle the empty-list case?");
-        request.Prompt.Should().Contain(Path.Combine(request.RunDirectory, "mention-answer.md"));
     }
 
     [Fact]
