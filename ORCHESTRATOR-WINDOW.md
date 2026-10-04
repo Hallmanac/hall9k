@@ -31,13 +31,13 @@ transcript when the first two have already named the task worth digging into.
 
 The flip is live (Decisions Log #17): Hall9k builds Hall9k. An orchestrator session **never
 implements a platform feature directly**, however small the change looks and however much faster
-it would be to just do it. It drafts a task, publishes it, assigns it, and lets a dispatched agent
+it would be to just do it. It drafts a task, publishes it, queues it, and lets a dispatched agent
 do the work.
 
 ```bash
 h9k idea add "The attention pane should teach the next command"     # not sure yet what it is
 h9k task add --project hall9k --objective "…" --criteria "…"        # a Draft: identity, not readiness
-h9k task publish <id> --assign                                      # the gate, and the go signal
+h9k task publish <id> --queue                                       # the gate, and the go signal
 ```
 
 Three things are outside the law, because they are not platform features:
@@ -56,12 +56,17 @@ Three things are outside the law, because they are not platform features:
   the real fix.
 
 Everything else is a task. When the human says "just quickly add X", the answer is a draft, and
-`h9k task publish --assign` is how fast looks around here.
+`h9k task publish --queue` is how fast looks around here.
+
+Two verbs are easy to confuse here. `h9k task assign <id> <member>` records who holds a task (at any stage, a draft
+included) and queues nothing; `h9k task queue <id>` is the go signal, and `h9k task dequeue <id>` takes a
+queued task back out of the queue keeping its holder. Nothing dispatches without a queue, and the window's habit
+of "assign means go" is retired: a task that was only assigned is still Ready and not queued.
 
 ## Taking the wheel
 
 The window can also put its own hands on a task's code instead of only drafting the task and
-stepping back — claiming a Published task (assigned to nobody, or already Queued or Blocked) and
+stepping back — claiming a Published task (held by nobody, or already Queued or Blocked) and
 either building it directly in an interactive session (`h9k task work`) or dispatching it headless
 on the spot while still standing as the boundary arbiter (`h9k task start`), plus the levers
 documented under both in `AGENTS.md`'s *Build / test / run* section. Doing that runs on its own doctrine, settled
@@ -189,7 +194,7 @@ and it has **no idea whether two of them collide**. `--blocked-by` enforces
 sequencing, but only as declared: the graph is enforced, never inferred. Inferring it is the
 window's job, and it is real work.
 
-Before assigning a batch, estimate each task's likely file footprint and decide:
+Before queueing a batch, estimate each task's likely file footprint and decide:
 
 - **Run in parallel** when the footprints are disjoint. Two tasks in different vertical slices
   (`Features/Idea/` and `Features/Run/`) genuinely do not see each other.
@@ -207,7 +212,7 @@ Before assigning a batch, estimate each task's likely file footprint and decide:
 A collision guess costs latency; a miss costs a rebase conflict. Both are survivable, so prefer
 latency only where the collision is real rather than serializing the queue by reflex.
 
-State the reasoning when you assign. "13 is held behind 09 because both rewrite the dispatch loop"
+State the reasoning when you queue. "13 is held behind 09 because both rewrite the dispatch loop"
 is the sentence a human needs in order to overrule you.
 
 This judgment is documented as a gap, not as a permanent human duty:
@@ -386,7 +391,7 @@ The checkpoints, in the order the window sees them:
    out-of-scope review findings` (Decisions Log #117) — so eight one-line pre-existing defects cost
    one build-gate-review-PR pipeline instead of eight. Its footprint is wide by construction (it
    touches as many unrelated files as it has items), so it is groomed and published by a human and
-   assigned alone, with no parallel siblings queued beside it, exactly as *the judgment the window
+   queued alone, with no parallel siblings queued beside it, exactly as *the judgment the window
    owns* above prescribes for any wide-footprint task.
    Only cycle 1 pays full two-lens discovery (Decisions Log #92, origin: 576M input tokens in one
    day re-reading 12k-line diffs with two lenses to judge 40-line fixes) — except that a

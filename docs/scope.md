@@ -15,7 +15,7 @@ Last reconciled against the tree on 2026-09-23.
 
 ### The dispatch pipeline
 
-Draft a task, publish it through the readiness gate, assign it, and a daemon claims it under a
+Draft a task, publish it through the readiness gate, queue it, and a daemon claims it under a
 lease, cuts a worktree and a branch from the base branch, spawns a detached Claude Code session
 with an assembled prompt, runs the project's verification gates, puts the diff through a two-lens
 independent review loop, and opens a pull request. A fix cycle's own `dotnet test`-shaped gate
@@ -64,6 +64,15 @@ output, bounded by its own round cap distinct from the rebase-recovery session's
 round that lands still earns a fresh-context review before the run may settle, the same guarantee a
 recovered rebase already gets. Only a repair round that cannot make the gate pass parks for a human
 (PLAN.md §16, Decisions Log #173).
+
+Holding a task and queueing it are two acts with two verbs, each named for the board column the task lands
+in (Decisions Log #34). `h9k task assign` records who holds a task at any stage before it runs (the
+assignee) and never dispatches it; a Published task stays Ready, and the board says `Assigned to Ryan ·
+not queued`. `h9k task queue` is the go signal: it queues a Published task for its assignee, or for you
+when nobody holds it, and `h9k task dequeue` returns a queued task to Published while keeping its
+assignee. `h9k task unassign` lets go of the hold. A node that predates these verbs still treats `assign`
+as the go signal, so every node of every member must be updated before anyone relies on `assign`
+meaning hold.
 
 Two things about that loop have been hardened by incident rather than by design review: leases
 survive a laptop lid closing without spawning duplicate agents, and daemon catch-up after a
@@ -148,10 +157,10 @@ resolving) renders "unknown" rather than a bare zero.
 
 `h9k task work <id> [--direct-launch] [--acknowledge-unmet-dependencies]` lets an operator work a
 Published, Queued, or Blocked task themselves instead of dispatching it headless. On a Published
-task assigned to nobody, it assigns the task to the operator's own owner and claims it
+task assigned to nobody, it queues the task for the operator's own owner and claims it
 interactively in one atomic event append, so the task is never observably Queued in between and the
 dispatcher can never win the race to it. An unmet dependency — whether just discovered here on a
-Published task, or already sitting Blocked from an ordinary `h9k task assign` or a
+Published task, or already sitting Blocked from an ordinary `h9k task queue` or a
 handed-back/retried claim — warns rather than refuses: the platform names every open blocker, and
 `--acknowledge-unmet-dependencies` is the human's recorded override to claim it anyway. Not needed
 twice: an acknowledgment this task already carries from an earlier claim on the same still-open
@@ -184,9 +193,9 @@ the claim to a headless agent
 partway through, resuming the same branch (`--first` marks it queue-first for the next free
 dispatch slot, `--now` dispatches it immediately instead, ceiling-exempt, through
 `h9k task start`'s own mechanism — refused together); `h9k task release` gives an untouched claim
-back to the dispatch queue, or, with `--unassign`, straight to Published instead, atomically —
-nobody can claim it in between, unlike a plain release followed by a separate
-`h9k task unassign`. See [PLAN.md Decisions Log #103, #122, #124, #126, #127](../PLAN.md).
+back to the dispatch queue, or, with `--unassign`, straight to Published instead, atomically, keeping
+its assignee — nobody can claim it in between, unlike a plain release followed by a separate
+`h9k task dequeue`. See [PLAN.md Decisions Log #103, #122, #124, #126, #127](../PLAN.md).
 
 ### Interactive mode's own review boundaries
 
@@ -260,7 +269,7 @@ launches the agent headless and detached (`claude -p`) under the
 `<task-shortid>-build` name rather than attached to the caller's terminal, and returns as soon as
 the process is confirmed alive. Shares `h9k task work`'s own warn-then-acknowledge shape for an
 unmet dependency, on a Published task and on an already-Blocked one alike (a task already sitting
-Blocked from an ordinary `h9k task assign`, or from a handed-back/retried deliberate claim): the
+Blocked from an ordinary `h9k task queue`, or from a handed-back/retried deliberate claim): the
 platform names every open blocker, and `--acknowledge-unmet-dependencies` is the human's recorded
 override to start it anyway. Not needed twice: an acknowledgment this task already carries from an
 earlier claim on the same still-open blockers is honored without asking again, whichever of
@@ -273,7 +282,7 @@ committed tree automatically, or flags anything else needs-you within seconds ra
 the row reading Working indefinitely (`h9k task handback --now` dispatches through this identical
 mechanism and carries the same flag). Giving the claim back (`handback`, `release`, `retry`, or `pr resolve`
 reopening it) lands the task on Blocked rather than Queued when the acknowledged dependency is
-still open, since only `h9k task assign` clears that snapshot — and the acknowledgment itself stays
+still open, since only `h9k task queue` clears that snapshot — and the acknowledgment itself stays
 on record for whichever command reclaims it next. See
 [PLAN.md Decisions Log #125, #128](../PLAN.md).
 
@@ -293,7 +302,7 @@ not built is an owner filter (show one named teammate's tasks); `--everyone` is 
 
 ### The dependency graph
 
-`--blocked-by` edges, enforced at assignment and re-evaluated every dispatch cycle. Cycles are
+`--blocked-by` edges, enforced at queueing and re-evaluated every dispatch cycle. Cycles are
 refused at publish and named hop by hop. A dependency counts as met only at true closeout. A
 blocker that dies holds its dependents visibly rather than silently unblocking them, and a
 blocker that recovers clears the hold on its own. The same edges route context: a run receives
@@ -341,8 +350,8 @@ the release from `Blocked`, the branch the cut starts from, the retarget, the re
 show` — reads what that sweep recorded rather than calling out again. The two forms are
 alternatives, the remote one carries no `--blocked-by` (there is no local task to name), and
 nothing needs to exist locally for the parent. A pull request the repository does not have yet is
-ordinary waiting; one that closed unmerged is the dead parent. The sweep reads only *assigned*
-children, so `h9k task assign` is what starts the watch on one still sitting Published. Because the
+ordinary waiting; one that closed unmerged is the dead parent. The sweep reads only *queued*
+children, so `h9k task queue` is what starts the watch on one still sitting Published. Because the
 read is on a cadence, the board can sit a few minutes behind the browser, which is why every line
 about a remote parent is labelled as an observation rather than as current.
 
@@ -458,7 +467,7 @@ a byte-for-byte determinism contract across nodes and this answer depends on whi
 asking.
 
 Distillation is a task a human authors. `h9k learn distill` creates an ordinary Research task
-draft and stops: nothing dispatches until a person publishes and assigns it, and no daemon code
+draft and stops: nothing dispatches until a person publishes and queues it, and no daemon code
 path authors one (a source sweep in the test suite holds that). Its instructions are
 merge-and-cite only, and the citation half is enforced rather than requested: `h9k learn
 --distilled-from <id>` records the merge with its sources, and the decider refuses a distilled
@@ -767,7 +776,7 @@ private or internal one keeps the collaborator behaviour above with no membershi
 (security review idea 6be68ee2, finding 1). `h9k project set <name> --review-requires-membership
 on|off|default` overrides the visibility-computed default either way; `default` has the daemon read
 the repository's own visibility fresh every sweep. A non-member's (or a bot's) request still mints
-the task, published but left unassigned — `h9k task assign` is the human go — and this node's first
+the task, published but held, not queued — `h9k task queue` is the human go — and this node's first
 sweep after a restart, before it has recomputed the project's declared members, skips rather than
 guesses and retries next sweep.
 
@@ -821,7 +830,7 @@ alone, and records what it saw on the task's own stream.
 
 Every claim door re-checks: the dispatcher leaves a refused task Queued and logs once per
 episode, and `h9k task work`/`h9k task start` refuse with the same wording and exit 70.
-`h9k task assign` warns and assigns anyway, because the tracker is the go signal and the queue is
+`h9k task queue` warns and queues anyway, because the tracker is the go signal and the queue is
 where the task is meant to wait. A queued task's own line on `h9k status`, `h9k task show` and
 `h9k project show` names the item and its current holder. The gate itself is read-only with no
 override flag, and a `pr-review` task is untouched — a pull request's own assignment is already
@@ -830,10 +839,10 @@ quoting the tracker's own error and naming what ends the hold (renew the token, 
 connection, or wait out the outage), and a held task is re-read no more often than every three
 minutes.
 
-`h9k task assign <id> --take` is the one write the feature makes, so claiming stops being a
+`h9k task queue <id> --take` (and `h9k task assign <id> --take` for a task you only hold) is the one write the feature makes, so claiming stops being a
 two-place act (Decisions Log #143): in a gated project it reads the linked item fresh and, when
 the tracker shows nobody holds it, writes this install's own tracker identity into the assignee
-field, reads the item back, records `TrackerAssignmentWritten` from that read-back, and assigns —
+field, reads the item back, records `TrackerAssignmentWritten` from that read-back, and queues —
 so the gate then passes on its own. It only ever moves an item from unassigned to you: one
 somebody else holds is refused (exit 70) naming the holder with nothing written and the task
 untouched, and there is deliberately no flag that takes an item from another person. Already yours
@@ -843,7 +852,7 @@ refused too — two installs took the item in the same moment, which only GitHub
 transition — Jira gets an `assignee`-only update through the same executor every other Jira write
 uses, GitHub gets
 `gh issue edit --add-assignee` — so the item's status is untouched, though a team's own board
-automation may react to the assignment. Without the flag an interactive assign offers the same
+automation may react to the assignment. Without the flag an interactive queue offers the same
 take (defaulting to no) and a non-interactive one warns and proceeds, never writing silently.
 Releasing a task leaves the tracker assignment where it is; the reverse write is not built.
 
@@ -888,7 +897,7 @@ built by this task) — reading the raw stream is the only way to see one today.
 A task published or later set `h9k task publish --pre-approved [on|after-human-review]` /
 `h9k task set-pre-approved <id> on|after-human-review|off`
 removes the owner as a synchronous gate at its own pull request. `h9k task set-pre-approved`
-is settable without the unassign/draft/revise/publish ceremony, on any live task whose pull request
+is settable without the dequeue/draft/revise/publish ceremony, on any live task whose pull request
 has not actually merged yet — `TaskState.Done` alone does not refuse it, since Done is also the
 entire window a pull request is open and closeout is watching it. A Draft refuses too, for a
 different reason: pre-approval is part of the readiness contract set at publish, and a value set
@@ -1075,9 +1084,9 @@ names the rank decision as its own sentence, beside the one already naming the p
 only when rank actually decided the slot against another eligible task in the same project — two
 tasks of equal rank dispatch oldest first with nothing to report. `h9k status` lists a project's
 queued rows in this same order and names the rank each one waits under: inside the sentence that
-already says a plain queued row is assigned and ready, or, for a follow-up lap already past its
+already says a plain queued row is queued and ready, or, for a follow-up lap already past its
 first pull request (which reads Delivered, not Published), on that row's phase line instead, since
-the assigned-and-ready sentence composes only for a Published row.
+the queued-and-ready sentence composes only for a Queued row.
 
 `h9k status` prints a throughput block beneath those spend lines, for the identical period, so
 speed and efficiency read beside cost rather than instead of it: how many tasks merged this
@@ -1547,7 +1556,7 @@ of every Jira write (create, update, comment): composition and execution are spl
 executor refuses a transition or a close regardless of what was composed, because which status a
 merge means is a team's workflow rather than a fact about software. The one write the platform
 initiates entirely on its own is a comment on the card when the task's pull request merges. The
-claim gate's own `h9k task assign --take` (#143) writes one field — the assignee, on an item nobody
+claim gate's own `--take` on `h9k task queue` and `h9k task assign` (#143) writes one field — the assignee, on an item nobody
 holds, on a human's explicit say-so — and no status, which is exactly why it does not breach this:
 who is holding a card is not which state it is in.
 

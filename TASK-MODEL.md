@@ -41,8 +41,8 @@ The §3.3 lifecycle mixes two concerns. Here they separate cleanly:
   with the failure path `Claimed → Failed → Queued | Done | Abandoned`
   (+ `NeedsRefinement` reserved, not built in v0). The first three states separate task
   *development* from task *dispatch* (log #34, §2.3 below): `Draft` is being developed and is
-  invisible to the dispatcher, `Published` has passed the readiness gate and is assignable but
-  not claimable, and only an explicit human assignment produces `Queued` (dependencies all
+  invisible to the dispatcher, `Published` has passed the readiness gate and is queueable but
+  not claimable, and only an explicit human queueing (`h9k task queue`) produces `Queued` (dependencies all
   closed out) or `Blocked` (some have not). Only `Done` and `Abandoned` are terminal:
   terminal states say how the story ended, and "ended in failure" is only true when a human
   walks away, which is what `Abandoned` means. `Failed` is a needs-human waypoint (log #27)
@@ -99,13 +99,14 @@ public sealed record TaskRevised(       // Draft-only. Optional<T> carries "left
     DateTimeOffset RevisedAt,
     Guid RevisedByOwnerId);
 
-public sealed record TaskReturnedToDraft( // Published -> Draft: the explicit revert (refused once assigned)
+public sealed record TaskReturnedToDraft( // Published -> Draft: the explicit revert (refused once queued)
     Guid Id,
     string? Reason,
     DateTimeOffset ReturnedAt,
     Guid ReturnedByOwnerId);
 
-public sealed record TaskAssigned(      // Published -> Queued (or Blocked): the dispatch trigger, always human
+public sealed record TaskAssigned(      // Published -> Queued (or Blocked): the go signal `h9k task queue` writes, always human.
+                                        // Named for the wire, not the verb: it also sets the assignee, and `assign` writes TaskAssigneeSet
     Guid Id,
     Guid AssignedOwnerId,               // the claim guard reads this: a node claims only its owner's work
     IReadOnlyList<Guid> UnmetDependencies, // empty => Queued; otherwise Blocked until each closes out
@@ -122,11 +123,15 @@ public sealed record TaskAssigneeSet(   // a member lays hold of a Draft or Publ
 public sealed record TaskAssigneeCleared( // the assignee lets go of a Draft or an unqueued Published task
     Guid Id, string? Reason, DateTimeOffset ClearedAt, Guid ClearedByOwnerId);
 
-public sealed record TaskUnassigned(    // Queued/Blocked -> Published; refused while a lease is held
+public sealed record TaskUnassigned(    // Queued/Blocked -> Published (dequeue, or unassign when KeepsAssignee is false); refused while a lease is held
     Guid Id,
     string? Reason,
     DateTimeOffset UnassignedAt,
-    Guid UnassignedByOwnerId);
+    Guid UnassignedByOwnerId,
+    string? OnBehalfOfOwnerRootFingerprint = null,
+    string? OverrideReason = null,
+    bool KeepsAssignee = false);        // true for `h9k task dequeue`: the task leaves the queue and keeps its assignee;
+                                        // absent on every older event, which replays as it always did (assignee cleared)
 
 public sealed record TaskDependencyCompleted( // a blocker reached TRUE closeout (RunCompleted, §2.2)
     Guid Id,
@@ -285,7 +290,7 @@ public sealed class TaskAggregate
     public void Apply(TaskAssigned @event) { /* AssignedOwnerId and AssigneeOwnerId; State = UnmetDependencies.Count == 0 ? Queued : Blocked */ }
     public void Apply(TaskAssigneeSet @event) { /* AssigneeOwnerId only; ignored while AssignedOwnerId is set */ }
     public void Apply(TaskAssigneeCleared @event) { /* AssigneeOwnerId = null; ignored while AssignedOwnerId is set */ }
-    public void Apply(TaskUnassigned @event) { /* AssignedOwnerId and AssigneeOwnerId = null; dependency bookkeeping cleared; State = Published */ }
+    public void Apply(TaskUnassigned @event) { /* AssignedOwnerId = null, and AssigneeOwnerId = null unless KeepsAssignee; dependency bookkeeping cleared; State = Published */ }
     public void Apply(TaskDependencyCompleted @event) { /* drop it from Unmet + Dead; empty => Blocked -> Queued */ }
     public void Apply(TaskDependencyFailed @event) { /* record the dead blocker + reason; State unchanged */ }
     public void Apply(TaskDependencyRecovered @event) { /* drop that dead blocker; reason = what is left; State unchanged */ }
@@ -491,19 +496,21 @@ Queued` meant the daemon claimed a half-formed thought within seconds of it bein
 ```
 h9k task add          ->  Draft       being developed; editable; invisible to the dispatcher
 h9k task revise       ->  Draft       objective / criteria / context / type / model / BlockedBy
-h9k task publish      ->  Published   the readiness gate; immutable; assignable, NOT claimable
-h9k task assign       ->  Queued      every dependency at true closeout
+h9k task assign       ->  (same)      records who holds it at any stage; queues nothing
+h9k task publish      ->  Published   the readiness gate; immutable; queueable, NOT claimable
+h9k task queue        ->  Queued      the go signal; every dependency at true closeout
                       or  Blocked     at least one is not
-h9k task unassign     ->  Published   refused while a lease is held
-h9k task draft        ->  Draft       refused from Queued/Blocked onward (unassign first)
+h9k task dequeue      ->  Published   keeps the assignee; refused while a lease is held
+h9k task unassign     ->  Published   dequeues and lets go of the assignee; refused while a lease is held
+h9k task draft        ->  Draft       refused from Queued/Blocked onward (dequeue first)
 ```
 
 **Where validation lives.** Creation asks only for identity — a project and an objective. The
 readiness contract (an outcome-phrased objective and at least one checkable acceptance
 criterion, PLAN.md §4) is enforced once, at Publish, as an *invariant of that state* rather
 than a toll booth at creation. Revision is Draft-only because every later state carries a
-promise editing would break: Published promises "a human may assign this at any moment and it
-satisfies the contract"; assigned promises "a node may read this at any moment", and revising a
+promise editing would break: Published promises "a human may queue this at any moment and it
+satisfies the contract"; queued promises "a node may read this at any moment", and revising a
 claimable task races the dispatcher.
 
 **The claim guard is one rule.** `task.State == Queued && task.AssignedOwnerId == node.OwnerId`.
@@ -511,7 +518,7 @@ There is no other path to a claim, which is also what makes multi-owner projects
 arrive (backlog/IDEA-task-assignment.md): arbitrary pickup is structurally impossible rather
 than policy-forbidden. The daemon's queue query stays the cheap indexed-friendly filter it
 always was — state plus assigned owner — and dispatch order inside the ready set is unchanged:
-FIFO by `AddedAt`. Dependencies and assignment shape the ready set, not its ordering.
+FIFO by `AddedAt`. Dependencies and queueing shape the ready set, not its ordering.
 
 **"Complete" means true closeout.** A `BlockedBy` edge is met only when the dependency's run
 reached `RunCompleted` — which §2.2's closeout monitor appends when it observes the merge.
@@ -559,7 +566,7 @@ work and the holds did not clear, leaving a board that read "act now" about a si
 handled for what would have been the whole rebuild.
 
 **Cycles.** Detection lives at Publish alone. A draft may transiently reference a cycle while a
-graph is being authored; a cycle can never become assignable, and the refusal names the cycle
+graph is being authored; a cycle can never become queueable, and the refusal names the cycle
 hop by hop rather than saying one exists somewhere.
 
 **Migration.** `TaskAdded.StartsAsDraft` defaults to `false` — the pre-split meaning — so a
@@ -585,7 +592,7 @@ why - and the answer is three surfaces, composed in `TaskStatusComposer` and rea
 `Failed`, `Archived`. It is display-only; nothing about the persisted model changes. `Queued` and
 `Blocked` render as `Published` unless the task has already been pushed once — a reopened task
 carrying a pull request is a follow-up in flight, which reads `Delivered` instead (a plain `Queued`
-or `Blocked` row's difference moves onto that row's derived-facts line: "assigned and ready as a
+or `Blocked` row's difference moves onto that row's derived-facts line: "queued and ready as a
 first claim; the dispatcher has not claimed it yet", "waiting on 2 dependencies to close out",
 which is also where the ranking model's facts will land when it retires those two states). A
 queued row names its own rank — a follow-up lap past its first pull request, a retry or hand-back
@@ -1513,7 +1520,7 @@ Three things this slice deliberately does not do:
    attachments feature's job (IDEA-task-attachments), not this one's.
 2. **It does not duplicate the task lifecycle.** Cutting a task emits an ordinary `TaskAdded`
    (a Draft, per log #34) whose agent context is the note plus the workspace pointer, and the
-   human then walks the ordinary ceremony: revise, publish, assign — once per cut.
+   human then walks the ordinary ceremony: revise, publish, queue — once per cut.
 3. **It does not interpret the note.** A cut's objective is always typed (`--objective`),
    never taken from the note — several tasks fanned out from one idea cannot share its first
    sentence. `h9k idea promote`'s own mechanical first-sentence split is the one exception,

@@ -224,17 +224,26 @@ after it was written down.
 ```
 h9k task add          ->  Draft       being developed; editable; invisible to the dispatcher
 h9k task revise       ->  Draft       objective / criteria / context / type / model / BlockedBy / epic
-h9k task publish      ->  Published   the readiness gate; immutable; assignable, NOT claimable
-h9k task assign       ->  Queued      every dependency at true closeout
+h9k task assign       ->  (same)      records who holds it at any stage; queues nothing
+h9k task publish      ->  Published   the readiness gate; immutable; queueable, NOT claimable
+h9k task queue        ->  Queued      the go signal; every dependency at true closeout
                       or  Blocked     at least one is not
-h9k task unassign     ->  Published   refused while a lease is held
-h9k task draft        ->  Draft       refused from Queued/Blocked onward (unassign first)
+h9k task dequeue      ->  Published   keeps the assignee; refused while a lease is held
+h9k task unassign     ->  Published   dequeues and lets go of the assignee; refused while a lease is held
+h9k task draft        ->  Draft       refused from Queued/Blocked onward (dequeue first)
 ```
 
-The edit-after-the-fact path is therefore `unassign → draft → revise → publish → assign`, each
-step an explicit act. Revision is Draft-only because every later state carries a promise that
-editing would break: Published promises the task satisfies the contract and may be assigned at
-any moment, and an assigned task promises a node may read it at any moment. The main exception is
+Each verb names the board column the task lands in (Decisions Log #34, and the assign/queue split):
+`assign` moves no column at all, because it records who holds a task and a Draft, a Published task and an
+idea can all be held; `publish` lands it in Ready; `queue` lands it in Queued and is the go signal; and
+only the daemon moves it on to Working and Delivered. A held but unqueued task is "Assigned to Ryan · not
+queued" on the board, and nothing dispatches without a queue.
+
+The edit-after-the-fact path is therefore `dequeue → draft → revise → publish → queue`, each
+step an explicit act (`unassign` in place of `dequeue` when the task should also lose its holder).
+Revision is Draft-only because every later state carries a promise that
+editing would break: Published promises the task satisfies the contract and may be queued at
+any moment, and a queued task promises a node may read it at any moment. The main exception is
 `--queue-first`/`--clear-queue-first`: a scheduling fact rather than part of the readiness
 contract, so a call that names only it is let through in any live state except Abandoned —
 Queued, Blocked, a currently Claimed task (for its next turn in the queue), even a Done one (for
@@ -488,9 +497,9 @@ Everything above stays true, with three differences:
   ordinary task on the base branch, which is exactly where the retarget would have put it. The
   earlier-start checkpoints above are for local parents only.
 - **The state is read from GitHub on the closeout watcher's own cadence**, by one sweep, once per
-  tick, for every *assigned* stacked child this owner has that is still waiting, running, or under
-  review. A child still sitting in Draft or Published is assigned to nobody, so nothing looks at its
-  parent and nothing would dispatch it if it did — `h9k task assign` is what starts the watch, and
+  tick, for every *queued* stacked child this owner has that is still waiting, running, or under
+  review. A child still sitting in Draft or Published is queued for nobody, so nothing looks at its
+  parent and nothing would dispatch it if it did — `h9k task queue` is what starts the watch, and
   the claim doors and `h9k task show` say so rather than telling you to wait. Everything downstream
   — the release, the branch a fresh cut starts from, the retarget, the replay, `h9k task show` —
   reads what that sweep recorded rather than asking GitHub again, so a dispatch never waits on a
@@ -1178,7 +1187,7 @@ its task's, so an answer carrying the task alone lands a finished task reading a
 laps and no sessions, which is what happened to task 3727884f on 2026-09-21. And a task that lands
 naming blocked-by or stacked-on ids whose streams are not here has each of those asked for
 automatically, one request per missing dependency and the graph walked again as each one arrives,
-so `h9k task assign` is never refused for a dependency the platform could have fetched.
+so `h9k task queue` is never refused for a dependency the platform could have fetched.
 
 `h9k status` shows every outstanding request while it stands, whichever mechanism minted it, and
 names whose dependency an automatic one is fetching. A broadcast closes when a member answers it,
@@ -1367,10 +1376,10 @@ Agent-facing commands are observation gates: `write-jira` and `h9k task link-jir
 a pre-existing card) both read the key back through Jira before recording anything, so an agent's
 or an operator's claim is an argument that gets checked, never a fact that gets accepted.
 
-**An assignment names an owner, not a node.** `h9k task assign <id> <owner>` puts the task in the
-queue every node of that owner's fleet reads from (Decisions Log #34), and the first free dispatcher
+**Queueing names an owner, not a node.** `h9k task queue <id>` puts the task in the
+queue every node of its assignee's fleet reads from (Decisions Log #34), and the first free dispatcher
 in that fleet claims it, wherever it runs, exactly as if only one node existed. `--node
-<id-or-fragment>` narrows that to one specific node of the owner's own fleet: only that node's
+<id-or-fragment>` on `queue` narrows that to one specific node of the owner's own fleet: only that node's
 dispatcher claims it, and every other node of the fleet skips it, logging why once a sweep
 rather than silently. Placement is advisory to dispatch alone — it never changes whose work the
 task is, and it never touches the ledger holder a claim writes; it only narrows *which* node of the
@@ -1383,7 +1392,7 @@ first.
 Placement and the takeover levers agree by construction (idea 202383dc, items 4 and 5): a forced
 `h9k task take --force` or a cooperative grant that moves an already-*placed* task rewrites the
 placement to the taker's own node in the same event, so the node that just lost the task stops
-trying to reclaim it without a second `h9k task assign --node`. A never-placed task stays unplaced
+trying to reclaim it without a second `h9k task assign --node` (or `queue --node`). A never-placed task stays unplaced
 through either lever, keeping the automatic cross-node recovery it had before placement existed.
 
 GitHub gets a write path of its own, because an issue's shape (title, body, labels) is uniform
@@ -1698,9 +1707,9 @@ ahead of the agent's own context in the first run that resumes the task's branch
 is capped at four thousand characters, and is for work still in flight, unlike the closeout handoff
 a merge gives a dependent task.
 
-**Placement chooses among the nodes of your fleet, and it never moves ownership.** `h9k task assign <id>
-[owner] --node <node>` narrows a task to one node of the owner's fleet: only that node's dispatcher
-claims it, and the others stand down without a forced take. A node outside the fleet is refused (vouch
+**Placement chooses among the nodes of your fleet, and it never moves ownership.** `h9k task queue <id>
+--node <node>` (and `h9k task assign <id> --node <node>` once the task is queued) narrows a task to one node of the owner's fleet:
+only that node's dispatcher claims it, and the others stand down without a forced take. A node outside the fleet is refused (vouch
 it first), and a bare `--node` clears the placement. A forced take or a grant that moves a placed task
 rewrites the placement to the new holder in the same step.
 
