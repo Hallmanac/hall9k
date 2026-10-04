@@ -1,14 +1,18 @@
 using System.Formats.Tar;
 using System.IO.Compression;
+using System.ComponentModel;
 using System.Security.Cryptography;
+using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Installation;
+using Hall9k.Connectors.Releases;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.TestSupport;
 using Xunit;
 
@@ -374,15 +378,154 @@ public sealed class UpdateCommandTests : IDisposable
             "a refused update must not leave its downloaded archive or extracted payload behind in temp");
     }
 
+    [Fact]
+    public async Task A_release_whose_assets_are_not_all_attached_yet_says_so_and_downloads_nothing()
+    {
+        if (ReleasePlatform.CurrentRid() is null)
+        {
+            return;
+        }
+
+        FakeGh gh = FakeGh.ForCurrentPlatform(workspace, version: "1.2.3", skillName: "pr-summary");
+        gh.AttachOnly("checksums.txt");
+        using ScopedConsoleCapture captured = ScopedConsoleCapture.StandardError();
+
+        int exitCode = await Run(gh.Runner);
+
+        exitCode.Should().NotBe(0);
+        captured.Text.Should().Contain("not yet complete").And.Contain(ReleasePlatform.ArchiveFileName(ReleasePlatform.CurrentRid()!));
+        gh.DownloadedTag.Should().BeNull("a release that is not complete must never reach the download");
+        Directory.Exists(DaemonRuntime.BinDirectory).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task The_cleared_channel_installs_the_release_github_calls_latest()
+    {
+        if (ReleasePlatform.CurrentRid() is null)
+        {
+            return;
+        }
+
+        FakeGh gh = FakeGh.ForCurrentPlatform(workspace, version: "1.2.3", skillName: "pr-summary", tag: "v1.2.3");
+        gh.ListRelease("v1.3.0", isDraft: false);
+
+        int exitCode = await Run(gh.Runner, ReleaseChannel.Cleared);
+
+        exitCode.Should().Be(0);
+        gh.DownloadedTag.Should().Be("v1.2.3");
+        gh.Verbs.Should().NotContain("release list");
+    }
+
+    [Fact]
+    public async Task The_all_channel_installs_the_highest_published_version_and_pins_the_attestation_to_it()
+    {
+        if (ReleasePlatform.CurrentRid() is null)
+        {
+            return;
+        }
+
+        FakeGh gh = FakeGh.ForCurrentPlatform(workspace, version: "1.2.3", skillName: "pr-summary", tag: "v1.2.3");
+        gh.ListRelease("v1.2.9", isDraft: false);
+        gh.ListRelease("v1.3.0", isDraft: true);
+        gh.ListRelease("v1.2.10", isDraft: false);
+
+        int exitCode = await Run(gh.Runner, ReleaseChannel.All);
+
+        exitCode.Should().Be(0);
+        gh.DownloadedTag.Should().Be("v1.2.10", "the highest published version wins over the newest created and over a draft");
+        gh.VerifiedSourceRef.Should().Be("refs/tags/v1.2.10");
+    }
+
+    [Fact]
+    public async Task A_missing_gh_keeps_its_install_hint()
+    {
+        using ScopedConsoleCapture captured = ScopedConsoleCapture.StandardError();
+
+        int exitCode = await Run((_, _, _, _) => throw new Win32Exception("No such file or directory"));
+
+        exitCode.Should().NotBe(0);
+        captured.Text.Should().Contain("gh is not installed or not on the PATH").And.Contain("https://cli.github.com");
+    }
+
+    [Fact]
+    public async Task A_signed_out_gh_keeps_its_auth_hint()
+    {
+        using ScopedConsoleCapture captured = ScopedConsoleCapture.StandardError();
+
+        int exitCode = await Run((_, _, _, _) => Task.FromResult(new ProcessResult(1, string.Empty, "HTTP 401: Bad credentials")));
+
+        exitCode.Should().NotBe(0);
+        captured.Text.Should().Contain("gh release view failed for").And.Contain("HTTP 401: Bad credentials").And.Contain("gh auth login");
+    }
+
+    [Fact]
+    public async Task A_repository_with_no_cleared_release_points_at_clearing_one_or_the_all_channel()
+    {
+        using ScopedConsoleCapture captured = ScopedConsoleCapture.StandardError();
+
+        int exitCode = await Run((_, _, _, _) => Task.FromResult(new ProcessResult(1, string.Empty, "release not found")));
+
+        exitCode.Should().NotBe(0);
+        captured.Text.Should().Contain("gh release edit <tag> --prerelease=false --latest").And.Contain("--release-channel all");
+    }
+
+    [Fact]
+    public async Task A_gh_that_times_out_keeps_its_timeout_message()
+    {
+        using ScopedConsoleCapture captured = ScopedConsoleCapture.StandardError();
+
+        int exitCode = await Run((_, _, _, _) => throw new TimeoutException("gh did not answer"));
+
+        exitCode.Should().NotBe(0);
+        captured.Text.Should().Contain("gh release view timed out: gh did not answer");
+    }
+
+    [Fact]
+    public async Task Unparseable_gh_output_keeps_its_parse_message()
+    {
+        using ScopedConsoleCapture captured = ScopedConsoleCapture.StandardError();
+
+        int exitCode = await Run((_, _, _, _) => Task.FromResult(new ProcessResult(0, "<html>rate limited</html>", string.Empty)));
+
+        exitCode.Should().NotBe(0);
+        captured.Text.Should().Contain("gh release view returned output h9k update could not parse for");
+    }
+
+    [Fact]
+    public async Task A_channel_warning_is_printed_and_the_update_still_proceeds_on_cleared()
+    {
+        if (ReleasePlatform.CurrentRid() is null)
+        {
+            return;
+        }
+
+        FakeGh gh = FakeGh.ForCurrentPlatform(workspace, version: "1.2.3", skillName: "pr-summary");
+        using ScopedConsoleCapture captured = ScopedConsoleCapture.StandardError();
+
+        int exitCode = await UpdateCommand.RunAsync(
+            gh.Runner, ReleasePlatform.DefaultRepository, restart: false, noRestart: true, linkOntoPath: false,
+            readReleaseChannel: _ => Task.FromResult(
+                new ReleaseChannelResolution(ReleaseChannel.Cleared, "Release channel: could not use config.json; using cleared.")),
+            containerRuntimeRunner: (_, _, _, _) => Task.FromResult(new ProcessResult(1, string.Empty, "docker not reached in this test")),
+            restartChildRunner: (_, _, _) => Task.FromResult(RestartStepResult.Exited(ExitCodes.Ok)),
+            scratchRoot: scratchRoot,
+            cancellationToken: CancellationToken.None);
+
+        exitCode.Should().Be(0);
+        captured.Text.Should().Contain("Release channel: could not use config.json; using cleared.");
+    }
+
     // Scoped to this test instance's own scratchRoot (never the machine-wide temp directory),
     // so a sibling process's own in-flight scratch directory on this shared host never shows up
     // as a false leak in the before/after diff.
     private IReadOnlySet<string> TempScratchDirectories() =>
         Directory.EnumerateDirectories(scratchRoot).ToHashSet();
 
-    private Task<int> Run(ProcessRunner gh) =>
+    private Task<int> Run(ProcessRunner gh, ReleaseChannel? channel = null) =>
         UpdateCommand.RunAsync(
             gh, ReleasePlatform.DefaultRepository, restart: false, noRestart: true, linkOntoPath: false,
+            // The real reader would look in this machine's config file; a test names its channel.
+            readReleaseChannel: _ => Task.FromResult(new ReleaseChannelResolution(channel ?? ReleaseChannel.Cleared, null)),
             // The port-binding check InstallCommand.FinishAsync now runs unconditionally shells
             // out to docker — a fake that never answers keeps this test's outcome independent of
             // whatever Docker happens to be running on the machine the test suite executes on.
@@ -407,6 +550,8 @@ public sealed class UpdateCommandTests : IDisposable
         private readonly string tag;
         private bool corrupt;
         private AttestationOutcome attestationOutcome = AttestationOutcome.Verified;
+        private readonly List<(string Tag, bool IsDraft)> listed = [];
+        private IReadOnlyList<string>? attachedAssets;
 
         private enum AttestationOutcome
         {
@@ -423,6 +568,15 @@ public sealed class UpdateCommandTests : IDisposable
             this.archiveFileName = archiveFileName;
             this.tag = tag;
         }
+
+        /// <summary>Every <c>gh</c> subcommand pair invoked ("release view", "release list", ...), in order.</summary>
+        public List<string> Verbs { get; } = [];
+
+        /// <summary>Adds a release to what <c>gh release list</c> returns, in the order added (newest created first).</summary>
+        public void ListRelease(string listedTag, bool isDraft) => listed.Add((listedTag, isDraft));
+
+        /// <summary>Limits the asset list <c>gh release view</c> reports, as a release still mid-publish would have.</summary>
+        public void AttachOnly(params string[] assetNames) => attachedAssets = assetNames;
 
         /// <summary>The tag argument <c>gh release download</c> was actually invoked with, or
         /// null if it was never called.</summary>
@@ -497,17 +651,33 @@ public sealed class UpdateCommandTests : IDisposable
         public ProcessRunner Runner => (fileName, arguments, _, _) =>
         {
             List<string> argumentList = [.. arguments];
+            Verbs.Add(string.Join(' ', argumentList.Take(2)));
             return Task.FromResult(argumentList switch
             {
-                ["release", "view", ..] => HandleReleaseView(),
+                ["release", "view", ..] => HandleReleaseView(argumentList),
+                ["release", "list", ..] => HandleReleaseList(),
                 ["release", "download", ..] => HandleReleaseDownload(argumentList),
                 ["attestation", "verify", ..] => HandleAttestationVerify(argumentList),
                 _ => throw new InvalidOperationException($"FakeGh does not know how to handle: gh {string.Join(' ', argumentList)}"),
             });
         };
 
-        private ProcessResult HandleReleaseView() =>
-            new(0, $$"""{"tagName":"{{tag}}"}""", string.Empty);
+        // A tag-less view is GitHub's latest release, which the cleared channel resolves; a view
+        // that names a tag (the all channel's second call) reports that tag's own assets.
+        private ProcessResult HandleReleaseView(List<string> argumentList)
+        {
+            string viewedTag = argumentList[2].StartsWith("--", StringComparison.Ordinal) ? tag : argumentList[2];
+            string[] assetNames = attachedAssets is { } attached
+                ? [.. attached]
+                : [archiveFileName, "checksums.txt", "hall9k-other-platform.zip"];
+            return new ProcessResult(
+                0,
+                JsonSerializer.Serialize(new { tagName = viewedTag, assets = assetNames.Select(name => new { name }) }),
+                string.Empty);
+        }
+
+        private ProcessResult HandleReleaseList() =>
+            new(0, JsonSerializer.Serialize(listed.Select(release => new { tagName = release.Tag, isDraft = release.IsDraft })), string.Empty);
 
         private ProcessResult HandleReleaseDownload(List<string> argumentList)
         {

@@ -340,6 +340,16 @@ public sealed class OperatingSettings
     /// </summary>
     public string? OrchestratorEffort { get; set; }
 
+    /// <summary>
+    /// Which releases this node's release lookup considers: "cleared" (GitHub's latest release,
+    /// which excludes pre-releases) or "all" (the published release with the highest version,
+    /// pre-release or not). Null, or a value that is neither, means cleared. Read only by
+    /// <c>Hall9k.Connectors.Releases.ReleaseChannelSetting</c>, fresh at every lookup, and by
+    /// <c>h9k config show</c>: no <c>DaemonOptions</c> field binds it and it has no environment
+    /// variable, so a change needs no daemon restart (Decisions Log 8c039759).
+    /// </summary>
+    public string? ReleaseChannel { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
 }

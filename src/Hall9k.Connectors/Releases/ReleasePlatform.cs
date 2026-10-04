@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace Hall9k.Cli.Installation;
+namespace Hall9k.Connectors.Releases;
 
 /// <summary>
 /// The platform matrix backlog 42's release workflow builds and <c>h9k update</c> fetches
