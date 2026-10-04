@@ -194,7 +194,7 @@ public sealed class TaskListItem
     /// fields (security review idea 6be68ee2, finding 1): whether this pr-review task's own mint
     /// was parked by the membership gate rather than assigned, and the pull request facts the
     /// park card names. <c>AttentionComposer</c> reads these to render the needs-you row; never
-    /// cleared once set, since <c>h9k task assign</c> is the human go that ends the park.
+    /// cleared once set, since <c>h9k task queue</c> is the human go that ends the park.
     /// </summary>
     public bool PrReviewGateParked { get; set; }
     public string? PrReviewGateParkedAuthorLogin { get; set; }
@@ -619,8 +619,12 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
     {
         view.AssignedOwnerId = null;
         view.AssignedOwnerFingerprint = null;
-        view.AssigneeOwnerId = null;
-        view.AssigneeOwnerFingerprint = null;
+        // A dequeue, a release and a park stop the go but keep the hold; an event with no marker clears it.
+        if (!@event.Data.KeepsAssignee)
+        {
+            view.AssigneeOwnerId = null;
+            view.AssigneeOwnerFingerprint = null;
+        }
         view.PlacedOnNodeId = null;
         view.AssignedAt = null;
         view.UnmetDependencies = [];
@@ -639,8 +643,12 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
 
         view.AssignedOwnerId = null;
         view.AssignedOwnerFingerprint = null;
-        view.AssigneeOwnerId = null;
-        view.AssigneeOwnerFingerprint = null;
+        // A dequeue, a release and a park stop the go but keep the hold; an event with no marker clears it.
+        if (!@event.Data.KeepsAssignee)
+        {
+            view.AssigneeOwnerId = null;
+            view.AssigneeOwnerFingerprint = null;
+        }
         view.PlacedOnNodeId = null;
         view.AssignedAt = null;
         view.UnmetDependencies = [];
@@ -1101,8 +1109,12 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
 
         view.AssignedOwnerId = null;
         view.AssignedOwnerFingerprint = null;
-        view.AssigneeOwnerId = null;
-        view.AssigneeOwnerFingerprint = null;
+        // A dequeue, a release and a park stop the go but keep the hold; an event with no marker clears it.
+        if (!@event.Data.KeepsAssignee)
+        {
+            view.AssigneeOwnerId = null;
+            view.AssigneeOwnerFingerprint = null;
+        }
         view.PlacedOnNodeId = null;
         view.AssignedAt = null;
         view.UnmetDependencies = [];

@@ -206,7 +206,7 @@ public sealed class TaskAssigneeTests
     }
 
     [Fact]
-    public void A_hand_off_on_a_queued_task_is_refused_and_names_the_unassign_that_releases_it()
+    public void A_hand_off_on_a_queued_task_is_refused_and_names_the_dequeue_that_takes_it_out_of_the_queue()
     {
         TaskAggregate queued = new();
         queued.Apply(Draft());
@@ -215,7 +215,7 @@ public sealed class TaskAssigneeTests
 
         Action handOff = () => TaskDecider.SetAssignee(queued, OwnerB, RootB, assigneeIsActor: false, Now, OwnerA);
 
-        handOff.Should().Throw<DomainConflictException>().WithMessage($"*h9k task unassign {TaskId}*");
+        handOff.Should().Throw<DomainConflictException>().WithMessage($"*h9k task dequeue {TaskId}*");
     }
 
     [Fact]

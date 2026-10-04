@@ -563,15 +563,15 @@ public sealed class TaskLifecycleTests
     }
 
     [Fact]
-    public void The_edit_after_the_fact_path_is_unassign_then_draft_then_revise_then_publish_then_assign()
+    public void The_edit_after_the_fact_path_is_dequeue_then_draft_then_revise_then_publish_then_queue()
     {
         TaskAggregate task = Queued();
 
         FluentActions.Invoking(() => TaskDecider.ReturnToDraft(task, null, Now, Owner))
             .Should().Throw<DomainConflictException>()
-            .WithMessage("*unassign it first*", "a task the dispatcher can see is never one keystroke from editable");
+            .WithMessage("*dequeue it first*", "a task the dispatcher can see is never one keystroke from editable");
 
-        task.Apply(TaskDecider.Unassign(task, "The criteria missed a case", leaseHeld: false, Now, Owner));
+        task.Apply(TaskDecider.Dequeue(task, "The criteria missed a case", leaseHeld: false, Now, Owner));
         task.State.Should().Be(TaskState.Published);
         task.AssignedOwnerId.Should().BeNull();
 

@@ -923,13 +923,13 @@ public sealed class TaskDeciderTests
     }
 
     [Fact]
-    public void SetPlacement_refuses_a_task_nobody_is_assigned_to()
+    public void SetPlacement_refuses_a_task_nobody_is_queued_for()
     {
         TaskAggregate task = PublishedTask();
 
         Action act = () => TaskDecider.SetPlacement(task, DomainId.New(), Now, Owner);
 
-        act.Should().Throw<DomainConflictException>().WithMessage("*not assigned*");
+        act.Should().Throw<DomainConflictException>().WithMessage("*not queued*");
     }
 
     [Fact]

@@ -24,9 +24,14 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// <see cref="TaskAggregate.Apply(PrReviewPreflightParked)"/> sets
 /// <see cref="TaskAggregate.PendingMentionFollowUpAfterPreflight"/> from this field exactly the way
 /// <see cref="Handlers.TaskDecider.Requeue"/> already does for a safe verdict or a retry — without
-/// it, the next <c>h9k task assign</c> ran an unrequested full review instead of answering the
+/// it, the next go ran an unrequested full review instead of answering the
 /// mentioning comment, which <see cref="Features.AutoPrReview.ObservedReviewMention"/> dedups
 /// permanently.
+/// </param>
+/// <param name="KeepsAssignee">
+/// True on every park written since the assign/queue split: the task lands Published and keeps its
+/// assignee, the same marker <see cref="TaskUnassigned.KeepsAssignee"/> carries for a dequeue. A park
+/// written before the field existed replays as it always did, clearing the assignee.
 /// </param>
 public sealed record PrReviewPreflightParked(
     Guid Id,
@@ -35,4 +40,5 @@ public sealed record PrReviewPreflightParked(
     string Verdict,
     string Reason,
     DateTimeOffset ParkedAt,
-    bool IsMentionFollowUp = false);
+    bool IsMentionFollowUp = false,
+    bool KeepsAssignee = false);

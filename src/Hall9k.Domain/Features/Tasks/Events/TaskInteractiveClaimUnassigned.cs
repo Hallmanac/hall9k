@@ -18,7 +18,14 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// (task: the release ruling of 2026-09-05 — a default release is an exit door, so headless
 /// dispatch must not keep gating phase boundaries for a human who walked away).
 /// </param>
+/// <param name="KeepsAssignee">
+/// True for <c>h9k task release --unassign</c>: the task lands Published but keeps its assignee, the
+/// same marker <see cref="TaskUnassigned.KeepsAssignee"/> carries for a dequeue. An event written
+/// before the field existed replays as it always did, clearing the assignee with the owner the task
+/// was queued for.
+/// </param>
 public sealed record TaskInteractiveClaimUnassigned(
     Guid Id,
     DateTimeOffset UnassignedAt,
-    bool ClearInteractiveMode = false);
+    bool ClearInteractiveMode = false,
+    bool KeepsAssignee = false);
