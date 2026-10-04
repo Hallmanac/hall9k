@@ -204,7 +204,7 @@ The project's `tracker-assignee` claim gate, when set, still reads the tracker f
 it always has — the ledger write only ever runs after that check passes, so a gated project's
 tracker assignee and its ledger holder always agree; `Off` never consults the tracker on claim at
 all. On every successful claim this install also mirrors its own identity onto the tracker
-assignee, best effort, through the identical unassigned-only write `h9k task assign --take` uses —
+assignee, best effort, through the identical unassigned-only write `h9k task queue --take` uses —
 invoked independent of the project's own configured gate, so it runs even for a project whose gate
 is `Off`; a mirror failure is logged and never fails the claim, and leaves a
 `TaskTrackerAssignMirrorPending` row for the daemon's own lease sweep to retry rather than waiting
@@ -537,7 +537,7 @@ request a peer declined or answered is closed rather than in flight, so a re-run
 says so; one genuinely outstanding is reported as outstanding and cleared only by
 `h9k task pull --again`. A stream ask is answered with the task's own run streams too, and a task
 that lands naming dependencies whose streams are not here has each of those asked for
-automatically, so `h9k task assign` is never refused for a dependency the platform could have
+automatically, so `h9k task queue` is never refused for a dependency the platform could have
 fetched. A peer serves an **explicit** ask — one named stream, or a named
 sequence bound — from below its own replication switch-on point, which an ordinary flush and a
 gap-fill are still held above: a task published before its node ever switched replication on is
@@ -793,7 +793,7 @@ h9k learn distill [--project <name>|--owner]          # author the Research task
 ```
 
 Distillation is a task a human authors, never something the daemon decides to do. `h9k learn
-distill` creates an ordinary Research task draft and stops there; a person publishes and assigns
+distill` creates an ordinary Research task draft and stops there; a person publishes and queues
 it like any other. Its instructions are merge-and-cite only, and the citation half is enforced:
 `--distilled-from` is refused outright when its citations resolve to nothing, repeat, or name the
 lesson itself, because a merge nobody can check against what it merged is a new claim wearing a
@@ -802,7 +802,7 @@ merge's clothes. Merging does not retire what it merged; that is still `h9k lear
 this lever for a project whose active lessons have passed the count cap.
 
 Task development and task dispatch are separate lifecycles (Decisions Log #34): `h9k task add`
-creates a **draft**, and nothing dispatches until a human publishes and assigns it.
+creates a **draft**, and nothing dispatches until a human publishes and queues it.
 
 ```bash
 h9k task add --project <name> --objective "…"     # creates a Draft (identity, not readiness)
@@ -822,24 +822,30 @@ h9k task revise <id> --queue-first                # the one revision Draft-only 
 h9k task revise <id> --clear-interactive-mode     # the other revision Draft-only doesn't gate: clears the interactive-mode flag (below) directly, settable in any live state, for when neither h9k task handback nor a default h9k task release has an active interactive claim left to act on
 h9k task revise <id> --review-stage-composition <VALUE|default>   # Draft-only, unlike the review caps below — a live change reaches only the task's next run (Decisions Log #129)
 h9k task set-review-caps <id> --max-compliance-review-cycles <N>   # a task-level review-cycle-cap override, settable at any time — even while the run is live (Decisions Log #112)
-h9k task publish <id> [--assign]                  # the readiness gate; --assign starts it too
+h9k task publish <id> [--queue]                   # the readiness gate; --queue publishes and queues in one transaction, for the task's assignee or for you when it has none (no owner argument; refuses when another member is the assignee). --no-queue (alias --no-assign) skips the interactive offer to queue; --assign is refused with a pointer to --queue for one minor release (decision f951013c)
 h9k task publish <id> --no-existing-item          # required if a tracking backlog policy finds no linked item yet and has no publication already pending
 h9k task publish <id> --untracked                 # the same gate's other exit: deliberately skip tracking for this task, attested on the stream
 h9k task publish <id> --pre-approved              # the owner stops being a synchronous gate at the pull request: the daemon rebase-merges once every real gate (CI, review decision, requested reviewers, threads) reads satisfied (Decisions Log #135)
 h9k task publish <id> --pre-approved after-human-review   # the same automatic merge, held until a human reviewer has actually been requested on the pull request AND every requested reviewer has approved the current head (Decisions Log #149)
-h9k task assign <id> [<owner>] [--take] [--node [NODE]]   # the dispatch trigger — Queued, or Blocked on dependencies; --take also takes the linked card/issue for this install when nobody holds it, in a project whose claim gate is on (Decisions Log #143); --node <id-or-fragment> places the task on one of the owner's own fleet — their own root node (no self-vouch needed) or a node they currently vouch — so only that node's dispatcher claims it and every other node of the same owner stands down without a forced take, and a bare --node with nothing named clears an existing placement (idea 202383dc: an owner can place a task on one of their own nodes)
+h9k task assign <id> [<member>] [--take] [--holder <name> --reason <text>]   # records WHO HOLDS the task at any stage (Draft or Published) and queues nothing; a Published task stays Ready and the output says it is not queued and names h9k task queue. The assignee, or with none the creator, may hand it to any member; any other member may only take an unassigned Published task for themselves; an Owner-role member overrides with --holder and --reason. A hand-off on a queued task refuses and names h9k task dequeue; another member on a Fleet-scope draft refuses and names h9k task share. --take also takes the linked card/issue for this install when nobody holds it, for a task you hold yourself, in a project whose claim gate is on (Decisions Log #143)
+h9k task assign <id> --node [NODE]                # against a task that is ALREADY queued, changes only its placement (TaskPlacementChanged); refused on a task that is not queued yet, where --node belongs to queue
+h9k task queue <id> [--take] [--node [NODE]]      # the go signal — Queued, or Blocked on dependencies. Queues for the task's assignee, or for you when it has none (you become the assignee in the same TaskAssigned); refuses when another member is the assignee, naming them and their hand-off. --take also takes the linked card/issue when nobody holds it, in a project whose claim gate is on (Decisions Log #143), and an interactive run offers it; --node <id-or-fragment> places the task on one of the owner's own fleet — their own root node (no self-vouch needed) or a node they currently vouch — so only that node's dispatcher claims it and every other node of the same owner stands down without a forced take, and a bare --node with nothing named clears an existing placement (idea 202383dc: an owner can place a task on one of their own nodes)
 h9k task set-session-cap <id> <cap>               # override how many agent sessions this task's run may hold at once; settable any time, even mid-run (Decisions Log #111)
-h9k task set-pre-approved <id> on|off|after-human-review   # set standing pre-approval after publish, without the unassign/draft/revise/publish ceremony — settable on any live task whose pull request has not yet merged, Draft excepted (pre-approval is part of the readiness contract set at publish). after-human-review waits for a requested human reviewer to approve the head; flipping it to on is the emergency path and merges on the next sweep. No reviewer is ever named here — reviewers are added in GitHub (Decisions Log #135, #149)
+h9k task set-pre-approved <id> on|off|after-human-review   # set standing pre-approval after publish, without the dequeue/draft/revise/publish ceremony — settable on any live task whose pull request has not yet merged, Draft excepted (pre-approval is part of the readiness contract set at publish). after-human-review waits for a requested human reviewer to approve the head; flipping it to on is the emergency path and merges on the next sweep. No reviewer is ever named here — reviewers are added in GitHub (Decisions Log #135, #149)
 h9k task set-private <id> on|off                  # idea 8c5993c5: pre-8c5993c5 alias — on is sugar for scope private, off is sugar for scope fleet, never straight to team on its own; publishing already sets team unconditionally
 h9k task scope <id> private|fleet|team            # idea 8c5993c5: set this task's own replication scope directly; refused only if already at that scope, or already team and asked narrower (team is one-way)
 h9k task share <id>                               # idea 8c5993c5: sugar for scope team, without publishing — the door for sharing a draft before it is ready to publish (idea 18464daa); idempotent no-op once already team
-h9k task unassign <id>                            # back to Published (refused while leased)
-# abandon, resolve and unassign refuse another owner's task; an Owner-role member adds --holder <name> --reason <text>
+h9k task dequeue <id>                             # Queued or Blocked back to Published, keeping the assignee (refused while leased); the event is TaskUnassigned marked KeepsAssignee, which an older node replays as a full unassign
+h9k task unassign <id>                            # lets go of the hold: a queued task is dequeued and its assignee cleared in one append; on a Draft or an unqueued Published task it clears the assignee only (refused while leased)
+# abandon, resolve, unassign and dequeue refuse another owner's task; an Owner-role member adds --holder <name> --reason <text>
 h9k task draft <id>                               # Published back to Draft, so it can be revised
 ```
 
-The edit-after-the-fact path is `unassign → draft → revise → publish → assign`, each step an
-explicit act. A dependency counts as met only at true closeout (the pull request merged and the
+The edit-after-the-fact path is `dequeue → draft → revise → publish → queue` (`unassign` in place of
+`dequeue` when the task should also lose its holder), each step an
+explicit act. `h9k task release <id> --unassign` and a pre-flight park also leave the task Published with its
+assignee kept. Nothing dispatches without a queue, and a node that predates the split still treats `assign` as
+the go signal, so every node of every member must be updated before anyone relies on `assign` meaning hold. A dependency counts as met only at true closeout (the pull request merged and the
 closeout monitor observed it); TASK-MODEL.md §2.3 has the whole picture.
 
 A Copilot review that errors naming a quota refusal ("the user who requested the review has
@@ -907,8 +913,8 @@ cadence, and everything downstream reads what that sweep recorded rather than ca
 so the board can sit a few minutes behind the browser, and every line `h9k task show` prints about
 the parent is labelled as an observation, with when that reading was taken (an unchanged look
 records nothing, so that is when the parent last *moved*, not when it was last looked at). That
-sweep reads only children that are **assigned**: a child still Published is watched by nothing and
-would not dispatch anyway, so `h9k task assign` is the step that starts the watch — claiming one
+sweep reads only children that are **queued**: a child still Published is watched by nothing and
+would not dispatch anyway, so `h9k task queue` is the step that starts the watch — claiming one
 straight from Published is refused, and the refusal says so. And **no `--blocked-by` travels with
 it**: there
 is no local task to name, so the hold is a second one beside the unmet-dependency set. The two
@@ -964,19 +970,19 @@ slug and by `ResolveBranchNameAsync`'s own collision retry when two slugs coinci
 that is broken, but it is worth knowing before dispatch rather than discovering it there.
 
 An operator can work a Published, Queued, or already-Blocked task interactively instead of dispatching it headless
-(Decisions Log #122). On a Published task assigned to nobody, `h9k task work` assigns it to the
+(Decisions Log #122). On a Published task assigned to nobody, `h9k task work` queues it for the
 operator's own owner and claims it interactively in one atomic event append: the task is never
 observably Queued in between, so the dispatcher, woken within moments by the doorbell notification
-a plain `h9k task assign` would have sent, can never win the race to it. An unmet dependency —
+a plain `h9k task queue` would have sent, can never win the race to it. An unmet dependency —
 whether just discovered here on a Published task, or already sitting Blocked from an ordinary
-`h9k task assign` or a claim handed back or retried — warns rather than refuses outright (Decisions
+`h9k task queue` or a claim handed back or retried — warns rather than refuses outright (Decisions
 Log #128): the platform names every open blocker, and `--acknowledge-unmet-dependencies` is the
-human's recorded override to claim it anyway, the same bar `h9k task assign` itself holds an
-assignment to. Not needed twice: an acknowledgment this task already carries from an earlier claim
+human's recorded override to claim it anyway, the same bar `h9k task queue` itself holds a
+queueing to. Not needed twice: an acknowledgment this task already carries from an earlier claim
 on the same still-open blockers is honored without asking again, and `h9k task show` names whether
 a claim's own acknowledgment was given fresh or carried forward from an earlier one. `h9k task
-assign` and `h9k task publish --assign` are both unchanged and remain the headless dispatch
-triggers; there is no `--interactive` flag on `assign` — edges still gate automatic dispatch
+queue` and `h9k task publish --queue` are both unchanged and remain the headless dispatch
+triggers; there is no `--interactive` flag on `queue` — edges still gate automatic dispatch
 exactly as before, and only this deliberate human claim gets the warn-and-proceed path. Whichever
 state it entered from, the claim itself is held by the human, not a process, so there is no lease
 and no heartbeat reclaim; closing the terminal is a normal way to leave, and running
@@ -1108,7 +1114,7 @@ re-entry branch the way `h9k task work` has one; a fresh claim is all this comma
 a fresh claim on an already-Blocked task is exactly what its own Blocked entry is, not a re-entry.
 Giving such a claim back before it finishes — `h9k task handback`, `h9k task release`,
 `h9k task retry`, or `h9k pr resolve`'s own reopen — lands the task on Blocked rather than Queued
-whenever the acknowledged dependency is still open, since claiming never clears it, only assigning
+whenever the acknowledged dependency is still open, since claiming never clears it, only queueing
 does; each of those commands names the still-open blocker(s) rather than claiming a run that will
 not in fact dispatch, and the acknowledgment itself stays on record for whichever command reclaims
 the task next. `h9k task deliver` recovers a start-it-mine session's own handoff and token
@@ -1297,7 +1303,7 @@ authenticated as, read live on every check and never stored. Each check reads th
 alone, so a task's one-time content snapshot is untouched, and records `TrackerAssignmentObserved`
 when it passes. Every claim door re-checks: the dispatcher leaves a refused task Queued and logs
 once per episode, `h9k task work` and `h9k task start` refuse with the same wording and exit 70,
-and `h9k task assign` warns on stderr naming the holder and the link but assigns anyway — the
+and `h9k task queue` warns on stderr naming the holder and the link but queues anyway — the
 tracker is the go signal and the queue is where the task waits. A queued task's line on
 `h9k status`, `h9k task show` and `h9k project show` names the item and its holder. Untouched: a
 task with no linked item, an untracked one, and a `pr-review` task, whose pull request's own
@@ -1308,14 +1314,14 @@ than every three minutes. The one write this feature makes lives outside the gat
 below.
 
 **One command can move the tracker and the board together** (Decisions Log #143).
-`h9k task assign <id> [owner] --take` is the one write this feature makes, and it lives outside the
+`h9k task queue <id> --take` (or `h9k task assign <id> --take` for a task you only hold) is the one write this feature makes, and it lives outside the
 gate rather than in it (`TrackerAssignmentTake`, which calls `TrackerClaimGate` for its read — the
 gate every door and every sweep calls stays read-only, because the dispatcher calls it on a cadence
 with nobody watching). In a gated project it reads the linked item fresh and, when the tracker
 shows **nobody** holds it, writes this install's own tracker identity into the assignee field (Jira
 as an `assignee`-only update through `JiraWriteExecutor`, GitHub as
 `gh issue edit --add-assignee` with the login read live), reads the
-item back, records `TrackerAssignmentWritten` from that read-back, and assigns — so the gate then
+item back, records `TrackerAssignmentWritten` from that read-back, and queues — so the gate then
 passes on its own instead of the task sitting in the queue waiting for a second act. It only ever
 moves an item from unassigned to this install: one somebody else holds is refused with exit 70
 naming the holder, nothing is written, the task is left exactly as it was, and **there is no flag
@@ -1327,7 +1333,7 @@ moment, so neither may claim it, and the refusal names who else is on it and say
 them rather than to run the command again. The write is a **field update, never a
 transition** — the item's status, labels and milestone are untouched — but a team's own board
 automation may react to an assignment, which is why the flag is explicit. Without it, an
-interactive assign offers the same take on an unassigned item (defaulting to no) and a
+interactive queue offers the same take on an unassigned item (defaulting to no) and a
 non-interactive one warns and proceeds without writing anything. `--take` where there is no gate
 to satisfy (gate off, or no linked card or issue) is refused rather than quietly honoured.
 Releasing a task leaves the tracker assignment where it is.

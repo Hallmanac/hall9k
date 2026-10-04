@@ -258,7 +258,7 @@ other or from what this skill says next time it runs.
 > task, including one the operator named by id, check whose it is.
 >
 > On another owner's task this window never, on its own initiative, abandons, resolves, unassigns,
-> retries, returns to draft, changes the scope or sharing, sets pre-approval, posts a review or a
+> dequeues, queues, assigns or hands off, retries, returns to draft, changes the scope or sharing, sets pre-approval, posts a review or a
 > comment under this login on their behalf, or answers a question that was asked of them. Those are
 > their acts. Reading their task, their logs, and their pull request is fine, and so is telling the
 > operator what you saw or relaying a teammate's message. A pull request a teammate authored is not
@@ -482,6 +482,19 @@ and budget.
    them, and what this window will do next. If the journal was not enough to re-orient you and you
    had to ask the operator something the journal should have told you, add one line to the
    journal's re-orientation log so the next rewrite of this recipe can carry that field.
+
+**The task verbs.** State the lifecycle verbs by the column each lands the task in, because a window that
+still believes "assign means go" will either strand work or start work nobody meant to start (Decisions Log
+#34, and the assign/queue split). `h9k task publish <id>` is the readiness gate and lands the task in Ready;
+`h9k task queue <id>` is the go signal and lands it in Queued, for the task's assignee or for this window's
+own operator when nobody holds it; `h9k task publish <id> --queue` does both in one transaction and is how a
+drafted task is launched (`--no-queue` stops after the gate, and `--assign` is refused with a pointer to
+`--queue`). `h9k task assign <id> <member>` only records who holds a task at any stage, a draft included, and
+never dispatches it: a task that was only assigned is still Ready and shows `Assigned to <name> · not queued`.
+`h9k task dequeue <id>` takes a queued task back to Published keeping its holder, and `h9k task unassign <id>`
+lets go of the holder as well. Nothing dispatches without a queue, `--node` places a queued task, and a
+dispatched session is refused all four verbs. The window states in its own recipe that it never assigns,
+queues, or dequeues on another owner's behalf without the operator saying so.
 
 **The journal (`journal.md`, at the project home's own root).** A rewritten state document, never
 an append-only log: rewrite it whenever a ruling is made, a walk finishes, a pull request merges,
@@ -753,7 +766,7 @@ their own. Both:
   the same as refinement does, and closes the idea's own loop explicitly with `h9k idea conclude
   <id> --reason "…"` (something came of it) or `h9k idea archive <id> --reason "…"` (nothing did) once
   discovery has genuinely stopped producing — never left implicit. Neither discovery nor refinement ever publishes,
-  assigns, or touches the daemon, the board, or a running task; refinement revises with
+  assigns, queues, dequeues, or touches the daemon, the board, or a running task; refinement revises with
   `h9k task revise` and reads with `h9k task show`. Publishing waits for the operator to walk the
   criteria.
 - State "read by pointer": start from the idea's `idea.md`/`workspace/journal.md`, or the draft's

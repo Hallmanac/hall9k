@@ -134,35 +134,54 @@ whose active lessons have passed the count cap.
 
 ### Tasks: development and dispatch
 
-`h9k task add | revise | set-session-cap | set-review-caps | set-pre-approved | publish | assign | unassign | draft | list | show | pull | log-interaction | scope | share | set-private | handoff | take | grant | refuse | run-local`
+`h9k task add | revise | set-session-cap | set-review-caps | set-pre-approved | publish | assign | queue | unassign | dequeue | draft | list | show | pull | log-interaction | scope | share | set-private | handoff | take | grant | refuse | run-local`
 
 `add` creates a Draft. `revise` is Draft-only, with a few exceptions, the main one being `--queue-first`/
 `--clear-queue-first` sets or clears a task-level scheduling marker — the next free dispatch slot
 takes this task regardless of assignment age — and is settable in any live state except Abandoned
 (Decisions Log #127). `--clear-interactive-mode` is another, and so are a spike's kind, exit
-criterion, and budget while it is Draft or Published. `publish` is the readiness gate. `assign` is the
-dispatch trigger. `assign <id> --node <id-or-fragment>` narrows that to one node of the owner's
-fleet: only that node's own dispatcher claims the task, and every other node of the fleet stands
-down without a forced take; run with no owner argument against a task already assigned, it
-changes only the placement. A bare `--node` with nothing named clears an existing placement, and a
-forced takeover or cooperative grant that moves a placed task to another node records that node as
-the new placement on its own (idea 202383dc: an owner can place a task on one node of their fleet).
-On a Draft, `assign` only lays hold of the task: it records the assignee (who holds the task at any
-stage, apart from the owner it is queued for), the task stays a Draft, and no dispatcher ever sees it.
-`unassign` on a Draft, or on a Published task that is not queued, lets go of that hold and the task falls
-back to its creator. The task's assignee, or with none its creator, may hand it to any member with
+criterion, and budget while it is Draft or Published. `publish` is the readiness gate. Two verbs then
+split what `assign` used to do on its own, and each is named for the board column the task lands in:
+`assign` records who holds a task and never dispatches it, and `queue` is the go signal that puts a
+Published task in front of the dispatcher. `dequeue` is the way back out of the queue.
+
+`assign <id> [member]` records the assignee, who holds the task at any stage before it runs, apart from
+the owner it is queued for. A Draft stays a Draft and a Published task stays Published (Ready), so no
+dispatcher ever sees either, and the command prints that the task is not queued and gives
+`h9k task queue <id>`. The task's assignee, or with none its creator, may hand it to any member with
 `assign <id> <member>`; any other member may only take an unassigned Published task for themselves, and
-an Owner-role member may override any other refusal with `--holder` and `--reason`. A hand-off of a
-Published task by a member who is not Owner-role only records the hold and queues nothing, because every
-peer refuses such a member's queueing assignment for anyone else; the new holder then runs `assign` on it
-themselves to queue it for their own nodes. A hand-off on a queued
-task refuses and names `unassign`, and naming another member on a draft still at Fleet scope refuses and
+an Owner-role member may override any other refusal with `--holder` and `--reason`. A hand-off on a queued
+task refuses and names `dequeue`, and naming another member on a draft still at Fleet scope refuses and
 names `h9k task share`, since a teammate would never receive it. `h9k task show` and the board say
-`Assigned to <name> · not queued` for a held Draft or Published task. `start`, `work` and
-`publish --assign` refuse a task another owner holds. Every node of every member must be updated before
-anyone assigns or hands off to another member: a node that does not know the assignee events skips them
-and keeps the creator fallback for that task.
-The path back for an edit is `unassign → draft → revise → publish → assign`.
+`Assigned to <name> · not queued` for a held Draft or Published task. `assign --take` takes the linked
+tracker card for your own tracker identity (see [the claim gate](#the-claim-gate)), and `assign <id> --node
+<id-or-fragment>` run against a task that is already queued changes only its placement; a task that is not
+queued is placed when it is queued.
+
+`queue <id>` writes the go signal for the recorded assignee, or for you when the task has no assignee,
+in which case you become the assignee in the same event. When another member is the assignee it refuses,
+names them, and names their hand-off (`assign <id> <member>`) as the way out. It queues when every
+dependency has reached true closeout and blocks otherwise, unblocking itself when the last one lands.
+`queue --node <id-or-fragment>` narrows the claim to one node of the owner's fleet: only that node's own
+dispatcher claims the task, and every other node of the fleet stands down without a forced take. A bare
+`--node` with nothing named clears an existing placement, and a forced takeover or cooperative grant that
+moves a placed task to another node records that node as the new placement on its own (idea 202383dc: an
+owner can place a task on one node of their fleet). In a project whose claim gate is `tracker-assignee`,
+`queue` offers the take of the tracker card, and `queue --take` does it without asking.
+`publish --queue` publishes and queues in one transaction, takes no owner argument, and refuses when
+another member is the assignee; `--assign` is refused for one minor release with a pointer to `--queue`.
+
+`dequeue <id>` returns a Queued or Blocked task to Published and keeps its assignee, so whoever held it
+still does and `queue` puts it back. `unassign <id>` lets go of the hold: on a queued task it dequeues and
+clears the assignee in one append, and on a Draft or a Published task that is not queued it clears the
+assignee and the task falls back to its creator. `release --unassign` and the pre-flight park also leave
+a task Published with its assignee kept. `start`, `work` and `publish --queue` refuse a task another owner
+holds. Because a node that predates these verbs still treats `assign` as the go signal and replays a dequeue
+as a full unassign, every node of every member must be updated before anyone relies on `assign` meaning
+hold, hands off to another member, or dequeues across members: a node that does not know the assignee
+events skips them and keeps the creator fallback for that task.
+The path back for an edit is `dequeue → draft → revise → publish → queue`, or `unassign → draft → revise
+→ publish → queue` when the task should also lose its holder.
 `set-session-cap <id> <cap>` overrides how many agent sessions this task's own run may hold
 simultaneously — settable any time, even mid-run — in place of the node's global default.
 `set-review-caps` overrides the node's compiled review-cycle-cap defaults for one task —
@@ -233,7 +252,7 @@ the daemon log, which is where to look if the same refusal comes back after a re
 
 A task that arrives naming blocked-by or stacked-on ids whose own streams are not here has those
 asked for automatically, one request per missing dependency, walking the graph as each one lands —
-that is what keeps `h9k task assign` from refusing the task for a dependency the platform could
+that is what keeps `h9k task queue` from refusing the task for a dependency the platform could
 have fetched itself. `h9k status` names each of those asks and whose dependency it is, and running
 `h9k task pull` on a task already here makes the same asks for anything it is still missing. Which
 node states catch up automatically and which need a pull is in
@@ -285,7 +304,7 @@ tracker is named. See [concepts.md](concepts.md#ideas-and-tasks).
 **Pre-approval lets the daemon merge a task's pull request itself.** `h9k task publish --pre-approved
 [on|after-human-review|off]` (and the same option on `h9k task add` for an adopted issue) gives a task
 standing pre-approval, and `h9k task set-pre-approved <id> on|off|after-human-review` changes it later
-on any live task whose pull request has not merged, without the unassign, draft, revise, publish
+on any live task whose pull request has not merged, without the dequeue, draft, revise, publish
 ceremony a readiness change would otherwise need. `on` merges the moment GitHub's own gates read
 satisfied; `after-human-review` holds the same merge until a human reviewer has been requested and
 every requested reviewer has approved the current head; `off` returns the merge to you. Hall9k
@@ -300,8 +319,9 @@ Smaller flags on the same commands:
 | `h9k task add --context "<text>"` | Sets the agent-facing context, meaning the pointers, constraints, and boundaries the session reads, and `h9k task revise --context` replaces it. |
 | `h9k task revise --effort <low\|medium\|high\|xhigh>` | Sets this Draft's own reasoning effort, the most specific level of the chain (task, then project, then the node's value for the session's role, then the node-wide value, then the model's own default), with `default` clearing it. It is stored on the task like its model, so it travels with the task and wins on every node. `h9k task show` prints it when set. |
 | `h9k task add --model <model>` | Sets this task's own model, which outranks every other level of the model chain, and `h9k task revise --model` changes it, with `default` clearing the override. |
-| `h9k task publish --no-assign` | Publishes and stops, without offering to assign, which is the form a script wants because an interactive terminal is otherwise asked about single-owner assignment. |
-| `h9k task release <id> --unassign` | Takes a claim straight to Published in one atomic act, so the dispatcher never sees the task claimable between a release and an `unassign`. |
+| `h9k task publish --no-queue` | Publishes and stops, without offering to queue, which is the form a script wants because an interactive terminal is otherwise asked whether to queue. `--no-assign` is its earlier name and is still accepted. |
+| `h9k task publish --queue` | Publishes and queues in one transaction, for the task's assignee or for you when it has none. It takes no owner argument and refuses when another member is the assignee. |
+| `h9k task release <id> --unassign` | Takes a claim straight to Published in one atomic act that keeps the task's assignee, so the dispatcher never sees the task claimable between a release and a `dequeue`. |
 | `h9k task release <id> --keep-interactive` | Preserves the interactive-mode flag across the release, so the next headless run still parks at each phase boundary for a recorded `h9k review proceed`. |
 | `h9k task deliver <id> --handoff "<text>"` | States what the run hands down to a dependent task or a resuming session, and is prompted for on an interactive terminal when omitted. |
 | `h9k task resolve <id> --pr <url>` | Records where the work landed, and when it names a real pull request on the project's repository it enrolls that pull request in closeout's orphan sweep. |
@@ -329,8 +349,8 @@ node — a teammate's pull request this install never dispatched and whose run i
 reach `Delivered`. It takes the number as GitHub shows it (`264` or `#264`) on this project's own
 repository, carries **no** `--blocked-by` (there is no local task to name), and needs no task to
 exist for that pull request at all. The pull request being *open* is the remote parent's
-`Delivered`, read from GitHub on the closeout watcher's cadence once the child is assigned — an
-unassigned one is on no cadence at all, so `h9k task assign` is what starts the watch. A hold can
+`Delivered`, read from GitHub on the closeout watcher's cadence once the child is queued — an
+unqueued one is on no cadence at all, so `h9k task queue` is what starts the watch. A hold can
 lag a few minutes behind the browser, and `h9k task show` labels every line about the parent as an
 observation, with when that reading was taken, rather than as current. The two forms are
 alternatives: pass one, and declaring either one replaces
@@ -490,7 +510,7 @@ internal repository keeps the collaborator behaviour above by default: no member
 either direction; `default` clears the override so the daemon decides fresh every sweep from a live
 `gh repo view --json isPrivate` read, which `h9k project show` also reports alongside its own read
 time. A non-member's (or a bot's) request still mints the `pr-review` task — it is published but
-left unassigned, so no worktree, branch, or session exists yet, and `h9k task assign` is the human
+held but not queued, so no worktree, branch, or session exists yet, and `h9k task queue` is the human
 go that starts it; `h9k status` shows it as a needs-you row naming the author and why. The first
 sweep after a daemon restart, before this node has recomputed the project's declared member
 accounts, skips a candidate that would otherwise need the check rather than guessing either way, and
@@ -591,8 +611,8 @@ being among them passes.
 
 Every claim door re-checks. The dispatcher leaves a refused task Queued and says why once per
 episode in the daemon log; `h9k task work` and `h9k task start` refuse with the same wording and
-exit 70. `h9k task assign` warns on stderr — naming who holds the item, or that nobody does, with
-its link — and assigns anyway, because the tracker is the go signal and the task is meant to wait
+exit 70. `h9k task queue` warns on stderr — naming who holds the item, or that nobody does, with
+its link — and queues anyway, because the tracker is the go signal and the task is meant to wait
 in the queue until it turns green. A queued task's own line on `h9k status`, `h9k task show` and
 `h9k project show` says it is waiting for the tracker to show the item assigned to you, and names
 the current holder when there is one. A task with no linked item, an untracked one, and a
@@ -608,13 +628,13 @@ a guess. A held task is re-read no more often than every three minutes rather th
 five-second sweep.
 
 **One command can move the tracker and the board together.**
-`h9k task assign <id> [owner] --take` (Decisions Log #143) is the one write this feature makes, so
+`h9k task queue <id> --take` (Decisions Log #143, and `h9k task assign <id> --take` for a task you only hold) is the one write this feature makes, so
 claiming stops being a two-place act: in a gated project it reads the linked card or issue fresh
 and, when the tracker shows **no** assignee, writes this install's own tracker identity into the
-assignee field, reads the item back, records what the read-back showed, and assigns — so the gate
+assignee field, reads the item back, records what the read-back showed, and queues — so the gate
 passes on its own and stops being what keeps the task in the queue. (It is the gate that stops
 holding the task, not a promise the task runs now: a task with unmet dependencies still waits on
-those, and the assign line above the take's own says so.)
+those, and the queue line above the take's own says so.)
 
 It only ever moves an item from unassigned to you. An item somebody else holds is refused (exit
 70) naming the holder, nothing is written, the task is left exactly as it was, and there is
@@ -636,7 +656,7 @@ consequence Hall9k cannot see. On GitHub, only a login that can be assigned on t
 collaborator, or an organisation team member with access — is accepted, and GitHub's own refusal is
 quoted verbatim when it is not.
 
-Without the flag, an interactive `h9k task assign` in a gated project **offers** the same take on
+Without the flag, an interactive `h9k task queue` in a gated project **offers** the same take on
 an unassigned item (defaulting to no), and a non-interactive one warns and proceeds without
 writing anything: Hall9k never writes to your tracker unless it was told to, and an unattended
 process cannot tell it. `--take` on a project whose gate is off, or on a task with no linked card
@@ -682,17 +702,17 @@ guard working as intended, not a bug to route around. On a project tracked under
 `h9k task work <id> [--direct-launch] [--acknowledge-unmet-dependencies] | register-session | verify | deliver | delegate | handback | release`
 
 An operator can work a Published, Queued, or already-Blocked task in their own terminal instead of dispatching it
-headless (Decisions Log #122). On a Published task assigned to nobody, `work` assigns it to the
+headless (Decisions Log #122). On a Published task assigned to nobody, `work` queues it for the
 operator's own owner and claims it interactively in one atomic event append: the task is never
 observably Queued in between, so the dispatcher can never win the race to it. An unmet
 dependency — whether just discovered here or already sitting Blocked from an ordinary
-`h9k task assign` or a handed-back or retried claim — warns rather than refuses outright: the
+`h9k task queue` or a handed-back or retried claim — warns rather than refuses outright: the
 platform names every open blocker, and
 `--acknowledge-unmet-dependencies` is the human's recorded override to claim it anyway. Not needed
 twice: an acknowledgment this task already carries from an earlier claim on the same still-open
 blockers is honored without asking again, and `h9k task show` names whether a claim's own
 acknowledgment was given fresh or carried forward from an earlier one (design ruling R7). `h9k task
-assign` and `h9k task publish --assign` are unchanged and remain the headless dispatch triggers —
+queue` and `h9k task publish --queue` are unchanged and remain the headless dispatch triggers —
 edges still gate automatic dispatch exactly as before; only this deliberate human claim gets the
 warn-and-proceed path. Either way, `work` cuts the same branch and worktree headless dispatch
 would, assembles the prompt through the same code path (its working rules swapped for an attached
@@ -729,7 +749,7 @@ agent headless and detached (`claude -p`) under the `<task-shortid>-build` name,
 session mesh, rather than attached to the caller's terminal, and returns as soon as the process is
 confirmed alive rather than waiting for it to finish. Shares `work`'s own warn-then-acknowledge
 shape for an unmet dependency, on a Published task and on an already-Blocked one alike (a task
-already sitting Blocked from an ordinary `h9k task assign`, or from a handed-back/retried
+already sitting Blocked from an ordinary `h9k task queue`, or from a handed-back/retried
 deliberate claim): the platform names every open blocker, and
 `--acknowledge-unmet-dependencies` is the human's recorded override to start it anyway. Not needed
 twice: an acknowledgment this task already carries from an earlier claim on the same still-open
@@ -738,7 +758,7 @@ on Draft, a pr-review task, a reopened task's follow-up branch, and any task tha
 live claim; there is no re-entry path the way `work` has one — a fresh claim on an already-Blocked
 task is exactly what its Blocked entry is, not a re-entry. Giving the claim back (`handback`,
 `release`, `retry`, or `pr resolve` reopening it) lands the task on Blocked rather than Queued when
-the acknowledged dependency is still open, since only `h9k task assign` clears that snapshot — and
+the acknowledged dependency is still open, since only `h9k task queue` clears that snapshot — and
 the acknowledgment itself stays on record for whichever command reclaims it next. See
 [PLAN.md Decisions Log #125, #128](../PLAN.md).
 
@@ -835,7 +855,8 @@ also appear elsewhere on this page stays where it is.
 
 | Command | What it is for |
 |---|---|
-| `h9k task assign <id> [owner] --node [node]` | Places an assigned task on one node of the owner's fleet so only that node claims it, and a bare `--node` clears the placement. |
+| `h9k task queue <id> --node [node]` | Queues the task and places it on one node of your fleet so only that node claims it, and a bare `--node` clears the placement. `h9k task assign <id> --node [node]` does the same placement for a task that is already queued. |
+| `h9k task dequeue <id> --reason "..."` | Takes a queued or blocked task back to Published and keeps its assignee. Refused on another owner's task unless an Owner-role member passes `--holder <name>` with `--reason`. |
 | `h9k task take <id> --reason "..."` | Asks the node that holds a task to hand it over, and the project's take policy decides how that node answers. |
 | `h9k task take <id> --force --reason "..."` | Overrides the holder on your own judgment when it has gone quiet, refused unless your root holds the owner role. |
 | `h9k task grant <id>` | Grants a cooperative take request that the holder's take policy parked for a person. |
@@ -1415,7 +1436,7 @@ eliding the segment or inventing a card number.
 That fallback is not a narrow edge case: under either tracking backlog policy (`--backlog jira` or
 `--backlog github-issues`) it is the ordinary outcome for a task the platform itself publishes and
 dispatches. A `jira` card is minted minutes later by a separately dispatched session, well after
-dispatch has already rendered and recorded the branch name, so a task published and assigned in
+dispatch has already rendered and recorded the branch name, so a task published and queued in
 one breath essentially always cuts `no-key-<slug>` rather than `ARX-14-<slug>`. A `github-issues`
 project fares better but is not exempt — `TaskPublishCommand` creates the issue inline, but the
 `gh issue create` round trip can still lose the race against the dispatch loop's five-second poll.
@@ -1747,7 +1768,7 @@ miss in the sections above.
 |---|---|
 | `h9k task register-session\|verify\|deliver\|delegate\|handback\|release --force` | Proceeds even though the claim's interactive session was recorded on another machine this one cannot check, which attests that you confirmed by hand that it has exited. |
 | `h9k task handback --reason "<why>"` | Records why a headless agent is finishing the task, on the stream and in the follow-up's context. |
-| `h9k task unassign --reason "<why>"` | Records why the task is being taken back, and leaves it unknown when omitted rather than inferring one. Refused on another owner's task unless an Owner-role member passes `--holder <name>` with `--reason`, the same override `h9k task abandon` takes. |
+| `h9k task unassign --reason "<why>"` | Lets go of the task (a queued one is dequeued and its assignee cleared in the one append). Records why the task is being taken back, and leaves it unknown when omitted rather than inferring one. Refused on another owner's task unless an Owner-role member passes `--holder <name>` with `--reason`, the same override `h9k task abandon` takes. |
 | `h9k project remove --reason "<why>"` | Records why a project is being archived, and leaves it unknown when omitted. |
 | `h9k epic close --reason "<why>"` | States why the epic is done, which is required because closing without a reason is exactly the automatic close this platform never does. |
 | `h9k epic list --state open\|closed\|all` | Filters epics by their state, and shows only the open ones by default. |

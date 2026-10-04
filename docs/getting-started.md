@@ -399,7 +399,7 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
 ```bash
 h9k task add --project <name> --from-issue <n>
 h9k task publish <id> --pre-approved
-h9k task assign <id>
+h9k task queue <id>
 h9k task show <id>
 h9k task retry <id> --reason "<why the machinery failed, not the work>"
 h9k review resolve <id> --merge-ready --reason "<why the finding is dismissed>"
@@ -408,9 +408,15 @@ h9k task resolve <id> --reason "<why the objective is met anyway>" --pr <url>
 h9k status
 ```
 
-Adopt from an issue, publish it pre-approved, assign it, and `h9k status` is the one command worth
+Adopt from an issue, publish it pre-approved, queue it, and `h9k status` is the one command worth
 running on a loop after that: it is the attention pane, bounded and glanceable, naming the cause
 underneath every row and the exact command that clears it, rather than a state to scan for.
+
+`h9k task queue <id>` is the go signal.
+`h9k task assign <id> [member]` is a different act: it records who holds a
+task (yours, or a teammate's by hand-off) and never runs it, so the task stays Ready and `h9k status` reads
+`Assigned to <name> · not queued` until someone queues it. `h9k task dequeue <id>` takes a queued task back out
+of the queue and keeps whoever holds it.
 
 ## Supervising it from an agent window
 

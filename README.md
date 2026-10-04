@@ -17,7 +17,7 @@ a remote before registering, or register with `--repo` only to explore the CLI l
 run a task through (see [Register a
 project](#register-a-project-only-with-the-users-own-repository) below).
 
-You write a piece of work down, publish it, and assign it. A daemon on your own machine takes it
+You write a piece of work down, publish it, and queue it. A daemon on your own machine takes it
 from there:
 
 - claims the task and prepares an isolated git worktree
@@ -87,7 +87,7 @@ deeper dives live in [docs/](docs/).
    A task can also be written directly when the work arrives already formed.
 4. **[Refine the draft](#refine-the-draft)** until it carries checkable acceptance criteria.
    A draft is invisible to the dispatcher, so this is the safe place to iterate.
-5. **[Publish it, then assign it](#publish-it-then-assign-it)** is the readiness gate followed
+5. **[Publish it, then queue it](#publish-it-then-queue-it)** is the readiness gate followed
    by the go signal. Nothing runs until a human does both.
 6. **[Watch the pipeline](#watch-the-pipeline)** as the daemon claims the task, builds, gates,
    and reviews. `h9k status` tells you the one thing that needs you.
@@ -157,7 +157,7 @@ $ h9k task add --project demo \
 Draft created in 'demo': Add rate limiting to the auth endpoints
 (01a02edb-2c55-7030-b4dd-4a9e2088f4fc)
 Next: h9k task publish 2088f4fc (a draft never dispatches; publishing then
-assigning is what starts it)
+queueing is what starts it)
 ```
 
 ### Refine the draft
@@ -180,19 +180,22 @@ Delivered ([concepts.md](docs/concepts.md#stacked-pull-requests)).
 
 Refinement ends when the contract is honest: an outcome-phrased objective and criteria a
 reviewer could actually check. A published task is immutable; the edit-after-the-fact path is
-`unassign`, `draft`, `revise`, `publish`, `assign`, each step an explicit act.
+`dequeue` (or `unassign`), `draft`, `revise`, `publish`, `queue`, each step an explicit act.
 
-### Publish it, then assign it
+### Publish it, then queue it
 
 Publishing is the readiness gate. It enforces the contract (an outcome-phrased objective and at
 least one checkable acceptance criterion) and refuses a dependency cycle by naming it hop by hop.
-Assigning is the separate, explicit act that makes the work dispatchable.
+Queueing is the separate, explicit act that makes the work dispatchable.
+Assigning is a third thing: `h9k task assign` records who holds a task and queues nothing,
+so an assigned task is still not queued until `h9k task queue`.
+`h9k task dequeue` takes a queued task back out of the queue and keeps its assignee.
 
 ```
-$ h9k task publish 2088f4fc --assign
+$ h9k task publish 2088f4fc --queue
 
 Task 2088f4fc published: Add rate limiting to the auth endpoints
-Task 2088f4fc assigned to Brian Hall — queued; the next dispatch cycle on one of
+Task 2088f4fc queued for Brian Hall — the next dispatch cycle on one of
 their fleet's nodes claims it.
 ```
 
@@ -222,7 +225,7 @@ finishes. Run h9k config set --max-concurrent-task-runs <n> and restart the
 daemon to run more at once
 81d8bca0  Published  hall9k  Brian Hall  The closeout sweep obse…    added 24m
 ago
-    ↳ assigned and ready as a first claim; the dispatcher has not claimed it yet
+    ↳ queued and ready as a first claim; the dispatcher has not claimed it yet
 · waiting for a slot — node 1 of 1 running
 ```
 
@@ -501,7 +504,7 @@ in it and its `AGENTS.md` tells it the rest. For a project this database already
 `h9k project init <name>` creates or repairs the same shape. Both are idempotent, both are
 platform code with no agent in them, and `--home <path>` puts the directory wherever you want it.
 
-Then the loop from the section above: `h9k task add`, `h9k task publish --assign`, `h9k status`.
+Then the loop from the section above: `h9k task add`, `h9k task publish --queue`, `h9k status`.
 
 Start-at-login is a separate opt-in that is never implied by anything else:
 
@@ -751,7 +754,7 @@ Below that sit the documents the new docs point into rather than replace:
 
 ## Scope, briefly
 
-**Working today:** the whole dispatch pipeline (draft, publish, assign, claim, worktree, detached
+**Working today:** the whole dispatch pipeline (draft, publish, queue, claim, worktree, detached
 agent, verification gates, two-lens pre-PR review, pull request, closeout monitoring, merge
 observation); the task dependency graph with context routing along its edges; ideas fanning out
 into any number of tasks, with promotion surviving as sugar over one-and-done; GitHub issue and
