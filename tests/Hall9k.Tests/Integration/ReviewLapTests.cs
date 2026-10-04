@@ -7,10 +7,12 @@ using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -19,6 +21,7 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -151,6 +154,159 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
         task.ReviewLapWorktreePath.Should().Be(seeded.WorktreePath);
         worktrees.PrReviewCheckouts.Should().BeEmpty(
             "the run's existing read-only worktree is reused, not re-fetched");
+    }
+
+    private const string TeammateRoot = "2222222222222222222222222222222222222222222222222222222222222222";
+
+    /// <summary>Claims this node's owner root on first use; the owner is shared across the class, so a root an earlier test already claimed is read back.</summary>
+    private static async Task EnsureOwnRootAsync(DocumentStore store, NodeContext node, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        OwnerAggregate owner = (await session.Events.AggregateStreamAsync<OwnerAggregate>(node.OwnerId, token: cancellationToken))!;
+        if (string.IsNullOrEmpty(owner.RootFingerprint))
+        {
+            session.Events.Append(node.OwnerId, OwnerDecider.ClaimRoot(owner, new string('1', 64), verified: true, Now));
+            await session.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// A teammate's replicated pr-review task for this test's pull request, in the state a lap
+    /// would otherwise attach to or claim: <c>published</c> and <c>queued</c> (nothing dispatched),
+    /// <c>parked</c> (the automated review parked a findings report) or <c>follow-through</c> (the
+    /// review is posted and the pull request is being watched). Added an hour after
+    /// <see cref="Now"/>, so it is newer than the task <see cref="SeedParkedPrReviewTaskAsync"/> seeds.
+    /// </summary>
+    private async Task<Guid> SeedTeammatesTaskAsync(
+        DocumentStore store, Guid projectId, string shape, CancellationToken cancellationToken)
+    {
+        Guid teammateOwnerId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        DateTimeOffset at = Now.AddHours(1);
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, "Teach the closeout monitor to read a rebase conflict",
+            ["every finding names a file and a line"], TaskType.PrReview, null, null,
+            new ExternalReference(WorkItemProvider.GitHubPullRequest, $"{repository}#42"), at, teammateOwnerId);
+        TaskAggregate task = new();
+        task.Apply(added);
+        TaskPublished published = TaskDecider.Publish(task, TaskDependencyGraph.Empty, at, teammateOwnerId);
+        task.Apply(published);
+        List<object> events = [added, published];
+
+        if (shape != "published")
+        {
+            TaskAssigned assigned = TaskDecider.Assign(
+                task, teammateOwnerId, [], at, teammateOwnerId, assignedOwnerRootFingerprint: TeammateRoot);
+            task.Apply(assigned);
+            events.Add(assigned);
+        }
+
+        if (shape is "parked" or "follow-through")
+        {
+            TaskClaimed claimed = TaskDecider.Claim(
+                task, DomainId.New(), teammateOwnerId, runId, at, ownerRootFingerprint: TeammateRoot);
+            task.Apply(claimed);
+            events.Add(claimed);
+        }
+
+        if (shape == "follow-through")
+        {
+            events.Add(TaskDecider.OpenPrReviewFollowThrough(
+                task, runId, $"https://github.com/{repository}/pull/42", headSha: null, at));
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream<TaskAggregate>(taskId, [.. events]);
+        // What a replicated task carries, and all that names its owner until it is assigned.
+        session.Store(new TaskCreatorRootRecord
+        {
+            Id = taskId,
+            ProjectId = projectId,
+            ClaimedOriginNodeId = DomainId.New(),
+            CreatorRootFingerprint = TeammateRoot,
+        });
+        await session.SaveChangesAsync(cancellationToken);
+        return taskId;
+    }
+
+    /// <summary>
+    /// A requested reviewer's pr-review task is theirs alone (decision 8a5822cc): a teammate's
+    /// replicated task of the same pull request is newer, and the lap still attaches to this
+    /// owner's own, leaving the teammate's stream exactly as it found it.
+    /// </summary>
+    [Fact]
+    public async Task The_lap_attaches_to_this_owners_own_task_even_when_a_teammates_is_newer()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        await EnsureOwnRootAsync(store, node, cts.Token);
+        Seeded seeded = await SeedParkedPrReviewTaskAsync(store, node, findingsReport: null, cts.Token);
+        Guid teammatesTask = await SeedTeammatesTaskAsync(store, seeded.ProjectId, "queued", cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            int result = await PullRequestReviewCommand.RunAsync(
+                store, session, new PullRequestReviewCommand.Settings { PullRequest = "42", Project = seeded.ProjectName },
+                ScriptedGh(), NewWorktrees(), cts.Token);
+            result.Should().Be(0);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.Events.AggregateStreamAsync<TaskAggregate>(seeded.TaskId, token: cts.Token))!.ReviewLapOpen
+            .Should().BeTrue("the lap opened on this owner's own task");
+        (await query.Events.FetchStreamStateAsync(teammatesTask, token: cts.Token))!.Version
+            .Should().Be(3, "the teammate's task was published, assigned and nothing else");
+    }
+
+    [Theory]
+    [InlineData("published")]
+    [InlineData("queued")]
+    [InlineData("parked")]
+    [InlineData("follow-through")]
+    public async Task The_lap_refuses_when_every_live_task_belongs_to_another_owner_and_appends_nothing(string shape)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        await EnsureOwnRootAsync(store, node, cts.Token);
+        SeededProject project = await SeedProjectAsync(store, node, cts.Token);
+        Guid teammatesTask = await SeedTeammatesTaskAsync(store, project.Id, shape, cts.Token);
+        long versionBefore;
+        await using (IQuerySession before = store.QuerySession())
+        {
+            versionBefore = (await before.Events.FetchStreamStateAsync(teammatesTask, token: cts.Token))!.Version;
+        }
+
+        FakeReviewWorktrees worktrees = NewWorktrees();
+
+        string expectedRefusal;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cts.Token);
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(teammatesTask, token: cts.Token))!;
+            expectedRefusal = (await FluentActions
+                .Awaiting(() => TaskOwnerGuard.AssertMayActAsync(session, task, context, cts.Token))
+                .Should().ThrowAsync<DomainBusinessRuleException>()).Which.Message;
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            Func<Task> lap = () => PullRequestReviewCommand.RunAsync(
+                store, session, new PullRequestReviewCommand.Settings { PullRequest = "42", Project = project.Name },
+                ScriptedGh(), worktrees, cts.Token);
+
+            (await lap.Should().ThrowAsync<DomainBusinessRuleException>()).Which.Message
+                .Should().Be(expectedRefusal, "it is the guard's own refusal, worded as every other guarded command words it");
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.Events.FetchStreamStateAsync(teammatesTask, token: cts.Token))!.Version
+            .Should().Be(versionBefore, "no attach, claim or lap event reached the teammate's task");
+        (await query.Query<TaskListItem>().Where(task => task.ProjectId == project.Id).ToListAsync(cts.Token))
+            .Should().ContainSingle("the pull request is not adopted a second time beside the teammate's task");
+        worktrees.PrReviewCheckouts.Should().BeEmpty();
     }
 
     [Fact]
