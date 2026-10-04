@@ -370,7 +370,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
 
-        // Unfenced, like every other ordinary idea mutation (h9k idea assign, h9k idea revise):
+        // Unfenced, like every other ordinary idea mutation (h9k idea move, h9k idea revise):
         // cutting has no "once" invariant to protect against racing itself, unlike promotion's
         // atomic cut-then-conclude — fan-out is meant to be freely repeatable, including two
         // cuts landing at the same moment, so this never competes with another cut for an
@@ -397,7 +397,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                     + "--project <name>."
                 : settings.FromIdea.IsNotBlank()
                     ? $"--from-idea cuts a task against a project too: pass --project <name>, or "
-                        + $"assign the idea to one first: h9k idea assign {settings.FromIdea} --project <name>."
+                        + $"move the idea to one first: h9k idea move {settings.FromIdea} <project>."
                     : "A task needs a project (--project or 'project:' in the file).");
         }
 

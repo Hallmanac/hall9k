@@ -25,7 +25,7 @@ public sealed class CommandHelpTests
         { typeof(ProjectShowCommand.Settings), nameof(ProjectShowCommand.Settings.Project) },
         { typeof(IdeaAddCommand.Settings), nameof(IdeaAddCommand.Settings.Project) },
         { typeof(IdeaListCommand.Settings), nameof(IdeaListCommand.Settings.Project) },
-        { typeof(IdeaAssignCommand.Settings), nameof(IdeaAssignCommand.Settings.Project) },
+        { typeof(IdeaMoveCommand.Settings), nameof(IdeaMoveCommand.Settings.Project) },
         { typeof(IdeaPromoteCommand.Settings), nameof(IdeaPromoteCommand.Settings.Project) },
         { typeof(EpicAddCommand.Settings), nameof(EpicAddCommand.Settings.Project) },
         { typeof(EpicListCommand.Settings), nameof(EpicListCommand.Settings.Project) },

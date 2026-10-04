@@ -125,7 +125,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             // holds the pull request) and dispatches work against it, so opening one here would
             // hand a fresh task, its run, and any unpushed review work to a project whose whole
             // database footprint the sweep destroys at the deadline — the same hazard h9k task
-            // add, h9k idea add, h9k epic add, h9k idea promote, and h9k idea assign already refuse
+            // add, h9k idea add, h9k epic add, h9k idea promote, and h9k idea move already refuse
             // (independent pre-PR review, cycle 3, adversarial lens, medium).
             throw new DomainValidationException(
                 $"Project '{project.Name}' is scheduled for permanent deletion at "

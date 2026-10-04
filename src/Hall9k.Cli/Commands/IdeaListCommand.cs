@@ -1,7 +1,9 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
 using Spectre.Console;
@@ -26,7 +28,9 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
         public string? Project { get; init; }
 
         [CommandOption("--unassigned")]
-        [Description("Only ideas that have no project yet — the ones still deciding where they belong")]
+        [Description(
+            "Only ideas that have no project yet — the ones still deciding where they belong. This is "
+            + "about the project, not about who holds the idea: the Assigned column shows that")]
         public bool Unassigned { get; init; }
 
         [CommandOption("--state <STATE>")]
@@ -96,9 +100,13 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
         List<IdeaDetails> scoped = [.. ideasPastPartialHistory
             .Where(idea => project is null || idea.ProjectId == project.Id)
             .Where(idea => !settings.Unassigned || idea.ProjectId is null)];
+        Dictionary<Guid, OwnerDetails> owners = (await session.Query<OwnerDetails>()
+            .ToListAsync(cancellationToken)).ToDictionary(owner => owner.Id);
+        Dictionary<Guid, ProjectMemberLabels> memberLabels = (await session.Query<ProjectMemberLabels>()
+            .ToListAsync(cancellationToken)).ToDictionary(labels => labels.Id);
         List<IdeaRow> matched = [.. scoped
             .Where(idea => state is null || idea.State == state)
-            .Select(idea => IdeaRow.Compose(idea, projects))
+            .Select(idea => IdeaRow.Compose(idea, projects, IdeaRow.AssigneeLabel(idea, owners, memberLabels)))
             .OrderByDescending(row => row.CapturedAt)];
         if (matched.Count == 0)
         {
@@ -124,11 +132,16 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
         IReadOnlyList<IdeaRow> rows, bool showState, bool scoped, int consoleWidth, DateTimeOffset now)
     {
         string[] ages = [.. rows.Select(row => $"[dim]{row.AgeMarkup(now)}[/]")];
+
+        // The column appears only when somebody holds one of the rows shown, so a list of ideas nobody
+        // has laid hold of reads exactly as it always did.
+        bool showAssignee = rows.Any(row => row.Assignee is not null);
         int text = TaskStatusRow.ObjectiveWidth(consoleWidth, bordered: true,
         [
             ["Id", .. rows.Select(row => row.IdMarkup)],
             .. showState ? (string[][])[["State", .. rows.Select(row => row.StateMarkup)]] : [],
             .. scoped ? (string[][])[] : [["Project", .. rows.Select(row => row.ProjectMarkup)]],
+            .. showAssignee ? (string[][])[["Assigned", .. rows.Select(row => row.AssigneeMarkup)]] : [],
             ["Captured", .. ages],
         ]);
 
@@ -144,6 +157,11 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
             table.AddColumn(new TableColumn("Project").NoWrap());
         }
 
+        if (showAssignee)
+        {
+            table.AddColumn(new TableColumn("Assigned").NoWrap());
+        }
+
         table.AddColumn("Idea");
         table.AddColumn(new TableColumn("Captured").NoWrap());
 
@@ -154,6 +172,7 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
                 row.IdMarkup,
                 .. showState ? (string[])[row.StateMarkup] : [],
                 .. scoped ? (string[])[] : [row.ProjectMarkup],
+                .. showAssignee ? (string[])[row.AssigneeMarkup] : [],
                 row.TextMarkup(text),
                 ages[index],
             ]);

@@ -33,7 +33,7 @@ public sealed class IdeaAddCommand : Hall9kAsyncCommand<IdeaAddCommand.Settings>
         [Description(
             "Optional, and only when you already know: the project's name, an unambiguous fragment "
             + "of it, or its id. An idea may precede its project — or become one — so leaving this "
-            + "off records an honest absence rather than a guess. Set it later with h9k idea assign")]
+            + "off records an honest absence rather than a guess. Set it later with h9k idea move")]
         public string? Project { get; init; }
     }
 
@@ -97,7 +97,7 @@ public sealed class IdeaAddCommand : Hall9kAsyncCommand<IdeaAddCommand.Settings>
             $"[blue]Idea captured[/] {TaskListCommand.Truncate(captured.Text, 72).EscapeMarkup()} [dim]({shortId})[/]");
         AnsiConsole.MarkupLine(project is null
             ? "[dim]  project:[/] none yet [dim]— set one when you know it:[/] "
-              + $"h9k idea assign {shortId} --project <name>"
+              + $"h9k idea move {shortId} <project>"
             : $"[dim]  project:[/] {project.Name.EscapeMarkup()}");
         AnsiConsole.MarkupLine($"[dim]  workspace:[/] {workspace.EscapeMarkup()}");
         AnsiConsole.MarkupLine(

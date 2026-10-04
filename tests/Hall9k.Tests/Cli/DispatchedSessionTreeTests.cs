@@ -36,6 +36,20 @@ public sealed class DispatchedSessionTreeTests
     }
 
     /// <summary>
+    /// Moving an idea, holding it and letting go of it are all the same kind of act as laying hold of one:
+    /// each changes who decides an idea or where it lives, so a dispatched session is refused every one.
+    /// </summary>
+    [Theory]
+    [InlineData(typeof(Hall9k.Cli.Commands.IdeaAssignCommand.Settings), "idea assign")]
+    [InlineData(typeof(Hall9k.Cli.Commands.IdeaUnassignCommand.Settings), "idea unassign")]
+    [InlineData(typeof(Hall9k.Cli.Commands.IdeaMoveCommand.Settings), "idea move")]
+    public void The_idea_verbs_that_move_or_hold_an_idea_are_all_refused_to_a_dispatched_session(Type settingsType, string verb)
+    {
+        DispatchedSessionCommandClassification.BySettingsType[settingsType]
+            .Should().Be((DispatchedSessionAccess.Refused, verb));
+    }
+
+    /// <summary>
     /// Runs one printed example through the shipped tree, stopping the instant Spectre has bound
     /// and validated its settings — the same technique <see cref="CommandTreeHelpTests.Parse"/>
     /// uses to prove an example is runnable, repurposed here to capture which settings CLR type the

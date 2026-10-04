@@ -1,5 +1,9 @@
+using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Trust;
 using Spectre.Console;
 
 namespace Hall9k.Cli.Commands;
@@ -24,9 +28,12 @@ internal sealed record IdeaRow(
     /// real timestamp in the same transaction that starts the stream, and <c>Create</c> always sets
     /// <see cref="IdeaState.Captured"/>.
     /// </summary>
-    bool PartialHistoryHeld = false)
+    bool PartialHistoryHeld = false,
+    /// <summary>Who has laid hold of the idea, as a one-line label, or null when nobody has (see <see cref="AssigneeLabel"/>).</summary>
+    string? Assignee = null)
 {
-    public static IdeaRow Compose(IdeaDetails idea, IReadOnlyDictionary<Guid, ProjectDetails> projects) =>
+    public static IdeaRow Compose(
+        IdeaDetails idea, IReadOnlyDictionary<Guid, ProjectDetails> projects, string? assignee = null) =>
         new(idea.Id,
             idea.Text,
             idea.ProjectId,
@@ -35,13 +42,28 @@ internal sealed record IdeaRow(
                 : null,
             idea.State,
             idea.CapturedAt,
-            IsPartialHistoryHeld(idea));
+            IsPartialHistoryHeld(idea),
+            assignee);
+
+    /// <summary>
+    /// The label of whoever holds <paramref name="idea"/>, or null when nobody does
+    /// (<see cref="IdeaAssigneeLabel"/>), bounded and kept to one line: a teammate's name is read from
+    /// their own self-signed file.
+    /// </summary>
+    public static string? AssigneeLabel(
+        IdeaDetails idea, IReadOnlyDictionary<Guid, OwnerDetails> owners,
+        IReadOnlyDictionary<Guid, ProjectMemberLabels> labels) =>
+        IdeaAssigneeLabel.Of(idea, owners, labels) is { } label
+            ? ExternalText.OneLine(RelayedText.Truncate(label, MemberLabelResolver.RenderLimit))
+            : null;
 
     /// <summary>See <see cref="PartialHistoryHeld"/>'s own doc for why either tell alone is authoritative.</summary>
     internal static bool IsPartialHistoryHeld(IdeaDetails idea) =>
         idea.State == IdeaState.Unknown || idea.CapturedAt == default;
 
     public string IdMarkup => $"[dim]{TaskListCommand.ShortId(Id)}[/]";
+
+    public string AssigneeMarkup => Assignee is null ? "[dim]-[/]" : Assignee.EscapeMarkup();
 
     public string StateMarkup => State.Value switch
     {
