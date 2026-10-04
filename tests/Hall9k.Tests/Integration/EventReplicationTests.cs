@@ -1681,7 +1681,8 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     /// arrived directly from its own origin node, never from a claim a relay relayed. With that root, a
     /// member who is neither the idea's assignee nor its creator cannot conclude it on any peer, and the
     /// creator, and then the assignee the creator hands it to, can; the creator can no longer once it is
-    /// handed away.
+    /// handed away. A conclude that arrives ahead of the hand-off that allows it is held, not dropped (see
+    /// <c>A_conclude_that_arrives_ahead_of_the_hand_off_that_allows_it_applies_once_the_hand_off_arrives</c>).
     /// </summary>
     [Fact]
     public async Task A_peer_records_the_creators_verified_root_and_applies_only_the_conclude_the_assignee_rule_allows()
@@ -1701,11 +1702,6 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
             record.CreatorRootFingerprint.Should().Be(IdeaReplicationRig.CreatorRoot, "a direct delivery verified who sent it");
             record.ClaimedOriginNodeId.Should().Be(rig.Creator.NodeId);
         }
-
-        // A teammate who is neither the creator nor an assignee cannot end it.
-        IdeaConcluded fromTeammate = new(ideaId, "tidying", Now.AddSeconds(3), Guid.NewGuid());
-        (await rig.DeliverAsync(rig.Teammate, Record(ideaId, fromTeammate, 1, rig.Teammate, Now.AddSeconds(3), rig.ProjectId), 4))
-            .Should().Be(0, "a Member-role non-creator's conclude of an unassigned idea is refused");
 
         // The creator hands it to the teammate: every peer applies the hand-off.
         IdeaAssigneeSet handOff = new(
@@ -1733,10 +1729,47 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     /// <summary>
+    /// Each sender's outbox is read on its own cursor, so an assignee's conclude can reach a peer before
+    /// the creator's hand-off that makes them the assignee. The peer holds it, and applies it the moment the
+    /// hand-off lands, rather than burning it for good and showing a different state from every other node.
+    /// </summary>
+    [Fact]
+    public async Task A_conclude_that_arrives_ahead_of_the_hand_off_that_allows_it_applies_once_the_hand_off_arrives()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        await using IdeaReplicationRig rig = await IdeaReplicationRig.OpenAsync(this, cts.Token);
+
+        Guid ideaId = DomainId.New();
+        IdeaCaptured genesis = IdeaDecider.Capture(
+            ideaId, rig.CreatorOwnerId, "Out of order", rig.ProjectId, Now.AddSeconds(1), ProjectHome.None);
+        (await rig.DeliverAsync(rig.Creator, Record(ideaId, genesis, 1, rig.Creator, Now.AddSeconds(1), rig.ProjectId), 2))
+            .Should().Be(1);
+
+        IdeaConcluded fromAssignee = new(ideaId, "shipped", Now.AddSeconds(3), Guid.NewGuid());
+        (await rig.DeliverAsync(rig.Teammate, Record(ideaId, fromAssignee, 1, rig.Teammate, Now.AddSeconds(3), rig.ProjectId), 4))
+            .Should().Be(0, "nothing says the teammate holds the idea yet");
+        await using (IQuerySession session = rig.StoreB.QuerySession())
+        {
+            (await session.Query<HeldTaskActRecord>().Where(held => held.TaskId == ideaId).CountAsync(cts.Token))
+                .Should().Be(1, "the conclude waits for the hand-off rather than being dropped for good");
+        }
+
+        IdeaAssigneeSet handOff = new(
+            ideaId, Guid.NewGuid(), IdeaReplicationRig.TeammateRoot, Now.AddSeconds(5), rig.CreatorOwnerId);
+        (await rig.DeliverAsync(rig.Creator, Record(ideaId, handOff, 2, rig.Creator, Now.AddSeconds(5), rig.ProjectId), 6))
+            .Should().BeGreaterThanOrEqualTo(2, "the hand-off applies and the held conclude is judged again and applies");
+
+        await using IQuerySession final = rig.StoreB.QuerySession();
+        (await final.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!.State.Should().Be(IdeaState.Concluded);
+        (await final.Query<HeldTaskActRecord>().Where(held => held.TaskId == ideaId).CountAsync(cts.Token)).Should().Be(0);
+    }
+
+    /// <summary>
     /// An act this node cannot yet judge because the idea's creator root is not verified is held, neither
     /// applied nor dropped. The root is confirmed by the first later act this node receives directly from the
     /// node the genesis claimed, and the held act is then judged against it: here the one from a teammate is
-    /// refused for good, and the creator's own is applied.
+    /// still not applied (it stays held until its window expires, in case the creator's hand-off to them is
+    /// still on its way), and the creator's own is applied.
     /// </summary>
     [Fact]
     public async Task An_act_on_an_idea_whose_creator_root_is_not_yet_verified_is_held_until_the_creator_confirms_it()
@@ -1782,7 +1815,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         (await final.LoadAsync<IdeaCreatorRootRecord>(ideaId, cts.Token))!.CreatorRootFingerprint
             .Should().Be(IdeaReplicationRig.CreatorRoot, "confirmed only from the node the genesis claimed, delivering directly");
         (await final.Query<HeldTaskActRecord>().Where(held => held.TaskId == ideaId).CountAsync(cts.Token))
-            .Should().Be(0, "the held conclude was judged once the root was known, and refused for good");
+            .Should().Be(1, "the held conclude was judged once the root was known and still waits, for an assignment that may yet arrive, until its hold expires");
         IdeaAggregate idea = (await final.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
         idea.State.Should().Be(IdeaState.Captured, "the teammate's conclude never applied");
         idea.AssigneeOwnerFingerprint.Should().Be(IdeaReplicationRig.CreatorRoot);
