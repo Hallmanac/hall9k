@@ -1600,6 +1600,358 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     /// <summary>
+    /// A node that has not yet updated to the build that knows <see cref="IdeaAssigneeSet"/> sees it as a
+    /// type it does not know: it skips the event without storing it, keeps applying every later event
+    /// from the same origin, and so keeps the creator fallback for that idea. Once that node does update,
+    /// the skipped event cannot be taken back: the stream already holds a later event from the same origin,
+    /// so re-delivering it is refused as out of order. The unknown type is simulated by the name the
+    /// envelope carries, which is all an older build ever sees of a type it has no class for.
+    /// <para>
+    /// What this suite cannot run is an older build's own gate, because there is none to run: a build from
+    /// before card D of idea 8d0b724b has no idea gate at all (it never classified an idea event), so it
+    /// applies an <see cref="IdeaConcluded"/> or <see cref="IdeaArchived"/> from a member who is neither the
+    /// idea's assignee nor its creator, which every updated peer refuses (the next test pins the refusal).
+    /// That half is stated here and in the pull request, not asserted. It is why every node of every member
+    /// must update before anyone assigns an idea to another member.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_node_that_does_not_know_the_idea_assignee_event_skips_it_keeps_applying_later_events_and_refuses_it_once_it_does()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        await using IdeaReplicationRig rig = await IdeaReplicationRig.OpenAsync(this, cts.Token);
+
+        Guid ideaId = DomainId.New();
+        IdeaCaptured genesis = IdeaDecider.Capture(
+            ideaId, rig.CreatorOwnerId, "Hold it", rig.ProjectId, Now.AddSeconds(1), ProjectHome.None);
+        (await rig.DeliverAsync(rig.Creator, Record(ideaId, genesis, 1, rig.Creator, Now.AddSeconds(1), rig.ProjectId), 2))
+            .Should().Be(1, "the capture itself is an ordinary event every build knows");
+
+        Guid assigneeEventId = DomainId.New();
+        IdeaAssigneeSet set = new(ideaId, DomainId.New(), IdeaReplicationRig.TeammateRoot, Now.AddSeconds(3), rig.CreatorOwnerId);
+        string assigneeJson = JsonSerializer.Serialize(set, rig.JsonOptions);
+        (await rig.DeliverAsync(
+            rig.Creator,
+            new(ideaId, typeof(IdeaAssigneeSet).FullName! + "FromANewerBuild", assigneeJson, assigneeEventId,
+                OriginSequence: 2, rig.Creator.NodeId, rig.Creator.Root, Now.AddSeconds(3), rig.ProjectId), 4))
+            .Should().Be(0, "a type this build has no class for is skipped, never stored and never applied");
+
+        IdeaRevised revised = new(ideaId, "Hold it, sharper", Now.AddSeconds(5), rig.CreatorOwnerId);
+        (await rig.DeliverAsync(rig.Creator, Record(ideaId, revised, 3, rig.Creator, Now.AddSeconds(5), rig.ProjectId), 6))
+            .Should().Be(1, "later events from the same origin keep applying past the skipped one");
+
+        await using (IQuerySession session = rig.StoreB.QuerySession())
+        {
+            (await session.LoadAsync<ReplicatedEventRecord>(assigneeEventId, cts.Token)).Should().BeNull();
+            IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
+            idea.Text.Should().Be("Hold it, sharper");
+            idea.AssigneeOwnerId.Should().BeNull("this node never learned the hold, so it keeps the creator fallback for the idea");
+        }
+
+        // The node updates and the same event arrives again under the name it now knows.
+        (await rig.DeliverAsync(
+            rig.Creator,
+            new(ideaId, typeof(IdeaAssigneeSet).FullName!, assigneeJson, assigneeEventId, OriginSequence: 2,
+                rig.Creator.NodeId, rig.Creator.Root, Now.AddSeconds(7), rig.ProjectId), 8))
+            .Should().Be(0, "the stream already holds sequence 3 from this origin, so sequence 2 is refused as out of order");
+        await using (IQuerySession session = rig.StoreB.QuerySession())
+        {
+            (await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!
+                .AssigneeOwnerId.Should().BeNull("the lagging node permanently lacks the hold; repairing it is out of scope");
+        }
+
+        // The control: a node that does know the type applies the same event delivered in order.
+        Guid knownIdeaId = DomainId.New();
+        IdeaCaptured knownGenesis = IdeaDecider.Capture(
+            knownIdeaId, rig.CreatorOwnerId, "Hold it too", rig.ProjectId, Now.AddSeconds(9), ProjectHome.None);
+        (await rig.DeliverAsync(rig.Creator, Record(knownIdeaId, knownGenesis, 4, rig.Creator, Now.AddSeconds(9), rig.ProjectId), 10))
+            .Should().Be(1);
+        Guid holder = DomainId.New();
+        IdeaAssigneeSet knownSet = new(knownIdeaId, holder, IdeaReplicationRig.TeammateRoot, Now.AddSeconds(11), rig.CreatorOwnerId);
+        (await rig.DeliverAsync(rig.Creator, Record(knownIdeaId, knownSet, 5, rig.Creator, Now.AddSeconds(11), rig.ProjectId), 12))
+            .Should().Be(1, "a build that knows the type applies it in order");
+        await using IQuerySession known = rig.StoreB.QuerySession();
+        IdeaAggregate knownIdea = (await known.Events.AggregateStreamAsync<IdeaAggregate>(knownIdeaId, token: cts.Token))!;
+        knownIdea.AssigneeOwnerId.Should().Be(holder);
+        knownIdea.AssigneeOwnerFingerprint.Should().Be(IdeaReplicationRig.TeammateRoot);
+    }
+
+    /// <summary>
+    /// The receive gate records an idea's creator root the way it does a task's: from a genesis that
+    /// arrived directly from its own origin node, never from a claim a relay relayed. With that root, a
+    /// member who is neither the idea's assignee nor its creator cannot conclude it on any peer, and the
+    /// creator, and then the assignee the creator hands it to, can; the creator can no longer once it is
+    /// handed away.
+    /// </summary>
+    [Fact]
+    public async Task A_peer_records_the_creators_verified_root_and_applies_only_the_conclude_the_assignee_rule_allows()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        await using IdeaReplicationRig rig = await IdeaReplicationRig.OpenAsync(this, cts.Token);
+
+        Guid ideaId = DomainId.New();
+        IdeaCaptured genesis = IdeaDecider.Capture(
+            ideaId, rig.CreatorOwnerId, "Whose is this", rig.ProjectId, Now.AddSeconds(1), ProjectHome.None);
+        (await rig.DeliverAsync(rig.Creator, Record(ideaId, genesis, 1, rig.Creator, Now.AddSeconds(1), rig.ProjectId), 2))
+            .Should().Be(1);
+
+        await using (IQuerySession session = rig.StoreB.QuerySession())
+        {
+            IdeaCreatorRootRecord record = (await session.LoadAsync<IdeaCreatorRootRecord>(ideaId, cts.Token))!;
+            record.CreatorRootFingerprint.Should().Be(IdeaReplicationRig.CreatorRoot, "a direct delivery verified who sent it");
+            record.ClaimedOriginNodeId.Should().Be(rig.Creator.NodeId);
+        }
+
+        // A teammate who is neither the creator nor an assignee cannot end it.
+        IdeaConcluded fromTeammate = new(ideaId, "tidying", Now.AddSeconds(3), Guid.NewGuid());
+        (await rig.DeliverAsync(rig.Teammate, Record(ideaId, fromTeammate, 1, rig.Teammate, Now.AddSeconds(3), rig.ProjectId), 4))
+            .Should().Be(0, "a Member-role non-creator's conclude of an unassigned idea is refused");
+
+        // The creator hands it to the teammate: every peer applies the hand-off.
+        IdeaAssigneeSet handOff = new(
+            ideaId, Guid.NewGuid(), IdeaReplicationRig.TeammateRoot, Now.AddSeconds(5), rig.CreatorOwnerId);
+        (await rig.DeliverAsync(rig.Creator, Record(ideaId, handOff, 2, rig.Creator, Now.AddSeconds(5), rig.ProjectId), 6))
+            .Should().Be(1, "the creator may hand an idea nobody holds to any member");
+
+        // Having handed it away, the creator no longer decides it.
+        IdeaConcluded fromCreatorAfterHandOff = new(ideaId, "changed my mind", Now.AddSeconds(7), rig.CreatorOwnerId);
+        (await rig.DeliverAsync(
+            rig.Creator, Record(ideaId, fromCreatorAfterHandOff, 3, rig.Creator, Now.AddSeconds(7), rig.ProjectId), 8))
+            .Should().Be(0, "a creator who handed the idea away cannot conclude it");
+        await using (IQuerySession session = rig.StoreB.QuerySession())
+        {
+            (await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!
+                .State.Should().Be(IdeaState.Captured);
+        }
+
+        // The assignee, who is not the creator, can.
+        IdeaConcluded fromAssignee = new(ideaId, "shipped", Now.AddSeconds(9), Guid.NewGuid());
+        (await rig.DeliverAsync(rig.Teammate, Record(ideaId, fromAssignee, 2, rig.Teammate, Now.AddSeconds(9), rig.ProjectId), 10))
+            .Should().Be(1, "the idea's assignee decides it, whoever created it");
+        await using IQuerySession final = rig.StoreB.QuerySession();
+        (await final.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!.State.Should().Be(IdeaState.Concluded);
+    }
+
+    /// <summary>
+    /// An act this node cannot yet judge because the idea's creator root is not verified is held, neither
+    /// applied nor dropped. The root is confirmed by the first later act this node receives directly from the
+    /// node the genesis claimed, and the held act is then judged against it: here the one from a teammate is
+    /// refused for good, and the creator's own is applied.
+    /// </summary>
+    [Fact]
+    public async Task An_act_on_an_idea_whose_creator_root_is_not_yet_verified_is_held_until_the_creator_confirms_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        await using IdeaReplicationRig rig = await IdeaReplicationRig.OpenAsync(this, cts.Token);
+
+        // The shape a relayed genesis leaves: the idea exists here, its creator record names the origin it
+        // claimed and carries no verified root.
+        Guid ideaId = DomainId.New();
+        await using (IDocumentSession session = rig.StoreB.LightweightSession())
+        {
+            session.Events.StartStream<IdeaAggregate>(
+                ideaId,
+                IdeaDecider.Capture(ideaId, rig.CreatorOwnerId, "Relayed in", rig.ProjectId, Now, ProjectHome.None));
+            session.Store(new IdeaCreatorRootRecord
+            {
+                Id = ideaId,
+                ProjectId = rig.ProjectId,
+                ClaimedOriginNodeId = rig.Creator.NodeId,
+                CreatorRootFingerprint = string.Empty,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        IdeaConcluded fromTeammate = new(ideaId, "tidying", Now.AddSeconds(1), Guid.NewGuid());
+        (await rig.DeliverAsync(rig.Teammate, Record(ideaId, fromTeammate, 1, rig.Teammate, Now.AddSeconds(1), rig.ProjectId), 2))
+            .Should().Be(0, "nothing is applied while the creator is unknown");
+        await using (IQuerySession session = rig.StoreB.QuerySession())
+        {
+            (await session.Query<HeldTaskActRecord>().Where(held => held.TaskId == ideaId).CountAsync(cts.Token))
+                .Should().Be(1, "the act is held for the idea, not applied and not dropped");
+        }
+
+        // The creator's own act, delivered directly from the claimed origin, confirms its root.
+        IdeaScopeSet shared = new(ideaId, ReplicationScope.Team, Now.AddSeconds(3), rig.CreatorOwnerId);
+        IdeaAssigneeSet byCreator = new(ideaId, rig.CreatorOwnerId, IdeaReplicationRig.CreatorRoot, Now.AddSeconds(4), rig.CreatorOwnerId);
+        (await rig.DeliverAsync(rig.Creator, Record(ideaId, shared, 1, rig.Creator, Now.AddSeconds(3), rig.ProjectId), 4)).Should().Be(1);
+        (await rig.DeliverAsync(rig.Creator, Record(ideaId, byCreator, 2, rig.Creator, Now.AddSeconds(4), rig.ProjectId), 5))
+            .Should().BeGreaterThanOrEqualTo(1, "the creator's own act on its own idea is applied once its root is confirmed");
+
+        await using IQuerySession final = rig.StoreB.QuerySession();
+        (await final.LoadAsync<IdeaCreatorRootRecord>(ideaId, cts.Token))!.CreatorRootFingerprint
+            .Should().Be(IdeaReplicationRig.CreatorRoot, "confirmed only from the node the genesis claimed, delivering directly");
+        (await final.Query<HeldTaskActRecord>().Where(held => held.TaskId == ideaId).CountAsync(cts.Token))
+            .Should().Be(0, "the held conclude was judged once the root was known, and refused for good");
+        IdeaAggregate idea = (await final.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
+        idea.State.Should().Be(IdeaState.Captured, "the teammate's conclude never applied");
+        idea.AssigneeOwnerFingerprint.Should().Be(IdeaReplicationRig.CreatorRoot);
+    }
+
+    /// <summary>
+    /// An idea that replicated in before this build kept a creator record has none. The node stages the
+    /// record from the genesis it already holds (which names the origin it was claimed from) with no
+    /// verified root, so the first act it receives directly from that origin confirms it exactly as it
+    /// confirms a fresh one: the creator's own conclude then applies where it would otherwise be held
+    /// until it expired, and a teammate's is still held, never applied on a claim nobody verified.
+    /// </summary>
+    [Fact]
+    public async Task An_idea_that_replicated_in_before_the_creator_record_existed_is_confirmed_by_the_creators_own_direct_act()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        await using IdeaReplicationRig rig = await IdeaReplicationRig.OpenAsync(this, cts.Token);
+
+        Guid ideaId = DomainId.New();
+        IdeaCaptured genesis = IdeaDecider.Capture(
+            ideaId, rig.CreatorOwnerId, "Captured before the upgrade", rig.ProjectId, Now.AddSeconds(1), ProjectHome.None);
+        (await rig.DeliverAsync(rig.Creator, Record(ideaId, genesis, 1, rig.Creator, Now.AddSeconds(1), rig.ProjectId), 2))
+            .Should().Be(1);
+        await using (IDocumentSession session = rig.StoreB.LightweightSession())
+        {
+            session.Delete<IdeaCreatorRootRecord>(ideaId);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        IdeaConcluded fromTeammate = new(ideaId, "tidying", Now.AddSeconds(3), Guid.NewGuid());
+        (await rig.DeliverAsync(rig.Teammate, Record(ideaId, fromTeammate, 1, rig.Teammate, Now.AddSeconds(3), rig.ProjectId), 4))
+            .Should().Be(0, "the creator is not known here, so a teammate's conclude waits rather than applying");
+        await using (IQuerySession session = rig.StoreB.QuerySession())
+        {
+            IdeaCreatorRootRecord staged = (await session.LoadAsync<IdeaCreatorRootRecord>(ideaId, cts.Token))!;
+            staged.CreatorRootFingerprint.Should().BeEmpty("a teammate's act confirms nothing");
+            staged.ClaimedOriginNodeId.Should().Be(rig.Creator.NodeId, "the record names the origin the genesis was claimed from");
+            (await session.Query<HeldTaskActRecord>().Where(held => held.TaskId == ideaId).CountAsync(cts.Token)).Should().Be(1);
+        }
+
+        IdeaAssigneeSet byCreator = new(ideaId, rig.CreatorOwnerId, IdeaReplicationRig.CreatorRoot, Now.AddSeconds(5), rig.CreatorOwnerId);
+        (await rig.DeliverAsync(rig.Creator, Record(ideaId, byCreator, 2, rig.Creator, Now.AddSeconds(5), rig.ProjectId), 6))
+            .Should().BeGreaterThanOrEqualTo(1, "the creator's own direct act on its own idea confirms its root and applies");
+
+        await using IQuerySession final = rig.StoreB.QuerySession();
+        (await final.LoadAsync<IdeaCreatorRootRecord>(ideaId, cts.Token))!.CreatorRootFingerprint
+            .Should().Be(IdeaReplicationRig.CreatorRoot);
+        IdeaAggregate idea = (await final.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
+        idea.AssigneeOwnerFingerprint.Should().Be(IdeaReplicationRig.CreatorRoot);
+        idea.State.Should().Be(IdeaState.Captured, "the teammate's held conclude was refused once the creator was known");
+    }
+
+    private static EventReplicationCodec.ReplicatedEventRecord Record(
+        Guid streamId, object data, long originSequence, IdeaReplicationRig.Sender sender, DateTimeOffset at, Guid projectId) =>
+        new(streamId, data.GetType().FullName!, JsonSerializer.Serialize(data, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+            DomainId.New(), originSequence, sender.NodeId, sender.Root, at, projectId);
+
+    /// <summary>
+    /// Two member nodes of one project sending an idea's events to a receiving store, over the same fake
+    /// ledger and in-memory transport every other replication test here uses: the creator and a teammate,
+    /// each its own Member-role owner, and a receiver that is a project Owner nobody sends from.
+    /// </summary>
+    private sealed class IdeaReplicationRig : IAsyncDisposable
+    {
+        public const string CreatorRoot = "creator-m-root-fingerprint";
+        public const string TeammateRoot = "teammate-t-root-fingerprint";
+
+        private readonly EventReplicationTests _tests;
+        private readonly EventReplicationInbox _inbox;
+        private readonly MessageOutbox _outbox;
+        private readonly (LedgerCommitter Committer, LedgerSigningKey SigningKey) _signing = Signing("origin");
+        private readonly TrustChain _trustChain;
+        private readonly CancellationToken _cancellationToken;
+
+        private IdeaReplicationRig(
+            EventReplicationTests tests, DocumentStore storeB, Sender creator, Sender teammate, Guid projectId,
+            EventReplicationInbox inbox, MessageOutbox outbox, TrustChain trustChain, CancellationToken cancellationToken)
+        {
+            _tests = tests;
+            StoreB = storeB;
+            Creator = creator;
+            Teammate = teammate;
+            ProjectId = projectId;
+            _inbox = inbox;
+            _outbox = outbox;
+            _trustChain = trustChain;
+            _cancellationToken = cancellationToken;
+        }
+
+        public sealed record Sender(Guid NodeId, string Root);
+
+        public DocumentStore StoreB { get; }
+
+        public Sender Creator { get; }
+
+        public Sender Teammate { get; }
+
+        public Guid ProjectId { get; }
+
+        public Guid CreatorOwnerId { get; } = DomainId.New();
+
+        public JsonSerializerOptions JsonOptions { get; } = new(JsonSerializerDefaults.Web);
+
+        public static async Task<IdeaReplicationRig> OpenAsync(EventReplicationTests tests, CancellationToken cancellationToken)
+        {
+            Sender creator = new(DomainId.New(), CreatorRoot);
+            Sender teammate = new(DomainId.New(), TeammateRoot);
+            Guid projectId = DomainId.New();
+            FakeLedger ledger = new();
+            await SeedNodeFileAsync(ledger, creator.NodeId, cancellationToken);
+            await SeedNodeFileAsync(ledger, teammate.NodeId, cancellationToken);
+            InMemoryMessageTransport transport = new(ledger);
+
+            string creatorKeyLine = $"ssh-ed25519 AAAAFAKE{creator.NodeId:N} test";
+            string teammateKeyLine = $"ssh-ed25519 AAAAFAKE{teammate.NodeId:N} test";
+            const string ownerRoot = "project-owner-root-fingerprint";
+            TrustChain trustChain = new(
+                new Dictionary<string, TrustedOwner>
+                {
+                    [CreatorRoot] = new TrustedOwner(
+                        CreatorRoot, "ssh-ed25519 AAAAFAKEcreatorM test",
+                        [new TrustedNode(creator.NodeId.ToString(), creatorKeyLine, NodeKeyStore.Fingerprint(creatorKeyLine), Now)]),
+                    [TeammateRoot] = new TrustedOwner(
+                        TeammateRoot, "ssh-ed25519 AAAAFAKEteammateT test",
+                        [new TrustedNode(teammate.NodeId.ToString(), teammateKeyLine, NodeKeyStore.Fingerprint(teammateKeyLine), Now)]),
+                },
+                [
+                    new ProjectMember(ownerRoot, MembershipRole.Owner, Now),
+                    new ProjectMember(CreatorRoot, MembershipRole.Member, Now),
+                    new ProjectMember(TeammateRoot, MembershipRole.Member, Now),
+                ]);
+
+            DocumentStore storeB = tests.OpenStoreB();
+            await using (IDocumentSession session = storeB.LightweightSession())
+            {
+                session.Events.StartStream<ProjectAggregate>(
+                    projectId,
+                    new ProjectRegistered(projectId, DomainId.New(), DomainId.New(), "Shared Project", "/repo-b", null, "main", Now));
+                await session.SaveChangesAsync(cancellationToken);
+            }
+
+            return new IdeaReplicationRig(
+                tests, storeB, creator, teammate, projectId, new EventReplicationInbox(transport), new MessageOutbox(transport),
+                trustChain, cancellationToken);
+        }
+
+        /// <summary>Queues <paramref name="record"/> on <paramref name="from"/>'s own outbox, flushes it, and has the receiver read that outbox.</summary>
+        public async Task<int> DeliverAsync(Sender from, EventReplicationCodec.ReplicatedEventRecord record, int atSecond)
+        {
+            await using (IDocumentSession session = _tests._postgres.Store.LightweightSession())
+            {
+                await MessageOutbox.QueueAsync(
+                    session, from.NodeId, ProjectId, from.Root, MessageAudience.Project, about: null,
+                    MessageKind.Events, EventReplicationCodec.EncodeBatch([record]), Now.AddSeconds(atSecond), _cancellationToken);
+                await _outbox.FlushAsync(
+                    session, RepositoryPath, from.NodeId, ProjectId, "shared-project-key", adoptUnassigned: false,
+                    _signing.Committer, _signing.SigningKey, Now.AddSeconds(atSecond), _cancellationToken);
+            }
+
+            await using IDocumentSession read = StoreB.LightweightSession();
+            return (await _inbox.ReadFromAsync(
+                read, RepositoryPath, from.NodeId, ProjectId, DomainId.New(), "owner-b-fingerprint",
+                Now.AddSeconds(atSecond + 1), _trustChain, _cancellationToken)).EventsApplied;
+        }
+
+        public async ValueTask DisposeAsync() => await StoreB.DisposeAsync();
+    }
+
+    /// <summary>
     /// The forged-forward shape proved above, repeated with a plain
     /// <see cref="TaskActClassification.MemberSafe"/> Task/Run act (<see cref="TaskCompleted"/>)
     /// rather than a Conditional one (independent pre-PR review, cycle 8, terminal lap): before the

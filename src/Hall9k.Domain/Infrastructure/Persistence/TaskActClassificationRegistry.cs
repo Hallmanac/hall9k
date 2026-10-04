@@ -1,10 +1,11 @@
+using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks.Events;
 
 namespace Hall9k.Domain.Infrastructure.Persistence;
 
 /// <summary>
-/// Whether a replicated <see cref="EventScope.ProjectScoped"/> Task or Run event, applied by a
+/// Whether a replicated <see cref="EventScope.ProjectScoped"/> Task, Run or Idea event, applied by a
 /// non-owner (Member-role) sender, is safe to apply unconditionally, safe only against the task
 /// it targets, or never safe at all from that sender (idea 6be68ee2, trust-ledger finding 5).
 /// Every classification here is judged against the SENDER — an owner-role sender's act always
@@ -47,7 +48,8 @@ public enum TaskActClassification
 
 /// <summary>
 /// The classification table itself: every <see cref="EventScope.ProjectScoped"/> event type in
-/// <c>Hall9k.Domain.Features.Tasks.Events</c> and <c>Hall9k.Domain.Features.Run.Events</c> gets one
+/// <c>Hall9k.Domain.Features.Tasks.Events</c>, <c>Hall9k.Domain.Features.Run.Events</c> and
+/// <c>Hall9k.Domain.Features.Idea</c> gets one
 /// entry (idea 6be68ee2, trust-ledger finding 5) — <c>TaskActClassificationRegistryTests</c>
 /// fails the build the moment a new one ships unclassified, the identical completeness gate
 /// <see cref="EventScopeRegistry"/> already runs for scope itself.
@@ -194,6 +196,34 @@ public static class TaskActClassificationRegistry
         [typeof(WorkItemPublicationCompleted)] = TaskActClassification.MemberSafe,
         [typeof(WorkItemPublicationDispatched)] = TaskActClassification.MemberSafe,
         [typeof(WorkItemPublicationRequested)] = TaskActClassification.MemberSafe,
+
+        // --- Hall9k.Domain.Features.Idea (card D of idea 8d0b724b) ---
+        //
+        // The same gate judges an idea act by the idea's own assignee, or with none its creator
+        // (EventReplicationInbox.EvaluateIdeaActVerdict). Every idea event is classified, the plain
+        // ones MemberSafe, so the one thing they gain is queueing behind an earlier held idea act
+        // from the same origin instead of overtaking it; their verdict is unchanged, always applied.
+
+        // Who may end the idea, and who may hand it on, are decided by the assignee rule.
+        [typeof(IdeaArchived)] = TaskActClassification.Conditional,
+        [typeof(IdeaConcluded)] = TaskActClassification.Conditional,
+        [typeof(IdeaAssigneeSet)] = TaskActClassification.Conditional,
+
+        // Only from the current assignee; an Owner-role override always applies like any Owner act.
+        [typeof(IdeaAssigneeCleared)] = TaskActClassification.Conditional,
+
+        // Admitted exactly as before this gate knew ideas.
+        [typeof(IdeaAssignedToProject)] = TaskActClassification.MemberSafe,
+        [typeof(IdeaCaptured)] = TaskActClassification.MemberSafe,
+        [typeof(IdeaRevised)] = TaskActClassification.MemberSafe,
+        [typeof(IdeaScopeSet)] = TaskActClassification.MemberSafe,
+        // Cutting a task from an idea, and the daemon's spike verdict, stay open to any member.
+        [typeof(IdeaSpikeConcluded)] = TaskActClassification.MemberSafe,
+        [typeof(IdeaTaskCut)] = TaskActClassification.MemberSafe,
+        // Historical events no write produces any more, replayed only from a stream that carries one.
+        [typeof(IdeaDiscarded)] = TaskActClassification.MemberSafe,
+        [typeof(IdeaPrivacySet)] = TaskActClassification.MemberSafe,
+        [typeof(IdeaPromoted)] = TaskActClassification.MemberSafe,
 
         // --- Hall9k.Domain.Features.Run.Events ---
 

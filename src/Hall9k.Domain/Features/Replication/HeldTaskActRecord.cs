@@ -1,7 +1,7 @@
 namespace Hall9k.Domain.Features.Replication;
 
 /// <summary>
-/// A replicated Task or Run "act" (idea 6be68ee2, trust-ledger finding 5) a non-owner sender's
+/// A replicated Task, Run or Idea "act" (idea 6be68ee2, trust-ledger finding 5) a non-owner sender's
 /// verdict could not yet be settled for — the task it targets already exists here
 /// (<see cref="HeldReplicatedEventRecord"/> is the sibling table for a genuinely missing genesis),
 /// but the specific fact this act's own conditional check needs — its current assignment or
@@ -37,7 +37,8 @@ public sealed class HeldTaskActRecord
     public Guid StreamId { get; set; }
 
     /// <summary>The task this act's conditional verdict is judged against — <see cref="StreamId"/>
-    /// itself for a Task act, or the run's own <c>TaskId</c> for a Run act.</summary>
+    /// itself for a Task act, or the run's own <c>TaskId</c> for a Run act. For an Idea act it is the
+    /// idea's own id, which is <see cref="StreamId"/> too: the column keeps the name it was persisted under.</summary>
     public Guid TaskId { get; set; }
 
     public Guid ProjectId { get; set; }
