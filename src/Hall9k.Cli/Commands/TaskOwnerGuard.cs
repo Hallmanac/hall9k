@@ -42,6 +42,15 @@ internal static class TaskOwnerGuard
     }
 
     /// <summary>
+    /// Whether this node's owner root may act on <paramref name="task"/>, the question
+    /// <see cref="AssertMayActAsync"/> refuses on, for a caller choosing among several tasks before
+    /// it has anything to refuse.
+    /// </summary>
+    public static async Task<bool> MayActAsync(
+        IDocumentSession session, TaskAggregate task, BootstrapContext context, CancellationToken cancellationToken) =>
+        (await EvaluateAsync(session, task, context, cancellationToken)).Check.MayAct;
+
+    /// <summary>
     /// The guard for the three commands an Owner-role member may still run against another
     /// owner's task, by naming that owner with <paramref name="holder"/> and saying why with
     /// <paramref name="reason"/>. The Owner-role check (the one <c>h9k task take --force</c> makes)

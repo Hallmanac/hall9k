@@ -141,7 +141,8 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         RefuseUnreviewablePullRequest(pullRequest);
 
         ExternalReference reference = new(WorkItemProvider.GitHubPullRequest, $"{pullRequest.Repository}#{pullRequest.Number}");
-        TaskListItem? existing = await FindLiveTaskAsync(session, reference, cancellationToken);
+        IReadOnlyList<TaskListItem> liveTasks = await FindLiveTasksAsync(session, reference, cancellationToken);
+        TaskListItem? existing = await ChooseOwnTaskAsync(session, liveTasks, context, cancellationToken);
 
         LapAttachment attachment;
         if (existing is null)
@@ -280,7 +281,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     }
 
     /// <summary>
-    /// The live pr-review task for this pull request, using the identical dedup rule
+    /// The live tasks for this pull request, newest first, using the identical dedup rule
     /// <c>TaskAddCommand.RefuseSecondAdoptionAsync</c> and <c>AutoPrReviewEngine</c> already
     /// share (PLAN.md §3.1a, one live task per item): an Abandoned task does not count, and
     /// neither does a Done pr-review — a completed review does not hold its pull request hostage,
@@ -293,7 +294,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// built to avoid.
     /// </para>
     /// </summary>
-    private static async Task<TaskListItem?> FindLiveTaskAsync(
+    private static async Task<IReadOnlyList<TaskListItem>> FindLiveTasksAsync(
         IQuerySession session, ExternalReference reference, CancellationToken cancellationToken)
     {
         string canonical = reference.ToString();
@@ -304,7 +305,43 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
                 "NOT (d.data ->> 'type' = ? AND d.data ->> 'state' = ?)",
                 TaskType.PrReview.Value, TaskState.Done.Value))
             .OrderByDescending(task => task.AddedAt)
-            .FirstOrDefaultAsync(cancellationToken);
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The live task this lap may attach to: this owner's own newest one, even when a teammate's
+    /// replicated task is newer, since a lap appends to whatever it attaches to and a requested
+    /// reviewer's task is theirs alone (the rule <c>TaskOwnerGuard</c>
+    /// applies to every other command). Null only when nothing is live, so the caller adopts. When
+    /// every live task belongs to another owner it refuses through the guard, before the caller
+    /// attaches, claims, or records anything on it, rather than adopting a second live task for the
+    /// same pull request.
+    /// </summary>
+    private static async Task<TaskListItem?> ChooseOwnTaskAsync(
+        IDocumentSession session, IReadOnlyList<TaskListItem> liveTasks, BootstrapContext context,
+        CancellationToken cancellationToken)
+    {
+        TaskAggregate? newest = null;
+        foreach (TaskListItem candidate in liveTasks)
+        {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                    candidate.Id, token: cancellationToken)
+                ?? throw new DomainNotFoundException($"No task {candidate.Id}.");
+
+            if (await TaskOwnerGuard.MayActAsync(session, task, context, cancellationToken))
+            {
+                return candidate;
+            }
+
+            newest ??= task;
+        }
+
+        if (newest is not null)
+        {
+            await TaskOwnerGuard.AssertMayActAsync(session, newest, context, cancellationToken);
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -615,7 +652,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         // auto-pr-review sweep or a second lap can mint a task for this same pull request inside
         // that window (self-review, round one). Cheap, and it narrows the duplicate window to the
         // append itself.
-        if (await FindLiveTaskAsync(session, imported.Reference, cancellationToken) is { } raced)
+        if ((await FindLiveTasksAsync(session, imported.Reference, cancellationToken)).FirstOrDefault() is { } raced)
         {
             throw new DomainConflictException(
                 $"Task {raced.Id} took {imported.Reference.Reference} while this lap was reading the pull "
