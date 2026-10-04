@@ -1,0 +1,21 @@
+hall9k-task-record: 1
+task-id: 01a1071f-eca3-70df-af96-886d83763327
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#685
+objective: A dispatch prompt or park line names a mention as aimed at this owner only when the mention tagged this install's login
+criteria:
+  - When an ordinary pr-review dispatch carries a mention (the minting row or task.LatestMention*), RunLauncher (about lines 771 to 786) appends BuildMintAddendum only when MentionFollowUpGate.Decide, given this install's gh login (read with the existing ReadOwnLoginWithRetryAsync), the comment's author, and the comment's body, proceeds. A comment that tags another login, or a login that cannot be read, dispatches the review without the addendum and logs why; the recorded tagged login is never trusted in place of the body match.
+  - A review dispatched without the addendum parks with a needs-you line that names no mention. The mention follow-up park wording (PrReviewEngine.cs, about line 1185) is unchanged, because its launch is already gated.
+  - |-
+    A test (the existing Postgres fixture in AutoPrReviewMentionEngineTests with its faked process runner, or a pure function extracted for the decision; no branch, git, or GitHub) covers, for an install logged in as brian: a comment by ryan tagging @taylor with no tagged login recorded adds no addendum; a comment tagging @Brian in different letter case adds it; an unreadable login adds none and the review still dispatches.
+  - The existing tests for each touched path still pass unchanged.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/83763327-a-dispatch-prompt-or-park-line
+published: 2026-10-04 13:37:46Z
+context: |-
+  Card B of idea 8d0b724b (ideas/8d0b724b-*/workspace/draft-task.md and report.md); it rewrites the routed draft 4a687e9b (h9k task show 4a687e9b for its verbatim finding). The attach path on current builds already refuses a teammate's task; what remains is the launcher's mint addendum trusting a replicated mention that an older peer attached. The review-report park line ("<author> tagged you", PrReviewEngine.cs about line 1309) is written only when mention-answer.md exists, which only the addendum requests, so gating the launcher fixes it too; the follow-up park line (about line 1185) is already true because every follow-up launch passes MentionFollowUpGate (RunLauncher.cs about line 1085). Reuse MentionFollowUpGate.Decide itself: it matches the comment body against the login gh reports, case-insensitively, and never reads the recorded tagged login, which an older node leaves null. The launcher already has ReadOwnLoginWithRetryAsync. Sites were confirmed on origin/main at fdf9c01ab by the cell B pair 4 challenge (verdict-opus.md and verdict-fable.md in this task's directory). Card A (0a35c9b9, #684) touches different files. Leave OwnerScopedCoverage's empty-root behavior alone. Tests: no branches, git, or GitHub; the existing Postgres fixture with its faked process runner is fine.
