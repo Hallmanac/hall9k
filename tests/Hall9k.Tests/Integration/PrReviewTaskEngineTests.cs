@@ -13,6 +13,7 @@ using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -614,6 +615,128 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         {
             // Still Claimed and still watched by its own project's opt-in, so this one has to be
             // taken out of later sweeps for the same reason the Queued sibling above does.
+            await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
+        }
+    }
+
+    private const string TeammateRoot = "2222222222222222222222222222222222222222222222222222222222222222";
+
+    /// <summary>This install's owner root, claimed on first use: the shared owner of this class may already hold one from an earlier test, which is read back rather than claimed again.</summary>
+    private static async Task<string> EnsureOwnRootAsync(
+        DocumentStore store, NodeContext node, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        OwnerAggregate owner = (await session.Events.AggregateStreamAsync<OwnerAggregate>(node.OwnerId, token: cancellationToken))!;
+        if (!string.IsNullOrEmpty(owner.RootFingerprint))
+        {
+            return owner.RootFingerprint;
+        }
+
+        const string ownRoot = "1111111111111111111111111111111111111111111111111111111111111111";
+        session.Events.Append(node.OwnerId, OwnerDecider.ClaimRoot(owner, ownRoot, verified: true, Now));
+        await session.SaveChangesAsync(cancellationToken);
+        return ownRoot;
+    }
+
+    /// <summary>A Queued auto-pr-review task for one pull request, assigned to <paramref name="ownerId"/> under <paramref name="ownerRoot"/>, watching <paramref name="assigneeLogin"/>'s request.</summary>
+    private static async Task<Guid> SeedQueuedReviewAsync(
+        DocumentStore store, Guid projectId, string repository, int number, string assigneeLogin,
+        Guid ownerId, string ownerRoot, CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, $"Review pull request {repository}#{number}", ["every finding is directed"],
+            TaskType.PrReview, null, null, new ExternalReference(WorkItemProvider.GitHubPullRequest, $"{repository}#{number}"),
+            Now.AddHours(-1), ownerId);
+        TaskAggregate task = new();
+        task.Apply(added);
+        PullRequestReviewAssignmentObserved observed = new(
+            taskId, $"https://github.com/{repository}/pull/{number}", assigneeLogin, "alice",
+            Now.AddHours(-1), Now.AddHours(-1));
+        task.Apply(observed);
+        TaskPublished published = TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now.AddHours(-1), ownerId, BacklogPolicy.None);
+        task.Apply(published);
+        TaskAssigned assigned = TaskDecider.Assign(
+            task, ownerId, [], Now.AddHours(-1), ownerId, assignedOwnerRootFingerprint: ownerRoot);
+
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream<TaskAggregate>(taskId, [added, observed, published, assigned]);
+        await session.SaveChangesAsync(cancellationToken);
+        return taskId;
+    }
+
+    /// <summary>
+    /// Brian and Ryan were both requested on one pull request, so each has a pr-review task and
+    /// Ryan's has replicated onto Brian's node. Brian is then removed: the removal the sweep reads
+    /// from GitHub is Brian's, so it recalls Brian's task and nothing else. Ryan's task is his
+    /// alone (decision 8a5822cc), whether it is told apart by the login it watches (ryan) or by
+    /// its owner (a second task that carries Brian's login but is held by a teammate's root).
+    /// </summary>
+    [Fact]
+    public async Task A_withdrawn_assignment_recalls_only_this_owners_own_task_not_a_replicated_teammates()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        string ownRoot = await EnsureOwnRootAsync(store, node, cts.Token);
+        ownRoot.Should().NotBe(TeammateRoot);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/brian-and-ryan-requested";
+        const int number = 77;
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), "auto-pr-review-withdrawn-own-only", "/tmp/auto-pr-review-withdrawn-own-only-repo",
+                new Uri($"https://github.com/{repository}"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+            ProjectAggregate project = new();
+            project.Apply(registered);
+            ProjectSettingsChanged optedIn = ProjectDecider.ChangeSettings(
+                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+                Optional<IReadOnlyList<ContextLink>>.None, Now, node.OwnerId,
+                autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Normal));
+            session.Events.Append(projectId, optedIn);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid brians = await SeedQueuedReviewAsync(store, projectId, repository, number, "Brian", node.OwnerId, ownRoot, cts.Token);
+        Guid ryans = await SeedQueuedReviewAsync(store, projectId, repository, number, "ryan", DomainId.New(), TeammateRoot, cts.Token);
+        Guid sameLoginOtherOwner = await SeedQueuedReviewAsync(
+            store, projectId, repository, number, "brian", DomainId.New(), TeammateRoot, cts.Token);
+
+        const string removalJson = """
+            {"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[
+              {"__typename":"ReviewRequestedEvent","createdAt":"2026-09-04T10:00:00Z",
+               "actor":{"login":"alice"},"requestedReviewer":{"__typename":"User","login":"brian"}},
+              {"__typename":"ReviewRequestRemovedEvent","createdAt":"2026-09-04T11:00:00Z",
+               "actor":{"login":"alice"},"requestedReviewer":{"__typename":"User","login":"brian"}}
+            ]}}}}}
+            """;
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node), ScriptedGh("brian", removalJson), new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
+
+        try
+        {
+            await engine.PollOnceAsync(cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            IReadOnlyList<object> briansStream = [.. (await query.Events.FetchStreamAsync(brians, token: cts.Token)).Select(recorded => recorded.Data)];
+            briansStream.OfType<PullRequestReviewAssignmentRecalled>().Should().ContainSingle("Brian's own task is recalled by Brian's own removal");
+            (await query.Events.AggregateStreamAsync<TaskAggregate>(brians, token: cts.Token))!.State
+                .Should().Be(TaskState.Abandoned, "Brian's task never dispatched, so the recall concludes it");
+
+            foreach (Guid teammatesTask in new[] { ryans, sameLoginOtherOwner })
+            {
+                IReadOnlyList<object> stream = [.. (await query.Events.FetchStreamAsync(teammatesTask, token: cts.Token)).Select(recorded => recorded.Data)];
+                stream.Should().NotContain(
+                    recorded => recorded is PullRequestReviewAssignmentRecalled || recorded is TaskAbandoned,
+                    "a teammate's replicated review is theirs alone and Brian's removal says nothing about it");
+                stream.Should().HaveCount(4, "nothing at all was appended to it");
+            }
+        }
+        finally
+        {
             await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
         }
     }
