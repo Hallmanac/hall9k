@@ -1498,6 +1498,10 @@ public sealed record IdeaCaptured(Guid Id, Guid OwnerId, string Text, Guid? Proj
 public sealed record IdeaRevised(Guid Id, string Text, DateTimeOffset RevisedAt, Guid RevisedByOwnerId);
 public sealed record IdeaAssignedToProject(
     Guid Id, Guid ProjectId, Guid? PreviousProjectId, DateTimeOffset AssignedAt, Guid AssignedByOwnerId);
+public sealed record IdeaAssigneeSet(          // a member lays hold of an idea, or hands it to another member;
+    Guid Id, Guid AssigneeOwnerId,              // judged by TaskOwnerRule over verified owner roots, no holder
+    string? AssigneeOwnerRootFingerprint, DateTimeOffset SetAt, Guid SetByOwnerId);
+public sealed record IdeaAssigneeCleared(Guid Id, string? Reason, DateTimeOffset ClearedAt, Guid ClearedByOwnerId);
 public sealed record IdeaTaskCut(               // repeatable: one per cut, never terminal
     Guid Id, Guid TaskId, string Objective, DateTimeOffset CutAt, Guid CutByOwnerId);
 public sealed record IdeaConcluded(Guid Id, string Reason, DateTimeOffset ConcludedAt, Guid ConcludedByOwnerId);
@@ -1510,6 +1514,16 @@ public sealed record IdeaArchived(Guid Id, string Reason, DateTimeOffset Archive
 // Apply handlers stay, for historical replay only, reconciled into Concluded/Archived
 // respectively, and h9k idea promote survives as sugar over IdeaTaskCut + IdeaConcluded.
 ```
+
+An idea's **assignee** is who has laid hold of it, a different fact from its project:
+`h9k idea assign` names a person and writes `IdeaAssigneeSet`, `h9k idea move` names a project and
+writes `IdeaAssignedToProject`. Capturing an idea never assigns its creator, so an idea nobody holds
+falls back to its creator, whose root a peer learns from `IdeaCreatorRootRecord` (the twin of
+`TaskCreatorRootRecord`, set only from a direct delivery of the genesis, never from a relayed claim).
+Only the assignee, or the creator when there is none, concludes, archives or promotes it, or hands it to
+any member; the CLI (`IdeaOwnerGuard`) and every node's receive gate judge by the same pure rule,
+`TaskOwnerRule` with no holder, over root fingerprints and never raw owner ids. Cutting a task and a
+spike's verdict stay open to any member, and a cut never copies the assignee onto the task.
 
 Three things this slice deliberately does not do:
 

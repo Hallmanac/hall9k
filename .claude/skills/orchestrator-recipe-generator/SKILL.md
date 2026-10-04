@@ -765,7 +765,11 @@ their own. Both:
   produce a second task from it. Once a task exists, discovery revises it with `h9k task revise`
   the same as refinement does, and closes the idea's own loop explicitly with `h9k idea conclude
   <id> --reason "…"` (something came of it) or `h9k idea archive <id> --reason "…"` (nothing did) once
-  discovery has genuinely stopped producing — never left implicit. Neither discovery nor refinement ever publishes,
+  discovery has genuinely stopped producing — never left implicit. Only the idea's assignee, or its
+  creator when nobody holds it, may conclude or archive it (`h9k idea assign` is who holds it, `h9k
+  idea move` is which project it belongs to); a refusal naming another owner is the answer, never
+  something to route around, and the Owner-role override (`--holder` with `--reason`) is the
+  operator's call. Neither discovery nor refinement ever publishes,
   assigns, queues, dequeues, or touches the daemon, the board, or a running task; refinement revises with
   `h9k task revise` and reads with `h9k task show`. Publishing waits for the operator to walk the
   criteria.

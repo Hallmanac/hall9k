@@ -677,7 +677,9 @@ h9k idea add "<text>" --project <name>            # --project is optional, at ca
 h9k idea list                                     # what is still in discovery, newest first
 h9k idea show <id>                                # note, project, workspace path, history, fan-out, outcome
 h9k idea revise <id> "<text>"                     # rewrite the note; every version stays on the stream
-h9k idea assign <id> --project <name>             # set or change where it belongs
+h9k idea move <id> <project>                       # set or change where it belongs (the only verb that moves an idea)
+h9k idea assign <id> [<member>]                    # lay hold of an idea (you, or the member named) before any task exists; names a person, never a project
+h9k idea unassign <id>                             # let go of it; nobody holds it afterwards, so its creator decides it
 h9k task add --from-idea <id> --objective "<…>"   # cut a draft task from it; repeatable, needs a project
 h9k idea promote <id> [--project <name>]          # sugar: cuts one task (note's first sentence) and concludes
 h9k idea conclude <id> --reason "<what came of it>"  # terminal: discovery produced something
@@ -686,6 +688,21 @@ h9k idea set-private <id> on|off                  # idea 8c5993c5: pre-8c5993c5 
 h9k idea scope <id> private|fleet|team            # idea 8c5993c5: set this idea's own replication scope directly; refused only if already at that scope, or already team and asked narrower (team is one-way)
 h9k idea share <id>                               # idea 8c5993c5: sugar for scope team; idempotent no-op once already team
 ```
+
+**Who holds an idea, and who decides it** (card D of idea 8d0b724b, decisions ca1f0313 and b8aa9007).
+`h9k idea assign` names a person and `h9k idea move` names a project; they are different facts. Capturing
+an idea never assigns its creator, so an idea nobody holds is its creator's. Only the idea's assignee, or its
+creator when it has none, may `conclude`, `archive` or `promote` it, and may `assign` it to any member,
+themselves included. Any other member is refused, including one naming themselves on a teammate's unassigned
+idea; an Owner-role member may override any refusal with `--holder <name>` and `--reason "<why>"`, the same
+override `h9k task assign` takes (on `conclude` and `archive` the `--reason` is both the ending's reason and the
+override's). Naming another member needs the idea at team scope (`h9k idea share`). The rule runs over verified
+owner roots at the CLI and at every node's receive gate, so an idea stays its creator's to decide from every node
+of the creator's fleet; an idea whose creator this node cannot resolve refuses and names the override. `h9k task
+add --from-idea` and a spike's verdict stay open to any member, and cutting a task never copies the assignee onto
+it. Every node of every member must update before anyone assigns an idea to another member: a node on an older
+build has no idea gate and applies a conclude or archive that updated peers refuse. `h9k idea assign <id>
+--project <name>`, or a project name where a member belongs, refuses and names `h9k idea move`.
 
 Every idea owns a discovery workspace, where research notes, gathered files, and prototypes
 accumulate: `~/.hall9k/ideas/<idea-id>/workspace` for an idea whose capture-time project had no

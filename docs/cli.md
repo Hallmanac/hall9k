@@ -54,7 +54,7 @@ One line per branch. Ask `--help` for the rest.
 
 ### Ideas: capture and discovery
 
-`h9k idea add | list | show | revise | assign | promote | conclude | archive | scope | share | set-private`
+`h9k idea add | list | show | revise | move | assign | unassign | promote | conclude | archive | scope | share | set-private`
 
 Capture is one command with one argument and an optional project. Revision has no ceremony,
 because nothing dispatches from an idea and there is no promise an edit could break. There is no
@@ -66,7 +66,28 @@ sentence becomes the objective) and concluding in the same breath. Cutting a tas
 idea; only an explicit `conclude` (something came of discovery) or `archive` (nothing did) does,
 each with its own required `--reason`. `h9k idea list` shows twenty rows, newest first, and
 `--limit <N>` changes that; `--unassigned` shows only the ideas that have no project yet, the ones
-still deciding where they belong.
+still deciding where they belong, which says nothing about who holds an idea: the Assigned column
+appears whenever a listed idea has an assignee.
+
+Where an idea belongs and who holds it are two different facts, and two different verbs.
+`h9k idea move <id> <project>` sets or changes the project and is the only verb that does. `h9k idea assign
+<id> [<member>]` lays hold of an idea, visibly to your fleet or the team, before any task exists: with no
+member it is you. `h9k idea unassign <id>` lets go, and nobody holds the idea afterwards. Capturing an idea never
+assigns its creator; an unassigned idea is simply nobody's, and its creator decides it. Only the idea's
+assignee, or its creator when it has none, may conclude, archive or promote it, by the receive gate's own
+ownership rule over verified owner roots, so an idea stays its creator's to decide from every node of the
+creator's fleet. The same person may assign it to any member, themselves included; any other member is
+refused, including one naming themselves on a teammate's unassigned idea. Naming another member needs the
+idea at team scope, and an idea still at fleet scope refuses and names `h9k idea share`. An Owner-role member
+may override any refusal with `--holder` and `--reason`, the same override `h9k task assign` takes, and the
+command says on the terminal that it was recorded as one. `h9k idea assign <id> --project`, or a name that
+resolves to a project and to no member, refuses and names `idea move`. Cutting a task from an idea
+(`h9k task add --from-idea`) stays open to any member and never copies the assignee onto the task. An idea
+captured before this change stays concludable by its creator with no flag; an idea whose creator this node
+cannot resolve refuses and names the Owner-role override. Every node of every member must be updated before
+anyone assigns an idea to another member: a node on an older build has no idea gate, so it applies an
+idea conclude or archive that updated peers refuse, and it skips the assignee events and keeps the creator
+fallback for that idea.
 
 ### Decisions and lessons
 
@@ -984,7 +1005,7 @@ ends a pending purge before it fires, leaving the project archived, never reacti
 a project with a purge still pending is refused (cancel it first) so a daemon sweep can never
 destroy a project that has gone live again. The same reasoning refuses handing a purge-pending
 project new work it would otherwise destroy along with everything else at the deadline: `task add`,
-`idea add`, `epic add`, `idea promote`, `idea assign`, and `pr review` all refuse against a project
+`idea add`, `epic add`, `idea promote`, `idea move`, and `pr review` all refuse against a project
 with a purge scheduled, naming the deadline and the cancel command. `project list --include-archived` and `project show`
 mark a purge-pending project with its deadline and the cancel command. A daemon sweep, alongside
 the closeout and auto-pr-review sweeps, checks for due purges on start and on its own poll
@@ -1778,7 +1799,10 @@ miss in the sections above.
 | `h9k task write-jira --file <path>` | Names the JSON payload a card-authoring session composed, whose `format` may be `markdown` or `plain` and never `html`. |
 | `h9k learn record "<claim>" --distilled-from <id>` | Records a merged lesson with the lessons it absorbed, repeatable, and the decider refuses a citation that resolves to nothing. |
 | `h9k decide import --project <project>` | Names the project whose rulebook is being imported, defaulting to the project of the run you are importing from. |
-| `h9k idea assign --project <project>` | Sets the project an idea belongs to when capture did not know it, or changes it when discovery says otherwise. |
+| `h9k idea move <id> <project>` | Sets the project an idea belongs to when capture did not know it, or changes it when discovery says otherwise. |
+| `h9k idea assign <id> [<member>] --holder <name> --reason "<why>"` | Lets an Owner-role member assign an idea another owner holds, naming whose it is and why, the same override `h9k task assign` takes. |
+| `h9k idea unassign <id> --holder <name> --reason "<why>"` | Lets an Owner-role member let go of an idea another member holds, naming whose it is and why. |
+| `h9k idea conclude`, `idea archive`, `idea promote` with `--holder <name>` and `--reason` | Let an Owner-role member end or promote an idea another owner holds, naming whose it is; on `conclude` and `archive` the `--reason` is both the ending's reason and the override's, and `promote` takes it for the override alone. |
 | `h9k idea promote --project <project>` | Names the project the one task belongs to, required unless the idea is already assigned to one. |
 | `h9k pr review --project <project>` | Names the project whose repository the pull request belongs to, and is optional when exactly one project is registered. |
 | `h9k doctor --yes` | Remediates without asking, by starting Hall9k's own Postgres and creating the schema, which is what a script or a dispatched agent wants. |
