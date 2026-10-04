@@ -780,9 +780,27 @@ public sealed class RunLauncher(
                 DateTimeOffset? mentionCreatedAt = mintingMention?.CommentCreatedAt ?? task.LatestMentionCreatedAt;
                 if (mentionAuthorLogin is not null && mentionCreatedAt is { } resolvedMentionCreatedAt)
                 {
-                    prompt += "\n\n" + MentionFollowUpPromptBuilder.BuildMintAddendum(
-                        mentionAuthorLogin, resolvedMentionCreatedAt, mentionBody ?? string.Empty,
-                        mentionUrl, runDirectory, voiceSkill);
+                    // A mention an older peer replicated can tag someone else entirely, and the login
+                    // the event recorded is not evidence of anything here, so the comment's own body
+                    // is matched against the login gh reports: the identical gate a follow-up launch
+                    // passes. Without the addendum the review still dispatches, and since nothing then
+                    // writes mention-answer.md the report's park line names no mention either.
+                    string? mintOwnLogin = await ReadOwnLoginWithRetryAsync(
+                        taskId, runId, project.RepositoryPath, cancellationToken);
+                    MentionFollowUpGate mintGate = MentionFollowUpGate.Decide(
+                        mintOwnLogin, mentionAuthorLogin, mentionBody ?? string.Empty);
+                    if (mintGate.Proceed)
+                    {
+                        prompt += "\n\n" + MentionFollowUpPromptBuilder.BuildMintAddendum(
+                            mentionAuthorLogin, resolvedMentionCreatedAt, mentionBody ?? string.Empty,
+                            mentionUrl, runDirectory, voiceSkill);
+                    }
+                    else
+                    {
+                        logger.LogInformation(
+                            "Task {TaskId}: run {RunId} dispatches its review without the mention addendum: {Reason}",
+                            taskId, runId, mintGate.Reason);
+                    }
                 }
             }
             else if (followUp is { } review)
