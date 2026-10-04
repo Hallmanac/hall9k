@@ -430,6 +430,17 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "already minted keeps whatever expiry it was minted with, unaffected by a later change here.")]
         public int? InviteExpiryHours { get; init; }
 
+        [CommandOption("--release-channel <cleared|all>")]
+        [Description(
+            "Which GitHub releases this node's release lookup sees (Decisions Log 0ecc3701 and 8c039759): "
+            + "cleared (the default) is GitHub's own latest release, which excludes pre-releases, so it sees "
+            + "only releases Brian has cleared with gh release edit <tag> --prerelease=false --latest; all is "
+            + "the published release with the highest version, pre-release or not, so the node tests a tag "
+            + "before it is cleared. Every hall9k tag publishes as a pre-release. Read fresh from the file by "
+            + "h9k update at each run, with no daemon restart and no environment variable involved. Anything "
+            + "but cleared or all in a hand-edited file counts as cleared, with a warning.")]
+        public string? ReleaseChannel { get; init; }
+
         [CommandOption("--lesson-prompt-max-lessons <COUNT>")]
         [Description(
             "How many recorded lessons a dispatched session's prompt carries, newest first "
@@ -502,7 +513,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         // force" note below rather than the daemon-restart one every other setting here needs.
         bool onlyImmediateEffectSettingsChanged =
             (settings.InteractiveClaimStaleAfterDays is not null || settings.InviteExpiryHours is not null
-                || settings.LessonPromptMaxLessons is not null || settings.LessonPromptMaxCharacters is not null)
+                || settings.ReleaseChannel is not null || settings.LessonPromptMaxLessons is not null || settings.LessonPromptMaxCharacters is not null)
             && settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
             && settings.Effort is null && settings.RoleEfforts.All(option => option.Input is null)
@@ -528,7 +539,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         else
         {
             AnsiConsole.MarkupLineInterpolated(
-                $"[dim]Written to {Hall9kDatabase.ConfigFile} — a running daemon picks this up on its next start (h9k daemon stop, then h9k daemon start); h9k config show prints the effective settings. (--interactive-claim-stale-after-days and --invite-expiry-hours, if you set either, are already in force — both are read fresh from the file, with no daemon restart involved.)[/]");
+                $"[dim]Written to {Hall9kDatabase.ConfigFile} — a running daemon picks this up on its next start (h9k daemon stop, then h9k daemon start); h9k config show prints the effective settings. (--interactive-claim-stale-after-days, --invite-expiry-hours and --release-channel, if you set any of them, are already in force: each is read fresh from the file, with no daemon restart involved.)[/]");
         }
 
         return ExitCodes.Ok;
@@ -559,7 +570,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.MessagePollActiveMin is null && settings.MessagePollActiveMax is null
             && settings.MessagePollIdleMin is null && settings.MessagePollIdleMax is null
             && settings.AutoPrReviewMintHold is null
-            && settings.InviteExpiryHours is null
+            && settings.InviteExpiryHours is null && settings.ReleaseChannel is null
             && settings.LessonPromptMaxLessons is null && settings.LessonPromptMaxCharacters is null)
         {
             throw new DomainValidationException(
@@ -640,6 +651,14 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && !SpendPeriod.FromInput(spendPeriod).IsWellFormed)
         {
             throw new DomainValidationException("--spend-period must be \"day\" or \"week\".");
+        }
+
+        if (settings.ReleaseChannel is { } releaseChannel
+            && !ReleaseChannel.FromInput(releaseChannel).IsWellFormed)
+        {
+            throw new DomainValidationException(
+                "--release-channel must be \"cleared\" (only releases cleared with gh release edit <tag> "
+                + "--prerelease=false --latest) or \"all\" (every published release, pre-releases included).");
         }
 
         if (settings.ReviewStageComposition is { } composition)
@@ -868,6 +887,12 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         {
             operating.InviteExpiryHours = inviteExpiryHours;
             changed.Add($"invite-expiry-hours = {inviteExpiryHours}");
+        }
+
+        if (settings.ReleaseChannel is { } releaseChannel)
+        {
+            operating.ReleaseChannel = ReleaseChannel.FromInput(releaseChannel).Value;
+            changed.Add($"release-channel = {operating.ReleaseChannel}");
         }
 
         if (settings.LessonPromptMaxLessons is { } lessonPromptMaxLessons)

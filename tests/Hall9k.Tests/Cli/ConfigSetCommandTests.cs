@@ -918,4 +918,34 @@ public sealed class ConfigSetCommandTests
         lessons.Should().NotThrow();
         characters.Should().NotThrow();
     }
+
+    [Theory]
+    [InlineData("cleared")]
+    [InlineData("all")]
+    [InlineData(" ALL ")]
+    public void A_release_channel_of_cleared_or_all_validates_and_is_written_normalized(string requested)
+    {
+        ConfigSetCommand.Settings settings = new() { ReleaseChannel = requested };
+        OperatingSettings operating = new();
+        List<string> changed = [];
+
+        ConfigSetCommand.Validate(settings);
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.ReleaseChannel.Should().Be(requested.Trim().ToLowerInvariant());
+        changed.Should().ContainSingle().Which.Should().Be($"release-channel = {operating.ReleaseChannel}");
+    }
+
+    [Theory]
+    [InlineData("pre-release")]
+    [InlineData("")]
+    [InlineData("latest")]
+    public void A_release_channel_that_is_neither_cleared_nor_all_is_refused_naming_both(string requested)
+    {
+        ConfigSetCommand.Settings settings = new() { ReleaseChannel = requested };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*--release-channel*cleared*all*");
+    }
 }
