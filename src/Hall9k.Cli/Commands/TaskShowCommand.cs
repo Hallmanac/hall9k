@@ -2484,7 +2484,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 : $"h9k task queue {shortId}";
             AnsiConsole.MarkupLine(
                 "  [yellow]Nothing is watching that pull request for this task yet[/] [dim]— the sweep reads a "
-                + "remote parent only for an assigned task, and an unassigned one never dispatches on its own. "
+                + "remote parent only for a queued task, and one that is not queued never dispatches on its own. "
                 + $"{step} holds it Blocked and starts that watch.[/]");
         }
 

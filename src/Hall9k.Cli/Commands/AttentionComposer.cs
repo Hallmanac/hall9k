@@ -102,7 +102,7 @@ internal static class AttentionComposer
         // 6be68ee2, finding 1, phase one): the daemon had already claimed and was mid-dispatch on
         // this task, and gave the claim back the moment the verdict landed, so it reads exactly
         // like the membership gate's own park above — Published, never NeedsHuman, so h9k task
-        // assign still works exactly as it does for any other published-and-unassigned task. Ahead
+        // queue still works exactly as it does for any other published task. Ahead
         // of every other check for the identical reason the gate-parked arm is.
         if (task.State == TaskState.Published && task.PrReviewPreflightUnsafe)
         {

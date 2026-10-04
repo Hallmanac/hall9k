@@ -10,7 +10,7 @@ namespace Hall9k.Cli.Commands;
 
 /// <summary>
 /// The claim gate as the CLI doors use it (idea 64c75e43): <c>h9k task queue</c> and
-/// <c>h9k task publish --queue</c>, which warn and assign anyway, and
+/// <c>h9k task publish --queue</c>, which warn and queue anyway, and
 /// <c>h9k task work</c>/<c>h9k task start</c>, which refuse with the identical sentence. One
 /// place, so the two behaviours cannot drift into two different readings of the same tracker
 /// answer, and so the refusal an agent has to self-correct from is worded once.

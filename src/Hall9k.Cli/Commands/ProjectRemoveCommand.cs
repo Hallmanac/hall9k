@@ -160,7 +160,7 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
         }
 
         // The confirmation prompt above can sit open indefinitely — wide enough for h9k task
-        // assign or the dispatcher's own claim to land a task in a state this method already
+        // queue or the dispatcher's own claim to land a task in a state this method already
         // refused to archive over. The blocking check is re-run against the database right before
         // the append, not only against the snapshot read before the prompt, so a task that turned
         // live while the operator was answering still stops the archive.
