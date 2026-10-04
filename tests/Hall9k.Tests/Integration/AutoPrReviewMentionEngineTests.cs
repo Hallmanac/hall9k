@@ -931,6 +931,100 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             "the prompt must name the exact path PrReviewEngine reads back, not just the bare filename");
     }
 
+    /// <summary>
+    /// Mints a task from a mention by ryan on a pull request, then rewrites the stored minting row
+    /// to <paramref name="storedBody"/> with no tagged login, the shape an older peer's replicated
+    /// mention takes, and relaunches the primary session. Returns the captured request of that
+    /// relaunch. Every login read after the mint answers <paramref name="loginReadable"/>.
+    /// </summary>
+    private async Task<AgentSpawnRequest> RelaunchMintedReviewWithStoredBodyAsync(
+        string repository, int number, string storedBody, bool loginReadable, CancellationToken cancellationToken)
+    {
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
+        Guid projectId = DomainId.New();
+        await SeedProjectAsync(
+            store, node, projectId, $"auto-pr-review-{repository.Replace('/', '-')}", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Now), cancellationToken);
+
+        bool loginReadNow = true;
+        ProcessRunner scripted = MentionScriptedGh(
+            repository, number, "brian", [("IC_1", "ryan", "@brian does this handle the empty-list case?", Now.AddMinutes(5))]);
+        ProcessRunner gh = (fileName, arguments, workingDirectory, environment) =>
+            arguments.Contains("user") && !loginReadNow
+                ? Task.FromResult(new ProcessResult(1, string.Empty, "gh: not logged in"))
+                : scripted(fileName, arguments, workingDirectory, environment);
+        CapturingExecutor executor = new();
+        RunLauncher launcher = NewLauncher(store, node, new StubWorktreeManager(), executor, gh);
+        AutoPrReviewEngine engine = new(
+            store, node, launcher, gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
+            NullLogger<AutoPrReviewEngine>.Instance);
+        await engine.PollOnceAsync(cancellationToken);
+
+        TaskDetails claimed;
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskListItem minted = (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId)
+                .ToListAsync(cancellationToken)).Single();
+            claimed = (await query.LoadAsync<TaskDetails>(minted.Id, cancellationToken))!;
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ObservedReviewMention row = await session.Query<ObservedReviewMention>()
+                .Where(mention => mention.TaskId == claimed.Id)
+                .FirstAsync(cancellationToken);
+            row.CommentBody = storedBody;
+            session.Store(row);
+            await session.SaveChangesAsync(cancellationToken);
+        }
+
+        await SeedSafePrReviewPreflightAsync(store, claimed.Id, node.NodeId, cancellationToken);
+        loginReadNow = loginReadable;
+        await launcher.LaunchAsync(
+            claimed.Id, claimed.CurrentRunId!.Value, node.NodeId, node.OwnerId, claimed.LeaseGeneration, cancellationToken);
+        return executor.Request!;
+    }
+
+    [Fact]
+    public async Task A_mint_whose_stored_comment_tags_another_login_dispatches_the_review_without_the_addendum()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+
+        AgentSpawnRequest request = await RelaunchMintedReviewWithStoredBodyAsync(
+            "acme/mention-mint-other-login-test", 4251, "@taylor does this handle the empty-list case?",
+            loginReadable: true, cts.Token);
+
+        request.Prompt.Should().NotContain("mention-answer.md", "a comment aimed at taylor is not one brian was asked to answer");
+        request.Prompt.Should().NotContain("@taylor does this handle", "the addendum quotes the comment, and none was appended");
+    }
+
+    [Fact]
+    public async Task A_mint_whose_stored_comment_tags_this_login_in_other_letter_case_keeps_the_addendum()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+
+        AgentSpawnRequest request = await RelaunchMintedReviewWithStoredBodyAsync(
+            "acme/mention-mint-letter-case-test", 4252, "@Brian does this handle the empty-list case?",
+            loginReadable: true, cts.Token);
+
+        request.Prompt.Should().Contain("@Brian does this handle the empty-list case?");
+        request.Prompt.Should().Contain(Path.Combine(request.RunDirectory, "mention-answer.md"));
+    }
+
+    [Fact]
+    public async Task A_mint_whose_own_login_cannot_be_read_still_dispatches_the_review_without_the_addendum()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+
+        AgentSpawnRequest request = await RelaunchMintedReviewWithStoredBodyAsync(
+            "acme/mention-mint-unreadable-login-test", 4253, "@brian does this handle the empty-list case?",
+            loginReadable: false, cts.Token);
+
+        request.Prompt.Should().NotContain("mention-answer.md");
+        request.Prompt.Should().NotContain("@brian does this handle");
+    }
+
     [Fact]
     public async Task A_comment_written_by_the_installs_own_login_is_never_counted_as_a_mention()
     {
