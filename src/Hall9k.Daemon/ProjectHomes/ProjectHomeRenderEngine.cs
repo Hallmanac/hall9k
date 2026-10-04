@@ -1,6 +1,8 @@
+using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Idea.Rendering;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -8,6 +10,7 @@ using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Rendering;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Marten;
@@ -50,6 +53,8 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
         // Marten's LINQ-to-JSON translation. Ideas are few and small (IdeaDetails' own doc
         // comment), so one unfiltered fetch here costs nothing a per-project query would have saved.
         IReadOnlyList<IdeaDetails> allIdeas = await query.Query<IdeaDetails>().ToListAsync(cancellationToken);
+        IReadOnlyDictionary<Guid, OwnerDetails> owners = (await query.Query<OwnerDetails>().ToListAsync(cancellationToken))
+            .ToDictionary(owner => owner.Id);
 
         int projectsInspected = 0;
         int tasksRendered = 0;
@@ -217,9 +222,13 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                 }
 
                 HashSet<string> failedIdeaShortIds = [];
+                IReadOnlyDictionary<Guid, ProjectMemberLabels> memberLabels = (await query.Query<ProjectMemberLabels>()
+                        .Where(labels => labels.Id == project.Id)
+                        .ToListAsync(cancellationToken))
+                    .ToDictionary(labels => labels.Id);
                 foreach (IdeaDetails idea in ideas)
                 {
-                    switch (RenderIdea(ideasRoot, idea, project))
+                    switch (RenderIdea(ideasRoot, idea, project, IdeaAssigneeText(idea, owners, memberLabels)))
                     {
                         case RenderOutcome.Written:
                             ideasRendered++;
@@ -529,7 +538,18 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
     public static bool CanRenderIdea(IdeaDetails idea) =>
         !idea.WorkspaceHome.HasValue || idea.WorkspaceHome.IsNativeForm;
 
-    private RenderOutcome RenderIdea(string ideasRoot, IdeaDetails idea, ProjectDetails project)
+    /// <summary>
+    /// The name <c>idea.md</c> gives the idea's assignee, kept to one line and bounded because a
+    /// teammate's label is read from their own self-signed file; null when nobody holds the idea.
+    /// </summary>
+    private static string? IdeaAssigneeText(
+        IdeaDetails idea, IReadOnlyDictionary<Guid, OwnerDetails> owners,
+        IReadOnlyDictionary<Guid, ProjectMemberLabels> memberLabels) =>
+        IdeaAssigneeLabel.Of(idea, owners, memberLabels) is { } label
+            ? RelayedText.OneLine(RelayedText.Truncate(label, MemberLabelResolver.RenderLimit))
+            : null;
+
+    private RenderOutcome RenderIdea(string ideasRoot, IdeaDetails idea, ProjectDetails project, string? assignee)
     {
         if (!CanRenderIdea(idea))
         {
@@ -539,7 +559,7 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
         try
         {
             string directoryName = IdeaDocumentRenderer.DirectoryName(idea);
-            string rendered = IdeaDocumentRenderer.Render(idea, project.Name);
+            string rendered = IdeaDocumentRenderer.Render(idea, project.Name, assignee);
             // Only true for an idea whose real discovery workspace lives under THIS project's
             // home (captured with this home already materialised, backlog 49) — an idea later
             // reassigned to a different project keeps its workspace at its original capture-time

@@ -1149,12 +1149,34 @@ public static class CliCommandTree
                     + "nothing dispatches from an idea, so there is no promise an edit could break. Every "
                     + "earlier version stays on the stream and in h9k idea show.")
                 .WithExample("idea", "revise", "28b19893", "\"Ideas need their own discovery workspace, not just a note\"");
-            idea.AddCommand<IdeaAssignCommand>("assign")
+            idea.AddCommand<IdeaMoveCommand>("move")
                 .WithDescription(
                     "Set or change the project an idea belongs to — for when capture did not know yet, "
-                    + "which is most of the time. An unassigned idea is honest, not incomplete; a project "
-                    + "only becomes required when the first task is cut from it.")
-                .WithExample("idea", "assign", "28b19893", "--project", "hall9k");
+                    + "which is most of the time. An idea with no project is honest, not incomplete; a "
+                    + "project only becomes required when the first task is cut from it. This is the "
+                    + "only verb that moves an idea between projects: h9k idea assign names a person.")
+                .WithExample("idea", "move", "28b19893", "hall9k");
+            idea.AddCommand<IdeaAssignCommand>("assign")
+                .WithDescription(
+                    "Lay hold of an idea before any task exists, visibly to your fleet or the team: you, "
+                    + "or the member you name. Only the idea's assignee, or its creator when nobody holds "
+                    + "it, decides its fate (conclude, archive, promote) and may hand it to any member, "
+                    + "themselves included; any other member is refused, including one naming themselves on "
+                    + "a teammate's unassigned idea. Handing it to another member needs it shared with the "
+                    + "team first (h9k idea share). An Owner-role member may override any refusal with "
+                    + "--holder and --reason. Cutting a task from the idea (h9k task add --from-idea) stays "
+                    + "open to any member, and assigns nobody. To move an idea to a project, use "
+                    + "h9k idea move.")
+                .WithExample("idea", "assign", "28b19893")
+                .WithExample("idea", "assign", "28b19893", "brian")
+                .WithExample("idea", "assign", "28b19893", "taylor", "--holder", "Ryan", "--reason", "\"Ryan is out this week\"");
+            idea.AddCommand<IdeaUnassignCommand>("unassign")
+                .WithDescription(
+                    "Let go of an idea you hold: nobody holds it afterwards, so it falls back to its "
+                    + "creator. Allowed only to the current assignee, or to an Owner-role member with "
+                    + "--holder and --reason.")
+                .WithExample("idea", "unassign", "28b19893")
+                .WithExample("idea", "unassign", "28b19893", "--holder", "Ryan", "--reason", "\"Ryan left the team\"");
             idea.AddCommand<IdeaPromoteCommand>("promote")
                 .WithDescription(
                     "Sugar over the ordinary fan-out door: cuts exactly one task from the idea (its "
@@ -1166,19 +1188,26 @@ public static class CliCommandTree
                     + "project, supplied here or already assigned.")
                 .WithExample("idea", "promote", "28b19893")
                 .WithExample("idea", "promote", "28b19893", "--project", "hall9k")
-                .WithExample("idea", "promote", "28b19893", "--objective", "\"Give every idea a discovery workspace\"");
+                .WithExample("idea", "promote", "28b19893", "--objective", "\"Give every idea a discovery workspace\"")
+                .WithExample("idea", "promote", "28b19893", "--holder", "Ryan", "--reason", "\"Ryan is out this week\"");
             idea.AddCommand<IdeaConcludeCommand>("conclude")
                 .WithDescription(
                     "One of an idea's two terminal acts, always explicit: discovery happened and "
                     + "something came of it — tasks cut, or an outcome acted on some other way. Cutting "
-                    + "a task never appends this on its own, because discovery may keep producing.")
-                .WithExample("idea", "conclude", "28b19893", "--reason", "\"Cut three tasks; discovery is done here\"");
+                    + "a task never appends this on its own, because discovery may keep producing. Only "
+                    + "the idea's assignee, or its creator when nobody holds it, may conclude it, or an "
+                    + "Owner-role member with --holder and --reason.")
+                .WithExample("idea", "conclude", "28b19893", "--reason", "\"Cut three tasks; discovery is done here\"")
+                .WithExample("idea", "conclude", "28b19893", "--holder", "Ryan", "--reason", "\"Ryan is out; the work shipped\"");
             idea.AddCommand<IdeaArchiveCommand>("archive")
                 .WithDescription(
                     "An idea's other terminal act: discovery happened and nothing came of it. Recorded "
                     + "with its reason, nothing deleted, and the workspace stays put — an idea that keeps "
-                    + "coming back is a signal.")
-                .WithExample("idea", "archive", "28b19893", "--reason", "\"Superseded by the attachments design\"");
+                    + "coming back is a signal. Decided by the same person as h9k idea conclude: the "
+                    + "idea's assignee, or its creator when nobody holds it, or an Owner-role member "
+                    + "with --holder and --reason.")
+                .WithExample("idea", "archive", "28b19893", "--reason", "\"Superseded by the attachments design\"")
+                .WithExample("idea", "archive", "28b19893", "--holder", "Ryan", "--reason", "\"Ryan left; superseded\"");
             idea.AddCommand<IdeaScopeCommand>("scope")
                 .WithDescription(
                     "Idea 8c5993c5: set this idea's own replication scope. private never leaves this "

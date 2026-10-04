@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.Text;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Identity;
+using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
@@ -52,13 +54,35 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
             "The draft's objective, in your words. Without it the idea's first sentence is taken "
             + "mechanically — never interpreted — and the whole note still rides along as agent context")]
         public string? Objective { get; init; }
+
+        [CommandOption("--reason <REASON>")]
+        [Description(
+            "Why an Owner-role member is promoting another owner's idea. Used only with --holder, where it "
+            + "is required and is the override's reason; an owner's own promotion needs none")]
+        public string? Reason { get; init; }
+
+        [CommandOption("--holder <NAME>")]
+        [Description(
+            "An idea somebody holds is theirs to promote, since promotion concludes it, so this refuses "
+            + "unless this node's owner is its assignee, or with none its creator. An Owner-role member may "
+            + "promote it on that owner's behalf by naming the holder here (their label, which the refusal "
+            + "names, or at least 8 hex characters of their root fingerprint; the word 'unknown' when the "
+            + "idea's owner cannot be resolved on this node) and giving --reason, both required together")]
+        public string? Holder { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
+        return await RunAsync(session, settings, new GitLedgerChainReader(), new NodeKeyStore(), cancellationToken);
+    }
 
+    /// <summary>Testable core: the chain read and the key store are the seams the Owner-role check of an override needs.</summary>
+    internal static async Task<int> RunAsync(
+        IDocumentSession session, Settings settings, ILedgerChainReader chainReader, NodeKeyStore keyStore,
+        CancellationToken cancellationToken)
+    {
         // Fence before aggregating: this appends two events on the idea's own stream (the cut,
         // then the conclusion) plus a new task stream, so a promote racing another promote (or a
         // revise, or an assign) must not land on an idea that has already moved. The task stream
@@ -75,6 +99,14 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
         // earns its own refusal rather than "promotion needs a project" when it happens to have
         // none (independent pre-PR review, conformance lens).
         IdeaDecider.RequireCaptured(idea, "promote");
+
+        // Promotion concludes the idea, which is the assignee's call, or the creator's when nobody
+        // holds it; only the cut is open to any member (h9k task add --from-idea), so a member who
+        // may not conclude cuts the task there instead. Asked before anything is resolved or written.
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        TaskOwnerOverrideDecision ownerDecision = await IdeaOwnerGuard.AuthorizeAsync(
+            session, idea, context, "promote", settings.Holder, settings.Reason, chainReader, keyStore,
+            cancellationToken);
 
         ProjectDetails? project = settings.Project.IsNotBlank()
             ? await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken)
@@ -111,8 +143,6 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
                 + "will not invent a repository for you (Decisions Log #35).");
         }
 
-        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
-
         IdeaSeed seed = Seed(idea.Text, settings.Objective);
         Guid taskId = DomainId.New();
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -129,6 +159,14 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
         IdeaTaskCut cut = IdeaDecider.CutTask(idea, taskId, seed.Objective, now, context.OwnerId);
         IdeaConcluded concluded = IdeaDecider.Conclude(
             idea, $"Promoted into a single task: {seed.Objective}", now, context.OwnerId);
+        if (ownerDecision.Outcome == TaskOwnerOverrideOutcome.Override)
+        {
+            concluded = concluded with
+            {
+                OnBehalfOfOwnerRootFingerprint = ownerDecision.OnBehalfOfRootFingerprint,
+                OverrideReason = ownerDecision.Reason,
+            };
+        }
 
         TaskAdded added = TaskDecider.Add(
             taskId,
@@ -162,6 +200,7 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
         // No doorbell: what promotion produces is a draft, and a draft is invisible to the
         // dispatcher until a human publishes and queues it (Decisions Log #34).
         Announce(idea, taskId, destinationProjectId, project, seed, settings.Objective.IsNotBlank());
+        TaskOwnerGuard.AnnounceOverride(ownerDecision, "promoted");
         return ExitCodes.Ok;
     }
 

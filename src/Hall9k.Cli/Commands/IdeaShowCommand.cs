@@ -6,6 +6,7 @@ using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
@@ -47,6 +48,7 @@ public sealed class IdeaShowCommand : Hall9kAsyncCommand<IdeaShowCommand.Setting
         header.AddRow("Captured", $"{idea.CapturedAt.ToLocalTime():g} "
             + $"[dim]({TaskStatusComposer.RelativeAge(DateTimeOffset.UtcNow - idea.CapturedAt)})[/]");
         header.AddRow("Captured by", await OwnerMarkupAsync(session, idea.OwnerId, cancellationToken));
+        header.AddRow("Assigned to", await AssigneeMarkupAsync(session, idea, cancellationToken));
         header.AddRow("Workspace", WorkspaceMarkup(idea));
         AnsiConsole.Write(header);
 
@@ -208,6 +210,31 @@ public sealed class IdeaShowCommand : Hall9kAsyncCommand<IdeaShowCommand.Setting
 
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(projectId, cancellationToken);
         return project is null ? $"[dim]{projectId}[/]" : project.Name.EscapeMarkup();
+    }
+
+    /// <summary>
+    /// Who has laid hold of the idea, resolved the way <c>h9k task show</c> resolves a task's assignee
+    /// (<see cref="TaskShowCommand.AssigneeMarkup"/>), or the honest absence: nobody, so its creator
+    /// decides it (<c>h9k idea assign</c> lays hold of it).
+    /// </summary>
+    internal static async Task<string> AssigneeMarkupAsync(
+        IQuerySession session, IdeaDetails idea, CancellationToken cancellationToken)
+    {
+        if (idea.AssigneeOwnerId is not { } ownerId)
+        {
+            return "[dim]nobody; its creator decides it. Lay hold of it with[/] "
+                + $"h9k idea assign {TaskListCommand.ShortId(idea.Id)}";
+        }
+
+        OwnerDetails? owner = await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken);
+        string? fingerprint = idea.AssigneeOwnerFingerprint;
+        OwnerDetails? trueOwner = fingerprint is null || (owner is not null && owner.RootFingerprint == fingerprint)
+            ? null
+            : await session.Query<OwnerDetails>()
+                .Where(candidate => candidate.RootFingerprint == fingerprint)
+                .FirstOrDefaultAsync(cancellationToken);
+        MemberLabelLookup labels = await MemberLabelling.LoadAsync(session, idea.ProjectId ?? Guid.Empty, cancellationToken);
+        return TaskShowCommand.AssigneeMarkup(ownerId, owner, fingerprint, trueOwner, labels);
     }
 
     private static async Task<string> OwnerMarkupAsync(

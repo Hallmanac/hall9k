@@ -9,6 +9,7 @@ using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Publication;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
@@ -1561,6 +1562,50 @@ public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<P
         string ideaDirectory = Directory.EnumerateDirectories(ideasRoot).Should().ContainSingle().Subject;
         Path.GetFileName(ideaDirectory).Should().Contain("project-directory-and-tracker-mirroring");
         File.ReadAllText(Path.Combine(ideaDirectory, "idea.md")).Should().Contain("Project directory and tracker mirroring");
+    }
+
+    [Fact]
+    public async Task A_rendered_idea_names_its_assignee_by_this_nodes_record_or_by_the_roots_short_form()
+    {
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid knownAssignee = DomainId.New();
+        string knownRoot = new('7', 64);
+        string unknownRoot = "abcdef0123456789abcdef";
+        Guid heldByKnown = DomainId.New();
+        Guid heldByStranger = DomainId.New();
+        Guid heldByNobody = DomainId.New();
+        ProjectHome home = ProjectHome.Parse(_renderHome);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            OwnerAggregate ryan = new();
+            OwnerRegistered registered = OwnerDecider.Register(knownAssignee, "Ryan", "ryan@test.local", RenderNow);
+            ryan.Apply(registered);
+            session.Events.StartStream<OwnerAggregate>(
+                knownAssignee, registered, OwnerDecider.ClaimRoot(ryan, knownRoot, verified: true, RenderNow));
+
+            foreach (Guid ideaId in new[] { heldByKnown, heldByStranger, heldByNobody })
+            {
+                session.Events.StartStream<IdeaAggregate>(
+                    ideaId, IdeaDecider.Capture(ideaId, ownerId, $"Idea {ideaId:N}", projectId, RenderNow, home));
+            }
+
+            session.Events.Append(heldByKnown, new IdeaAssigneeSet(heldByKnown, knownAssignee, knownRoot, RenderNow, ownerId));
+            session.Events.Append(heldByStranger, new IdeaAssigneeSet(heldByStranger, DomainId.New(), unknownRoot, RenderNow, ownerId));
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string ideasRoot = ProjectHomePaths.IdeasDirectory(_renderHome);
+        string Rendered(Guid ideaId) => File.ReadAllText(Path.Combine(
+            Directory.EnumerateDirectories(ideasRoot, $"{DomainId.Short(ideaId)}*").Single(), "idea.md"));
+        Rendered(heldByKnown).Should().Contain("assignee: Ryan");
+        Rendered(heldByStranger).Should().Contain($"assignee: {unknownRoot[..12]}");
+        Rendered(heldByNobody).Should().NotContain("assignee:");
     }
 
     [Fact]
