@@ -1363,9 +1363,17 @@ public sealed class AutoPrReviewEngine(
         // unassigned task never dispatches (no worktree, branch, or session exists), so this is
         // the pre-checkout park and h9k task assign is the human go. Speed is meaningless to a
         // task nothing will claim, so the speed handling below is skipped outright, not merely
-        // downgraded.
+        // downgraded. The task is still this owner's to answer for, so the assignee is recorded
+        // (TaskAssigneeSet) even though nothing is queued: a teammate's node must not read the
+        // creator fallback for it.
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
+            session, node.OwnerId, cancellationToken);
         if (parked)
         {
+            TaskAssigneeSet assignee = new(taskId, node.OwnerId, ownerRootFingerprint, now, node.OwnerId);
+            task.Apply(assignee);
+            events.Add(assignee);
+
             PullRequestGateParkFacts parkFacts = await ReadGateParkFactsAsync(
                 repository, candidate.Number, project.RepositoryPath, cancellationToken);
             EnrolledFleetSnapshot? fleet = enrolledNodes?.TryGet(project.Id);
@@ -1391,8 +1399,6 @@ public sealed class AutoPrReviewEngine(
                 "published but unassigned by the membership gate — h9k task assign to run it", actor);
         }
 
-        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
-            session, node.OwnerId, cancellationToken);
         TaskAssigned assigned = TaskDecider.Assign(
             task, node.OwnerId, dependencies: [], now, node.OwnerId, ownerRootFingerprint);
         task.Apply(assigned);
@@ -2677,8 +2683,15 @@ public sealed class AutoPrReviewEngine(
         // pull request author who reads as a declared member here — the comment author's own login
         // is already on the task's PullRequestReviewMentionObserved event and this outcome's own log
         // line, so it is not lost, only not repeated on this card.
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
+            session, node.OwnerId, cancellationToken);
         if (parked)
         {
+            // The assignee is recorded though nothing is queued, exactly as CreateOneAsync's own park does.
+            TaskAssigneeSet assignee = new(taskId, node.OwnerId, ownerRootFingerprint, now, node.OwnerId);
+            task.Apply(assignee);
+            events.Add(assignee);
+
             PullRequestGateParkFacts parkFacts = await ReadGateParkFactsAsync(
                 repository, candidate.Number, project.RepositoryPath, cancellationToken);
             EnrolledFleetSnapshot? fleet = enrolledNodes?.TryGet(project.Id);
@@ -2704,8 +2717,6 @@ public sealed class AutoPrReviewEngine(
                 taskId, "published but unassigned by the membership gate — h9k task assign to run it");
         }
 
-        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
-            session, node.OwnerId, cancellationToken);
         TaskAssigned assigned = TaskDecider.Assign(
             task, node.OwnerId, dependencies: [], now, node.OwnerId, ownerRootFingerprint);
         task.Apply(assigned);

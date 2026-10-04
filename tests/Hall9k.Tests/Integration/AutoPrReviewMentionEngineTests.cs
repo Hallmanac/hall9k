@@ -740,6 +740,8 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         TaskListItem minted = (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token)).Single();
         minted.Type.Should().Be(TaskType.PrReview);
         minted.State.Should().Be(TaskState.Published, "Add and Publish land, but the membership gate refuses Assign");
+        minted.AssigneeOwnerId.Should().Be(node.OwnerId, "a parked mint is still this owner's own task, so it records its assignee");
+        minted.AssignedOwnerId.Should().BeNull("nothing is queued: the assignee is not the go signal");
         minted.PrReviewGateParked.Should().BeTrue();
         minted.PrReviewGateParkedAuthorAccountId.Should().Be(
             memberAccountId,
@@ -799,6 +801,8 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         await using IQuerySession query = store.QuerySession();
         TaskListItem minted = (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token)).Single();
         minted.State.Should().Be(TaskState.Published);
+        minted.AssigneeOwnerId.Should().Be(node.OwnerId);
+        minted.AssignedOwnerId.Should().BeNull();
         minted.PrReviewGateParked.Should().BeTrue();
         (await query.LoadAsync<TaskDetails>(minted.Id, cts.Token))!.AnswersMentionOnly.Should().BeTrue();
         ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
@@ -860,6 +864,96 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_2"), cts.Token))!;
         observed.Outcome.Should().Be(ReviewMentionOutcome.TaskCreatedParked);
         observed.TaskId.Should().Be(minted.Id);
+    }
+
+    /// <summary>
+    /// The review-requested mint's own membership-gate park: the identical Published-but-unassigned
+    /// shape the mention parks above take, and it too records the assignee, since the task is this
+    /// owner's own even though nothing is queued. A parked mint that left the creator fallback as the
+    /// only owner fact would read as nobody's on a teammate's node.
+    /// </summary>
+    [Fact]
+    public async Task A_review_request_from_a_non_member_mints_published_unassigned_and_records_its_assignee()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/review-request-park-test";
+        const int number = 4310;
+        const long memberAccountId = 111;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-request-park", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+
+        string requestedAt = Now.AddMinutes(5).ToString("yyyy-MM-ddTHH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+        string timeline = """
+            {"data":{"repository":{"pullRequest":{
+              "author":{"login":"mallory","databaseId":888},"authorAssociation":"NONE",
+              "timelineItems":{"nodes":[
+                {"__typename":"ReviewRequestedEvent","createdAt":"REQUESTED_AT_Z",
+                 "actor":{"login":"mallory"},"requestedReviewer":{"__typename":"User","login":"brian"}}
+              ]}}}}}
+            """.Replace("REQUESTED_AT_Z", requestedAt + "Z", StringComparison.Ordinal);
+        ProcessRunner gh = (fileName, arguments, _, _) =>
+        {
+            if (IsVisibilityRead(arguments))
+            {
+                return Task.FromResult(new ProcessResult(0, """{"isPrivate":false}""", string.Empty));
+            }
+
+            if (IsRepositoryHostRead(arguments))
+            {
+                return Task.FromResult(new ProcessResult(1, string.Empty, "no repository this test knows"));
+            }
+
+            if (arguments.Contains("user"))
+            {
+                return Task.FromResult(new ProcessResult(0, "brian\n", string.Empty));
+            }
+
+            if (arguments.Contains("list"))
+            {
+                bool isMentionsSearch = arguments.Any(argument => argument.StartsWith("mentions:", StringComparison.Ordinal));
+                string listJson = !isMentionsSearch && AsksAbout(arguments, repository)
+                    ? $$"""
+                        [{"number":{{number}},"url":"https://github.com/{{repository}}/pull/{{number}}",
+                          "title":"Add rate limiting","body":"no links here"}]
+                        """
+                    : "[]";
+                return Task.FromResult(new ProcessResult(0, listJson, string.Empty));
+            }
+
+            if (arguments.Contains("view"))
+            {
+                return Task.FromResult(new ProcessResult(
+                    0,
+                    $$"""
+                    {"number":{{number}},"title":"Add rate limiting","body":"no links here","state":"OPEN",
+                     "url":"https://github.com/{{repository}}/pull/{{number}}","baseRefName":"main"}
+                    """,
+                    string.Empty));
+            }
+
+            return Task.FromResult(new ProcessResult(0, timeline, string.Empty));
+        };
+        AutoPrReviewEngine engine = new(
+            store, node,
+            NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("a parked task is never launched"), gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
+            enrolledNodes: MemberSnapshot(projectId, node, memberAccountId), clock: new FixedClock(Now.AddHours(1)));
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem minted = (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token)).Single();
+        minted.State.Should().Be(TaskState.Published, "the author is not a declared member, so the gate refuses Assign");
+        minted.PrReviewGateParked.Should().BeTrue();
+        minted.AssigneeOwnerId.Should().Be(node.OwnerId);
+        minted.AssigneeOwnerFingerprint.Should().Be(
+            (await query.LoadAsync<OwnerDetails>(node.OwnerId, cts.Token))!.RootFingerprint);
+        minted.AssignedOwnerId.Should().BeNull("a hold on a task is not the go signal");
     }
 
     /// <summary>
