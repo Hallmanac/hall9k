@@ -1,0 +1,21 @@
+hall9k-task-record: 1
+task-id: 01a10719-fcb1-7474-bd92-59c30a35c9b9
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#684
+objective: No automatic sweep and no h9k pr review invocation appends an event to a review task that TaskOwnerRule says belongs to another owner
+criteria:
+  - ConcludeWithdrawnAsync (AutoPrReviewEngine.cs, about line 1654) concludes only tasks whose AutoPrReviewAssigneeLogin equals this install's login, compared case-insensitively, and that OwnerScopedCoverage.IsOwn reports as this owner's; a task this node cannot attribute to an owner is left untouched.
+  - |-
+    A test (the engine's existing Postgres fixture with a faked review-assignments surface; no git or GitHub) reproduces the original scenario: Brian and Ryan are both requested, Ryan's replicated task is on Brian's node, and Brian is removed. It asserts that Ryan's task gains neither PullRequestReviewAssignmentRecalled nor TaskAbandoned, and that Brian's own task is still recalled.
+  - h9k pr review attaches to this owner's own live task for the pull request when one exists, even when a teammate's is newer. When every live task belongs to another owner, it refuses before any attach, claim, or lap event, names that owner by label through TaskOwnerGuard with the same wording as the other guarded commands, and appends nothing to that task in any state (Published, Queued, parked with a report, or awaiting follow-through). A test covers both the prefer-own and the refuse cases.
+  - The existing tests for each touched path still pass unchanged.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/0a35c9b9-no-automatic-sweep-and-no-h9k
+published: 2026-10-04 13:31:57Z
+context: |-
+  Card A of idea 8d0b724b (ideas/8d0b724b-*/workspace/draft-task.md and report.md); it rewrites the routed draft ba251d5e, whose verbatim review finding (ConcludeWithdrawnAsync recalls or abandons another owner's replicated review task) is the scenario behind criterion 2. Line references were confirmed on origin/main at fdf9c01ab by the cell B pair 3 challenge (verdict-opus.md and verdict-fable.md in this task's directory); re-confirm them. Use the existing owner test OwnerScopedCoverage.IsOwn (the one mention attach uses) and TaskOwnerGuard rather than inventing a new check; do not call TaskOwnerRule with an empty root, which matches nothing. Leave OwnerScopedCoverage's empty-root exception alone: a solo install that never ran h9k project join has an empty root permanently, and its own reviews must keep counting as its own (OwnerScopedCoverageTests pins this). Tests may use the existing Postgres fixture (PrReviewTaskEngineTests) with a faked review-assignments surface; no branches, git, or GitHub. Governing decisions: 8a5822cc (a requested reviewer's pr-review task is theirs alone) and the cross-owner acts ruling of 2026-10-01.
