@@ -130,7 +130,7 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
 
         await using IDocumentSession guardSession = _postgres.Store.LightweightSession();
         IdeaAggregate idea = (await guardSession.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
-        (await IdeaOwnerGuard.MayActAsync(guardSession, idea, _me, cts.Token))
+        (await IdeaOwnerGuard.MayActAsync(guardSession, idea, _me, new FakeLedgerChainReader(TrustChain.Empty), cts.Token))
             .Should().BeFalse("the creator handed it away, so it is Ryan's now, by the rule the receive gate applies");
     }
 
@@ -428,6 +428,26 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     }
 
     [Fact]
+    public async Task An_idea_that_replicated_in_from_a_sibling_node_stays_the_creators_to_conclude_with_no_flag()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid sibling = DomainId.New();
+        // A relayed genesis with no confirmed creator, and one that replicated in before any record existed.
+        Guid staged = await SeedIdeaAsync(
+            createdBy: DomainId.New(), cts.Token, replicatedCreatorRoot: string.Empty, claimedOriginNodeId: sibling);
+        Guid beforeTheRecord = await SeedIdeaAsync(createdBy: DomainId.New(), cts.Token, replicatedFromNodeId: sibling);
+        Guid fromAStranger = await SeedIdeaAsync(createdBy: DomainId.New(), cts.Token, replicatedFromNodeId: DomainId.New());
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        (await ConcludeAsync(session, staged, "done", holder: null, MembershipRole.Member, cts.Token, sibling)).Should().Be(ExitCodes.Ok);
+        (await ConcludeAsync(session, beforeTheRecord, "done", holder: null, MembershipRole.Member, cts.Token, sibling))
+            .Should().Be(ExitCodes.Ok);
+
+        Func<Task> refused = () => ConcludeAsync(session, fromAStranger, "done", holder: null, MembershipRole.Member, cts.Token, sibling);
+        (await refused.Should().ThrowAsync<DomainBusinessRuleException>()).Which.Message.Should().Contain("owner is unknown");
+    }
+
+    [Fact]
     public async Task An_owner_role_member_concludes_archives_or_promotes_a_teammates_idea_by_naming_whose_it_is_and_why()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
@@ -496,6 +516,9 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
         (await IdeaShowCommand.AssigneeMarkupAsync(query, heldDetails, cts.Token)).Should().Be("Ryan");
         (await IdeaShowCommand.AssigneeMarkupAsync(query, nobodyDetails, cts.Token))
             .Should().Contain("nobody").And.Contain("its creator decides it").And.Contain("h9k idea assign");
+        nobodyDetails.State = IdeaState.Concluded;
+        (await IdeaShowCommand.AssigneeMarkupAsync(query, nobodyDetails, cts.Token))
+            .Should().NotContain("h9k idea assign", "an idea that has ended has nothing left to hold");
 
         Dictionary<Guid, OwnerDetails> owners = (await query.Query<OwnerDetails>().ToListAsync(cts.Token)).ToDictionary(o => o.Id);
         IdeaRow.AssigneeLabel(heldDetails, owners, new Dictionary<Guid, ProjectMemberLabels>()).Should().Be("Ryan");
@@ -531,10 +554,10 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
 
     private async Task<int> ConcludeAsync(
         IDocumentSession session, Guid ideaId, string reason, string? holder, MembershipRole role,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken, Guid? siblingNodeId = null) =>
         await IdeaConcludeCommand.RunAsync(
             session, new IdeaConcludeCommand.Settings { Id = ideaId.ToString(), Reason = reason, Holder = holder },
-            await ChainAsync(role, cancellationToken), new NodeKeyStore(), Now, cancellationToken);
+            await ChainAsync(role, cancellationToken, siblingNodeId), new NodeKeyStore(), Now, cancellationToken);
 
     private async Task<int> ArchiveAsync(
         IDocumentSession session, Guid ideaId, string reason, string? holder, MembershipRole role,
@@ -550,11 +573,15 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
             session, new IdeaPromoteCommand.Settings { Id = ideaId.ToString(), Holder = holder, Reason = reason },
             await ChainAsync(role, cancellationToken), new NodeKeyStore(), cancellationToken);
 
-    private async Task<FakeLedgerChainReader> ChainAsync(MembershipRole role, CancellationToken cancellationToken)
+    private async Task<FakeLedgerChainReader> ChainAsync(
+        MembershipRole role, CancellationToken cancellationToken, Guid? siblingNodeId = null)
     {
         NodeSigningKey key = await new NodeKeyStore().EnsureAsync(_me.NodeId, cancellationToken);
         return new FakeLedgerChainReader(new TrustChain(
-            new Dictionary<string, TrustedOwner> { [_myRoot] = new(_myRoot, key.PublicKeyLine, []) },
+            new Dictionary<string, TrustedOwner>
+            {
+                [_myRoot] = new(_myRoot, key.PublicKeyLine, [], RootNodeId: siblingNodeId?.ToString()),
+            },
             [new ProjectMember(_myRoot, role, Now)]));
     }
 
@@ -566,7 +593,8 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     /// </summary>
     private async Task<Guid> SeedIdeaAsync(
         Guid createdBy, CancellationToken cancellationToken, OwnerDetailsSeed? heldBy = null, bool share = true,
-        string? replicatedCreatorRoot = null, Guid? projectId = null, bool legacy = false)
+        string? replicatedCreatorRoot = null, Guid? projectId = null, bool legacy = false,
+        Guid? claimedOriginNodeId = null, Guid? replicatedFromNodeId = null)
     {
         Guid ideaId = DomainId.New();
         Guid? ideaProject = projectId == Guid.Empty ? null : projectId ?? _projectId;
@@ -590,6 +618,13 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
         }
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
+        if (replicatedFromNodeId is { } replicatedFrom)
+        {
+            // What an idea that replicated in before the creator record existed carries: the origin its
+            // genesis was applied with, and no record.
+            session.SetHeader(ReplicationEventHeaders.OriginNodeId, replicatedFrom.ToString());
+        }
+
         session.Events.StartStream<IdeaAggregate>(ideaId, [.. events]);
         if (replicatedCreatorRoot is not null)
         {
@@ -597,7 +632,7 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
             {
                 Id = ideaId,
                 ProjectId = _projectId,
-                ClaimedOriginNodeId = DomainId.New(),
+                ClaimedOriginNodeId = claimedOriginNodeId ?? DomainId.New(),
                 CreatorRootFingerprint = replicatedCreatorRoot,
             });
         }

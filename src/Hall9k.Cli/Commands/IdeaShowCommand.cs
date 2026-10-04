@@ -215,15 +215,18 @@ public sealed class IdeaShowCommand : Hall9kAsyncCommand<IdeaShowCommand.Setting
     /// <summary>
     /// Who has laid hold of the idea, resolved the way <c>h9k task show</c> resolves a task's assignee
     /// (<see cref="TaskShowCommand.AssigneeMarkup"/>), or the honest absence: nobody, so its creator
-    /// decides it (<c>h9k idea assign</c> lays hold of it).
+    /// decides it, and may lay hold of it with <c>h9k idea assign</c>. An idea that has ended has nothing
+    /// left to hold, so it gets no hint at all.
     /// </summary>
     internal static async Task<string> AssigneeMarkupAsync(
         IQuerySession session, IdeaDetails idea, CancellationToken cancellationToken)
     {
         if (idea.AssigneeOwnerId is not { } ownerId)
         {
-            return "[dim]nobody; its creator decides it. Lay hold of it with[/] "
-                + $"h9k idea assign {TaskListCommand.ShortId(idea.Id)}";
+            return idea.State.IsTerminal
+                ? "[dim]nobody[/]"
+                : "[dim]nobody; its creator decides it, and can lay hold of it with[/] "
+                    + $"h9k idea assign {TaskListCommand.ShortId(idea.Id)}";
         }
 
         OwnerDetails? owner = await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken);

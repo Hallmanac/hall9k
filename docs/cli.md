@@ -76,7 +76,10 @@ member it is you. `h9k idea unassign <id>` lets go, and nobody holds the idea af
 assigns its creator; an unassigned idea is simply nobody's, and its creator decides it. Only the idea's
 assignee, or its creator when it has none, may conclude, archive or promote it, by the receive gate's own
 ownership rule over verified owner roots, so an idea stays its creator's to decide from every node of the
-creator's fleet. The same person may assign it to any member, themselves included; any other member is
+creator's fleet: a node of that fleet reads an idea that replicated in from another of its nodes as its creator's
+by the project ledger, before any direct act has confirmed it. A peer that receives an assignee, conclude or
+archive it cannot yet judge, because the hand-off that would allow it has not arrived, holds it and judges it
+again rather than dropping it. The same person may assign it to any member, themselves included; any other member is
 refused, including one naming themselves on a teammate's unassigned idea. Naming another member needs the
 idea at team scope, and an idea still at fleet scope refuses and names `h9k idea share`. An Owner-role member
 may override any refusal with `--holder` and `--reason`, the same override `h9k task assign` takes, and the
