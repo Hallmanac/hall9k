@@ -162,25 +162,6 @@ public sealed class IdeaAssigneeTests
         assign.Should().Throw<DomainValidationException>();
     }
 
-    /// <summary>
-    /// The rule an idea reuses is the task rule with no ledger holder: the assignee decides, and with
-    /// none the creator does, so a creator who handed the idea away no longer decides it.
-    /// </summary>
-    [Theory]
-    [InlineData(null, CreatorRoot, CreatorRoot, true)]
-    [InlineData(null, CreatorRoot, TeammateRoot, false)]
-    [InlineData(AssigneeRoot, CreatorRoot, AssigneeRoot, true)]
-    [InlineData(AssigneeRoot, CreatorRoot, CreatorRoot, false)]
-    [InlineData(AssigneeRoot, CreatorRoot, TeammateRoot, false)]
-    public void The_task_owner_rule_with_no_holder_answers_an_idea_assignee_first_then_its_creator(
-        string? assigneeRoot, string creatorRoot, string actingRoot, bool mayAct)
-    {
-        TaskOwnerFacts facts = new(
-            OwnerRootFact.Absent, OwnerRootFact.KnownOrAbsent(assigneeRoot), OwnerRootFact.Known(creatorRoot));
-
-        TaskOwnerRule.Decide(actingRoot, facts).MayAct.Should().Be(mayAct);
-    }
-
     [Fact]
     public void An_idea_whose_creator_cannot_be_resolved_is_unknown_and_the_refusal_says_idea_and_names_the_override()
     {

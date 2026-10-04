@@ -85,4 +85,28 @@ public static class IdeaOwnerFactsReader
             ? OwnerRootFact.Unresolved
             : OwnerRootFact.Known(creatorFingerprint);
     }
+
+    /// <summary>
+    /// The node an idea that replicated in says authored it, for a creator <see cref="ReadCreatorAsync"/>
+    /// could not verify: the origin the creator record names, or with no record (an idea that replicated
+    /// in before this build kept one) the origin its genesis event was applied with. Null for an idea this
+    /// node captured itself, which has no claim to read. It is a claim, never a verified root, so the
+    /// only caller that may lean on it is one that checks it against the ledger's own fleet.
+    /// </summary>
+    public static async Task<Guid?> ReadClaimedOriginNodeAsync(
+        IQuerySession session, IdeaAggregate idea, CancellationToken cancellationToken)
+    {
+        IdeaCreatorRootRecord? creatorRoot = await session.LoadAsync<IdeaCreatorRootRecord>(idea.Id, cancellationToken);
+        if (creatorRoot is not null)
+        {
+            return creatorRoot.ClaimedOriginNodeId;
+        }
+
+        IReadOnlyList<IEvent> ideaEvents = await session.Events.FetchStreamAsync(idea.Id, token: cancellationToken);
+        return ideaEvents.Count > 0
+            && ideaEvents[0].GetHeader(ReplicationEventHeaders.OriginNodeId) is string claimed
+            && Guid.TryParse(claimed, out Guid claimedOriginNodeId)
+                ? claimedOriginNodeId
+                : null;
+    }
 }

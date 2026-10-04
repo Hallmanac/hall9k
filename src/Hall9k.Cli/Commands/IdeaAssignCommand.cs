@@ -8,6 +8,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
+using JasperFx.Events;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -91,7 +92,13 @@ public sealed class IdeaAssignCommand : Hall9kAsyncCommand<IdeaAssignCommand.Set
         IDocumentSession session, Settings settings, ILedgerChainReader chainReader, NodeKeyStore keyStore,
         DateTimeOffset now, CancellationToken cancellationToken)
     {
-        IdeaAggregate idea = await IdeaIdResolver.LoadAsync(session, settings.Id, cancellationToken);
+        // Fenced like the other idea acts: a conclude racing this assign must not both land.
+        Guid ideaId = await IdeaIdResolver.ResolveAsync(session, settings.Id, cancellationToken);
+        StreamState fence = await session.Events.FetchStreamStateAsync(ideaId, cancellationToken)
+            ?? throw new DomainNotFoundException($"No idea {ideaId}.");
+        IdeaAggregate idea = await session.Events.AggregateStreamAsync<IdeaAggregate>(
+                ideaId, version: fence.Version, token: cancellationToken)
+            ?? throw new DomainNotFoundException($"No idea {ideaId}.");
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         OwnerDetails assignee = await ResolveMemberAsync(session, idea, settings.Member, context, cancellationToken);
 
@@ -101,8 +108,17 @@ public sealed class IdeaAssignCommand : Hall9kAsyncCommand<IdeaAssignCommand.Set
         TaskOwnerOverrideDecision ownerDecision = await IdeaOwnerGuard.AuthorizeAsync(
             session, idea, context, "assign", settings.Holder, settings.Reason, chainReader, keyStore, cancellationToken);
 
-        IdeaAssigneeSet? set = AppendAssignee(session, idea, assignee, context.OwnerId, ownerDecision, now);
-        await session.SaveChangesAsync(cancellationToken);
+        IdeaAssigneeSet? set = AppendAssignee(session, idea, assignee, context.OwnerId, ownerDecision, now, fence.Version + 1);
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            throw new DomainConflictException(
+                $"Idea {idea.Id} changed while it was being assigned, so nothing was recorded. Read it back with "
+                + $"h9k idea show {settings.Id}, then re-run this command if it is still open.");
+        }
 
         string shortId = TaskListCommand.ShortId(idea.Id);
         string name = assignee.Name.EscapeMarkup();
@@ -160,7 +176,7 @@ public sealed class IdeaAssignCommand : Hall9kAsyncCommand<IdeaAssignCommand.Set
     /// </summary>
     internal static IdeaAssigneeSet? AppendAssignee(
         IDocumentSession session, IdeaAggregate idea, OwnerDetails assignee, Guid setByOwnerId,
-        TaskOwnerOverrideDecision ownerDecision, DateTimeOffset now)
+        TaskOwnerOverrideDecision ownerDecision, DateTimeOffset now, long? expectedVersion = null)
     {
         bool assigneeIsActor = assignee.Id == setByOwnerId;
         if (!assigneeIsActor && assignee.RootFingerprint.IsBlank())
@@ -175,7 +191,11 @@ public sealed class IdeaAssignCommand : Hall9kAsyncCommand<IdeaAssignCommand.Set
             idea, assignee.Id, assignee.RootFingerprint, assigneeIsActor, now, setByOwnerId,
             overridden ? ownerDecision.OnBehalfOfRootFingerprint : null,
             overridden ? ownerDecision.Reason : null);
-        if (set is not null)
+        if (set is not null && expectedVersion is { } version)
+        {
+            session.Events.Append(idea.Id, version, set);
+        }
+        else if (set is not null)
         {
             session.Events.Append(idea.Id, set);
         }
