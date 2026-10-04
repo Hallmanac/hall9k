@@ -384,7 +384,9 @@ findings park nobody has walked, a failed one) is refused as it always was.
 **Your own review lap, on top of that task** (PLAN.md §16 #149): `h9k pr review <number-or-url>`
 attaches to the `pr-review` task this node already holds for the pull request — auto-adopted from a
 GitHub reviewer assignment, or created by `--from-pr` — and adopts the pull request itself only when
-no live task exists. It reuses that task's read-only worktree (`--no-worktree` skips the checkout,
+no live task exists. It attaches to your own live task even when a teammate's replicated one is newer,
+and when every live task belongs to another owner it refuses, naming that owner the way the task
+commands do, before it attaches, claims or records anything on it. It reuses that task's read-only worktree (`--no-worktree` skips the checkout,
 for reviewing against a deployed environment) and prints a briefing to paste into a Claude Code
 session you start yourself: the stated objective and acceptance criteria when this node can read
 the authoring task, the surfaces touched with a blast-radius summary, what CI ran, and the
@@ -461,6 +463,9 @@ and shows in `h9k status` as a needs-you row naming who mentioned which login, w
 comment, and no command, because the pull request is a teammate's review and the reply happens on
 GitHub; the row turns informational once that teammate's review has closed. A review request to you on a pull request a teammate's review covers mints your own task,
 and a teammate's closed review never counts as yours having already answered a standing request.
+When a reviewer is removed from a pull request, the sweep that recalls the assignment concludes only
+the task it minted for that reviewer's login on this install; a teammate's replicated review of the
+same pull request, and a task this node cannot yet attribute to an owner, are left untouched.
 
 On a public repository, a review request or mention must come from a declared hall9k team member
 before it mints and starts a task unattended — the bar is team membership, never GitHub collaborator
