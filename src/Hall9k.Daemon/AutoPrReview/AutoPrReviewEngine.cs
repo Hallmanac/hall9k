@@ -1391,12 +1391,12 @@ public sealed class AutoPrReviewEngine(
 
             logger.LogDebug(
                 "Auto-created pr-review task {TaskId} for {Repository}#{Number}, parked by the membership "
-                + "gate (security review idea 6be68ee2, finding 1) — published but unassigned",
+                + "gate (security review idea 6be68ee2, finding 1) — published and held but not queued",
                 taskId, repository, candidate.Number);
 
             return new MintAttempt(
                 ReviewRequestOutcome.TaskCreatedParked, taskId,
-                "published but unassigned by the membership gate — h9k task assign to run it", actor);
+                "published and held but not queued by the membership gate — h9k task assign to run it", actor);
         }
 
         TaskAssigned assigned = TaskDecider.Assign(
@@ -2709,12 +2709,12 @@ public sealed class AutoPrReviewEngine(
 
             logger.LogDebug(
                 "Auto-created pr-review task {TaskId} for {Repository}#{Number} from a mention, parked by "
-                + "the membership gate (security review idea 6be68ee2, finding 1) — published but unassigned",
+                + "the membership gate (security review idea 6be68ee2, finding 1) — published and held but not queued",
                 taskId, repository, candidate.Number);
 
             return (
                 answerOnly ? ReviewMentionOutcome.AnswerOnlyTaskCreatedParked : ReviewMentionOutcome.TaskCreatedParked,
-                taskId, "published but unassigned by the membership gate — h9k task assign to run it");
+                taskId, "published and held but not queued by the membership gate — h9k task assign to run it");
         }
 
         TaskAssigned assigned = TaskDecider.Assign(

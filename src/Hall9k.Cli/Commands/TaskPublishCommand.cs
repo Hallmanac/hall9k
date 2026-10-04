@@ -120,6 +120,7 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             session, task.BlockedBy, cancellationToken);
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        await TaskOwnerGuard.AssertMayActAsync(session, task, context, cancellationToken);
         TaskPublished published = TaskDecider.Publish(
             task, graph, DateTimeOffset.UtcNow, context.OwnerId, project.BacklogPolicy,
             settings.NoExistingItem, settings.Untracked, PreApprovalInput.FromFlag(settings.PreApproved),

@@ -82,7 +82,7 @@ public sealed class TaskUnassignCommand : Hall9kAsyncCommand<TaskUnassignCommand
         {
             session.Events.Append(
                 taskId, expectedVersion: fence.Version + 1,
-                ClearAssignee(task, settings.Reason, context.OwnerId, ownerDecision));
+                ClearAssignee(task, settings.Reason, context.OwnerId, ownerDecision, DateTimeOffset.UtcNow));
             await SaveAsync(
                 session,
                 $"Task {taskId} changed while letting go of it, so nothing was released. Check h9k task show, "
@@ -135,9 +135,10 @@ public sealed class TaskUnassignCommand : Hall9kAsyncCommand<TaskUnassignCommand
     /// to another owner's task (<c>--holder</c> with <c>--reason</c>).
     /// </summary>
     internal static TaskAssigneeCleared ClearAssignee(
-        TaskAggregate task, string? reason, Guid clearedByOwnerId, TaskOwnerOverrideDecision ownerDecision)
+        TaskAggregate task, string? reason, Guid clearedByOwnerId, TaskOwnerOverrideDecision ownerDecision,
+        DateTimeOffset now)
     {
-        TaskAssigneeCleared cleared = TaskDecider.ClearAssignee(task, reason, DateTimeOffset.UtcNow, clearedByOwnerId);
+        TaskAssigneeCleared cleared = TaskDecider.ClearAssignee(task, reason, now, clearedByOwnerId);
         return ownerDecision.Outcome == TaskOwnerOverrideOutcome.Override
             ? cleared with
             {

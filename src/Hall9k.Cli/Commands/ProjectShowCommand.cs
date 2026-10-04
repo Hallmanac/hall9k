@@ -276,7 +276,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Review requires membership", ReviewMembershipOption.Describe(
             membershipGate.Policy, visibility?.IsPrivate,
             "a hall9k team member's own request or mention is required before auto-pr-review runs it "
-            + "unattended; a non-member's still mints the pr-review task, published but unassigned — "
+            + "unattended; a non-member's still mints the pr-review task, published and held but not queued — "
             + "h9k task assign is the human go",
             "the daemon decides fresh every sweep from the repository's own visibility — required on "
             + "a public repository, not required on a private or internal one"));

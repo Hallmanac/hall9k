@@ -412,6 +412,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         }
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        await TaskOwnerGuard.AssertMayActAsync(session, task, context, cancellationToken);
         TaskRevised revised = TaskDecider.Revise(
             task,
             objective.IsBlank() ? Optional<string>.None : Optional<string>.Of(objective),
