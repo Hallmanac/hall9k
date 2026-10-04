@@ -1030,7 +1030,7 @@ public sealed class EventReplicationInbox(
                 !existingOwnership.IsProjectStreamItself && existingOwnership.ProjectId != projectId;
 
             // The one legitimate cross-project append: an idea moved from one shared project to
-            // another (h9k idea assign). The outbound flush resolves each event's project live, so the
+            // another (h9k idea move). The outbound flush resolves each event's project live, so the
             // move, and any of the idea's own earlier events not yet flushed when it happened, travel
             // through the DESTINATION project's outbox while the idea still resolves to the source
             // project here until the move itself applies. Refusing them left the idea under the source
@@ -1186,9 +1186,9 @@ public sealed class EventReplicationInbox(
                     // held relayed act ever superseded by a later run event on a different stream — would
                     // queue forever behind a held head that can never itself resolve who the creator is
                     // (independent pre-PR review, cycle 4, adversarial lens, high).
-                    await ResolveCreatorRootFingerprintAsync(
-                        session, task: null, earlierHeldForThisOrigin.TaskId, record.OriginNodeId, senderNodeId,
-                        recordSender, cancellationToken);
+                    await BackfillCreatorRootAsync(
+                        session, eventType, earlierHeldForThisOrigin.TaskId, projectId, record.OriginNodeId,
+                        senderNodeId, recordSender, cancellationToken);
                     await HoldTaskActAsync(
                         session, record, effectiveStreamId, earlierHeldForThisOrigin.TaskId, projectId, senderNodeId,
                         senderFingerprint, originProjectKey, now, taskActCatchUpAskTaskIdsThisRead: null, cancellationToken);
@@ -1216,13 +1216,9 @@ public sealed class EventReplicationInbox(
             SenderResolution? actSender = alwaysAllowed ? null : recordSender;
             if (!alwaysAllowed && actSender is not { Role: MembershipRole.Owner })
             {
-                TaskActTargetResolution target =
-                    await ResolveTaskActTargetAsync(session, eventType, effectiveStreamId, cancellationToken);
-                string? creatorRootFingerprint = await ResolveCreatorRootFingerprintAsync(
-                    session, target.Task, target.TaskId, record.OriginNodeId, senderNodeId, actSender, cancellationToken);
-                TaskActVerdict verdict = EvaluateTaskActVerdict(
-                    classification, eventType, data, target.Task, actSender,
-                    record.OriginNodeId, senderNodeId, creatorRootFingerprint);
+                (Guid targetId, TaskActVerdict verdict) = await JudgeActAsync(
+                    session, classification, eventType, data, effectiveStreamId, projectId, record.OriginNodeId,
+                    senderNodeId, actSender, cancellationToken);
 
                 switch (verdict)
                 {
@@ -1235,14 +1231,14 @@ public sealed class EventReplicationInbox(
                             + "(fingerprint {SenderFingerprint}) targets task {TaskId}, whose current assignment or "
                             + "holder is not yet known here — held until it clears or 24 hours pass",
                             record.EventTypeName, record.OriginEventId, senderNodeId, senderFingerprint ?? "(none)",
-                            target.TaskId);
+                            targetId);
                         await HoldTaskActAsync(
-                            session, record, effectiveStreamId, target.TaskId, projectId, senderNodeId, senderFingerprint,
+                            session, record, effectiveStreamId, targetId, projectId, senderNodeId, senderFingerprint,
                             originProjectKey, now, taskActCatchUpAskTaskIdsThisRead, cancellationToken);
                         return 0;
 
                     case TaskActVerdict.DroppedAndRefusedPermanently:
-                        LogTaskActDropped(record, senderNodeId, senderFingerprint, target.TaskId, permanent: true);
+                        LogTaskActDropped(record, senderNodeId, senderFingerprint, targetId, permanent: true);
                         session.Store(new ReplicatedEventRecord
                         {
                             Id = record.OriginEventId,
@@ -1266,9 +1262,9 @@ public sealed class EventReplicationInbox(
                         // recorded as a gated drop, exactly like the sibling project-settings gate above,
                         // so an outstanding catch-up request this exact answer would otherwise satisfy is
                         // left standing for the true origin to answer instead.
-                        LogTaskActDropped(record, senderNodeId, senderFingerprint, target.TaskId, permanent: false);
+                        LogTaskActDropped(record, senderNodeId, senderFingerprint, targetId, permanent: false);
                         await HoldTaskActAsync(
-                            session, record, effectiveStreamId, target.TaskId, projectId, senderNodeId, senderFingerprint,
+                            session, record, effectiveStreamId, targetId, projectId, senderNodeId, senderFingerprint,
                             originProjectKey, now, taskActCatchUpAskTaskIdsThisRead: null, cancellationToken);
                         gatedDropOriginNodeIdsThisRead.Add(record.OriginNodeId);
                         gatedDropStreamIdsThisRead.Add(effectiveStreamId);
@@ -1512,12 +1508,29 @@ public sealed class EventReplicationInbox(
         // actually delivered it. Staged in this same save so a poison-event rollback below takes it
         // down with everything else this record staged, never leaving an orphaned creator root for a
         // stream that never actually started.
+        //
+        // An idea's own genesis (IdeaCaptured) gets the identical record under the identical rule
+        // (IdeaCreatorRootRecord): IdeaCaptured.OwnerId is a per-node Guid, so a peer has no other
+        // verified way to know whose idea this is.
         if (!streamExists && eventType == typeof(TaskAdded))
         {
             SenderResolution? genesisSender = senderNodeId == record.OriginNodeId
                 ? ResolveSender(trustChain, senderFingerprint, senderNodeId)
                 : null;
             session.Store(new TaskCreatorRootRecord
+            {
+                Id = effectiveStreamId,
+                ProjectId = projectId,
+                ClaimedOriginNodeId = record.OriginNodeId,
+                CreatorRootFingerprint = genesisSender?.RootFingerprint ?? string.Empty,
+            });
+        }
+        else if (!streamExists && eventType == typeof(IdeaCaptured))
+        {
+            SenderResolution? genesisSender = senderNodeId == record.OriginNodeId
+                ? ResolveSender(trustChain, senderFingerprint, senderNodeId)
+                : null;
+            session.Store(new IdeaCreatorRootRecord
             {
                 Id = effectiveStreamId,
                 ProjectId = projectId,
@@ -1717,7 +1730,7 @@ public sealed class EventReplicationInbox(
     /// project the idea resolves to now, by that project's OWN ledger. Allowed only when
     /// <paramref name="senderFingerprint"/> is vouched, for <paramref name="senderNodeId"/>
     /// specifically, by a current member of the source project, whatever that member's role: an
-    /// owner who belongs to both projects is exactly who runs <c>h9k idea assign</c> across them, and
+    /// owner who belongs to both projects is exactly who runs <c>h9k idea move</c> across them, and
     /// could send the identical event through the source project's own outbox anyway, while a member
     /// of the destination alone must never be able to pull another project's idea into it or write
     /// into it. A null chain (no chain reader, no source project to read, or an idea with no project
@@ -2327,6 +2340,204 @@ public sealed class EventReplicationInbox(
         return sender.RootFingerprint;
     }
 
+    /// <summary>
+    /// Whether <paramref name="eventType"/> is an idea event, judged against the idea's own assignee
+    /// and creator (<see cref="EvaluateIdeaActVerdict"/>) rather than a task's.
+    /// </summary>
+    private static bool IsIdeaAct(Type eventType) => FamilyOf(eventType) == ReplicationStreamFamily.Idea;
+
+    /// <summary>
+    /// The one place a non-owner sender's conditional act is judged, for both callers (the fresh
+    /// delivery in <see cref="ApplyAsync"/> and the re-judging in <see cref="ReCheckHeldTaskActsAsync"/>),
+    /// so a Task, Run or Idea act can never be judged one way on arrival and another way at replay.
+    /// Returns the id the verdict was judged against too (the task, or the idea), which a hold is keyed
+    /// by and a catch-up ask names.
+    /// </summary>
+    private static async Task<(Guid TargetId, TaskActVerdict Verdict)> JudgeActAsync(
+        IDocumentSession session, TaskActClassification classification, Type eventType, object eventData,
+        Guid effectiveStreamId, Guid projectId, Guid recordOriginNodeId, Guid senderNodeId, SenderResolution? sender,
+        CancellationToken cancellationToken)
+    {
+        if (IsIdeaAct(eventType))
+        {
+            IdeaAggregate? idea =
+                await session.Events.AggregateStreamAsync<IdeaAggregate>(effectiveStreamId, token: cancellationToken);
+            string? ideaCreatorRoot = await ResolveIdeaCreatorRootFingerprintAsync(
+                session, idea, effectiveStreamId, projectId, recordOriginNodeId, senderNodeId, sender, cancellationToken);
+            return (effectiveStreamId, EvaluateIdeaActVerdict(
+                classification, eventType, idea, sender, recordOriginNodeId, senderNodeId, ideaCreatorRoot));
+        }
+
+        TaskActTargetResolution target =
+            await ResolveTaskActTargetAsync(session, eventType, effectiveStreamId, cancellationToken);
+        string? creatorRootFingerprint = await ResolveCreatorRootFingerprintAsync(
+            session, target.Task, target.TaskId, recordOriginNodeId, senderNodeId, sender, cancellationToken);
+        return (target.TaskId, EvaluateTaskActVerdict(
+            classification, eventType, eventData, target.Task, sender, recordOriginNodeId, senderNodeId,
+            creatorRootFingerprint));
+    }
+
+    /// <summary>
+    /// Runs the creator-root backfill for a record being queued behind an earlier hold, without a
+    /// verdict of its own: the direct delivery that can confirm a relayed genesis's creator must not
+    /// be lost to the queue (see the call site's own comment).
+    /// </summary>
+    private static async Task BackfillCreatorRootAsync(
+        IDocumentSession session, Type eventType, Guid streamId, Guid projectId, Guid recordOriginNodeId,
+        Guid senderNodeId, SenderResolution? sender, CancellationToken cancellationToken)
+    {
+        if (IsIdeaAct(eventType))
+        {
+            await ResolveIdeaCreatorRootFingerprintAsync(
+                session, idea: null, streamId, projectId, recordOriginNodeId, senderNodeId, sender, cancellationToken);
+            return;
+        }
+
+        await ResolveCreatorRootFingerprintAsync(
+            session, task: null, streamId, recordOriginNodeId, senderNodeId, sender, cancellationToken);
+    }
+
+    /// <summary>
+    /// <see cref="ResolveCreatorRootFingerprintAsync"/>'s twin for an idea, under the same trust rule
+    /// (<see cref="IdeaCreatorRootRecord"/>'s own doc): a record still empty is backfilled only from a
+    /// DIRECT delivery from the node the genesis claimed, and an idea with no record reads through
+    /// <see cref="IdeaOwnerFactsReader"/>, which is the one place the CLI guard reads it too. With
+    /// <paramref name="idea"/> null only the backfill runs and nothing is read.
+    /// </summary>
+    private static async Task<string?> ResolveIdeaCreatorRootFingerprintAsync(
+        IDocumentSession session, IdeaAggregate? idea, Guid ideaId, Guid projectId, Guid recordOriginNodeId,
+        Guid senderNodeId, SenderResolution? sender, CancellationToken cancellationToken)
+    {
+        IdeaCreatorRootRecord? creatorRoot = await session.LoadAsync<IdeaCreatorRootRecord>(ideaId, cancellationToken)
+            ?? await StageClaimedCreatorRecordAsync(session, ideaId, projectId, cancellationToken);
+        if (creatorRoot is { CreatorRootFingerprint.Length: 0 }
+            && sender is not null
+            && senderNodeId == recordOriginNodeId
+            && recordOriginNodeId == creatorRoot.ClaimedOriginNodeId)
+        {
+            creatorRoot.CreatorRootFingerprint = sender.RootFingerprint;
+            session.Store(creatorRoot);
+            return sender.RootFingerprint;
+        }
+
+        if (idea is null)
+        {
+            return null;
+        }
+
+        return (await IdeaOwnerFactsReader.ReadCreatorAsync(session, idea, cancellationToken)).RootFingerprint;
+    }
+
+    /// <summary>
+    /// An idea that replicated in before this build kept a creator record has none, and a node that
+    /// updated since cannot tell whose it is, so every act that needs the creator would be held until
+    /// its 24 hours ran out. The genesis this node already holds names the origin node it was claimed
+    /// from (<see cref="ReplicationEventHeaders.OriginNodeId"/>), exactly what the record a fresh
+    /// delivery writes names, so the same record is staged here with no verified root: the first act
+    /// this node receives directly from that origin then confirms it, by the one proof a fresh record
+    /// confirms by. Never sets a root, and stages nothing for an idea this node captured itself, whose
+    /// genesis carries no such header and whose creator <see cref="IdeaOwnerFactsReader"/> reads from
+    /// the node's own stamp.
+    /// </summary>
+    private static async Task<IdeaCreatorRootRecord?> StageClaimedCreatorRecordAsync(
+        IDocumentSession session, Guid ideaId, Guid projectId, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<IEvent> ideaEvents = await session.Events.FetchStreamAsync(ideaId, token: cancellationToken);
+        if (ideaEvents.Count == 0
+            || ideaEvents[0].GetHeader(ReplicationEventHeaders.OriginNodeId) is not string claimedOrigin
+            || !Guid.TryParse(claimedOrigin, out Guid claimedOriginNodeId))
+        {
+            return null;
+        }
+
+        IdeaCreatorRootRecord staged = new()
+        {
+            Id = ideaId,
+            ProjectId = projectId,
+            ClaimedOriginNodeId = claimedOriginNodeId,
+            CreatorRootFingerprint = string.Empty,
+        };
+        session.Store(staged);
+        return staged;
+    }
+
+    /// <summary>
+    /// The pure verdict for an idea act (card D of idea 8d0b724b), by the rule the CLI applies
+    /// (<c>h9k idea assign</c>, <c>conclude</c>, <c>archive</c>): a Member-role sender may name an
+    /// assignee, conclude or archive an idea only when its root is the idea's assignee, or with no
+    /// assignee its creator, which is <see cref="Tasks.Handlers.TaskOwnerRule"/>'s own answer for an
+    /// idea (an idea has no ledger holder). Unlike a task there is no self-take exception: a member
+    /// naming itself on a teammate's unassigned idea is refused. <see cref="IdeaAssigneeCleared"/> is
+    /// allowed only from the current assignee, since a creator who handed the idea away no longer holds
+    /// it. An Owner-role sender's act always applies. Every other idea event is plain
+    /// <see cref="TaskActClassification.MemberSafe"/> and applies exactly as it did before this gate
+    /// knew ideas, including <see cref="IdeaSpikeConcluded"/> from a teammate's node.
+    /// <para>
+    /// An idea whose creator this node never verified (<paramref name="creatorRootFingerprint"/> null)
+    /// holds, as does an assignee clear on an idea with no recorded assignee, because the fact it needs
+    /// may simply not have arrived. An assignee recorded without a fingerprint refuses a Member, as a
+    /// task's does: this node cannot tell whose it is.
+    /// </para>
+    /// </summary>
+    internal static TaskActVerdict EvaluateIdeaActVerdict(
+        TaskActClassification classification, Type eventType, IdeaAggregate? idea, SenderResolution? sender,
+        Guid originNodeId, Guid senderNodeId, string? creatorRootFingerprint = null)
+    {
+        if (classification == TaskActClassification.MemberSafe)
+        {
+            return TaskActVerdict.Allowed;
+        }
+
+        if (sender is null)
+        {
+            return Refuse(originNodeId, senderNodeId);
+        }
+
+        if (sender.Role == MembershipRole.Owner)
+        {
+            return TaskActVerdict.Allowed;
+        }
+
+        if (classification != TaskActClassification.Conditional)
+        {
+            return Refuse(originNodeId, senderNodeId);
+        }
+
+        if (idea is null)
+        {
+            return TaskActVerdict.Held;
+        }
+
+        if (eventType == typeof(IdeaAssigneeCleared))
+        {
+            return idea switch
+            {
+                { AssigneeOwnerId: null } => TaskActVerdict.Held,
+                _ when idea.AssigneeOwnerFingerprint == sender.RootFingerprint => TaskActVerdict.Allowed,
+                _ => Refuse(originNodeId, senderNodeId),
+            };
+        }
+
+        if (eventType != typeof(IdeaAssigneeSet) && eventType != typeof(IdeaConcluded) && eventType != typeof(IdeaArchived))
+        {
+            throw new InvalidOperationException($"Unhandled conditional idea act {eventType.Name}.");
+        }
+
+        if (idea.AssigneeOwnerId is not null)
+        {
+            return idea.AssigneeOwnerFingerprint == sender.RootFingerprint
+                ? TaskActVerdict.Allowed
+                : Refuse(originNodeId, senderNodeId);
+        }
+
+        return creatorRootFingerprint switch
+        {
+            null => TaskActVerdict.Held,
+            _ when creatorRootFingerprint == sender.RootFingerprint => TaskActVerdict.Allowed,
+            _ => Refuse(originNodeId, senderNodeId),
+        };
+    }
+
     /// <summary>The task a Task or Run act's own conditional verdict is judged against, and its id
     /// either way — <see cref="TaskAggregate"/> is null only when this node cannot resolve it at
     /// all (a Run act whose referenced task has never replicated here), never when the task simply
@@ -2541,14 +2752,9 @@ public sealed class EventReplicationInbox(
                 TaskActVerdict verdict = TaskActVerdict.Allowed;
                 if (!alwaysAllowed && sender is not { Role: MembershipRole.Owner })
                 {
-                    TaskActTargetResolution target =
-                        await ResolveTaskActTargetAsync(session, eventType, current.StreamId, cancellationToken);
-                    string? creatorRootFingerprint = await ResolveCreatorRootFingerprintAsync(
-                        session, target.Task, target.TaskId, current.OriginNodeId, current.SenderNodeId, sender,
-                        cancellationToken);
-                    verdict = EvaluateTaskActVerdict(
-                        classification.Value, eventType, data, target.Task, sender, current.OriginNodeId,
-                        current.SenderNodeId, creatorRootFingerprint);
+                    (_, verdict) = await JudgeActAsync(
+                        session, classification.Value, eventType, data, current.StreamId, current.ProjectId,
+                        current.OriginNodeId, current.SenderNodeId, sender, cancellationToken);
                 }
 
                 if (verdict is TaskActVerdict.Held or TaskActVerdict.DroppedWithoutRecording)
