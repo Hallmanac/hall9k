@@ -19,7 +19,13 @@ public static class IdeaDocumentRenderer
     /// <summary>The directory an idea renders under: short id plus a slug from its current note text.</summary>
     public static string DirectoryName(IdeaDetails idea) => ProjectHomePaths.EntryDirectoryName(idea.Id, idea.Text);
 
-    public static string Render(IdeaDetails idea, string projectName)
+    /// <param name="assignee">
+    /// How to name whoever holds the idea, resolved by the caller (a node's own record of the owner, or
+    /// the project's member label), since this renderer reads no store. Null with an assignee recorded
+    /// falls back to the root's short form, and an idea nobody holds writes no line at all: the creator
+    /// decides it.
+    /// </param>
+    public static string Render(IdeaDetails idea, string projectName, string? assignee = null)
     {
         string shortId = DomainId.Short(idea.Id);
         StringBuilder document = new();
@@ -28,6 +34,17 @@ public static class IdeaDocumentRenderer
         document.AppendLine($"id: {shortId}");
         document.AppendLine($"project: {projectName}");
         document.AppendLine($"state: {idea.State.Value}");
+        if (idea.AssigneeOwnerId is not null)
+        {
+            string named = (assignee, idea.AssigneeOwnerFingerprint) switch
+            {
+                ({ } label, _) when label.IsNotBlank() => label,
+                (_, { Length: > 0 } fingerprint) => fingerprint[..Math.Min(12, fingerprint.Length)],
+                _ => DomainId.Short(idea.AssigneeOwnerId.Value),
+            };
+            document.AppendLine($"assignee: {named.ReplaceLineEndings(" ").Trim()}");
+        }
+
         document.AppendLine($"revisions: {idea.Revisions}");
         if (idea.CutTaskIds.Count > 0)
         {

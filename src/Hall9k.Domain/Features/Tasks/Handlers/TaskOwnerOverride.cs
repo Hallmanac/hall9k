@@ -22,6 +22,7 @@ public static class TaskOwnerOverride
     /// <param name="ownerLabel">The owner root's label, for matching <paramref name="holder"/> and for the message. Null when the owner is unknown.</param>
     /// <param name="assigneeLabel">The assignee's label when it is a different root than the owner.</param>
     /// <param name="roleCheck">Whether the acting node passed the Owner-role check, or <see cref="OwnerRoleCheck.NotChecked"/> when it has not been asked yet.</param>
+    /// <param name="noun">What the refusal calls the thing acted on: an idea reuses this rule with the same words.</param>
     public static TaskOwnerOverrideDecision Decide(
         Guid taskId,
         string verb,
@@ -30,7 +31,8 @@ public static class TaskOwnerOverride
         string? assigneeLabel,
         string? holder,
         string? reason,
-        OwnerRoleCheck roleCheck)
+        OwnerRoleCheck roleCheck,
+        string noun = TaskOwnerRefusal.TaskNoun)
     {
         if (check.MayAct)
         {
@@ -39,17 +41,20 @@ public static class TaskOwnerOverride
 
         string hint = $"An Owner-role member may {verb} it on that owner's behalf with --holder <name> and "
             + "--reason <text>, both required together.";
-        string refusal = TaskOwnerRefusal.Describe(taskId, check, ownerLabel, assigneeLabel);
+        string refusal = TaskOwnerRefusal.Describe(taskId, check, ownerLabel, assigneeLabel, noun);
 
-        if (holder.IsBlank() && reason.IsBlank())
+        // A reason alone is not the override: abandon, resolve, conclude and archive all take --reason for
+        // their own ending, so a plain command against another owner's work carries one and must still be
+        // told about the override rather than only that the two flags go together.
+        if (holder.IsBlank())
         {
             return TaskOwnerOverrideDecision.Refuse($"{refusal} {hint}");
         }
 
-        if (holder.IsBlank() || reason.IsBlank())
+        if (reason.IsBlank())
         {
             return TaskOwnerOverrideDecision.Refuse(
-                $"{refusal} --holder and --reason are required together: name whose task this is and say why.");
+                $"{refusal} --holder and --reason are required together: name whose {noun.ToLowerInvariant()} this is and say why.");
         }
 
         if (!NamesOwner(check, ownerLabel, holder.Trim()))
@@ -88,13 +93,18 @@ public static class TaskOwnerOverride
 /// <summary>The words every guarded command refuses with, so the override and the plain guard read the same.</summary>
 public static class TaskOwnerRefusal
 {
-    public static string Describe(Guid taskId, TaskOwnerCheck check, string? ownerLabel, string? assigneeLabel)
+    public const string TaskNoun = "Task";
+
+    public const string IdeaNoun = "Idea";
+
+    public static string Describe(
+        Guid taskId, TaskOwnerCheck check, string? ownerLabel, string? assigneeLabel, string noun = TaskNoun)
     {
-        string task = $"Task {DomainId.Short(taskId)}";
+        string task = $"{noun} {DomainId.Short(taskId)}";
         if (check.Outcome == TaskOwnerOutcome.Unknown)
         {
             return $"{task}'s owner is unknown on this node: its {check.UnknownFact} cannot be resolved to an owner, "
-                + "so this refuses to act on it rather than guess whose task it is.";
+                + $"so this refuses to act on it rather than guess whose {noun.ToLowerInvariant()} it is.";
         }
 
         string assignee = assigneeLabel is null

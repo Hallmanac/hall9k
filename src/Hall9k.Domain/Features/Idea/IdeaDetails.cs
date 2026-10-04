@@ -24,6 +24,10 @@ public sealed class IdeaDetails
     /// <summary>The current note — the newest entry in <see cref="History"/>.</summary>
     public string Text { get; set; } = string.Empty;
     public Guid? ProjectId { get; set; }
+    /// <summary>Mirrors <see cref="IdeaAggregate.AssigneeOwnerId"/>: who has laid hold of the idea, or null.</summary>
+    public Guid? AssigneeOwnerId { get; set; }
+    /// <summary>Mirrors <see cref="IdeaAggregate.AssigneeOwnerFingerprint"/>.</summary>
+    public string? AssigneeOwnerFingerprint { get; set; }
     public IdeaState State { get; set; } = IdeaState.Unknown;
     /// <summary>Every version the note has had, oldest first: how the thinking moved.</summary>
     public List<IdeaNote> History { get; set; } = [];
@@ -132,6 +136,18 @@ public sealed partial class IdeaDetailsProjection : SingleStreamProjection<IdeaD
 
     public void Apply(IEvent<IdeaAssignedToProject> @event, IdeaDetails view) =>
         view.ProjectId = @event.Data.ProjectId;
+
+    public void Apply(IEvent<IdeaAssigneeSet> @event, IdeaDetails view)
+    {
+        view.AssigneeOwnerId = @event.Data.AssigneeOwnerId;
+        view.AssigneeOwnerFingerprint = @event.Data.AssigneeOwnerRootFingerprint;
+    }
+
+    public void Apply(IEvent<IdeaAssigneeCleared> @event, IdeaDetails view)
+    {
+        view.AssigneeOwnerId = null;
+        view.AssigneeOwnerFingerprint = null;
+    }
 
     public void Apply(IEvent<IdeaTaskCut> @event, IdeaDetails view) =>
         view.CutTaskIds.Add(@event.Data.TaskId);
