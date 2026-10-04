@@ -510,7 +510,279 @@ public sealed class EventReplicationInboxTaskActGateTests
         return rows;
     }
 
-    private static EventReplicationInbox.SenderResolution MemberSender(Guid memberNodeId) =>
+    private const string TeammateRoot = "teammate-root-fingerprint";
+
+    [Fact]
+    public void A_revise_from_an_assignee_who_is_not_the_creator_is_applied_and_the_creators_is_refused()
+    {
+        Guid taskId = DomainId.New();
+        Guid assigneeNodeId = DomainId.New();
+        Guid creatorNodeId = DomainId.New();
+        TaskAggregate task = DraftHeldBy(taskId, MemberRoot);
+        TaskRevised revised = new(
+            taskId, Optional<string>.Of("a new objective"), Optional<IReadOnlyList<string>>.None,
+            Optional<string>.None, Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None,
+            Optional<AgentModel>.None, Now, Guid.NewGuid());
+
+        EventReplicationInbox.TaskActVerdict fromAssignee = EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassification.Conditional, typeof(TaskRevised), revised, task, MemberSender(assigneeNodeId),
+            assigneeNodeId, assigneeNodeId, creatorRootFingerprint: OwnerRoot);
+        EventReplicationInbox.TaskActVerdict fromCreator = EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassification.Conditional, typeof(TaskRevised), revised, task,
+            new EventReplicationInbox.SenderResolution(OwnerRoot, MembershipRole.Member, new HashSet<Guid> { creatorNodeId }),
+            creatorNodeId, creatorNodeId, creatorRootFingerprint: OwnerRoot);
+
+        fromAssignee.Should().Be(EventReplicationInbox.TaskActVerdict.Allowed);
+        fromCreator.Should().Be(EventReplicationInbox.TaskActVerdict.DroppedAndRefusedPermanently);
+    }
+
+    [Fact]
+    public void A_handoff_from_the_current_assignee_is_applied_whoever_it_names()
+    {
+        Guid taskId = DomainId.New();
+        Guid memberNodeId = DomainId.New();
+        TaskAggregate task = DraftHeldBy(taskId, MemberRoot);
+
+        EventReplicationInbox.TaskActVerdict verdict = EvaluateAssigneeSet(task, TeammateRoot, memberNodeId, creatorRoot: OwnerRoot);
+
+        verdict.Should().Be(EventReplicationInbox.TaskActVerdict.Allowed);
+    }
+
+    [Fact]
+    public void A_creator_handing_off_an_unassigned_draft_is_applied()
+    {
+        Guid taskId = DomainId.New();
+        Guid memberNodeId = DomainId.New();
+        TaskAggregate task = Draft(taskId);
+
+        EventReplicationInbox.TaskActVerdict verdict = EvaluateAssigneeSet(task, TeammateRoot, memberNodeId, creatorRoot: MemberRoot);
+
+        verdict.Should().Be(EventReplicationInbox.TaskActVerdict.Allowed);
+    }
+
+    [Fact]
+    public void A_member_taking_a_teammates_unassigned_draft_is_refused()
+    {
+        Guid memberNodeId = DomainId.New();
+        TaskAggregate task = Draft(DomainId.New());
+
+        EventReplicationInbox.TaskActVerdict verdict = EvaluateAssigneeSet(task, MemberRoot, memberNodeId, creatorRoot: OwnerRoot);
+
+        verdict.Should().Be(EventReplicationInbox.TaskActVerdict.DroppedAndRefusedPermanently);
+    }
+
+    [Fact]
+    public void A_member_taking_an_unassigned_published_task_for_itself_is_applied()
+    {
+        Guid memberNodeId = DomainId.New();
+        TaskAggregate task = PublishedFreeTask(DomainId.New());
+
+        EventReplicationInbox.TaskActVerdict verdict = EvaluateAssigneeSet(task, MemberRoot, memberNodeId, creatorRoot: OwnerRoot);
+
+        verdict.Should().Be(EventReplicationInbox.TaskActVerdict.Allowed);
+    }
+
+    [Fact]
+    public void A_non_owner_member_naming_another_root_is_refused()
+    {
+        Guid memberNodeId = DomainId.New();
+
+        EvaluateAssigneeSet(PublishedFreeTask(DomainId.New()), TeammateRoot, memberNodeId, creatorRoot: OwnerRoot)
+            .Should().Be(EventReplicationInbox.TaskActVerdict.DroppedAndRefusedPermanently);
+        EvaluateAssigneeSet(DraftHeldBy(DomainId.New(), TeammateRoot), MemberRoot, memberNodeId, creatorRoot: MemberRoot)
+            .Should().Be(
+                EventReplicationInbox.TaskActVerdict.DroppedAndRefusedPermanently,
+                "the creator who handed the task away no longer holds it, and a held task is not taken");
+    }
+
+    [Fact]
+    public void A_handoff_whose_creator_is_not_yet_known_holds_rather_than_dropping()
+    {
+        Guid memberNodeId = DomainId.New();
+
+        EvaluateAssigneeSet(Draft(DomainId.New()), TeammateRoot, memberNodeId, creatorRoot: null)
+            .Should().Be(EventReplicationInbox.TaskActVerdict.Held);
+    }
+
+    [Fact]
+    public void A_relayed_refusal_is_held_for_the_true_origin_not_dropped_for_good()
+    {
+        Guid memberNodeId = DomainId.New();
+        Guid relayNodeId = DomainId.New();
+        TaskAggregate task = Draft(DomainId.New());
+
+        EventReplicationInbox.TaskActVerdict verdict = EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassification.Conditional, typeof(TaskAssigneeSet),
+            new TaskAssigneeSet(task.Id, Guid.NewGuid(), MemberRoot, Now, Guid.NewGuid()), task, MemberSender(memberNodeId),
+            originNodeId: memberNodeId, senderNodeId: relayNodeId, creatorRootFingerprint: OwnerRoot);
+
+        verdict.Should().Be(EventReplicationInbox.TaskActVerdict.DroppedWithoutRecording);
+    }
+
+    [Fact]
+    public void An_assignee_set_on_a_task_held_by_another_roots_ledger_lock_is_refused()
+    {
+        Guid memberNodeId = DomainId.New();
+        TaskAggregate task = HeldByOwnerTask(DomainId.New());
+
+        EvaluateAssigneeSet(task, MemberRoot, memberNodeId, creatorRoot: OwnerRoot)
+            .Should().Be(EventReplicationInbox.TaskActVerdict.DroppedAndRefusedPermanently);
+    }
+
+    [Fact]
+    public void An_assignee_set_from_the_ledger_holder_of_a_task_nobody_is_assigned_is_applied()
+    {
+        Guid memberNodeId = DomainId.New();
+        TaskAggregate task = Draft(DomainId.New());
+        task.Apply(new TaskClaimed(
+            task.Id, DomainId.New(), Guid.NewGuid(), LeaseGeneration: 1, DomainId.New(), Now, OwnerRootFingerprint: MemberRoot));
+
+        EvaluateAssigneeSet(task, MemberRoot, memberNodeId, creatorRoot: OwnerRoot)
+            .Should().Be(EventReplicationInbox.TaskActVerdict.Allowed, "the rule lets the holder act, and the CLI sent it on that");
+        EvaluateAssigneeSet(task, TeammateRoot, memberNodeId, creatorRoot: OwnerRoot)
+            .Should().Be(EventReplicationInbox.TaskActVerdict.Allowed, "a hand-off from the holder is the holder's to make");
+    }
+
+    [Fact]
+    public void An_assignee_cleared_from_the_ledger_holder_is_applied_and_from_a_third_root_is_not()
+    {
+        Guid nodeId = DomainId.New();
+        TaskAggregate task = DraftHeldBy(DomainId.New(), TeammateRoot);
+        task.Apply(new TaskClaimed(
+            task.Id, DomainId.New(), Guid.NewGuid(), LeaseGeneration: 1, DomainId.New(), Now, OwnerRootFingerprint: MemberRoot));
+        TaskAssigneeCleared cleared = new(task.Id, null, Now, Guid.NewGuid());
+
+        EventReplicationInbox.TaskActVerdict fromHolder = EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassification.Conditional, typeof(TaskAssigneeCleared), cleared, task, MemberSender(nodeId),
+            nodeId, nodeId, creatorRootFingerprint: OwnerRoot);
+        EventReplicationInbox.TaskActVerdict fromCreator = EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassification.Conditional, typeof(TaskAssigneeCleared), cleared, task,
+            new EventReplicationInbox.SenderResolution(OwnerRoot, MembershipRole.Member, new HashSet<Guid> { nodeId }),
+            nodeId, nodeId, creatorRootFingerprint: OwnerRoot);
+
+        fromHolder.Should().Be(EventReplicationInbox.TaskActVerdict.Allowed);
+        fromCreator.Should().Be(EventReplicationInbox.TaskActVerdict.DroppedAndRefusedPermanently);
+    }
+
+    [Fact]
+    public void An_assignee_set_by_an_owner_role_sender_always_applies()
+    {
+        Guid ownerNodeId = DomainId.New();
+        TaskAggregate task = DraftHeldBy(DomainId.New(), MemberRoot);
+
+        EventReplicationInbox.TaskActVerdict verdict = EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassification.Conditional, typeof(TaskAssigneeSet),
+            new TaskAssigneeSet(task.Id, Guid.NewGuid(), TeammateRoot, Now, Guid.NewGuid()), task,
+            new EventReplicationInbox.SenderResolution(OwnerRoot, MembershipRole.Owner, new HashSet<Guid> { ownerNodeId }),
+            ownerNodeId, ownerNodeId, creatorRootFingerprint: MemberRoot);
+
+        verdict.Should().Be(EventReplicationInbox.TaskActVerdict.Allowed);
+    }
+
+    [Fact]
+    public void An_assignee_cleared_is_allowed_only_from_the_current_assignee()
+    {
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        TaskAggregate task = DraftHeldBy(taskId, MemberRoot);
+        TaskAssigneeCleared cleared = new(taskId, null, Now, Guid.NewGuid());
+
+        EventReplicationInbox.TaskActVerdict fromAssignee = EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassification.Conditional, typeof(TaskAssigneeCleared), cleared, task, MemberSender(nodeId),
+            nodeId, nodeId, creatorRootFingerprint: OwnerRoot);
+        EventReplicationInbox.TaskActVerdict fromCreator = EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassification.Conditional, typeof(TaskAssigneeCleared), cleared, task,
+            new EventReplicationInbox.SenderResolution(OwnerRoot, MembershipRole.Member, new HashSet<Guid> { nodeId }),
+            nodeId, nodeId, creatorRootFingerprint: OwnerRoot);
+        EventReplicationInbox.TaskActVerdict fromOwnerRole = EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassification.Conditional, typeof(TaskAssigneeCleared), cleared, task,
+            new EventReplicationInbox.SenderResolution(TeammateRoot, MembershipRole.Owner, new HashSet<Guid> { nodeId }),
+            nodeId, nodeId, creatorRootFingerprint: OwnerRoot);
+
+        fromAssignee.Should().Be(EventReplicationInbox.TaskActVerdict.Allowed);
+        fromCreator.Should().Be(EventReplicationInbox.TaskActVerdict.DroppedAndRefusedPermanently);
+        fromOwnerRole.Should().Be(EventReplicationInbox.TaskActVerdict.Allowed, "an Owner-role override always applies");
+    }
+
+    /// <summary>
+    /// The agreement test above feeds the rule a queued assignment. A draft somebody has laid hold of
+    /// is the case this card adds: the rule and the gate must give one answer for it too, with the
+    /// hold recorded by <see cref="TaskAssigneeSet"/> and no go signal anywhere on the stream.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(TaskActAgreementRows))]
+    public void The_owner_rule_agrees_with_the_receive_gate_for_a_draft_a_member_has_laid_hold_of(
+        string? holderRoot, string? assigneeRoot, string? creatorRoot, string actingRoot)
+    {
+        Guid taskId = DomainId.New();
+        TaskAggregate task = Draft(taskId);
+        if (assigneeRoot is not null)
+        {
+            task.Apply(new TaskAssigneeSet(taskId, Guid.NewGuid(), assigneeRoot, Now, Guid.NewGuid()));
+        }
+
+        if (holderRoot is not null)
+        {
+            task.Apply(new TaskClaimed(
+                taskId, DomainId.New(), Guid.NewGuid(), LeaseGeneration: 1, DomainId.New(), Now, OwnerRootFingerprint: holderRoot));
+        }
+
+        Guid nodeId = DomainId.New();
+        EventReplicationInbox.TaskActVerdict gate = EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassification.Conditional, typeof(TaskAbandoned), new TaskAbandoned(taskId, null, Now, Guid.NewGuid()),
+            task, new EventReplicationInbox.SenderResolution(actingRoot, MembershipRole.Member, new HashSet<Guid> { nodeId }),
+            nodeId, nodeId, creatorRoot);
+
+        TaskOwnerCheck check = TaskOwnerRule.Decide(
+            actingRoot,
+            new TaskOwnerFacts(
+                OwnerRootFact.KnownOrAbsent(holderRoot),
+                OwnerRootFact.KnownOrAbsent(assigneeRoot),
+                creatorRoot is null
+                    ? OwnerRootFact.Unresolved
+                    : OwnerRootFact.Known(creatorRoot)));
+
+        if (gate == EventReplicationInbox.TaskActVerdict.Held)
+        {
+            check.Outcome.Should().Be(TaskOwnerOutcome.Unknown);
+        }
+        else
+        {
+            check.MayAct.Should().Be(gate == EventReplicationInbox.TaskActVerdict.Allowed);
+        }
+    }
+
+    private static EventReplicationInbox.TaskActVerdict EvaluateAssigneeSet(
+        TaskAggregate task, string namedRoot, Guid memberNodeId, string? creatorRoot) =>
+        EventReplicationInbox.EvaluateTaskActVerdict(
+            TaskActClassification.Conditional, typeof(TaskAssigneeSet),
+            new TaskAssigneeSet(task.Id, Guid.NewGuid(), namedRoot, Now, Guid.NewGuid()), task, MemberSender(memberNodeId),
+            memberNodeId, memberNodeId, creatorRoot);
+
+    private static TaskAggregate Draft(Guid taskId)
+    {
+        TaskAggregate task = new();
+        task.Apply(new TaskAdded(
+            taskId, DomainId.New(), "Ship the thing", ["it ships"], TaskType.Feature, null, null, null, Now, Guid.NewGuid(),
+            StartsAsDraft: true));
+        return task;
+    }
+
+    private static TaskAggregate DraftHeldBy(Guid taskId, string assigneeRoot)
+    {
+        TaskAggregate task = Draft(taskId);
+        task.Apply(new TaskAssigneeSet(taskId, Guid.NewGuid(), assigneeRoot, Now, Guid.NewGuid()));
+        return task;
+    }
+
+        private static TaskAggregate PublishedFreeTask(Guid taskId)
+    {
+        TaskAggregate task = Draft(taskId);
+        task.Apply(new TaskPublished(taskId, Now, Guid.NewGuid()));
+        return task;
+    }
+
+private static EventReplicationInbox.SenderResolution MemberSender(Guid memberNodeId) =>
         new(MemberRoot, MembershipRole.Member, new HashSet<Guid> { memberNodeId });
 
     private static TaskAggregate PublishedUnassignedTask(Guid taskId)
