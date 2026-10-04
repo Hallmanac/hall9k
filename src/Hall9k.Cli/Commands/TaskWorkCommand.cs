@@ -39,10 +39,10 @@ namespace Hall9k.Cli.Commands;
 /// Queued task, claims it exactly as headless dispatch would (same branch, same worktree, and the
 /// prompt assembled through the identical code — <see cref="WorkPromptBuilder"/> is the code both
 /// paths call, with its working rules swapped for an attached operator). On a Published task
-/// assigned to nobody, this command assigns it to the operator's own owner and claims it
+/// assigned to nobody, this command queues it for the operator's own owner and claims it
 /// interactively in the same atomic event append (task 688a1ccf-h9k, 2026-09-02): the task is
 /// never observably Queued in between, so the dispatcher — woken within moments by the doorbell
-/// notification a plain <c>h9k task assign</c> would have sent — can never win the race to it. A
+/// notification a plain <c>h9k task queue</c> would have sent — can never win the race to it. A
 /// Published task whose dependencies have not all closed out is refused, naming the open
 /// blockers, the same bar dispatch itself holds an assignment to (<see cref="TaskDependency"/>).
 /// The claim is held by the human, not a process: no <c>TaskLease</c> is written, so there is
@@ -83,7 +83,7 @@ namespace Hall9k.Cli.Commands;
 /// </para>
 /// <para>
 /// A task with unmet dependencies — Published and newly assigned in this same atomic entry, or
-/// already sitting Blocked from an earlier <c>h9k task assign</c> or a handed-back/retried
+/// already sitting Blocked from an earlier <c>h9k task queue</c> or a handed-back/retried
 /// deliberate claim — warns rather than refuses outright (task 0ac72cb8-h9k, design ruling R7):
 /// the platform names every open blocker, and <c>--acknowledge-unmet-dependencies</c> is the
 /// human's recorded override to claim it anyway, the same shape <c>h9k task start</c> already has
@@ -629,7 +629,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         //
         // Blocked (task 0ac72cb8-h9k, "claiming or starting a task interactively across
         // dependency edges warns and asks instead of refuses"): the task was already assigned —
-        // by an ordinary h9k task assign, or by an earlier deliberate claim that was handed back
+        // by an ordinary h9k task queue, or by an earlier deliberate claim that was handed back
         // or retried — so no assignment travels here either, but the still-open blockers are
         // loaded the same way so the warn-and-acknowledge path below can name them, the same bar
         // the just-assigned Published case holds an assignment to.
@@ -683,8 +683,8 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(taskDetails.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {task.Id}'s project no longer exists.");
 
-        // The same archived-project refusal TaskAssignCommand.AppendAsync gives h9k task assign
-        // and h9k task publish --assign (task: a project can be archived, listed as archived,
+        // The same archived-project refusal TaskAssignCommand.AppendAsync gives h9k task queue
+        // and h9k task publish --queue (task: a project can be archived, listed as archived,
         // reactivated, and renamed) — this door claims a task the identical way, calling
         // TaskDecider.Assign/ClaimInteractively directly rather than through AppendAsync, so it
         // never inherited that guard on its own.
@@ -727,7 +727,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         }
 
         // The claim gate (idea 64c75e43), read fresh here and refused with the identical sentence
-        // h9k task assign warns with: this door starts the work now, so a card the tracker says
+        // h9k task queue warns with: this door starts the work now, so a card the tracker says
         // somebody else holds is a claim this install must not take. Read before anything is
         // appended, and before any worktree exists, so a refusal leaves nothing behind. Exits 70
         // through DomainBusinessRuleException — a standing project rule, not a bad command line.
@@ -768,7 +768,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // dependencies is non-null only for the Published entry (task 688a1ccf-h9k): the
         // assignment and the claim are computed together, and the assignment travels in the same
         // Append call as the claim — one expectedVersion covering both events, so the database
-        // arbitrates a genuine collision (another operator, or another owner's h9k task assign)
+        // arbitrates a genuine collision (another operator, or another owner's h9k task queue)
         // to exactly one winner with nothing ever landing on a task this operator does not end up
         // holding. unmetAtEntry is non-null only for the already-Blocked entry: no assignment
         // travels there either, but the warn-and-acknowledge shape is identical (task 0ac72cb8-h9k).
@@ -1060,7 +1060,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// up a Queued task, so nothing would dispatch it even if it were. Told to wait, an operator
     /// would wait forever, and the only other named way out — the acknowledgment flag — cuts from
     /// the project's base and silently loses the parent's work, which is the hazard this whole
-    /// feature exists to prevent. The unassigned form names <c>h9k task assign</c>, which is what
+    /// feature exists to prevent. The unassigned form names <c>h9k task queue</c>, which is what
     /// makes both halves true (independent pre-PR review, cycle 1, adversarial lens).
     /// </param>
     internal static string RemoteStackedParentClaimRefusal(
@@ -1075,7 +1075,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             : "Nothing is watching that pull request on this task's behalf, and waiting will not change "
               + "that: the closeout watcher's sweep reads a remote parent only for a task that is assigned, "
               + "and a Published task never dispatches on its own. "
-              + $"h9k task assign {task.Id} holds it Blocked and starts that watch — it then queues and "
+              + $"h9k task queue {task.Id} holds it Blocked and starts that watch — it then queues and "
               + "dispatches itself once the pull request is observed open, which the sweep looks for on its "
               + "cadence, so the board can sit a few minutes behind GitHub. ")
         + (task.RemoteStackedParentHoldReason is { } hold
@@ -1088,7 +1088,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
     /// <summary>
     /// The claim behind an already-Blocked entry (task 0ac72cb8-h9k): the task was already
-    /// assigned — by an ordinary h9k task assign, or by an earlier deliberate claim that was
+    /// assigned — by an ordinary h9k task queue, or by an earlier deliberate claim that was
     /// handed back or retried — so no assignment travels here, unlike
     /// <see cref="PrepareInteractiveClaimFromPublished"/>'s just-assigned case; only
     /// <see cref="TaskDecider.ClaimInteractively"/> is ever appended. Warns and proceeds on
@@ -1145,12 +1145,12 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// it tells the operator to wait on a merge that can never happen; <see cref="TaskDependency.DescribeDeath"/>
     /// already says the honest thing instead (independent pre-PR review, cycle 1). Internal, not
     /// private: <see cref="TaskStartCommand.PrepareDeliberateClaimFromPublished"/> reuses this
-    /// exact fragment for the identical "h9k task assign to hold it Blocked" alternative in its own
+    /// exact fragment for the identical "h9k task queue to hold it Blocked" alternative in its own
     /// refusal, rather than re-deriving the dead-versus-live distinction a second time and letting
     /// the two drift (independent pre-PR review, cycle 1, adversarial lens).
     /// <paramref name="alreadyAssigned"/> is true only for <see cref="PrepareInteractiveClaimFromBlocked"/>'s
     /// own refusal (task 0ac72cb8-h9k): a task already sitting Blocked is already assigned, so
-    /// pointing it at <c>h9k task assign</c> — which refuses anything but a Published task — would
+    /// pointing it at <c>h9k task queue</c> — which refuses anything but a Published task — would
     /// be advice that cannot be followed; that case drops the command and keeps only the promise
     /// (or the honest lack of one) behind it.
     /// </summary>
@@ -1180,7 +1180,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             // only because it opens with the literal command name.
             return alreadyAssigned
                 ? $"It queues itself the moment {clearsWhen}, or"
-                : $"h9k task assign {taskId} to hold it Blocked until they clear (it queues itself the moment "
+                : $"h9k task queue {taskId} to hold it Blocked until they clear (it queues itself the moment "
                   + $"{clearsWhen}), or";
         }
 
@@ -1196,7 +1196,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         string liveAdvice = alreadyAssigned
             ? "waiting will not clear that on its own, or"
-            : $"h9k task assign {taskId} only holds it Blocked, and waiting will not clear that on its own, or";
+            : $"h9k task queue {taskId} only holds it Blocked, and waiting will not clear that on its own, or";
         return deathAdvice + " The live ones can still close out on their own, but this task will not queue "
             + $"until the dead one is gone too — {liveAdvice}";
     }
@@ -1253,7 +1253,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// Reads what actually landed after this operator's atomic assign-and-claim lost the
     /// database's optimistic-concurrency race (task 688a1ccf-h9k) — the loser is told honestly who
     /// won rather than only that the task changed, since two operators (or an operator racing
-    /// another owner's headless <c>h9k task assign</c>) racing the same Published task is exactly
+    /// another owner's headless <c>h9k task queue</c>) racing the same Published task is exactly
     /// the collision this atomic path exists to arbitrate.
     /// </summary>
     internal static async Task<DomainConflictException> DescribeAssignAndClaimRaceLossAsync(
@@ -1271,7 +1271,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         if (current.State != TaskState.Claimed)
         {
             // Something else committed first, but that write never claimed the task — a plain
-            // h9k task assign that landed Queued or Blocked, most likely — so there is no
+            // h9k task queue that landed Queued or Blocked, most likely — so there is no
             // claimant to name. Saying so honestly beats asserting a claim that may never have
             // happened (AGENTS.md: never guess at unobserved facts).
             return new DomainConflictException(

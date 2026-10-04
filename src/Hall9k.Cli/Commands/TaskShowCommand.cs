@@ -962,7 +962,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// A task's passage in time (task: h9k task show tells a task's passage in time), one row per
     /// line so a reader's eye lands on it right under the phase line rather than after the whole
     /// context mountain below. Prints nothing at all when <paramref name="passage"/> has nothing
-    /// to say yet — a Draft or Published task that has never been assigned has no queued phase,
+    /// to say yet — a Draft or Published task that has never been queued has no queued phase,
     /// no runs, and nothing else this section could honestly report.
     /// </summary>
     private static void AppendPassage(Table standing, TaskPassage passage)
@@ -2480,8 +2480,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         {
             string shortId = TaskListCommand.ShortId(details.Id);
             string step = details.State == TaskState.Draft
-                ? $"h9k task publish {shortId}, then h9k task assign {shortId},"
-                : $"h9k task assign {shortId}";
+                ? $"h9k task publish {shortId}, then h9k task queue {shortId},"
+                : $"h9k task queue {shortId}";
             AnsiConsole.MarkupLine(
                 "  [yellow]Nothing is watching that pull request for this task yet[/] [dim]— the sweep reads a "
                 + "remote parent only for an assigned task, and an unassigned one never dispatches on its own. "
@@ -2805,7 +2805,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// Who holds this task: its assignee (<see cref="TaskDetails.AssigneeOwnerId"/>), which on a
     /// Queued or later task is the owner whose nodes may claim it and on a Draft or Published task
     /// is a hold that dispatches nothing, said so with "not queued". Unassigned is a fact, not a
-    /// gap: nothing dispatches until a human assigns it (Decisions Log #34).
+    /// gap: nothing dispatches until a human queues it (Decisions Log #34).
     /// <para>
     /// A recorded <see cref="TaskDetails.AssigneeOwnerFingerprint"/> — a cooperative grant's own
     /// (idea 20723ef8), or an ordinary cross-node assignment's (idea f72138e1) — is what actually
@@ -2964,7 +2964,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         // TaskCreated or TaskCreatedParked (independent pre-PR review, cycle 1, conformance lens):
         // a parked mint's own mention row carries the identical marker under whichever outcome the
-        // membership gate actually settled it with, once the operator's own h9k task assign lets
+        // membership gate actually settled it with, once the operator's own h9k task queue lets
         // this first run happen at all.
         return await session.Query<ObservedReviewMention>()
             .Where(mention => mention.TaskId == details.Id)
@@ -2997,13 +2997,13 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         {
             "Draft" => details.AcceptanceCriteria.Count == 0
                 ? $"[dim]Next:[/] h9k task revise {shortId} --criteria \"…\" [dim]— publishing needs at least one[/]"
-                : $"[dim]Next:[/] h9k task publish {shortId} [dim]then[/] h9k task assign {shortId}",
-            "Published" => $"[dim]Next:[/] h9k task assign {shortId} [dim]— it will not run until you do"
+                : $"[dim]Next:[/] h9k task publish {shortId} [dim]then[/] h9k task queue {shortId}",
+            "Published" => $"[dim]Next:[/] h9k task queue {shortId} [dim]— it will not run until you do"
                 + $"{interactiveClaimHint}[/]",
             "Blocked" => $"[dim]It queues itself when its dependencies close out. To stop waiting:[/] "
-                + $"h9k task unassign {shortId} [dim]→[/] h9k task draft {shortId} [dim]→[/] h9k task revise {shortId} --clear-dependencies"
+                + $"h9k task dequeue {shortId} [dim]→[/] h9k task draft {shortId} [dim]→[/] h9k task revise {shortId} --clear-dependencies"
                 + $" [dim]— or claim across the open dependency yourself:[/] h9k task work {shortId} --acknowledge-unmet-dependencies",
-            "Queued" => $"[dim]Waiting for a dispatch cycle on one of the assignee's nodes. To take it back:[/] h9k task unassign {shortId}",
+            "Queued" => $"[dim]Waiting for a dispatch cycle on one of the assignee's nodes. To take it back:[/] h9k task dequeue {shortId}",
             // A posted review waiting on its author (task: a pr-review task stays open while the
             // pull request's review threads are unresolved). Nothing is being asked of the
             // reviewer, so the hint says what the platform is doing and names the one lever that

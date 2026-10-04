@@ -163,9 +163,9 @@ public sealed class TaskWorkClaimTests
             .WithMessage("*Blocked*")
             .Where(exception => exception.Message.Contains(open.Describe())
                     && exception.Message.Contains("--acknowledge-unmet-dependencies")
-                    // An already-assigned task cannot be pointed at h9k task assign, which
+                    // An already-queued task cannot be pointed at h9k task queue, which
                     // refuses anything but a Published task.
-                    && !exception.Message.Contains("h9k task assign"),
+                    && !exception.Message.Contains("h9k task queue"),
                 "the refusal names the open blocker and the override flag, without advice the task cannot follow");
 
         task.State.Should().Be(TaskState.Blocked, "the refusal decides nothing");
@@ -256,7 +256,7 @@ public sealed class TaskWorkClaimTests
 
         act.Should().Throw<DomainBusinessRuleException>()
             .WithMessage($"*stacked on pull request #{RemoteParentNumber}*")
-            .Where(exception => exception.Message.Contains($"h9k task assign {task.Id}")
+            .Where(exception => exception.Message.Contains($"h9k task queue {task.Id}")
                     && exception.Message.Contains("--acknowledge-unmet-dependencies")
                     && !exception.Message.Contains("It dispatches on its own"),
                 "an unassigned child is on no sweep's cadence and would not dispatch if it were, so the "
@@ -284,7 +284,7 @@ public sealed class TaskWorkClaimTests
         act.Should().Throw<DomainBusinessRuleException>()
             .Where(exception => exception.Message.Contains("It dispatches on its own")
                     && exception.Message.Contains("--acknowledge-unmet-dependencies")
-                    && !exception.Message.Contains("h9k task assign"),
+                    && !exception.Message.Contains("h9k task queue"),
                 "this one is on the sweep's cadence, so waiting is honest advice — and advice it can follow");
 
         task.State.Should().Be(TaskState.Blocked, "the refusal decides nothing");

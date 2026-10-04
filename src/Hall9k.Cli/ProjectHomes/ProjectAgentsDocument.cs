@@ -252,8 +252,8 @@ public static class ProjectAgentsDocument
             + "window's own start-up and use `--since 6h` to look further back");
         document.AppendLine();
         document.AppendLine(
-            "New work enters through `h9k task add`, then `h9k task publish <id> --assign`. Nothing "
-            + "dispatches until a human publishes and assigns it.");
+            "New work enters through `h9k task add`, then `h9k task publish <id> --queue`. Nothing "
+            + "dispatches until a human publishes and queues it.");
 
         return document.ToString();
     }

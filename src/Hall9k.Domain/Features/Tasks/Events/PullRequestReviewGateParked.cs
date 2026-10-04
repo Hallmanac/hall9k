@@ -1,13 +1,13 @@
 namespace Hall9k.Domain.Features.Tasks.Events;
 
 /// <summary>
-/// This pr-review task was minted and published, but deliberately never assigned, because the
+/// This pr-review task was minted and published, but deliberately never queued, because the
 /// membership gate found its pull request's own author, the mentioning comment's own author (a
 /// mention-triggered mint only), or both, was not a declared hall9k team member (or was a Bot) on
 /// a repository the gate covers (security review idea 6be68ee2, finding 1; independent pre-PR
 /// review, cycle 3, conformance lens, added the pull request's own author to the mention trigger's
 /// own check). An unassigned task never dispatches — no worktree, branch, or session exists — so
-/// this is the pre-checkout park: the human go is the existing <c>h9k task assign</c>, nothing new.
+/// this is the pre-checkout park: the human go is the existing <c>h9k task queue</c>, nothing new.
 /// <para>
 /// Every field here is a deterministic fact carried at mint time, never a model session's own
 /// summary (tools before tokens): <see cref="AuthorLogin"/>, <see cref="AuthorAccountId"/> and

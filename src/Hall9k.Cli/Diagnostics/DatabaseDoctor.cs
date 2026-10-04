@@ -1366,7 +1366,7 @@ public static class DatabaseDoctor
     }
 
     /// <summary>
-    /// Offer-never-force (same shape as the auto-assign prompt at publish): asks before
+    /// Offer-never-force (same shape as the queue prompt at publish): asks before
     /// starting anything, and only when there is something Docker can actually do — a
     /// stopped hall9k-postgres container to restart, or the shipped compose definition to
     /// bring up for the first time. Waits for readiness before reporting success, so the

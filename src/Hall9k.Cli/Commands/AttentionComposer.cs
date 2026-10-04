@@ -86,16 +86,16 @@ internal static class AttentionComposer
             return TaskAttention.None;
         }
 
-        // A pr-review task the membership gate minted but deliberately never assigned (security
+        // A pr-review task the membership gate minted but deliberately never queued (security
         // review idea 6be68ee2, finding 1): the pull request's own author was not a declared
         // hall9k team member (or was a Bot) on a repository the gate covers. State stays Published
-        // — never NeedsHuman — precisely so h9k task assign still works exactly as it does for any
+        // — never NeedsHuman — precisely so h9k task queue still works exactly as it does for any
         // other published-and-unassigned task; this arm is what tells the two states apart, ahead
         // of every other check, since a freshly minted Published task with no run yet would
         // otherwise fall through and read as an ordinary, ignorable queue wait.
         if (task.State == TaskState.Published && task.PrReviewGateParked)
         {
-            return new TaskAttention(AttentionLevel.NeedsYou, GateParkedCause(task), $"h9k task assign {id}");
+            return new TaskAttention(AttentionLevel.NeedsYou, GateParkedCause(task), $"h9k task queue {id}");
         }
 
         // A pr-review task whose own pre-flight came back unsafe for its current head (idea
@@ -106,7 +106,7 @@ internal static class AttentionComposer
         // of every other check for the identical reason the gate-parked arm is.
         if (task.State == TaskState.Published && task.PrReviewPreflightUnsafe)
         {
-            return new TaskAttention(AttentionLevel.NeedsYou, PreflightParkedCause(task), $"h9k task assign {id}");
+            return new TaskAttention(AttentionLevel.NeedsYou, PreflightParkedCause(task), $"h9k task queue {id}");
         }
 
         // A Queued row this node refuses to claim because the project's own current verify gate
@@ -442,15 +442,15 @@ internal static class AttentionComposer
         // Delivered work nobody is assigned to. h9k pr resolve reopens a done task to Queued and
         // keeps its pull request, and h9k task unassign accepts it from there — which leaves an
         // open pull request, no run watching it, and no owner whose nodes could claim the
-        // follow-up. Nothing moves it until a human assigns it again, so it is a red row with a
+        // follow-up. Nothing moves it until a human queues it again, so it is a red row with a
         // lever rather than a wait that clears itself. Checked before the run is read: the reopen
         // clears CurrentRunId, so the run-is-null arm below would otherwise answer for this row
         // with the pull request as its only lever.
         if (task.State == TaskState.Published)
         {
             return new TaskAttention(AttentionLevel.NeedsYou,
-                "the pull request is open and the task is unassigned — nothing will claim the follow-up",
-                $"h9k task assign {id}");
+                "the pull request is open and the task is not queued — nothing will claim the follow-up",
+                $"h9k task queue {id}");
         }
 
         // A follow-up run owns the pull request: the machinery is mid-move, not the human. The
@@ -1270,7 +1270,7 @@ internal static class AttentionComposer
               + $"at all: {string.Join(", ", task.PrReviewGateParkedMembersWithoutDeclaredAccount)} — "
               + "on a version before v0.10.54, or not restarted since)"
             : string.Empty;
-        return $"\"{title}\" was minted but not assigned: its author is {author}, not a declared hall9k "
+        return $"\"{title}\" was minted but not queued: its author is {author}, not a declared hall9k "
             + $"team member (declared member ids: {memberIds}{missingDeclaration}), on a {visibility} "
             + $"repository — head is {head}; {files}";
     }
@@ -1285,7 +1285,7 @@ internal static class AttentionComposer
     {
         // "unreadable" (ParkUnreadableDiffPreflightAsync) is not a verdict any session ever
         // reached — gh itself refused the diff outright, over its own 300-file ceiling — so unlike
-        // a genuine unsafe verdict, h9k task assign here only re-dispatches the identical
+        // a genuine unsafe verdict, h9k task queue here only re-dispatches the identical
         // pre-flight into the identical refusal: nothing about reassigning changes how many files
         // the pull request touches. Said plainly, rather than showing the same remedy line a
         // genuine unsafe verdict shows and letting the owner spend an assign on a park that
@@ -1293,9 +1293,9 @@ internal static class AttentionComposer
         if (string.Equals(task.PrReviewPreflightParkedVerdict, "unreadable", StringComparison.OrdinalIgnoreCase))
         {
             return $"gh could not read this pull request's diff at all ({task.PrReviewPreflightParkedReason}); "
-                + "h9k task assign only re-dispatches the identical pre-flight, which hits the same refusal "
+                + "h9k task queue only re-dispatches the identical pre-flight, which hits the same refusal "
                 + "again — nothing resolves this until the pull request itself shrinks under GitHub's "
-                + "300-file diff ceiling, after which a plain h9k task assign reads it cleanly";
+                + "300-file diff ceiling, after which a plain h9k task queue reads it cleanly";
         }
 
         string surfaces = task.PrReviewPreflightParkedSurfaces.Count > 0

@@ -29,7 +29,7 @@ public sealed record ReviewMentionOutcome
     /// own author, or both, was not a declared hall9k team member (or was a Bot) on a repository the
     /// gate covers (security review idea 6be68ee2, finding 1; independent pre-PR review, cycle 3,
     /// conformance lens, added the pull request's own author to a check that used to read the
-    /// comment's alone). <c>h9k task assign</c> is the human go.
+    /// comment's alone). <c>h9k task queue</c> is the human go.
     /// </summary>
     public static readonly ReviewMentionOutcome TaskCreatedParked = new("TaskCreatedParked");
 
@@ -43,8 +43,8 @@ public sealed record ReviewMentionOutcome
 
     /// <summary>
     /// <see cref="AnswerOnlyTaskCreated"/>, held by the membership gate exactly as
-    /// <see cref="TaskCreatedParked"/> is: published but never assigned, with <c>h9k task assign</c>
-    /// the human go. Once assigned it still runs the answer lap and never the two-lens review.
+    /// <see cref="TaskCreatedParked"/> is: published but never queued, with <c>h9k task queue</c>
+    /// the human go. Once queued it still runs the answer lap and never the two-lens review.
     /// </summary>
     public static readonly ReviewMentionOutcome AnswerOnlyTaskCreatedParked = new("AnswerOnlyTaskCreatedParked");
 

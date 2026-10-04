@@ -19,7 +19,7 @@ namespace Hall9k.Connectors.WorkItems;
 /// <para>
 /// Every claim door goes through here rather than reading the tracker itself: the dispatcher's own
 /// <c>DispatchEngine.TryClaimAsync</c>, <c>h9k task work</c>, <c>h9k task start</c>, and
-/// <c>h9k task assign</c> (which warns and proceeds — the tracker stays the go signal, so the task
+/// <c>h9k task queue</c> (which warns and proceeds — the tracker stays the go signal, so the task
 /// simply waits in the queue). One place, so the rule and its sentences cannot drift between them.
 /// </para>
 /// <para>
@@ -30,7 +30,7 @@ namespace Hall9k.Connectors.WorkItems;
 /// content snapshot an adoption took is untouched (Decisions Log #60).
 /// </para>
 /// <para>
-/// The one write this feature does make — <c>h9k task assign --take</c>, which puts this install's
+/// The one write this feature does make — <c>h9k task queue --take</c>, which puts this install's
 /// own identity in an <em>unassigned</em> item's assignee field so the gate then passes on its own
 /// (Decisions Log #143) — lives in <see cref="TrackerAssignmentTake"/> and calls this class for its
 /// read. That separation is load-bearing rather than tidiness: the dispatcher calls the method

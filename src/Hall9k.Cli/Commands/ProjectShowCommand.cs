@@ -277,7 +277,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             membershipGate.Policy, visibility?.IsPrivate,
             "a hall9k team member's own request or mention is required before auto-pr-review runs it "
             + "unattended; a non-member's still mints the pr-review task, published and held but not queued — "
-            + "h9k task assign is the human go",
+            + "h9k task queue is the human go",
             "the daemon decides fresh every sweep from the repository's own visibility — required on "
             + "a public repository, not required on a private or internal one"));
         table.AddRow("Repository visibility observed", RepositoryVisibilityRow(visibility));
@@ -634,7 +634,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             : "tracker-assignee [dim]— a task linked to a Jira card or a GitHub issue is claimed on this "
               + "install only while the tracker shows that item assigned to this install's own tracker "
               + "identity, so two teammates' installs cannot both run the same card (idea 64c75e43). "
-              + "Satisfy it in one command with h9k task assign <id> --take, which takes an item nobody "
+              + "Satisfy it in one command with h9k task queue <id> --take, which takes an item nobody "
               + "holds; the gate itself is read-only, has no override flag, and a tracker that cannot be "
               + "read holds the claim[/]";
     }

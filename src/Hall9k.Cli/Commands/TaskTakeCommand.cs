@@ -664,7 +664,7 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
                     AnsiConsole.MarkupLine(
                         $"[yellow]Task {taskId} has no current holder[/] and is already unassigned — this node's "
                         + "dispatch sweep will never claim it, and there is no cooperative lever here for a task "
-                        + $"nobody holds yet. Assign it first: h9k task assign {taskId} <owner>.");
+                        + $"nobody holds yet. Queue it first: h9k task queue {taskId}.");
                 }
                 else if (task.State.IsAssigned)
                 {
@@ -672,7 +672,7 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
                         $"[yellow]Task {taskId} has no current holder[/], but it is assigned to "
                         + $"{assignedOwnerLabel.EscapeMarkup()}, not this node's own owner — this node's dispatch "
                         + "sweep will never claim it, and there is no cooperative lever here for a task nobody "
-                        + $"holds yet. Move it first: h9k task unassign {taskId} && h9k task assign {taskId} <owner>.");
+                        + $"holds yet. Move it first: h9k task unassign {taskId} && h9k task queue {taskId}.");
                 }
                 else if (task.State.IsTerminal)
                 {

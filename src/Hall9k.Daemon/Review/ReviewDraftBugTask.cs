@@ -12,7 +12,7 @@ namespace Hall9k.Daemon.Review;
 /// Turns an out-of-scope review finding into a draft bug task (Decisions Log #63). A defect the
 /// reviewer found in code this branch never touched should not grow this branch's diff, and it
 /// should not evaporate either; a draft is the shape that does both, because a draft dispatches
-/// nothing until a human publishes and assigns it (log #34).
+/// nothing until a human publishes and queues it (log #34).
 /// <para>
 /// Everything the draft carries about its own provenance is recorded by machinery — which task
 /// and run the finding came from, which lens produced it, at which cycle, and the grade and

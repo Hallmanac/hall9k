@@ -1228,8 +1228,8 @@ public sealed class AttentionSurfaceTests
 
         row.State.Should().Be(LifecycleState.Delivered);
         row.Attention.NeedsYou.Should().BeTrue("nothing clears this on its own");
-        row.Attention.Cause.Should().Contain("unassigned");
-        row.Attention.Lever.Should().Be($"h9k task assign {TaskListCommand.ShortId(unassigned.Id)}");
+        row.Attention.Cause.Should().Contain("not queued");
+        row.Attention.Lever.Should().Be($"h9k task queue {TaskListCommand.ShortId(unassigned.Id)}");
         row.Group.Should().Be(AttentionBucket.NeedsYou);
         row.Phase.Detail.Should().Contain("no run record is watching it",
             "the phase and the attention line tell the same story about this row");

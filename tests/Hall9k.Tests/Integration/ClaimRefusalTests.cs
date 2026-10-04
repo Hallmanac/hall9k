@@ -986,9 +986,9 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
             .WithMessage("*is Blocked*")
             .Where(exception => exception.Message.Contains("The blocker, still open")
                 && exception.Message.Contains("--acknowledge-unmet-dependencies")
-                // Already assigned, so pointing at h9k task assign — which refuses anything but a
+                // Already queued, so pointing at h9k task queue — which refuses anything but a
                 // Published task — would be advice this task cannot follow.
-                && !exception.Message.Contains("h9k task assign"));
+                && !exception.Message.Contains("h9k task queue"));
     }
 
     /// <summary>
@@ -1610,7 +1610,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
         await act.Should().ThrowAsync<DomainBusinessRuleException>()
             .WithMessage("*depends on 1 task(s)*")
             .Where(exception => exception.Message.Contains("The blocker, still open")
-                && exception.Message.Contains("h9k task assign"));
+                && exception.Message.Contains("h9k task queue"));
     }
 
     private string CreateEmptyDirectory()

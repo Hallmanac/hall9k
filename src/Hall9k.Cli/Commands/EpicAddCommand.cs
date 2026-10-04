@@ -71,7 +71,7 @@ public sealed class EpicAddCommand : Hall9kAsyncCommand<EpicAddCommand.Settings>
             $"[dim]Next:[/] h9k task add --project {project.Name.EscapeMarkup()} --objective \"…\" --epic {shortId} "
             + $"[dim]for a new task, or for an existing draft:[/] h9k task revise <id> --epic {shortId} "
             + $"[dim](revision is Draft-only — a Published task returns with[/] h9k task draft <id> "
-            + $"[dim]alone; an assigned task (Queued or Blocked) needs[/] h9k task unassign <id> && h9k task draft <id> "
+            + $"[dim]alone; an assigned task (Queued or Blocked) needs[/] h9k task dequeue <id> && h9k task draft <id> "
             + $"[dim]first)[/]");
         return ExitCodes.Ok;
     }

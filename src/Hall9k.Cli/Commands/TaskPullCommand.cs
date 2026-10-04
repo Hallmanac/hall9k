@@ -47,7 +47,7 @@ namespace Hall9k.Cli.Commands;
 /// <para>
 /// A task already here is not a dead end either: its own blocked-by and stacked-on dependencies are
 /// checked, and any whose stream is absent is asked for, which is what keeps
-/// <c>h9k task assign</c> from refusing a task for a dependency the platform could have fetched
+/// <c>h9k task queue</c> from refusing a task for a dependency the platform could have fetched
 /// (<see cref="TaskDependencyCatchUp"/> — the same asks the platform mints on its own the moment a
 /// task lands by replication).
 /// </para>
@@ -238,7 +238,7 @@ public sealed class TaskPullCommand : Hall9kAsyncCommand<TaskPullCommand.Setting
     /// own stream is not here — the platform mints these on its own the moment a task lands by
     /// replication (<see cref="TaskDependencyCatchUp"/>), so this is the lever for a task that
     /// landed before it did, and the answer to the one refusal a human cannot otherwise act on:
-    /// <c>h9k task assign</c> turning the task down because the platform does not know a task it
+    /// <c>h9k task queue</c> turning the task down because the platform does not know a task it
     /// depends on. The project asked is the task's own, read off its projection rather than
     /// resolved or defaulted — a task already here has no ambiguity about which project it is in.
     /// </summary>

@@ -25,7 +25,7 @@ internal sealed record LifecycleState
     public static readonly LifecycleState Draft = new("Draft", "dim");
 
     /// <summary>
-    /// Past the readiness gate and not yet working: waiting to be assigned, waiting to be
+    /// Past the readiness gate and not yet working: waiting to be queued, waiting to be
     /// claimed, or waiting on a dependency. Which of those it is goes on the derived-facts line,
     /// never in this column.
     /// </summary>

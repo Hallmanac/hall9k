@@ -654,7 +654,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         await session.SaveChangesAsync(cancellationToken);
 
         // No doorbell: a draft is invisible to the dispatcher by design, so there is nothing
-        // for a daemon to wake up for until a human publishes and assigns it (log #34).
+        // for a daemon to wake up for until a human publishes and queues it (log #34).
         string modelNote = added.Model is { } chosen && chosen != AgentModel.Unknown
             ? $" [dim]on {chosen.Value.EscapeMarkup()}[/]"
             : string.Empty;
@@ -737,7 +737,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         if (stackedOnPullRequestNumber is { } remoteParent)
         {
             AnsiConsole.MarkupLine(
-                $"[dim]  stacked on pull request #{remoteParent} — assign it and it dispatches once that pull "
+                $"[dim]  stacked on pull request #{remoteParent} — queue it and it dispatches once that pull "
                 + "request is observed open, which the closeout watcher's own sweep looks for on its cadence. "
                 + "Nothing looks at that pull request until the task is assigned[/]");
         }
@@ -753,7 +753,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
 
         AnsiConsole.MarkupLine(added.AcceptanceCriteria.Count == 0
             ? $"[dim]Next:[/] h9k task revise {shortId} --criteria \"…\" [dim]then[/] h9k task publish {shortId}"
-            : $"[dim]Next:[/] h9k task publish {shortId} [dim](a draft never dispatches; publishing then assigning is what starts it)[/]");
+            : $"[dim]Next:[/] h9k task publish {shortId} [dim](a draft never dispatches; publishing then queueing is what starts it)[/]");
         return ExitCodes.Ok;
     }
 

@@ -82,7 +82,7 @@ public sealed class TaskLifecycleSurfaceTests
         blocked.UnmetDependencies = [blocker];
 
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Published)).Facts
-            .Should().ContainSingle().Which.Should().Contain("not assigned");
+            .Should().ContainSingle().Which.Should().Contain("not queued");
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Queued)).Facts
             .Should().ContainSingle().Which.Should().Contain("the dispatcher has not claimed it yet");
 

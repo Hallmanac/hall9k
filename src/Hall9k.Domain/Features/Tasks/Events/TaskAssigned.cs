@@ -35,7 +35,7 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// 202383dc: an owner can place a task on one of their own nodes rather than leaving it to
 /// whichever of their nodes' dispatchers gets there first). <see cref="Optional{T}"/> of a
 /// nullable node id, the same present-with-null-clears idiom <see cref="TaskRevised.EpicId"/>
-/// already uses: absent (<c>h9k task assign</c> with no <c>--node</c>) leaves whatever placement
+/// already uses: absent (<c>h9k task queue</c> with no <c>--node</c>) leaves whatever placement
 /// the task already carried alone, present with null (<c>--node</c> with nothing named) clears it,
 /// present with a node id pins it. Never a security decision on its own — the assignment's own
 /// owner match already decided whose work this is; this only narrows WHICH of that owner's nodes

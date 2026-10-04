@@ -49,7 +49,7 @@ internal sealed record TaskStatusRow(
     /// </summary>
     QueueHold? Held = null,
     /// <summary>
-    /// When a human assigned the task, null while nothing is assigned. The key the dispatcher
+    /// When a human queued the task, null while nothing is queued. The key the dispatcher
     /// queues on (Decisions Log #64), carried here so a pane listing a deferred queue can list
     /// it in the order it will actually be served.
     /// </summary>
@@ -182,7 +182,7 @@ internal sealed record TaskStatusRow(
     /// The attention pane prints every line because it is a pane of a handful of rows; a list of
     /// twenty tasks that spent three lines each would stop being a list. What the browse surfaces
     /// keep is the distinction they would otherwise have lost with the run vocabulary: three
-    /// Published rows that read identically in the Status column say "not assigned", "assigned
+    /// Published rows that read identically in the Status column say "not queued", "queued
     /// and ready" and "waiting on 2 dependencies to close out" underneath it, and the attention
     /// column still says which of them wants a human.
     /// </para>
@@ -343,7 +343,7 @@ internal enum AttentionBucket
     /// <summary>Assigned, but waiting on a dependency that has not reached true closeout.</summary>
     Blocked,
 
-    /// <summary>Published and past the readiness gate: waiting for a human to assign it.</summary>
+    /// <summary>Published and past the readiness gate: waiting for a human to queue it.</summary>
     Ready,
 
     /// <summary>Still being developed: a draft, invisible to the dispatcher until published.</summary>

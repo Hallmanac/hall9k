@@ -4464,7 +4464,7 @@ public static class AgentPromptBuilder
             // Nothing about card publication gates on task state (TaskDecider.RequestWorkItemPublication
             // refuses only Abandoned; CardPublicationEngine selects purely on a pending request), so a
             // publication session dispatched against a Claimed task — `push-to-jira` run on a Working
-            // task, or the request appended alongside `task publish --assign` on a jira-backlog project
+            // task, or the request appended alongside `task publish --queue` on a jira-backlog project
             // — has a live run exactly like any other dispatched prompt. Asserting otherwise here
             // would tell a session in that case the invariant does not apply when `h9k task
             // log-interaction` would in fact succeed (independent pre-PR review, cycle 1).

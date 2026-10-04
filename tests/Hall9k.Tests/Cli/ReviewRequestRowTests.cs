@@ -364,8 +364,8 @@ public sealed class ReviewRequestRowTests
             new CoveringReview(taskId, Live: true, "Working", AutoCreated: true, GateParked: true));
 
         row.NeedsYou.Should().BeTrue("the membership gate parked it; nothing has run yet");
-        row.Markup.Should().Contain($"task {DomainId.Short(taskId)} was minted but not assigned");
-        row.Markup.Should().Contain($"h9k task assign {DomainId.Short(taskId)}");
+        row.Markup.Should().Contain($"task {DomainId.Short(taskId)} was minted but not queued");
+        row.Markup.Should().Contain($"h9k task queue {DomainId.Short(taskId)}");
     }
 
     [Fact]
@@ -831,7 +831,7 @@ public sealed class ReviewRequestRowTests
         project.ClaimGate = ClaimGate.TrackerAssignee;
 
         ProjectShowCommand.ClaimGateRow(project, recorded: true)
-            .Should().StartWith("tracker-assignee").And.Contain("h9k task assign <id> --take");
+            .Should().StartWith("tracker-assignee").And.Contain("h9k task queue <id> --take");
     }
 
     private static ProjectDetails Project() => new() { Id = DomainId.New(), Name = "arx-platform" };

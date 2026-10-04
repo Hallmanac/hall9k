@@ -231,7 +231,7 @@ internal static class PublishedFacts
 
         IReadOnlyList<string> facts = task.State.Value switch
         {
-            "Published" => ["not assigned — nothing will claim it until you assign it"],
+            "Published" => ["not queued — nothing will claim it until you queue it"],
             // Ready is all this row can honestly claim on its own: it is assigned, its
             // dependencies are met, and the dispatcher has not claimed it. Why not is a question
             // only a measurement can answer, so the slot line is appended when one exists and
@@ -248,7 +248,7 @@ internal static class PublishedFacts
             // the dispatcher has not claimed anything of this project's at all.
             "Queued" =>
             [
-                $"assigned and ready as {task.Rank.Describe()}; the dispatcher has not claimed it yet",
+                $"queued and ready as {task.Rank.Describe()}; the dispatcher has not claimed it yet",
                 .. heldByTracker is not null ? (string[])[heldByTracker.ReasonLine] : [],
                 .. heldByLedgerHolder is not null ? (string[])[LedgerHolderFact(heldByLedgerHolder, now)] : [],
                 .. held is not null ? (string[])[held.ReasonLine] : [],

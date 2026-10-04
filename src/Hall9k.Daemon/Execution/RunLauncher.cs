@@ -2141,7 +2141,7 @@ public sealed class RunLauncher(
             // An unsafe verdict is never cached forever: ParkPrReviewPreflight lands the task on
             // Published, never Queued, so the ordinary dispatch loop can never reclaim it on its
             // own — the only way this gate runs again against the identical head is a human's own
-            // h9k task assign. Re-parking off the stale row here, rather than judging fresh, left
+            // h9k task queue. Re-parking off the stale row here, rather than judging fresh, left
             // that deliberate override unable to ever change the outcome (independent pre-PR
             // review, cycle 1, adversarial lens) and contradicted PrReviewPreflightUnsafe's own
             // doc, which promises this next dispatch's own pre-flight "either records a new, safe

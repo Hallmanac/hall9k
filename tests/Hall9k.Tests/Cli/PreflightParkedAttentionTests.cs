@@ -41,7 +41,7 @@ public sealed class PreflightParkedAttentionTests
             "300-file diff ceiling", "the owner must be told what actually blocks this, not just handed a command");
         attention.Cause.Should().Contain(
             "only re-dispatches the identical pre-flight", "assign is not the fix here, and the card must say so");
-        attention.Lever.Should().Be($"h9k task assign {TaskListCommand.ShortId(task.Id)}");
+        attention.Lever.Should().Be($"h9k task queue {TaskListCommand.ShortId(task.Id)}");
     }
 
     [Fact]
@@ -68,6 +68,6 @@ public sealed class PreflightParkedAttentionTests
         attention.Cause.Should().Contain("abc123");
         attention.Cause.Should().NotContain(
             "300-file diff ceiling", "a genuine verdict must never carry the unreadable-park's own wording");
-        attention.Lever.Should().Be($"h9k task assign {TaskListCommand.ShortId(task.Id)}");
+        attention.Lever.Should().Be($"h9k task queue {TaskListCommand.ShortId(task.Id)}");
     }
 }

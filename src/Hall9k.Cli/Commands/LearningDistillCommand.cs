@@ -133,7 +133,7 @@ public sealed class LearningDistillCommand : Hall9kAsyncCommand<LearningDistillC
             + $"{added.Objective.EscapeMarkup()} [dim]({shortId})[/]");
         AnsiConsole.MarkupLine(
             "[dim]It is a draft and nothing dispatches it: the daemon never distils on its own "
-            + "judgment. Read what it asks for, then publish and assign it yourself:[/] "
+            + "judgment. Read what it asks for, then publish and queue it yourself:[/] "
             + $"h9k task show {shortId} [dim]then[/] h9k task publish {shortId}");
         return ExitCodes.Ok;
     }

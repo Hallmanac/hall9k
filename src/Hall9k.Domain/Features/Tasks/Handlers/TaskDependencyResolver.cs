@@ -251,7 +251,7 @@ public static class TaskDependencyResolver
     /// record rather than keeping advice the decider would now refuse.
     /// </summary>
     private static string DeathReason(TaskAggregate task, TaskDependency dependency) =>
-        $"{dependency.DescribeDeath()} (h9k task unassign {task.Id}, then h9k task draft {task.Id}).";
+        $"{dependency.DescribeDeath()} (h9k task dequeue {task.Id}, then h9k task draft {task.Id}).";
 
     /// <summary>
     /// Why a blocker id that names no task at all will never close out — there is no
@@ -263,5 +263,5 @@ public static class TaskDependencyResolver
     private static string MissingDependencyReason(TaskAggregate task, Guid dependencyId) =>
         $"Dependency {dependencyId.ToString("N")[^8..]} no longer exists — most likely its project was "
         + "purged — so it will never close out. Revise this task's dependencies "
-        + $"(h9k task unassign {task.Id}, then h9k task draft {task.Id}).";
+        + $"(h9k task dequeue {task.Id}, then h9k task draft {task.Id}).";
 }

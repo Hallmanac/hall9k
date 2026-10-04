@@ -139,7 +139,7 @@ public sealed class DispatchEngine(
     /// self-declared <c>AssignedOwnerId</c> names this node's own owner but whose recorded
     /// <c>AssignedOwnerFingerprint</c> does not match this node's own root fingerprint is excluded
     /// from <see cref="ReadQueueAsync"/>'s own result with no other trace at all — <c>h9k task
-    /// show</c> is the only surface that otherwise explains it, and a task assigned to this owner
+    /// show</c> is the only surface that otherwise explains it, and a task queued for this owner
     /// that this node will never claim is indistinguishable from an idle queue without this line.
     /// Same one-line-per-episode discipline as <see cref="_deferredClaims"/>: rebuilt
     /// every sweep from the rows actually excluded, so a mismatch that clears (an owner-root rewrite
@@ -685,7 +685,7 @@ public sealed class DispatchEngine(
     /// task's own project is under its (Decisions Log #64, #111, #140). The claim is the lock:
     /// appends race on the stream version and the database picks the winner (TASK-MODEL.md §2).
     /// Draft, Published and Blocked tasks are structurally invisible here — a task becomes
-    /// claimable only through an explicit human assignment (Decisions Log #34).
+    /// claimable only through an explicit human queueing (Decisions Log #34).
     /// <para>
     /// Which project each free slot goes to is <see cref="ProjectRotation"/>'s decision
     /// (Decisions Log #141): round-robin across the eligible projects by default, with an optional
@@ -927,7 +927,7 @@ public sealed class DispatchEngine(
     /// This owner's queue, in the order the queue itself is served.
     /// <para>
     /// The whole claim rule, as one indexed-friendly filter (Decisions Log #34): Queued
-    /// means a human assigned it and every dependency has closed out, and the owner match
+    /// means a human queued it and every dependency has closed out, and the owner match
     /// means those were this node's owner's decisions. The ceilings shape how much of this
     /// set is taken, never which end of it (Decisions Log #64).
     /// </para>
@@ -1480,7 +1480,7 @@ public sealed class DispatchEngine(
         {
             logger.LogDebug(
                 "Task {TaskId} stays queued on this node: it is placed on a different node of this owner's "
-                + "own fleet (h9k task assign {TaskId} --node) — that node's own dispatch sweep claims it",
+                + "own fleet (h9k task assign {TaskId} --node) — that node's own claim sweep takes it",
                 taskId, taskId);
         }
     }
