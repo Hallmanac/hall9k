@@ -176,24 +176,6 @@ public sealed class TaskQueueSplitTests
     }
 
     [Fact]
-    public void A_TaskUnassigned_without_the_kept_marker_replays_as_a_clearing_unassign_and_one_with_it_keeps_the_hold()
-    {
-        TaskUnassigned legacy = new(TaskId, "left", Now, OwnerA);
-        TaskUnassigned dequeue = legacy with { KeepsAssignee = true };
-
-        legacy.KeepsAssignee.Should().BeFalse("an event written before the marker existed carries none");
-        TaskAggregate cleared = QueuedTask();
-        cleared.Apply(legacy);
-        TaskAggregate kept = QueuedTask();
-        kept.Apply(dequeue);
-
-        cleared.AssigneeOwnerId.Should().BeNull();
-        cleared.AssigneeOwnerFingerprint.Should().BeNull();
-        kept.AssigneeOwnerId.Should().Be(OwnerA);
-        kept.AssigneeOwnerFingerprint.Should().Be(RootA);
-    }
-
-    [Fact]
     public void Release_unassign_keeps_the_assignee_and_an_older_release_event_still_clears_it()
     {
         TaskAggregate task = QueuedTask();

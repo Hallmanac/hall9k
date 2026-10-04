@@ -739,7 +739,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             AnsiConsole.MarkupLine(
                 $"[dim]  stacked on pull request #{remoteParent} — queue it and it dispatches once that pull "
                 + "request is observed open, which the closeout watcher's own sweep looks for on its cadence. "
-                + "Nothing looks at that pull request until the task is assigned[/]");
+                + "Nothing looks at that pull request until the task is queued[/]");
         }
 
         string shortId = TaskListCommand.ShortId(taskId);

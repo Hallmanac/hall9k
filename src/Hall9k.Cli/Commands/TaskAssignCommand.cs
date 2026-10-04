@@ -158,7 +158,11 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         string state = task.State.Value;
         string shortId = TaskListCommand.ShortId(task.Id);
         bool heldByActor = assignee.Id == context.OwnerId;
-        if (settings.Node.IsSet)
+
+        // A task already queued or blocked never reaches these two refusals: TaskDecider.SetAssignee below
+        // refuses it with h9k task dequeue, the one answer that works there, where --node would otherwise
+        // be told to queue a task that queue itself refuses as already queued.
+        if (task.State.IsPreDispatch && settings.Node.IsSet)
         {
             throw new DomainValidationException(
                 $"Task {task.Id} is {state} and assigning it only records who holds it, so --node, which "
@@ -168,7 +172,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
                     : $"Place it when you queue it: h9k task queue {shortId} --node."));
         }
 
-        if (settings.Take && !heldByActor)
+        if (task.State.IsPreDispatch && settings.Take && !heldByActor)
         {
             throw new DomainValidationException(
                 $"--take puts this install's own tracker identity on the linked card, which only makes sense for "
@@ -531,7 +535,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
             {
                 throw new DomainValidationException(
                     $"Could not read '{project.Name}'s own ledger chain: {exception.Message} Re-run "
-                    + $"h9k task assign ... --node {nodeIdOrFragment} once the remote is reachable again.");
+                    + $"the command with --node {nodeIdOrFragment} once the remote is reachable again.");
             }
         }
 

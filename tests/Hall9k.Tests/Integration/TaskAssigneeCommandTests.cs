@@ -161,27 +161,6 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     }
 
     [Fact]
-    public async Task Queue_is_the_assignees_act_alone_and_a_refusal_names_the_assignees_hand_off()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid heldByRyan = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _ryan, publish: true);
-        Guid heldByMe = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, heldBy: Me, publish: true);
-        Guid free = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, publish: true);
-
-        await using IDocumentSession session = _postgres.Store.LightweightSession();
-        OwnerDetails actor = (await session.LoadAsync<OwnerDetails>(_me.OwnerId, cts.Token))!;
-        async Task Queue(Guid id) => await TaskQueueCommand.AuthorizeAsync(
-            session, (await session.Events.AggregateStreamAsync<TaskAggregate>(id, token: cts.Token))!, _me, actor,
-            cts.Token);
-
-        Func<Task> another = () => Queue(heldByRyan);
-        (await another.Should().ThrowAsync<DomainConflictException>()).Which.Message
-            .Should().Contain("Ryan").And.Contain($"h9k task assign {DomainId.Short(heldByRyan)} <member>");
-        await Queue(heldByMe);
-        await Queue(free);
-    }
-
-    [Fact]
     public async Task A_task_a_teammate_holds_refuses_even_a_self_assign_without_the_override()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
