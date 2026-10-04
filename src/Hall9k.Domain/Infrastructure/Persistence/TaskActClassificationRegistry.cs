@@ -109,6 +109,15 @@ public static class TaskActClassificationRegistry
         // reassignment of an owner's already-assigned or already-held task is refused).
         [typeof(TaskAssigned)] = TaskActClassification.MemberSafe,
 
+        // Judged by the assignee rule, never by TaskAssigned's targetsOwnRoot (EventReplicationInbox's
+        // own EvaluateTaskActVerdict): the current assignee may hand a draft to another member, and a
+        // member who is not the task's owner may only take an unassigned Published task for itself.
+        // Conditional rather than MemberSafe so the plain-MemberSafe shortcut never applies to either.
+        [typeof(TaskAssigneeSet)] = TaskActClassification.Conditional,
+
+        // Only from the current assignee; an Owner-role override always applies like any Owner act.
+        [typeof(TaskAssigneeCleared)] = TaskActClassification.Conditional,
+
         // A duplicate-convergence pass abandons its own rival under its own root only
         // (PullRequestReviewDuplicateConvergence's own doc) — the run's own task must already be
         // this sender's, the same conditional check every other lifecycle-ending act here carries.

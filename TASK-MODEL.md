@@ -112,6 +112,16 @@ public sealed record TaskAssigned(      // Published -> Queued (or Blocked): the
     DateTimeOffset AssignedAt,
     Guid AssignedByOwnerId);
 
+public sealed record TaskAssigneeSet(   // a member lays hold of a Draft or Published task without queueing it,
+    Guid Id,                            // or the current assignee hands it to another member; nothing else moves
+    Guid AssigneeOwnerId,
+    string? AssigneeOwnerRootFingerprint,
+    DateTimeOffset SetAt,
+    Guid SetByOwnerId);                 // never for a Queued task: its assignee is the owner it is queued for
+
+public sealed record TaskAssigneeCleared( // the assignee lets go of a Draft or an unqueued Published task
+    Guid Id, string? Reason, DateTimeOffset ClearedAt, Guid ClearedByOwnerId);
+
 public sealed record TaskUnassigned(    // Queued/Blocked -> Published; refused while a lease is held
     Guid Id,
     string? Reason,
@@ -253,6 +263,9 @@ public sealed class TaskAggregate
     public IReadOnlyList<string> KnownPendingReviewRequestLogins { get; } // comparison points as of the
                                                                           // last automatic decision (§2.2)
     public Guid? AssignedOwnerId { get; private set; }   // set by TaskAssigned; the claim guard's other half (§2.3)
+    public Guid? AssigneeOwnerId { get; private set; }   // who holds the task at any stage; every surface that asks
+                                                         // "whose is this" reads it (TaskOwnerRule). AssignedOwnerId
+                                                         // stays "queued for": whenever it is set, the assignee equals it
     public IReadOnlyList<Guid> BlockedBy { get; }        // declared dependency edges
     public IReadOnlyList<Guid> UnmetDependencies { get; }// those not yet at true closeout; empty on a Queued task
     public IReadOnlyList<Guid> DeadDependencies { get; } // blockers observed Failed/Abandoned
@@ -269,8 +282,10 @@ public sealed class TaskAggregate
     public void Apply(TaskPublished @event) { /* State = Published */ }
     public void Apply(TaskRevised @event) { /* only the Optional fields that HaveValue */ }
     public void Apply(TaskReturnedToDraft @event) { /* State = Draft */ }
-    public void Apply(TaskAssigned @event) { /* AssignedOwnerId; State = UnmetDependencies.Count == 0 ? Queued : Blocked */ }
-    public void Apply(TaskUnassigned @event) { /* AssignedOwnerId = null; dependency bookkeeping cleared; State = Published */ }
+    public void Apply(TaskAssigned @event) { /* AssignedOwnerId and AssigneeOwnerId; State = UnmetDependencies.Count == 0 ? Queued : Blocked */ }
+    public void Apply(TaskAssigneeSet @event) { /* AssigneeOwnerId only; ignored while AssignedOwnerId is set */ }
+    public void Apply(TaskAssigneeCleared @event) { /* AssigneeOwnerId = null; ignored while AssignedOwnerId is set */ }
+    public void Apply(TaskUnassigned @event) { /* AssignedOwnerId and AssigneeOwnerId = null; dependency bookkeeping cleared; State = Published */ }
     public void Apply(TaskDependencyCompleted @event) { /* drop it from Unmet + Dead; empty => Blocked -> Queued */ }
     public void Apply(TaskDependencyFailed @event) { /* record the dead blocker + reason; State unchanged */ }
     public void Apply(TaskDependencyRecovered @event) { /* drop that dead blocker; reason = what is left; State unchanged */ }

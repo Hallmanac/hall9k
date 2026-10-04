@@ -1265,6 +1265,96 @@ public static class TaskDecider
     }
 
     /// <summary>
+    /// A member lays hold of a Draft or Published task without queueing it, or hands it to another
+    /// member: only the assignee moves, so nothing the dispatcher reads changes. Who may do it is
+    /// the caller's own question (<c>TaskOwnerGuard</c> on the CLI, the receive gate on a peer);
+    /// this refuses what no caller may do. Returns null when <paramref name="assigneeOwnerId"/>
+    /// already holds the task, the idempotent no-op, so the caller appends nothing.
+    /// <para>
+    /// A Queued or later task is refused, because its assignee is the owner it is queued for and
+    /// splitting the two would break what dispatch reads: the way to hand one off is
+    /// <c>h9k task unassign</c> first. A draft below team scope cannot reach another member's node
+    /// at all, so naming someone else on one is refused with the command that widens it.
+    /// </para>
+    /// </summary>
+    /// <param name="assigneeIsActor">Whether the assignee is the owner running the command, since a hand-off to another member is what the scope rule is about.</param>
+    public static TaskAssigneeSet? SetAssignee(
+        TaskAggregate task,
+        Guid assigneeOwnerId,
+        string? assigneeRootFingerprint,
+        bool assigneeIsActor,
+        DateTimeOffset setAt,
+        Guid setByOwnerId,
+        string? onBehalfOfOwnerRootFingerprint = null,
+        string? overrideReason = null)
+    {
+        if (!task.State.IsPreDispatch)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value}: only a Draft or a Published task that is not queued can be " +
+                "handed to someone. " + task.State switch
+                {
+                    var state when state.IsAssigned =>
+                        $"It is queued for its assignee; release it first with h9k task unassign {task.Id}, then assign it.",
+                    _ => "Its story has already moved past assignment.",
+                });
+        }
+
+        if (assigneeOwnerId == Guid.Empty)
+        {
+            throw new DomainValidationException("An assignment names the owner who holds the task.");
+        }
+
+        if (!assigneeIsActor && !task.Scope.IsAtLeast(ReplicationScope.Team))
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.Scope.Value} scope, so another member would never receive it. Share it " +
+                $"with the team first: h9k task share {task.Id}.");
+        }
+
+        return task.AssigneeOwnerId == assigneeOwnerId && task.AssigneeOwnerFingerprint == assigneeRootFingerprint
+            ? null
+            : new TaskAssigneeSet(
+                task.Id, assigneeOwnerId, assigneeRootFingerprint, setAt, setByOwnerId,
+                onBehalfOfOwnerRootFingerprint, overrideReason);
+    }
+
+    /// <summary>
+    /// The assignee lets go of a Draft or Published task that is not queued; the task falls back to
+    /// its creator. A queued task releases its assignee through <see cref="Unassign"/> instead, which
+    /// clears the owner it is queued for in the same event.
+    /// </summary>
+    public static TaskAssigneeCleared ClearAssignee(
+        TaskAggregate task, string? reason, DateTimeOffset clearedAt, Guid clearedByOwnerId)
+    {
+        if (!task.State.IsPreDispatch)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value}: only a Draft or a Published task that is not queued clears " +
+                "an assignee this way." + (task.State.IsAssigned
+                    ? $" A queued task releases it through h9k task unassign {task.Id}."
+                    : string.Empty));
+        }
+
+        if (task.AssigneeOwnerId is null)
+        {
+            throw new DomainConflictException($"Task {task.Id} has no assignee, so there is nothing to clear.");
+        }
+
+        return new TaskAssigneeCleared(task.Id, reason, clearedAt, clearedByOwnerId);
+    }
+
+    /// <summary>
+    /// Whether some other owner holds this task, by its assignee: the check <c>h9k task start</c>,
+    /// <c>h9k task work</c> and <c>h9k task publish --assign</c> make before they would queue a
+    /// Published task for the operator, which a hold by someone else forbids. A task nobody holds is
+    /// not held by another owner.
+    /// </summary>
+    public static bool IsHeldByAnotherOwner(TaskAggregate task, Guid thisOwnerId, string? thisOwnerRootFingerprint) =>
+        task.AssigneeOwnerId is not null
+        && !IsGrantedToThisOwner(task.AssigneeOwnerId, task.AssigneeOwnerFingerprint, thisOwnerId, thisOwnerRootFingerprint);
+
+    /// <summary>
     /// What actually holds a Blocked task, as a noun phrase after "Blocked on". Two things can,
     /// and a claim refusal that names the wrong one leaves an agent unable to self-correct from the
     /// message (the CLI standard in AGENTS.md): a stacked child whose parent is a pull request on

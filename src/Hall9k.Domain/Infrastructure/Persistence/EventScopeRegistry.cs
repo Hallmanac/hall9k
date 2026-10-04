@@ -76,6 +76,8 @@ public static class EventScopeRegistry
         [typeof(TaskAbandoned)] = EventScope.ProjectScoped,
         [typeof(TaskAdded)] = EventScope.ProjectScoped,
         [typeof(TaskAssigned)] = EventScope.ProjectScoped,
+        [typeof(TaskAssigneeCleared)] = EventScope.ProjectScoped,
+        [typeof(TaskAssigneeSet)] = EventScope.ProjectScoped,
         [typeof(TaskBranchPushed)] = EventScope.ProjectScoped,
         [typeof(TaskClaimed)] = EventScope.ProjectScoped,
         [typeof(TaskCompleted)] = EventScope.ProjectScoped,

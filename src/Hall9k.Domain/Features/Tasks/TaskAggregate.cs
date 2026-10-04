@@ -575,6 +575,29 @@ public sealed class TaskAggregate
     public string? AssignedOwnerFingerprint { get; private set; }
 
     /// <summary>
+    /// Who holds this task at any stage, separate from the go signal: a member lays hold of a Draft
+    /// or Published task (<see cref="Events.TaskAssigneeSet"/>) without dispatching it.
+    /// <see cref="AssignedOwnerId"/> keeps meaning "queued for", which dispatch, closeout and the
+    /// Jira retry sweep read, so whenever <see cref="AssignedOwnerId"/> is set this equals it:
+    /// every door that sets or clears <see cref="AssignedOwnerId"/> sets or clears the assignee the
+    /// same way, which is what makes a stream written before this field existed project the same
+    /// owner it always did. Null means nobody has laid hold of the task, and
+    /// <see cref="Handlers.TaskOwnerRule"/> falls back to the creator. Read by every surface that
+    /// asks whose a task is (the CLI guard, the board, the orchestrator feed, auto-pr-review
+    /// coverage, and the receive gate).
+    /// </summary>
+    public Guid? AssigneeOwnerId { get; private set; }
+
+    /// <summary>
+    /// <see cref="AssigneeOwnerId"/>'s own cross-node root fingerprint, mirroring
+    /// <see cref="AssignedOwnerFingerprint"/> exactly wherever <see cref="AssignedOwnerId"/> is set
+    /// (a legacy add and a forced takeover record none, an ordinary assignment and a cooperative
+    /// grant record the event's own), and the fingerprint <see cref="Events.TaskAssigneeSet"/>
+    /// carries otherwise.
+    /// </summary>
+    public string? AssigneeOwnerFingerprint { get; private set; }
+
+    /// <summary>
     /// Advisory dispatch placement narrower than <see cref="AssignedOwnerId"/> (idea 202383dc: an
     /// owner can place a task on one of their own nodes rather than leaving it to whichever of
     /// their nodes' dispatchers gets there first). Null means unplaced — every node of the granted
@@ -1169,6 +1192,7 @@ public sealed class TaskAggregate
         // sole owner of a v0 install, so this reads an observed fact rather than inventing
         // provenance for a historical task.
         AssignedOwnerId = @event.AddedByOwnerId;
+        AssigneeOwnerId = @event.AddedByOwnerId;
         State = TaskState.Queued;
     }
 
@@ -1358,6 +1382,9 @@ public sealed class TaskAggregate
         // one — but it is not simply cleared: this assignment's own fingerprint (idea f72138e1)
         // takes its place, null only when the event itself predates the field.
         AssignedOwnerFingerprint = @event.AssignedOwnerRootFingerprint;
+        // The go signal also lays hold of the task, so the assignee equals queued-for from here on.
+        AssigneeOwnerId = @event.AssignedOwnerId;
+        AssigneeOwnerFingerprint = @event.AssignedOwnerRootFingerprint;
         // Absent (Optional.None) leaves whatever placement this task already carried alone — the
         // ordinary case, an owner or a --take reassignment that never mentioned --node; present
         // with null clears it, present with a value pins it (idea 202383dc).
@@ -1397,6 +1424,40 @@ public sealed class TaskAggregate
     }
 
     /// <summary>
+    /// Lays hold of the task without queueing it: only the assignee moves. Ignored while the task is
+    /// queued for someone (<see cref="AssignedOwnerId"/> set), because the assignee must equal the
+    /// owner it is queued for, and the decider already refuses a hand-off there; the receive gate
+    /// refuses one a peer sends, and this keeps a stream that somehow carries one from splitting the
+    /// two fields.
+    /// </summary>
+    public void Apply(TaskAssigneeSet @event)
+    {
+        if (AssignedOwnerId is not null)
+        {
+            return;
+        }
+
+        AssigneeOwnerId = @event.AssigneeOwnerId;
+        AssigneeOwnerFingerprint = @event.AssigneeOwnerRootFingerprint;
+    }
+
+    /// <summary>
+    /// Lets go of the task: nobody holds it, so it falls back to its creator. Ignored while the task
+    /// is queued for someone, for the reason <see cref="Apply(TaskAssigneeSet)"/> gives: a queued
+    /// task releases its assignee through <see cref="Apply(TaskUnassigned)"/>.
+    /// </summary>
+    public void Apply(TaskAssigneeCleared @event)
+    {
+        if (AssignedOwnerId is not null)
+        {
+            return;
+        }
+
+        AssigneeOwnerId = null;
+        AssigneeOwnerFingerprint = null;
+    }
+
+    /// <summary>
     /// Changes placement in place — nothing else about the task moves (Handlers.TaskDecider.SetPlacement's
     /// own doc): unlike <see cref="Apply(TaskAssigned)"/>'s <c>Optional</c> field, a plain nullable
     /// is unconditional here, since this event's whole reason to exist is changing the placement.
@@ -1410,6 +1471,8 @@ public sealed class TaskAggregate
     {
         AssignedOwnerId = null;
         AssignedOwnerFingerprint = null;
+        AssigneeOwnerId = null;
+        AssigneeOwnerFingerprint = null;
         PlacedOnNodeId = null;
         _unmetDependencies.Clear();
         _deadDependencies.Clear();
@@ -1729,6 +1792,8 @@ public sealed class TaskAggregate
 
             AssignedOwnerId = @event.GrantedToOwnerId;
             AssignedOwnerFingerprint = @event.GrantedToOwnerFingerprint;
+            AssigneeOwnerId = @event.GrantedToOwnerId;
+            AssigneeOwnerFingerprint = @event.GrantedToOwnerFingerprint;
             // Only when a placement already named some node: retargets it to the grant's own
             // destination, the same way a takeover retargets one below — the old placement would
             // otherwise strand the very requester this grant just released the task for. A task
@@ -1841,6 +1906,8 @@ public sealed class TaskAggregate
         // aggregate has any reason to distrust — it carries no fingerprint of its own, and clears
         // whatever a prior cooperative grant recorded here (idea 20723ef8).
         AssignedOwnerFingerprint = null;
+        AssigneeOwnerId = @event.NewHolderOwnerId;
+        AssigneeOwnerFingerprint = null;
         // Only when a placement already named some node: retargets it to the taker's own node,
         // the same way a cooperative grant retargets one above — the old node stands down without
         // a second command, since its own dispatch sweep now reads a placement naming somebody
@@ -1932,6 +1999,8 @@ public sealed class TaskAggregate
 
         AssignedOwnerId = null;
         AssignedOwnerFingerprint = null;
+        AssigneeOwnerId = null;
+        AssigneeOwnerFingerprint = null;
         PlacedOnNodeId = null;
         _unmetDependencies.Clear();
         _deadDependencies.Clear();
@@ -2349,6 +2418,8 @@ public sealed class TaskAggregate
 
         AssignedOwnerId = null;
         AssignedOwnerFingerprint = null;
+        AssigneeOwnerId = null;
+        AssigneeOwnerFingerprint = null;
         PlacedOnNodeId = null;
         _unmetDependencies.Clear();
         _deadDependencies.Clear();

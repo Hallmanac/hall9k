@@ -91,6 +91,17 @@ public static class TaskLifecycleProjectionBackfill
     /// identically on every path that consumes this field, which
     /// <c>DispatchEngineNodePlacementGateTests</c>' unplaced-admits-everyone case already proves.
     /// </para>
+    /// <para>
+    /// <see cref="TaskListItem.AssigneeOwnerId"/> and <see cref="TaskDetails.AssigneeOwnerId"/> (who
+    /// holds a task at any stage, apart from the go signal) are markers, unlike the nullable fields
+    /// above that read honestly when absent: a Queued document written before the field existed has
+    /// no assignee key, and the owner readers (<c>TaskOwnerFactsReader</c>, <c>TaskListItemOwnerFacts</c>)
+    /// would then read it as held by nobody and fall back to its creator, disagreeing with the
+    /// dispatcher, which still reads the queued-for owner. This store writes a nullable property as an
+    /// explicit null, so <c>jsonb_exists</c> catches exactly the documents last written before the
+    /// field existed, and replaying their streams sets the assignee from the same events that set the
+    /// queued-for owner.
+    /// </para>
     /// </summary>
     private const string StaleDocument =
         "(not jsonb_exists(d.data, 'assignedOwnerId')"               // pre-lifecycle-split (log #34)
@@ -98,7 +109,8 @@ public static class TaskLifecycleProjectionBackfill
         + " or not jsonb_exists(d.data, 'assignedAt')"               // pre-concurrency-ceiling (log #64)
         + " or not jsonb_exists(d.data, 'failureReason')"            // pre-status-redesign (log #66)
         + " or not jsonb_exists(d.data, 'preApproval')"              // pre-three-valued pre-approval
-        + " or not jsonb_exists(d.data, 'scope'))";                 // pre-replication-scope (idea 8c5993c5)
+        + " or not jsonb_exists(d.data, 'scope')"                    // pre-replication-scope (idea 8c5993c5)
+        + " or not jsonb_exists(d.data, 'assigneeOwnerId'))";        // pre-assignee (who holds it, apart from queued-for)
 
     /// <summary>
     /// <see cref="StaleDocument"/>'s markers, plus the fields <see cref="TaskDetails"/> alone

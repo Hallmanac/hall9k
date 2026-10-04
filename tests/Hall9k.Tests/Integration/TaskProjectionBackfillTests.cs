@@ -637,6 +637,62 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     }
 
     /// <summary>
+    /// <see cref="TaskListItem.AssigneeOwnerId"/> and <see cref="TaskDetails.AssigneeOwnerId"/> (who holds a
+    /// task at any stage) landed after documents already existed. A Queued document without the key would
+    /// read as held by nobody, so the owner rule would fall back to its creator while the dispatcher still
+    /// reads the queued-for owner: the rebuild sets the assignee from the same events that set that owner,
+    /// and a draft somebody laid hold of keeps the hold its stream recorded.
+    /// </summary>
+    [Fact]
+    public async Task A_document_projected_before_the_assignee_landed_gains_the_key_after_the_backfill_runs()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid queued = await SeedQueuedAsync(store, node, "Queued before the assignee existed", cts.Token);
+
+        Guid heldDraft = DomainId.New();
+        Guid holder = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Events.StartStream<TaskAggregate>(
+                heldDraft, Add(heldDraft, "Held before the assignee existed"),
+                new TaskAssigneeSet(heldDraft, holder, "holder-root", Now, holder));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await StripKeyAsync(queued, "assigneeOwnerId", cts.Token);
+        await StripKeyAsync(heldDraft, "assigneeOwnerId", cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            (await query.LoadAsync<TaskListItem>(queued, cts.Token))!.AssigneeOwnerId.Should().BeNull(
+                "this is the stale shape: the key is simply absent, and the owner readers would call it nobody's");
+        }
+
+        IReadOnlyList<Guid> rebuilt = await TaskLifecycleProjectionBackfill.RunAsync(store, cts.Token);
+
+        rebuilt.Should().BeEquivalentTo([queued, heldDraft]);
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskListItem row = (await query.LoadAsync<TaskListItem>(queued, cts.Token))!;
+            row.AssigneeOwnerId.Should().Be(node.OwnerId);
+            row.AssigneeOwnerId.Should().Be(row.AssignedOwnerId, "queued for and held by are the same owner");
+            (await query.LoadAsync<TaskDetails>(queued, cts.Token))!.AssigneeOwnerId.Should().Be(node.OwnerId);
+
+            TaskListItem held = (await query.LoadAsync<TaskListItem>(heldDraft, cts.Token))!;
+            held.AssigneeOwnerId.Should().Be(holder);
+            held.AssigneeOwnerFingerprint.Should().Be("holder-root");
+            held.AssignedOwnerId.Should().BeNull("a hold on a draft queues nothing");
+            (await query.LoadAsync<TaskDetails>(heldDraft, cts.Token))!.AssigneeOwnerFingerprint.Should().Be("holder-root");
+        }
+
+        (await TaskLifecycleProjectionBackfill.RunAsync(store, cts.Token)).Should().BeEmpty(
+            "the key is present on both documents now, so the backfill stops owing them anything");
+    }
+
+    /// <summary>
     /// <see cref="TaskListItem.QueuePriorityMarked"/> (task 45136b29) exists only on the list
     /// item, and a document written before the field landed carries no key at all — the same
     /// class of defect the markers above cover, but with the worst failure mode of any of them:

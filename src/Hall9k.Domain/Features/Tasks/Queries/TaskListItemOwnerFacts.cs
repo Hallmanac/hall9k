@@ -7,7 +7,7 @@ namespace Hall9k.Domain.Features.Tasks.Queries;
 /// task's stream, so a surface that holds only <see cref="TaskListItem"/> documents asks the same
 /// question the commands ask through <see cref="TaskOwnerFactsReader"/> and gets the same answer.
 /// The two readers walk the same facts in the same order: the holder's root as recorded, the
-/// assignee's root as recorded or else resolved from the owner id, and the creator only when both
+/// assignee's root (who holds the task, not who it is queued for) as recorded or else resolved from the owner id, and the creator only when both
 /// of those are absent.
 /// <para>
 /// Pure: the owner-id lookup and the creator are handed in, because the caller that renders many
@@ -41,22 +41,22 @@ public static class TaskListItemOwnerFacts
     /// <summary>Whether <see cref="From"/> would read the creator for this row, so a caller loads it only where it matters.</summary>
     public static bool NeedsCreator(TaskListItem task) =>
         string.IsNullOrEmpty(task.HolderOwnerRootFingerprint)
-        && string.IsNullOrEmpty(task.AssignedOwnerFingerprint)
-        && task.AssignedOwnerId is null;
+        && string.IsNullOrEmpty(task.AssigneeOwnerFingerprint)
+        && task.AssigneeOwnerId is null;
 
     private static OwnerRootFact ReadAssigned(TaskListItem task, Func<Guid, string?> ownerRoot)
     {
-        if (!string.IsNullOrEmpty(task.AssignedOwnerFingerprint))
+        if (!string.IsNullOrEmpty(task.AssigneeOwnerFingerprint))
         {
-            return OwnerRootFact.Known(task.AssignedOwnerFingerprint);
+            return OwnerRootFact.Known(task.AssigneeOwnerFingerprint);
         }
 
-        if (task.AssignedOwnerId is not { } assignedOwnerId)
+        if (task.AssigneeOwnerId is not { } assigneeOwnerId)
         {
             return OwnerRootFact.Absent;
         }
 
-        string? resolved = ownerRoot(assignedOwnerId);
+        string? resolved = ownerRoot(assigneeOwnerId);
         return string.IsNullOrEmpty(resolved)
             ? OwnerRootFact.Unresolved
             : OwnerRootFact.Known(resolved);

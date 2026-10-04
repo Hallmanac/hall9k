@@ -33,25 +33,27 @@ public static class TaskOwnerFactsReader
     }
 
     /// <summary>
-    /// A recorded fingerprint is the assignment. An assignment recorded by owner id alone (a task
-    /// from before the fingerprint existed, or a forced takeover, which clears it) resolves through
+    /// The assignee, who holds the task at any stage (<see cref="TaskAggregate.AssigneeOwnerId"/>),
+    /// not the owner it is queued for, which only dispatch asks. A recorded fingerprint is the
+    /// assignment. An assignment recorded by owner id alone (a task from before the fingerprint
+    /// existed, or a forced takeover, which clears it) resolves through
     /// <see cref="OwnerRootFingerprintResolver"/>, and stays unresolved when this node has no row
     /// for that owner.
     /// </summary>
     private static async Task<OwnerRootFact> ReadAssignedAsync(
         IQuerySession session, TaskAggregate task, CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrEmpty(task.AssignedOwnerFingerprint))
+        if (!string.IsNullOrEmpty(task.AssigneeOwnerFingerprint))
         {
-            return OwnerRootFact.Known(task.AssignedOwnerFingerprint);
+            return OwnerRootFact.Known(task.AssigneeOwnerFingerprint);
         }
 
-        if (task.AssignedOwnerId is not { } assignedOwnerId)
+        if (task.AssigneeOwnerId is not { } assigneeOwnerId)
         {
             return OwnerRootFact.Absent;
         }
 
-        string? resolved = await OwnerRootFingerprintResolver.ResolveAsync(session, assignedOwnerId, cancellationToken);
+        string? resolved = await OwnerRootFingerprintResolver.ResolveAsync(session, assigneeOwnerId, cancellationToken);
         return string.IsNullOrEmpty(resolved)
             ? OwnerRootFact.Unresolved
             : OwnerRootFact.Known(resolved);

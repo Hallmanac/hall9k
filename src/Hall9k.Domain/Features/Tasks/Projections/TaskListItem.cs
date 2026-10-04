@@ -104,6 +104,14 @@ public sealed class TaskListItem
     /// </summary>
     public string? AssignedOwnerFingerprint { get; set; }
     /// <summary>
+    /// Mirrors <see cref="TaskAggregate.AssigneeOwnerId"/>: who holds the task at any stage, equal to
+    /// <see cref="AssignedOwnerId"/> whenever that is set. Read by every surface that asks whose a
+    /// task is; <see cref="AssignedOwnerId"/> stays "queued for" for dispatch.
+    /// </summary>
+    public Guid? AssigneeOwnerId { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.AssigneeOwnerFingerprint"/>; see its own doc.</summary>
+    public string? AssigneeOwnerFingerprint { get; set; }
+    /// <summary>
     /// Advisory dispatch placement mirroring <see cref="TaskAggregate.PlacedOnNodeId"/> (idea
     /// 202383dc: an owner can place a task on one of their own nodes). Carried on this lean row
     /// because the daemon's own queue read (this class's own doc) is where it actually gates: null
@@ -428,6 +436,7 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         // added them, which is the sole owner of a v0 install (Decisions Log #34).
         State = @event.Data.StartsAsDraft ? TaskState.Draft : TaskState.Queued,
         AssignedOwnerId = @event.Data.StartsAsDraft ? null : @event.Data.AddedByOwnerId,
+        AssigneeOwnerId = @event.Data.StartsAsDraft ? null : @event.Data.AddedByOwnerId,
         // A pre-lifecycle stream was assigned by the act of being added, so that is the moment
         // it queued on — the same reading the line above already makes of its owner.
         AssignedAt = @event.Data.StartsAsDraft ? null : @event.Data.AddedAt,
@@ -462,6 +471,7 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         view.Type = @event.Data.Type;
         view.State = @event.Data.StartsAsDraft ? TaskState.Draft : TaskState.Queued;
         view.AssignedOwnerId = @event.Data.StartsAsDraft ? null : @event.Data.AddedByOwnerId;
+        view.AssigneeOwnerId = @event.Data.StartsAsDraft ? null : @event.Data.AddedByOwnerId;
         view.AssignedAt = @event.Data.StartsAsDraft ? null : @event.Data.AddedAt;
         view.BlockedBy = [.. @event.Data.BlockedBy ?? []];
         view.StackedOnTaskId = @event.Data.StackedOnTaskId;
@@ -554,6 +564,8 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
     {
         view.AssignedOwnerId = @event.Data.AssignedOwnerId;
         view.AssignedOwnerFingerprint = @event.Data.AssignedOwnerRootFingerprint;
+        view.AssigneeOwnerId = @event.Data.AssignedOwnerId;
+        view.AssigneeOwnerFingerprint = @event.Data.AssignedOwnerRootFingerprint;
         if (@event.Data.PlacedOnNodeId.HasValue)
         {
             view.PlacedOnNodeId = @event.Data.PlacedOnNodeId.Value;
@@ -572,6 +584,33 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         view.PrReviewPreflightUnsafe = false;
     }
 
+    /// <summary>
+    /// Mirrors <see cref="TaskAggregate.Apply(Events.TaskAssigneeSet)"/>, including its guard: a task
+    /// queued for someone keeps its assignee equal to that owner.
+    /// </summary>
+    public void Apply(IEvent<TaskAssigneeSet> @event, TaskListItem view)
+    {
+        if (view.AssignedOwnerId is not null)
+        {
+            return;
+        }
+
+        view.AssigneeOwnerId = @event.Data.AssigneeOwnerId;
+        view.AssigneeOwnerFingerprint = @event.Data.AssigneeOwnerRootFingerprint;
+    }
+
+    /// <summary>Mirrors <see cref="TaskAggregate.Apply(Events.TaskAssigneeCleared)"/>, including its guard.</summary>
+    public void Apply(IEvent<TaskAssigneeCleared> @event, TaskListItem view)
+    {
+        if (view.AssignedOwnerId is not null)
+        {
+            return;
+        }
+
+        view.AssigneeOwnerId = null;
+        view.AssigneeOwnerFingerprint = null;
+    }
+
     /// <summary>Mirrors <see cref="TaskAggregate.Apply(Events.TaskPlacementChanged)"/> — see its own doc.</summary>
     public void Apply(IEvent<TaskPlacementChanged> @event, TaskListItem view) =>
         view.PlacedOnNodeId = @event.Data.PlacedOnNodeId;
@@ -580,6 +619,8 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
     {
         view.AssignedOwnerId = null;
         view.AssignedOwnerFingerprint = null;
+        view.AssigneeOwnerId = null;
+        view.AssigneeOwnerFingerprint = null;
         view.PlacedOnNodeId = null;
         view.AssignedAt = null;
         view.UnmetDependencies = [];
@@ -598,6 +639,8 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
 
         view.AssignedOwnerId = null;
         view.AssignedOwnerFingerprint = null;
+        view.AssigneeOwnerId = null;
+        view.AssigneeOwnerFingerprint = null;
         view.PlacedOnNodeId = null;
         view.AssignedAt = null;
         view.UnmetDependencies = [];
@@ -777,6 +820,8 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         view.HolderOwnerRootFingerprint = @event.Data.NewHolderOwnerRootFingerprint;
         view.AssignedOwnerId = @event.Data.NewHolderOwnerId;
         view.AssignedOwnerFingerprint = null;
+        view.AssigneeOwnerId = @event.Data.NewHolderOwnerId;
+        view.AssigneeOwnerFingerprint = null;
         // Only when a placement already named some node — mirrors
         // TaskAggregate.Apply(Events.TaskHolderTakenOver)'s own guard (independent pre-PR review,
         // cycle 1, conformance lens): a never-placed task must stay unplaced rather than becoming
@@ -829,6 +874,8 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
             view.CurrentRunId = null;
             view.AssignedOwnerId = @event.Data.GrantedToOwnerId;
             view.AssignedOwnerFingerprint = @event.Data.GrantedToOwnerFingerprint;
+            view.AssigneeOwnerId = @event.Data.GrantedToOwnerId;
+            view.AssigneeOwnerFingerprint = @event.Data.GrantedToOwnerFingerprint;
             // Only when a placement already named some node — mirrors
             // TaskAggregate.Apply(Events.TaskHolderReleased)'s own guard (independent pre-PR
             // review, cycle 1, conformance lens): a never-placed task must stay unplaced rather
@@ -1054,6 +1101,8 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
 
         view.AssignedOwnerId = null;
         view.AssignedOwnerFingerprint = null;
+        view.AssigneeOwnerId = null;
+        view.AssigneeOwnerFingerprint = null;
         view.PlacedOnNodeId = null;
         view.AssignedAt = null;
         view.UnmetDependencies = [];
