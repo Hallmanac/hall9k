@@ -54,7 +54,7 @@ public static class ReleaseArchive
     }
 
     /// <summary>
-    /// Unpacks a release archive (<c>.tar.gz</c> or <c>.zip</c>, per <see cref="ReleasePlatform.ArchiveExtension"/>)
+    /// Unpacks a release archive (<c>.tar.gz</c> or <c>.zip</c>, per <see cref="Hall9k.Connectors.Releases.ReleasePlatform.ArchiveExtension"/>)
     /// into <paramref name="destinationDirectory"/>, which is created if absent.
     /// </summary>
     public static async Task ExtractAsync(string archivePath, string destinationDirectory, CancellationToken cancellationToken)

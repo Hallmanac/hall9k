@@ -1,10 +1,11 @@
 using System.ComponentModel;
-using System.Text.Json;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Installation;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Releases;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.ValueObjects;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -76,6 +77,9 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
     /// <paramref name="restartChildRunner"/> is the seam for launching the installed <c>h9k</c>
     /// (the launch-anchor refresh and, with <c>--restart</c>, the restart steps), so a test never
     /// spawns the payload's stand-in binary.
+    /// <paramref name="readReleaseChannel"/> is the seam for the node's release channel, which the
+    /// real command reads from the platform config file at each lookup: a test passes one so the
+    /// channel never depends on the machine's own config file.
     /// <paramref name="scratchRoot"/> is the same kind of seam for where the download/extract
     /// scratch directories below are created: it defaults to the real machine-wide
     /// <see cref="Path.GetTempPath"/>, and a test passes a directory unique to itself so its own
@@ -91,6 +95,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
         bool linkOntoPath = true,
         ProcessRunner? containerRuntimeRunner = null,
         RestartChildRunner? restartChildRunner = null,
+        ReleaseChannelReader? readReleaseChannel = null,
         string? scratchRoot = null,
         CancellationToken cancellationToken = default)
     {
@@ -118,9 +123,20 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
             Directory.CreateDirectory(downloadDirectory);
 
             AnsiConsole.MarkupLineInterpolated($"[dim]Resolving the latest release for {repository}…[/]");
-            string? tag = await ResolveLatestTagAsync(gh, repository, workingDirectory, cancellationToken);
-            if (tag is null)
+            LatestReleaseResult latest = await new LatestReleaseLookup(gh, readReleaseChannel)
+                .ResolveAsync(repository, rid, workingDirectory, cancellationToken);
+            if (latest.Channel.Warning is { } channelWarning)
             {
+                await Console.Error.WriteLineAsync(channelWarning);
+            }
+
+            if (latest.Tag is not { } tag)
+            {
+                foreach (string line in DescribeLookupFailure(latest, repository))
+                {
+                    await Console.Error.WriteLineAsync(line);
+                }
+
                 return ExitCodes.Error;
             }
 
@@ -238,69 +254,57 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
     }
 
     /// <summary>
-    /// The tag <c>gh release download</c> pins its download to below, resolved separately rather
-    /// than left implicit in a tag-less <c>gh release download</c> (which floats to whatever is
-    /// latest at the moment it runs): both the download and the attestation verify that follows
-    /// it need to agree on one concrete tag, and <c>--source-ref refs/tags/&lt;tag&gt;</c> only
-    /// means something once that tag is in hand. Returns the resolved tag, or null once the
-    /// caller should return <see cref="ExitCodes.Error"/> without going any further — the message
-    /// has already gone to stderr either way, so there is nothing else for the caller to report.
+    /// The stderr lines for a lookup that did not end in a tag to install. The tag is resolved
+    /// separately rather than left implicit in a tag-less <c>gh release download</c> (which floats
+    /// to whatever is latest at the moment it runs): both the download and the attestation verify
+    /// that follows it need to agree on one concrete tag, and <c>--source-ref
+    /// refs/tags/&lt;tag&gt;</c> only means something once that tag is in hand.
     /// </summary>
-    private static async Task<string?> ResolveLatestTagAsync(
-        ProcessRunner gh, string repository, string workingDirectory, CancellationToken cancellationToken)
+    private static IReadOnlyList<string> DescribeLookupFailure(LatestReleaseResult latest, string repository) => latest.Outcome switch
     {
-        ProcessResult view;
-        try
+        LatestReleaseOutcome.GhMissing =>
+        [
+            "gh is not installed or not on the PATH — h9k update fetches releases through the GitHub "
+            + "CLI. Install it from https://cli.github.com and run gh auth login.",
+        ],
+        LatestReleaseOutcome.TimedOut => [$"{latest.Command} timed out: {latest.Detail}"],
+        LatestReleaseOutcome.GhFailed => DescribeGhFailure(latest, repository),
+        LatestReleaseOutcome.Unparseable =>
+            [$"{latest.Command} returned output h9k update could not parse for {repository}: {latest.Detail}"],
+        LatestReleaseOutcome.NoRelease =>
+            [$"h9k update found no release to install: {latest.Detail}. Check h9k config show for this node's release-channel."],
+        LatestReleaseOutcome.NotYetComplete =>
+        [
+            $"Release {latest.CandidateTag} of {repository} is not yet complete: it has no {string.Join(" and no ", latest.MissingAssets)} "
+            + "(release.yml uploads a release's assets as it publishes it). Nothing was installed; "
+            + "run h9k update again once the release is complete.",
+        ],
+        _ => throw new InvalidOperationException($"Unhandled {nameof(LatestReleaseOutcome)}: {latest.Outcome}"),
+    };
+
+    /// <summary>
+    /// A failed <c>gh</c> call is usually auth, but a "not found" is just as likely the cleared
+    /// channel having nothing to find: every tag publishes as a pre-release, so until one is
+    /// cleared GitHub has no latest release at all.
+    /// </summary>
+    private static IReadOnlyList<string> DescribeGhFailure(LatestReleaseResult latest, string repository)
+    {
+        List<string> lines =
+        [
+            $"{latest.Command} failed for {repository}:",
+            latest.Detail,
+            "Check gh auth status — a private repository's releases need an authenticated gh (gh auth login).",
+        ];
+        if (latest.Channel.Channel == ReleaseChannel.Cleared
+            && latest.Detail.Contains("not found", StringComparison.OrdinalIgnoreCase))
         {
-            view = await gh(
-                "gh",
-                ["release", "view", "--repo", repository, "--json", "tagName"],
-                workingDirectory,
-                cancellationToken);
-        }
-        catch (Win32Exception)
-        {
-            await Console.Error.WriteLineAsync(
-                "gh is not installed or not on the PATH — h9k update fetches releases through the GitHub "
-                + "CLI. Install it from https://cli.github.com and run gh auth login.");
-            return null;
-        }
-        catch (TimeoutException exception)
-        {
-            await Console.Error.WriteLineAsync($"gh release view timed out: {exception.Message}");
-            return null;
+            lines.Add(
+                "If the repository simply has no cleared release yet (every tag publishes as a pre-release), "
+                + "clear one with gh release edit <tag> --prerelease=false --latest, or opt this node in to "
+                + "pre-releases with h9k config set --release-channel all.");
         }
 
-        if (view.ExitCode != 0)
-        {
-            await Console.Error.WriteLineAsync($"gh release view failed for {repository}:");
-            await Console.Error.WriteLineAsync(view.StandardError);
-            await Console.Error.WriteLineAsync(
-                "Check gh auth status — a private repository's releases need an authenticated gh (gh auth login).");
-            return null;
-        }
-
-        string? tagName;
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(view.StandardOutput);
-            tagName = document.RootElement.GetProperty("tagName").GetString();
-        }
-        catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException)
-        {
-            await Console.Error.WriteLineAsync(
-                $"gh release view returned output h9k update could not parse for {repository}: {exception.Message}");
-            return null;
-        }
-
-        if (string.IsNullOrEmpty(tagName))
-        {
-            await Console.Error.WriteLineAsync(
-                $"gh release view returned no tagName for {repository} — cannot resolve which release to download.");
-            return null;
-        }
-
-        return tagName;
+        return lines;
     }
 
     /// <summary>

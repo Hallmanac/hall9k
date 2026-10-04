@@ -1,9 +1,9 @@
 using System.Runtime.InteropServices;
 using FluentAssertions;
-using Hall9k.Cli.Installation;
+using Hall9k.Connectors.Releases;
 using Xunit;
 
-namespace Hall9k.Tests.Cli;
+namespace Hall9k.Tests.Connectors;
 
 /// <summary>
 /// The RID-to-asset-name mapping backlog 42's release.yml and h9k update both have to
