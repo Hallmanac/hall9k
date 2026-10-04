@@ -17,11 +17,13 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// Queued or Blocked -> Published: takes a task back out of the dispatcher's sight (Decisions
-/// Log #34). Refused while a node holds the lease — that is a running agent, and pulling the
-/// contract out from under it is the race the lifecycle exists to prevent. On a Draft, or a
-/// Published task that is not queued, it only lets go of the assignee
-/// (<see cref="TaskAssigneeCleared"/>), and nothing moves for the dispatcher.
+/// Lets go of a task: whoever holds it stops holding it. Queued or Blocked -> Published, it
+/// takes the task back out of the dispatcher's sight and clears the assignee in the one append
+/// (Decisions Log #34); <c>h9k task dequeue</c> is the same without clearing the assignee. Refused
+/// while a node holds the lease — that is a running agent, and pulling the contract out from under
+/// it is the race the lifecycle exists to prevent. On a Draft, or a Published task that is not
+/// queued, it only lets go of the assignee (<see cref="TaskAssigneeCleared"/>), and nothing moves
+/// for the dispatcher.
 /// </summary>
 public sealed class TaskUnassignCommand : Hall9kAsyncCommand<TaskUnassignCommand.Settings>
 {
@@ -115,9 +117,10 @@ public sealed class TaskUnassignCommand : Hall9kAsyncCommand<TaskUnassignCommand
             cancellationToken);
 
         string shortId = TaskListCommand.ShortId(taskId);
-        AnsiConsole.MarkupLine($"[blue]Task {shortId} unassigned[/] — published again, and no node will claim it.");
         AnsiConsole.MarkupLine(
-            $"[dim]To edit it:[/] h9k task draft {shortId} [dim]· to start it again:[/] h9k task assign {shortId}");
+            $"[blue]Task {shortId} unassigned[/] — dequeued and let go of in one step: published again, nobody holds it, and no node will claim it.");
+        AnsiConsole.MarkupLine(
+            $"[dim]To edit it:[/] h9k task draft {shortId} [dim]· to run it again:[/] h9k task queue {shortId}");
         TaskOwnerGuard.AnnounceOverride(ownerDecision, "unassigned");
         return ExitCodes.Ok;
     }

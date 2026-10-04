@@ -73,7 +73,7 @@ public static class CliCommandTree
         config.AddExample("status");
         config.AddExample("task", "add", "--project", "hall9k", "--objective", "\"Add the project browse surface\"",
             "--criteria", "\"h9k project list shows one row per project\"");
-        config.AddExample("task", "publish", "28b19893", "--assign");
+        config.AddExample("task", "publish", "28b19893", "--queue");
         config.AddExample("task", "list", "--state", "needs-you");
         config.AddExample("task", "show", "28b19893");
 
@@ -1097,7 +1097,7 @@ public static class CliCommandTree
                 .WithDescription(
                     "Author the task that merges this scope's lessons into fewer, better ones. Creates "
                     + "an ordinary Research task DRAFT and stops there: nothing dispatches until you "
-                    + "publish and assign it, because the daemon never distils on its own judgment. "
+                    + "publish and queue it, because the daemon never distils on its own judgment. "
                     + "Merging two claims into one is a judgment about meaning, and a wrong merge is "
                     + "worse than two lessons that overlap: the overlap costs a prompt line, a bad "
                     + "merge replaces two things somebody observed with one thing nobody did. The "
@@ -1247,8 +1247,9 @@ public static class CliCommandTree
         {
             task.SetDescription(
                 "Manage tasks. Development and dispatch are separate lifecycles (Decisions Log #34): "
-                + "add drafts, revise develops, publish is the readiness gate, and assign is the go signal. "
-                + "A task runs only once a human assigns it and every dependency has closed out.");
+                + "add drafts, revise develops, publish is the readiness gate, assign records who holds a task "
+                + "and never dispatches it, and queue is the go signal. A task runs only once a human queues "
+                + "it and every dependency has closed out.");
             task.AddCommand<TaskAddCommand>("add")
                 .WithDescription(
                     "Create a draft (flags, --file task.md, --from-idea to cut it from an idea's "
@@ -1257,7 +1258,7 @@ public static class CliCommandTree
                     + "--type spike with --kind and --exit-criterion for a bounded, budgeted spike that "
                     + "answers one stated question and never opens a pull request). "
                     + "Creation is identity, not readiness: a project and an objective are all it takes, "
-                    + "and the draft is invisible to the dispatcher until you publish and assign it. "
+                    + "and the draft is invisible to the dispatcher until you publish and queue it. "
                     + "Acceptance criteria are what h9k task publish demands, and an adopted issue or "
                     + "pull request never supplies them — unless the issue carries a task record another "
                     + "hall9k install published into it, which holds the whole task (criteria, context, "
@@ -1294,8 +1295,8 @@ public static class CliCommandTree
                     "Revise a draft: objective, acceptance criteria, agent context, type, model, effort, dependencies, "
                     + "or — settable on a Draft or a Published spike alone — its kind, exit criterion, and "
                     + "budget (--max-turns/--max-tokens/--max-wall-clock, or --clear-budget to drop one already "
-                    + "set). Draft-only for everything else — a published task promises it may be assigned at any moment "
-                    + "and an assigned one promises a node may read it at any moment, and editing them would break "
+                    + "set). Draft-only for everything else — a published task promises it may be queued at any moment "
+                    + "and a queued one promises a node may read it at any moment, and editing them would break "
                     + "both. --queue-first/--clear-queue-first (Decisions Log #127) and --clear-interactive-mode "
                     + "(task: interactive mode becomes a recorded property of the task) are the two exceptions: "
                     + "scheduling/mode facts, not part of the readiness contract, each settable on a call that "
@@ -1347,8 +1348,11 @@ public static class CliCommandTree
                 .WithDescription(
                     "Publish a draft: the readiness gate. Enforces the full contract (an outcome-phrased "
                     + "objective and at least one checkable acceptance criterion, PLAN.md §4) and refuses a "
-                    + "dependency cycle, naming it. A published task is immutable and assignable but still "
-                    + "will not run — assigning it is a separate, explicit act (--assign does both at once). "
+                    + "dependency cycle, naming it. A published task is immutable and can be queued but still "
+                    + "will not run — queueing it is a separate, explicit act (--queue does both at once, for "
+                    + "the task's assignee or for you when it has none; --assign is refused and points at --queue "
+                    + "for one minor release). Without either flag an interactive terminal is asked whether to "
+                    + "queue, and --no-queue (or its earlier name --no-assign) skips the question. "
                     + "Under a tracking backlog policy (h9k project set --backlog), publishing has an "
                     + "external side effect: github-issues files a GitHub issue itself, through the "
                     + "operator's own gh credentials, and jira dispatches an agent run to author the card. "
@@ -1358,8 +1362,8 @@ public static class CliCommandTree
                     + "--no-existing-item, or attest that this task should skip tracking altogether with "
                     + "--untracked (for internal chores that should not pollute a team's tracker).")
                 .WithExample("task", "publish", "28b19893")
-                .WithExample("task", "publish", "28b19893", "--assign")
-                .WithExample("task", "publish", "28b19893", "--no-assign")
+                .WithExample("task", "publish", "28b19893", "--queue")
+                .WithExample("task", "publish", "28b19893", "--no-queue")
                 .WithExample("task", "publish", "28b19893", "--no-existing-item")
                 .WithExample("task", "publish", "28b19893", "--untracked")
                 .WithExample("task", "publish", "28b19893", "--pre-approved")
@@ -1367,31 +1371,45 @@ public static class CliCommandTree
                 .WithExample("task", "publish", "28b19893", "--close-linked-issue", "on-closeout");
             task.AddCommand<TaskAssignCommand>("assign")
                 .WithDescription(
-                    "Assign a published task to an owner: the dispatch trigger, and the only way a task "
-                    + "becomes claimable. It queues when every dependency has reached true closeout (the "
-                    + "pull request merged), and blocks otherwise — unblocking itself when the last one lands. "
-                    + "Only that owner's nodes may claim it. In a project whose claim gate is "
-                    + "tracker-assignee (h9k project set --claim-gate), --take also takes the linked Jira "
-                    + "card or GitHub issue for this install's own tracker identity when the tracker shows "
-                    + "nobody holds it, so one command moves the tracker and the board together and the gate "
-                    + "passes on its own — an item somebody else holds is refused and nothing is written, "
+                    "Record who holds a task, at any stage before it runs: the assignee. It never dispatches. "
+                    + "On a Draft or a Published task the assignee is recorded and the task keeps its state, so "
+                    + "no dispatcher ever sees it, and a Published task stays Ready until you queue it "
+                    + "(h9k task queue). Who may assign: the task's own assignee (or, with none, its creator) "
+                    + "may hand it to any member, itself included; any other member may only take an unassigned "
+                    + "Published task for themselves. Naming another member on a draft that is still Fleet scope "
+                    + "refuses and names h9k task share, and a hand-off on a queued task refuses and names "
+                    + "h9k task dequeue. An Owner-role member may override any other refusal with --holder and "
+                    + "--reason, both required together. In a project whose claim gate is tracker-assignee "
+                    + "(h9k project set --claim-gate), --take also takes the linked Jira card or GitHub issue "
+                    + "for this install's own tracker identity when the tracker shows nobody holds it, for a "
+                    + "task you hold yourself — an item somebody else holds is refused and nothing is written, "
                     + "and nothing here ever transitions the item, though a team's own board automation may "
-                    + "react to the assignment. On a Draft it only lays hold of the task: the assignee is "
-                    + "recorded, the task stays a Draft, and no dispatcher ever sees it. Who may assign: the "
-                    + "task's own assignee (or, with none, its creator) may hand it to any member, itself "
-                    + "included; any other member may only take an unassigned Published task for themselves. "
-                    + "A member who is not Owner-role handing a Published task to another member only records "
-                    + "the hold and queues nothing, and the new holder runs assign on it to queue it. "
-                    + "Naming another member on a draft that is still Fleet scope refuses and names h9k task "
-                    + "share, and a hand-off on a queued task refuses and names h9k task unassign. An "
-                    + "Owner-role member may override any other refusal with --holder and --reason, both "
-                    + "required together.")
+                    + "react to the assignment. Against a task that is already queued, --node alone changes "
+                    + "where it runs (placement); placing a task that is not queued yet is h9k task queue --node.")
                 .WithExample("task", "assign", "28b19893")
                 .WithExample("task", "assign", "28b19893", "brian")
-                .WithExample("task", "assign", "28b19893", "brian", "--take")
-                .WithExample("task", "assign", "28b19893", "brian", "--node", "a1b2c3d4")
+                .WithExample("task", "assign", "28b19893", "--take")
+                .WithExample("task", "assign", "28b19893", "--node", "a1b2c3d4")
                 .WithExample("task", "assign", "28b19893", "--node")
                 .WithExample("task", "assign", "28b19893", "taylor", "--holder", "Ryan", "--reason", "\"Ryan is out this week\"");
+            task.AddCommand<TaskQueueCommand>("queue")
+                .WithDescription(
+                    "Queue a published task: the go signal, and the only way a task becomes claimable. It "
+                    + "queues for the task's assignee and only for them: with no assignee you become the "
+                    + "assignee in the same event, and with another member as assignee it refuses, names them, "
+                    + "and names their hand-off (h9k task assign <id> <member>). It queues when every dependency "
+                    + "has reached true closeout (the pull request merged), and blocks otherwise — unblocking "
+                    + "itself when the last one lands. Only the assignee's nodes may claim it, and --node places "
+                    + "it on one of your own. In a project whose claim gate is tracker-assignee (h9k project "
+                    + "set --claim-gate), --take also takes the linked Jira card or GitHub issue for this "
+                    + "install's own tracker identity when the tracker shows nobody holds it, so one command "
+                    + "moves the tracker and the board together and the gate passes on its own; an interactive "
+                    + "run offers the same take, and a non-interactive one warns and proceeds. h9k task dequeue "
+                    + "takes a queued task back out of the queue and keeps its assignee.")
+                .WithExample("task", "queue", "28b19893")
+                .WithExample("task", "queue", "28b19893", "--take")
+                .WithExample("task", "queue", "28b19893", "--node", "a1b2c3d4")
+                .WithExample("task", "queue", "28b19893", "--node");
             task.AddCommand<TaskSetSessionCapCommand>("set-session-cap")
                 .WithDescription(
                     "Override how many agent sessions this task's own run may hold simultaneously (Decisions Log "
@@ -1451,20 +1469,33 @@ public static class CliCommandTree
                 .WithExample("task", "set-private", "28b19893", "off");
             task.AddCommand<TaskUnassignCommand>("unassign")
                 .WithDescription(
-                    "Take a queued or blocked task back to Published, so no node claims it. On a Draft, or a "
-                    + "Published task that is not queued, it lets go of the assignee instead and the task falls "
-                    + "back to its creator. Refused while a "
+                    "Let go of a task: nobody holds it afterward. A queued or blocked task goes back to "
+                    + "Published so no node claims it, and its assignee is cleared in the same step (h9k task "
+                    + "dequeue is the same without clearing the assignee). On a Draft, or a Published task that "
+                    + "is not queued, it lets go of the assignee only and the task falls back to its creator. "
+                    + "Refused while a "
                     + "node holds the lease — that is a running agent. This is the first step of the "
-                    + "edit-after-the-fact path: unassign → draft → revise → publish → assign. Another "
+                    + "edit-after-the-fact path: unassign → draft → revise → publish → queue. Another "
                     + "owner's task is theirs to unassign, so this refuses unless your node's owner may act "
                     + "on it; an Owner-role member may do it on that owner's behalf with --holder and --reason, "
                     + "both required together.")
                 .WithExample("task", "unassign", "28b19893", "--reason", "\"The criteria missed the migration case\"")
                 .WithExample("task", "unassign", "28b19893", "--holder", "Taylor", "--reason", "\"Taylor left the project\"");
+            task.AddCommand<TaskDequeueCommand>("dequeue")
+                .WithDescription(
+                    "Take a queued or blocked task back to Published and keep its assignee, so no node claims "
+                    + "it and whoever held it still does. The reverse of h9k task queue; queue it again when "
+                    + "it should run. Refused while a node holds the lease — that is a running agent. h9k task "
+                    + "unassign is the stronger act that also lets go of the assignee. Another owner's task is "
+                    + "theirs to dequeue, so this refuses unless your node's owner may act on it; an Owner-role "
+                    + "member may do it on that owner's behalf with --holder and --reason, both required together.")
+                .WithExample("task", "dequeue", "28b19893")
+                .WithExample("task", "dequeue", "28b19893", "--reason", "\"Waiting on the schema change\"")
+                .WithExample("task", "dequeue", "28b19893", "--holder", "Taylor", "--reason", "\"Taylor is out this week\"");
             task.AddCommand<TaskDraftCommand>("draft")
                 .WithDescription(
                     "Return a published task to Draft so it can be revised. Refused from Queued and Blocked "
-                    + "onward: unassign it first, so a task the dispatcher can see never becomes editable by "
+                    + "onward: dequeue it first, so a task the dispatcher can see never becomes editable by "
                     + "one keystroke.")
                 .WithExample("task", "draft", "28b19893");
             task.AddCommand<TaskListCommand>("list")
@@ -1642,12 +1673,12 @@ public static class CliCommandTree
             task.AddCommand<TaskWorkCommand>("work")
                 .WithDescription(
                     "Work a Published, Queued, or already-Blocked task interactively. On a Published task assigned to nobody, "
-                    + "this assigns it to your own owner and claims it interactively in one atomic event append, "
-                    + "the same collapsing h9k task publish --assign already does for publish and assign: the "
+                    + "this queues it for your own owner and claims it interactively in one atomic event append, "
+                    + "the same collapsing h9k task publish --queue already does for publish and queue: the "
                     + "task is never observably Queued in between, so the dispatcher (woken within moments by "
-                    + "the doorbell a plain h9k task assign would send) can never win the race to it. An unmet "
+                    + "the doorbell a plain h9k task queue would send) can never win the race to it. An unmet "
                     + "dependency — whether just discovered here or already sitting Blocked from an earlier "
-                    + "h9k task assign or a handed-back/retried claim — warns rather than refuses: the platform "
+                    + "h9k task queue or a handed-back/retried claim — warns rather than refuses: the platform "
                     + "names every open blocker, and --acknowledge-unmet-dependencies is your recorded override "
                     + "to claim it anyway. Not needed twice: an acknowledgment this task already carries from an "
                     + "earlier claim on the same still-open blockers is honored without asking again. On an "
@@ -1698,7 +1729,7 @@ public static class CliCommandTree
                 .WithDescription(
                     "Dispatch a Published, Queued, or already-Blocked task on the spot, headless, instead of waiting for the "
                     + "dispatcher's own ceiling and ordering to reach it (a deliberate human kick-off). On a "
-                    + "Published task assigned to nobody, this assigns it to your own owner and claims it in "
+                    + "Published task assigned to nobody, this queues it for your own owner and claims it in "
                     + "one atomic event append, the same collapsing h9k task work's own Published entry already "
                     + "uses, including h9k task work's own warn-then-acknowledge shape for an unmet dependency, on "
                     + "a Published task and on an already-Blocked one alike: the platform names every open "
@@ -1757,9 +1788,9 @@ public static class CliCommandTree
                     + "headless run still parks at each phase boundary for a recorded h9k review proceed. Refused "
                     + "when the claim's session was recorded on another machine this one cannot check — --force "
                     + "attests you confirmed by hand that it has exited. --unassign takes the same untouched claim "
-                    + "straight to Published instead of back to the queue, in one atomic act — nothing between "
-                    + "them ever leaves the task visible to the dispatcher as claimable, unlike a separate release "
-                    + "followed by h9k task unassign. A second, unrelated case: a task this node still names "
+                    + "straight to Published instead of back to the queue, in one atomic act, keeping the task's "
+                    + "assignee: nothing between them ever leaves the task visible to the dispatcher as claimable, "
+                    + "unlike a separate release followed by h9k task dequeue. A second, unrelated case: a task this node still names "
                     + "itself the ledger holder of, but that is no longer claimed at all (Done or Blocked with an "
                     + "open pull request, the window the holder deliberately survives into) — releases just that "
                     + "holder, untouched by --unassign or --keep-interactive, leaving the task's own state exactly "
