@@ -47,22 +47,23 @@ public sealed class EventReplicationInboxIdeaActGateTests
     }
 
     [Fact]
-    public void A_member_taking_a_teammates_unassigned_idea_for_themselves_is_refused()
+    public void A_member_taking_a_teammates_unassigned_idea_for_themselves_is_never_applied_on_its_own()
     {
         Verdict verdict = Judge(typeof(IdeaAssigneeSet), Captured(), Sender(TeammateRoot), creatorRoot: CreatorRoot);
 
         verdict.Should().Be(
-            Verdict.DroppedAndRefusedPermanently,
-            "unlike a Published task there is no self-take exception for an idea (decision b8aa9007)");
+            Verdict.Held,
+            "unlike a Published task there is no self-take exception for an idea (decision b8aa9007), and "
+            + "the creator's own hand-off to this member may simply not have arrived yet");
     }
 
     [Fact]
-    public void A_creator_who_handed_the_idea_away_cannot_assign_it_again()
+    public void A_creator_who_handed_the_idea_away_cannot_assign_it_again_until_a_release_arrives()
     {
         IdeaAggregate idea = IdeaHeldBy(AssigneeRoot);
 
         Judge(typeof(IdeaAssigneeSet), idea, Sender(CreatorRoot), creatorRoot: CreatorRoot)
-            .Should().Be(Verdict.DroppedAndRefusedPermanently);
+            .Should().Be(Verdict.Held, "the assignee's release may be in another origin's outbox");
     }
 
     [Theory]
@@ -77,21 +78,21 @@ public sealed class EventReplicationInboxIdeaActGateTests
     [Theory]
     [InlineData(typeof(IdeaConcluded))]
     [InlineData(typeof(IdeaArchived))]
-    public void A_conclude_or_archive_by_the_creator_after_handing_the_idea_away_is_refused(Type eventType)
+    public void A_conclude_or_archive_by_the_creator_after_handing_the_idea_away_is_held_not_applied(Type eventType)
     {
         Judge(eventType, IdeaHeldBy(AssigneeRoot), Sender(CreatorRoot), creatorRoot: CreatorRoot)
-            .Should().Be(Verdict.DroppedAndRefusedPermanently);
+            .Should().Be(Verdict.Held);
     }
 
     [Theory]
     [InlineData(typeof(IdeaConcluded))]
     [InlineData(typeof(IdeaArchived))]
-    public void A_conclude_or_archive_by_a_non_owner_member_is_refused(Type eventType)
+    public void A_conclude_or_archive_by_a_non_owner_member_is_held_because_its_hand_off_may_not_have_arrived(Type eventType)
     {
         Judge(eventType, Captured(), Sender(TeammateRoot), creatorRoot: CreatorRoot)
-            .Should().Be(Verdict.DroppedAndRefusedPermanently);
+            .Should().Be(Verdict.Held, "the creator's assignment to this member may be in another origin's outbox");
         Judge(eventType, IdeaHeldBy(AssigneeRoot), Sender(TeammateRoot), creatorRoot: CreatorRoot)
-            .Should().Be(Verdict.DroppedAndRefusedPermanently);
+            .Should().Be(Verdict.Held, "a hand-off from the recorded assignee to this member may not have arrived");
     }
 
     [Theory]
@@ -119,7 +120,7 @@ public sealed class EventReplicationInboxIdeaActGateTests
         Judge(typeof(IdeaConcluded), IdeaHeldBy(AssigneeRoot), Sender(AssigneeRoot), creatorRoot: null)
             .Should().Be(Verdict.Allowed);
         Judge(typeof(IdeaConcluded), IdeaHeldBy(AssigneeRoot), Sender(CreatorRoot), creatorRoot: null)
-            .Should().Be(Verdict.DroppedAndRefusedPermanently);
+            .Should().Be(Verdict.Held);
     }
 
     [Fact]
@@ -200,15 +201,14 @@ public sealed class EventReplicationInboxIdeaActGateTests
     }
 
     [Fact]
-    public void An_assignee_cleared_is_allowed_only_from_the_current_assignee_and_holds_when_nobody_is_recorded()
+    public void An_assignee_cleared_is_allowed_only_from_the_current_assignee_and_holds_otherwise()
     {
         IdeaAggregate held = IdeaHeldBy(AssigneeRoot);
 
         Judge(typeof(IdeaAssigneeCleared), held, Sender(AssigneeRoot), CreatorRoot).Should().Be(Verdict.Allowed);
         Judge(typeof(IdeaAssigneeCleared), held, Sender(CreatorRoot), CreatorRoot)
-            .Should().Be(Verdict.DroppedAndRefusedPermanently, "a creator who handed the idea away no longer holds it");
-        Judge(typeof(IdeaAssigneeCleared), held, Sender(TeammateRoot), CreatorRoot)
-            .Should().Be(Verdict.DroppedAndRefusedPermanently);
+            .Should().Be(Verdict.Held, "a creator who handed the idea away no longer holds it, and a newer hand-off may be missing");
+        Judge(typeof(IdeaAssigneeCleared), held, Sender(TeammateRoot), CreatorRoot).Should().Be(Verdict.Held);
         Judge(typeof(IdeaAssigneeCleared), Captured(), Sender(CreatorRoot), CreatorRoot)
             .Should().Be(Verdict.Held, "the assignment it releases may simply not have arrived here yet");
     }
@@ -220,8 +220,11 @@ public sealed class EventReplicationInboxIdeaActGateTests
         Guid relayNode = DomainId.New();
         EventReplicationInbox.SenderResolution relay = new(TeammateRoot, MembershipRole.Member, new HashSet<Guid> { relayNode });
 
+        IdeaAggregate unattributable = Captured();
+        unattributable.Apply(new IdeaAssigneeSet(unattributable.Id, DomainId.New(), AssigneeOwnerRootFingerprint: null, Now, Guid.NewGuid()));
+
         EventReplicationInbox.EvaluateIdeaActVerdict(
-                TaskActClassification.Conditional, typeof(IdeaConcluded), Captured(), relay, originNode, relayNode, CreatorRoot)
+                TaskActClassification.Conditional, typeof(IdeaConcluded), unattributable, relay, originNode, relayNode, CreatorRoot)
             .Should().Be(Verdict.DroppedWithoutRecording);
     }
 
@@ -229,7 +232,9 @@ public sealed class EventReplicationInboxIdeaActGateTests
     /// The CLI guard (<see cref="TaskOwnerRule"/> over <see cref="TaskOwnerFacts"/> with no holder) must say
     /// what the receive gate says, so a command that refuses is refusing an act the fleet would drop and
     /// one that proceeds is proceeding with an act the fleet would apply. Wherever the gate holds (a creator
-    /// it has not verified) the rule has no answer either and reports the owner unknown.
+    /// it has not verified) the rule has no answer either and reports the owner unknown. The gate also holds
+    /// where its fact may be stale (a mismatch against the recorded assignee or creator), which the rule, with
+    /// nothing to wait for, answers as a refusal: the CLI is never more permissive than the gate.
     /// </summary>
     [Theory]
     [MemberData(nameof(AgreementRows))]
@@ -246,13 +251,10 @@ public sealed class EventReplicationInboxIdeaActGateTests
                 OwnerRootFact.KnownOrAbsent(assigneeRoot),
                 creatorRoot is null ? OwnerRootFact.Unresolved : OwnerRootFact.Known(creatorRoot)));
 
-        if (gate == Verdict.Held)
+        check.MayAct.Should().Be(gate == Verdict.Allowed);
+        if (gate == Verdict.Held && assigneeRoot is null && creatorRoot is null)
         {
             check.Outcome.Should().Be(TaskOwnerOutcome.Unknown);
-        }
-        else
-        {
-            check.MayAct.Should().Be(gate == Verdict.Allowed);
         }
     }
 

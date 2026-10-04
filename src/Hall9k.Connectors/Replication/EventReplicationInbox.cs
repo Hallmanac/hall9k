@@ -2473,10 +2473,14 @@ public sealed class EventReplicationInbox(
     /// <see cref="TaskActClassification.MemberSafe"/> and applies exactly as it did before this gate
     /// knew ideas, including <see cref="IdeaSpikeConcluded"/> from a teammate's node.
     /// <para>
-    /// An idea whose creator this node never verified (<paramref name="creatorRootFingerprint"/> null)
-    /// holds, as does an assignee clear on an idea with no recorded assignee, because the fact it needs
-    /// may simply not have arrived. An assignee recorded without a fingerprint refuses a Member, as a
-    /// task's does: this node cannot tell whose it is.
+    /// A sender whose root does not match the fact it is judged against holds rather than refuses, the
+    /// fact being the creator (an idea whose creator this node never verified, <paramref name="creatorRootFingerprint"/>
+    /// null, holds the same way) or the recorded assignee, and so does an assignee clear on an idea with
+    /// no recorded assignee: each sender's outbox is read on its own cursor, so the assignment, hand-off
+    /// or release that would have allowed the act may simply not have arrived here yet, and a permanent
+    /// drop would leave this node forked from every peer that did see it in order. A held act is judged
+    /// again on every later read and expires after the hold window like any other. An assignee recorded
+    /// without a fingerprint refuses a Member, as a task's does: this node cannot tell whose it is.
     /// </para>
     /// </summary>
     internal static TaskActVerdict EvaluateIdeaActVerdict(
@@ -2510,12 +2514,9 @@ public sealed class EventReplicationInbox(
 
         if (eventType == typeof(IdeaAssigneeCleared))
         {
-            return idea switch
-            {
-                { AssigneeOwnerId: null } => TaskActVerdict.Held,
-                _ when idea.AssigneeOwnerFingerprint == sender.RootFingerprint => TaskActVerdict.Allowed,
-                _ => Refuse(originNodeId, senderNodeId),
-            };
+            return idea.AssigneeOwnerId is null
+                ? TaskActVerdict.Held
+                : JudgeAgainstAssignee(idea, sender, originNodeId, senderNodeId);
         }
 
         if (eventType != typeof(IdeaAssigneeSet) && eventType != typeof(IdeaConcluded) && eventType != typeof(IdeaArchived))
@@ -2525,18 +2526,30 @@ public sealed class EventReplicationInbox(
 
         if (idea.AssigneeOwnerId is not null)
         {
-            return idea.AssigneeOwnerFingerprint == sender.RootFingerprint
-                ? TaskActVerdict.Allowed
-                : Refuse(originNodeId, senderNodeId);
+            return JudgeAgainstAssignee(idea, sender, originNodeId, senderNodeId);
         }
 
-        return creatorRootFingerprint switch
-        {
-            null => TaskActVerdict.Held,
-            _ when creatorRootFingerprint == sender.RootFingerprint => TaskActVerdict.Allowed,
-            _ => Refuse(originNodeId, senderNodeId),
-        };
+        // Another origin's assignment may simply not have arrived yet (each sender's outbox is read on
+        // its own cursor), so a sender that is not the creator waits as well rather than being burned.
+        return creatorRootFingerprint == sender.RootFingerprint
+            ? TaskActVerdict.Allowed
+            : TaskActVerdict.Held;
     }
+
+    /// <summary>
+    /// A Member-role sender's act against a recorded assignee: applied from the assignee's own root, and
+    /// held from any other, since the hand-off that made the sender the assignee, or the release that
+    /// took the recorded one off, may be waiting in another origin's outbox. An assignee recorded without
+    /// a fingerprint refuses outright: no later delivery makes this node able to tell whose it is.
+    /// </summary>
+    private static TaskActVerdict JudgeAgainstAssignee(
+        IdeaAggregate idea, SenderResolution sender, Guid originNodeId, Guid senderNodeId) =>
+        idea.AssigneeOwnerFingerprint switch
+        {
+            null or { Length: 0 } => Refuse(originNodeId, senderNodeId),
+            { } assignee when assignee == sender.RootFingerprint => TaskActVerdict.Allowed,
+            _ => TaskActVerdict.Held,
+        };
 
     /// <summary>The task a Task or Run act's own conditional verdict is judged against, and its id
     /// either way — <see cref="TaskAggregate"/> is null only when this node cannot resolve it at
