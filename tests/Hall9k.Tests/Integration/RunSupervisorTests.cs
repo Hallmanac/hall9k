@@ -3247,6 +3247,56 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         details.ParkedReason.Should().Contain("disputed a review thread");
     }
 
+    /// <summary>
+    /// A review body that makes several points can be answered in pieces: a fix posted for one
+    /// point does not answer a decline of another, whichever came first. The refused decline still
+    /// parks, with its drafted words, on both lap kinds (independent pre-PR review, cycle 1, both
+    /// lenses).
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_refused_review_body_decline_still_parks_beside_a_fix_posted_for_another_point(
+        bool changesRequestedLap)
+    {
+        FollowUpKind kind = changesRequestedLap ? FollowUpKind.ReviewRequestedChanges : FollowUpKind.ReviewFeedback;
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
+            store, cts.Token, asFollowUp: true, followUpKind: kind,
+            changesRequestedReviews: changesRequestedLap
+                ? [new ChangesRequestedReview("jsmotherman", BodyReviewUrl, Now, [new ChangesRequestedFinding("Rename it.")])]
+                : null);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewBodyReplyPosted(
+                runId, BodyReviewUrl, ReviewThreadDisposition.Fix, true, Now.AddMinutes(-5)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await RecordBodyRefusalAsync(store, runId, cts.Token);
+
+        string summary =
+            $"DISAGREEMENT: review={BodyReviewUrl}; disposition=decline\n"
+            + "REVIEWER ASKED: why a canary value\n"
+            + "MY REASONING: the sentinel already means 'unset'\n"
+            + "PROPOSED REPLY: The sentinel already means unset here.\n"
+            + "RESOLUTION: resolved";
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(summary)));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        NewSupervisor(store, node).StartMonitoring(
+            runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "ReviewParked", cts.Token);
+        IReadOnlyList<ReviewDisagreement> drafts = changesRequestedLap
+            ? details.ChangesRequestedDisagreements
+            : details.HumanThreadReplyDrafts;
+        ReviewDisagreement draft = drafts.Should().ContainSingle().Subject;
+        draft.ReviewUrl.Should().Be(BodyReviewUrl);
+        draft.ProposedReply.Should().Be("The sentinel already means unset here.");
+    }
+
     /// <summary>A review this run later answered with a posted comment owes nothing.</summary>
     [Fact]
     public async Task A_refused_review_body_decline_later_answered_by_a_fix_parks_nothing()
