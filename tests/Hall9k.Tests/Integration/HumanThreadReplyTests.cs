@@ -253,12 +253,16 @@ public sealed class HumanThreadReplyTests(PostgresFixture postgres) : IClassFixt
     }
 
     /// <summary>
-    /// A fix's reply still reaches a person's thread, because "I changed it, here is what
-    /// changed" invites no argument and the commit is its evidence. The claimed disposition is
-    /// recorded so a false one is checkable afterwards.
+    /// A fix's reply is held for the platform's push, into a person's thread as into a bot's: the
+    /// session never pushes, and a reply that says Fixed must not reach the pull request before the
+    /// fix does (task: a review-feedback lap's fix reply posts only after the platform's push has
+    /// moved the pull request's head). The words are vetted and recorded, the claim is recorded
+    /// with the platform's own read of who opened the thread, and nothing reaches GitHub.
     /// </summary>
-    [Fact]
-    public async Task A_fix_reply_into_a_human_thread_still_posts_and_records_the_claim()
+    [Theory]
+    [InlineData(HumanThreadId, true)]
+    [InlineData(BotThreadId, false)]
+    public async Task A_fix_reply_is_held_not_posted_and_records_the_claim(string threadId, bool humanAuthored)
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         (Guid taskId, Guid runId) = await SeedParkedReplyAsync(cts.Token, parked: false);
@@ -270,21 +274,55 @@ public sealed class HumanThreadReplyTests(PostgresFixture postgres) : IClassFixt
                 session, taskId,
                 new PullRequestReplyCommand.Settings
                 {
-                    Thread = HumanThreadId, Disposition = "fix", Body = "Renamed it in the commit above.",
+                    Thread = threadId, Disposition = "fix", Body = "Renamed it in the commit above.",
                 },
                 new GitHubReviewReplies(gh.Runner), new GitHubPullRequestReviews(gh.Runner),
                 cts.Token);
             result.Should().Be(0);
         }
 
-        gh.Calls.Should().ContainSingle().Which.Arguments.Should().Contain($"threadId={HumanThreadId}");
+        gh.Calls.Should().BeEmpty("a fix reply posts only after the platform's push has moved the head");
 
         await using IQuerySession query = postgres.Store.QuerySession();
-        ReviewThreadReplyRecord posted = (await query.LoadAsync<RunDetails>(runId, cts.Token))!
-            .ReviewThreadRepliesPosted.Should().ContainSingle().Subject;
-        posted.Disposition.Should().Be(ReviewThreadDisposition.Fix);
-        posted.ThreadIsHumanAuthored.Should().BeTrue(
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewThreadRepliesPosted.Should().BeEmpty();
+        HeldReplyRecord held = run.HeldReplies.Should().ContainSingle().Subject;
+        held.ThreadId.Should().Be(threadId);
+        held.Disposition.Should().Be(ReviewThreadDisposition.Fix);
+        held.Body.Should().Be("Renamed it in the commit above.");
+        held.IsWaiting.Should().BeTrue();
+        held.TargetIsHumanAuthored.Should().Be(
+            humanAuthored,
             "the author kind is the platform's own read, and recording it is what makes the claim checkable");
+    }
+
+    /// <summary>
+    /// The writing-conventions check runs at the hold, exactly as it did at the post: what is
+    /// recorded, and so what the daemon later posts, is the vetted text, never the raw one.
+    /// </summary>
+    [Fact]
+    public async Task A_fix_reply_is_vetted_against_the_writing_conventions_before_it_is_held()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        (Guid taskId, Guid runId) = await SeedParkedReplyAsync(cts.Token, parked: false);
+
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding("{}");
+        await using (IDocumentSession session = postgres.Store.LightweightSession())
+        {
+            await PullRequestReplyCommand.ReplyAsync(
+                session, taskId,
+                new PullRequestReplyCommand.Settings
+                {
+                    Thread = BotThreadId, Disposition = "fix", Body = "Renamed it \u2014 in the commit above.",
+                },
+                new GitHubReviewReplies(gh.Runner), new GitHubPullRequestReviews(gh.Runner),
+                cts.Token);
+        }
+
+        gh.Calls.Should().BeEmpty();
+        await using IQuerySession query = postgres.Store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.HeldReplies.Should().ContainSingle()
+            .Which.Body.Should().NotContain("\u2014", "the held text is the vetted text");
     }
 
     /// <summary>

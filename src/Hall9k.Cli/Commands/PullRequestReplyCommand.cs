@@ -7,6 +7,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
 using Spectre.Console;
@@ -34,6 +35,15 @@ namespace Hall9k.Cli.Commands;
 /// Copilot's findings stay on the automated path they have always been on (Decisions Log #159) —
 /// and a fix's reply into a person's thread, because "I changed it, here is what changed" invites
 /// no argument and the commit is the evidence.
+/// </para>
+/// <para>
+/// <b>What a fix waits for</b> (task: a review-feedback lap's fix reply posts only after the
+/// platform's push has moved the pull request's head). A fix reply, into a bot's thread or a
+/// person's and onto a review body alike, posts nothing from here: the words are vetted against
+/// the writing conventions and recorded on the run as held (<see cref="ReviewReplyHeld"/>), and
+/// the daemon posts them in its push step, with a line naming the push, only when that push moved
+/// the head. A reply that says Fixed is a claim about the head, and the session never pushes. The
+/// session is told so, and told not to resolve the thread itself.
 /// </para>
 /// <para>
 /// <b>Whose thread it is, and how much is trusted.</b> The author kind is not the session's to
@@ -90,11 +100,12 @@ public sealed class PullRequestReplyCommand : Hall9kAsyncCommand<PullRequestRepl
         [Description(
             "The triage disposition this reply carries: fix, decline, or route. A decline or a route "
             + "into a thread a PERSON opened, or onto a review body a PERSON wrote, is refused — draft it, park it, and let the owner send it "
-            + "(PLAN.md Decisions Log #62, #159, and the review-feedback reply park)")]
+            + "(PLAN.md Decisions Log #62, #159, and the review-feedback reply park). A fix is recorded, not posted: "
+            + "the platform posts it and resolves the thread after its push has moved the pull request's head")]
         public string Disposition { get; init; } = string.Empty;
 
         [CommandOption("--body <BODY>")]
-        [Description("The reply itself, posted verbatim under the owner's login (a review-body reply is prefixed with the review's url)")]
+        [Description("The reply itself, posted verbatim under the owner's login (a review-body reply is prefixed with the review's url; a fix reply gets one line naming the platform's push appended)")]
         public string Body { get; init; } = string.Empty;
 
         public override ValidationResult Validate() => this switch
@@ -219,6 +230,17 @@ public sealed class PullRequestReplyCommand : Hall9kAsyncCommand<PullRequestRepl
         string body = PostedProse.Vet(
             settings.Body.Trim(), project.WritingConventions, $"the reply for review thread {threadId}");
 
+        // A fix is a claim about the pull request's head, and the session never pushes: the
+        // platform does, after its gates. So the vetted words are recorded on the run and the
+        // daemon posts them in its push step, once the push has moved the head, with a line
+        // naming that push. Nothing reaches GitHub from here.
+        if (disposition == ReviewThreadDisposition.Fix)
+        {
+            await HoldAsync(session, runId, threadId, null, disposition, human is not null, body, cancellationToken);
+            PrintHeld($"review thread {threadId}", task.PullRequestUrl, resolvesThread: true);
+            return ExitCodes.Ok;
+        }
+
         // The provider write is the LAST thing that can fail before the append, the same ordering
         // ReviewResolveCommand's own post keeps: a failed post leaves nothing on the stream saying
         // the reviewer was answered, which is the one lie this record must never tell.
@@ -246,6 +268,42 @@ public sealed class PullRequestReplyCommand : Hall9kAsyncCommand<PullRequestRepl
         AnsiConsole.MarkupLineInterpolated(
             $"[dim]Replied in review thread {threadId} on {task.PullRequestUrl}.[/]");
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Records a fix reply as held on the run. A pure log entry, appended on the same terms as the
+    /// refusals and posts beside it: no expected version, because nothing is decided from the run
+    /// stream here.
+    /// </summary>
+    private static async Task HoldAsync(
+        IDocumentSession session, Guid runId, string? threadId, string? reviewUrl,
+        ReviewThreadDisposition disposition, bool targetIsHumanAuthored, string body,
+        CancellationToken cancellationToken)
+    {
+        session.Events.Append(runId, new ReviewReplyHeld(
+            runId, DomainId.New(), threadId, reviewUrl, disposition,
+            targetIsHumanAuthored, body, DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// What the session is told when its fix reply is held, in the order of events it cannot see:
+    /// the platform pushes, then posts, then resolves, so the session must not resolve the thread
+    /// itself. Plain text on stdout, because an agent reads the command's output rather than a
+    /// markup rendering of it.
+    /// </summary>
+    private static void PrintHeld(string target, string? pullRequestUrl, bool resolvesThread)
+    {
+        Console.WriteLine(
+            $"Recorded your fix reply for {target} on {pullRequestUrl}. Nothing was posted yet: a reply that says "
+            + "Fixed must not reach the pull request before the fix does, and the platform pushes this lap's work "
+            + "after its gates.");
+        Console.WriteLine(
+            resolvesThread
+                ? "The platform will post this reply and resolve the thread after it pushes this lap's work and "
+                    + "the pull request's head has moved. Do NOT resolve the thread yourself."
+                : "The platform will post this reply as a comment after it pushes this lap's work and the pull "
+                    + "request's head has moved.");
     }
 
     /// <summary>
@@ -287,11 +345,20 @@ public sealed class PullRequestReplyCommand : Hall9kAsyncCommand<PullRequestRepl
         string body = PostedProse.Vet(
             settings.Body.Trim(), project.WritingConventions, $"the comment answering review {review.Url}");
 
+        // A fix answer waits for the push exactly as a thread's does; see ReplyInThreadAsync.
+        if (disposition == ReviewThreadDisposition.Fix)
+        {
+            await HoldAsync(
+                session, runId, null, review.Url, disposition, !review.AuthoredByBot, body, cancellationToken);
+            PrintHeld($"review {review.Url}", task.PullRequestUrl, resolvesThread: false);
+            return ExitCodes.Ok;
+        }
+
         // The same naming ReviewResolveCommand gives the owner's own send of a parked body draft,
         // so the reviewer reads one shape whichever route the words took.
         await replies.CommentAsync(
             project.RepositoryPath, PullRequestUrls.ParseNumber(task.PullRequestUrl),
-            $"On {review.Url}:\n\n{body}", cancellationToken);
+            GitHubReviewReplies.ReviewBodyComment(review.Url, body), cancellationToken);
         session.Events.Append(runId, new ReviewBodyReplyPosted(
             runId, review.Url, disposition, !review.AuthoredByBot, DateTimeOffset.UtcNow));
         try
