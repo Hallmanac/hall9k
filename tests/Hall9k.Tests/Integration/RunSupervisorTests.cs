@@ -3175,6 +3175,50 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// A review body can make several points, and a lap that declines more than one drafts one
+    /// block per point. The park carries every one of them, on both lap kinds, so
+    /// <c>--post-reply-as-written</c> answers each point rather than only the first.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_refused_review_body_decline_parks_every_block_that_names_the_review(bool changesRequestedLap)
+    {
+        FollowUpKind kind = changesRequestedLap ? FollowUpKind.ReviewRequestedChanges : FollowUpKind.ReviewFeedback;
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
+            store, cts.Token, asFollowUp: true, followUpKind: kind,
+            changesRequestedReviews: changesRequestedLap
+                ? [new ChangesRequestedReview("jsmotherman", BodyReviewUrl, Now, [new ChangesRequestedFinding("Rename it.")])]
+                : null);
+        await RecordBodyRefusalAsync(store, runId, cts.Token);
+
+        string summary =
+            $"DISAGREEMENT: review={BodyReviewUrl}; disposition=decline\n"
+            + "REVIEWER ASKED: why a canary value\n"
+            + "MY REASONING: the sentinel already means 'unset'\n"
+            + "PROPOSED REPLY: First point answered.\n"
+            + $"DISAGREEMENT: review={BodyReviewUrl}; disposition=decline\n"
+            + "REVIEWER ASKED: why not a record\n"
+            + "MY REASONING: the type is closed\n"
+            + "PROPOSED REPLY: Second point answered.\n"
+            + "RESOLUTION: disputed";
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(summary)));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        NewSupervisor(store, node).StartMonitoring(
+            runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "ReviewParked", cts.Token);
+        IReadOnlyList<ReviewDisagreement> drafts = changesRequestedLap
+            ? details.ChangesRequestedDisagreements
+            : details.HumanThreadReplyDrafts;
+        drafts.Select(draft => draft.ProposedReply).Should().Equal("First point answered.", "Second point answered.");
+        drafts.Should().OnlyContain(draft => draft.ReviewUrl == BodyReviewUrl);
+    }
+
+    /// <summary>
     /// A block naming a review url the posting path never read is the session's word and nothing
     /// else, so it takes the plain dispute park with no reply choices attached.
     /// </summary>

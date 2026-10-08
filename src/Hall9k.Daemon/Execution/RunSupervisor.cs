@@ -2792,9 +2792,9 @@ public sealed class RunSupervisor(
     /// its own), one per refused review. The refusal record is GitHub's own report of the review,
     /// taken by <c>h9k pr reply --review</c> when it ran, so the draft carries that url and the
     /// disposition the session claimed; a <c>DISAGREEMENT:</c> block naming the same review lends
-    /// its words, and a refusal with no block becomes a blank draft, the honest record of a lap that
-    /// decided against a person and composed nothing, exactly as a declined thread read off the
-    /// triage alone does. A review this run already answered with a posted comment is skipped:
+    /// its words (every block naming it, one draft each), and a refusal with no block becomes a
+    /// blank draft, the honest record of a lap that decided against a person and composed nothing,
+    /// exactly as a declined thread read off the triage alone does. A review this run already answered with a posted comment is skipped:
     /// the words reached the reviewer, so there is nothing left to send.
     /// <para>
     /// A <c>DISAGREEMENT:</c> block naming a review url with no refusal record produces nothing
@@ -2806,9 +2806,12 @@ public sealed class RunSupervisor(
         RunDetails run, IReadOnlyList<ReviewDisagreement> blocks)
     {
         List<ReviewDisagreement> drafts = [];
+        List<string> handled = [];
         foreach (RefusedReviewBodyReplyRecord refused in run.RefusedReviewBodyReplies)
         {
-            if (drafts.Exists(draft => SameReview(draft.ReviewUrl, refused.ReviewUrl))
+            // Tracked apart from the drafts, because one review can carry several drafts (one per
+            // block) and a second refusal record for the same review must not draft it again.
+            if (handled.Exists(url => SameReview(url, refused.ReviewUrl))
                 || run.ReviewBodyRepliesPosted.Any(posted => SameReview(posted.ReviewUrl, refused.ReviewUrl))
                 // A park this run already raised for the review, resolved since: a resumed session
                 // reading the same refusal must not ask the owner the same question twice.
@@ -2818,23 +2821,36 @@ public sealed class RunSupervisor(
                 continue;
             }
 
-            ReviewDisagreement? block = blocks.FirstOrDefault(candidate =>
-                candidate.ThreadId.IsBlank() && SameReview(candidate.ReviewUrl, refused.ReviewUrl));
-            drafts.Add(block is null
-                // Blank rather than filled in: the session restated no finding and drafted no
-                // reply, and those are the two things the operator is about to be told are missing
-                // (AGENTS.md: never guess at unobserved facts).
-                ? new ReviewDisagreement(
-                    Finding: string.Empty,
-                    Reasoning: string.Empty,
-                    ProposedReply: string.Empty,
-                    ReviewUrl: refused.ReviewUrl,
-                    Disposition: refused.Disposition)
-                : block with
-                {
-                    ReviewUrl = refused.ReviewUrl,
-                    Disposition = block.Disposition ?? refused.Disposition,
-                });
+            handled.Add(refused.ReviewUrl);
+
+            // Every block naming the review, not the first: a review body can make several points
+            // and the lap drafted one block per point, so the park carries each of them and
+            // --post-reply-as-written answers each of them.
+            ReviewDisagreement[] named =
+            [
+                .. blocks
+                    .Where(candidate => candidate.ThreadId.IsBlank() && SameReview(candidate.ReviewUrl, refused.ReviewUrl))
+                    .Select(block => block with
+                    {
+                        ReviewUrl = refused.ReviewUrl,
+                        Disposition = block.Disposition ?? refused.Disposition,
+                    }),
+            ];
+            if (named.Length > 0)
+            {
+                drafts.AddRange(named);
+                continue;
+            }
+
+            // Blank rather than filled in: the session restated no finding and drafted no
+            // reply, and those are the two things the operator is about to be told are missing
+            // (AGENTS.md: never guess at unobserved facts).
+            drafts.Add(new ReviewDisagreement(
+                Finding: string.Empty,
+                Reasoning: string.Empty,
+                ProposedReply: string.Empty,
+                ReviewUrl: refused.ReviewUrl,
+                Disposition: refused.Disposition));
         }
 
         return drafts;
