@@ -793,7 +793,10 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "handling-intro"));
         prompt.AppendLine();
-        AppendFragment(prompt, file, "handling-fix");
+        AppendFragment(
+            prompt, file, "handling-fix",
+            ("ReplyCommand", ClaudeSettingsFile.ReviewThreadReplyCommand),
+            ("TaskId", taskId.ToString()));
         AppendFragment(prompt, file, "handling-question");
         AppendFragment(
             prompt, file, "handling-body-comment",
@@ -2084,8 +2087,10 @@ public static class AgentPromptBuilder
 
     /// <summary>
     /// How a triage disposition becomes a reply and a resolve decision (Decisions Log #62, #159,
-    /// #152, and the review-feedback reply park). A fix invites no argument and is replied and
-    /// resolved the same way regardless of who started the thread; a decline or a route is
+    /// #152, and the review-feedback reply park). A fix invites no argument and is held for the
+    /// platform's push, then posted and resolved by the daemon, regardless of who started the
+    /// thread (task: a review-feedback lap's fix reply posts only after the platform's push has
+    /// moved the pull request's head); a decline or a route is
     /// different, and the difference is now about who opened the thread rather than only about
     /// who may close it.
     /// <para>

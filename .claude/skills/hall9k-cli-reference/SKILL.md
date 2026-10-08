@@ -1722,17 +1722,36 @@ and records the attempt on the run (`ReviewThreadReplyRefused`, rendered by `h9k
 telling a colleague their point does not hold is the owner's to send, so the lap drafts the reply,
 closes with the `DISAGREEMENT:` block and `RESOLUTION: disputed`, and parks; `h9k review resolve`
 then takes `--post-reply-as-written`, `--post-reply "<text>"`, or `--post-nothing` alongside the
-verdict. A **bot's** thread, on any disposition, and a **fix**'s reply into anyone's thread post
-exactly as they always have.
+verdict. A **bot's** thread, on a decline or a route, posts at once, as it always has.
+
+A **fix** reply posts nothing during the session, into a bot's thread or a person's. The command vets
+the body against the writing conventions as before and records the reply on the run as held
+(`ReviewReplyHeld`), because the session never pushes: the platform does, after its gates, and a
+reply saying Fixed must not reach the pull request before the fix does. The daemon posts it in the
+push step, after the generation fence admits the run and before the task reads complete, but only
+when the push moved the pull request's head away from the head the lap started from
+(`RunDetails.OpeningReviewSinceSha`, else the tip the task last pushed to the branch before this
+push; with neither known, nothing posts). It appends one line naming the push, the short shas before
+and after and GitHub's two-dot compare link between them, then resolves the thread and records the
+post (`ReviewThreadReplyPosted`). So the session does **not** resolve a fix's thread itself. A post or
+a resolve that fails is logged with gh's error and leaves that thread open without failing the run.
+A lap that ends without moving the head (an unmoved push, a gate failure, a failed or abandoned or
+superseded run) posts nothing, a parked run's reply waits for a later push, and a reply posts at most
+once. `h9k task show` lists each fix reply that has not posted with its thread and body, as waiting for
+the push or as withheld with the reason (`ReviewReplyWithheld`). A finding the pull request already
+satisfies on the head the lap started from is not a fix: it is a decline whose evidence names the
+commit that satisfies it, posted on a bot's thread and drafted and parked on a person's.
 
 Whose thread it is comes from the platform's own read of the pull request when the lap was
 dispatched (`TaskReopened.HumanReviewThreads`, the provider's own actor type), never the session's
 say-so; a thread this install never read as human-authored posts, because an unobserved fact is not
 an observed bot and a thread opened after the dispatch read is the ordinary case. The
 **disposition** is the session's own word, which is the one soft spot — so every accepted reply
-records the claim (`ReviewThreadReplyPosted`) and `RunSupervisor` compares it against that thread's
-own `THREAD DISPOSITION:` block at completion, putting a reply that claimed fix and was really a
-decline in the run log rather than nowhere.
+records the claim (`ReviewReplyHeld` for a fix, `ReviewThreadReplyPosted` for the rest) and
+`RunSupervisor` compares it against that thread's own `THREAD DISPOSITION:` block when the closing
+triage lands: a held fix reply into a person's thread that the triage calls a decline or a route is
+withheld, with a run-log warning naming the thread, and stays withheld if the run later resumes
+from a park and pushes.
 
 **The review-body form.** A review's body is unthreadable, so its answer is a top-level comment, and
 `--review <review url>` posts exactly one that names the review (`On <url>:` ahead of the words).
@@ -1741,7 +1760,8 @@ session: a `Bot` actor type or a known Copilot login is a bot (the rule the clos
 applies, shared in `GitHubActors`), any other author is a person, and a review GitHub returns with no
 readable author is a person's. A review that is not on the task's own pull request, or that GitHub
 will not return, is refused with nothing posted and nothing recorded. On a person's review a **fix**
-posts at once and is recorded (`ReviewBodyReplyPosted`); a **decline** or **route** posts nothing and
+is held for the push like a thread's and then posts as the top-level comment with the same push
+line (`ReviewBodyReplyPosted`); a **decline** or **route** posts nothing and
 is recorded as refused (`ReviewBodyReplyRefused`, with the review's url and author as GitHub reported
 them). The lap drafts the reply into a `DISAGREEMENT:` block naming `review=<url>` and closes
 `RESOLUTION: disputed`, and the run parks, on a review-feedback lap and a changes-requested lap alike,
@@ -1749,7 +1769,7 @@ with the three `h9k review resolve` choices; sending posts the reply as a top-le
 review. The refusal record is what the park draws its reply choices from, so it parks even when the
 session wrote no block or closed `RESOLUTION: resolved` (the draft is then blank), and a `review=` url
 the session composed with no refusal record behind it takes the plain park with no reply choices. A
-bot's review body posts on any disposition. Every post goes through the same writing-conventions
+bot's review body posts at once on a decline or a route. Every post goes through the same writing-conventions
 check. The residual, named rather than closed: a lap that declines a person's body point, never calls
 the form, and closes `RESOLUTION: resolved` posts nothing and parks nothing, because the body has no
 `THREAD DISPOSITION:` triage to read a second source from; the prompt rule is all that holds there.

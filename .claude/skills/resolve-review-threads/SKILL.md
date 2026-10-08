@@ -13,9 +13,9 @@ This skill works on an **existing** PR only. Never open a PR from an agent sessi
 
 Origin incidents, both with replies that were accurate and still had to be deleted: arx-platform PR #2021 (2026-09-09) and PR #2042 (2026-09-15), where a follow-up answered a reviewer in the owner's name minutes after they approved.
 
-Everything else in this skill is unchanged: a **fix**'s reply, and everything a **bot** opened, are handled here, in-thread, as they always have been.
+Everything a **bot** opened is handled here, in-thread, as it always has been. A **fix**'s reply, in anyone's thread, is still answered in-thread, but inside a Hall9k follow-up the platform posts it (and resolves the thread) after its own push has moved the pull request's head, instead of the session posting it during the lap.
 
-**Inside a Hall9k follow-up, in-thread replies go through the platform.** The command is `h9k pr reply <task> --thread <node id> --disposition fix|decline|route --body "<text>"`, and the `gh` reply routes are refused before they run — only that command can tell a bot's thread from a person's. Running this skill standalone, outside a dispatched run, the `gh` route in step 7 is what you have; the rule above still applies, and the draft goes to whoever asked you to run the skill.
+**Inside a Hall9k follow-up, in-thread replies go through the platform.** The command is `h9k pr reply <task> --thread <node id> --disposition fix|decline|route --body "<text>"`, and the `gh` reply routes are refused before they run — only that command can tell a bot's thread from a person's. A **fix** reply is held there rather than posted: the platform posts it, and resolves the thread, only after its own push has moved the pull request's head (steps 7 and 9). Running this skill standalone, outside a dispatched run, the `gh` route in step 7 is what you have, and you push the fix yourself before replying; the rule above still applies, and the draft goes to whoever asked you to run the skill.
 
 ## Whose comment is whose
 
@@ -66,7 +66,7 @@ Two consequences worth stating:
 
 4. **Triage every thread before touching any code.** Read the thread and the diff around it, then give each one exactly one disposition (task: every review thread on a pull request gets a triage disposition before any fix work — origin: PR #199 and PR #229, two full fix laps in two days bought by Copilot claims that turned out false on inspection, both resolved by hand on Brian's word after evidence, with no way for the lifecycle to do that itself):
 
-   - **fix** — the finding is real and in scope. The only disposition that earns a code change.
+   - **fix** — the finding is real and in scope. The only disposition that earns a code change. A finding the pull request **already satisfies on the head this lap started from** (the pull request as GitHub shows it, not a local commit this lap made) is not a fix: there is no push to wait for and nothing to claim as fixed. It is a decline whose evidence names the commit that satisfies it, so it is posted on a bot's thread and drafted and parked on a person's.
    - **decline** — you have reproduction-grade evidence it does not hold up: a scratch-repo demonstration (`mktemp -d`, reproduce the claim, show the actual behavior), or a pointer to the code path that already handles it. Disagreeing is not evidence. "I don't think that's right" is not a decline; "here is the command and its output" is.
    - **route** — real, but out of this task's own scope. File it rather than growing this diff: `h9k idea add "<text>" --project <name>`.
 
@@ -75,7 +75,7 @@ Two consequences worth stating:
    Dismissal is now decline or route, not a third bucket: a suggestion to refactor something that follows an established codebase pattern is a decline citing the pattern; a suggestion that would break functionality is a decline citing why; a valid-but-out-of-scope suggestion is a route, filed as an idea rather than only mentioned in a reply.
 
 5. **Human threads get more care than bot threads, at every disposition.** Same mechanics, higher bar:
-   - **A decline or a route posts nothing at all.** See the carve-out at the top of this skill: draft the reply, park it, and let the owner send it. Steps 7 and 9 below apply to a bot's thread, and to a fix's reply in anyone's.
+   - **A decline or a route posts nothing at all.** See the carve-out at the top of this skill: draft the reply, park it, and let the owner send it. Steps 7 and 9 below apply to a bot's thread, and to a fix's reply in anyone's, where the platform does the posting and the resolving after it pushes.
    - **A question gets an answer, not a code change.** If the honest answer is "yes, deliberately, because X", that answer *is* the resolution — usually a decline whose evidence is the answer itself, occasionally a fix if the honest answer turns out to be "you're right". Inventing a change to look responsive is worse than saying nothing. Since answering a question is a decline, a question a *person* asked is drafted and parked rather than posted.
    - **Never resolve a human's thread without replying substantively.** A resolved thread with no answer in it is worse than an open one: it reads as handled.
    - **One honest attempt per thread.** Say your piece once, with reasoning and evidence. Never re-litigate a point a previous run already answered.
@@ -89,6 +89,7 @@ Two consequences worth stating:
    ```bash
    h9k pr reply "$TASK_ID" --thread "$THREAD_ID" --disposition fix|decline|route --body "…"
    ```
+   A **fix** reply is held, not posted: the command vets your words and records them on the run. You never push; the platform does, after its gates, and a reply saying Fixed must not reach the pull request before the fix does. So it posts the reply after its push has moved the pull request's head, and it appends the push range (the short shas before and after, and GitHub's compare link) on its own line, so do not write that line yourself. A lap that pushes nothing posts nothing. A decline or a route on a bot's thread posts at once.
    Standalone, `$COMMENT_ID` is the numeric `databaseId` of a comment in the thread (the first one is the reviewer's, and replying under it is what puts your answer in that thread), never the `PRRC_…` node id:
    ```bash
    gh api "repos/$SLUG/pulls/$PR_NUMBER/comments/$COMMENT_ID/replies" -f body="…"
@@ -103,7 +104,7 @@ Two consequences worth stating:
    ```bash
    h9k pr reply "$TASK_ID" --review "$REVIEW_URL" --disposition fix|decline|route --body "…"
    ```
-   The command posts one top-level comment that names the review, and it reads the review's author from GitHub rather than taking your word. A fix posts at once. A decline or a route on a person's review body posts nothing and is recorded as refused, so draft it and park it exactly as step 7's carve-out does for a person's thread, with `review=$REVIEW_URL` in the `DISAGREEMENT:` block. Submit the decline through the command anyway: the recorded refusal is what lets the owner send your draft. A bot's review body posts on any disposition.
+   The command posts one top-level comment that names the review, and it reads the review's author from GitHub rather than taking your word. A fix is held like a thread's (step 7): the platform posts it as that top-level comment after its push has moved the pull request's head, with the push range on its own line, and a lap that pushes nothing posts nothing. A decline or a route on a person's review body posts nothing and is recorded as refused, so draft it and park it exactly as step 7's carve-out does for a person's thread, with `review=$REVIEW_URL` in the `DISAGREEMENT:` block. Submit the decline through the command anyway: the recorded refusal is what lets the owner send your draft. A bot's review body posts on any disposition.
 
    Standalone, outside a Hall9k follow-up, there is no platform to route through, so post the comment yourself:
    ```bash
@@ -111,7 +112,7 @@ Two consequences worth stating:
    ```
 
 9. **Resolve the thread**, once its reply is posted, per its disposition and its author:
-   - **fix**: resolve it, bot-authored or human-authored — a fix invites no argument.
+   - **fix**: inside a Hall9k follow-up, do **not** resolve it: the platform resolves the thread right after it posts the held reply, once its push has moved the head, bot-authored or human-authored. A thread you resolved yourself before that would read as answered over a head that does not carry the fix yet. Standalone, you push first, then resolve it — a fix invites no argument.
    - **decline or route, bot-authored**: resolve it. The evidence (or the routing note) is what a bot needed; there is nobody left to answer.
    - **decline or route, human-authored**: nothing was posted and nothing is resolved. The thread stays open and unanswered until the owner decides what it hears. **Agents never answer or close a person's thread on a decline or a route.**
    ```bash

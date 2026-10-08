@@ -996,7 +996,8 @@ Per poll, in priority order:
   they decide, and a lap can legitimately push nothing at all. The decline rate is recorded per
   thread on the run stream. Three things back the rule up: every reply routes through
   `h9k pr reply`, in a thread or, for a review's own body, as one top-level comment
-  (`--review`), and it refuses a decline or a route onto a person's thread or review and records
+  (`--review`); a fix reply there waits for the platform's push and posts only if the push moved
+  the pull request's head; and it refuses a decline or a route onto a person's thread or review and records
   the attempt; the `gh` routes onto the pull request, top-level comments included, are refused by
   every headless session's own PreToolUse guard, on either shell; and the park itself is read off
   the lap's own triage (or, for a review body, off the recorded refusal), so a lap that declined a
