@@ -822,8 +822,16 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         }
 
         await Doorbell.RingAsync($"review-resolve:{taskId}", cancellationToken);
-        AnsiConsole.MarkupLineInterpolated(
-            $"[dim]Run {runId} resolved — the daemon completes the task. Nothing was posted to the pull request.[/]");
+        AnsiConsole.MarkupLineInterpolated($"[dim]{PrReviewResolvedLine(runId)}[/]");
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// The closing line of a pr-review resolve. It speaks only for this command: the findings walk may
+    /// already have posted to the pull request, and a full review waits on the pull request after
+    /// resolve rather than completing, so it claims neither a post nor a completion.
+    /// </summary>
+    internal static string PrReviewResolvedLine(Guid runId) =>
+        $"Run {runId} resolved; the daemon finalizes the review from here. This command posted nothing "
+        + "to the pull request; anything posted during the findings walk stands.";
 }
