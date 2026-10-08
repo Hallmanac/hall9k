@@ -29,7 +29,3 @@ context: |-
   A wording that would meet criterion 1, offered rather than required: "the run finished; the pull request on record is <url>".
 
   Out of scope: the park line at src/Hall9k.Daemon/Review/PrReviewEngine.cs lines 1321 to 1325 ("nothing was posted to the pull request") is true at park time and stays. It is parked in idea c857584a with a trigger: a parked pr-review row that still says nothing was posted after the owner reviewed by hand. Smallest fix: wording from facts already on the record; no new event, no new field.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-10-08 17:08:26Z
