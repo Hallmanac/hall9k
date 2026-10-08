@@ -530,6 +530,14 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// </summary>
     public List<RefusedReviewBodyReplyRecord> RefusedReviewBodyReplies { get; set; } = [];
     /// <summary>
+    /// Every fix reply the posting path held for the daemon to post after its push, oldest first,
+    /// with what became of each (task: a review-feedback lap's fix reply posts only after the
+    /// platform's push has moved the pull request's head). A reply still waiting here has reached
+    /// nobody; <c>h9k task show</c> lists the ones that never posted so the owner can read what
+    /// the lap would have claimed.
+    /// </summary>
+    public List<HeldReplyRecord> HeldReplies { get; set; } = [];
+    /// <summary>
     /// The unresolved threads a person opened that closeout read as asking nothing, beside a
     /// review from that same person requesting no change — the FYI beside an approval, which buys
     /// no follow-up lap (task: a review-feedback follow-up never answers a human reviewer in the
@@ -1512,19 +1520,64 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         view.ParkedOnReviewDisagreement = true;
     }
 
-    public void Apply(IEvent<ReviewThreadReplyPosted> @event, RunDetails view) =>
+    public void Apply(IEvent<ReviewThreadReplyPosted> @event, RunDetails view)
+    {
         view.ReviewThreadRepliesPosted.Add(new ReviewThreadReplyRecord(
             @event.Data.ThreadId, @event.Data.Disposition, @event.Data.ThreadIsHumanAuthored,
             @event.Data.PostedAt));
+        MarkHeldReplyPosted(view, @event.Data.HeldReplyId, @event.Data.PostedAt);
+    }
 
     public void Apply(IEvent<ReviewThreadReplyRefused> @event, RunDetails view) =>
         view.RefusedHumanThreadReplies.Add(new RefusedThreadReplyRecord(
             @event.Data.ThreadId, @event.Data.Disposition, @event.Data.Reason, @event.Data.RefusedAt));
 
-    public void Apply(IEvent<ReviewBodyReplyPosted> @event, RunDetails view) =>
+    public void Apply(IEvent<ReviewBodyReplyPosted> @event, RunDetails view)
+    {
         view.ReviewBodyRepliesPosted.Add(new ReviewBodyReplyRecord(
             @event.Data.ReviewUrl, @event.Data.Disposition, @event.Data.ReviewIsHumanAuthored,
             @event.Data.PostedAt));
+        MarkHeldReplyPosted(view, @event.Data.HeldReplyId, @event.Data.PostedAt);
+    }
+
+    public void Apply(IEvent<ReviewReplyHeld> @event, RunDetails view)
+    {
+        // A second hold for the same point replaces one still waiting: the resumed session's later
+        // word is the one the owner would want posted. One already decided stays as history.
+        view.HeldReplies.RemoveAll(held =>
+            held.IsWaiting && held.Answers(@event.Data.ThreadId, @event.Data.ReviewUrl));
+        view.HeldReplies.Add(new HeldReplyRecord(
+            @event.Data.ReplyId, @event.Data.ThreadId, @event.Data.ReviewUrl, @event.Data.Disposition,
+            @event.Data.TargetIsHumanAuthored, @event.Data.Body, @event.Data.HeldAt));
+    }
+
+    public void Apply(IEvent<ReviewReplyWithheld> @event, RunDetails view)
+    {
+        int index = view.HeldReplies.FindIndex(held => held.ReplyId == @event.Data.ReplyId);
+        // A reply already posted is never un-posted by a later withheld record.
+        if (index >= 0 && view.HeldReplies[index].PostedAt is null)
+        {
+            view.HeldReplies[index] = view.HeldReplies[index] with
+            {
+                WithheldReason = @event.Data.Reason,
+                WithheldAt = @event.Data.WithheldAt,
+            };
+        }
+    }
+
+    private static void MarkHeldReplyPosted(RunDetails view, Guid? heldReplyId, DateTimeOffset postedAt)
+    {
+        int index = heldReplyId is { } id ? view.HeldReplies.FindIndex(held => held.ReplyId == id) : -1;
+        if (index >= 0)
+        {
+            view.HeldReplies[index] = view.HeldReplies[index] with
+            {
+                PostedAt = postedAt,
+                WithheldReason = null,
+                WithheldAt = null,
+            };
+        }
+    }
 
     public void Apply(IEvent<ReviewBodyReplyRefused> @event, RunDetails view) =>
         view.RefusedReviewBodyReplies.Add(new RefusedReviewBodyReplyRecord(

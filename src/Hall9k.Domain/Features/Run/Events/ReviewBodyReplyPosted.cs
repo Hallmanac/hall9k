@@ -14,9 +14,14 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// Whether GitHub's own record of the review's author made it a person's. A review GitHub returned
 /// with no readable author is a person's.
 /// </param>
+/// <param name="HeldReplyId">
+/// The <see cref="ReviewReplyHeld.ReplyId"/> this comment posted, for a fix answer the daemon posted
+/// after its push; null for a decline or route on a bot's review, which posts at once.
+/// </param>
 public sealed record ReviewBodyReplyPosted(
     Guid Id,
     string ReviewUrl,
     ReviewThreadDisposition Disposition,
     bool ReviewIsHumanAuthored,
-    DateTimeOffset PostedAt);
+    DateTimeOffset PostedAt,
+    Guid? HeldReplyId = null);

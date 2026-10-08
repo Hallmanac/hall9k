@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Hall9k.Domain.Features.Run;
 
 /// <summary>
@@ -49,3 +51,41 @@ public sealed record RefusedReviewBodyReplyRecord(
     ReviewThreadDisposition Disposition,
     string Reason,
     DateTimeOffset RefusedAt);
+
+/// <summary>
+/// One fix reply the posting path held for the daemon to post after its push, as
+/// <c>RunDetails</c> keeps it (task: a review-feedback lap's fix reply posts only after the
+/// platform's push has moved the pull request's head). The projection form of
+/// <see cref="Events.ReviewReplyHeld"/>, carrying what became of it: <see cref="PostedAt"/> once
+/// the daemon posted it, <see cref="WithheldReason"/> once the push step decided it never will.
+/// Both null means it is still waiting for the push step. A later hold for the same thread or
+/// review replaces one still waiting (the resumed session's second word on the same point);
+/// one already posted or withheld stays as history.
+/// </summary>
+public sealed record HeldReplyRecord(
+    Guid ReplyId,
+    string? ThreadId,
+    string? ReviewUrl,
+    ReviewThreadDisposition Disposition,
+    bool TargetIsHumanAuthored,
+    string Body,
+    DateTimeOffset HeldAt,
+    DateTimeOffset? PostedAt = null,
+    string? WithheldReason = null,
+    DateTimeOffset? WithheldAt = null)
+{
+    /// <summary>True while no decision on this reply has been recorded.</summary>
+    [JsonIgnore]
+    public bool IsWaiting => PostedAt is null && WithheldReason is null;
+
+    /// <summary>Where the reply lands, as <c>h9k task show</c> names it.</summary>
+    [JsonIgnore]
+    public string Target => ThreadId is { Length: > 0 } thread
+        ? $"thread {thread}"
+        : $"review body {ReviewUrl}";
+
+    /// <summary>Whether this record is the hold for the given thread or review, matched exactly.</summary>
+    public bool Answers(string? threadId, string? reviewUrl) => threadId is not null
+        ? string.Equals(ThreadId, threadId, StringComparison.Ordinal)
+        : reviewUrl is not null && string.Equals(ReviewUrl, reviewUrl, StringComparison.OrdinalIgnoreCase);
+}

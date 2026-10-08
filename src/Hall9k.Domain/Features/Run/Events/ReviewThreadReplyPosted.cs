@@ -17,10 +17,17 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// <c>THREAD DISPOSITION:</c> block in the session's closing summary, so the contradiction lands
 /// in the run log instead of passing unseen.
 /// </para>
+/// <para>
+/// A fix reply no longer posts from the command: it is held (<see cref="ReviewReplyHeld"/>) and
+/// the daemon posts it after the push has moved the pull request's head, recording it here with
+/// <see cref="HeldReplyId"/> naming the held reply it posted. A decline or route into a bot's
+/// thread still posts at once and leaves that null.
+/// </para>
 /// </summary>
 public sealed record ReviewThreadReplyPosted(
     Guid Id,
     string ThreadId,
     ReviewThreadDisposition Disposition,
     bool ThreadIsHumanAuthored,
-    DateTimeOffset PostedAt);
+    DateTimeOffset PostedAt,
+    Guid? HeldReplyId = null);
