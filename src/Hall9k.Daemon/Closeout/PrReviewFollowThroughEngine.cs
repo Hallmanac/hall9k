@@ -311,7 +311,7 @@ public sealed class PrReviewFollowThroughEngine(
         SubmittedReview? latestReview = conversation.ReviewsTruncated
             ? null
             : conversation.LatestReviewOf(reviewerLogin);
-        if (!conversation.ReviewsTruncated && TryReopenHead(task, latestReview, conversation, out string? reopenHead))
+        if (!conversation.ReviewsTruncated && TryReopenHead(task, reviewerLogin, latestReview, conversation, out string? reopenHead))
         {
             session.Events.Append(
                 row.Id,
@@ -434,7 +434,9 @@ public sealed class PrReviewFollowThroughEngine(
     /// approval or a changes-requested review that names one. Any other review (a comment, or a lone thread reply)
     /// reviews no code, so the head stays the one the task already records as reviewed: moving it to
     /// the head this poll read would drop the push the reviewer never read from every surface. A task
-    /// that records no reviewed head falls back to the head this poll read.
+    /// that records no reviewed head reads it from the reviewer's newest approval or request for
+    /// changes on the page (the same rule the scoped lap computes its range from), and only with no
+    /// such verdict at all falls back to the head this poll read.
     /// </item>
     /// <item>
     /// A NeedsHuman watch whose stored observation recorded a re-review request while the reviewer
@@ -445,11 +447,15 @@ public sealed class PrReviewFollowThroughEngine(
     /// A watch not yet baselined never reopens on the first reason: its first look only records.
     /// </summary>
     private static bool TryReopenHead(
-        TaskAggregate task, SubmittedReview? latestReview, ReviewConversation conversation, out string? headSha)
+        TaskAggregate task, string reviewerLogin, SubmittedReview? latestReview, ReviewConversation conversation,
+        out string? headSha)
     {
         if (latestReview is { } review)
         {
-            headSha = review.ReviewedCommitOid ?? task.PrReviewReviewedHeadSha ?? conversation.HeadSha;
+            headSha = review.ReviewedCommitOid
+                ?? task.PrReviewReviewedHeadSha
+                ?? conversation.LatestVerdictOf(reviewerLogin)?.ReviewedCommitOid
+                ?? conversation.HeadSha;
             return task.PrReviewReviewBaselined && review.Id != task.PrReviewReviewerReviewId;
         }
 

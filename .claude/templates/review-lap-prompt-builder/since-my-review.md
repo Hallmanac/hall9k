@@ -30,6 +30,8 @@ None of the reviewer's own threads have moved since their review
  Whatever prompted this lap is in the code half below.
 ===no-new-comment-opening===
 No new comment has been added to any of the reviewer's own threads since their review.
+===no-new-comment-opening-truncated===
+No new comment was found on any of the reviewer's own threads that could be read since their review; threads past the page cap were never read, so this says nothing about them.
 ===no-new-comment-unchanged===
  Threads with a recorded baseline that are unchanged in resolution as well: {{Count}}.
 ===unbaselined-threads===

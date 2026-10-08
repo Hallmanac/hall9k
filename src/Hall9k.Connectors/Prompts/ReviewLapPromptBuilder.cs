@@ -479,7 +479,7 @@ public static class ReviewLapPromptBuilder
             // The "none have moved" opening and the "they opened none" ending are both off the table
             // here: threads exist whose resolution cannot be compared, so neither claim is observed.
             prompt.AppendLine(
-                PromptTemplates.Load(file, "no-new-comment-opening")
+                PromptTemplates.Load(file, scoped.ThreadPageTruncated ? "no-new-comment-opening-truncated" : "no-new-comment-opening")
                 + (scoped.UnchangedThreadCount > 0
                     ? Fragment(file, "no-new-comment-unchanged", ("Count", Count(scoped.UnchangedThreadCount)))
                     : string.Empty)
