@@ -312,4 +312,41 @@ public sealed class ClaudeExecutorIsolationTests
             Directory.Delete(runDirectory, recursive: true);
         }
     }
+
+    /// <summary>
+    /// Every session the daemon spawns on the ordinary settings file carries the reply guard
+    /// (task: a dispatched session never speaks to a person at the top level of a pull request on
+    /// its own), a fresh build session as much as a follow-up. It used to follow the run being a
+    /// follow-up, which left a fresh session free to address a person at the top level.
+    /// </summary>
+    [Fact]
+    public async Task A_fresh_build_spawn_carries_the_reply_guard()
+    {
+        string runDirectory = Directory.CreateTempSubdirectory("hall9k-claude-executor-tests-").FullName;
+        try
+        {
+            ClaudeExecutor executor = new(
+                NullLogger<ClaudeExecutor>.Instance, new FakeProcessManager(),
+                Options.Create(new DaemonOptions()));
+
+            AgentSpawnRequest request = new(
+                DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
+                ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false)
+            {
+                SessionName = "test-build",
+            };
+
+            await executor.SpawnAsync(request, CancellationToken.None);
+
+            string settingsContent = await File.ReadAllTextAsync(RunPaths.SettingsFile(runDirectory));
+            using JsonDocument document = JsonDocument.Parse(settingsContent);
+            JsonElement hook = document.RootElement.GetProperty("hooks").GetProperty("PreToolUse")[0];
+            hook.GetProperty("matcher").GetString().Should().Be(ClaudeSettingsFile.ReviewThreadReplyGuardMatcher);
+            hook.GetProperty("hooks")[0].GetProperty("command").GetString().Should().Be("h9k pr reply-guard");
+        }
+        finally
+        {
+            Directory.Delete(runDirectory, recursive: true);
+        }
+    }
 }

@@ -101,12 +101,6 @@ public sealed class PrimarySessionResumer(IExecutor executor, IOptions<DaemonOpt
             // security review's own IExecutor doc named only three of).
             SkipPermissions: isPrReview ? false : project.SkipPermissions,
             ResumeSessionId: run.SessionId, UntrustedWorkingDirectory: isPrReview,
-            // The same guard the original spawn carried (task: a review-feedback follow-up never
-            // answers a human reviewer in the owner's name on its own). A resume rewrites the
-            // settings file, so omitting it here would silently lift the guard from the retry of
-            // exactly the session it was written for — the blast-radius shape the launcher's own
-            // two branches have been caught by before.
-            GuardsReviewThreadReplies: run.IsFollowUp,
             // Carried forward from the task's own declared budget, exactly as the original spawn
             // (RunLauncher.LaunchAsync) already passes it: without this, a resumed primary session
             // — a token-budget park's own retry, or the short-backoff error-result retry — ran

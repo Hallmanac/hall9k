@@ -948,8 +948,7 @@ public sealed partial class VerificationRunner(
                 agent = await executor.SpawnAsync(new AgentSpawnRequest(
                     run.Id, recoverySessionId, run.WorktreePath, run.RunDirectory, prompt, run.ExecutorMode, run.Model,
                     effort, project.SkipPermissions, SessionArtifactName: SessionRoleName.CommitRecovery,
-                    MaxTurns: options.Value.UncommittedWorkRecoveryMaxTurns,
-                    GuardsReviewThreadReplies: run.IsFollowUp)
+                    MaxTurns: options.Value.UncommittedWorkRecoveryMaxTurns)
                 {
                     TaskId = task.Id,
                     SessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.CommitRecovery),

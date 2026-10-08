@@ -978,12 +978,6 @@ public sealed class RunLauncher(
                     // ordinary build session, which this same call site also spawns.
                     SkipPermissions: isPrReview ? false : project.SkipPermissions,
                     UntrustedWorkingDirectory: isPrReview,
-                    // Every follow-up kind, not only the review-feedback one (task: a
-                    // review-feedback follow-up never answers a human reviewer in the owner's
-                    // name on its own): a follow-up is exactly the session that works an open
-                    // pull request's threads, and a CI-fix lap wandering into a person's thread
-                    // is as much the thing being prevented as a thread lap doing it on purpose.
-                    GuardsReviewThreadReplies: followUp is not null,
                     // TaskConstraints' first consumer (task: a spike is a run, not a walk):
                     // passed straight through to the agent launch as its own hard turn limit —
                     // null (no declared budget) leaves this session exactly as unbounded as

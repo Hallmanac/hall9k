@@ -41,24 +41,24 @@ namespace Hall9k.Daemon.Execution;
 /// it (the uncommitted-files pre-gate recovery) is the one session on this whole seam whose job
 /// is narrow enough that a small, fixed turn count is actually the right shape for it.
 /// <para>
-/// GuardsReviewThreadReplies installs the in-thread reply guard in this session's settings file
-/// (<see cref="Hall9k.Connectors.Prompts.ClaudeSettingsFile.ReviewThreadReplyGuardHook"/>, task:
-/// a review-feedback follow-up never answers a human reviewer in the owner's name on its own):
-/// the shell routes that write inside somebody's review thread are refused, so the only way this
-/// session reaches one is <c>h9k pr reply</c>, which knows whose thread it is. Set by every
-/// spawn site whose session works a FOLLOW-UP run's worktree, which is the only shape that holds
-/// an open pull request's branch for the whole of its life: the launcher's own dispatch, the
-/// resumer behind an error retry, and every session the review loop and the gates put into that
-/// same run afterwards (<c>ReviewEngine</c>, <c>VerificationRunner</c>'s uncommitted-work
-/// recovery). False everywhere else, so a fresh build session's settings file is byte-for-byte
-/// what it was.
+/// The reply guard is not a per-request choice (<see cref="Hall9k.Connectors.Prompts.ClaudeSettingsFile.ReviewThreadReplyGuardHook"/>,
+/// task: a dispatched session never speaks to a person at the top level of a pull request on its
+/// own): <see cref="ClaudeExecutor"/> installs it in every settings file it writes, because a
+/// headless session has no operator watching its shell. The shell routes that put text on a pull
+/// request, inside a review thread or at the top level (<c>gh pr comment</c>, <c>gh issue comment</c>,
+/// the issue-comment REST endpoint and the GraphQL comment mutations), are refused, so the only way
+/// any dispatched session reaches one is <c>h9k pr reply</c>, which knows whose thread or review it
+/// is. That covers fresh build sessions and every follow-up kind alike, and the pr-review settings
+/// file (<see cref="UsesReviewPermissions"/>) carries the same hook. It used to follow the run
+/// being a follow-up, which left a fresh session free to address a person at the top level, and
+/// <c>gh pr comment</c> was named as a deliberate hole.
 /// </para>
 /// <para>
-/// Three spawn paths deliberately never set it, and none of them can reach a follow-up: an
-/// interactive claim and a deliberate kick-off both refuse a reopened task outright
-/// (<c>TaskWorkCommand</c>, <c>TaskStartCommand</c>), and a pr-review lap writes nothing to the
-/// pull request at all, under a deny list of its own
-/// (<see cref="Hall9k.Connectors.Prompts.ClaudeSettingsFile.ReviewLapDeniedTools"/>).
+/// Not guarded: the interactive <c>h9k task work</c> session, where the operator is present, and
+/// the daemon's own provider writes (the pull-request opener, re-requests, the merge note and
+/// closeout comments), which run in the daemon rather than in a session's shell. The hook fails
+/// open and reads command text, so it is not a sandbox: a client library that spells no recognized
+/// route or host, or a program hidden behind an indirection the text does not show, is outside it.
 /// </para>
 /// <para>
 /// <see cref="UsesReviewPermissions"/> is what <see cref="ClaudeExecutor"/> (security review idea
@@ -87,7 +87,6 @@ public sealed record AgentSpawnRequest(
     Guid? ResumeSessionId = null,
     bool UntrustedWorkingDirectory = false,
     int? MaxTurns = null,
-    bool GuardsReviewThreadReplies = false,
     bool UsesReviewPermissions = false,
     IReadOnlyList<VerifyCommand>? QaGateCommands = null)
 {

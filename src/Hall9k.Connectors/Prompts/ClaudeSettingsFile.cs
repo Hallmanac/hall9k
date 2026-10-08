@@ -78,11 +78,14 @@ public static class ClaudeSettingsFile
     /// <c>BASH_MAX_TIMEOUT_MS</c> to double that.
     /// </summary>
     /// <param name="guardReviewThreadReplies">
-    /// Whether to install the in-thread reply guard (task: a review-feedback follow-up never
-    /// answers a human reviewer in the owner's name on its own) — see
-    /// <see cref="ReviewThreadReplyGuardHook"/>. Set for a follow-up run, which is the only kind
-    /// of session that works an open pull request's threads; false everywhere else, so a fresh
-    /// build session's settings are byte-for-byte what they were.
+    /// Whether to install the reply guard (task: a review-feedback follow-up never answers a human
+    /// reviewer in the owner's name on its own; extended by: a dispatched session never speaks to a
+    /// person at the top level of a pull request on its own) — see
+    /// <see cref="ReviewThreadReplyGuardHook"/>. True for every headless session: the daemon's
+    /// (<c>ClaudeExecutor</c> sets it on the ordinary settings file for fresh builds and follow-ups
+    /// alike) and the CLI's own headless launches (<c>h9k task start</c>, <c>h9k task delegate</c>).
+    /// False for the interactive <c>h9k task work</c> session, where the operator is present, whose
+    /// settings are byte-for-byte what they were. The default is false so a caller has to choose.
     /// </param>
     /// <param name="effort">
     /// The node's configured reasoning effort level, written as <c>effortLevel</c>. A headless
@@ -113,9 +116,9 @@ public static class ClaudeSettingsFile
     /// The <c>PreToolUse</c> hook that makes the reply park enforcement rather than instruction
     /// (task: a review-feedback follow-up never answers a human reviewer in the owner's name on
     /// its own). It refuses the shell routes that put a comment inside somebody's review thread,
-    /// so the only way a follow-up reaches one is <see cref="ReviewThreadReplyCommand"/> — which
-    /// knows, from closeout's own provider read, whose thread it is, and refuses a decline or a
-    /// route into a person's.
+    /// so the only way a dispatched session reaches one is <see cref="ReviewThreadReplyCommand"/> —
+    /// which knows, from closeout's own provider read, whose thread it is, or from GitHub's own
+    /// record of a review whose review it is, and refuses a decline or a route into a person's.
     /// <para>
     /// <b>Why a hook and not a <c>permissions.deny</c> entry.</b> The review lap's guard is a
     /// deny list (<see cref="ReviewLapDeniedTools"/>) and could not be one here. A deny matches
@@ -138,15 +141,19 @@ public static class ClaudeSettingsFile
     /// both.
     /// </para>
     /// <para>
-    /// <b>What it does not stop, stated plainly.</b> A session can still answer a person at the
-    /// top level with <c>gh pr comment</c>, which is deliberately left alone because it is the
-    /// only way to answer a review BODY (GitHub makes one unthreadable) and that path is not what
-    /// the two origin incidents were. A session that reaches GitHub's API through a client library
-    /// of its own, spelling neither a route this recognizes nor a host, is outside what any of
-    /// this sees. This refuses the routes a session
-    /// actually reaches for, which is the same honest claim <see cref="ReviewLapDeniedTools"/>
-    /// makes for its own list; the long-term answer is still node-signed authorship in the P2P
-    /// identity layer (PLAN.md §16 #38-#58).
+    /// <b>What it covers now, and what it still does not.</b> The shell routes that put text on a
+    /// pull request are refused whether they land inside a review thread or at the top level:
+    /// <c>gh pr comment</c>, <c>gh issue comment</c>, the issue-comment REST endpoint and the GraphQL
+    /// comment mutations joined the list when this guard stopped being a follow-up-only hook, because
+    /// a review BODY is unthreadable and the top-level comment that answers one is the same class of
+    /// message the two origin incidents were. The allowed route for it is
+    /// <c>h9k pr reply --review</c>, which reads the review's author from GitHub and refuses a decline
+    /// or a route on a person's. A session that reaches GitHub's API through a client library of its
+    /// own, spelling neither a route this recognizes nor a host, or that hides the program behind an
+    /// indirection the command text does not show, is outside what any of this sees. This refuses the
+    /// routes a session actually reaches for, which is the same honest claim
+    /// <see cref="ReviewLapDeniedTools"/> makes for its own list; the long-term answer is still
+    /// node-signed authorship in the P2P identity layer (PLAN.md §16 #38-#58).
     /// </para>
     /// <para>
     /// The guard fails OPEN: <c>h9k</c> missing from the session's PATH, a crash, or a malformed
