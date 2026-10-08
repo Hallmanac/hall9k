@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Run;
 
 namespace Hall9k.Daemon.Closeout;
@@ -1282,27 +1283,8 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
             ? review.GetProperty("id").GetString()
             : null;
 
-    // Copilot's reviewer authors under a small set of known app logins: GraphQL reports
-    // the bare form (copilot-pull-request-reviewer), REST the [bot]-suffixed form, and
-    // the unified Copilot app surfaces as plain Copilot. Exact match after stripping the
-    // suffix — a collaborator whose login merely contains "copilot" is not the reviewer
-    // bot, and misclassifying one would hold the run at ReviewPending and spend the
-    // automatic closeout budget re-requesting reviews from an account that cannot answer.
-    private static readonly string[] CopilotLogins = ["copilot", "copilot-pull-request-reviewer"];
-
     /// <summary>Internal so <see cref="PullRequestSnapshot.HasOutstandingHumanReviewer"/> can share the identical classification.</summary>
-    internal static bool IsCopilotLogin(string? login)
-    {
-        if (login is null)
-        {
-            return false;
-        }
-
-        string bare = login.EndsWith("[bot]", StringComparison.Ordinal)
-            ? login[..^"[bot]".Length]
-            : login;
-        return CopilotLogins.Contains(bare, StringComparer.OrdinalIgnoreCase);
-    }
+    internal static bool IsCopilotLogin(string? login) => GitHubActors.IsCopilotLogin(login);
 
     /// <summary>
     /// The author of a comment, review, or pull request, with the provider's own actor type
@@ -1336,18 +1318,17 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
     }
 
     /// <summary>
-    /// The provider's actor type mapped to the three kinds that behave differently here. Only
-    /// Bot and Mannequin are named: every other actor type GitHub reports for an author is a
-    /// person (User today, EnterpriseUserAccount in an enterprise tenant), so the default is
-    /// Human deliberately — an unfamiliar type must not silently vanish from the human thread
-    /// count, which is what tells a follow-up that somebody is waiting on an answer.
+    /// The provider's actor type mapped to the three kinds that behave differently here, by the
+    /// rule <see cref="GitHubActors.Classify"/> owns so the CLI's review-body read applies the
+    /// identical one.
     /// </summary>
-    private static ReviewerKind ReadKind(string typeName, string login) => typeName switch
-    {
-        "Bot" => ReviewerKind.Bot,
-        "Mannequin" => ReviewerKind.Mannequin,
-        _ => IsCopilotLogin(login) ? ReviewerKind.Bot : ReviewerKind.Human,
-    };
+    private static ReviewerKind ReadKind(string typeName, string login) =>
+        GitHubActors.Classify(typeName, login) switch
+        {
+            GitHubActorKind.Bot => ReviewerKind.Bot,
+            GitHubActorKind.Mannequin => ReviewerKind.Mannequin,
+            _ => ReviewerKind.Human,
+        };
 
     /// <summary>
     /// Reads the rollup, plus whether GitHub has actually reported any check at all
