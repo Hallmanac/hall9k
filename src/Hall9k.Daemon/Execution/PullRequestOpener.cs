@@ -121,8 +121,19 @@ public sealed class PullRequestOpener(
                 && task.LastPushedBranchTip is { } recordedTip
                 ? [recordedTip]
                 : [];
+
+            // The head this lap started from, for the held fix replies' push check (task: a
+            // review-feedback lap's fix reply posts only after the platform's push has moved the
+            // pull request's head): the one closeout recorded when it dispatched the lap, else the
+            // tip this task last pushed to this branch, read from `task` BEFORE this run's own push
+            // is recorded below. Unknown stays null, and null never posts.
+            string? startedFrom = run.OpeningReviewSinceSha.IsNotBlank()
+                ? run.OpeningReviewSinceSha
+                : task.LastPushedBranch == run.Branch
+                    ? task.LastPushedBranchTip
+                    : null;
             await PushBranchAsync(run.WorktreePath, run.Branch, recordedPushedTips, cancellationToken);
-            await RecordBranchPushedAsync(taskId, run.Branch, run.WorktreePath, cancellationToken);
+            string? pushedTip = await RecordBranchPushedAsync(taskId, run.Branch, run.WorktreePath, cancellationToken);
 
             // The base this run recorded at dispatch, not the project's own: a stacked child's
             // pull request targets its parent's branch, which is what forms the stack on GitHub
@@ -212,6 +223,20 @@ public sealed class PullRequestOpener(
 
                 await session.SaveChangesAsync(cancellationToken);
                 return;
+            }
+
+            // The held fix replies post here: after the fence has admitted this run, so a stale or
+            // abandoned run posts nothing, and before TaskCompleted is saved, because closeout
+            // starts reading the pull request once the task completes, and a thread still open at
+            // that read buys a lap over a reply about to post.
+            if (pullRequestUrl is not null && run.HeldReplies.Count > 0)
+            {
+                await new HeldReplyPoster(
+                    logger, new GitHubReviewReplies(processRunner),
+                    (@event, token) => RecordOnRunAsync(runId, @event, token))
+                    .PostAsync(
+                        run, new PushedHeads(startedFrom, pushedTip), project.RepositoryPath, pullRequestUrl,
+                        cancellationToken);
             }
 
             if (fenced is { } current && current.Task.State == TaskState.Claimed)
@@ -910,18 +935,38 @@ public sealed class PullRequestOpener(
     /// defense against a future reflog wipe, not the delivery itself — the ancestor and reflog
     /// checks still cover the ordinary case. Nothing here can throw.
     /// </para>
+    /// <para>
+    /// Returns the tip it read, even when recording it failed, because the held fix replies judge
+    /// whether the push moved the pull request's head against it (task: a review-feedback lap's fix
+    /// reply posts only after the platform's push has moved the pull request's head). Null when the
+    /// tip could not be read, and a reply that cannot tell whether the head moved does not post.
+    /// </para>
     /// </summary>
-    private async Task RecordBranchPushedAsync(
+    private async Task<string?> RecordBranchPushedAsync(
         Guid taskId, string branch, string worktreePath, CancellationToken cancellationToken)
     {
+        string tip;
         try
         {
             // The local branch ref, not HEAD: ForceWithLeasePusher's own push above pushes
             // refs/heads/{branch}, and a worktree left on a detached HEAD at push time would
             // otherwise record a commit this push never actually sent (independent pre-PR
             // review, cycle 1, adversarial lens).
-            string tip = (await RunInWorktreeAsync(
+            tip = (await RunInWorktreeAsync(
                 worktreePath, "git", ["rev-parse", $"refs/heads/{branch}"], cancellationToken)).Trim();
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Task {TaskId}: pushed {Branch} but could not read the pushed tip back — it is not recorded for "
+                + "the force-with-lease guard, and a held fix reply cannot tell whether the push moved the head, "
+                + "so none posts",
+                taskId, branch);
+            return null;
+        }
+
+        try
+        {
             await using IDocumentSession session = store.LightweightSession();
             session.Events.Append(taskId, new TaskBranchPushed(taskId, branch, tip, DateTimeOffset.UtcNow));
             await session.SaveChangesAsync(cancellationToken);
@@ -933,6 +978,19 @@ public sealed class PullRequestOpener(
                 + "guard's own recorded-tip check — the ancestor and reflog checks still cover the ordinary case",
                 taskId, branch);
         }
+
+        return tip.IsNotBlank() ? tip : null;
+    }
+
+    /// <summary>
+    /// Appends one held-reply decision to the run's stream in its own session, so each lands as it
+    /// happens and a later failure in the posting loop cannot take an earlier record with it.
+    /// </summary>
+    private async Task RecordOnRunAsync(Guid runId, object @event, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, @event);
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     private static async Task<string> RunInWorktreeAsync(

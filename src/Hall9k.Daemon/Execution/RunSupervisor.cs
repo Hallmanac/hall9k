@@ -2408,8 +2408,19 @@ public sealed class RunSupervisor(
         }
 
         session.Events.Append(runId, new ReviewThreadsTriaged(runId, outcomes, DateTimeOffset.UtcNow));
+        // A fix reply into a person's thread that the session's own triage calls a decline or a
+        // route is withheld as the triage lands, in the same write: the push step re-judges it on
+        // the same evidence, so it stays withheld if the run parks and later resumes to push.
+        IReadOnlyList<(HeldReplyRecord Held, ReviewThreadDisposition Triaged)> contradicted =
+            HeldReplyPoster.ContradictedByTriage(run, outcomes);
+        foreach ((HeldReplyRecord held, ReviewThreadDisposition triaged) in contradicted)
+        {
+            session.Events.Append(runId, new ReviewReplyWithheld(
+                runId, held.ReplyId, HeldReplyPoster.ContradictionReason(triaged), DateTimeOffset.UtcNow));
+        }
+
         await session.SaveChangesAsync(cancellationToken);
-        WarnOnContradictedReplyClaims(run, outcomes);
+        WarnOnContradictedReplyClaims(run, outcomes, contradicted);
         logger.LogInformation(
             "Run {RunId}: triaged {Count} review thread(s) ({Fix} fix, {Decline} decline, {Route} route)",
             runId, outcomes.Count,
@@ -2426,14 +2437,34 @@ public sealed class RunSupervisor(
     /// later, write the honest <c>THREAD DISPOSITION:</c> block for the same thread. Comparing
     /// the two is what turns that into something a person can find.
     /// <para>
-    /// A warning and nothing more, deliberately. The reply has already reached GitHub by the time
-    /// this runs, so there is nothing left to refuse; failing the run would punish the pull
-    /// request for what the session did and would still not unsay the words. What this buys is
-    /// that the contradiction is in the run log with the thread id in it, rather than nowhere.
+    /// A fix reply now waits for the platform's push (task: a review-feedback lap's fix reply posts
+    /// only after the platform's push has moved the pull request's head), so this check runs
+    /// BEFORE the reply is posted and can act on it: a held fix reply into a person's thread that
+    /// the triage calls a decline or a route is withheld, and the log names the thread and says
+    /// so. The push step re-judges every held reply against the same triage, so a withheld reply
+    /// stays withheld if the run parks and later resumes to push. The warning for a reply already
+    /// posted is all that is left to do about one: failing the run would punish the pull request
+    /// for what the session did and would still not unsay the words.
     /// </para>
     /// </summary>
-    private void WarnOnContradictedReplyClaims(RunDetails run, IReadOnlyList<ReviewThreadOutcome> outcomes)
+    private void WarnOnContradictedReplyClaims(
+        RunDetails run, IReadOnlyList<ReviewThreadOutcome> outcomes,
+        IReadOnlyList<(HeldReplyRecord Held, ReviewThreadDisposition Triaged)> withheld)
     {
+        // A fix reply into a person's thread now waits for the push, so the common contradiction is
+        // caught before anything reaches GitHub: the reply is withheld, and the log says so.
+        foreach ((HeldReplyRecord held, ReviewThreadDisposition triaged) in withheld)
+        {
+            logger.LogWarning(
+                "Run {RunId}: a fix reply held for human-authored thread {ThreadId} claimed disposition fix, "
+                + "and the session's own closing triage recorded it as {Disposition} — the reply was withheld "
+                + "and will not post, because it should have been drafted and parked under the owner's eye",
+                run.Id, held.ThreadId, triaged.Value);
+        }
+
+        // A reply recorded as posted before holds existed, or one the daemon posted on an earlier
+        // pass of this run, can still contradict a later triage; there is nothing left to
+        // withhold, so it stays the warning it always was.
         foreach (ReviewThreadReplyRecord posted in run.ReviewThreadRepliesPosted.Where(
             reply => reply.ThreadIsHumanAuthored && reply.Disposition == ReviewThreadDisposition.Fix))
         {
@@ -2842,10 +2873,16 @@ public sealed class RunSupervisor(
             // reached the reviewer. A comment posted BEFORE it, or beside a drafted block, answers
             // a different point of the same review body, so the declined one is still owed
             // (independent pre-PR review, cycle 1, both lenses): a review body that makes three
-            // points, two fixed and one declined, must not lose the declined one.
+            // points, two fixed and one declined, must not lose the declined one. A fix answer
+            // now waits for the platform's push, so one held after the refusal counts the same
+            // way: the words are as good as sent, and they post when the push carries the fix.
             if (named.Length == 0
-                && run.ReviewBodyRepliesPosted.Any(posted =>
-                    SameReview(posted.ReviewUrl, refused.ReviewUrl) && posted.PostedAt >= refused.RefusedAt))
+                && (run.ReviewBodyRepliesPosted.Any(posted =>
+                        SameReview(posted.ReviewUrl, refused.ReviewUrl) && posted.PostedAt >= refused.RefusedAt)
+                    || run.HeldReplies.Any(held =>
+                        held.ReviewUrl is not null
+                        && SameReview(held.ReviewUrl, refused.ReviewUrl)
+                        && held.HeldAt >= refused.RefusedAt)))
             {
                 continue;
             }
