@@ -174,6 +174,7 @@ internal static class DispatchedSessionCommandClassification
             [typeof(PullRequestReplyGuardCommand.Settings)] = (DispatchedSessionAccess.Allowed, "pr reply-guard"),
             [typeof(PrReviewGitOutputGuardCommand.Settings)] = (DispatchedSessionAccess.Allowed, "pr review-git-guard"),
             [typeof(PullRequestReviewCommand.Settings)] = (DispatchedSessionAccess.Refused, "pr review"),
+            [typeof(PullRequestThreadsCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "pr threads"),
             [typeof(PullRequestApproveCommand.Settings)] = (DispatchedSessionAccess.Refused, "pr approve"),
             [typeof(PullRequestRequestChangesCommand.Settings)] = (DispatchedSessionAccess.Refused, "pr request-changes"),
 

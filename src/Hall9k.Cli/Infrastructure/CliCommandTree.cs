@@ -612,6 +612,18 @@ public static class CliCommandTree
                 .WithExample("pr", "review", "https://github.com/Hallmanac/hall9k/pull/42")
                 .WithExample("pr", "review", "42", "--no-worktree")
                 .WithExample("pr", "review", "42", "--since-my-review");
+            pullRequest.AddCommand<PullRequestThreadsCommand>("threads")
+                .WithDescription(
+                    "Read every inline review thread on a pull request, read-only: for each one the "
+                    + "location (path:line), whether it is resolved, who opened it, and every comment it "
+                    + "read verbatim with its author's login. The route to the threads from inside a "
+                    + "review lap, where gh pr view and gh pr diff do not return them and gh api is "
+                    + "denied. Reads under the project's own GitHub account, the way h9k pr review does, "
+                    + "and writes nothing to GitHub or to the task store. The read is capped at 100 "
+                    + "threads and 100 comments per thread; when a cap is hit the output says what is "
+                    + "not shown rather than presenting the read as complete.")
+                .WithExample("pr", "threads", "42")
+                .WithExample("pr", "threads", "Hallmanac/hall9k#42", "--project", "hall9k");
             pullRequest.AddCommand<PullRequestApproveCommand>("approve")
                 .WithDescription(
                     "End your review lap with an approval: posts an APPROVE review on the pull request's "

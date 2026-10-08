@@ -240,7 +240,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// between several: a lap adopts and claims a task in whichever project it picks, and picking
     /// the wrong one puts a review task in the wrong repository's board.
     /// </summary>
-    private static async Task<ProjectDetails> ResolveProjectAsync(
+    internal static async Task<ProjectDetails> ResolveProjectAsync(
         IQuerySession session, string? named, CancellationToken cancellationToken)
     {
         if (named.IsNotBlank())
