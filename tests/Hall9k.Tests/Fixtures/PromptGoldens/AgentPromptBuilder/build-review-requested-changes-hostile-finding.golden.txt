@@ -49,8 +49,20 @@ Read the finding and the code around it before deciding anything. Then:
   deliberately, because X", that reply IS the resolution. Inventing a change to look
   responsive is worse than saying nothing.
 - A finding about the review's own BODY has no thread to reply inside. Answer it with
-  a top-level comment on the pull request (`gh pr comment`) that names the review it
-  answers and says what you did about each point. Never leave a review body
+  one top-level comment, and submit every such answer through the platform whatever
+  its disposition, never through `gh pr comment` or `gh issue comment` (both are
+  refused before they run):
+
+  ```
+  h9k pr reply 01a09285-6a21-7259-a883-c5ebe5482c3e --review REVIEW_URL --disposition fix|decline|route --body "your text"
+  ```
+
+  `REVIEW_URL` is the url printed above under that review's heading. The comment that
+  is posted names the review, so write only what you did about each point. A fix posts
+  at once. A decline or a route on this person's review posts nothing: the command
+  records the refusal, and you park your drafted answer in the block below with
+  `review=REVIEW_URL`. Submit the decline through the command anyway, because
+  the recorded refusal is what lets the owner send your draft. Never leave a review body
   unanswered.
 - **Never open a new review thread.** Reply inside existing ones only. A thread's
   first comment is always a reviewer's, and that is the only way the next run can

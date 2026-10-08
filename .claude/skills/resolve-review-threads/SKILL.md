@@ -97,7 +97,18 @@ Two consequences worth stating:
 
    **Whose voice.** Every reply here posts under the owner's own login, so when the owner has named a voice skill (`h9k owner set --voice-skill <name>`) the prompt that dispatched you names it: load that skill and its `contexts/code-review.md` context before writing, and let it decide the prose while the rules in this step decide what the reply has to contain.
 
-8. **Answer a review BODY with a top-level comment.** A review's body text is not a thread and GitHub gives you nothing to reply inside. Use `gh pr comment "$PR_NUMBER" --body "…"`, naming the review it answers (its author and URL from step 2) and summarising what you did about each point. Never leave a review body unanswered, and never leave an unanchored comment the reviewer has to connect back themselves. (Origin: the PR #20 human review was answered only through the work itself, with no visible reply on the PR.)
+8. **Answer a review BODY with a top-level comment.** A review's body text is not a thread and GitHub gives you nothing to reply inside. Name the review it answers (its author and URL from step 2) and summarise what you did about each point. Never leave a review body unanswered, and never leave an unanchored comment the reviewer has to connect back themselves. (Origin: the PR #20 human review was answered only through the work itself, with no visible reply on the PR.)
+
+   Inside a Hall9k follow-up, submit every review-body answer through the platform, whatever its disposition. The shell's own `gh pr comment` and `gh issue comment` are refused there, and `$REVIEW_URL` is the review's own address (`<pull request url>#pullrequestreview-<id>`):
+   ```bash
+   h9k pr reply "$TASK_ID" --review "$REVIEW_URL" --disposition fix|decline|route --body "…"
+   ```
+   The command posts one top-level comment that names the review, and it reads the review's author from GitHub rather than taking your word. A fix posts at once. A decline or a route on a person's review body posts nothing and is recorded as refused, so draft it and park it exactly as step 7's carve-out does for a person's thread, with `review=$REVIEW_URL` in the `DISAGREEMENT:` block. Submit the decline through the command anyway: the recorded refusal is what lets the owner send your draft. A bot's review body posts on any disposition.
+
+   Standalone, outside a Hall9k follow-up, there is no platform to route through, so post the comment yourself:
+   ```bash
+   gh pr comment "$PR_NUMBER" --body "…"
+   ```
 
 9. **Resolve the thread**, once its reply is posted, per its disposition and its author:
    - **fix**: resolve it, bot-authored or human-authored — a fix invites no argument.

@@ -994,10 +994,12 @@ Per poll, in priority order:
   changes-requested lap's disagreement park takes. Answering a question counts as a decline, so a
   question a person asked is drafted and parked too. The thread stays open and unanswered until
   they decide, and a lap can legitimately push nothing at all. The decline rate is recorded per
-  thread on the run stream. Three things back the rule up: every in-thread reply routes through
-  `h9k pr reply`, which refuses a decline or a route into a person's thread and records the
-  attempt; the `gh` routes into a thread are refused by the session's own PreToolUse guard, on
-  either shell; and the park itself is read off the lap's own triage, so a lap that declined a
+  thread on the run stream. Three things back the rule up: every reply routes through
+  `h9k pr reply`, in a thread or, for a review's own body, as one top-level comment
+  (`--review`), and it refuses a decline or a route onto a person's thread or review and records
+  the attempt; the `gh` routes onto the pull request, top-level comments included, are refused by
+  every headless session's own PreToolUse guard, on either shell; and the park itself is read off
+  the lap's own triage (or, for a review body, off the recorded refusal), so a lap that declined a
   person's thread and then closed as if it were finished parks anyway, with a blank draft for the
   owner to fill in or drop.
   One thread never buys this lap in the first place — an unresolved thread a person opened that

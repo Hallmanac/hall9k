@@ -679,7 +679,9 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("A question gets an answer, not a code change");
         prompt.Should().Contain("Never resolve a human's thread without replying substantively");
         prompt.Should().Contain("One honest attempt per");
-        prompt.Should().Contain("gh pr comment", "a review body is unthreadable, so it is answered at the top level");
+        prompt.Should().Contain("--review REVIEW_URL", "a review body is unthreadable, so it is answered at the top level through the platform");
+        prompt.Should().Contain("whatever its disposition", "a refused decline is what lets the owner send the drafted reply");
+        prompt.Should().Contain("never through `gh pr comment` or `gh issue comment`");
         prompt.Should().Contain("RESOLUTION: disputed");
         prompt.Should().Contain("h9k review resolve", "a parked disagreement names the human's way back in");
     }
@@ -698,7 +700,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
         prompt.Should().Contain("No em dashes (U+2014)");
         prompt.IndexOf("No em dashes (U+2014)", StringComparison.Ordinal)
-            .Should().BeGreaterThan(prompt.IndexOf("gh pr comment", StringComparison.Ordinal),
+            .Should().BeGreaterThan(prompt.IndexOf("--review REVIEW_URL", StringComparison.Ordinal),
                 "it governs the comment the bullet above it asks for");
     }
 

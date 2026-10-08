@@ -1977,15 +1977,23 @@ draft stays in that block after you resolve its park, so each row also says what
 sent as written, sent in your own words (with those words), or still waiting on you. Once a changes-requested lap pushes, that reviewer's review is re-requested on the
 new head automatically, because their verdict is what blocks the merge until they change it.
 
-None of this rests on the prompt alone. A follow-up session posts every in-thread reply through
-`h9k pr reply`, which refuses a decline or a route into a thread the platform read a person
-opening and records the attempt on the run; the `gh` routes into a review thread are refused by a
-PreToolUse guard the session launches with, attached to both shell tools a session may have. It is
-a refusal of the ordinary route rather than a sandbox, and it is not extended to `gh pr comment`,
-which is the only way to answer a review's own unthreadable body. The park is enforced the same
-way: a lap that declined or routed a person's thread and closed as though it were done still
-parks, because the daemon reads the debt off the lap's own triage rather than off its closing
-verdict — the draft is simply blank, and you write the reply or drop it.
+None of this rests on the prompt alone. A dispatched session posts every reply on its pull request
+through `h9k pr reply`, in a thread or, with `--review`, as the one top-level comment that answers a
+review's body. It refuses a decline or a route into a thread, or onto a review body, that the
+platform read a person writing, and records the attempt on the run. A review body's author is read
+from GitHub by the command itself, so a refused decline on a body parks the run just as a thread
+does, and sending the draft posts one top-level comment naming the review. The `gh` routes onto the
+pull request, `gh pr comment` and `gh issue comment` included, are refused by a PreToolUse guard
+that every headless session launches with (fresh builds and follow-ups alike, `h9k task start` and
+`h9k task delegate` too), attached to both shell tools a session may have; the interactive
+`h9k task work` session, where you are present, does not carry it, and the daemon's own writes
+(the pull-request opener, re-requests, the merge note) never run in a session's shell. It is a
+refusal of the ordinary routes rather than a sandbox. The park is enforced the same way: a lap that
+declined or routed a person's thread and closed as though it were done still parks, because the
+daemon reads the debt off the lap's own triage rather than off its closing verdict, and a refused
+body decline parks off its recorded refusal. The draft is simply blank, and you write the reply or
+drop it. One gap stays open: a lap that declines a person's review body, never calls the form, and
+closes as resolved posts nothing and parks nothing.
 
 Two distinctions get confused, so they are worth stating flatly:
 

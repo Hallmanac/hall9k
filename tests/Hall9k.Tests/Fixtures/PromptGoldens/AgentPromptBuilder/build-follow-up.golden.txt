@@ -146,9 +146,23 @@ you are answering. Resolving a thread is unchanged and still yours
   previous run already answered.
 
 A review can also carry a BODY alongside its inline comments, and GitHub makes a
-body unthreadable — there is nothing to reply inside. Answer it with a top-level
-comment on the pull request (`gh pr comment`) that names the review it answers and
-says what you did about each point. Never leave a review body unanswered, and
+body unthreadable, so there is nothing to reply inside. Answer it with one top-level
+comment, and submit every such answer through the platform whatever its disposition,
+never through `gh pr comment` or `gh issue comment` (both are refused before they run):
+
+```
+h9k pr reply 01a09285-6a21-7259-a883-c5ebe5482c3e --review REVIEW_URL --disposition fix|decline|route --body "your text"
+```
+
+`REVIEW_URL` is the review's own address (`<pull request url>#pullrequestreview-<id>`).
+The comment that is posted names that review, so write only what you did about each
+point. The command reads the review's author from GitHub, not from you. A fix posts at
+once. When the review is a person's and your answer is a decline or a route, nothing
+is posted: the command records the refusal, and you park the answer exactly as for a
+person's thread, with `DISAGREEMENT:` carrying `review=REVIEW_URL`
+and `disposition=decline` or `route`. Submit that decline through the command
+anyway, because the recorded refusal is what lets the owner send the reply you drafted.
+A bot's review body posts on any disposition. Never leave a review body unanswered, and
 never leave a comment the reviewer has to connect back to their review themselves.
 
 - **How every one of those replies reads.** The top-level comment, each in-thread reply, and each reply you draft for the owner to send are all read under the owner's own login, so this project's writing conventions govern every word of them:
