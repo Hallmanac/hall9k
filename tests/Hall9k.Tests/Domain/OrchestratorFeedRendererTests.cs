@@ -44,6 +44,8 @@ public sealed class OrchestratorFeedRendererTests
                 FeedTask, "the adversarial lens and the fix session disagree about finding 2", At)),
             Item(14, null, Note("are you still on the stacked pair?")),
             Item(15, PresenceTask, new RunFailed(PresenceTask, "the verification gate never finished", At)),
+            Item(16, FeedTask, new TaskCompleted(
+                FeedTask, Guid.NewGuid(), "https://github.com/AgelessRx/arx-platform/pull/2201", At)),
         ];
 
         // UTC deliberately, not TimeZoneInfo.Local: the CLI prints local time so the feed reads
@@ -56,6 +58,7 @@ public sealed class OrchestratorFeedRendererTests
             "37b5ec69  The daemon keeps a per-project orchestrator feed",
             "  2026-09-19 14:10  published and ready to assign",
             "  2026-09-19 14:13  the review loop parked for a human: the adversarial lens and the fix session disagree about finding 2",
+            "  2026-09-19 14:16  the run finished; the pull request on record is https://github.com/AgelessRx/arx-platform/pull/2201",
             "579dcd44  An orchestrator window announces itself as live",
             "  2026-09-19 14:11  claimed by node 44444444; a run is starting",
             "  2026-09-19 14:15  the run failed: the verification gate never finished",

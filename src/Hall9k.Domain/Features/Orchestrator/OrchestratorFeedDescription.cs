@@ -130,7 +130,9 @@ public static class OrchestratorFeedDescription
             PullRequestOpened opened => $"delivered: pull request #{opened.PullRequestNumber} opened",
             TaskCompleted completed when completed.PullRequestUrl.IsBlank() =>
                 "the run finished with no pull request to watch",
-            TaskCompleted completed => $"the run finished and pushed its work to {Field(completed.PullRequestUrl, 80)}",
+            // The record holds a URL, not a push: only the opener's completion follows one, and a fresh
+            // pull request already has its own PullRequestOpened line, so this names the URL and no more.
+            TaskCompleted completed => $"the run finished; the pull request on record is {Field(completed.PullRequestUrl, 80)}",
             PullRequestMerged => "done: the pull request merged",
             TaskResolved resolved => $"closed as done by hand: {Quote(resolved.Reason)}",
             TaskFailed failed => $"the task failed: {Quote(failed.Reason)}",
