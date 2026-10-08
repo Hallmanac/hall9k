@@ -10,7 +10,7 @@ namespace Hall9k.Connectors.Prompts;
 /// of a pull request on its own). The knowledge behind
 /// <see cref="ClaudeSettingsFile.ReviewThreadReplyGuardHook"/>, kept here so it is a unit-testable
 /// function rather than a regex buried in a hook command.
-/// /// <para>
+/// <para>
 /// Matched on the command text, because that is all a <c>PreToolUse</c> hook is given — so the
 /// API routes are recognized by the surface they name rather than by the program invoked, which
 /// is what makes the recognition survive quoting, variables, and <c>bash -c</c> wrapping. The
@@ -173,13 +173,27 @@ public static class ReviewThreadReplyRoutes
             @"(?<!\w)commit_id[\s""']*[=:](?!=)",
             @"\bevent=",
             @"\bbody=",
-            @"(--method|--request|-X)[\s='""]*(POST|PUT|PATCH|DELETE)\b",
-            // A request body supplied from a file or inline: `gh api --input` and curl's data
-            // flags both make the request a write without naming a method, which is how a
-            // top-level comment is posted from a prepared payload.
-            @"(?<![\w-])--input\b",
-            @"(?<![\w-])(-d|--data|--data-raw|--data-binary|--data-urlencode|--json)(?=[\s='""])"),
+            @"(--method|--request|-X)[\s='""]*(POST|PUT|PATCH|DELETE)\b"),
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+    /// <summary>
+    /// The flags that supply a request body without naming a method: <c>gh api --input</c> and
+    /// curl's data flags, which is how a top-level comment is posted from a prepared payload.
+    /// <para>
+    /// Unlike <see cref="WriteParameters"/> these are tested against ONE simple command that also
+    /// reaches the API (<see cref="SendsABodyFlag"/>), not the whole text, and the data flags are
+    /// case-sensitive. <c>-d</c> and <c>--json</c> mean a body to <c>curl</c> and something else to
+    /// the other programs a command line strings together: <c>gh pr view --json reviews</c> and
+    /// <c>cut -d' '</c> are reads, and curl's <c>-D</c> dumps response headers. Matched over the
+    /// whole text they refused a read of the comments endpoint whenever any program beside it used
+    /// one (independent pre-PR review, cycle 1, adversarial lens). The attached forms
+    /// (<c>-d@file</c>, <c>-d{…}</c>, which is what <c>-d'{…}'</c> reads as once its quotes are
+    /// gone) count.
+    /// </para>
+    /// </summary>
+    private static readonly Regex BodyFlags = new(
+        @"(?<![\w-])(?:--input\b|(?:-d|--data|--data-raw|--data-binary|--data-urlencode|--json)(?=[\s='""@{\[]|$))",
+        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     /// <summary>
     /// Whether this command puts text onto a pull request by a route other than
@@ -197,7 +211,12 @@ public static class ReviewThreadReplyRoutes
 
     private static bool NamesAThreadWrite(string command) =>
         Routes.IsMatch(command)
-        || (ReadableWritePaths.IsMatch(command) && WriteParameters.IsMatch(command));
+        || (ReadableWritePaths.IsMatch(command)
+            && (WriteParameters.IsMatch(command) || SendsABodyFlag(command)));
+
+    private static bool SendsABodyFlag(string command) =>
+        ShellInvocations.CommandLines(command).Any(line =>
+            ReachesTheGitHubApi.IsMatch(line) && BodyFlags.IsMatch(line));
 
     /// <summary>
     /// What the session is told when the guard refuses, in the shape a refusal here has to take:

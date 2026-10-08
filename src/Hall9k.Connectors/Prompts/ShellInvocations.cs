@@ -66,6 +66,15 @@ internal static class ShellInvocations
     public static bool InvokesGh(string command, params (string Group, string Verb)[] routes) =>
         SimpleCommands(command, 0).Any(words => InvokesGh(words, routes));
 
+    /// <summary>
+    /// Each simple command in <paramref name="command"/>, nested ones included, with its quoting
+    /// removed and its words joined by a space. For a test that has to hold of ONE command rather
+    /// than of the whole text, such as a flag that means something to <c>curl</c> and something
+    /// else to the program on the other side of a pipe.
+    /// </summary>
+    public static IEnumerable<string> CommandLines(string command) =>
+        SimpleCommands(command, 0).Select(words => string.Join(' ', words));
+
     private static bool InvokesGh(List<string> words, (string Group, string Verb)[] routes)
     {
         int start = ProgramIndex(words);
@@ -96,8 +105,13 @@ internal static class ShellInvocations
     }
 
     /// <summary>
-    /// The index of the program word: past variable assignments and wrapper words (and the flags
-    /// and bare numbers those take, as in <c>timeout 30 gh …</c>), or -1 when there is none.
+    /// The index of the program word: past variable assignments and wrapper words and what those
+    /// take, or -1 when there is none. A wrapper's arguments are flags, bare counts and durations
+    /// (<c>timeout 30 gh …</c>, <c>timeout 30s gh …</c>), assignments, and the value a flag takes
+    /// as a separate word (<c>sudo -u someone gh …</c>, <c>env -C dir gh …</c>,
+    /// <c>xargs -I % gh …</c>). Which flags take a value differs per wrapper, so a word after a
+    /// flag is taken as that flag's value unless it is itself <c>gh</c>, a shell, an evaluator or
+    /// another wrapper: <c>sudo -E gh …</c> and <c>env -i bash -c "…"</c> keep their program.
     /// </summary>
     private static int ProgramIndex(List<string> words)
     {
@@ -112,9 +126,27 @@ internal static class ShellInvocations
             else if (Wrappers.Contains(Program(word)))
             {
                 index++;
-                while (index < words.Count && (words[index].StartsWith('-') || IsAssignment(words[index])
-                    || int.TryParse(words[index], out _)))
+                bool afterFlag = false;
+                while (index < words.Count)
                 {
+                    string argument = words[index];
+                    if (argument.StartsWith('-'))
+                    {
+                        afterFlag = !argument.Contains('=');
+                    }
+                    else if (IsAssignment(argument) || IsCountOrDuration(argument))
+                    {
+                        afterFlag = false;
+                    }
+                    else if (afterFlag && index + 1 < words.Count && !NamesAProgramToFollow(argument))
+                    {
+                        afterFlag = false;
+                    }
+                    else
+                    {
+                        break;
+                    }
+
                     index++;
                 }
             }
@@ -125,6 +157,25 @@ internal static class ShellInvocations
         }
 
         return -1;
+    }
+
+    /// <summary>A word that starts the wrapped command rather than being a flag's value.</summary>
+    private static bool NamesAProgramToFollow(string word)
+    {
+        string program = Program(word);
+        return program.Equals("gh", StringComparison.OrdinalIgnoreCase)
+            || Shells.Contains(program)
+            || Evaluators.Contains(program)
+            || Wrappers.Contains(program);
+    }
+
+    /// <summary>A bare number with an optional <c>s</c>, <c>m</c>, <c>h</c> or <c>d</c> suffix, as <c>timeout</c> and <c>nice</c> take.</summary>
+    private static bool IsCountOrDuration(string word)
+    {
+        string digits = word.Length > 1 && word[^1] is 's' or 'm' or 'h' or 'd' ? word[..^1] : word;
+        return digits.Length > 0
+            && digits.All(character => char.IsAsciiDigit(character) || character == '.')
+            && char.IsAsciiDigit(digits[0]);
     }
 
     private static int SkipFlags(List<string> words, int index)
@@ -208,6 +259,14 @@ internal static class ShellInvocations
             char current = command[index];
             switch (current)
             {
+                case '\\' when index + 1 < command.Length && command[index + 1] == '\n':
+                    // A backslash before a newline continues the line, so a call spread over several
+                    // lines is still one command.
+                    index += 2;
+                    break;
+                case '\\' when index + 2 < command.Length && command[index + 1] == '\r' && command[index + 2] == '\n':
+                    index += 3;
+                    break;
                 case '\\' when index + 1 < command.Length:
                     // A backslash escapes a quote, a space, a dollar, or another backslash; before
                     // any other character it is a path separator and is kept, so a Windows path to
