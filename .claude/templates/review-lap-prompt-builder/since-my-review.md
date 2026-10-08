@@ -4,8 +4,10 @@
 This is a **scoped lap**. The reviewer ({{ReviewerLogin}}) has already reviewed this pull request once, and this briefing is only what has arrived since: replies on the threads they opened, and the commits pushed after their review. The objective, the blast radius, the CI results and the platform's own earlier findings report are deliberately NOT here — they were read in the first lap and re-reading them is what this flag exists to avoid. Do not reason as though the packet below were the whole pull request; when something in it needs wider context, go and read that context in the checkout rather than assuming it away.
 ===head-known===
 Their review was posted against `{{ReviewedShort}}`; the head is now `{{CurrentShort}}`.
+===head-from-review===
+The platform recorded no commit for their review, so the reviewed commit was read from their newest review on GitHub instead (not recorded by the platform): that review was posted against `{{ReviewedShort}}`; the head is now `{{CurrentShort}}`.
 ===head-unknown===
-The platform has no record of which commit their review was posted against, so the code half of this packet is the commits it could observe rather than a range pinned to their review. Say so if it matters to a finding.
+The platform recorded no commit for their review, and their newest review on GitHub supplied none either, so the code half of this packet is not pinned to a range. Say so if it matters to a finding.
 ===re-request-notice===
 **The author has re-requested this review**, which is an explicit ask to look again whatever the packet below turns out to hold — a re-request with no reply and no push is still an ask.
 ===thread-replies-heading===
@@ -26,6 +28,12 @@ None of the reviewer's own threads have moved since their review
  What prompted this lap may be nothing more than the re-request above; say so plainly if the code half below is empty as well.
 ===none-moved-no-rerequest-tail===
  Whatever prompted this lap is in the code half below.
+===no-new-comment-opening===
+No new comment has been added to any of the reviewer's own threads since their review.
+===no-new-comment-unchanged===
+ Threads with a recorded baseline that are unchanged in resolution as well: {{Count}}.
+===unbaselined-threads===
+Threads of the reviewer's with no new comment and no recorded baseline to compare their resolution against: {{Count}}. Whether the resolution of those threads changed since the review cannot be told; the number of them resolved now is {{ResolvedCount}}.
 ===moved-summary-opening===
 {{MovedCount}} of the reviewer's threads moved
 ===moved-summary-with-unchanged===
@@ -44,6 +52,8 @@ still unresolved
 (**{{UnreadCount}} further comment(s) on this thread are past the provider's own page cap and are NOT shown here** — and they are the most recent ones, so the last word in this thread is not above. Read the thread on GitHub before drawing a conclusion from it.)
 ===commits-heading===
 ### Commits pushed since your review
+===commits-not-computed===
+The range of commits pushed since your review could not be computed: {{Reason}}
 ===commits-none===
 None were observed.
 ===what-to-produce-heading===

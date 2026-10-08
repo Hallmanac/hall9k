@@ -1085,8 +1085,10 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// <para>
     /// The code half is <c>git</c> in the lap's own read-only checkout, which is where the pull
     /// request's head has just been fetched. Every way it can come up short is stated rather than
-    /// dropped: no recorded reviewed head, no checkout at all (<c>--no-worktree</c>), a range git
-    /// refuses because a force-push dropped the reviewed commit, or a diff past the budget above.
+    /// dropped: no reviewed commit from the platform's record or from the reviewer's own newest
+    /// review on GitHub (the record wins; the review is read only when it holds none), no checkout
+    /// at all (<c>--no-worktree</c>), a range git refuses because a force-push dropped the reviewed
+    /// commit, or a diff past the budget above.
     /// Silence there would read as "nothing changed in the code", which is the one wrong answer.
     /// </para>
     /// </summary>
@@ -1119,6 +1121,8 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
 
         List<ScopedReviewThreadDelta> moved = [];
         int unchanged = 0;
+        int unbaselined = 0;
+        int unbaselinedResolved = 0;
         foreach (ReviewThread thread in conversation.ThreadsStartedBy(reviewerLogin))
         {
             // Everything after the reviewer's own last comment in the thread — the identical rule
@@ -1145,7 +1149,21 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             int unreadTail = thread.UnreadCommentCount;
             if (seen >= thread.Comments.Count && unreadTail == 0 && !stateChanged)
             {
-                unchanged++;
+                // Without a watermark "the resolution did not change" was never observed: the
+                // watermark is taken at the first follow-through poll, not at the review, so a lap
+                // opened before that poll, or on a task whose follow-through never opened, has none.
+                // Counting such a thread unchanged is what told a reviewer all eleven of theirs were
+                // quiet when every one had been resolved since (arx#2201).
+                if (watermark is null)
+                {
+                    unbaselined++;
+                    unbaselinedResolved += thread.IsResolved ? 1 : 0;
+                }
+                else
+                {
+                    unchanged++;
+                }
+
                 continue;
             }
 
@@ -1162,16 +1180,23 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
                 UnreadCommentCount: unreadTail));
         }
 
-        (IReadOnlyList<string> commits, string? diff, string? note) = await ReadPushedSinceAsync(
-            task.PrReviewReviewedHeadSha,
+        // The platform's record wins. Only when it holds none is the reviewer's own newest review on
+        // GitHub asked, which is already in the conversation read above, so this costs no further call.
+        SubmittedReview? latestReview = conversation.LatestReviewOf(reviewerLogin);
+        bool readFromReview = task.PrReviewReviewedHeadSha.IsBlank() && latestReview?.ReviewedCommitOid is not null;
+        string? reviewedHead = readFromReview ? latestReview?.ReviewedCommitOid : task.PrReviewReviewedHeadSha;
+
+        (IReadOnlyList<string> commits, string? diff, string? notComputed, string? note) = await ReadPushedSinceAsync(
+            reviewedHead,
             conversation.HeadSha ?? pullRequest.HeadSha,
             worktreePath,
+            WhyNoReviewedCommit(conversation, latestReview),
             processRunner,
             cancellationToken);
 
         return new ScopedReviewPacket(
             reviewerLogin,
-            task.PrReviewReviewedHeadSha,
+            reviewedHead,
             conversation.HeadSha ?? pullRequest.HeadSha,
             moved,
             unchanged,
@@ -1179,33 +1204,63 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             diff,
             note,
             conversation.ThreadsTruncated,
-            conversation.ReReviewRequestedOf(reviewerLogin));
+            conversation.ReReviewRequestedOf(reviewerLogin),
+            CommitRangeNotComputed: notComputed,
+            ReviewedHeadReadFromReview: readFromReview,
+            UnbaselinedThreadCount: unbaselined,
+            UnbaselinedResolvedCount: unbaselinedResolved);
+    }
+
+    /// <summary>
+    /// What the lap saw when neither source supplied a reviewed commit: the platform recorded none,
+    /// and this is what the reviewer's newest review on GitHub looked like. Only observations, so a
+    /// reader can tell a review that carried no commit from one that was never in the page read.
+    /// </summary>
+    private static string WhyNoReviewedCommit(ReviewConversation conversation, SubmittedReview? latestReview)
+    {
+        string observed = latestReview switch
+        {
+            null when conversation.ReviewsTruncated =>
+                "the platform recorded none, and none of the reviewer's reviews was in the newest hundred that GitHub returned",
+            null => "the platform recorded none, and no submitted review of the reviewer's was found on GitHub",
+            { State: "APPROVED" or "CHANGES_REQUESTED" } review =>
+                $"the platform recorded none, and their newest review there is {review.State} but carries no commit",
+            { } review =>
+                $"the platform recorded none, and their newest review there is {RelayedText.OneLine(review.State).Trim()}, "
+                + "and only an approval or a request for changes is read as naming the commit reviewed",
+        };
+
+        return $"neither the platform's record nor the reviewer's newest review on GitHub supplied a reviewed commit ({observed}).";
     }
 
     /// <summary>
     /// The commits between the reviewed head and the current one, and their diff, read with git in
-    /// the lap's own checkout. Returns the reason instead whenever it cannot: each of the four
-    /// ways that happens is a fact the reviewer needs, and none of them is "nothing changed".
+    /// the lap's own checkout. Whenever the range cannot be computed it returns the reason it was not
+    /// (<c>NotComputed</c>) instead, and an empty commit list is then NOT a finding: each of the ways
+    /// that happens is a fact the reviewer needs, and none of them is "nothing changed". The
+    /// <c>Note</c> is for what the reader can do about it, or why a diff alone is missing.
     /// </summary>
-    private static async Task<(IReadOnlyList<string> Commits, string? Diff, string? Note)> ReadPushedSinceAsync(
+    private static async Task<(IReadOnlyList<string> Commits, string? Diff, string? NotComputed, string? Note)> ReadPushedSinceAsync(
         string? reviewedHead,
         string currentHead,
         string worktreePath,
+        string noReviewedCommitReason,
         ProcessRunner processRunner,
         CancellationToken cancellationToken)
     {
         if (reviewedHead.IsBlank())
         {
-            return ([], null,
-                "No commit is recorded for the reviewer's own review, so there is no range to diff — the "
-                + "review predates this platform recording the head it was posted against. The whole pull "
-                + "request is in the checkout; ask the reviewer which commit they read if a finding turns on it.");
+            return ([], null, noReviewedCommitReason,
+                (worktreePath.IsBlank()
+                    ? "This lap has no checkout (`--no-worktree`); `gh pr diff` on the pull request reads it whole."
+                    : "The whole pull request is in the checkout.")
+                + " Ask the reviewer which commit they read if a finding turns on it.");
         }
 
         if (worktreePath.IsBlank())
         {
-            return ([], null, "This lap has no checkout (`--no-worktree`), so the code half cannot be read "
-                + $"here. `gh pr diff` on the pull request, or a lap without that flag, is the way to it.");
+            return ([], null, "this lap has no checkout (`--no-worktree`), so git has nowhere to read it.",
+                "`gh pr diff` on the pull request, or a lap without that flag, is the way to the code half.");
         }
 
         string range = $"{reviewedHead}..{currentHead}";
@@ -1213,10 +1268,11 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             "git", ["log", "--no-decorate", "--oneline", range], worktreePath, cancellationToken);
         if (log.ExitCode != 0)
         {
-            return ([], null, $"git could not resolve `{range}` in the checkout — the commit the review was "
-                + "posted against is not reachable from the head any more, which is what a force-push looks "
-                + $"like. git reported: {RelayedText.OneLine(log.StandardError).Trim()}. The whole pull "
-                + "request is in the checkout; read what you need of it directly.");
+            return ([], null,
+                $"git could not resolve `{range}` in the checkout; git reported: "
+                + $"{RelayedText.OneLine(log.StandardError).Trim()}.",
+                "If the reviewed commit is no longer reachable from the head, that is what a force-push looks "
+                + "like. The whole pull request is in the checkout; read what you need of it directly.");
         }
 
         IReadOnlyList<string> commits =
@@ -1229,16 +1285,16 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         ProcessResult diff = await processRunner("git", ["diff", range], worktreePath, cancellationToken);
         if (diff.ExitCode != 0)
         {
-            return (commits, null, $"git listed those commits but could not diff `{range}`: "
+            return (commits, null, null, $"git listed those commits but could not diff `{range}`: "
                 + $"{RelayedText.OneLine(diff.StandardError).Trim()}. Read them in the checkout directly.");
         }
 
         return diff.StandardOutput.Length <= ScopedDiffCharacterBudget
-            ? (commits, diff.StandardOutput, null)
-            : (commits, null, $"The diff of `{range}` is "
+            ? (commits, diff.StandardOutput, null, null)
+            : (commits, null, null, $"The diff of `{range}` is "
                 + $"{diff.StandardOutput.Length.ToString(CultureInfo.InvariantCulture)} "
-                + "characters, past what a scoped packet carries, so it is NOT included here — this is a "
-                + "deliberate omission, not an empty diff. Read it in the checkout: "
+                + "characters, past what a scoped packet carries, so it is NOT included here, which is a "
+                + "deliberate omission and not an empty diff. Read it in the checkout: "
                 + $"`git diff {range}`.");
     }
 

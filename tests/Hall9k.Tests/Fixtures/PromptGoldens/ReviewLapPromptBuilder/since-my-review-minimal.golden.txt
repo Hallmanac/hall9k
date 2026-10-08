@@ -10,7 +10,7 @@ It targets `main` from `task/9f2-conflict-read`, and its head right now is `0f1e
 
 This is a **scoped lap**. The reviewer (octocat) has already reviewed this pull request once, and this briefing is only what has arrived since: replies on the threads they opened, and the commits pushed after their review. The objective, the blast radius, the CI results and the platform's own earlier findings report are deliberately NOT here — they were read in the first lap and re-reading them is what this flag exists to avoid. Do not reason as though the packet below were the whole pull request; when something in it needs wider context, go and read that context in the checkout rather than assuming it away.
 
-The platform has no record of which commit their review was posted against, so the code half of this packet is the commits it could observe rather than a range pinned to their review. Say so if it matters to a finding.
+The platform recorded no commit for their review, and their newest review on GitHub supplied none either, so the code half of this packet is not pinned to a range. Say so if it matters to a finding.
 
 ### Thread replies
 
@@ -18,9 +18,9 @@ None of the reviewer's own threads have moved since their review — they opened
 
 ### Commits pushed since your review
 
-None were observed.
+The range of commits pushed since your review could not be computed: neither the platform's record nor the reviewer's newest review on GitHub supplied a reviewed commit (the platform recorded none, and no submitted review of the reviewer's was found on GitHub).
 
-The reviewed commit could no longer be found; the branch may have been force-pushed.
+The whole pull request is in the checkout; ask the reviewer which commit they read if a finding turns on it.
 
 ### What to produce
 
