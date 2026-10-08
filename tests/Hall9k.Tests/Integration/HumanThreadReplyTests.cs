@@ -172,7 +172,8 @@ public sealed class HumanThreadReplyTests(PostgresFixture postgres) : IClassFixt
                 {
                     Thread = HumanThreadId, Disposition = disposition, Body = "It already handles that case.",
                 },
-                new GitHubReviewReplies(gh.Runner), cts.Token);
+                new GitHubReviewReplies(gh.Runner), new GitHubPullRequestReviews(gh.Runner),
+                cts.Token);
 
             (await act.Should().ThrowAsync<DomainValidationException>())
                 .WithMessage($"*{HumanThreadId}*");
@@ -210,7 +211,8 @@ public sealed class HumanThreadReplyTests(PostgresFixture postgres) : IClassFixt
             {
                 Thread = BotThreadId, Disposition = "fix", Body = "Renamed it in the commit above.",
             },
-            new GitHubReviewReplies(gh.Runner), cts.Token);
+            new GitHubReviewReplies(gh.Runner), new GitHubPullRequestReviews(gh.Runner),
+                cts.Token);
 
         (await act.Should().ThrowAsync<DomainConflictException>()).WithMessage($"*{runId}*");
         gh.Calls.Should().BeEmpty("the fence is ahead of the provider write, so nothing half-reached anyone");
@@ -237,7 +239,8 @@ public sealed class HumanThreadReplyTests(PostgresFixture postgres) : IClassFixt
                     Disposition = "decline",
                     Body = "Reproduced in a scratch repo: the ref is updated already.",
                 },
-                new GitHubReviewReplies(gh.Runner), cts.Token);
+                new GitHubReviewReplies(gh.Runner), new GitHubPullRequestReviews(gh.Runner),
+                cts.Token);
             result.Should().Be(0);
         }
 
@@ -269,7 +272,8 @@ public sealed class HumanThreadReplyTests(PostgresFixture postgres) : IClassFixt
                 {
                     Thread = HumanThreadId, Disposition = "fix", Body = "Renamed it in the commit above.",
                 },
-                new GitHubReviewReplies(gh.Runner), cts.Token);
+                new GitHubReviewReplies(gh.Runner), new GitHubPullRequestReviews(gh.Runner),
+                cts.Token);
             result.Should().Be(0);
         }
 
@@ -391,7 +395,8 @@ public sealed class HumanThreadReplyTests(PostgresFixture postgres) : IClassFixt
                 {
                     Thread = HumanThreadId, Disposition = "decline", Body = "No.",
                 },
-                new GitHubReviewReplies(gh.Runner), cts.Token);
+                new GitHubReviewReplies(gh.Runner), new GitHubPullRequestReviews(gh.Runner),
+                cts.Token);
             await act.Should().ThrowAsync<DomainValidationException>();
         }
 

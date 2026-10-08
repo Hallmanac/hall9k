@@ -558,16 +558,22 @@ public static class CliCommandTree
                 .WithExample("pr", "resolve", "28b19893", "--rebase");
             pullRequest.AddCommand<PullRequestReplyCommand>("reply")
                 .WithDescription(
-                    "Post one reply inside a review thread on a task's own pull request — the platform's "
-                    + "posting path, and the only route a follow-up session has to a thread. A decline or a "
-                    + "route into a thread a PERSON opened is refused outright and recorded: telling a "
-                    + "colleague their point does not hold is yours to send, so the lap drafts it, parks, and "
-                    + "h9k review resolve posts it as written, posts your own text, or posts nothing. A bot's "
-                    + "thread and a fix's reply into anyone's thread post as they always have "
+                    "Post one reply on a task's own pull request, inside a review thread (--thread) or as the "
+                    + "one top-level comment that answers a review's own body (--review) — the platform's "
+                    + "posting path, and the only route a dispatched session has to either. A decline or a "
+                    + "route into a thread, or onto a review body, a PERSON wrote is refused outright and "
+                    + "recorded: telling a colleague their point does not hold is yours to send, so the lap "
+                    + "drafts it, parks, and h9k review resolve posts it as written, posts your own text, or "
+                    + "posts nothing. Whose review it is comes from GitHub, read when this runs. A bot's "
+                    + "thread or review and a fix's reply to anyone post as they always have "
                     + "(PLAN.md log #62, #159).")
                 .WithExample(
                     "pr", "reply", "28b19893", "--thread", "PRRT_kwDO", "--disposition", "fix",
-                    "--body", "\"Fixed in the commit above: the sentinel is reused now.\"");
+                    "--body", "\"Fixed in the commit above: the sentinel is reused now.\"")
+                .WithExample(
+                    "pr", "reply", "28b19893", "--review",
+                    "\"https://github.com/a/b/pull/1#pullrequestreview-9\"", "--disposition", "fix",
+                    "--body", "\"Fixed above.\"");
             pullRequest.AddCommand<PullRequestReplyGuardCommand>("reply-guard")
                 .WithDescription(
                     "Not for you: the PreToolUse hook a follow-up session launches with, which refuses the "
