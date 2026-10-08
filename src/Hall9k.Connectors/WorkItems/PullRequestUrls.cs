@@ -14,6 +14,18 @@ namespace Hall9k.Connectors.WorkItems;
 /// </summary>
 public static class PullRequestUrls
 {
+    /// <summary>
+    /// GitHub's two-dot compare between two commits of the pull request's own repository, derived
+    /// from the pull request's url; null when the url does not name a repository. Two dots rather
+    /// than three, because a narrative lap rewrites history and the two-dot form diffs the two
+    /// commits directly instead of from their merge base.
+    /// </summary>
+    public static string? CompareUrl(string pullRequestUrl, string beforeSha, string afterSha) =>
+        Uri.TryCreate(pullRequestUrl, UriKind.Absolute, out Uri? parsed)
+        && parsed.AbsolutePath.Trim('/').Split('/') is [{ Length: > 0 } owner, { Length: > 0 } repository, ..]
+            ? $"{parsed.GetLeftPart(UriPartial.Authority)}/{owner}/{repository}/compare/{beforeSha}..{afterSha}"
+            : null;
+
     public static int ParseNumber(string url)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? parsed))
