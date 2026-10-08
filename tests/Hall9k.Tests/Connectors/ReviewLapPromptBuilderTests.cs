@@ -561,6 +561,40 @@ public sealed class ReviewLapPromptBuilderTests : IDisposable
         prompt.Should().Contain("Terse. British spelling.").And.NotContain("No em dashes (U+2014)");
     }
 
+    /// <summary>
+    /// With threads that have no watermark and a thread page cut at the provider's cap, the packet
+    /// must not state flatly that no thread of the reviewer's gained a comment: threads past the cap
+    /// were never read, so that claim was never observed.
+    /// </summary>
+    [Theory]
+    [InlineData(false, "No new comment has been added to any of the reviewer's own threads since their review.")]
+    [InlineData(true, "No new comment was found on any of the reviewer's own threads that could be read since their review")]
+    public void A_scoped_lap_with_unbaselined_threads_only_claims_what_the_thread_page_could_show(
+        bool truncated, string expectedOpening)
+    {
+        string prompt = ReviewLapPromptBuilder.Build(Briefing() with
+        {
+            SinceMyReview = new ScopedReviewPacket(
+                ReviewerLogin: "octocat",
+                ReviewedHeadSha: "0f1e2d3c4b5a69788796a5b4c3d2e1f001234567",
+                CurrentHeadSha: "aa11bb22cc33dd44ee55ff660011223344556677",
+                Threads: [],
+                UnchangedThreadCount: 0,
+                NewCommits: [],
+                Diff: null,
+                DiffNote: null,
+                ThreadPageTruncated: truncated,
+                ReReviewRequested: false,
+                UnbaselinedThreadCount: 2),
+        });
+
+        prompt.Should().Contain(expectedOpening);
+        if (truncated)
+        {
+            prompt.Should().NotContain("No new comment has been added to any");
+        }
+    }
+
     private static ReviewLapBriefing Briefing() => new(
         DomainId.New(),
         PullRequest(),

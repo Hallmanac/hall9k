@@ -981,6 +981,42 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
     }
 
     /// <summary>
+    /// A task that recorded no reviewed head must not take the head this poll read when the reviewer's
+    /// newest review is a lone thread reply: the reopen would write that head into the record and the
+    /// scoped lap would then trust it over the approval or request for changes that names the commit
+    /// the reviewer actually read. The reopen reads that verdict from the page instead.
+    /// </summary>
+    [Fact]
+    public async Task A_reopen_on_a_task_with_no_reviewed_head_takes_the_commit_of_the_reviewers_verdict_not_the_polled_head()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (NodeContext node, Guid taskId, _) = await SeedWaitingReviewAsync(cts.Token, openedAtHead: null);
+        SubmittedReview verdict = new("R1", "CHANGES_REQUESTED", Now.AddMinutes(5), "aaaaaaaaaaaa");
+        FakeConversations conversations = new()
+        {
+            Conversation = WithReview(FakeConversations.Quiet(), "R1", "CHANGES_REQUESTED", "aaaaaaaaaaaa") with
+            {
+                LatestVerdictByLogin = new Dictionary<string, SubmittedReview>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [ReviewerLogin] = verdict,
+                },
+            },
+        };
+        PrReviewFollowThroughEngine engine = Engine(node, conversations);
+        await engine.FollowThroughOnceAsync(taskId, cts.Token);
+
+        conversations.Conversation = WithReview(conversations.Conversation, "R2", "COMMENTED", "cccccccccccc") with
+        {
+            HeadSha = "dddddddddddd",
+        };
+        await engine.FollowThroughOnceAsync(taskId, cts.Token);
+
+        PullRequestReviewFollowThroughOpened reopened =
+            (await EventsAsync(taskId, cts.Token)).OfType<PullRequestReviewFollowThroughOpened>().Last();
+        reopened.HeadSha.Should().Be("aaaaaaaaaaaa");
+    }
+
+    /// <summary>
     /// A lone thread reply by the reviewer is GitHub's implicit COMMENTED review, so it reopens the
     /// watch too. That churn is accepted: the reply is the reviewer's own act, and the first look
     /// after the reopen reports whatever is still unanswered in the threads, so nothing is lost.
