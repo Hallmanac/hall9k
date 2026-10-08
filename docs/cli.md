@@ -429,7 +429,7 @@ over the deltas alone — the replies on threads you opened, verbatim, plus the 
 your review and their diff. A re-review request standing against you is stated at the top of that
 packet, because it is the one thing that can summon a lap with nothing in either half. The commit
 range starts at the head the platform recorded for your review; when it recorded none, it starts at the
-commit your own newest approval or changes-requested review on GitHub was posted against, and the
+commit your own newest approval or changes-requested review on GitHub was posted against (a later comment-only review does not hide it), and the
 packet says it was read from the review. When neither supplies a commit, or git cannot compute the
 range, the section opens by saying the range could not be computed and why, and never reads as an empty
 one. A thread of yours with no new comment and no recorded baseline is counted separately, with how many

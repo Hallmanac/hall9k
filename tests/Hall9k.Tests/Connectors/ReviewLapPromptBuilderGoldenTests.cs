@@ -216,7 +216,7 @@ public sealed class ReviewLapPromptBuilderGoldenTests : IDisposable
             DiffNote: "The whole pull request is in the checkout; ask the reviewer which commit they read if a finding turns on it.",
             ThreadPageTruncated: false,
             ReReviewRequested: false,
-            CommitRangeNotComputed: "neither the platform's record nor the reviewer's newest review on GitHub supplied a reviewed commit "
+            CommitRangeNotComputed: "neither the platform's record nor the reviewer's newest approval or request for changes on GitHub supplied a reviewed commit "
                 + "(the platform recorded none, and no submitted review of the reviewer's was found on GitHub)."),
     };
 

@@ -5,9 +5,9 @@ This is a **scoped lap**. The reviewer ({{ReviewerLogin}}) has already reviewed 
 ===head-known===
 Their review was posted against `{{ReviewedShort}}`; the head is now `{{CurrentShort}}`.
 ===head-from-review===
-The platform recorded no commit for their review, so the reviewed commit was read from their newest review on GitHub instead (not recorded by the platform): that review was posted against `{{ReviewedShort}}`; the head is now `{{CurrentShort}}`.
+The platform recorded no commit for their review, so the reviewed commit was read from their newest approval or request for changes on GitHub instead (not recorded by the platform): that review was posted against `{{ReviewedShort}}`; the head is now `{{CurrentShort}}`.
 ===head-unknown===
-The platform recorded no commit for their review, and their newest review on GitHub supplied none either, so the code half of this packet is not pinned to a range. Say so if it matters to a finding.
+The platform recorded no commit for their review, and their newest approval or request for changes on GitHub supplied none either, so the code half of this packet is not pinned to a range. Say so if it matters to a finding.
 ===re-request-notice===
 **The author has re-requested this review**, which is an explicit ask to look again whatever the packet below turns out to hold — a re-request with no reply and no push is still an ask.
 ===thread-replies-heading===

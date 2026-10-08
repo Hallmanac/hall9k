@@ -1181,16 +1181,19 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         }
 
         // The platform's record wins. Only when it holds none is the reviewer's own newest review on
-        // GitHub asked, which is already in the conversation read above, so this costs no further call.
-        SubmittedReview? latestReview = conversation.LatestReviewOf(reviewerLogin);
-        bool readFromReview = task.PrReviewReviewedHeadSha.IsBlank() && latestReview?.ReviewedCommitOid is not null;
-        string? reviewedHead = readFromReview ? latestReview?.ReviewedCommitOid : task.PrReviewReviewedHeadSha;
+        // GitHub asked for its newest approval or request for changes, which is already in the
+        // conversation read above, so this costs no further call. Not the newest review of any kind:
+        // a lone thread reply is a COMMENTED review, and after any reply exchange it would otherwise
+        // sit over the verdict that actually named the commit they read.
+        SubmittedReview? verdict = conversation.LatestVerdictOf(reviewerLogin);
+        bool readFromReview = task.PrReviewReviewedHeadSha.IsBlank() && verdict?.ReviewedCommitOid is not null;
+        string? reviewedHead = readFromReview ? verdict?.ReviewedCommitOid : task.PrReviewReviewedHeadSha;
 
         (IReadOnlyList<string> commits, string? diff, string? notComputed, string? note) = await ReadPushedSinceAsync(
             reviewedHead,
             conversation.HeadSha ?? pullRequest.HeadSha,
             worktreePath,
-            WhyNoReviewedCommit(conversation, latestReview),
+            WhyNoReviewedCommit(conversation, conversation.LatestReviewOf(reviewerLogin), verdict),
             processRunner,
             cancellationToken);
 
@@ -1213,24 +1216,28 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
 
     /// <summary>
     /// What the lap saw when neither source supplied a reviewed commit: the platform recorded none,
-    /// and this is what the reviewer's newest review on GitHub looked like. Only observations, so a
+    /// and this is what the reviewer's reviews on GitHub looked like. Only observations, so a
     /// reader can tell a review that carried no commit from one that was never in the page read.
     /// </summary>
-    private static string WhyNoReviewedCommit(ReviewConversation conversation, SubmittedReview? latestReview)
+    private static string WhyNoReviewedCommit(
+        ReviewConversation conversation, SubmittedReview? latestReview, SubmittedReview? verdict)
     {
-        string observed = latestReview switch
+        string observed = (latestReview, verdict) switch
         {
-            null when conversation.ReviewsTruncated =>
+            (_, { } approvalOrChanges) =>
+                $"the platform recorded none, and their newest approval or request for changes there is {approvalOrChanges.State} but carries no commit",
+            (null, _) when conversation.ReviewsTruncated =>
                 "the platform recorded none, and none of the reviewer's reviews was in the newest hundred that GitHub returned",
-            null => "the platform recorded none, and no submitted review of the reviewer's was found on GitHub",
-            { State: "APPROVED" or "CHANGES_REQUESTED" } review =>
-                $"the platform recorded none, and their newest review there is {review.State} but carries no commit",
-            { } review =>
+            (null, _) => "the platform recorded none, and no submitted review of the reviewer's was found on GitHub",
+            ({ } review, _) =>
                 $"the platform recorded none, and their newest review there is {RelayedText.OneLine(review.State).Trim()}, "
-                + "and only an approval or a request for changes is read as naming the commit reviewed",
+                + (conversation.ReviewsTruncated
+                    ? "and no approval or request for changes of theirs was in the newest hundred that GitHub returned; "
+                    : "and they have no approval or request for changes there; ")
+                + "only those are read as naming the commit reviewed",
         };
 
-        return $"neither the platform's record nor the reviewer's newest review on GitHub supplied a reviewed commit ({observed}).";
+        return $"neither the platform's record nor the reviewer's newest approval or request for changes on GitHub supplied a reviewed commit ({observed}).";
     }
 
     /// <summary>
