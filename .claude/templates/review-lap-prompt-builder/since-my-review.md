@@ -13,7 +13,7 @@ The platform recorded no commit for their review, and their newest approval or r
 ===thread-replies-heading===
 ### Thread replies
 ===page-truncated===
-**This pull request carries more review threads than the provider's own page cap can return (100), so the thread half of this packet is incomplete.** Every count below is a floor, and threads the reviewer opened may be missing from it entirely — an absent thread here does NOT mean it went quiet. Read them on GitHub before treating any silence below as an answer: `gh pr view {{RepoAndNumber}} --comments`.
+**This pull request carries more review threads than the provider's own page cap can return (100), so the thread half of this packet is incomplete.** Every count below is a floor, and threads the reviewer opened may be missing from it entirely — an absent thread here does NOT mean it went quiet. The overflow is past what any read in this lap returns (`h9k pr threads` reads through the same capped query), so do not treat any silence below as an answer; the reviewer can read the remaining threads on the pull request's page on GitHub.
 ===none-moved-opening===
 None of the reviewer's own threads have moved since their review
 ===none-moved-unchanged-truncated===
@@ -51,7 +51,7 @@ still unresolved
 ===no-new-comment===
 (No new comment; the thread's own state is what changed.)
 ===unread-comment-notice===
-(**{{UnreadCount}} further comment(s) on this thread are past the provider's own page cap and are NOT shown here** — and they are the most recent ones, so the last word in this thread is not above. Read the thread on GitHub before drawing a conclusion from it.)
+(**{{UnreadCount}} further comment(s) on this thread are past the provider's own page cap and are NOT shown here** — and they are the most recent ones, so the last word in this thread is not above. They are past what any read in this lap returns, so draw no conclusion from this thread without them; the reviewer can read them on the pull request's page on GitHub.)
 ===commits-heading===
 ### Commits pushed since your review
 ===commits-not-computed===

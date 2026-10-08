@@ -468,9 +468,7 @@ public static class ReviewLapPromptBuilder
             // believed: this pull request carries more review threads than one provider page holds,
             // so every number below is a floor and threads of the reviewer's own may be missing
             // from this packet outright.
-            prompt.AppendLine(Fragment(file, "page-truncated",
-                ("RepoAndNumber",
-                    $"{OneLine(briefing.PullRequest.Repository)}#{briefing.PullRequest.Number.ToString(CultureInfo.InvariantCulture)}")));
+            prompt.AppendLine(PromptTemplates.Load(file, "page-truncated"));
             prompt.AppendLine();
         }
 
@@ -719,10 +717,23 @@ public static class ReviewLapPromptBuilder
         prompt.AppendLine(PromptTemplates.Load(file, "help"));
         prompt.AppendLine(PromptTemplates.Load(file, "never-push"));
         prompt.AppendLine(PromptTemplates.Load(file, "own-branch"));
-        prompt.AppendLine(PromptTemplates.Load(file, "never-post-github"));
+        prompt.AppendLine(Fragment(file, "never-post-github",
+            ("RepoAndNumber",
+                $"{OneLine(briefing.PullRequest.Repository)}#{briefing.PullRequest.Number.ToString(CultureInfo.InvariantCulture)}"),
+            ("Project", ProjectArgument(briefing.ProjectName))));
         prompt.AppendLine(PromptTemplates.Load(file, "thread-text-boundary"));
         prompt.AppendLine();
         WorkPromptBuilder.AppendExternalInteractionLoggingRule(prompt, briefing.TaskId);
+    }
+
+    /// <summary>
+    /// The project name as a shell argument: bare when it is one word, double-quoted when it has
+    /// whitespace, so the command line the briefing prints can be run as written.
+    /// </summary>
+    private static string ProjectArgument(string projectName)
+    {
+        string name = OneLine(projectName);
+        return name.Any(char.IsWhiteSpace) ? $"\"{name.Replace("\"", "\\\"")}\"" : name;
     }
 
     private static void AppendClosingSection(StringBuilder prompt, ReviewLapBriefing briefing)
