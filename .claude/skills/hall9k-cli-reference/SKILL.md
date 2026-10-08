@@ -1619,6 +1619,7 @@ pr-review task rather than beside it.
 h9k pr review 42                       # attach to the pr-review task this node holds for #42, or adopt the PR when none exists
 h9k pr review https://github.com/o/r/pull/42 --project <name>   # a URL, and --project when several are registered
 h9k pr review 42 --no-worktree         # skip the read-only checkout: reviewing against a deployed environment
+h9k pr threads o/r#42 --project <name>  # READ-ONLY: every inline review thread (path:line, resolved or not, who opened it, each comment verbatim); gh pr view / gh pr diff do not return them and gh api is denied in the lap
 h9k pr approve <task> --note "…"       # END the lap: posts APPROVE on the PR's current head under YOUR login
 h9k pr request-changes <task> --note "…" --finding "src/Foo.cs:42: <what is wrong>"   # END the lap with line comments; repeat --finding
 ```
@@ -1666,7 +1667,12 @@ commands are in it because they ARE that poster: they reach the same endpoint un
 own login and finalize the task besides, so a session that ran one would post a verdict the
 reviewer never gave. A lap loses nothing by any of it, because every read it makes
 goes through `gh pr view` / `gh pr diff` / `gh pr checks`, and `gh issue view` / `list` / `status`
-stay open for the issues a pull request cites. It is a session-level permission deny matched on the
+stay open for the issues a pull request cites. The one read those do not cover is the inline review
+threads, which `gh pr view` and `gh pr diff` leave out; the briefing names `h9k pr threads
+<owner/repo#number> --project <project>` for it, a read-only command that runs gh as h9k's own
+child process under the project's account, so the `gh api` deny does not see it. It reads through
+the same capped query as the scoped lap (100 threads, 100 comments each) and says where a cap was
+hit. It is a session-level permission deny matched on the
 command as spelled, not a sandbox: it refuses the ordinary route to each of these, and a command
 spelled around the prefix does not match it. `git commit` is deliberately **not** — the checkout is detached with no
 local branch, so a commit there moves nothing, and the reviewer's own tests have to be committable;

@@ -385,6 +385,7 @@ Full behaviour: [concepts.md](concepts.md#stacked-pull-requests).
 
 `h9k task add --from-pr <number-or-url> [--again]` ·
 `h9k pr review <number-or-url> [--no-worktree] [--since-my-review]` ·
+`h9k pr threads <number-or-url> [--project <project>]` ·
 `h9k pr approve <task> --note "…"` · `h9k pr request-changes <task> --note "…" [--finding "…"]`
 
 `--from-pr` creates a read-only `pr-review` task: the node pulls the pull request into a detached
@@ -466,6 +467,17 @@ the pull request's number would comment on the pull request; `gh api`, the endpo
 reach and the one this platform's own poster uses; and the two verdict commands below, which are
 yours to run and not the session's), and tests you write go to a branch of your own the
 session offers to stack on the pull request.
+
+**Reading the inline review threads from inside a lap**: `gh pr view` and `gh pr diff` do not
+return a pull request's inline review comments, and the lap's guard denies `gh api`, so the
+briefing names `h9k pr threads <owner/repo#number> --project <project>` instead. It is read-only
+(a dispatched session may run it) and reads under the project's own GitHub account the way
+`h9k pr review` does. For every review thread it prints the location (`path:line`), whether the
+thread is resolved, who opened it, and then each comment verbatim with its author's login; an
+author GitHub did not report is labelled as having none rather than attributed to anyone. It
+writes nothing to GitHub and nothing to the task store. The read is capped at 100 threads and 100
+comments per thread, and the output says so, on the pull request or on the thread, whenever a cap
+was hit; it never presents a capped read as complete.
 
 The lap **never ends on its own**. It ends when you run `h9k pr approve <task> --note "<text>"` or
 `h9k pr request-changes <task> --note "<text>" [--finding "<path:line: text>"]...`, each of which

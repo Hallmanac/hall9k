@@ -273,7 +273,7 @@ public sealed class GitHubReviewThreads(ProcessRunner? runner = null) : IReviewC
     /// a floor rather than silently trusting a truncated page — the same discipline
     /// <c>GitHubPullRequestInspector</c>'s own reviewThreads read keeps.
     /// </summary>
-    private const int ThreadPageSize = 100;
+    public const int ThreadPageSize = 100;
 
     /// <summary>
     /// The per-thread comment cap. <c>first</c> and not <c>last</c>, matching the closeout
@@ -282,7 +282,7 @@ public sealed class GitHubReviewThreads(ProcessRunner? runner = null) : IReviewC
     /// entirely. <c>totalCount</c> beside it is what keeps a capped thread's own count honest, so
     /// a reply landing past the cap still registers as movement.
     /// </summary>
-    private const int CommentPageSize = 100;
+    public const int CommentPageSize = 100;
 
     /// <summary>
     /// The review page cap. <c>last</c> and not <c>first</c>, because GitHub lists reviews oldest
