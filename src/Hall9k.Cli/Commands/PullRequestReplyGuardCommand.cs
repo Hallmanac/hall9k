@@ -8,11 +8,12 @@ namespace Hall9k.Cli.Commands;
 /// <summary>
 /// The <c>PreToolUse</c> hook body behind
 /// <see cref="ClaudeSettingsFile.ReviewThreadReplyGuardHook"/> (task: a review-feedback follow-up
-/// never answers a human reviewer in the owner's name on its own). Claude Code runs it before
-/// every shell tool call in a follow-up session — Bash, and on a Windows node the PowerShell tool
-/// beside it — hands it the call as JSON on stdin, and it refuses the shell routes that write
-/// inside somebody's review thread, so the only way to one is <c>h9k pr reply</c>, which can tell
-/// a bot's thread from a person's.
+/// never answers a human reviewer in the owner's name on its own; and a dispatched session never
+/// speaks to a person at the top level of a pull request on its own). Claude Code runs it before
+/// every shell tool call in a headless session — Bash, and on a Windows node the PowerShell tool
+/// beside it — hands it the call as JSON on stdin, and it refuses the shell routes that put text
+/// on a pull request, inside somebody's review thread or at the top level, so the only way to
+/// either is <c>h9k pr reply</c>, which can tell a bot's words from a person's.
 /// <para>
 /// Not a command an operator ever types. It is registered in the tree anyway rather than hidden,
 /// because a hook that fails silently is the worst kind: an operator debugging why a session's
@@ -20,8 +21,9 @@ namespace Hall9k.Cli.Commands;
 /// the same answer.
 /// </para>
 /// <para>
-/// <b>It touches no database and opens no store.</b> It runs on every shell call in a follow-up
-/// session, so its cost is a process start and a regex; anything more would be paid hundreds of
+/// <b>It touches no database and opens no store.</b> It runs on every shell call in a headless
+/// session (about 90 ms each on a Mac), so its cost is a process start and a read of the command
+/// text; anything more would be paid hundreds of
 /// times a lap for a check that only ever looks at the command text.
 /// </para>
 /// <para>
@@ -67,7 +69,7 @@ public sealed class PullRequestReplyGuardCommand : Hall9kAsyncCommand<PullReques
     }
 
     /// <summary>
-    /// Whether this hook payload names a Bash call that writes into a review thread. Internal so
+    /// Whether this hook payload names a shell call that puts text on a pull request by a refused route. Internal so
     /// the decision is testable against real payload shapes rather than only through a process.
     /// Every parse failure answers false — see the class doc on failing open.
     /// </summary>

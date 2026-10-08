@@ -3,14 +3,19 @@ using System.Text.RegularExpressions;
 namespace Hall9k.Connectors.Prompts;
 
 /// <summary>
-/// Which shell commands put text inside somebody's pull-request review thread (task: a
-/// review-feedback follow-up never answers a human reviewer in the owner's name on its own).
-/// The knowledge behind <see cref="ClaudeSettingsFile.ReviewThreadReplyGuardHook"/>, kept here so
-/// it is a unit-testable function rather than a regex buried in a hook command.
-/// <para>
+/// Which shell commands put text onto somebody's pull request by a route other than
+/// <c>h9k pr reply</c>: inside a review thread, or at the top level of the pull request or one of
+/// its issue-style comments (task: a review-feedback follow-up never answers a human reviewer in
+/// the owner's name on its own; and a dispatched session never speaks to a person at the top level
+/// of a pull request on its own). The knowledge behind
+/// <see cref="ClaudeSettingsFile.ReviewThreadReplyGuardHook"/>, kept here so it is a unit-testable
+/// function rather than a regex buried in a hook command.
+/// /// <para>
 /// Matched on the command text, because that is all a <c>PreToolUse</c> hook is given — so the
-/// routes are recognized by the API surface they name rather than by the program invoked, which
-/// is what makes the recognition survive quoting, variables, and <c>bash -c</c> wrapping.
+/// API routes are recognized by the surface they name rather than by the program invoked, which
+/// is what makes the recognition survive quoting, variables, and <c>bash -c</c> wrapping. The
+/// <c>gh</c> subcommands that reach GitHub without <c>gh api</c> cannot be told from text that way,
+/// so they are matched as programs (<see cref="ShellInvocations"/>): invoked, not merely mentioned.
 /// </para>
 /// <para>
 /// <b>Naming a surface is not using it</b>, though, so a refusal takes two halves: the command
@@ -44,15 +49,24 @@ namespace Hall9k.Connectors.Prompts;
 /// agents are forbidden from either way, by AGENTS.md's never-start-a-review-thread rule), and
 /// the deprecated <c>addPullRequestReviewComment</c>, which an exact-name list missed;</item>
 /// <item><c>gh pr review</c>, which submits a review under the caller's login without going near
-/// <c>gh api</c> and would otherwise be the way around a reply guard.</item>
+/// <c>gh api</c> and would otherwise be the way around a reply guard;</item>
+/// <item>the top-level routes, which answer a review BODY or speak to a person at the top of the
+/// pull request (task: a dispatched session never speaks to a person at the top level of a pull
+/// request on its own): <c>gh pr comment</c> and <c>gh issue comment</c>, which share one number
+/// space and one resource so the second posts on a pull request as readily as the first; the REST
+/// issue-comment endpoint (<c>…/issues/&lt;n&gt;/comments</c>, which a GET also answers, so it needs
+/// a write parameter, a mutating method, or an <c>--input</c> body to count) and its edit and
+/// delete path (<c>…/issues/comments/&lt;id&gt;</c>); and the GraphQL <c>addComment</c>,
+/// <c>updateIssueComment</c> and <c>deleteIssueComment</c> mutations. A review BODY is
+/// unthreadable, so its answer is a top-level comment, and that answer goes through
+/// <c>h9k pr reply --review</c>, which can tell a bot's review from a person's. Reads stay open:
+/// <c>gh pr view --comments</c> and a GET of the comments endpoint refuse nothing.</item>
 /// </list>
 /// <para>
-/// <b>Deliberately not matched:</b> <c>gh pr comment</c> and the issue-comment endpoint under it.
-/// A review BODY is unthreadable, so a top-level comment is the only answer that exists to one,
-/// and the follow-up prompt has told sessions to write it since Decisions Log #62. Refusing it
-/// here would break an instruction this task was told not to touch. It is a hole in the fence
-/// and it is named as one: a session can still address a person at the top level of the pull
-/// request under the owner's login.
+/// <b>What this still does not stop, stated plainly.</b> A session that reaches GitHub's API
+/// through a client library of its own, spelling neither a route this recognizes nor a host, or
+/// that hides the program behind an indirection the command text does not show, is outside what
+/// any of this sees. It refuses the routes a session actually reaches for.
 /// </para>
 /// </summary>
 public static class ReviewThreadReplyRoutes
@@ -74,13 +88,18 @@ public static class ReviewThreadReplyRoutes
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     /// <summary>
-    /// <c>gh pr review</c>, which is both the surface and the route: it submits a review under the
-    /// caller's login without going near <c>gh api</c>, so it is tested on its own rather than
-    /// behind <see cref="ReachesTheGitHubApi"/>.
+    /// The <c>gh</c> subcommands that put text on a pull request without going near <c>gh api</c>,
+    /// so each is both the surface and the route and is tested on its own rather than behind
+    /// <see cref="ReachesTheGitHubApi"/>: <c>gh pr review</c> submits a review under the caller's
+    /// login, and <c>gh pr comment</c> and <c>gh issue comment</c> post at the top level (the issue
+    /// form reaches a pull request too, since the two share a number space).
     /// </summary>
-    private static readonly Regex SubmitsAReviewDirectly = new(
-        @"\bgh\s+pr\s+review\b",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+    private static readonly (string Group, string Verb)[] DirectPostingSubcommands =
+    [
+        ("pr", "review"),
+        ("pr", "comment"),
+        ("issue", "comment"),
+    ];
 
     private static readonly Regex Routes = new(
         string.Join(
@@ -96,12 +115,19 @@ public static class ReviewThreadReplyRoutes
             // delete verbs ride the same prefix for the same reason (Copilot, PR #397): rewriting
             // the words already in a thread, or removing a reviewer's, is writing into it, and
             // GraphQL spells those `updatePullRequestReview…` and `deletePullRequestReview…`.
-            "(add|update|delete)PullRequestReview"),
+            "(add|update|delete)PullRequestReview",
+            // The top-level comment mutations (task: a dispatched session never speaks to a person
+            // at the top level of a pull request on its own): `addComment` posts on any
+            // subject, a pull request included, and the other two rewrite or remove what is
+            // already there. Word-bounded so `addCommentSomethingElse` is not this one.
+            @"\b(addComment|updateIssueComment|deleteIssueComment)\b"),
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     /// <summary>
-    /// The REST paths under a pull request that a GET also answers — the inline-comment endpoint
-    /// and the review endpoint. Matching either one alone would refuse a lap's own reads (listing
+    /// The REST paths under a pull request that a GET also answers — the inline-comment endpoint,
+    /// the review endpoint, and the issue-comment endpoint a pull request's top-level comments
+    /// live at (<c>…/issues/&lt;n&gt;/comments</c>, and <c>…/issues/comments/&lt;id&gt;</c> for an edit or
+    /// a delete). Matching any one alone would refuse a lap's own reads (listing
     /// a pull request's review comments is how a session finds a thread's numeric reply id), so
     /// each is paired with <see cref="WriteParameters"/>.
     /// <para>
@@ -111,7 +137,7 @@ public static class ReviewThreadReplyRoutes
     /// </para>
     /// </summary>
     private static readonly Regex ReadableWritePaths = new(
-        @"pulls/(\S+/)?(comments|reviews)\b",
+        @"(pulls/(\S+/)?(comments|reviews)|issues/(\S+/)?comments)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     /// <summary>
@@ -147,19 +173,26 @@ public static class ReviewThreadReplyRoutes
             @"(?<!\w)commit_id[\s""']*[=:](?!=)",
             @"\bevent=",
             @"\bbody=",
-            @"(--method|--request|-X)[\s='""]*(POST|PUT|PATCH|DELETE)\b"),
+            @"(--method|--request|-X)[\s='""]*(POST|PUT|PATCH|DELETE)\b",
+            // A request body supplied from a file or inline: `gh api --input` and curl's data
+            // flags both make the request a write without naming a method, which is how a
+            // top-level comment is posted from a prepared payload.
+            @"(?<![\w-])--input\b",
+            @"(?<![\w-])(-d|--data|--data-raw|--data-binary|--data-urlencode|--json)(?=[\s='""])"),
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     /// <summary>
-    /// Whether this command writes into a pull request's review threads. False for everything
-    /// else, including every read — a follow-up fetches its threads with
-    /// <c>gh api graphql</c> and resolves a bot's with <c>resolveReviewThread</c>, and neither
+    /// Whether this command puts text onto a pull request by a route other than
+    /// <c>h9k pr reply</c>: inside a review thread, or at the top level of the pull request. (The
+    /// name predates the top-level routes joining the list.) False for everything else, including
+    /// every read — a follow-up fetches its threads with <c>gh api graphql</c>, lists comments
+    /// with a GET, and resolves a bot's thread with <c>resolveReviewThread</c>, and none of those
     /// says anything to anybody — and false for a command that merely quotes one of these routes
-    /// in a search pattern or a commit message, which reaches no API at all.
+    /// in a search pattern or a commit message, which invokes no such program and reaches no API.
     /// </summary>
     public static bool WritesIntoAReviewThread(string? command) =>
         command.IsNotBlank()
-        && (SubmitsAReviewDirectly.IsMatch(command)
+        && (ShellInvocations.InvokesGh(command, DirectPostingSubcommands)
             || (ReachesTheGitHubApi.IsMatch(command) && NamesAThreadWrite(command)));
 
     private static bool NamesAThreadWrite(string command) =>
@@ -173,10 +206,14 @@ public static class ReviewThreadReplyRoutes
     /// retry the same command.
     /// </summary>
     public const string RefusalReason =
-        "This platform posts in-thread replies through " + ClaudeSettingsFile.ReviewThreadReplyCommand
-        + " <task> --thread <id> --disposition <fix|decline|route> --body \"<text>\", never through gh "
-        + "directly, because only that command can tell a bot's thread from a person's. A decline or a "
-        + "route on a thread a PERSON opened is not yours to post at all: draft it, close with the "
-        + "DISAGREEMENT block and RESOLUTION: disputed, and the run parks so the owner sends it, edits "
-        + "it, or drops it.";
+        "This platform posts replies on a pull request through " + ClaudeSettingsFile.ReviewThreadReplyCommand
+        + ", never through gh directly, because only that command can tell a bot's words from a person's. "
+        + "Inside a review thread: " + ClaudeSettingsFile.ReviewThreadReplyCommand
+        + " <task> --thread <id> --disposition <fix|decline|route> --body \"<text>\". "
+        + "To answer a review's own body, which has no thread (this replaces gh pr comment and gh issue "
+        + "comment): " + ClaudeSettingsFile.ReviewThreadReplyCommand
+        + " <task> --review <review url> --disposition <fix|decline|route> --body \"<text>\". "
+        + "A decline or a route on a thread or a review body a PERSON wrote is not yours to post at all: "
+        + "draft it, close with the DISAGREEMENT block and RESOLUTION: disputed, and the run parks so the "
+        + "owner sends it, edits it, or drops it.";
 }

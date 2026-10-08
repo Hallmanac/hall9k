@@ -576,9 +576,9 @@ public static class CliCommandTree
                     "--body", "\"Fixed above.\"");
             pullRequest.AddCommand<PullRequestReplyGuardCommand>("reply-guard")
                 .WithDescription(
-                    "Not for you: the PreToolUse hook a follow-up session launches with, which refuses the "
-                    + "shell routes that write inside a review thread so every reply goes through h9k pr "
-                    + "reply. Reads Claude Code's hook payload on stdin and exits 2 to refuse. Registered "
+                    "Not for you: the PreToolUse hook every headless session launches with, which refuses the "
+                    + "shell routes that put text on a pull request, inside a review thread or at the top "
+                    + "level, so every reply goes through h9k pr reply. Reads Claude Code's hook payload on stdin and exits 2 to refuse. Registered "
                     + "rather than hidden so the same check can be run by hand when a session reports a "
                     + "refusal you did not expect: pipe the payload in on stdin.")
                 .WithExample("pr", "reply-guard");
