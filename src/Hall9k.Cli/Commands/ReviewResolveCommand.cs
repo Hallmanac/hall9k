@@ -576,7 +576,9 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
                     ? $"review thread {disagreement.ThreadId}"
                     : disagreement.Location.IsNotBlank()
                         ? disagreement.Location
-                        : "the review's own body";
+                        : disagreement.ReviewUrl.IsNotBlank()
+                            ? $"review {disagreement.ReviewUrl}"
+                            : "the review's own body";
                 throw new DomainConflictException(
                     $"Task {task.Id}'s parked reply for {where} carries no drafted reply, so there is "
                     + "nothing to post as written. Nothing has been posted. Pass your own text with "
@@ -613,12 +615,23 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
                 // OrdinalIgnoreCase, the comparison this codebase already uses for provider-supplied
                 // urls and logins, so casing alone never rejects a url closeout did read.
                 && !task.ChangesRequestedReviews.Any(review =>
-                    string.Equals(review.ReviewUrl, disagreement.ReviewUrl, StringComparison.OrdinalIgnoreCase)))
+                    string.Equals(review.ReviewUrl, disagreement.ReviewUrl, StringComparison.OrdinalIgnoreCase))
+                // The other review GitHub itself reported: one the lap's own `h9k pr reply --review`
+                // read and refused to answer for a person (task: a dispatched session never speaks
+                // to a person at the top level of a pull request on its own). That record, not the
+                // session's summary, is why a review-feedback lap's body draft may be sent at all.
+                && !run.RefusedReviewBodyUrls.Any(url =>
+                    string.Equals(url, disagreement.ReviewUrl, StringComparison.OrdinalIgnoreCase)))
             {
-                string[] known = [.. task.ChangesRequestedReviews.Select(review => review.ReviewUrl)];
+                string[] known =
+                [
+                    .. task.ChangesRequestedReviews.Select(review => review.ReviewUrl),
+                    .. run.RefusedReviewBodyUrls,
+                ];
                 throw new DomainConflictException(
                     $"Task {task.Id}'s parked disagreement answers review {disagreement.ReviewUrl}, which is "
-                    + "not one of the changes-requested reviews this lap was dispatched to answer — the fix "
+                    + "not one of the changes-requested reviews this lap was dispatched to answer, and no "
+                    + "h9k pr reply --review refusal on this run read it from GitHub either — the "
                     + "session stated it, and closeout never read it, so a top-level comment naming it would "
                     + "tell the reviewer they are being answered about a review that may not be theirs. "
                     + "Nothing has been posted. The reviews this lap is answering: "

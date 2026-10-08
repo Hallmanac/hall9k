@@ -1761,11 +1761,12 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 draft => (Draft: draft, Sent: SentReply(run, draft)))),
         ];
         List<RefusedThreadReplyRecord> refusals = [.. runs.SelectMany(run => run.RefusedHumanThreadReplies)];
+        List<RefusedReviewBodyReplyRecord> bodyRefusals = [.. runs.SelectMany(run => run.RefusedReviewBodyReplies)];
         // A refusal shows even with no draft beside it, and that shape is the interesting one: a
         // session that was turned down and then did NOT park is exactly the run an operator needs
         // to know about, and gating the block on the drafts would be the one case it hid
         // (self-review, this task).
-        if (drafts.Count == 0 && refusals.Count == 0)
+        if (drafts.Count == 0 && refusals.Count == 0 && bodyRefusals.Count == 0)
         {
             return [];
         }
@@ -1787,7 +1788,9 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 ? ExternalText.OneLineMarkup(draft.ThreadUrl)
                 : draft.ThreadId.IsNotBlank()
                     ? $"thread {ExternalText.OneLineMarkup(draft.ThreadId)} (no link observed)"
-                    : "no thread identified";
+                    : draft.ReviewUrl.IsNotBlank()
+                        ? $"review body {ExternalText.OneLineMarkup(draft.ReviewUrl)}"
+                        : "no thread identified";
             string disposition = draft.Disposition is { } value && value.Value.IsNotBlank()
                 ? value.Value.ToLowerInvariant()
                 : "no disposition stated";
@@ -1836,6 +1839,17 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 + $"({refused.RefusedAt.ToLocalTime():g}); nothing was sent[/]");
         }
 
+        foreach (RefusedReviewBodyReplyRecord refused in bodyRefusals)
+        {
+            string author = refused.Author.IsNotBlank()
+                ? $"@{ExternalText.OneLineMarkup(refused.Author)}'s"
+                : "a person's";
+            lines.Add(
+                $"  [red]refused:[/] [dim]a session tried to post a {refused.Disposition.Value.ToLowerInvariant()} "
+                + $"onto {author} review body {ExternalText.OneLineMarkup(refused.ReviewUrl)} and was stopped "
+                + $"({refused.RefusedAt.ToLocalTime():g}); nothing was sent[/]");
+        }
+
         return lines;
     }
 
@@ -1854,7 +1868,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// </summary>
     private static ReviewDisagreementReplyDirection? SentReply(RunDetails run, ReviewDisagreement draft) =>
         draft.ThreadId.IsBlank()
-            ? null
+            // A review-body draft has no thread to pair on. Its send is a top-level comment that
+            // opens "On <review url>:" whichever choice was made (ReviewResolveCommand), so the
+            // text that reached the pull request names the review it answered; a --post-nothing
+            // direction carries no text and pairs with nothing, as above.
+            ? draft.ReviewUrl.IsBlank()
+                ? null
+                : run.ChangesRequestedReplyDirections.LastOrDefault(direction =>
+                    direction.PostedBody is { } posted
+                    && posted.StartsWith($"On {draft.ReviewUrl}:", StringComparison.OrdinalIgnoreCase))
             // Ordinal, and the LAST match: a GraphQL node id is opaque and case-significant, and
             // a thread the owner answered more than once across this run's parks is showing the
             // words that reached the reviewer most recently.
