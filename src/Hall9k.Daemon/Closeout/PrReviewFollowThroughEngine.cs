@@ -449,9 +449,7 @@ public sealed class PrReviewFollowThroughEngine(
     {
         if (latestReview is { } review)
         {
-            headSha = review.State is "APPROVED" or "CHANGES_REQUESTED" && review.CommitOid is { } commitOid
-                ? commitOid
-                : task.PrReviewReviewedHeadSha ?? conversation.HeadSha;
+            headSha = review.ReviewedCommitOid ?? task.PrReviewReviewedHeadSha ?? conversation.HeadSha;
             return task.PrReviewReviewBaselined && review.Id != task.PrReviewReviewerReviewId;
         }
 

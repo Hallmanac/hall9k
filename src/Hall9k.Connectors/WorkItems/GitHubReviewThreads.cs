@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Text;
+using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -124,7 +125,19 @@ public sealed record ReviewThread(
 /// the review-conversation read folded it. <see cref="CommitOid"/> and <see cref="SubmittedAt"/>
 /// are honestly null where the payload carried none, rather than defaulted.
 /// </summary>
-public sealed record SubmittedReview(string Id, string State, DateTimeOffset? SubmittedAt, string? CommitOid);
+public sealed record SubmittedReview(string Id, string State, DateTimeOffset? SubmittedAt, string? CommitOid)
+{
+    /// <summary>
+    /// The commit this review read, or null when it names none this platform trusts as one. Only an
+    /// approval or a request for changes reviews code: a COMMENTED review, which includes a lone
+    /// thread reply, can be posted after a push and would carry a later commit than the one the
+    /// reviewer actually read, which shortens a range, the wrong direction to fail in. The rule
+    /// the follow-through poll reopens on and the scoped lap computes its range from, so the two
+    /// can never disagree about which review names a reviewed head.
+    /// </summary>
+    public string? ReviewedCommitOid =>
+        State is "APPROVED" or "CHANGES_REQUESTED" && CommitOid.IsNotBlank() ? CommitOid : null;
+}
 
 /// <summary>
 /// What one look at a pull request's review conversation saw. Everything a posted review's
