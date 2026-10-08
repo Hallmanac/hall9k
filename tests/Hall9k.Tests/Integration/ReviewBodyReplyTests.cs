@@ -47,27 +47,26 @@ public sealed class ReviewBodyReplyTests(PostgresFixture postgres) : IClassFixtu
         "The sentinel already means unset in this projection, so a distinct canary is what keeps the two apart.";
 
     [Fact]
-    public async Task A_fix_answer_to_a_persons_review_body_posts_after_the_conventions_check_and_is_recorded()
+    public async Task A_fix_answer_to_a_persons_review_body_is_held_after_the_conventions_check_and_posts_nothing()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         (Guid taskId, Guid runId) = await SeedAsync(cts.Token);
         RecordingProcessRunner gh = ScriptedGitHub(ReviewJson("jsmotherman", "User"));
 
-        await ReplyAsync(taskId, "fix", "Every point is fixed above — the sentinel is reused now.", gh, cts.Token);
+        await ReplyAsync(taskId, "fix", "Every point is fixed above \u2014 the sentinel is reused now.", gh, cts.Token);
 
-        gh.Calls.Select(call => call.Arguments[0]).Should().Equal("api", "pr");
-        IReadOnlyList<string> comment = gh.Calls[1].Arguments;
-        comment.Should().Contain("comment").And.Contain("2042");
-        string body = comment[comment.ToList().IndexOf("--body") + 1];
-        body.Should().StartWith($"On {ReviewUrl}:\n\n", "the comment names the review it answers");
-        body.Should().NotContain("—", "the writing-conventions check ran before the write");
+        gh.Calls.Select(call => call.Arguments[0]).Should().OnlyContain(
+            first => first == "api", "only the author read reached GitHub; the comment waits for the push");
 
         await using IQuerySession query = postgres.Store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
-        ReviewBodyReplyRecord posted = run.ReviewBodyRepliesPosted.Should().ContainSingle().Subject;
-        posted.ReviewUrl.Should().Be(ReviewUrl);
-        posted.Disposition.Should().Be(ReviewThreadDisposition.Fix);
-        posted.ReviewIsHumanAuthored.Should().BeTrue("the author came from GitHub's own record");
+        run.ReviewBodyRepliesPosted.Should().BeEmpty();
+        HeldReplyRecord held = run.HeldReplies.Should().ContainSingle().Subject;
+        held.ReviewUrl.Should().Be(ReviewUrl);
+        held.ThreadId.Should().BeNull();
+        held.Disposition.Should().Be(ReviewThreadDisposition.Fix);
+        held.TargetIsHumanAuthored.Should().BeTrue("the author came from GitHub's own record");
+        held.Body.Should().NotContain("\u2014", "the writing-conventions check ran before the hold");
         run.RefusedReviewBodyReplies.Should().BeEmpty();
     }
 
@@ -272,6 +271,7 @@ public sealed class ReviewBodyReplyTests(PostgresFixture postgres) : IClassFixtu
         run.RefusedReviewBodyReplies.Should().BeEmpty(
             "a review GitHub never reported is not something a later park may treat as GitHub's report");
         run.ReviewBodyRepliesPosted.Should().BeEmpty();
+        run.HeldReplies.Should().BeEmpty("a review the command could not vouch for is not held either");
     }
 
     private async Task ResolveAsync(

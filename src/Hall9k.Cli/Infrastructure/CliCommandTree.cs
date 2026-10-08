@@ -565,8 +565,10 @@ public static class CliCommandTree
                     + "recorded: telling a colleague their point does not hold is yours to send, so the lap "
                     + "drafts it, parks, and h9k review resolve posts it as written, posts your own text, or "
                     + "posts nothing. Whose review it is comes from GitHub, read when this runs. A bot's "
-                    + "thread or review and a fix's reply to anyone post as they always have "
-                    + "(PLAN.md log #62, #159).")
+                    + "thread or review posts a decline or a route at once. A fix reply, to anyone, posts "
+                    + "nothing now: it is recorded, and the platform posts it and resolves the thread after "
+                    + "its push has moved the pull request's head, so do not resolve a fix's thread "
+                    + "yourself (PLAN.md log #62, #159).")
                 .WithExample(
                     "pr", "reply", "28b19893", "--thread", "PRRT_kwDO", "--disposition", "fix",
                     "--body", "\"Fixed in the commit above: the sentinel is reused now.\"")
