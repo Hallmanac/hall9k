@@ -739,6 +739,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 AnsiConsole.MarkupLine(line);
             }
 
+            foreach (string line in ComposeHeldReplies(everyRun, details.State == TaskState.Abandoned))
+            {
+                AnsiConsole.MarkupLine(line);
+            }
+
             // Selected across every run rather than from the newest, for the reason the mechanical
             // rebase above it is: the retarget is recorded on the run that was watching the pull
             // request, and the replay dispatched in the same sweep supersedes that run immediately.
@@ -1851,6 +1856,80 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         }
 
         return lines;
+    }
+
+    /// <summary>
+    /// The fix replies a lap's session handed the posting path that have not posted, each with its
+    /// thread or review and its words (task: a review-feedback lap's fix reply posts only after
+    /// the platform's push has moved the pull request's head). A fix reply waits for the platform's
+    /// push, so until the push step decides it the row says it is waiting; once that step passes
+    /// without posting it, or the run ends or is superseded first, the row says it was withheld
+    /// and why, so the owner can read what the lap would have claimed. A reply that posted is the
+    /// pull request's business and is not listed.
+    /// </summary>
+    internal static IReadOnlyList<string> ComposeHeldReplies(IReadOnlyList<RunDetails> runs, bool taskAbandoned)
+    {
+        List<string> lines = [];
+        foreach (RunDetails run in runs)
+        {
+            foreach (HeldReplyRecord held in run.HeldReplies.Where(reply => reply.PostedAt is null))
+            {
+                if (lines.Count == 0)
+                {
+                    lines.Add("\n[bold]Fix replies that have not posted[/]");
+                    lines.Add(
+                        "  [dim]a fix reply posts only after the platform's push has moved the pull request's head, "
+                        + "so a lap that pushed nothing claims nothing[/]");
+                }
+
+                string? withheld = WithheldReason(run, held, taskAbandoned);
+                lines.Add(withheld is null
+                    ? $"  [yellow]waiting for the push[/] [dim]{ExternalText.OneLineMarkup(held.Target)}[/]"
+                    : $"  [red]withheld[/] [dim]{ExternalText.OneLineMarkup(held.Target)}: "
+                        + $"{ExternalText.OneLineMarkup(withheld)}[/]");
+                lines.Add($"    [dim]would have said:[/] {ExternalText.OneLineMarkup(held.Body)}");
+            }
+        }
+
+        return lines;
+    }
+
+    /// <summary>
+    /// Why a reply that has not posted will not, or null while it is still waiting for the push
+    /// step. The recorded reason wins; otherwise the run's own ending speaks for it, since a run
+    /// that failed or was superseded never reaches the step that would have recorded one.
+    /// </summary>
+    private static string? WithheldReason(RunDetails run, HeldReplyRecord held, bool taskAbandoned)
+    {
+        if (held.WithheldReason is { } recorded)
+        {
+            return recorded;
+        }
+
+        if (taskAbandoned)
+        {
+            return "the task was abandoned before the platform pushed this lap's work";
+        }
+
+        if (run.State == RunState.Failed || run.State == RunState.Killed)
+        {
+            return $"the run {run.State.Value.ToLowerInvariant()} before the platform pushed this lap's work";
+        }
+
+        if (run.State == RunState.Superseded)
+        {
+            return "the run was superseded before the platform pushed this lap's work";
+        }
+
+        // Still on its way to the push: dispatched, running, in the gates or the pre-PR review, or
+        // parked (a parked run's replies stay pending and post only if it later pushes).
+        bool beforePush = run.State.IsLive
+            || run.State == RunState.ReviewParked
+            || run.State == RunState.BudgetParked
+            || run.State == RunState.LaunchHeld;
+        return beforePush
+            ? null
+            : "the push step finished without posting it";
     }
 
     /// <summary>
