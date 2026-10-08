@@ -72,11 +72,22 @@ public sealed record ScopedReviewThreadDelta(
 /// </para>
 /// </summary>
 /// <param name="ReviewerLogin">The login whose threads and review this packet is scoped to, read back from gh.</param>
-/// <param name="ReviewedHeadSha">The head the reviewer's own review was posted against, or null when none was recorded.</param>
+/// <param name="ReviewedHeadSha">
+/// The head the reviewer's own review was posted against, from the platform's record or, when it
+/// recorded none, from the reviewer's own newest review on GitHub (see
+/// <paramref name="ReviewedHeadReadFromReview"/>); null when neither supplied one.
+/// </param>
 /// <param name="CurrentHeadSha">The head right now.</param>
 /// <param name="Threads">The reviewer's threads that moved. Empty when none did.</param>
-/// <param name="UnchangedThreadCount">How many of the reviewer's threads did not move, so the packet's scope is stated rather than implied.</param>
-/// <param name="NewCommits">One line per commit pushed since the review, oldest first. Empty when none were.</param>
+/// <param name="UnchangedThreadCount">
+/// How many of the reviewer's threads did not move, so the packet's scope is stated rather than
+/// implied. A thread with no recorded watermark is never counted here (see
+/// <paramref name="UnbaselinedThreadCount"/>).
+/// </param>
+/// <param name="NewCommits">
+/// One line per commit pushed since the review, oldest first. Empty when none were, and also when
+/// the range was never computed: <paramref name="CommitRangeNotComputed"/> is what tells the two apart.
+/// </param>
 /// <param name="Diff">The diff of those commits, or null when the range could not be read.</param>
 /// <param name="DiffNote">Why the diff is absent or shortened, or null when it is neither.</param>
 /// <param name="ThreadPageTruncated">
@@ -95,6 +106,23 @@ public sealed record ScopedReviewThreadDelta(
 /// adversarial lens). Stated rather than inferred, for the same reason every other short read here
 /// is stated.
 /// </param>
+/// <param name="CommitRangeNotComputed">
+/// Why the commit range was not computed (no reviewed commit from either source, no checkout, or a
+/// range git refused), stated as what the lap observed; null when git computed it. The one field the
+/// briefing reads to choose between listing commits, saying none were observed, and saying the
+/// range is unknown, so an empty <paramref name="NewCommits"/> can never be mistaken for the second
+/// when it is the third.
+/// </param>
+/// <param name="ReviewedHeadReadFromReview">
+/// Whether <paramref name="ReviewedHeadSha"/> came from the reviewer's own review on GitHub because
+/// the platform recorded none, which the briefing says in as many words.
+/// </param>
+/// <param name="UnbaselinedThreadCount">
+/// How many of the reviewer's threads have no new comment and no recorded watermark. Whether their
+/// resolution changed since the review cannot be told, so they are counted neither as unchanged nor
+/// as moved.
+/// </param>
+/// <param name="UnbaselinedResolvedCount">How many of those threads are resolved now.</param>
 public sealed record ScopedReviewPacket(
     string ReviewerLogin,
     string? ReviewedHeadSha,
@@ -105,7 +133,11 @@ public sealed record ScopedReviewPacket(
     string? Diff,
     string? DiffNote,
     bool ThreadPageTruncated = false,
-    bool ReReviewRequested = false);
+    bool ReReviewRequested = false,
+    string? CommitRangeNotComputed = null,
+    bool ReviewedHeadReadFromReview = false,
+    int UnbaselinedThreadCount = 0,
+    int UnbaselinedResolvedCount = 0);
 
 /// <summary>
 /// Everything the opening briefing states, gathered by the caller so the composition itself is
@@ -411,7 +443,7 @@ public static class ReviewLapPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine(
             scoped.ReviewedHeadSha.IsNotBlank()
-                ? Fragment(file, "head-known",
+                ? Fragment(file, scoped.ReviewedHeadReadFromReview ? "head-from-review" : "head-known",
                     ("ReviewedShort", ShortSha(scoped.ReviewedHeadSha)),
                     ("CurrentShort", ShortSha(scoped.CurrentHeadSha ?? string.Empty)))
                 : PromptTemplates.Load(file, "head-unknown"));
@@ -442,7 +474,20 @@ public static class ReviewLapPromptBuilder
             prompt.AppendLine();
         }
 
-        if (scoped.Threads.Count == 0)
+        if (scoped.Threads.Count == 0 && scoped.UnbaselinedThreadCount > 0)
+        {
+            // The "none have moved" opening and the "they opened none" ending are both off the table
+            // here: threads exist whose resolution cannot be compared, so neither claim is observed.
+            prompt.AppendLine(
+                PromptTemplates.Load(file, "no-new-comment-opening")
+                + (scoped.UnchangedThreadCount > 0
+                    ? Fragment(file, "no-new-comment-unchanged", ("Count", Count(scoped.UnchangedThreadCount)))
+                    : string.Empty)
+                + (scoped.ReReviewRequested ? PromptTemplates.Load(file, "none-moved-rerequest-tail") : string.Empty));
+            prompt.AppendLine();
+            AppendUnbaselinedNotice(prompt, file, scoped);
+        }
+        else if (scoped.Threads.Count == 0)
         {
             prompt.AppendLine(
                 PromptTemplates.Load(file, "none-moved-opening")
@@ -470,6 +515,7 @@ public static class ReviewLapPromptBuilder
                     : PromptTemplates.Load(file, "moved-summary-no-unchanged"))
                 + PromptTemplates.Load(file, "moved-summary-tail"));
             prompt.AppendLine();
+            AppendUnbaselinedNotice(prompt, file, scoped);
             foreach (ScopedReviewThreadDelta thread in scoped.Threads)
             {
                 prompt.AppendLine(
@@ -504,7 +550,14 @@ public static class ReviewLapPromptBuilder
 
         prompt.AppendLine(PromptTemplates.Load(file, "commits-heading"));
         prompt.AppendLine();
-        if (scoped.NewCommits.Count == 0)
+        if (scoped.CommitRangeNotComputed.IsNotBlank())
+        {
+            // Before anything that could read as a list, and never "none were observed": an empty
+            // list here is a range nobody computed, which is the opposite of a range that held
+            // nothing, and the origin gap (arx#2201) was a reviewer trusting the first for the second.
+            prompt.AppendLine(Fragment(file, "commits-not-computed", ("Reason", OneLine(scoped.CommitRangeNotComputed))));
+        }
+        else if (scoped.NewCommits.Count == 0)
         {
             prompt.AppendLine(PromptTemplates.Load(file, "commits-none"));
         }
@@ -532,6 +585,25 @@ public static class ReviewLapPromptBuilder
         prompt.AppendLine(PromptTemplates.Load(file, "what-to-produce-heading"));
         prompt.AppendLine();
         prompt.AppendLine(PromptTemplates.Load(file, "what-to-produce-body"));
+        prompt.AppendLine();
+    }
+
+    /// <summary>
+    /// The threads whose resolution cannot be compared with anything: no new comment, and no
+    /// watermark taken at a follow-through poll (it is taken at the first poll, not at the review, so
+    /// a lap opened before that poll has none). Stated as a count and a limit, never folded into
+    /// "unchanged" or "moved", because the platform did not observe either.
+    /// </summary>
+    private static void AppendUnbaselinedNotice(StringBuilder prompt, string file, ScopedReviewPacket scoped)
+    {
+        if (scoped.UnbaselinedThreadCount == 0)
+        {
+            return;
+        }
+
+        prompt.AppendLine(Fragment(file, "unbaselined-threads",
+            ("Count", Count(scoped.UnbaselinedThreadCount)),
+            ("ResolvedCount", scoped.UnbaselinedResolvedCount.ToString(CultureInfo.InvariantCulture))));
         prompt.AppendLine();
     }
 

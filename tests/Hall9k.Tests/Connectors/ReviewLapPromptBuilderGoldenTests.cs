@@ -213,9 +213,11 @@ public sealed class ReviewLapPromptBuilderGoldenTests : IDisposable
             UnchangedThreadCount: 0,
             NewCommits: [],
             Diff: null,
-            DiffNote: "The reviewed commit could no longer be found; the branch may have been force-pushed.",
+            DiffNote: "The whole pull request is in the checkout; ask the reviewer which commit they read if a finding turns on it.",
             ThreadPageTruncated: false,
-            ReReviewRequested: false),
+            ReReviewRequested: false,
+            CommitRangeNotComputed: "neither the platform's record nor the reviewer's newest review on GitHub supplied a reviewed commit "
+                + "(the platform recorded none, and no submitted review of the reviewer's was found on GitHub)."),
     };
 
     private static PullRequestSurface PullRequest() => new(

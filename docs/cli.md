@@ -427,7 +427,13 @@ lever that does, since `h9k task resolve` is the attestation exit from a Failed 
 **Reading only what changed**: `h9k pr review <number-or-url> --since-my-review` opens a scoped lap
 over the deltas alone — the replies on threads you opened, verbatim, plus the commits pushed since
 your review and their diff. A re-review request standing against you is stated at the top of that
-packet, because it is the one thing that can summon a lap with nothing in either half. It skips the
+packet, because it is the one thing that can summon a lap with nothing in either half. The commit
+range starts at the head the platform recorded for your review; when it recorded none, it starts at the
+commit your own newest approval or changes-requested review on GitHub was posted against, and the
+packet says it was read from the review. When neither supplies a commit, or git cannot compute the
+range, the section opens by saying the range could not be computed and why, and never reads as an empty
+one. A thread of yours with no new comment and no recorded baseline is counted separately, with how many
+are resolved now, because whether its resolution changed since your review cannot be told. It skips the
 objective, the blast radius, the CI results and the earlier
 findings report outright (you read those in the first lap) and reports findings in the same shape,
 which you direct with the same two commands. Without the flag, a lap on a waiting review reads the

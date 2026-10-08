@@ -1194,11 +1194,20 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
     /// question, so it dispatches on what was asked rather than on call order — which is the
     /// honest shape anyway: the composer is free to reorder its reads.
     /// </summary>
-    private ProcessRunner ScopedLapGh(string conversationJson) => (fileName, arguments, _, _) =>
+    private ProcessRunner ScopedLapGh(string conversationJson, string? onlyForRangeStartingAt = null) => (fileName, arguments, _, _) =>
     {
         List<string> argv = [.. arguments];
         if (fileName == "git")
         {
+            // Answers only for a range that starts where the test says the lap must start, so a lap
+            // that reached for any other commit is told git cannot resolve it rather than handed the
+            // canned commit list.
+            if (onlyForRangeStartingAt is not null
+                && !argv.Any(argument => argument.StartsWith($"{onlyForRangeStartingAt}..", StringComparison.Ordinal)))
+            {
+                return Task.FromResult(new ProcessResult(128, string.Empty, "fatal: bad revision"));
+            }
+
             return Task.FromResult(argv.Contains("log")
                 ? new ProcessResult(0, "9a1b2c3 answer the review\n", string.Empty)
                 : new ProcessResult(
@@ -1541,6 +1550,180 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
     }
 
     /// <summary>
+    /// ConversationWithOneReply with the reviewer's own newest submitted review added to it, as GitHub
+    /// reports one: its state and, when it names one, the commit it was posted against.
+    /// </summary>
+    private static string WithReviewerReview(string conversation, string state, string? commitOid)
+    {
+        string commit = commitOid is null ? "null" : "{\"oid\":\"" + commitOid + "\"}";
+        return conversation.Replace(
+            "\"reviewRequests\"",
+            $$$"""
+            "reviews":{"nodes":[
+              {"id":"R1","state":"{{{state}}}","submittedAt":"2026-09-07T13:20:00Z","author":{"login":"brian"},"commit":{{{commit}}}}
+            ],"pageInfo":{"hasPreviousPage":false}},
+            "reviewRequests"
+            """,
+            StringComparison.Ordinal);
+    }
+
+    private async Task<string> RunScopedLapAsync(
+        bool recordsHeadAndWatermark, string conversation, string? onlyForRangeStartingAt)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Seeded seeded = await SeedWaitingPrReviewTaskAsync(store, node, cts.Token, recordsHeadAndWatermark);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            (await PullRequestReviewCommand.RunAsync(
+                store, session,
+                new PullRequestReviewCommand.Settings
+                {
+                    PullRequest = "42", Project = seeded.ProjectName, SinceMyReview = true,
+                },
+                ScopedLapGh(conversation, onlyForRangeStartingAt), NewWorktrees(), cts.Token))
+                .Should().Be(0);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(seeded.TaskId, token: cts.Token))!;
+        return ReadPrompt((await query.LoadAsync<RunDetails>(task.CurrentRunId!.Value, cts.Token))!);
+    }
+
+    /// <summary>
+    /// The origin gap (arx#2201): the platform recorded no reviewed head, so the packet said "None
+    /// were observed" under the commits heading while three commits had landed after the review. The
+    /// reviewer's own CHANGES_REQUESTED review on GitHub names the commit it was posted against, and
+    /// the range is computed from that. The fake git answers only for a range that starts there.
+    /// </summary>
+    [Fact]
+    public async Task A_scoped_lap_with_no_recorded_head_computes_the_range_from_the_reviewers_own_review()
+    {
+        string prompt = await RunScopedLapAsync(
+            recordsHeadAndWatermark: false,
+            WithReviewerReview(ConversationWithOneReply(), "CHANGES_REQUESTED", "dd75751200000000"),
+            onlyForRangeStartingAt: "dd75751200000000");
+
+        prompt.Should().Contain("9a1b2c3 answer the review", "the commits since the review's own commit are listed");
+        prompt.Should().Contain("+new", "and their diff is carried exactly as it is from a recorded head");
+        prompt.Should().Contain("`dd7575120000`", "the reviewed commit is named");
+        prompt.Should().Contain(
+            "not recorded by the platform", "and the line says it was read from the review on GitHub");
+        prompt.Should().NotContain("could not be computed").And.NotContain("None were observed");
+    }
+
+    /// <summary>A recorded head is still the one used, whatever the review on GitHub names.</summary>
+    [Fact]
+    public async Task A_recorded_head_is_used_over_the_commit_of_the_reviewers_review_on_github()
+    {
+        string prompt = await RunScopedLapAsync(
+            recordsHeadAndWatermark: true,
+            WithReviewerReview(ConversationWithOneReply(), "CHANGES_REQUESTED", "dd75751200000000"),
+            onlyForRangeStartingAt: "0f1e2d3c4b5a");
+
+        prompt.Should().Contain("Their review was posted against `0f1e2d3c4b5a`");
+        prompt.Should().Contain("9a1b2c3 answer the review").And.Contain("+new");
+        prompt.Should().NotContain("not recorded by the platform").And.NotContain("dd7575120000");
+        prompt.Should().NotContain("could not be computed");
+    }
+
+    /// <summary>
+    /// A COMMENTED review reviews no code (a lone thread reply is one, and can be posted after a
+    /// push), and a changes-requested review with no commit names nothing: neither supplies a range,
+    /// and the packet says so instead of reading as an empty one.
+    /// </summary>
+    [Theory]
+    [InlineData("COMMENTED", "dd75751200000000")]
+    [InlineData("CHANGES_REQUESTED", null)]
+    public async Task A_scoped_lap_with_no_reviewed_commit_from_either_source_says_the_range_could_not_be_computed(
+        string state, string? commitOid)
+    {
+        string prompt = await RunScopedLapAsync(
+            recordsHeadAndWatermark: false,
+            WithReviewerReview(ConversationWithOneReply(), state, commitOid),
+            onlyForRangeStartingAt: null);
+
+        prompt.Should().Contain(
+            "The range of commits pushed since your review could not be computed: neither the platform's record "
+            + "nor the reviewer's newest review on GitHub supplied a reviewed commit");
+        prompt.Should().Contain($"their newest review there is {state}");
+        prompt.Should().NotContain("None were observed");
+        prompt.Should().NotContain("the commits it could observe");
+        prompt.Should().NotContain("9a1b2c3 answer the review", "no range was computed, so no commit is listed");
+    }
+
+    /// <summary>
+    /// Watermarks are taken at the first follow-through poll, not at the review, so a thread with no
+    /// new comment and no watermark has no observed "unchanged": it is counted separately, with how
+    /// many are resolved now, and the packet never says the reviewer opened none or that none moved.
+    /// </summary>
+    [Fact]
+    public async Task Threads_with_no_watermark_and_no_new_comment_are_neither_unchanged_nor_moved()
+    {
+        const string conversation =
+            """
+            {"data":{"repository":{"pullRequest":{
+              "state":"OPEN","merged":false,"closed":false,"headRefOid":"9a1b2c3d4e5f",
+              "commits":{"totalCount":4},
+              "reviewThreads":{"nodes":[
+                {"id":"T1","isResolved":false,"path":"src/One.cs","line":12,
+                 "comments":{"totalCount":1,"nodes":[
+                   {"author":{"login":"brian"},"body":"the fence is checked after the read","createdAt":"2026-09-07T13:20:00Z"}]}},
+                {"id":"T3","isResolved":true,"path":"src/Three.cs","line":7,
+                 "comments":{"totalCount":1,"nodes":[
+                   {"author":{"login":"brian"},"body":"name this","createdAt":"2026-09-07T13:21:00Z"}]}}
+              ],"pageInfo":{"hasNextPage":false}},
+              "reviewRequests":{"nodes":[]}
+            }}}}
+            """;
+
+        string prompt = await RunScopedLapAsync(
+            recordsHeadAndWatermark: false, conversation, onlyForRangeStartingAt: null);
+
+        prompt.Should().Contain("Threads of the reviewer's with no new comment and no recorded baseline");
+        prompt.Should().Contain(": 2 threads.");
+        prompt.Should().Contain("cannot be told");
+        prompt.Should().Contain("the number of them resolved now is 1");
+        prompt.Should().NotContain("unchanged", "neither of them was observed to be");
+        prompt.Should().NotContain("have moved since their review").And.NotContain("they opened none");
+    }
+
+    /// <summary>
+    /// A thread WITH a watermark is judged exactly as before (unchanged here), beside one without,
+    /// and a thread without a watermark that did gain a comment is still just a moved thread.
+    /// </summary>
+    [Fact]
+    public async Task Threads_with_a_watermark_are_still_judged_as_before_beside_ones_without()
+    {
+        const string conversation =
+            """
+            {"data":{"repository":{"pullRequest":{
+              "state":"OPEN","merged":false,"closed":false,"headRefOid":"9a1b2c3d4e5f",
+              "commits":{"totalCount":4},
+              "reviewThreads":{"nodes":[
+                {"id":"T1","isResolved":false,"path":"src/One.cs","line":12,
+                 "comments":{"totalCount":1,"nodes":[
+                   {"author":{"login":"brian"},"body":"the fence is checked after the read","createdAt":"2026-09-07T13:20:00Z"}]}},
+                {"id":"T3","isResolved":true,"path":"src/Three.cs","line":7,
+                 "comments":{"totalCount":1,"nodes":[
+                   {"author":{"login":"brian"},"body":"name this","createdAt":"2026-09-07T13:21:00Z"}]}}
+              ],"pageInfo":{"hasNextPage":false}},
+              "reviewRequests":{"nodes":[]}
+            }}}}
+            """;
+
+        string prompt = await RunScopedLapAsync(
+            recordsHeadAndWatermark: true, conversation, onlyForRangeStartingAt: null);
+
+        prompt.Should().Contain("Threads with a recorded baseline that are unchanged in resolution as well: 1 thread.");
+        prompt.Should().Contain(": 1 thread.", "T3 has no watermark");
+        prompt.Should().Contain("the number of them resolved now is 1");
+        prompt.Should().NotContain("None of the reviewer's own threads have moved");
+    }
+
+    /// <summary>
     /// Closing the terminal is an ordinary way to leave a scoped lap too (independent pre-PR
     /// review, cycle 1, adversarial lens). The refusal that guarded <c>--since-my-review</c> read
     /// the task's STATE, which the lap's own claim has already moved to Claimed — so re-running
@@ -1622,7 +1805,7 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
     /// thread carries no reply yet, which is the state the review was posted in.
     /// </summary>
     private async Task<Seeded> SeedWaitingPrReviewTaskAsync(
-        DocumentStore store, NodeContext node, CancellationToken cancellationToken)
+        DocumentStore store, NodeContext node, CancellationToken cancellationToken, bool recordsHeadAndWatermark = true)
     {
         Seeded parked = await SeedParkedPrReviewTaskAsync(
             store, node, "The lease fence is checked after the read, not before.", cancellationToken);
@@ -1631,12 +1814,23 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
         TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
             parked.TaskId, token: cancellationToken))!;
         PullRequestReviewFollowThroughOpened opened = TaskDecider.OpenPrReviewFollowThrough(
-            task, parked.RunId, $"https://github.com/{repository}/pull/42", "0f1e2d3c4b5a", Now.AddHours(1));
+            task, parked.RunId, $"https://github.com/{repository}/pull/42",
+            recordsHeadAndWatermark ? "0f1e2d3c4b5a" : null, Now.AddHours(1));
         task.Apply(opened);
-        PullRequestReviewFollowThroughObserved observed = TaskDecider.ObservePrReviewFollowThrough(
-            task, "brian", [new PrReviewThreadWatermark("T1", 0, IsResolved: false)],
-            reReviewRequested: false, headSha: "0f1e2d3c4b5a", commitCount: 3, Now.AddHours(2));
-        session.Events.Append(parked.TaskId, opened, observed);
+        if (!recordsHeadAndWatermark)
+        {
+            // The shape a lap opened before the first poll leaves: follow-through open, no reviewed
+            // head and no thread watermark recorded yet.
+            session.Events.Append(parked.TaskId, opened);
+        }
+        else
+        {
+            PullRequestReviewFollowThroughObserved observed = TaskDecider.ObservePrReviewFollowThrough(
+                task, "brian", [new PrReviewThreadWatermark("T1", 0, IsResolved: false)],
+                reReviewRequested: false, headSha: "0f1e2d3c4b5a", commitCount: 3, Now.AddHours(2));
+            session.Events.Append(parked.TaskId, opened, observed);
+        }
+
         session.Delete<TaskLease>(parked.TaskId);
         await session.SaveChangesAsync(cancellationToken);
         return parked;
