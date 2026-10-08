@@ -19,10 +19,16 @@ namespace Hall9k.Daemon.Execution;
 /// would refuse a tip this node's own prior run legitimately pushed. Anything else is a tip this
 /// node has never incorporated — someone else moved the branch — and the push is refused rather
 /// than forced.
+/// <para>
+/// Returns the tip origin held for the branch immediately before the push (null when origin had
+/// no such branch), because that is the one observation of "where the pull request's head stood
+/// before this push" that nothing else can have moved in between: the held fix replies judge
+/// whether the push moved the head against it.
+/// </para>
 /// </summary>
 internal static class ForceWithLeasePusher
 {
-    public static async Task PushAsync(
+    public static async Task<string?> PushAsync(
         ProcessRunner processRunner, string worktreePath, string branch,
         IReadOnlySet<string> recordedPushedTips, CancellationToken cancellationToken)
     {
@@ -41,7 +47,7 @@ internal static class ForceWithLeasePusher
             // this branch exists to allow.
             await RunOrThrowAsync(
                 processRunner, worktreePath, ["push", $"--force-with-lease={branch}:", "origin", branch], cancellationToken);
-            return;
+            return null;
         }
 
         if (tip.ExitCode != 0)
@@ -88,6 +94,7 @@ internal static class ForceWithLeasePusher
         await RunOrThrowAsync(
             processRunner, worktreePath,
             ["push", $"--force-with-lease={branch}:{originTip}", "origin", branch], cancellationToken);
+        return originTip;
     }
 
     private static async Task RunOrThrowAsync(

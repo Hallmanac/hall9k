@@ -12,9 +12,10 @@ namespace Hall9k.Daemon.Execution;
 /// unknown never posts.
 /// </summary>
 /// <param name="StartedFrom">
-/// The head the lap started from: the one closeout recorded when it dispatched the lap
-/// (<c>RunDetails.OpeningReviewSinceSha</c>), or, when none was recorded, the tip this task had
-/// recorded as last pushed to this branch when the push step began.
+/// The head the push started from: the tip origin held for the branch immediately before the
+/// platform's push, as the push's own lease guard read it, so a commit that reached the pull
+/// request some other way earlier is not counted as work the push carried. When the push step has
+/// run before for the same run, the pair recorded then (<c>RunBranchPushed</c>).
 /// </param>
 /// <param name="PushedTip">The tip the push step read from the branch it just pushed.</param>
 public sealed record PushedHeads(string? StartedFrom, string? PushedTip)
@@ -52,7 +53,8 @@ public sealed record PushedHeads(string? StartedFrom, string? PushedTip)
 public sealed class HeldReplyPoster(
     ILogger logger,
     GitHubReviewReplies replies,
-    Func<object, CancellationToken, Task> record)
+    Func<object, CancellationToken, Task> record,
+    TimeProvider clock)
 {
     private const int ShortShaLength = 7;
 
@@ -92,7 +94,7 @@ public sealed class HeldReplyPoster(
 
         if (heads.StartedFrom.IsBlank())
         {
-            return "the head this lap started from was not recorded, so there is no way to tell whether the "
+            return "the tip origin held for the branch before the push was not observed, so there is no way to tell whether the "
                 + "push moved the pull request's head";
         }
 
@@ -191,10 +193,10 @@ public sealed class HeldReplyPoster(
         // later failure in this loop must not take the record of it along.
         object posted = held.ThreadId is { } thread
             ? new ReviewThreadReplyPosted(
-                runId, thread, held.Disposition, held.TargetIsHumanAuthored, DateTimeOffset.UtcNow, held.ReplyId)
+                runId, thread, held.Disposition, held.TargetIsHumanAuthored, clock.GetUtcNow(), held.ReplyId)
             : new ReviewBodyReplyPosted(
                 runId, held.ReviewUrl ?? string.Empty, held.Disposition, held.TargetIsHumanAuthored,
-                DateTimeOffset.UtcNow, held.ReplyId);
+                clock.GetUtcNow(), held.ReplyId);
         await RecordAsync(
             posted, runId, $"the fix reply for {held.Target} is on the pull request but unrecorded here",
             cancellationToken);
@@ -233,7 +235,7 @@ public sealed class HeldReplyPoster(
         logger.LogInformation(
             "Run {RunId}: the held fix reply for {Target} was withheld: {Reason}", runId, held.Target, reason);
         await RecordAsync(
-            new ReviewReplyWithheld(runId, held.ReplyId, reason, DateTimeOffset.UtcNow), runId,
+            new ReviewReplyWithheld(runId, held.ReplyId, reason, clock.GetUtcNow()), runId,
             $"the fix reply for {held.Target} was withheld ({reason}) but unrecorded here", cancellationToken);
     }
 

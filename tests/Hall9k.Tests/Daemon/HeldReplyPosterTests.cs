@@ -60,7 +60,7 @@ public sealed class HeldReplyPosterTests
         posted.ThreadId.Should().Be("PRRT_a");
         posted.HeldReplyId.Should().Be(replyId);
         harness.Run.ReviewThreadRepliesPosted.Should().ContainSingle();
-        harness.Run.HeldReplies.Should().ContainSingle().Which.PostedAt.Should().NotBeNull();
+        harness.Run.HeldReplies.Should().ContainSingle().Which.PostedAt.Should().Be(Now, "the poster stamps from its injected clock");
         TaskShowCommand.ComposeHeldReplies([harness.Run], taskAbandoned: false).Should().BeEmpty(
             "a reply that posted is the pull request's business");
     }
@@ -84,6 +84,20 @@ public sealed class HeldReplyPosterTests
         posted.ReviewUrl.Should().Be(ReviewUrl);
         posted.ReviewIsHumanAuthored.Should().BeTrue();
         harness.Run.ReviewBodyRepliesPosted.Should().ContainSingle();
+    }
+
+    [Fact]
+    public void The_first_recorded_push_heads_stand_when_the_push_step_runs_again()
+    {
+        Harness harness = new();
+        RunDetailsProjection projection = new();
+
+        // A re-run reads origin at the tip the first push left, so its own pair is (Pushed, Pushed).
+        projection.Apply(new FakeEvent<RunBranchPushed>(new RunBranchPushed(harness.RunId, Started, Pushed, Now)), harness.Run);
+        projection.Apply(new FakeEvent<RunBranchPushed>(new RunBranchPushed(harness.RunId, Pushed, Pushed, Now)), harness.Run);
+
+        harness.Run.PushStartedFromSha.Should().Be(Started);
+        harness.Run.PushedTipSha.Should().Be(Pushed);
     }
 
     [Fact]
@@ -318,7 +332,7 @@ public sealed class HeldReplyPosterTests
             {
                 Apply(@event);
                 return Task.CompletedTask;
-            }).PostAsync(Run, heads, RepositoryPath, PullRequestUrl, CancellationToken.None);
+            }, new FixedClock(Now)).PostAsync(Run, heads, RepositoryPath, PullRequestUrl, CancellationToken.None);
 
         private void Apply(object @event)
         {
