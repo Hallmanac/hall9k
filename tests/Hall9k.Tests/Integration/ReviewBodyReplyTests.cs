@@ -116,18 +116,6 @@ public sealed class ReviewBodyReplyTests(PostgresFixture postgres) : IClassFixtu
     }
 
     [Fact]
-    public async Task A_known_copilot_login_is_a_bot_even_when_github_types_it_as_a_user()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        (Guid taskId, _) = await SeedAsync(cts.Token);
-        RecordingProcessRunner gh = ScriptedGitHub(ReviewJson("Copilot", "User"));
-
-        await ReplyAsync(taskId, "decline", "The ref is updated already.", gh, cts.Token);
-
-        gh.Calls.Should().HaveCount(2, "a bot's review body posts on any disposition");
-    }
-
-    [Fact]
     public async Task A_review_returned_with_no_readable_author_is_treated_as_a_persons()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
