@@ -294,6 +294,7 @@ public static class TaskActClassificationRegistry
         [typeof(ReviewThreadReplyRefused)] = TaskActClassification.MemberSafe,
         [typeof(ReviewReplyHeld)] = TaskActClassification.MemberSafe,
         [typeof(ReviewReplyWithheld)] = TaskActClassification.MemberSafe,
+        [typeof(RunBranchPushed)] = TaskActClassification.MemberSafe,
         [typeof(ReviewThreadsTriaged)] = TaskActClassification.MemberSafe,
         [typeof(ReviewTrackConcluded)] = TaskActClassification.MemberSafe,
 

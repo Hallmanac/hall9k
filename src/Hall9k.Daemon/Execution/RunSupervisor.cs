@@ -2873,16 +2873,13 @@ public sealed class RunSupervisor(
             // reached the reviewer. A comment posted BEFORE it, or beside a drafted block, answers
             // a different point of the same review body, so the declined one is still owed
             // (independent pre-PR review, cycle 1, both lenses): a review body that makes three
-            // points, two fixed and one declined, must not lose the declined one. A fix answer
-            // now waits for the platform's push, so one held after the refusal counts the same
-            // way: the words are as good as sent, and they post when the push carries the fix.
+            // points, two fixed and one declined, must not lose the declined one. A fix answer held
+            // for the platform's push does not count here: the push step can still withhold it (an
+            // unmoved head, a failed post), and this check runs before that, so skipping the draft
+            // on its account could leave the reviewer with neither the comment nor a draft.
             if (named.Length == 0
-                && (run.ReviewBodyRepliesPosted.Any(posted =>
-                        SameReview(posted.ReviewUrl, refused.ReviewUrl) && posted.PostedAt >= refused.RefusedAt)
-                    || run.HeldReplies.Any(held =>
-                        held.ReviewUrl is not null
-                        && SameReview(held.ReviewUrl, refused.ReviewUrl)
-                        && held.HeldAt >= refused.RefusedAt)))
+                && run.ReviewBodyRepliesPosted.Any(posted =>
+                    SameReview(posted.ReviewUrl, refused.ReviewUrl) && posted.PostedAt >= refused.RefusedAt))
             {
                 continue;
             }

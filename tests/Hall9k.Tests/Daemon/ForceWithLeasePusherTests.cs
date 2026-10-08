@@ -102,4 +102,20 @@ public sealed class ForceWithLeasePusherTests
         git.Calls.Should().NotContain(call => call[0] == "reflog",
             "the ancestor check alone is enough; the guard should not need the reflog fallback");
     }
+
+    /// <summary>
+    /// The push hands back the tip origin held immediately before it, which is what the held fix
+    /// replies judge "did this push move the pull request's head" against: a tip read at any other
+    /// moment lets a commit that reached the branch some other way count as the push's own work.
+    /// </summary>
+    [Fact]
+    public async Task The_push_returns_the_tip_origin_held_just_before_it()
+    {
+        FakeGit git = new() { OriginTipIsAncestor = true };
+
+        string? before = await ForceWithLeasePusher.PushAsync(
+            git.Runner, "/worktree", Branch, new HashSet<string>(), CancellationToken.None);
+
+        before.Should().Be(git.OriginTip);
+    }
 }

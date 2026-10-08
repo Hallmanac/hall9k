@@ -1729,9 +1729,10 @@ the body against the writing conventions as before and records the reply on the 
 (`ReviewReplyHeld`), because the session never pushes: the platform does, after its gates, and a
 reply saying Fixed must not reach the pull request before the fix does. The daemon posts it in the
 push step, after the generation fence admits the run and before the task reads complete, but only
-when the push moved the pull request's head away from the head the lap started from
-(`RunDetails.OpeningReviewSinceSha`, else the tip the task last pushed to the branch before this
-push; with neither known, nothing posts). It appends one line naming the push, the short shas before
+when the push moved the pull request's head away from the tip origin held for the branch
+immediately before the push (read by the push's own lease guard and recorded on the run as
+`RunBranchPushed`, so a re-run of the push step judges the same pair; with either tip unknown,
+nothing posts). It appends one line naming the push, the short shas before
 and after and GitHub's two-dot compare link between them, then resolves the thread and records the
 post (`ReviewThreadReplyPosted`). So the session does **not** resolve a fix's thread itself. A post or
 a resolve that fails is logged with gh's error and leaves that thread open without failing the run.

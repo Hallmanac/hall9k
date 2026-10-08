@@ -538,6 +538,14 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// </summary>
     public List<HeldReplyRecord> HeldReplies { get; set; } = [];
     /// <summary>
+    /// Origin's tip for the branch just before the platform's push, from the first
+    /// <see cref="Events.RunBranchPushed"/>; null until a push step has recorded one. The held fix
+    /// replies judge whether the push moved the pull request's head against it.
+    /// </summary>
+    public string? PushStartedFromSha { get; set; }
+    /// <summary>The tip that push left, from the same <see cref="Events.RunBranchPushed"/>.</summary>
+    public string? PushedTipSha { get; set; }
+    /// <summary>
     /// The unresolved threads a person opened that closeout read as asking nothing, beside a
     /// review from that same person requesting no change — the FYI beside an approval, which buys
     /// no follow-up lap (task: a review-feedback follow-up never answers a human reviewer in the
@@ -1549,6 +1557,17 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         view.HeldReplies.Add(new HeldReplyRecord(
             @event.Data.ReplyId, @event.Data.ThreadId, @event.Data.ReviewUrl, @event.Data.Disposition,
             @event.Data.TargetIsHumanAuthored, @event.Data.Body, @event.Data.HeldAt));
+    }
+
+    public void Apply(IEvent<RunBranchPushed> @event, RunDetails view)
+    {
+        // The first push's pair stands: a re-run of the push step reads origin at the tip that
+        // first push left, which would turn a push that moved the head into one that did not.
+        if (view.PushStartedFromSha is null)
+        {
+            view.PushStartedFromSha = @event.Data.StartedFrom;
+            view.PushedTipSha = @event.Data.PushedTip;
+        }
     }
 
     public void Apply(IEvent<ReviewReplyWithheld> @event, RunDetails view)

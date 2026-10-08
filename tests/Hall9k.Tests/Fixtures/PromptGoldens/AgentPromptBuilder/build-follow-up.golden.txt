@@ -179,7 +179,7 @@ is posted: the command records the refusal, and you park the answer exactly as f
 person's thread, with `DISAGREEMENT:` carrying `review=REVIEW_URL`
 and `disposition=decline` or `route`. Submit that decline through the command
 anyway, because the recorded refusal is what lets the owner send the reply you drafted.
-A bot's review body posts on any disposition. Never leave a review body unanswered, and
+A bot's review body posts at once on a decline or a route, and holds a fix. Never leave a review body unanswered, and
 never leave a comment the reviewer has to connect back to their review themselves.
 
 - **How every one of those replies reads.** The top-level comment, each in-thread reply, and each reply you draft for the owner to send are all read under the owner's own login, so this project's writing conventions govern every word of them:

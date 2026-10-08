@@ -122,18 +122,17 @@ public sealed class PullRequestOpener(
                 ? [recordedTip]
                 : [];
 
-            // The head this lap started from, for the held fix replies' push check (task: a
-            // review-feedback lap's fix reply posts only after the platform's push has moved the
-            // pull request's head): the one closeout recorded when it dispatched the lap, else the
-            // tip this task last pushed to this branch, read from `task` BEFORE this run's own push
-            // is recorded below. Unknown stays null, and null never posts.
-            string? startedFrom = run.OpeningReviewSinceSha.IsNotBlank()
-                ? run.OpeningReviewSinceSha
-                : task.LastPushedBranch == run.Branch
-                    ? task.LastPushedBranchTip
-                    : null;
-            await PushBranchAsync(run.WorktreePath, run.Branch, recordedPushedTips, cancellationToken);
+            // Origin's tip for the branch as the push step found it, read by the push's own lease
+            // guard immediately before pushing (task: a review-feedback lap's fix reply posts only
+            // after the platform's push has moved the pull request's head). It is the head the
+            // push actually started from, so a commit that reached the pull request some other
+            // way earlier (a suggestion applied in GitHub's web UI while this lap waited to
+            // dispatch) is not mistaken for work this push carried. Unknown stays null, and null
+            // never posts.
+            string? originBeforePush = await PushBranchAsync(
+                run.WorktreePath, run.Branch, recordedPushedTips, cancellationToken);
             string? pushedTip = await RecordBranchPushedAsync(taskId, run.Branch, run.WorktreePath, cancellationToken);
+            PushedHeads pushedHeads = await ResolvePushedHeadsAsync(run, originBeforePush, pushedTip, cancellationToken);
 
             // The base this run recorded at dispatch, not the project's own: a stacked child's
             // pull request targets its parent's branch, which is what forms the stack on GitHub
@@ -233,9 +232,9 @@ public sealed class PullRequestOpener(
             {
                 await new HeldReplyPoster(
                     logger, new GitHubReviewReplies(processRunner),
-                    (@event, token) => RecordOnRunAsync(runId, @event, token))
+                    (@event, token) => RecordOnRunAsync(runId, @event, token), TimeProvider.System)
                     .PostAsync(
-                        run, new PushedHeads(startedFrom, pushedTip), project.RepositoryPath, pullRequestUrl,
+                        run, pushedHeads, project.RepositoryPath, pullRequestUrl,
                         cancellationToken);
             }
 
@@ -872,16 +871,18 @@ public sealed class PullRequestOpener(
     /// remote-tracking ref currently reads (see the caller's comment for why that ref alone is
     /// not proof the local branch actually accounts for it). The ancestor-or-reflog guard itself
     /// lives in <see cref="ForceWithLeasePusher"/>, shared with the closeout engine's mechanical
-    /// rebase fast path — only the recovery lever named in a refusal differs per caller.
+    /// rebase fast path — only the recovery lever named in a refusal differs per caller. Returns
+    /// the tip origin held for the branch just before the push, or null when origin had no such
+    /// branch or the push landed without that tip being observed.
     /// </summary>
-    private static async Task PushBranchAsync(
+    private static async Task<string?> PushBranchAsync(
         string worktreePath, string branch, IReadOnlySet<string> recordedPushedTips,
         CancellationToken cancellationToken)
     {
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(PushDeadline);
         try
         {
-            await ForceWithLeasePusher.PushAsync(git, worktreePath, branch, recordedPushedTips, cancellationToken);
+            return await ForceWithLeasePusher.PushAsync(git, worktreePath, branch, recordedPushedTips, cancellationToken);
         }
         catch (ProcessOutputStuckException exception) when (exception.ExitCode == 0)
         {
@@ -904,7 +905,8 @@ public sealed class PullRequestOpener(
 
             if (localHead.ExitCode == 0 && originHead is not null && originHead == localHead.StandardOutput.Trim())
             {
-                return;
+                // The push landed, but which tip origin held before it was not observed.
+                return null;
             }
 
             throw new InvalidOperationException(
@@ -980,6 +982,46 @@ public sealed class PullRequestOpener(
         }
 
         return tip.IsNotBlank() ? tip : null;
+    }
+
+    /// <summary>
+    /// The two heads the held fix replies are judged against: origin's tip just before this push
+    /// and the tip the push left. The pair is recorded on the run the first time both are known, and
+    /// a push step that runs again for the same run (a daemon restart, or a post that failed) reads
+    /// the recorded pair back, because origin's tip is by then the one this run's own first push
+    /// left and a push that moved the head would read as one that did not. Nothing is recorded for
+    /// a run holding no replies, and a failed record only costs that re-run its evidence.
+    /// </summary>
+    private async Task<PushedHeads> ResolvePushedHeadsAsync(
+        RunDetails run, string? originBeforePush, string? pushedTip, CancellationToken cancellationToken)
+    {
+        if (run.HeldReplies.Count == 0)
+        {
+            return new PushedHeads(originBeforePush, pushedTip);
+        }
+
+        if (run.PushStartedFromSha.IsNotBlank())
+        {
+            return new PushedHeads(run.PushStartedFromSha, pushedTip.IsNotBlank() ? pushedTip : run.PushedTipSha);
+        }
+
+        if (originBeforePush.IsNotBlank() && pushedTip.IsNotBlank())
+        {
+            try
+            {
+                await RecordOnRunAsync(
+                    run.Id, new RunBranchPushed(run.Id, originBeforePush, pushedTip, DateTimeOffset.UtcNow),
+                    cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(exception,
+                    "Run {RunId}: could not record the heads the push moved between, so a re-run of the push step "
+                    + "cannot tell whether this push moved the head", run.Id);
+            }
+        }
+
+        return new PushedHeads(originBeforePush, pushedTip);
     }
 
     /// <summary>
