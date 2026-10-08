@@ -179,6 +179,22 @@ public sealed class ReviewThreadReplyGuardTests
         "echo \"git commit -m 'x\"; gh api repos/acme/web/issues/7/comments -f body=hi; echo \"y'\"",
         "# git commit -m \"x\ngh api repos/acme/web/issues/7/comments -f body=hi\n#\"",
         "gh pr review 7 --comment --body 'x'",
+        "gh pr close 7 --comment 'not doing this'",
+        "gh pr close 7 -c 'not doing this'",
+        "gh issue close 7 -c 'not doing this'",
+        "gh issue close 7 --comment='not doing this'",
+        "gh pr reopen 7 -c'back again'",
+        "gh -R acme/web issue reopen 7 --comment back",
+        "gh api repos/{owner}/{repo}/issues/7/comments --input - <<'EOF'\n{\"body\":\"x\"}\nEOF",
+        "curl https://api.github.com/repos/${OWNER}/${REPO}/issues/$N/comments -d @body.json",
+        "gh -R {owner}/{repo} pr comment 7 --body x",
+        "{ gh pr comment 7 --body x; }",
+        "h9k status; gh api repos/acme/web/issues/7/comments -f body=x",
+        "h9k learn 'a lesson' && gh api repos/acme/web/issues/7/comments -f body=x",
+        "h9k learn \"$(gh api graphql -f query='mutation{ addComment(input:{}) }')\"",
+        "echo h9k; gh api graphql -f query='mutation{ addComment(input:{}) }'",
+        "gh api graphql --hostname h9k -f query='mutation{ addComment(input:{}) }'",
+        "git commit -m \"$(cat <<'EOF'\nfeat: x\nEOF\ngh api repos/acme/web/issues/7/comments -f body=hi\n)\"",
         "cat <<EOF | bash\ngh pr comment 7 --body x\nEOF",
         "gh api repos/acme/web/issues/7/comments -f body='answering'",
         "gh api \"repos/$SLUG/issues/$PR_NUMBER/comments\" -f body=\"$TEXT\"",
@@ -192,11 +208,6 @@ public sealed class ReviewThreadReplyGuardTests
         "gh api graphql -f query='mutation{ updateIssueComment(input:{id:\"IC_1\", body:\"x\"}){ clientMutationId } }'",
         "gh api graphql -f query='mutation{ deleteIssueComment(input:{id:\"IC_1\"}){ clientMutationId } }'",
     ];
-
-    [Theory]
-    [MemberData(nameof(TopLevelRoutes))]
-    public void A_top_level_comment_route_is_refused(string command) =>
-        ReviewThreadReplyRoutes.WritesIntoAReviewThread(command).Should().BeTrue();
 
     /// <summary>The hook itself, on both shell tools it is attached to, for every new route.</summary>
     [Theory]
@@ -241,6 +252,16 @@ public sealed class ReviewThreadReplyGuardTests
     [InlineData("echo \"never run gh pr comment here\"")]
     [InlineData("grep -rn 'gh pr comment' docs # gh pr comment")]
     [InlineData("git log --grep='gh pr review'")]
+    [InlineData("gh pr close 7")]
+    [InlineData("gh issue close 7 --reason completed")]
+    [InlineData("gh api repos/{owner}/{repo}/issues/7/comments --paginate")]
+    [InlineData("curl -s https://api.github.com/repos/${OWNER}/${REPO}/issues/$N/comments")]
+    [InlineData("git commit -m \"$(cat <<'EOF'\nfeat: refuse addComment sent through gh api graphql\nEOF\n)\"")]
+    [InlineData("h9k pr reply 28b19893 --review https://github.com/o/r/pull/1#pullrequestreview-9 --disposition fix --body \"Fixed: the guard now refuses addComment sent through gh api graphql.\"")]
+    [InlineData("h9k pr reply 28b19893 --thread PRRT_1 --disposition fix --body='curl https://api.github.com/repos/o/r/issues/5/comments -d body=x is refused now'")]
+    [InlineData("h9k learn \"A guard must refuse gh api graphql addComment\" --task 01a1166e")]
+    [InlineData("H9K_X=1 h9k decide 'refuse gh api repos/o/r/issues/7/comments -f body=x'")]
+    [InlineData("h9k pr reply 28b19893 --review U --disposition fix --body \"$(cat <<'EOF'\nNow refuses gh api graphql addComment.\nEOF\n)\"")]
     public void A_read_or_text_that_only_names_a_route_runs(string command)
     {
         ReviewThreadReplyRoutes.WritesIntoAReviewThread(command).Should().BeFalse();
