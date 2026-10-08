@@ -175,6 +175,9 @@ public sealed class ReviewThreadReplyGuardTests
         "git commit -m \"wip\" && gh api repos/acme/web/issues/7/comments -f body=x",
         "git commit -m \"$(gh api repos/acme/web/issues/7/comments -f body=x)\"",
         "git commit -m \"x\\\"; gh api repos/acme/web/issues/7/comments -f body=hi; echo \\\"\"",
+        "echo 'git commit -m \"x'; gh api repos/acme/web/issues/7/comments -f body=hi; echo 'y\"'",
+        "echo \"git commit -m 'x\"; gh api repos/acme/web/issues/7/comments -f body=hi; echo \"y'\"",
+        "# git commit -m \"x\ngh api repos/acme/web/issues/7/comments -f body=hi\n#\"",
         "gh pr review 7 --comment --body 'x'",
         "cat <<EOF | bash\ngh pr comment 7 --body x\nEOF",
         "gh api repos/acme/web/issues/7/comments -f body='answering'",
@@ -214,6 +217,7 @@ public sealed class ReviewThreadReplyGuardTests
     [InlineData("gh pr view 7 --json comments --jq '.comments[].body'")]
     [InlineData("gh issue view 7 --comments")]
     [InlineData("timeout 30s git commit -m \"gh pr review is a hole\"")]
+    [InlineData("cd \"my repo\" && git commit --author='A <a@b.c>' -m \"gh pr review is a hole\"")]
     [InlineData("sudo -E git grep 'gh pr comment' src/")]
     [InlineData("gh pr view 42 --json reviews,comments && gh api repos/acme/web/pulls/42/comments --paginate")]
     [InlineData("gh api repos/acme/web/issues/42/comments --jq '.[] | \"\\(.id) \\(.user.login)\"' | cut -d' ' -f1")]

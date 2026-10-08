@@ -210,8 +210,23 @@ public static class ReviewThreadReplyRoutes
     /// still seen; a message this does not recognize is left alone and merely refused as before.
     /// </summary>
     private static readonly Regex CommitMessages = new(
-        @"(?<=\bgit\s+commit\b[^\n;&|]*?\s)(?:-m|--message)(?:=|\s+)(?:'[^']*'|""(?:[^""\\`$]|\$(?!\())*"")",
+        @"(?<=^" + QuoteBalancedText(@"[^'""`\\#]") + @"\bgit\s+commit\b" + QuoteBalancedText(@"[^\n;&|'""`\\#]") + @"\s)"
+        + @"(?:-m|--message)(?:=|\s+)(?:'[^']*'|""(?:[^""\\`$]|\$(?!\())*"")",
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+    /// <summary>
+    /// A run of text in which every quote that opens a string also closes it, with
+    /// <paramref name="plainCharacter"/> standing for one character outside any quote. Text that
+    /// holds an UNBALANCED quote is exactly text the shell reads differently from the regex:
+    /// <c>echo 'git commit -m "x'; gh api …; echo 'y"'</c> has a <c>git commit -m "</c> that is
+    /// only characters inside an echo's string, and masking from that quote to the next one hid
+    /// the real call between them (independent pre-PR review, cycle 4, adversarial lens). So the
+    /// message is masked only when everything ahead of it, from the start of the command, is plain
+    /// text or whole quoted strings; the plain class also leaves out <c>#</c> (a comment can hide
+    /// a <c>git commit</c> from the shell) and a backslash (which can escape a quote).
+    /// </summary>
+    private static string QuoteBalancedText(string plainCharacter) =>
+        "(?:" + plainCharacter + @"|'[^']*'|""(?:[^""\\`$]|\$(?!\())*"")*?";
 
     /// <summary>
     /// Whether this command puts text onto a pull request by a route other than
