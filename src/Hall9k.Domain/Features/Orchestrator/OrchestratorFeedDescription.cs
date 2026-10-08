@@ -57,6 +57,9 @@ public static class OrchestratorFeedDescription
             ReviewThreadReplyRefused refused =>
                 $"a session tried to {DispositionWord(refused.Disposition)} a person's own review thread and was "
                 + $"refused: {Quote(refused.Reason)}",
+            ReviewBodyReplyRefused refused =>
+                $"a session tried to {DispositionWord(refused.Disposition)} a person's own review body and was "
+                + $"refused: {Quote(refused.Reason)}",
             ReviewFindingRouted routed when routed.DraftTaskId is null =>
                 $"a {routed.Severity.Value} review finding at {Field(routed.Location, 60)} could not be routed out "
                 + $"of the pull request: {Quote(routed.FailureReason)}",

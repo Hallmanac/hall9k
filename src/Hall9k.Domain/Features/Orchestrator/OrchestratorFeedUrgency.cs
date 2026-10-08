@@ -34,6 +34,7 @@ public static class OrchestratorFeedUrgency
         typeof(ReviewDisagreementParked),
         typeof(HumanThreadReplyParked),
         typeof(ReviewThreadReplyRefused),
+        typeof(ReviewBodyReplyRefused),
         typeof(ReviewFindingRouted),
         typeof(QuestionAsked),
 

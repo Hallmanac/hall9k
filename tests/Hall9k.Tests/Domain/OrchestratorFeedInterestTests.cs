@@ -52,6 +52,7 @@ public sealed class OrchestratorFeedInterestTests
     [InlineData(typeof(ReviewDisagreementParked))]
     [InlineData(typeof(HumanThreadReplyParked))]
     [InlineData(typeof(ReviewThreadReplyRefused))]
+    [InlineData(typeof(ReviewBodyReplyRefused))]
     [InlineData(typeof(ReviewFindingRouted))]
     [InlineData(typeof(QuestionAsked))]
     // An owner-role member write held on the root for its own human to approve.

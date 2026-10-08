@@ -68,6 +68,7 @@ public static class OrchestratorFeedInterest
         // session reached for h9k pr reply on a person's own thread and was refused. An operator
         // who cannot see the refusal cannot tell it from a session that behaved.
         [typeof(ReviewThreadReplyRefused)] = OrchestratorFeedLevel.Actionable,
+        [typeof(ReviewBodyReplyRefused)] = OrchestratorFeedLevel.Actionable,
         // A dispute the loop declined to settle itself: the finding left this pull request onto a
         // draft nobody has published (Decisions Log #63), or the routing itself failed.
         [typeof(ReviewFindingRouted)] = OrchestratorFeedLevel.Actionable,
