@@ -53,7 +53,9 @@ namespace Hall9k.Connectors.Prompts;
 /// <item>the top-level routes, which answer a review BODY or speak to a person at the top of the
 /// pull request (task: a dispatched session never speaks to a person at the top level of a pull
 /// request on its own): <c>gh pr comment</c> and <c>gh issue comment</c>, which share one number
-/// space and one resource so the second posts on a pull request as readily as the first; the REST
+/// space and one resource so the second posts on a pull request as readily as the first; the close
+    /// and reopen verbs of both (<c>gh pr close --comment</c>, <c>gh issue close -c</c>), which comment as
+    /// a side effect and are routes only when handed a comment; the REST
 /// issue-comment endpoint (<c>…/issues/&lt;n&gt;/comments</c>, which a GET also answers, so it needs
 /// a write parameter, a mutating method, or an <c>--input</c> body to count) and its edit and
 /// delete path (<c>…/issues/comments/&lt;id&gt;</c>); and the GraphQL <c>addComment</c>,
@@ -92,13 +94,20 @@ public static class ReviewThreadReplyRoutes
     /// so each is both the surface and the route and is tested on its own rather than behind
     /// <see cref="ReachesTheGitHubApi"/>: <c>gh pr review</c> submits a review under the caller's
     /// login, and <c>gh pr comment</c> and <c>gh issue comment</c> post at the top level (the issue
-    /// form reaches a pull request too, since the two share a number space).
+    /// form reaches a pull request too, since the two share a number space). The close and reopen
+    /// verbs post a top-level comment too, but only when handed one (<c>--comment</c>, <c>-c</c>),
+    /// so those are routes only with that flag: closing a pull request quietly says nothing to
+    /// anybody (independent pre-PR review, cycle 1, adversarial lens).
     /// </summary>
-    private static readonly (string Group, string Verb)[] DirectPostingSubcommands =
+    private static readonly GhRoute[] DirectPostingSubcommands =
     [
-        ("pr", "review"),
-        ("pr", "comment"),
-        ("issue", "comment"),
+        new("pr", "review"),
+        new("pr", "comment"),
+        new("issue", "comment"),
+        new("pr", "close", ["--comment", "-c"]),
+        new("pr", "reopen", ["--comment", "-c"]),
+        new("issue", "close", ["--comment", "-c"]),
+        new("issue", "reopen", ["--comment", "-c"]),
     ];
 
     private static readonly Regex Routes = new(
@@ -202,7 +211,9 @@ public static class ReviewThreadReplyRoutes
     /// <c>refuse addComment sent through gh api graphql</c>, and a whole-text match refused those
     /// (independent pre-PR review, cycle 2, conformance lens). Only a quoted message that cannot
     /// run anything is masked: a double-quoted one holding <c>$(</c> or a backtick is left in
-    /// place, because a substitution inside it executes. So is one holding a backslash: bash reads
+    /// place, because a substitution inside it executes. The one substitution read as plain text is
+    /// <see cref="InertHeredocSubstitution"/>, which is the shape Claude Code's own commit command
+    /// takes. A message holding a backslash is left unmasked too: bash reads
     /// <c>\"</c> as an escaped quote but PowerShell, which this same function guards, ends the string
     /// there, so a <c>-m "x\"; gh api …; echo \""</c> would hide a real call inside what looks like
     /// one message (independent pre-PR review, cycle 3, adversarial lens). Everything outside the message stays,
@@ -211,8 +222,44 @@ public static class ReviewThreadReplyRoutes
     /// </summary>
     private static readonly Regex CommitMessages = new(
         @"(?<=^" + QuoteBalancedText(@"[^'""`\\#]") + @"\bgit\s+commit\b" + QuoteBalancedText(@"[^\n;&|'""`\\#]") + @"\s)"
-        + @"(?:-m|--message)(?:=|\s+)(?:'[^']*'|""(?:[^""\\`$]|\$(?!\())*"")",
+        + @"(?:-m|--message)(?:=|\s+)" + InertString,
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+    /// <summary>
+    /// A quoted string argument of an <c>h9k</c> command, whose text is data the session is handing
+    /// to the platform and never a command: the <c>--body</c> of <c>h9k pr reply</c> (the one route
+    /// the refusal itself points at), a <c>h9k learn</c> lesson, an <c>h9k decide</c> claim. This
+    /// repository's own work is the work most likely to quote a route there ("the guard now refuses
+    /// addComment sent through gh api graphql"), and a whole-text match refused the sanctioned
+    /// command for it (independent pre-PR review, cycle 1, adversarial lens). Masked on the same
+    /// terms as <see cref="CommitMessages"/>: only an inert string, and only where everything
+    /// ahead of it is plain text or whole quoted strings, with <c>h9k</c> itself in command position
+    /// and no <c>; &amp; | ( )</c>, newline or comment between it and the string, so a call chained
+    /// after the <c>h9k</c> command is still seen. A <c>#</c> inside a word (a url's fragment, as in
+    /// <c>--review …#pullrequestreview-9</c>) is not a comment; one that starts a word is.
+    /// </summary>
+    private static readonly Regex H9kTextArguments = new(
+        @"(?<=^" + QuoteBalancedText(@"[^'""`\\#]")
+        + @"(?:^|[\n;&|(])[ \t]*(?:[A-Za-z_]\w*=[^\s'""`;&|()\\]*[ \t]+)*(?:[^\s'""`;&|()\\]*[/\\])?h9k(?:\.exe)?(?=\s)"
+        + QuoteBalancedText(@"[^\n;&|()'""`\\#]|(?<=\S)#") + @"[\s=])"
+        + InertString,
+        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+    /// <summary>
+    /// The shell command substitution Claude Code writes a multi-line commit message with,
+    /// <c>"$(cat &lt;&lt;'EOF'</c> … <c>EOF</c> <c>)"</c>. Its delimiter is quoted, so the body is
+    /// inert text, and the body stops at the FIRST line that is the delimiter, as the shell stops
+    /// it: a later one must not be reachable, or the text between two could hide a real call.
+    /// </summary>
+    private const string InertHeredocSubstitution =
+        @"\$\(\s*cat\s+<<-?\s*'(?<heredoc>\w+)'[ \t]*\r?\n(?:(?!\k<heredoc>\r?\n)[^\n]*\n)*\k<heredoc>\r?\n\s*\)";
+
+    /// <summary>
+    /// A single-quoted string, or a double-quoted one that runs nothing: no backtick, no backslash,
+    /// and no <c>$(</c> other than <see cref="InertHeredocSubstitution"/>.
+    /// </summary>
+    private const string InertString =
+        @"(?:'[^']*'|""(?:[^""\\`$]|\$(?!\()|" + InertHeredocSubstitution + @")*"")";
 
     /// <summary>
     /// A run of text in which every quote that opens a string also closes it, with
@@ -240,7 +287,14 @@ public static class ReviewThreadReplyRoutes
     public static bool WritesIntoAReviewThread(string? command) =>
         command.IsNotBlank()
         && (ShellInvocations.InvokesGh(command, DirectPostingSubcommands)
-            || ReachesAndWrites(CommitMessages.Replace(command, "-m \"\"")));
+            || ReachesAndWrites(WithoutInertText(command)));
+
+    /// <summary>
+    /// The command with the text that only NAMES routes blanked out: a commit message and the
+    /// quoted arguments of an <c>h9k</c> command.
+    /// </summary>
+    private static string WithoutInertText(string command) =>
+        H9kTextArguments.Replace(CommitMessages.Replace(command, "-m \"\""), "\"\"");
 
     private static bool ReachesAndWrites(string command) =>
         ReachesTheGitHubApi.IsMatch(command) && NamesAThreadWrite(command);

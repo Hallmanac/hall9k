@@ -13,7 +13,7 @@ namespace Hall9k.Connectors.Prompts;
 /// just as readily as the real thing.
 /// <para>
 /// So the command is read the way a shell reads it, far enough to tell a program from an
-/// argument: it is split into simple commands at <c>; &amp; | ( ) { }</c> and newlines, quoting is
+/// argument: it is split into simple commands at <c>; &amp; | ( )</c>, a <c>{</c> or <c>}</c> that starts a word, and newlines, quoting is
 /// removed (so <c>g"h" pr comment</c> is still <c>gh pr comment</c>), command substitution and
 /// backticks open nested commands even inside double quotes, and <c>bash -c "…"</c>, <c>eval</c>
 /// and the PowerShell equivalents are read through to the command text they run. A simple command
@@ -63,7 +63,7 @@ internal static class ShellInvocations
     /// Whether any command in <paramref name="command"/> invokes <c>gh &lt;group&gt; &lt;verb&gt;</c>
     /// for one of <paramref name="routes"/>. Group and verb compare case-insensitively.
     /// </summary>
-    public static bool InvokesGh(string command, params (string Group, string Verb)[] routes) =>
+    public static bool InvokesGh(string command, params GhRoute[] routes) =>
         SimpleCommands(command, 0).Any(words => InvokesGh(words, routes));
 
     /// <summary>
@@ -75,7 +75,7 @@ internal static class ShellInvocations
     public static IEnumerable<string> CommandLines(string command) =>
         SimpleCommands(command, 0).Select(words => string.Join(' ', words));
 
-    private static bool InvokesGh(List<string> words, (string Group, string Verb)[] routes)
+    private static bool InvokesGh(List<string> words, GhRoute[] routes)
     {
         int start = ProgramIndex(words);
         if (start < 0 || !Program(words[start]).Equals("gh", StringComparison.OrdinalIgnoreCase))
@@ -99,9 +99,12 @@ internal static class ShellInvocations
         }
 
         string verb = words[index];
+        int verbIndex = index;
         return routes.Any(route =>
             route.Group.Equals(group, StringComparison.OrdinalIgnoreCase)
-            && route.Verb.Equals(verb, StringComparison.OrdinalIgnoreCase));
+            && route.Verb.Equals(verb, StringComparison.OrdinalIgnoreCase)
+            && (route.AnyOfFlags.Length == 0
+                || words.Skip(verbIndex + 1).Any(word => route.NamesAFlag(word))));
     }
 
     /// <summary>
@@ -349,6 +352,24 @@ internal static class ShellInvocations
                     EndCommand();
                     index++;
                     break;
+                case '{' or '}' when inWord:
+                    // A brace in the middle of a word is part of the word: an unquoted `${VAR}` in
+                    // a url, or the end of one of gh's own placeholders. Only a brace that starts a
+                    // word groups commands, and splitting at the others cut a call such as
+                    // `gh api repos/{owner}/{repo}/issues/7/comments --input -` in two, leaving its
+                    // body flag in a command that no longer reached the API (independent pre-PR
+                    // review, cycle 1, conformance lens).
+                    word.Append(current);
+                    index++;
+                    break;
+                case '{' when PlaceholderLength(command, index) is var length and > 0:
+                    // gh's `{owner}`, `{repo}` and `{branch}` placeholders fill in from the
+                    // checkout, and one can start a word (`gh -R {owner}/{repo} pr comment …`).
+                    // A group's brace is followed by a space, so `{ gh …; }` still splits.
+                    word.Append(command, index, length);
+                    inWord = true;
+                    index += length;
+                    break;
                 case ';' or '&' or '|' or '(' or ')' or '{' or '}':
                     EndCommand();
                     index++;
@@ -437,6 +458,18 @@ internal static class ShellInvocations
         }
 
         return index + 1;
+    }
+
+    /// <summary>The length of a <c>{name}</c> placeholder starting at <paramref name="start"/>, or 0 when there is none.</summary>
+    private static int PlaceholderLength(string command, int start)
+    {
+        int end = start + 1;
+        while (end < command.Length && (char.IsAsciiLetterOrDigit(command[end]) || command[end] == '_'))
+        {
+            end++;
+        }
+
+        return end > start + 1 && end < command.Length && command[end] == '}' ? end - start + 1 : 0;
     }
 
     /// <summary>The index of the <c>)</c> closing the <c>(</c> at <paramref name="open"/>, or the end of the text.</summary>
