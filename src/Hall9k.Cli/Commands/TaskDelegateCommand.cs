@@ -117,7 +117,7 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         // The build effort rides in it too, exactly as h9k task start's does: this contractor is headless
         // and honors only this file, so it runs at the level a dispatcher-launched build on this node
         // would, resolved once by PrepareAsync beside the model.
-        string settingsContent = ClaudeSettingsFile.Build(ClaudeSettingsFile.DefaultCommandTimeout, effort: plan.Effort);
+        string settingsContent = HeadlessLaunch.SettingsContent(plan.Effort);
         await File.WriteAllTextAsync(settingsFile, settingsContent, cancellationToken);
 
         // Fetched here, before the RunDetails reload below, not immediately before the append —

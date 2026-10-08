@@ -2184,8 +2184,7 @@ public sealed class ReviewEngine(
         string sessionName = SessionRoleName.For(DomainId.Short(context.TaskId), SessionRoleName.Review(lens, cycle));
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, executorMode, model,
-            effort, context.Project.SkipPermissions, ReviewArtifactName(cycle, sessionId, lens),
-            GuardsReviewThreadReplies: context.Run.IsFollowUp)
+            effort, context.Project.SkipPermissions, ReviewArtifactName(cycle, sessionId, lens))
         {
             Environment = ReviewSessionEnvironment,
             TaskId = context.TaskId,
@@ -2267,8 +2266,7 @@ public sealed class ReviewEngine(
             DomainId.Short(context.TaskId), SessionRoleName.ReviewVerify(cycle));
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, executorMode, model,
-            effort, context.Project.SkipPermissions, ReviewArtifactName(cycle, sessionId, ReviewLens.Verify),
-            GuardsReviewThreadReplies: context.Run.IsFollowUp)
+            effort, context.Project.SkipPermissions, ReviewArtifactName(cycle, sessionId, ReviewLens.Verify))
         {
             Environment = ReviewSessionEnvironment,
             TaskId = context.TaskId,
@@ -2355,7 +2353,7 @@ public sealed class ReviewEngine(
             context.RunId, artifactId, context.Run.WorktreePath, context.Run.RunDirectory, prompt,
             context.Run.ExecutorMode, model,
             effort, context.Project.SkipPermissions, ReviewArtifactName(run.ReviewCycle, artifactId, verdictless.Lens),
-            ResumeSessionId: resumeSessionId, GuardsReviewThreadReplies: context.Run.IsFollowUp)
+            ResumeSessionId: resumeSessionId)
         {
             Environment = ReviewSessionEnvironment,
             TaskId = context.TaskId,
@@ -2596,8 +2594,7 @@ public sealed class ReviewEngine(
         string sessionName = SessionRoleName.For(DomainId.Short(context.TaskId), SessionRoleName.Fix(cycle));
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, mode, model,
-            effort, context.Project.SkipPermissions, FixArtifactName(cycle, sessionId),
-            GuardsReviewThreadReplies: context.Run.IsFollowUp)
+            effort, context.Project.SkipPermissions, FixArtifactName(cycle, sessionId))
         {
             TaskId = context.TaskId,
             SessionName = sessionName,
@@ -3910,8 +3907,7 @@ public sealed class ReviewEngine(
                 agent = await executor.SpawnAsync(new AgentSpawnRequest(
                     context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt,
                     context.Run.ExecutorMode, model, effort, context.Project.SkipPermissions,
-                    SessionArtifactName: SessionRoleName.StackAssessment, MaxTurns: _options.StackAssessmentMaxTurns,
-                    GuardsReviewThreadReplies: context.Run.IsFollowUp)
+                    SessionArtifactName: SessionRoleName.StackAssessment, MaxTurns: _options.StackAssessmentMaxTurns)
                 {
                     TaskId = context.TaskId,
                     SessionName = sessionName,
@@ -4986,8 +4982,7 @@ public sealed class ReviewEngine(
         string sessionName = SessionRoleName.For(DomainId.Short(context.TaskId), artifactName);
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, mode, model,
-            effort, context.Project.SkipPermissions, artifactName,
-            GuardsReviewThreadReplies: context.Run.IsFollowUp)
+            effort, context.Project.SkipPermissions, artifactName)
         {
             TaskId = context.TaskId,
             SessionName = sessionName,
@@ -5546,8 +5541,7 @@ public sealed class ReviewEngine(
         string sessionName = SessionRoleName.For(DomainId.Short(context.TaskId), artifactName);
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, mode, model,
-            effort, context.Project.SkipPermissions, artifactName,
-            GuardsReviewThreadReplies: context.Run.IsFollowUp)
+            effort, context.Project.SkipPermissions, artifactName)
         {
             TaskId = context.TaskId,
             SessionName = sessionName,

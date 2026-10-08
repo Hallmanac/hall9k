@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Hall9k.Cli.DaemonControl;
+using Hall9k.Connectors.Prompts;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -48,6 +49,19 @@ namespace Hall9k.Cli.Commands;
 /// </summary>
 internal static class HeadlessLaunch
 {
+    /// <summary>
+    /// The settings file every headless launch from the CLI writes (<c>h9k task start</c> and
+    /// <c>h9k task delegate</c>): the platform-imposed overrides, the build effort, and the reply
+    /// guard (task: a dispatched session never speaks to a person at the top level of a pull
+    /// request on its own). A detached session has no operator watching its shell, so the only
+    /// route it has onto a pull request is <c>h9k pr reply</c>, exactly as a daemon dispatch.
+    /// The interactive <c>h9k task work</c> session, where the operator is present, writes its own
+    /// file without the hook (<see cref="TaskWorkCommand"/>).
+    /// </summary>
+    internal static string SettingsContent(AgentEffort effort) =>
+        ClaudeSettingsFile.Build(
+            ClaudeSettingsFile.DefaultCommandTimeout, guardReviewThreadReplies: true, effort: effort);
+
     /// <summary>
     /// Stamped onto the detached child's own environment at spawn time, carrying the session name
     /// it was launched under, and inherited by every descendant it spawns — so a command run from

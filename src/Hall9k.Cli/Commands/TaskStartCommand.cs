@@ -200,7 +200,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // build on this node would use (ResolveBuildEffortAsync), so this headless build runs at that
         // level (a headless session honors only this file, not the owner's own user-level effortLevel).
         AgentEffort effort = await ResolveBuildEffortAsync(taskDetails, project, cancellationToken);
-        string settingsContent = ClaudeSettingsFile.Build(ClaudeSettingsFile.DefaultCommandTimeout, effort: effort);
+        string settingsContent = HeadlessLaunch.SettingsContent(effort);
         await File.WriteAllTextAsync(settingsFile, settingsContent, cancellationToken);
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {worktreePath}[/]");

@@ -57,13 +57,17 @@ public sealed class ClaudeExecutor(
         // UsesReviewPermissions (security review idea 6be68ee2, process-injection finding 1) is
         // what tells a pr-review session's own settings file apart from an ordinary build's: a
         // real, minimal permission file instead of the co-authored-by/timeout/hooks shape every
-        // other session gets, never --dangerously-skip-permissions.
+        // other session gets, never --dangerously-skip-permissions. Every ordinary session carries
+        // the reply guard, fresh builds as much as follow-ups (task: a dispatched session never
+        // speaks to a person at the top level of a pull request on its own): a headless session
+        // has no operator watching its shell, so the only route it has onto a pull request is
+        // h9k pr reply.
         string settingsContent = request.UsesReviewPermissions
             ? ClaudeSettingsFile.BuildForPrReview(
                 options.Value.VerifyGateTimeout, request.WorktreePath, runDirectory, request.QaGateCommands,
                 request.Effort)
             : ClaudeSettingsFile.Build(
-                options.Value.VerifyGateTimeout, request.GuardsReviewThreadReplies, request.Effort);
+                options.Value.VerifyGateTimeout, guardReviewThreadReplies: true, effort: request.Effort);
         await File.WriteAllTextAsync(SettingsFile(request, runDirectory), settingsContent, cancellationToken);
 
         string command = $"\"{ClaudeBinary()}\" {string.Join(' ', Arguments(request, runDirectory))}";

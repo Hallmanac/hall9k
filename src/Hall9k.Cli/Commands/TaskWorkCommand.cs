@@ -234,7 +234,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);
         Directory.CreateDirectory(resolvedRunDirectory);
         string settingsFile = RunPaths.SettingsFile(resolvedRunDirectory);
-        string settingsContent = ClaudeSettingsFile.Build(ClaudeSettingsFile.DefaultCommandTimeout);
+        string settingsContent = SettingsContent();
         await File.WriteAllTextAsync(settingsFile, settingsContent, cancellationToken);
 
         // Re-checked immediately before launch, not only once inside ReenterAsync: everything
@@ -283,6 +283,15 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// fire-and-forget kick-off is told up front rather than discovering it only once the run
     /// unexpectedly parks NeedsHuman.
     /// </summary>
+    /// <summary>
+    /// The settings file an interactive claim writes: the platform-imposed overrides and nothing
+    /// else. It deliberately carries no reply guard, unlike every headless launch
+    /// (<see cref="HeadlessLaunch.SettingsContent"/>): the operator is present at this session's
+    /// shell, so a comment it posts on a pull request is theirs to see and stop.
+    /// </summary>
+    internal static string SettingsContent() =>
+        ClaudeSettingsFile.Build(ClaudeSettingsFile.DefaultCommandTimeout);
+
     private static void AnnounceInteractiveModeIfFreshClaim(Guid taskId)
     {
         AnsiConsole.MarkupLineInterpolated(
