@@ -30,3 +30,7 @@ context: |-
   Note to the orchestrator: 8b410ac0 also edits ReviewLapPromptBuilder.cs (its route line in the briefing), in a different section; whichever merges second may need a rebase, and if 8b410ac0's line lands in the scoped section the since-my-review golden moves with it. Not stacked.
 
   Notes from the challenge pair (2026-10-08): SeedWaitingPrReviewTaskAsync (tests/Hall9k.Tests/Integration/ReviewLapTests.cs about line 1624) records a reviewed head and a T1 watermark, so the new cases need a seed with neither; the null-head opening at about line 215 of the same file is the pattern to copy. The minimal golden fixture SinceMyReviewMinimalBriefing (golden tests about lines 206 to 219) pairs a blank head with a force-push note, a combination the composer cannot produce; if the build decides "not computed" from an explicit packet field, that fixture must set it. On arx#2201 itself, a later thread reply by Taylor would be a newer COMMENTED review and route to the could-not-compute opening; criterion 2 ends the failure he reported either way, and the recovered range is the bonus, not the fix.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-10-08 17:08:36Z
