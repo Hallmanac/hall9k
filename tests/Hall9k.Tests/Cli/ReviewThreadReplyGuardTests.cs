@@ -169,6 +169,11 @@ public sealed class ReviewThreadReplyGuardTests
         "env -i sh -c \"gh pr comment 7 --body x\"",
         "curl -s \\\n  -H 'Authorization: token $T' \\\n  -d '{\"body\":\"x\"}' \\\n  https://api.github.com/repos/acme/web/issues/7/comments",
         "curl -d'{\"body\":\"x\"}' https://api.github.com/repos/acme/web/issues/7/comments",
+        "curl -sd '{\"body\":\"x\"}' -H \"Authorization: token $T\" https://api.github.com/repos/acme/web/issues/7/comments",
+        "gh api repos/acme/web/issues/7/comments `\n  --input payload.json",
+        "curl.exe -s `\n  -d @payload.json `\n  https://api.github.com/repos/acme/web/issues/7/comments",
+        "git commit -m \"wip\" && gh api repos/acme/web/issues/7/comments -f body=x",
+        "git commit -m \"$(gh api repos/acme/web/issues/7/comments -f body=x)\"",
         "gh pr review 7 --comment --body 'x'",
         "cat <<EOF | bash\ngh pr comment 7 --body x\nEOF",
         "gh api repos/acme/web/issues/7/comments -f body='answering'",
@@ -225,6 +230,8 @@ public sealed class ReviewThreadReplyGuardTests
     [InlineData("git commit -m \"gh pr comment is refused now\"")]
     [InlineData("git commit -m 'gh pr review is a hole'")]
     [InlineData("git commit -m \"fix: refuse addComment, updateIssueComment and deleteIssueComment\"")]
+    [InlineData("git commit -m \"feat: refuse addComment sent through gh api graphql\"")]
+    [InlineData("git commit -m 'refuse gh api repos/o/r/issues/7/comments -f body=x' -m \"and gh api graphql addComment\"")]
     [InlineData("git commit -F - <<'EOF'\nfeat: route gh pr comment through h9k pr reply\n\ngh issue comment too\nEOF")]
     [InlineData("echo \"never run gh pr comment here\"")]
     [InlineData("grep -rn 'gh pr comment' docs # gh pr comment")]

@@ -188,11 +188,26 @@ public static class ReviewThreadReplyRoutes
     /// whole text they refused a read of the comments endpoint whenever any program beside it used
     /// one (independent pre-PR review, cycle 1, adversarial lens). The attached forms
     /// (<c>-d@file</c>, <c>-d{…}</c>, which is what <c>-d'{…}'</c> reads as once its quotes are
-    /// gone) count.
+    /// gone) count, and so does curl's short-flag cluster ending in <c>d</c> (<c>-sd</c>, <c>-sSd</c>),
+    /// restricted to curl's own no-argument letters so an unrelated word ending in <c>d</c> is not a body.
     /// </para>
     /// </summary>
     private static readonly Regex BodyFlags = new(
-        @"(?<![\w-])(?:--input\b|(?:-d|--data|--data-raw|--data-binary|--data-urlencode|--json)(?=[\s='""@{\[]|$))",
+        @"(?<![\w-])(?:--input\b|(?:-[sSkLvfiIgGOJZq#]*d|--data|--data-raw|--data-binary|--data-urlencode|--json)(?=[\s='""@{\[]|$))",
+        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+    /// <summary>
+    /// The message argument of a <c>git commit</c> (<c>-m "…"</c>, <c>--message='…'</c>), whose
+    /// text names routes without calling them: this repository writes commit messages like
+    /// <c>refuse addComment sent through gh api graphql</c>, and a whole-text match refused those
+    /// (independent pre-PR review, cycle 2, conformance lens). Only a quoted message that cannot
+    /// run anything is masked: a double-quoted one holding <c>$(</c> or a backtick is left in
+    /// place, because a substitution inside it executes. Everything outside the message stays,
+    /// so a <c>gh api</c> call chained after the commit, or fed through a variable or heredoc, is
+    /// still seen; a message this does not recognize is left alone and merely refused as before.
+    /// </summary>
+    private static readonly Regex CommitMessages = new(
+        @"(?<=\bgit\s+commit\b[^\n;&|]*?\s)(?:-m|--message)(?:=|\s+)(?:'[^']*'|""(?:[^""\\`$]|\\.|\$(?!\())*"")",
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     /// <summary>
@@ -207,16 +222,29 @@ public static class ReviewThreadReplyRoutes
     public static bool WritesIntoAReviewThread(string? command) =>
         command.IsNotBlank()
         && (ShellInvocations.InvokesGh(command, DirectPostingSubcommands)
-            || (ReachesTheGitHubApi.IsMatch(command) && NamesAThreadWrite(command)));
+            || ReachesAndWrites(CommitMessages.Replace(command, "-m \"\"")));
+
+    private static bool ReachesAndWrites(string command) =>
+        ReachesTheGitHubApi.IsMatch(command) && NamesAThreadWrite(command);
 
     private static bool NamesAThreadWrite(string command) =>
         Routes.IsMatch(command)
         || (ReadableWritePaths.IsMatch(command)
             && (WriteParameters.IsMatch(command) || SendsABodyFlag(command)));
 
+    /// <summary>
+    /// Whether a body flag sits in the same simple command as the API call. A backtick is the
+    /// PowerShell line continuation, but the shell reader reads it as the start of a command
+    /// substitution, which splits <c>gh api …/comments `</c> and <c>--input payload.json</c> into
+    /// two commands that each look harmless (independent pre-PR review, cycle 2, adversarial
+    /// lens). So text holding a backtick is judged whole rather than command by command: that can
+    /// only refuse more, never less.
+    /// </summary>
     private static bool SendsABodyFlag(string command) =>
-        ShellInvocations.CommandLines(command).Any(line =>
-            ReachesTheGitHubApi.IsMatch(line) && BodyFlags.IsMatch(line));
+        command.Contains('`')
+            ? BodyFlags.IsMatch(command)
+            : ShellInvocations.CommandLines(command).Any(line =>
+                ReachesTheGitHubApi.IsMatch(line) && BodyFlags.IsMatch(line));
 
     /// <summary>
     /// What the session is told when the guard refuses, in the shape a refusal here has to take:
