@@ -277,13 +277,6 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     }
 
     /// <summary>
-    /// Announced once, only on a fresh claim (independent pre-PR review, cycle 1, conformance
-    /// lens): this claim always turns the task's interactive-mode flag on, the identical fact
-    /// <c>h9k task release</c> already prints on the way back off, so an operator using this as a
-    /// fire-and-forget kick-off is told up front rather than discovering it only once the run
-    /// unexpectedly parks NeedsHuman.
-    /// </summary>
-    /// <summary>
     /// The settings file an interactive claim writes: the platform-imposed overrides and nothing
     /// else. It deliberately carries no reply guard, unlike every headless launch
     /// (<see cref="HeadlessLaunch.SettingsContent"/>): the operator is present at this session's
@@ -292,6 +285,13 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     internal static string SettingsContent() =>
         ClaudeSettingsFile.Build(ClaudeSettingsFile.DefaultCommandTimeout);
 
+    /// <summary>
+    /// Announced once, only on a fresh claim (independent pre-PR review, cycle 1, conformance
+    /// lens): this claim always turns the task's interactive-mode flag on, the identical fact
+    /// <c>h9k task release</c> already prints on the way back off, so an operator using this as a
+    /// fire-and-forget kick-off is told up front rather than discovering it only once the run
+    /// unexpectedly parks NeedsHuman.
+    /// </summary>
     private static void AnnounceInteractiveModeIfFreshClaim(Guid taskId)
     {
         AnsiConsole.MarkupLineInterpolated(
