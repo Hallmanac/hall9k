@@ -2504,14 +2504,20 @@ public sealed class RunSupervisor(
         bool mayOweAnAnswer = ReviewResultParser.ParseThreadDispositions(result.Summary).Any(outcome =>
             outcome.Disposition == ReviewThreadDisposition.Decline
             || outcome.Disposition == ReviewThreadDisposition.Route);
-        if (!disputed && !mayOweAnAnswer)
-        {
-            return ThreadDisputeOutcome.NoDispute;
-        }
 
         await using IDocumentSession session = store.LightweightSession();
         RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
         if (run is null || !run.IsFollowUp)
+        {
+            return ThreadDisputeOutcome.NoDispute;
+        }
+
+        // The third entry condition, and the one only the run itself can answer (task: a dispatched
+        // session never speaks to a person at the top level of a pull request on its own): the
+        // posting path refused to send a decline or a route onto a person's review body and
+        // recorded it. That refusal is a debt exactly as a THREAD DISPOSITION triage is, and it
+        // exists whether or not the session also closed RESOLUTION: disputed or wrote a block.
+        if (!disputed && !mayOweAnAnswer && run.RefusedReviewBodyReplies.Count == 0)
         {
             return ThreadDisputeOutcome.NoDispute;
         }
@@ -2551,11 +2557,26 @@ public sealed class RunSupervisor(
         // sends the reply, edits it, or drops it.
         IReadOnlyList<ReviewDisagreement> humanThreadDrafts = HumanThreadReplyDrafts(task, run, result.Summary);
 
+        // The same question asked of a person's review BODY, on every lap kind that was taught the
+        // form (task: a dispatched session never speaks to a person at the top level of a pull
+        // request on its own): drafted from the posting path's own refusal records, which are
+        // GitHub's report of the review, never from a review url the session wrote.
+        IReadOnlyList<ReviewDisagreement> reviewBodyDrafts = isChangesRequestedDisagreement
+            || task.FollowUpKind == FollowUpKind.ReviewFeedback
+            || task.FollowUpKind == FollowUpKind.Unknown
+                ? RefusedReviewBodyDrafts(run, ReviewResultParser.ParseDisagreements(result.Summary))
+                : [];
+        if (!isChangesRequestedDisagreement)
+        {
+            humanThreadDrafts = [.. humanThreadDrafts, .. reviewBodyDrafts];
+        }
+
         // The non-disputed lap only parks because it owes a person an answer, so if none of its
         // declines or routes turned out to name a thread closeout observed a PERSON opening — a
-        // bot's thread, which is the ordinary case, or a thread nobody read — there is nothing
-        // here and the run goes on to its gates exactly as it always did.
-        if (!disputed && humanThreadDrafts.Count == 0)
+        // bot's thread, which is the ordinary case, or a thread nobody read — or a review body the
+        // posting path refused for a person, there is nothing here and the run goes on to its
+        // gates exactly as it always did.
+        if (!disputed && humanThreadDrafts.Count == 0 && reviewBodyDrafts.Count == 0)
         {
             return ThreadDisputeOutcome.NoDispute;
         }
@@ -2603,8 +2624,16 @@ public sealed class RunSupervisor(
         // reviewer hears rather than reading an unparseable park as an ordinary one.
         if (isChangesRequestedDisagreement)
         {
+            // A block naming a review the posting path refused is replaced by its refusal-backed
+            // draft, and a refusal with no block rides in as a blank one: the park is owed either way.
+            IReadOnlyList<ReviewDisagreement> blocks = ReviewResultParser.ParseDisagreements(result.Summary);
             session.Events.Append(runId, new ReviewDisagreementParked(
-                runId, ReviewResultParser.ParseDisagreements(result.Summary), DateTimeOffset.UtcNow));
+                runId,
+                [
+                    .. blocks.Where(block => !NamesRefusedReview(run, block)),
+                    .. reviewBodyDrafts,
+                ],
+                DateTimeOffset.UtcNow));
         }
         else if (humanThreadDrafts.Count > 0)
         {
@@ -2758,6 +2787,73 @@ public sealed class RunSupervisor(
                 string.Equals(thread.ThreadId, threadId, StringComparison.Ordinal));
 
     /// <summary>
+    /// The drafts a lap owes for review BODIES the posting path refused to answer for a person
+    /// (task: a dispatched session never speaks to a person at the top level of a pull request on
+    /// its own), one per refused review. The refusal record is GitHub's own report of the review,
+    /// taken by <c>h9k pr reply --review</c> when it ran, so the draft carries that url and the
+    /// disposition the session claimed; a <c>DISAGREEMENT:</c> block naming the same review lends
+    /// its words, and a refusal with no block becomes a blank draft, the honest record of a lap that
+    /// decided against a person and composed nothing, exactly as a declined thread read off the
+    /// triage alone does. A review this run already answered with a posted comment is skipped:
+    /// the words reached the reviewer, so there is nothing left to send.
+    /// <para>
+    /// A <c>DISAGREEMENT:</c> block naming a review url with no refusal record produces nothing
+    /// here, and that is the point: the url is the session's word, and the park offers reply
+    /// choices only for a review GitHub itself reported.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<ReviewDisagreement> RefusedReviewBodyDrafts(
+        RunDetails run, IReadOnlyList<ReviewDisagreement> blocks)
+    {
+        List<ReviewDisagreement> drafts = [];
+        foreach (RefusedReviewBodyReplyRecord refused in run.RefusedReviewBodyReplies)
+        {
+            if (drafts.Exists(draft => SameReview(draft.ReviewUrl, refused.ReviewUrl))
+                || run.ReviewBodyRepliesPosted.Any(posted => SameReview(posted.ReviewUrl, refused.ReviewUrl))
+                // A park this run already raised for the review, resolved since: a resumed session
+                // reading the same refusal must not ask the owner the same question twice.
+                || run.HumanThreadReplyDrafts.Any(parked => SameReview(parked.ReviewUrl, refused.ReviewUrl))
+                || run.ChangesRequestedDisagreements.Any(parked => SameReview(parked.ReviewUrl, refused.ReviewUrl)))
+            {
+                continue;
+            }
+
+            ReviewDisagreement? block = blocks.FirstOrDefault(candidate =>
+                candidate.ThreadId.IsBlank() && SameReview(candidate.ReviewUrl, refused.ReviewUrl));
+            drafts.Add(block is null
+                // Blank rather than filled in: the session restated no finding and drafted no
+                // reply, and those are the two things the operator is about to be told are missing
+                // (AGENTS.md: never guess at unobserved facts).
+                ? new ReviewDisagreement(
+                    Finding: string.Empty,
+                    Reasoning: string.Empty,
+                    ProposedReply: string.Empty,
+                    ReviewUrl: refused.ReviewUrl,
+                    Disposition: refused.Disposition)
+                : block with
+                {
+                    ReviewUrl = refused.ReviewUrl,
+                    Disposition = block.Disposition ?? refused.Disposition,
+                });
+        }
+
+        return drafts;
+    }
+
+    private static bool NamesRefusedReview(RunDetails run, ReviewDisagreement block) =>
+        block.ThreadId.IsBlank()
+        && run.RefusedReviewBodyReplies.Any(refused => SameReview(block.ReviewUrl, refused.ReviewUrl));
+
+    /// <summary>
+    /// Whether two review urls name the same review: OrdinalIgnoreCase, the comparison this
+    /// codebase uses for provider-supplied urls, and blind to a trailing slash a session may add.
+    /// </summary>
+    private static bool SameReview(string? left, string? right) =>
+        left.IsNotBlank()
+        && right.IsNotBlank()
+        && string.Equals(left.Trim().TrimEnd('/'), right.Trim().TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// What the operator reads on the board when a lap parks with a reply nobody has sent. It
     /// names all three things the decision needs — which thread, what the lap decided, and the
     /// exact words it would send — because the alternative is a park that says "go and look",
@@ -2779,26 +2875,34 @@ public sealed class RunSupervisor(
         // the shape read off the triage alone: it decided against the thread and never composed
         // the words, so the park has a decision to show and nothing to send.
         bool anyDrafted = drafts.Any(draft => draft.ProposedReply.IsNotBlank());
+        // What the drafts answer, so a body draft is never called a thread: a review GitHub reported
+        // is "a review a person wrote", and a lap holding both kinds says so.
+        bool anyReview = drafts.Any(draft => draft.ThreadId.IsBlank() && draft.ReviewUrl.IsNotBlank());
+        bool anyThread = drafts.Any(draft => draft.ThreadId.IsNotBlank() || draft.ReviewUrl.IsBlank());
+        (string one, string many) = (anyThread, anyReview) switch
+        {
+            (true, true) => ("a thread or review", "threads and reviews people opened or wrote"),
+            (false, true) => ("a review a person wrote", "reviews people wrote"),
+            _ => ("a thread a person opened", "threads people opened"),
+        };
         string lead = (drafts.Count == 1, anyDrafted) switch
         {
-            (true, true) => "A review-feedback follow-up answered a thread a person opened and posted nothing: ",
+            (true, true) => $"A review-feedback follow-up answered {one} and posted nothing: ",
             (true, false) =>
-                "A review-feedback follow-up decided against a thread a person opened and drafted no answer "
-                + "to it: ",
+                $"A review-feedback follow-up decided against {one} and drafted no answer to it: ",
             (false, true) =>
-                $"A review-feedback follow-up answered {drafts.Count} threads people opened and posted "
-                + "nothing: ",
+                $"A review-feedback follow-up answered {drafts.Count} {many} and posted nothing: ",
             (false, false) =>
-                $"A review-feedback follow-up decided against {drafts.Count} threads people opened and "
+                $"A review-feedback follow-up decided against {drafts.Count} {many} and "
                 + "drafted no answer to them: ",
         };
         string threads = string.Join(" ", drafts.Select(draft =>
-            $"[{draft.ThreadUrl ?? draft.ThreadId ?? "thread not identified"} — "
+            $"[{draft.ThreadUrl ?? draft.ThreadId ?? draft.ReviewUrl ?? "thread not identified"} — "
             + $"{(draft.Disposition?.Value ?? "no disposition stated").ToLowerInvariant()}] "
             + $"drafted reply: {Excerpt(draft.ProposedReply)}"));
         string undrafted = drafts.All(draft => draft.ProposedReply.IsNotBlank())
             ? string.Empty
-            : " A thread with no drafted reply cannot be posted as written — write the answer with "
+            : " A draft with no drafted reply cannot be posted as written — write the answer with "
               + "--post-reply \"<text>\" or resolve with --post-nothing and reply by hand.";
         return lead
             + "telling a colleague their point does not hold is yours to send, not an agent's. "

@@ -3061,6 +3061,175 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             "the triage still lands on the stream whether or not the run goes on to park");
     }
 
+    private const string BodyReviewUrl = "https://github.com/x/y/pull/1#pullrequestreview-345";
+
+    /// <summary>
+    /// What <c>h9k pr reply --review</c> leaves behind when it refuses a decline on a person's
+    /// review body: GitHub's own report of the review, on the run's stream.
+    /// </summary>
+    private static async Task RecordBodyRefusalAsync(
+        DocumentStore store, Guid runId, CancellationToken cancellationToken, string reviewUrl = BodyReviewUrl)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, new ReviewBodyReplyRefused(
+            runId, reviewUrl, "jsmotherman", ReviewThreadDisposition.Decline, "refused", Now));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The review-body half of the reply park (task: a dispatched session never speaks to a person
+    /// at the top level of a pull request on its own). The posting path refused a decline on a
+    /// person's review body and the lap drafted the answer into a block naming that review: the run
+    /// parks with the words, and the review url is the one GitHub reported.
+    /// </summary>
+    [Fact]
+    public async Task A_refused_decline_on_a_persons_review_body_parks_with_the_drafted_reply()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
+            store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.ReviewFeedback);
+        await RecordBodyRefusalAsync(store, runId, cts.Token);
+
+        string summary =
+            $"DISAGREEMENT: review={BodyReviewUrl}; disposition=decline\n"
+            + "REVIEWER ASKED: why a canary value rather than reusing the sentinel\n"
+            + "MY REASONING: the sentinel already means 'unset' in this projection\n"
+            + "PROPOSED REPLY: The sentinel already means unset here, so a distinct canary keeps the two apart.\n"
+            + "RESOLUTION: disputed";
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(summary)));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        NewSupervisor(store, node).StartMonitoring(
+            runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "ReviewParked", cts.Token);
+        details.ParkedOnReviewDisagreement.Should().BeTrue("the park takes the three posting choices");
+        ReviewDisagreement draft = details.HumanThreadReplyDrafts.Should().ContainSingle().Subject;
+        draft.ThreadId.Should().BeNull("a review body has no thread");
+        draft.ReviewUrl.Should().Be(BodyReviewUrl);
+        draft.Disposition.Should().Be(ReviewThreadDisposition.Decline);
+        draft.ProposedReply.Should().Contain("a distinct canary keeps the two apart");
+        details.ParkedReason.Should().Contain("a review a person wrote");
+        details.ParkedReason.Should().Contain(BodyReviewUrl);
+        details.ParkedReason.Should().Contain("--post-reply-as-written");
+    }
+
+    /// <summary>
+    /// The refusal record is the debt, so the park does not depend on the session writing a block
+    /// or closing disputed: this lap was refused, wrote nothing, and closed resolved.
+    /// </summary>
+    [Fact]
+    public async Task A_refused_review_body_decline_parks_with_a_blank_draft_when_the_lap_wrote_no_block()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
+            store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.ReviewFeedback);
+        await RecordBodyRefusalAsync(store, runId, cts.Token);
+
+        const string summary = "SUMMARY:\nEverything else on the pull request was already fine.\nRESOLUTION: resolved";
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(summary)));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        NewSupervisor(store, node).StartMonitoring(
+            runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "ReviewParked", cts.Token);
+        details.ParkedOnReviewDisagreement.Should().BeTrue();
+        ReviewDisagreement draft = details.HumanThreadReplyDrafts.Should().ContainSingle().Subject;
+        draft.ReviewUrl.Should().Be(BodyReviewUrl);
+        draft.ProposedReply.Should().BeEmpty("the lap drafted none, and none is invented for it");
+        details.ParkedReason.Should().Contain("drafted no answer");
+    }
+
+    /// <summary>
+    /// The same debt on a changes-requested lap, whose park is a different event: the refusal
+    /// rides in as a blank draft beside whatever blocks the session wrote.
+    /// </summary>
+    [Fact]
+    public async Task A_refused_review_body_decline_parks_a_changes_requested_lap_too()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
+            store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.ReviewRequestedChanges,
+            changesRequestedReviews:
+            [
+                new ChangesRequestedReview("jsmotherman", BodyReviewUrl, Now, [new ChangesRequestedFinding("Rename it.")]),
+            ]);
+        await RecordBodyRefusalAsync(store, runId, cts.Token);
+
+        const string summary = "SUMMARY:\nFixed the rename.\nRESOLUTION: resolved";
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(summary)));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        NewSupervisor(store, node).StartMonitoring(
+            runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "ReviewParked", cts.Token);
+        details.ParkedOnReviewDisagreement.Should().BeTrue();
+        ReviewDisagreement draft = details.ChangesRequestedDisagreements.Should().ContainSingle().Subject;
+        draft.ReviewUrl.Should().Be(BodyReviewUrl);
+        draft.ProposedReply.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A block naming a review url the posting path never read is the session's word and nothing
+    /// else, so it takes the plain dispute park with no reply choices attached.
+    /// </summary>
+    [Fact]
+    public async Task A_disagreement_naming_a_review_url_with_no_refusal_record_takes_the_plain_park()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
+            store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.ReviewFeedback);
+
+        string summary =
+            $"DISAGREEMENT: review={BodyReviewUrl}; disposition=decline\n"
+            + "MY REASONING: the claim does not hold\n"
+            + "PROPOSED REPLY: It already handles that case.\n"
+            + "RESOLUTION: disputed";
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(summary)));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        NewSupervisor(store, node).StartMonitoring(
+            runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "ReviewParked", cts.Token);
+        details.HumanThreadReplyDrafts.Should().BeEmpty();
+        details.ParkedOnReviewDisagreement.Should().BeFalse("no review GitHub reported stands behind this url");
+        details.ParkedReason.Should().Contain("disputed a review thread");
+    }
+
+    /// <summary>A review this run later answered with a posted comment owes nothing.</summary>
+    [Fact]
+    public async Task A_refused_review_body_decline_later_answered_by_a_fix_parks_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
+            store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.ReviewFeedback);
+        await RecordBodyRefusalAsync(store, runId, cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewBodyReplyPosted(
+                runId, BodyReviewUrl, ReviewThreadDisposition.Fix, true, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        const string summary = "SUMMARY:\nFixed it after all.\nRESOLUTION: resolved";
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(summary)));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        NewSupervisor(store, node).StartMonitoring(
+            runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "Verifying", cts.Token);
+        details.HumanThreadReplyDrafts.Should().BeEmpty();
+    }
+
     /// <summary>
     /// The same triage read, keyed on what the platform observed: a decline of a BOT's thread is
     /// the ordinary case and buys no park at all, so the run goes on to its gates exactly as it
@@ -3564,7 +3733,8 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     private async Task<(NodeContext Node, Guid TaskId, Guid RunId)> SeedClaimedTaskAsync(
         DocumentStore store, CancellationToken cancellationToken,
         bool asFollowUp = false, FollowUpKind? followUpKind = null,
-        IReadOnlyList<ReviewThreadReference>? humanReviewThreads = null)
+        IReadOnlyList<ReviewThreadReference>? humanReviewThreads = null,
+        IReadOnlyList<ChangesRequestedReview>? changesRequestedReviews = null)
     {
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
@@ -3591,7 +3761,8 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
                 followUpKind, automatic: true, Now, node.OwnerId,
                 stackReplayUpstreamCommit: followUpKind == FollowUpKind.StackReplay ? "0000000000000000000000000000000000000a" : null,
                 stackReplayOntoCommit: followUpKind == FollowUpKind.StackReplay ? "0000000000000000000000000000000000000b" : null,
-                humanReviewThreads: humanReviewThreads);
+                humanReviewThreads: humanReviewThreads,
+                changesRequestedReviews: changesRequestedReviews);
             task.Apply(reopened);
             reopen = [firstClaim, completed, reopened];
         }
