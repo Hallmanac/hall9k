@@ -108,27 +108,164 @@ public sealed class ReviewThreadReplyGuardTests
     [InlineData("rg \"comments/.*/replies\" src/Hall9k.Connectors")]
     [InlineData("git commit -m \"fix: escape addPullRequestReviewThreadReply body\"")]
     [InlineData("bash -c 'grep -rn addPullRequestReview src/'")]
+    [InlineData("git commit -m \"mention gh pr review in the docs\"")]
+    [InlineData("rg \"gh pr review\" docs")]
     [InlineData("gh api repos/acme/web/pulls/7/comments --jq '.[].id'")]
     [InlineData("gh api repos/acme/web/pulls/7/reviews --jq '.[].state'")]
     public void A_command_that_only_names_a_route_runs(string command) =>
         ReviewThreadReplyRoutes.WritesIntoAReviewThread(command).Should().BeFalse();
 
     /// <summary>
-    /// Everything a lap legitimately does keeps working. <c>gh pr comment</c> is on this list
-    /// deliberately and is named as a hole in <see cref="ReviewThreadReplyRoutes"/>'s own doc: a
-    /// review BODY is unthreadable, and answering one has been an instruction since Decisions
-    /// Log #62.
+    /// Everything a lap legitimately does keeps working: its reads, its own thread resolves, and
+    /// the platform's posting path itself. <c>gh pr comment</c> is no longer on this list (task: a
+    /// dispatched session never speaks to a person at the top level of a pull request on its own);
+    /// a review body is answered through <c>h9k pr reply --review</c> instead.
     /// </summary>
     [Theory]
     [InlineData("gh api graphql -f query='query($owner:String!){ repository { pullRequest { reviewThreads { nodes { id } } } } }'")]
     [InlineData("gh api graphql -f query='mutation($id:ID!){ resolveReviewThread(input:{threadId:$id}){ thread { isResolved } } }'")]
     [InlineData("gh pr view 7 --json reviews")]
     [InlineData("gh pr diff 7")]
-    [InlineData("gh pr comment 7 --body 'answering the review body'")]
     [InlineData("h9k pr reply 28b19893 --thread PRRT_1 --disposition fix --body \"done\"")]
+    [InlineData("h9k pr reply 28b19893 --review https://github.com/a/b/pull/7#pullrequestreview-9 --disposition fix --body \"done\"")]
     [InlineData("dotnet test")]
     public void Everything_else_runs(string command) =>
         ReviewThreadReplyRoutes.WritesIntoAReviewThread(command).Should().BeFalse();
+
+    /// <summary>
+    /// The top-level routes (task: a dispatched session never speaks to a person at the top level
+    /// of a pull request on its own): the same class of message the two origin incidents were,
+    /// reachable without going near a thread. Every spelling a session reaches for, program form
+    /// and API form alike.
+    /// </summary>
+    public static TheoryData<string> TopLevelRoutes =>
+    [
+        "gh pr comment 7 --body 'answering the review body'",
+        "gh issue comment 7 --body 'issues and pull requests share a number space'",
+        "gh pr comment 7 -F body.md",
+        "gh -R acme/web pr comment 7 --body x",
+        "gh --repo acme/web issue comment 7 -b x",
+        "GH_TOKEN=abc gh pr comment 7 --body x",
+        "cd repo && gh pr comment 7 --body x",
+        "git push; gh pr comment 7 --body x",
+        "echo done | gh pr comment 7 --body-file -",
+        "bash -c 'gh pr comment 7 --body x'",
+        "sh -lc \"cd repo; gh issue comment 7 --body x\"",
+        "pwsh -NoProfile -Command \"gh pr comment 7 --body x\"",
+        "eval \"gh pr comment 7 --body x\"",
+        "echo \"$(gh pr comment 7 --body x)\"",
+        "echo `gh pr comment 7 --body x`",
+        "& \"C:\\Program Files\\GitHub CLI\\gh.exe\" pr comment 7 --body x",
+        "g\"h\" pr comment 7 --body x",
+        "timeout 30 gh pr comment 7 --body x",
+        "gh pr review 7 --comment --body 'x'",
+        "cat <<EOF | bash\ngh pr comment 7 --body x\nEOF",
+        "gh api repos/acme/web/issues/7/comments -f body='answering'",
+        "gh api \"repos/$SLUG/issues/$PR_NUMBER/comments\" -f body=\"$TEXT\"",
+        "gh api --method POST repos/acme/web/issues/7/comments --input comment.json",
+        "gh api repos/acme/web/issues/7/comments --input comment.json",
+        "gh api -X PATCH repos/acme/web/issues/comments/123 -f body='rewritten'",
+        "gh api --method=DELETE repos/acme/web/issues/comments/123",
+        "curl -X POST -H 'Authorization: token $T' -d '{\"body\":\"x\"}' https://api.github.com/repos/acme/web/issues/7/comments",
+        "curl -d '{\"body\":\"x\"}' https://api.github.com/repos/acme/web/issues/7/comments",
+        "gh api graphql -f query='mutation{ addComment(input:{subjectId:\"PR_1\", body:\"x\"}){ clientMutationId } }'",
+        "gh api graphql -f query='mutation{ updateIssueComment(input:{id:\"IC_1\", body:\"x\"}){ clientMutationId } }'",
+        "gh api graphql -f query='mutation{ deleteIssueComment(input:{id:\"IC_1\"}){ clientMutationId } }'",
+    ];
+
+    [Theory]
+    [MemberData(nameof(TopLevelRoutes))]
+    public void A_top_level_comment_route_is_refused(string command) =>
+        ReviewThreadReplyRoutes.WritesIntoAReviewThread(command).Should().BeTrue();
+
+    /// <summary>The hook itself, on both shell tools it is attached to, for every new route.</summary>
+    [Theory]
+    [MemberData(nameof(TopLevelRoutes))]
+    public void The_hook_refuses_every_top_level_route_on_both_shell_tools(string command)
+    {
+        PullRequestReplyGuardCommand.Denies(Payload("Bash", command)).Should().BeTrue();
+        PullRequestReplyGuardCommand.Denies(Payload("PowerShell", command)).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Reads stay open, and so does text that only NAMES a route (a search pattern, a commit
+    /// message, a heredoc body that feeds no shell, an echo). A regex over the raw text refused
+    /// every one of these, which is the failure the class doc records for the API routes.
+    /// </summary>
+    [Theory]
+    [InlineData("gh pr view 7 --comments")]
+    [InlineData("gh pr view 7 --json comments --jq '.comments[].body'")]
+    [InlineData("gh issue view 7 --comments")]
+    [InlineData("gh api repos/acme/web/issues/7/comments")]
+    [InlineData("gh api repos/acme/web/issues/7/comments --paginate --jq '.[].body'")]
+    [InlineData("gh api -X GET repos/acme/web/issues/comments/123")]
+    [InlineData("gh api \"repos/$SLUG/issues/$PR_NUMBER/comments\" --jq '.[] | select(.user.login == \"x\")'")]
+    [InlineData("curl -s https://api.github.com/repos/acme/web/issues/7/comments")]
+    [InlineData("git grep \"gh pr comment\" -- docs")]
+    [InlineData("git grep -n 'gh issue comment' src/")]
+    [InlineData("rg 'gh pr comment' .claude")]
+    [InlineData("rg \"gh pr review|gh pr comment\" docs")]
+    [InlineData("git commit -m \"docs: stop teaching gh pr comment and gh issue comment\"")]
+    [InlineData("git commit -m \"gh pr comment is refused now\"")]
+    [InlineData("git commit -m 'gh pr review is a hole'")]
+    [InlineData("git commit -m \"fix: refuse addComment, updateIssueComment and deleteIssueComment\"")]
+    [InlineData("git commit -F - <<'EOF'\nfeat: route gh pr comment through h9k pr reply\n\ngh issue comment too\nEOF")]
+    [InlineData("echo \"never run gh pr comment here\"")]
+    [InlineData("grep -rn 'gh pr comment' docs # gh pr comment")]
+    [InlineData("git log --grep='gh pr review'")]
+    public void A_read_or_text_that_only_names_a_route_runs(string command)
+    {
+        ReviewThreadReplyRoutes.WritesIntoAReviewThread(command).Should().BeFalse();
+        PullRequestReplyGuardCommand.Denies(Payload("Bash", command)).Should().BeFalse();
+        PullRequestReplyGuardCommand.Denies(Payload("PowerShell", command)).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The shell reader runs on every shell call of every headless session, over text it does not
+    /// control, so it must never throw on any shape of quoting: an unterminated quote, an unclosed
+    /// substitution, a dangling backslash, a heredoc with no terminator. A throw would fail the hook
+    /// on every such call. A fixed seed keeps the sweep reproducible.
+    /// </summary>
+    [Fact]
+    public void Malformed_quoting_never_throws()
+    {
+        const string alphabet = "gh pr comment issue review'\"`$()<>{}|&;#\\\n\t-=EOF";
+        Random random = new(20261008);
+        for (int attempt = 0; attempt < 5000; attempt++)
+        {
+            string command = string.Create(
+                random.Next(1, 60), random, (span, source) =>
+                {
+                    for (int index = 0; index < span.Length; index++)
+                    {
+                        span[index] = alphabet[source.Next(alphabet.Length)];
+                    }
+                });
+
+            Action act = () => ReviewThreadReplyRoutes.WritesIntoAReviewThread(command);
+
+            act.Should().NotThrow($"the command text was {command}");
+        }
+
+        foreach (string command in (string[])
+            ["gh pr comment '", "echo \"$(", "echo `", "cat <<", "cat <<EOF\nbody", "bash -c", "\\", "$(", "<<-"])
+        {
+            Action act = () => ReviewThreadReplyRoutes.WritesIntoAReviewThread(command);
+            act.Should().NotThrow($"the command text was {command}");
+        }
+    }
+
+    /// <summary>
+    /// The refusal is what the session reads, so it has to name the review-body form: an agent
+    /// told only what it may not do retries the same command.
+    /// </summary>
+    [Fact]
+    public void The_refusal_names_the_review_body_form()
+    {
+        ReviewThreadReplyRoutes.RefusalReason.Should().Contain("h9k pr reply");
+        ReviewThreadReplyRoutes.RefusalReason.Should().Contain("--review");
+        ReviewThreadReplyRoutes.RefusalReason.Should().Contain("--thread");
+    }
 
     [Fact]
     public void The_hook_denies_a_bash_call_that_posts_into_a_thread() =>
@@ -222,11 +359,11 @@ public sealed class ReviewThreadReplyGuardTests
     }
 
     /// <summary>
-    /// The guard only ships where it belongs: a follow-up run's settings carry the hook, a fresh
-    /// build session's do not.
+    /// The settings builder installs the hook only when asked, so the one caller that must not
+    /// carry it (the interactive claim) is byte-for-byte what it always was.
     /// </summary>
     [Fact]
-    public void Only_a_guarded_spawn_writes_the_hook_into_its_settings()
+    public void The_hook_is_written_only_when_the_caller_asks_for_it()
     {
         ClaudeSettingsFile.Build(TimeSpan.FromMinutes(30)).Should().NotContain("reply-guard");
         string guarded = ClaudeSettingsFile.Build(TimeSpan.FromMinutes(30), guardReviewThreadReplies: true);
