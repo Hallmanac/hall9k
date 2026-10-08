@@ -1553,19 +1553,24 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
     /// ConversationWithOneReply with the reviewer's own newest submitted review added to it, as GitHub
     /// reports one: its state and, when it names one, the commit it was posted against.
     /// </summary>
-    private static string WithReviewerReview(string conversation, string state, string? commitOid)
+    private static string WithReviewerReview(string conversation, string state, string? commitOid) =>
+        WithReviewerReviews(conversation, ReviewNode("R1", state, "2026-09-07T13:20:00Z", commitOid));
+
+    /// <summary>One submitted review of the reviewer's as GitHub reports it; pass several to <see cref="WithReviewerReviews"/> oldest first.</summary>
+    private static string ReviewNode(string id, string state, string submittedAt, string? commitOid)
     {
         string commit = commitOid is null ? "null" : "{\"oid\":\"" + commitOid + "\"}";
-        return conversation.Replace(
+        return $$$"""{"id":"{{{id}}}","state":"{{{state}}}","submittedAt":"{{{submittedAt}}}","author":{"login":"brian"},"commit":{{{commit}}}}""";
+    }
+
+    private static string WithReviewerReviews(string conversation, params string[] reviewNodes) =>
+        conversation.Replace(
             "\"reviewRequests\"",
             $$$"""
-            "reviews":{"nodes":[
-              {"id":"R1","state":"{{{state}}}","submittedAt":"2026-09-07T13:20:00Z","author":{"login":"brian"},"commit":{{{commit}}}}
-            ],"pageInfo":{"hasPreviousPage":false}},
+            "reviews":{"nodes":[{{{string.Join(",", reviewNodes)}}}],"pageInfo":{"hasPreviousPage":false}},
             "reviewRequests"
             """,
             StringComparison.Ordinal);
-    }
 
     private async Task<string> RunScopedLapAsync(
         bool recordsHeadAndWatermark, string conversation, string? onlyForRangeStartingAt)
@@ -1630,6 +1635,27 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
     }
 
     /// <summary>
+    /// A lone thread reply is recorded by GitHub as a COMMENTED review, so after any reply exchange the
+    /// reviewer's newest review of any kind is a comment. The range still starts at the commit their
+    /// earlier changes-requested review was posted against, not at nothing and not at the comment's.
+    /// </summary>
+    [Fact]
+    public async Task A_later_comment_only_review_does_not_hide_the_reviewers_earlier_verdict()
+    {
+        string prompt = await RunScopedLapAsync(
+            recordsHeadAndWatermark: false,
+            WithReviewerReviews(
+                ConversationWithOneReply(),
+                ReviewNode("R1", "CHANGES_REQUESTED", "2026-09-07T13:20:00Z", "dd75751200000000"),
+                ReviewNode("R2", "COMMENTED", "2026-09-08T12:30:00Z", "eeeeeeee00000000")),
+            onlyForRangeStartingAt: "dd75751200000000");
+
+        prompt.Should().Contain("9a1b2c3 answer the review", "the range starts at the changes-requested review's commit");
+        prompt.Should().Contain("`dd7575120000`").And.NotContain("eeeeeeee0000");
+        prompt.Should().NotContain("could not be computed");
+    }
+
+    /// <summary>
     /// A COMMENTED review reviews no code (a lone thread reply is one, and can be posted after a
     /// push), and a changes-requested review with no commit names nothing: neither supplies a range,
     /// and the packet says so instead of reading as an empty one.
@@ -1647,8 +1673,11 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
 
         prompt.Should().Contain(
             "The range of commits pushed since your review could not be computed: neither the platform's record "
-            + "nor the reviewer's newest review on GitHub supplied a reviewed commit");
-        prompt.Should().Contain($"their newest review there is {state}");
+            + "nor the reviewer's newest approval or request for changes on GitHub supplied a reviewed commit");
+        prompt.Should().Contain(
+            state == "COMMENTED"
+                ? "their newest review there is COMMENTED"
+                : "their newest approval or request for changes there is CHANGES_REQUESTED but carries no commit");
         prompt.Should().NotContain("None were observed");
         prompt.Should().NotContain("the commits it could observe");
         prompt.Should().NotContain("9a1b2c3 answer the review", "no range was computed, so no commit is listed");
@@ -1691,8 +1720,8 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
     }
 
     /// <summary>
-    /// A thread WITH a watermark is judged exactly as before (unchanged here), beside one without,
-    /// and a thread without a watermark that did gain a comment is still just a moved thread.
+    /// A thread WITH a watermark is judged exactly as before (unchanged here), beside one without that
+    /// is counted as unbaselined and one without that gained a comment, which is simply a moved thread.
     /// </summary>
     [Fact]
     public async Task Threads_with_a_watermark_are_still_judged_as_before_beside_ones_without()
@@ -1708,7 +1737,11 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
                    {"author":{"login":"brian"},"body":"the fence is checked after the read","createdAt":"2026-09-07T13:20:00Z"}]}},
                 {"id":"T3","isResolved":true,"path":"src/Three.cs","line":7,
                  "comments":{"totalCount":1,"nodes":[
-                   {"author":{"login":"brian"},"body":"name this","createdAt":"2026-09-07T13:21:00Z"}]}}
+                   {"author":{"login":"brian"},"body":"name this","createdAt":"2026-09-07T13:21:00Z"}]}},
+                {"id":"T4","isResolved":false,"path":"src/Four.cs","line":9,
+                 "comments":{"totalCount":2,"nodes":[
+                   {"author":{"login":"brian"},"body":"extract this","createdAt":"2026-09-07T13:22:00Z"},
+                   {"author":{"login":"someone-else"},"body":"extracted in 9a1b2c3","createdAt":"2026-09-08T12:07:00Z"}]}}
               ],"pageInfo":{"hasNextPage":false}},
               "reviewRequests":{"nodes":[]}
             }}}}
@@ -1717,9 +1750,12 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
         string prompt = await RunScopedLapAsync(
             recordsHeadAndWatermark: true, conversation, onlyForRangeStartingAt: null);
 
-        prompt.Should().Contain("Threads with a recorded baseline that are unchanged in resolution as well: 1 thread.");
-        prompt.Should().Contain(": 1 thread.", "T3 has no watermark");
-        prompt.Should().Contain("the number of them resolved now is 1");
+        prompt.Should().Contain("1 thread of the reviewer's threads moved; 1 thread more are unchanged and are not shown.");
+        prompt.Should().Contain("extracted in 9a1b2c3", "T4 has no watermark but gained a comment, so it is a moved thread");
+        prompt.Should().Contain(
+            "no recorded baseline to compare their resolution against: 1 thread. "
+            + "Whether the resolution of those threads changed since the review cannot be told; "
+            + "the number of them resolved now is 1.");
         prompt.Should().NotContain("None of the reviewer's own threads have moved");
     }
 

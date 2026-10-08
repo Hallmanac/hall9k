@@ -168,7 +168,8 @@ public sealed record ReviewConversation(
     IReadOnlyList<string> OutstandingReviewerLogins,
     bool ThreadsTruncated,
     IReadOnlyDictionary<string, SubmittedReview> LatestReviewByLogin,
-    bool ReviewsTruncated)
+    bool ReviewsTruncated,
+    IReadOnlyDictionary<string, SubmittedReview>? LatestVerdictByLogin = null)
 {
     /// <summary>Every thread <paramref name="login"/> opened, case-insensitively — the only threads a follow-through of that login's review is ever about.</summary>
     public IReadOnlyList<ReviewThread> ThreadsStartedBy(string login) =>
@@ -205,6 +206,19 @@ public sealed record ReviewConversation(
     /// </summary>
     public SubmittedReview? LatestReviewOf(string login) =>
         LatestReviewByLogin.TryGetValue(login, out SubmittedReview? review) ? review : null;
+
+    /// <summary>
+    /// <paramref name="login"/>'s newest approval or request for changes in the page this read
+    /// carried, or null when the page holds none of theirs. Distinct from <see cref="LatestReviewOf"/>
+    /// because a lone thread reply is recorded as a COMMENTED review and becomes their newest review
+    /// of any kind, which would hide the verdict that actually named the commit they read
+    /// (Decisions Log #150, #152 record the same masking for the standing verdict). Null on a
+    /// truncated read does not mean they have no verdict.
+    /// </summary>
+    public SubmittedReview? LatestVerdictOf(string login) =>
+        LatestVerdictByLogin is not null && LatestVerdictByLogin.TryGetValue(login, out SubmittedReview? review)
+            ? review
+            : null;
 
     /// <summary>
     /// Whether <paramref name="login"/> is being asked back: a request outstanding on a reviewer
@@ -421,11 +435,13 @@ public sealed class GitHubReviewThreads(ProcessRunner? runner = null) : IReviewC
             Threads: threads,
             OutstandingReviewerLogins: ReadOutstandingReviewerLogins(pullRequest),
             ThreadsTruncated: truncated,
-            LatestReviewByLogin: ReadLatestReviewByLogin(reviews),
+            LatestReviewByLogin: ReadLatestReviewByLogin(reviews, static _ => true),
             ReviewsTruncated: reviews.ValueKind == JsonValueKind.Object
                 && reviews.TryGetProperty("pageInfo", out JsonElement reviewPageInfo)
                 && reviewPageInfo.TryGetProperty("hasPreviousPage", out JsonElement hasPreviousPage)
-                && hasPreviousPage.ValueKind == JsonValueKind.True);
+                && hasPreviousPage.ValueKind == JsonValueKind.True,
+            LatestVerdictByLogin: ReadLatestReviewByLogin(
+                reviews, static state => state is "APPROVED" or "CHANGES_REQUESTED"));
     }
 
     /// <summary>
@@ -434,8 +450,11 @@ public sealed class GitHubReviewThreads(ProcessRunner? runner = null) : IReviewC
     /// account) is skipped rather than attributed to anyone (AGENTS.md: never guess at unobserved
     /// facts), and so is one with no id, which GitHub types as non-null so a missing one is a
     /// malformed payload. A review with no <c>submittedAt</c> loses to any review that has one.
+    /// Only reviews whose state satisfies <paramref name="includeState"/> compete, which is how the
+    /// newest approval or request for changes is read from the same page.
     /// </summary>
-    private static IReadOnlyDictionary<string, SubmittedReview> ReadLatestReviewByLogin(JsonElement reviews)
+    private static IReadOnlyDictionary<string, SubmittedReview> ReadLatestReviewByLogin(
+        JsonElement reviews, Func<string, bool> includeState)
     {
         Dictionary<string, SubmittedReview> latest = new(StringComparer.OrdinalIgnoreCase);
         if (reviews.ValueKind != JsonValueKind.Object
@@ -456,7 +475,7 @@ public sealed class GitHubReviewThreads(ProcessRunner? runner = null) : IReviewC
 
             // The query never asks for PENDING; a draft that arrived anyway is nobody's submitted review.
             string state = ReadString(review, "state") ?? string.Empty;
-            if (string.Equals(state, "PENDING", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(state, "PENDING", StringComparison.OrdinalIgnoreCase) || !includeState(state))
             {
                 continue;
             }

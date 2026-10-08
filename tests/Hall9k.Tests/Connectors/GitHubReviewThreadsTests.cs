@@ -174,6 +174,29 @@ public sealed class GitHubReviewThreadsTests
     }
 
     [Fact]
+    public void The_latest_verdict_is_read_beneath_a_later_comment_only_review()
+    {
+        ReviewConversation conversation = GitHubReviewThreads.Parse(Payload("""
+            "state":"OPEN","merged":false,"closed":false,"headRefOid":"abc123",
+            "reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false}},
+            "reviews":{"nodes":[
+              {"id":"R1","state":"CHANGES_REQUESTED","submittedAt":"2026-09-07T10:00:00Z","author":{"login":"brian"},"commit":{"oid":"aaa"}},
+              {"id":"R2","state":"COMMENTED","submittedAt":"2026-09-08T10:00:00Z","author":{"login":"Brian"},"commit":{"oid":"bbb"}},
+              {"id":"R3","state":"COMMENTED","submittedAt":"2026-09-08T11:00:00Z","author":{"login":"ryan"},"commit":{"oid":"ccc"}}
+            ],"pageInfo":{"hasPreviousPage":false}},
+            "reviewRequests":{"nodes":[]}
+            """));
+
+        conversation.LatestReviewOf("brian").Should().BeEquivalentTo(
+            new { Id = "R2" }, options => options.ExcludingMissingMembers(), "a comment is their newest review of any kind");
+        conversation.LatestVerdictOf("BRIAN").Should().BeEquivalentTo(
+            new { Id = "R1", ReviewedCommitOid = "aaa" },
+            options => options.ExcludingMissingMembers(),
+            "the earlier changes-requested review is still their newest verdict");
+        conversation.LatestVerdictOf("ryan").Should().BeNull("a reviewer who only ever commented has given no verdict");
+    }
+
+    [Fact]
     public void A_pending_review_is_nobodys_submitted_review()
     {
         ReviewConversation conversation = GitHubReviewThreads.Parse(Payload("""
