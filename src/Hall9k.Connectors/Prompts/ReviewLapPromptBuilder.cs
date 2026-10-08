@@ -727,14 +727,21 @@ public static class ReviewLapPromptBuilder
     }
 
     /// <summary>
-    /// The project name as a shell argument: bare when it is one word, double-quoted when it has
-    /// whitespace, so the command line the briefing prints can be run as written.
+    /// The project name as a shell argument: bare when every character is one a shell leaves alone,
+    /// single-quoted otherwise (a single quote inside it written as <c>'\''</c>), so the command
+    /// line the briefing prints can be run as written whatever the name holds. Single quotes, not
+    /// double, because a double-quoted string still expands <c>$</c> and the backtick.
     /// </summary>
     private static string ProjectArgument(string projectName)
     {
         string name = OneLine(projectName);
-        return name.Any(char.IsWhiteSpace) ? $"\"{name.Replace("\"", "\\\"")}\"" : name;
+        return name.Length > 0 && name.All(IsShellSafe)
+            ? name
+            : $"'{name.Replace("'", "'\\''", StringComparison.Ordinal)}'";
     }
+
+    private static bool IsShellSafe(char character) =>
+        char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-' or '/' or '@' or ':' or '+';
 
     private static void AppendClosingSection(StringBuilder prompt, ReviewLapBriefing briefing)
     {

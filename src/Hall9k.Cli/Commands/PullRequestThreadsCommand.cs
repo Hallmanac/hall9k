@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Globalization;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project.Projections;
 using Marten;
@@ -98,9 +99,11 @@ public sealed class PullRequestThreadsCommand : Hall9kAsyncCommand<PullRequestTh
 
     /// <summary>
     /// The printed threads, line by line, with no gh and no database in it. Comment bodies pass
-    /// through <see cref="ExternalText.ForTerminal"/> and keep their own layout; every one-line
-    /// field (a login, a path) is folded to one line, so a value free to emit a newline cannot
-    /// print a row of its own choosing.
+    /// through <see cref="ExternalText.ForTerminal"/>, keep their own layout, and are fenced
+    /// (<see cref="RelayedText.Fenced"/>) so nothing marks the end of one but the command's own
+    /// closing fence, which the body cannot close early; every one-line field (a login, a path) is
+    /// folded to one line. Either way a value free to emit a newline cannot print a row of its own
+    /// choosing.
     /// </summary>
     internal static IReadOnlyList<string> Lines(string repository, int number, ReviewConversation conversation)
     {
@@ -141,7 +144,7 @@ public sealed class PullRequestThreadsCommand : Hall9kAsyncCommand<PullRequestTh
                 lines.Add(string.Empty);
                 lines.Add(
                     $"Comment {(commentIndex + 1).ToString(CultureInfo.InvariantCulture)} by {Author(comment.AuthorLogin)}:");
-                lines.Add(ExternalText.ForTerminal(comment.Body));
+                lines.Add(RelayedText.Fenced(ExternalText.ForTerminal(comment.Body)));
             }
 
             if (thread.UnreadCommentCount > 0)
