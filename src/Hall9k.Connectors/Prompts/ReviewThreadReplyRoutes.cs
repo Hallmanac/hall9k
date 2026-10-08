@@ -202,12 +202,15 @@ public static class ReviewThreadReplyRoutes
     /// <c>refuse addComment sent through gh api graphql</c>, and a whole-text match refused those
     /// (independent pre-PR review, cycle 2, conformance lens). Only a quoted message that cannot
     /// run anything is masked: a double-quoted one holding <c>$(</c> or a backtick is left in
-    /// place, because a substitution inside it executes. Everything outside the message stays,
+    /// place, because a substitution inside it executes. So is one holding a backslash: bash reads
+    /// <c>\"</c> as an escaped quote but PowerShell, which this same function guards, ends the string
+    /// there, so a <c>-m "x\"; gh api …; echo \""</c> would hide a real call inside what looks like
+    /// one message (independent pre-PR review, cycle 3, adversarial lens). Everything outside the message stays,
     /// so a <c>gh api</c> call chained after the commit, or fed through a variable or heredoc, is
     /// still seen; a message this does not recognize is left alone and merely refused as before.
     /// </summary>
     private static readonly Regex CommitMessages = new(
-        @"(?<=\bgit\s+commit\b[^\n;&|]*?\s)(?:-m|--message)(?:=|\s+)(?:'[^']*'|""(?:[^""\\`$]|\\.|\$(?!\())*"")",
+        @"(?<=\bgit\s+commit\b[^\n;&|]*?\s)(?:-m|--message)(?:=|\s+)(?:'[^']*'|""(?:[^""\\`$]|\$(?!\())*"")",
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     /// <summary>

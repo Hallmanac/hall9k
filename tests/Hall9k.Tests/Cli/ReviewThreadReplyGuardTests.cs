@@ -174,6 +174,7 @@ public sealed class ReviewThreadReplyGuardTests
         "curl.exe -s `\n  -d @payload.json `\n  https://api.github.com/repos/acme/web/issues/7/comments",
         "git commit -m \"wip\" && gh api repos/acme/web/issues/7/comments -f body=x",
         "git commit -m \"$(gh api repos/acme/web/issues/7/comments -f body=x)\"",
+        "git commit -m \"x\\\"; gh api repos/acme/web/issues/7/comments -f body=hi; echo \\\"\"",
         "gh pr review 7 --comment --body 'x'",
         "cat <<EOF | bash\ngh pr comment 7 --body x\nEOF",
         "gh api repos/acme/web/issues/7/comments -f body='answering'",
