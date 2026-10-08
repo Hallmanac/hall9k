@@ -1,0 +1,31 @@
+hall9k-task-record: 1
+task-id: 01a11c65-ee05-74bd-84b0-d7fbca84101f
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#698
+objective: The orchestrator feed, and so the courier's delivered message, names a completed task's pull request without claiming a push the task record does not hold, and h9k review resolve on a pr-review task says what this command posted rather than seeming to deny what the walk posted
+criteria:
+  - When a task completes with a pull request URL on the record, its line in h9k orchestrator feed names that pull request and does not say the run pushed anything; the word "pushed" does not appear in it. One sentence serves every task type, pr-review and build alike. A completion with no URL still reads "the run finished with no pull request to watch".
+  - After h9k review resolve --merge-ready on a pr-review task, the closing line says that this command posted nothing to the pull request and that anything already posted during the findings walk stands, and it does not say the daemon completes the task (a full review waits on the pull request after resolve). The bare "Nothing was posted to the pull request." and "the daemon completes the task" are both gone from that line.
+  - The feed golden in tests/Hall9k.Tests/Domain/OrchestratorFeedRendererTests.cs includes a TaskCompleted carrying a pull request URL and pins its rendered line exactly, and a test pins the text of the resolve command's closing line. Neither test creates a branch, pushes, or calls GitHub.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/ca84101f-the-orchestrator-feed-and-so-t
+published: 2026-10-08 17:08:23Z
+context: |-
+  Origin: TaylorDenny, arx-platform#2201. On 2026-10-06 (transport note 2b88e9e7), after a pr-review task closed out, the courier delivered "the run finished and pushed its work to https://github.com/AgelessRx/arx-platform/pull/2201". Nothing had been pushed, and the lap ran behind a push guard; he checked three ways before believing the message. On 2026-10-08 (note b21c6dce) the same wording fired on a follow-up lap that pushed nothing. Triage: notes/taylor-observations-2026-10-08/triage.md row 1 in the project home.
+
+  Where it lives (verified on origin/main at 5fa78e34b):
+  - src/Hall9k.Domain/Features/Orchestrator/OrchestratorFeedDescription.cs line 133 is the arm that renders every TaskCompleted with a URL as a push; line 131 is the blank-URL arm, which stays as it is.
+  - TaskCompleted (src/Hall9k.Domain/Features/Tasks/Events/TaskCompleted.cs) carries Id, RunId, PullRequestUrl, and CompletedAt, and no task type. It is appended from six places: the five TaskDecider.Complete callers (PullRequestOpener, RunLauncher's already-merged path, CloseoutEngine, PrReviewFollowThroughEngine, SpikeEngine with no URL) and PrReviewEngine.FinalizeAsync through TaskDecider.ConcludeDeliveredPrReview (an answer-only task, or a pr-review with no readable reference). Only the PullRequestOpener one follows a push in the same run. A fresh pull request already gets its own line from PullRequestOpened ("delivered: pull request #N opened"), so the completion line does not need to carry the push.
+  - The sentence is composed in OrchestratorFeedSelection.SelectAsync (line 108), before the task's scope is looked up, and OrchestratorFeedScope carries no task type. OrchestratorFeedRenderer only groups already-composed sentences under a heading. So the task type is not reachable where the sentence is written; reaching it would mean a new scope field, a task load for every local event, and reordering the selection. Not worth it: the neutral sentence is true for every caller above.
+  - The courier renders nothing of its own: CourierEngine.SpawnAsync builds its prompt from OrchestratorFeedPrinter.ComposeAsync, which uses OrchestratorFeedRenderer over the same descriptions. Fixing line 133 fixes the courier's message too.
+  - The golden is OrchestratorFeedRendererTests.The_grouped_output_reads_oldest_first_under_one_heading_per_task; it has no TaskCompleted item today, so the new line is added to it (or to a sibling golden in the same class).
+  - The resolve line is src/Hall9k.Cli/Commands/ReviewResolveCommand.cs line 826, at the end of ResolvePrReviewAsync, written through AnsiConsole. The existing integration test (tests/Hall9k.Tests/Integration/ReviewLapTests.cs around line 1919) exercises that method against a store but does not read console output; pulling the line's text into something a unit test can assert is enough. tests/Hall9k.Tests/TestSupport/ScopedAnsiConsoleCapture.cs can capture the line in the existing integration test instead. Note to the orchestrator: sweep draft d30d4128's finding at ReviewResolveCommand.cs:800 (the line now at 826 saying the daemon completes the task) is answered by criterion 2; drop that entry from d30d4128 at closeout. A wording that would meet criterion 2, offered rather than required: "Run <id> resolved; the daemon finalizes the review from here. This command posted nothing to the pull request; anything posted during the findings walk stands."
+
+  A wording that would meet criterion 1, offered rather than required: "the run finished; the pull request on record is <url>".
+
+  Out of scope: the park line at src/Hall9k.Daemon/Review/PrReviewEngine.cs lines 1321 to 1325 ("nothing was posted to the pull request") is true at park time and stays. It is parked in idea c857584a with a trigger: a parked pr-review row that still says nothing was posted after the owner reviewed by hand. Smallest fix: wording from facts already on the record; no new event, no new field.
