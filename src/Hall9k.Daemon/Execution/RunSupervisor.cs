@@ -2794,8 +2794,11 @@ public sealed class RunSupervisor(
     /// disposition the session claimed; a <c>DISAGREEMENT:</c> block naming the same review lends
     /// its words (every block naming it, one draft each), and a refusal with no block becomes a
     /// blank draft, the honest record of a lap that decided against a person and composed nothing,
-    /// exactly as a declined thread read off the triage alone does. A review this run already answered with a posted comment is skipped:
-    /// the words reached the reviewer, so there is nothing left to send.
+    /// exactly as a declined thread read off the triage alone does. A refusal is skipped when the run
+    /// posted a comment on the review at or after it and no block names the review: the decline became a
+    /// fix, the words reached the reviewer, and there is nothing left to send. A comment posted before the
+    /// refusal, or beside a block, answered a different point of the same review body, so the refused
+    /// point is still owed.
     /// <para>
     /// A <c>DISAGREEMENT:</c> block naming a review url with no refusal record produces nothing
     /// here, and that is the point: the url is the session's word, and the park offers reply
@@ -2812,7 +2815,6 @@ public sealed class RunSupervisor(
             // Tracked apart from the drafts, because one review can carry several drafts (one per
             // block) and a second refusal record for the same review must not draft it again.
             if (handled.Exists(url => SameReview(url, refused.ReviewUrl))
-                || run.ReviewBodyRepliesPosted.Any(posted => SameReview(posted.ReviewUrl, refused.ReviewUrl))
                 // A park this run already raised for the review, resolved since: a resumed session
                 // reading the same refusal must not ask the owner the same question twice.
                 || run.HumanThreadReplyDrafts.Any(parked => SameReview(parked.ReviewUrl, refused.ReviewUrl))
@@ -2820,8 +2822,6 @@ public sealed class RunSupervisor(
             {
                 continue;
             }
-
-            handled.Add(refused.ReviewUrl);
 
             // Every block naming the review, not the first: a review body can make several points
             // and the lap drafted one block per point, so the park carries each of them and
@@ -2836,6 +2836,22 @@ public sealed class RunSupervisor(
                         Disposition = block.Disposition ?? refused.Disposition,
                     }),
             ];
+
+            // A comment posted on the review AFTER the refusal, from a lap that kept no block for
+            // it, is the session having reconsidered: the decline became a fix and the words
+            // reached the reviewer. A comment posted BEFORE it, or beside a drafted block, answers
+            // a different point of the same review body, so the declined one is still owed
+            // (independent pre-PR review, cycle 1, both lenses): a review body that makes three
+            // points, two fixed and one declined, must not lose the declined one.
+            if (named.Length == 0
+                && run.ReviewBodyRepliesPosted.Any(posted =>
+                    SameReview(posted.ReviewUrl, refused.ReviewUrl) && posted.PostedAt >= refused.RefusedAt))
+            {
+                continue;
+            }
+
+            handled.Add(refused.ReviewUrl);
+
             if (named.Length > 0)
             {
                 drafts.AddRange(named);
