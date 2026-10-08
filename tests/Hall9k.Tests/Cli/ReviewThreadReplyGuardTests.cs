@@ -159,6 +159,16 @@ public sealed class ReviewThreadReplyGuardTests
         "& \"C:\\Program Files\\GitHub CLI\\gh.exe\" pr comment 7 --body x",
         "g\"h\" pr comment 7 --body x",
         "timeout 30 gh pr comment 7 --body x",
+        "timeout 30s gh pr review 7 --approve",
+        "timeout -s KILL 1.5m gh pr comment 7 --body x",
+        "sudo -u someone gh pr review 7 --approve",
+        "env -C repo gh pr comment 7 --body x",
+        "xargs -I % gh pr review % --approve",
+        "sudo -E gh issue comment 7 --body x",
+        "sudo -E bash -c 'gh pr comment 7 --body x'",
+        "env -i sh -c \"gh pr comment 7 --body x\"",
+        "curl -s \\\n  -H 'Authorization: token $T' \\\n  -d '{\"body\":\"x\"}' \\\n  https://api.github.com/repos/acme/web/issues/7/comments",
+        "curl -d'{\"body\":\"x\"}' https://api.github.com/repos/acme/web/issues/7/comments",
         "gh pr review 7 --comment --body 'x'",
         "cat <<EOF | bash\ngh pr comment 7 --body x\nEOF",
         "gh api repos/acme/web/issues/7/comments -f body='answering'",
@@ -197,6 +207,11 @@ public sealed class ReviewThreadReplyGuardTests
     [InlineData("gh pr view 7 --comments")]
     [InlineData("gh pr view 7 --json comments --jq '.comments[].body'")]
     [InlineData("gh issue view 7 --comments")]
+    [InlineData("timeout 30s git commit -m \"gh pr review is a hole\"")]
+    [InlineData("sudo -E git grep 'gh pr comment' src/")]
+    [InlineData("gh pr view 42 --json reviews,comments && gh api repos/acme/web/pulls/42/comments --paginate")]
+    [InlineData("gh api repos/acme/web/issues/42/comments --jq '.[] | \"\\(.id) \\(.user.login)\"' | cut -d' ' -f1")]
+    [InlineData("curl -D - -H \"Authorization: token $T\" https://api.github.com/repos/acme/web/issues/42/comments")]
     [InlineData("gh api repos/acme/web/issues/7/comments")]
     [InlineData("gh api repos/acme/web/issues/7/comments --paginate --jq '.[].body'")]
     [InlineData("gh api -X GET repos/acme/web/issues/comments/123")]
