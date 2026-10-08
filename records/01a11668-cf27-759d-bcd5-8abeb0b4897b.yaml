@@ -25,3 +25,7 @@ context: |-
   Docker source for the docs paragraph: https://docs.docker.com/engine/containers/start-containers-automatically/ ("A restart policy only takes effect after a container starts successfully.").
 
   Boundaries: keep the hint generic (Parallels only as an example, no vendor detection). Do not make the doctor or daemon look at another machine's Docker, and do not add anything that reorders startup on the host machine; both were rejected in discovery. Nobody has observed the failure; Brian's own Mac (hall9k-postgres-win on 10.211.55.2:5433) is the free test at its next reboot, and that is his to run, not part of this task.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a04de3-7a23-75c0-8a06-9314ef6ab27d
+holder-node-name: HALL-AGELESSRX
+holder-since: 2026-10-08 17:11:42Z
