@@ -26,6 +26,7 @@ public sealed class OrchestratorFeedUrgencyTests
     [InlineData(typeof(ReviewDisagreementParked))]
     [InlineData(typeof(HumanThreadReplyParked))]
     [InlineData(typeof(ReviewThreadReplyRefused))]
+    [InlineData(typeof(ReviewBodyReplyRefused))]
     [InlineData(typeof(ReviewFindingRouted))]
     [InlineData(typeof(QuestionAsked))]
     [InlineData(typeof(RunSessionErrorRetried))]

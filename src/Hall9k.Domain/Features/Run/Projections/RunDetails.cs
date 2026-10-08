@@ -518,6 +518,18 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// </summary>
     public List<RefusedThreadReplyRecord> RefusedHumanThreadReplies { get; set; } = [];
     /// <summary>
+    /// Every top-level comment a session on this run put through <c>h9k pr reply --review</c>
+    /// to answer a review body, oldest first: the review-body sibling of
+    /// <see cref="ReviewThreadRepliesPosted"/>.
+    /// </summary>
+    public List<ReviewBodyReplyRecord> ReviewBodyRepliesPosted { get; set; } = [];
+    /// <summary>
+    /// Every decline or route the posting path refused to send onto a person's review body,
+    /// oldest first. Each is GitHub's own report of a review, taken by the command when it ran, so
+    /// the park draws its reply choices from these and never from a review url a session wrote.
+    /// </summary>
+    public List<RefusedReviewBodyReplyRecord> RefusedReviewBodyReplies { get; set; } = [];
+    /// <summary>
     /// The unresolved threads a person opened that closeout read as asking nothing, beside a
     /// review from that same person requesting no change — the FYI beside an approval, which buys
     /// no follow-up lap (task: a review-feedback follow-up never answers a human reviewer in the
@@ -1508,6 +1520,16 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
     public void Apply(IEvent<ReviewThreadReplyRefused> @event, RunDetails view) =>
         view.RefusedHumanThreadReplies.Add(new RefusedThreadReplyRecord(
             @event.Data.ThreadId, @event.Data.Disposition, @event.Data.Reason, @event.Data.RefusedAt));
+
+    public void Apply(IEvent<ReviewBodyReplyPosted> @event, RunDetails view) =>
+        view.ReviewBodyRepliesPosted.Add(new ReviewBodyReplyRecord(
+            @event.Data.ReviewUrl, @event.Data.Disposition, @event.Data.ReviewIsHumanAuthored,
+            @event.Data.PostedAt));
+
+    public void Apply(IEvent<ReviewBodyReplyRefused> @event, RunDetails view) =>
+        view.RefusedReviewBodyReplies.Add(new RefusedReviewBodyReplyRecord(
+            @event.Data.ReviewUrl, @event.Data.Author, @event.Data.Disposition, @event.Data.Reason,
+            @event.Data.RefusedAt));
 
     public void Apply(IEvent<AdvisoryReviewThreadsObserved> @event, RunDetails view) =>
         view.AdvisoryHumanReviewThreadIds = [.. @event.Data.ThreadIds];

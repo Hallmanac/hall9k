@@ -949,6 +949,14 @@ public sealed class RunAggregate
     public IReadOnlyList<ReviewDisagreement> ParkedDisagreements { get; private set; } = [];
 
     /// <summary>
+    /// The review urls this run's posting path refused a decline or a route for, as GitHub
+    /// reported them (<see cref="Events.ReviewBodyReplyRefused"/>). History, never cleared: it is
+    /// what <c>h9k review resolve</c> checks a parked body draft's review url against, beside the
+    /// changes-requested reviews closeout read, so a url a session composed is never posted under.
+    /// </summary>
+    public IReadOnlyList<string> RefusedReviewBodyUrls { get; private set; } = [];
+
+    /// <summary>
     /// Whether the park just recorded is a changes-requested lap's disagreement park, which is
     /// what makes <c>h9k review resolve</c> require one of its three reply choices before it will
     /// let the run continue. Kept as its own flag rather than inferred from
@@ -1526,6 +1534,9 @@ public sealed class RunAggregate
         ParkedDisagreements = @event.Drafts;
         ParkedOnReviewDisagreement = true;
     }
+
+    public void Apply(ReviewBodyReplyRefused @event) =>
+        RefusedReviewBodyUrls = [.. RefusedReviewBodyUrls, @event.ReviewUrl];
 
     public void Apply(ReviewParked @event)
     {
