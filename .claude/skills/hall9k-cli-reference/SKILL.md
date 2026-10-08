@@ -1696,14 +1696,17 @@ so nothing is posted until every line is one it accepts.
 walked and nothing needs posting (the `walk-pr-review-findings` path); `h9k pr approve` /
 `h9k pr request-changes` are what replace that ceremony for somebody who actually reviewed.
 
-**One reply inside a review thread goes through the platform, and a decline to a person parks**
+**One reply on the pull request goes through the platform, and a decline to a person parks**
 (Decisions Log #62, #159, and the review-feedback reply park). `h9k pr reply` is the posting path
-for a single in-thread reply on a task's own pull request, and the only route a dispatched
-follow-up has into a thread at all.
+for a single reply on a task's own pull request, inside a review thread (`--thread`) or as the one
+top-level comment that answers a review's own body (`--review`), and the only route any dispatched
+session has to either.
 
 ```bash
 h9k pr reply <task> --thread PRRT_kwDO --disposition fix --body "Fixed above: the sentinel is reused now."
 h9k pr reply <task> --thread PRRT_kwDO --disposition decline --body "…"   # refused when a PERSON opened it
+h9k pr reply <task> --review "<pr url>#pullrequestreview-345" --disposition fix --body "…"       # a review BODY
+h9k pr reply <task> --review "<pr url>#pullrequestreview-345" --disposition decline --body "…"   # refused when a PERSON wrote it
 h9k pr reply-guard                     # not for you: the PreToolUse hook, payload on stdin
 ```
 
@@ -1725,6 +1728,26 @@ records the claim (`ReviewThreadReplyPosted`) and `RunSupervisor` compares it ag
 own `THREAD DISPOSITION:` block at completion, putting a reply that claimed fix and was really a
 decline in the run log rather than nowhere.
 
+**The review-body form.** A review's body is unthreadable, so its answer is a top-level comment, and
+`--review <review url>` posts exactly one that names the review (`On <url>:` ahead of the words).
+Whose review it is comes from GitHub, read by the command itself when it runs and never from the
+session: a `Bot` actor type or a known Copilot login is a bot (the rule the closeout inspector
+applies, shared in `GitHubActors`), any other author is a person, and a review GitHub returns with no
+readable author is a person's. A review that is not on the task's own pull request, or that GitHub
+will not return, is refused with nothing posted and nothing recorded. On a person's review a **fix**
+posts at once and is recorded (`ReviewBodyReplyPosted`); a **decline** or **route** posts nothing and
+is recorded as refused (`ReviewBodyReplyRefused`, with the review's url and author as GitHub reported
+them). The lap drafts the reply into a `DISAGREEMENT:` block naming `review=<url>` and closes
+`RESOLUTION: disputed`, and the run parks, on a review-feedback lap and a changes-requested lap alike,
+with the three `h9k review resolve` choices; sending posts the reply as a top-level comment naming the
+review. The refusal record is what the park draws its reply choices from, so it parks even when the
+session wrote no block or closed `RESOLUTION: resolved` (the draft is then blank), and a `review=` url
+the session composed with no refusal record behind it takes the plain park with no reply choices. A
+bot's review body posts on any disposition. Every post goes through the same writing-conventions
+check. The residual, named rather than closed: a lap that declines a person's body point, never calls
+the form, and closes `RESOLUTION: resolved` posts nothing and parks nothing, because the body has no
+`THREAD DISPOSITION:` triage to read a second source from; the prompt rule is all that holds there.
+
 The park is not optional either. A lap that records `disposition=decline` or `route` for a person's
 thread and then closes `RESOLUTION: resolved` still parks: `RunSupervisor` reads the
 `THREAD DISPOSITION:` triage as a second source and parks with a draft carrying no proposed reply,
@@ -1732,20 +1755,35 @@ so the owner writes the answer (`--post-reply "<text>"`) or drops it (`--post-no
 the `DISAGREEMENT:` block is what gets your drafted words in front of them instead of a blank.
 
 `h9k pr reply-guard` is not a command an operator types: it is the `PreToolUse` hook written into
-every follow-up run's settings file, refusing the shell routes that write inside a review thread so
-the sanctioned one is the only one left. It is registered in the tree rather than hidden so the
-same check can be run by hand — pipe Claude Code's hook payload in on stdin — when a session
-reports a refusal you did not expect. A refusal takes both halves: the command has to name a
-thread-writing route (the REST replies endpoint, the inline-comment or review endpoints carrying
-`in_reply_to` / `commit_id` / `event=` / `body=`, each only where a value is actually assigned to
-it, so filtering a read on `.in_reply_to_id` stays a read, every `addPullRequestReview…` mutation
-matched on the shared prefix, `gh pr review`) **and** be able to reach GitHub's API (`gh api`, `curl`,
-`wget`, a spelled `api.github.com`) — because every one of those identifiers is also source text in
-this repository, and matching the route alone refused a `git grep` for what it never sent. It is
-attached to both shell tools a session may have (`Bash|PowerShell`), since the same `gh` line runs
-in either and a Windows node hands a session both. The hook
-fails **open** everywhere (missing binary, unparseable payload, a tool that is neither shell): blocking
-every command in every follow-up on a mis-parse is a worse failure than the one it prevents.
-`gh pr comment` is deliberately not refused, and is named as a hole rather than papered over — a
-review's own *body* is unthreadable, so a top-level comment is the only answer it can have, and
-writing one has been an instruction since #62.
+the settings file of every headless session, so no dispatched session can put text on a pull request
+except through `h9k pr reply`. That is the daemon's fresh build sessions and every follow-up kind
+alike, plus the CLI's own headless launches (`h9k task start`, `h9k task delegate`). The interactive
+`h9k task work` session, where the operator is present, is unchanged, and the daemon's own provider
+writes (the pull-request opener, re-requests, the merge note, closeout comments) never run in a
+session's shell, so they are unaffected. It is registered in the tree rather than hidden so the
+same check can be run by hand (pipe Claude Code's hook payload in on stdin) when a session
+reports a refusal you did not expect.
+
+It refuses two families of route. Inside a review thread: the REST replies endpoint, the
+inline-comment or review endpoints carrying `in_reply_to` / `commit_id` / `event=` / `body=`, each
+only where a value is actually assigned to it (so filtering a read on `.in_reply_to_id` stays a
+read), every `addPullRequestReview…` mutation matched on the shared prefix, and `gh pr review`. At the
+top level of the pull request: `gh pr comment`, `gh issue comment`, a REST write to
+`…/issues/<n>/comments` (a write parameter, a mutating method, or an `--input` body) and the edit or
+delete path at `…/issues/comments/<id>`, and the GraphQL `addComment`, `updateIssueComment` and
+`deleteIssueComment` mutations. The refusal names `h9k pr reply --review`, the route for a review
+body. Reads stay open (`gh pr view --comments`, a GET of the comments endpoint).
+
+The API routes take both halves: a route AND something that can actually reach GitHub's API (`gh api`,
+`curl`, `wget`, a spelled `api.github.com`), because every one of those identifiers is also source
+text in this repository, and matching the route alone refused a `git grep` for what it never sent. The
+`gh` subcommands (`gh pr review`, `gh pr comment`, `gh issue comment`) reach GitHub without `gh api`,
+so they are matched as programs the way a shell would run them, after quoting is removed and through
+`bash -c`, `eval` and command substitution; a `git grep` or `rg` pattern or a `git commit -m` message
+that only names one is not refused. The hook is attached to both shell tools a session may have
+(`Bash|PowerShell`), since the same `gh` line runs in either and a Windows node hands a session both.
+It fails **open** everywhere (missing binary, unparseable payload, a tool that is neither shell):
+blocking every command in a session on a mis-parse is a worse failure than the one it prevents. It
+matches command text, so it is not a sandbox: a client library that spells no recognized route or
+host, or a program hidden behind an indirection the text does not show, is outside it. It costs about
+90 ms per shell call on a Mac, paid on every shell call of every headless session.

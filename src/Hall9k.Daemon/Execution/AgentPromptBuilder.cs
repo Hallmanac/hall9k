@@ -598,7 +598,7 @@ public static class AgentPromptBuilder
 
         AppendProjectHome(prompt, project);
         AppendChangesRequestedFindings(prompt, task);
-        AppendChangesRequestedHandlingRules(prompt, project, voiceSkill);
+        AppendChangesRequestedHandlingRules(prompt, project, task.Id, voiceSkill);
         AppendChangesRequestedDisagreementRules(prompt, voiceSkill);
 
         AppendRecordedLessons(prompt, lessons, task.Id);
@@ -786,7 +786,7 @@ public static class AgentPromptBuilder
     /// this prompt.
     /// </summary>
     private static void AppendChangesRequestedHandlingRules(
-        StringBuilder prompt, ProjectDetails project, VoiceSkillName? voiceSkill)
+        StringBuilder prompt, ProjectDetails project, Guid taskId, VoiceSkillName? voiceSkill)
     {
         const string file = $"{TemplateDirectory}/review-requested-changes.md";
         prompt.AppendLine(Fragment(file, "handling-heading"));
@@ -795,7 +795,11 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         AppendFragment(prompt, file, "handling-fix");
         AppendFragment(prompt, file, "handling-question");
-        AppendFragment(prompt, file, "handling-body-comment");
+        AppendFragment(
+            prompt, file, "handling-body-comment",
+            ("ReplyCommand", ClaudeSettingsFile.ReviewThreadReplyCommand),
+            ("TaskId", taskId.ToString()),
+            ("ReviewTagKey", ReviewResultParser.ReviewTagKey));
         AppendFragment(prompt, file, "handling-never-open-thread");
         AppendWritingConventions(
             prompt, string.Empty, project.WritingConventions, Fragment(file, "writing-conventions-lead-in"));
@@ -2145,7 +2149,13 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "never-resolve-without-reply");
         AppendFragment(prompt, file, "one-attempt");
         prompt.AppendLine();
-        AppendFragment(prompt, file, "body-comment");
+        AppendFragment(
+            prompt, file, "body-comment",
+            ("ReplyCommand", ClaudeSettingsFile.ReviewThreadReplyCommand),
+            ("TaskId", taskId.ToString()),
+            ("DisagreementMarker", ReviewResultParser.DisagreementMarker),
+            ("ReviewTagKey", ReviewResultParser.ReviewTagKey),
+            ("DispositionTagKey", ReviewResultParser.DispositionTagKey));
         prompt.AppendLine();
         AppendWritingConventions(
             prompt, string.Empty, project.WritingConventions, Fragment(file, "writing-conventions-lead-in"));

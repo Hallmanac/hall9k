@@ -598,15 +598,17 @@ Three things make that default safe to leave on:
 ### Replying in a review thread
 
 `h9k pr reply <task> --thread <node-id> --disposition fix|decline|route --body "<text>"` ·
+`h9k pr reply <task> --review <review-url> --disposition fix|decline|route --body "<text>"` ·
 `h9k pr reply-guard`
 
-The platform's own posting path, and the only route a dispatched follow-up has into a review
-thread on its own pull request. It exists so exactly one question can be asked before words leave
-the machine: whose thread is this? A **decline** or a **route** into a thread a *person* opened is
-refused outright and recorded on the run — telling a colleague their point does not hold is the
-owner's to send, so the lap drafts the reply and parks it, and `h9k review resolve` sends it,
-edits it, or drops it. A **bot's** thread and a **fix**'s reply into anyone's thread post exactly
-as they always have.
+The platform's own posting path, and the only route a dispatched session has onto its own pull
+request, inside a review thread (`--thread`) or at the top level (`--review`). It exists so exactly
+one question can be asked before words leave the machine: whose is this? A **decline** or a
+**route** into a thread a *person* opened, or onto a review body a *person* wrote, is refused
+outright and recorded on the run. Telling a colleague their point does not hold is the owner's to
+send, so the lap drafts the reply and parks it, and `h9k review resolve` sends it, edits it, or
+drops it. A **bot's** thread or review and a **fix**'s reply to anyone post exactly as they always
+have.
 
 Whose thread it is comes from the platform's own read of the pull request at the moment the lap
 was dispatched, not from the session's say-so; the disposition is the session's word, so every
@@ -614,12 +616,36 @@ accepted reply records the claim and the daemon compares it against that thread'
 triage block, putting a contradiction in the run log. The park is enforced off that same triage
 rather than off the session's closing verdict, so a lap that declined a person's thread and then
 closed as though it were finished parks anyway, with a blank draft for you to fill in or drop.
-`h9k pr reply-guard` is not a command you
-type: it is the PreToolUse hook a follow-up session launches with, refusing the `gh` routes into a
-review thread — on either shell tool the session has — so the sanctioned one is the only one left.
-`gh pr comment` is deliberately not
-refused, because a review's own *body* is unthreadable and a top-level comment is the only answer
-it can have.
+
+**The review-body form.** A review's body is unthreadable, so its answer is one top-level comment
+on the task's pull request. `--review` takes the review's own url
+(`<pull request url>#pullrequestreview-<id>`) and posts a comment that opens with `On <url>:`, so
+the reviewer never has to connect it back. Whose review it is comes from GitHub, read by the command
+itself when it runs and never from the session: a Bot actor type or a known Copilot login is a bot,
+any other author is a person, and a review GitHub returns with no readable author is a person's. A
+review that is not on the task's own pull request, or that GitHub will not return, is refused with
+nothing posted and nothing recorded. On a person's review a fix posts at once; a decline or a route
+posts nothing, is recorded as refused with the review's url and author as GitHub reported them, and
+the lap drafts it into a `DISAGREEMENT:` block naming `review=<url>`. The run then parks, on a
+review-feedback lap and a changes-requested lap alike, and sending the draft posts it as a top-level
+comment naming the review. The park offers those choices only for a review GitHub itself reported (a
+refusal record, or closeout's own changes-requested read), never for a url a session composed, and
+it parks even when the session wrote no block or closed as though it were finished, with a blank
+draft. A bot's review body posts on any disposition. Every post, thread or review, goes through the
+project's writing-conventions check first. One gap is named rather than closed: a lap that declines a
+person's body point, never calls the form, and closes as resolved posts nothing and parks nothing,
+because a body has no closing triage block to read a second source from; the prompt rule is all
+that holds there.
+
+`h9k pr reply-guard` is not a command you type: it is the PreToolUse hook every headless session
+launches with, fresh build sessions and follow-ups alike, plus `h9k task start` and
+`h9k task delegate`. It refuses the `gh` routes that put text on the pull request, on either shell
+tool the session has: the reply and review routes inside a thread, and now the top-level ones too
+(`gh pr comment`, `gh issue comment`, a write to the issue-comment REST endpoint, and the GraphQL
+comment mutations), so the sanctioned route is the only one left. A search pattern or a commit
+message that only names one of them is not refused, and neither is a read. The interactive
+`h9k task work` session, where you are present, does not carry it. The guard reads command text and
+fails open, so it is a refusal of the ordinary routes rather than a sandbox.
 
 ### The claim gate
 
