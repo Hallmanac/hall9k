@@ -194,6 +194,8 @@ public static class EventScopeRegistry
         [typeof(ReviewBodyReplyRefused)] = EventScope.ProjectScoped,
         [typeof(ReviewThreadReplyPosted)] = EventScope.ProjectScoped,
         [typeof(ReviewThreadReplyRefused)] = EventScope.ProjectScoped,
+        [typeof(ReviewReplyHeld)] = EventScope.ProjectScoped,
+        [typeof(ReviewReplyWithheld)] = EventScope.ProjectScoped,
         [typeof(ReviewThreadsTriaged)] = EventScope.ProjectScoped,
         [typeof(ReviewTrackConcluded)] = EventScope.ProjectScoped,
         [typeof(ReviewTrackReactivated)] = EventScope.ProjectScoped,
