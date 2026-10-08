@@ -861,19 +861,29 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
     /// <summary>
     /// The rule is about a PERSON's thread and nothing else: a bot's disagreement is still
-    /// answered in-thread and resolved there (Decisions Log #159, untouched), and a fix's reply
-    /// still goes into anyone's thread, because the commit is its evidence.
+    /// answered in-thread and resolved there (Decisions Log #159, untouched). A fix's reply, in
+    /// anyone's thread, now waits for the platform's push (task: a review-feedback lap's fix reply
+    /// posts only after the platform's push has moved the pull request's head), and the prompt says
+    /// so: the session records it, does not resolve the thread, and treats a finding the head
+    /// already satisfies as a decline rather than a fix.
     /// </summary>
     [Fact]
-    public void Follow_up_prompt_leaves_bot_threads_and_fixes_posting_as_before()
+    public void Follow_up_prompt_leaves_bot_declines_posting_and_teaches_the_fix_reply_order()
     {
         string prompt = AgentPromptBuilder.BuildFollowUp(
             SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
 
         prompt.Should().Contain("Bot-authored thread: post the evidence",
             "a bot's thread is untouched by the widening");
-        prompt.Should().Contain("bot-authored or human-authored, since a fix invites no",
-            "a fix is still replied to and resolved in anyone's thread");
+        prompt.Should().Contain("A fix reply is held, not posted",
+            "the posting route says a fix reply posts after the platform's push");
+        prompt.Should().Contain("the push range on its own line",
+            "the session is told the platform carries the range, so it does not write one");
+        prompt.Should().Contain("do not resolve a fix's thread yourself",
+            "the platform resolves a fix's thread after it posts the held reply");
+        prompt.Should().Contain("The platform\n  posts it and resolves the thread after it pushes");
+        prompt.Should().Contain("already satisfied on the head this lap started from is not a fix",
+            "a finding the pull request already carries is a decline, not a fix");
         prompt.Should().Contain("One honest attempt per thread per follow-up; never re-litigate",
             "the reply-once rule survives");
     }

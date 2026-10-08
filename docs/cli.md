@@ -619,13 +619,28 @@ one question can be asked before words leave the machine: whose is this? A **dec
 **route** into a thread a *person* opened, or onto a review body a *person* wrote, is refused
 outright and recorded on the run. Telling a colleague their point does not hold is the owner's to
 send, so the lap drafts the reply and parks it, and `h9k review resolve` sends it, edits it, or
-drops it. A **bot's** thread or review and a **fix**'s reply to anyone post exactly as they always
-have.
+drops it. A **bot's** thread or review posts a decline or a route at once, as it always has.
+
+A **fix** reply posts nothing during the session, into a bot's thread or a person's. The command
+vets the body against the writing conventions and records it on the run as held, because the
+session never pushes: the platform does, after its gates, and a reply saying Fixed must not reach
+the pull request before the fix does. After the push, only if it moved the pull request's head away
+from the head the lap started from, the daemon posts the reply with one appended line naming the
+push (the short shas before and after, and GitHub's compare link between them), resolves the
+thread, and records the post. A post or a resolve that fails is logged with gh's error and leaves
+that thread open without failing the run. A lap that ends without moving the head (a push whose tip
+is the head it started from, a gate failure, a failed, abandoned or superseded run) posts nothing, a
+parked run's reply waits for a later push, and a reply posts at most once. `h9k task show` lists each
+held fix reply that has not posted with its thread and body, marked as waiting for the push or as
+withheld with the reason. The session therefore does not resolve a fix's thread itself. A finding
+the pull request already satisfies on the head the lap started from is not a fix: it is a decline
+whose evidence names the commit that satisfies it.
 
 Whose thread it is comes from the platform's own read of the pull request at the moment the lap
 was dispatched, not from the session's say-so; the disposition is the session's word, so every
 accepted reply records the claim and the daemon compares it against that thread's own closing
-triage block, putting a contradiction in the run log. The park is enforced off that same triage
+triage block: a held fix reply into a person's thread that the triage calls a decline or a route is
+withheld, with a warning in the run log naming the thread. The park is enforced off that same triage
 rather than off the session's closing verdict, so a lap that declined a person's thread and then
 closed as though it were finished parks anyway, with a blank draft for you to fill in or drop.
 
@@ -636,14 +651,15 @@ the reviewer never has to connect it back. Whose review it is comes from GitHub,
 itself when it runs and never from the session: a Bot actor type or a known Copilot login is a bot,
 any other author is a person, and a review GitHub returns with no readable author is a person's. A
 review that is not on the task's own pull request, or that GitHub will not return, is refused with
-nothing posted and nothing recorded. On a person's review a fix posts at once; a decline or a route
+nothing posted and nothing recorded. On a person's review a fix is held for the push like a thread's, then posts as the top-level
+comment with the same push line; a decline or a route
 posts nothing, is recorded as refused with the review's url and author as GitHub reported them, and
 the lap drafts it into a `DISAGREEMENT:` block naming `review=<url>`. The run then parks, on a
 review-feedback lap and a changes-requested lap alike, and sending the draft posts it as a top-level
 comment naming the review. The park offers those choices only for a review GitHub itself reported (a
 refusal record, or closeout's own changes-requested read), never for a url a session composed, and
 it parks even when the session wrote no block or closed as though it were finished, with a blank
-draft. A bot's review body posts on any disposition. Every post, thread or review, goes through the
+draft. A bot's review body posts a decline or a route at once. Every post, thread or review, goes through the
 project's writing-conventions check first. One gap is named rather than closed: a lap that declines a
 person's body point, never calls the form, and closes as resolved posts nothing and parks nothing,
 because a body has no closing triage block to read a second source from; the prompt rule is all

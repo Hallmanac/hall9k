@@ -1977,8 +1977,11 @@ draft stays in that block after you resolve its park, so each row also says what
 sent as written, sent in your own words (with those words), or still waiting on you. Once a changes-requested lap pushes, that reviewer's review is re-requested on the
 new head automatically, because their verdict is what blocks the merge until they change it.
 
-None of this rests on the prompt alone. A dispatched session posts every reply on its pull request
-through `h9k pr reply`, in a thread or, with `--review`, as the one top-level comment that answers a
+None of this rests on the prompt alone. A fix reply waits for the platform's push: the session's
+`h9k pr reply --disposition fix` only records it, and the daemon posts it, and resolves the thread,
+once its push has moved the pull request's head, with a line naming the push. `h9k task show` lists
+any fix reply that has not posted, as waiting for the push or as withheld with the reason. A
+dispatched session posts every other reply on its pull request through `h9k pr reply`, in a thread or, with `--review`, as the one top-level comment that answers a
 review's body. It refuses a decline or a route into a thread, or onto a review body, that the
 platform read a person writing, and records the attempt on the run. A review body's author is read
 from GitHub by the command itself, so a refused decline on a body parks the run just as a thread

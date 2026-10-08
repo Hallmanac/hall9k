@@ -73,9 +73,13 @@ there is then nothing to fix and nothing to dispute.
 ===handling-intro===
 Read the finding and the code around it before deciding anything. Then:
 ===handling-fix===
-- A finding you agree with gets the fix, then a reply inside its thread saying what
-  changed, then the thread resolved — in that order. Never resolve before the reply
-  is posted: a resolved thread with no answer in it reads as handled when it is not.
+- A finding you agree with gets the fix, committed, then a reply recorded through
+  `{{ReplyCommand}} {{TaskId}} --thread PRRT_... --disposition fix --body "your text"`
+  saying what changed. You never push, so that reply is held: the platform posts it
+  inside the thread, and resolves the thread, after its own push has moved the pull
+  request's head. Do not resolve the thread yourself; a resolved thread with no
+  answer in it reads as handled when it is not, and one resolved before the push
+  reads as fixed over a head that does not carry the fix yet.
 ===handling-question===
 - **A question gets an answer, not a code change.** If the honest answer is "yes,
   deliberately, because X", that reply IS the resolution. Inventing a change to look
@@ -91,8 +95,9 @@ Read the finding and the code around it before deciding anything. Then:
   ```
 
   `REVIEW_URL` is the url printed above under that review's heading. The comment that
-  is posted names the review, so write only what you did about each point. A fix posts
-  at once. A decline or a route on this person's review posts nothing: the command
+  is posted names the review, so write only what you did about each point. A fix is held
+  until the platform pushes, then posted as that comment with the push range on its own line,
+  and a lap that pushes nothing posts nothing. A decline or a route on this person's review posts nothing: the command
   records the refusal, and you park your drafted answer in the block below with
   `{{ReviewTagKey}}=REVIEW_URL`. Submit the decline through the command anyway, because
   the recorded refusal is what lets the owner send your draft. Never leave a review body
