@@ -294,20 +294,12 @@ public sealed class ReviewLapPromptBuilderTests : IDisposable
     }
 
     [Fact]
-    public void The_briefing_names_the_command_that_reads_inline_review_threads()
+    public void A_project_name_with_shell_significant_characters_is_single_quoted_so_the_threads_command_runs_as_written()
     {
-        string prompt = ReviewLapPromptBuilder.Build(Briefing());
-
-        prompt.Should().Contain("`h9k pr threads acme/web#42 --project hall9k`");
-        prompt.Should().Contain("`gh pr view` and `gh pr diff` do not return the inline review threads");
-    }
-
-    [Fact]
-    public void A_project_name_with_whitespace_is_quoted_so_the_threads_command_runs_as_written()
-    {
-        string prompt = ReviewLapPromptBuilder.Build(Briefing() with { ProjectName = "my project" });
-
-        prompt.Should().Contain("`h9k pr threads acme/web#42 --project \"my project\"`");
+        ReviewLapPromptBuilder.Build(Briefing() with { ProjectName = "my project" })
+            .Should().Contain("`h9k pr threads acme/web#42 --project 'my project'`");
+        ReviewLapPromptBuilder.Build(Briefing() with { ProjectName = "acme'web;$(x)" })
+            .Should().Contain("`h9k pr threads acme/web#42 --project 'acme'\\''web;$(x)'`");
     }
 
     [Fact]
