@@ -49,6 +49,18 @@ public sealed class DesignReviewPromptBuilderGoldenTests : IDisposable
             "# Running hall9k locally\n\n1. `docker compose up -d`\n2. `dotnet run --project src/Web`\n")));
 
     /// <summary>
+    /// The driven review is told to start the product and stop it, so it must be handed the one
+    /// supported route for both, and the ban on stopping anything by name, pattern, or port.
+    /// </summary>
+    [Fact]
+    public void A_driven_design_review_states_the_helper_process_route() =>
+        HelperProcessCarveOut.AssertStated(
+            DesignReviewPromptBuilder.Build(Request(
+                new ReviewDriveDecision(ReviewPersona.Designer, SettingOn: true, ProjectHasRunSkill: true),
+                "# Running hall9k locally\n\n1. `dotnet run --project src/Web`\n")),
+            "the driven design review");
+
+    /// <summary>
     /// A retry reason another owner's node replicated reaches the design session as a fenced,
     /// labelled note (security review idea 6be68ee2), through the same section every other pr-review
     /// lens renders it with.

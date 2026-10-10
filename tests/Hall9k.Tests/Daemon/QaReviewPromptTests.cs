@@ -152,7 +152,8 @@ public sealed class QaReviewPromptTests : IDisposable
         prompt.Should().Contain("`npm run dev -- --port <port>`", "the skill itself is handed over, not pointed at");
         prompt.Should().Contain("Bring it up on an ephemeral port");
         prompt.Should().Contain("Say in your report which port you used.");
-        prompt.Should().Contain("Tear the product down before you finish");
+        prompt.Should().Contain("tear it down before you finish");
+        prompt.Should().Contain("`TaskStop` by the id `run_in_background` returned");
         prompt.Should().Contain("browser automation");
         prompt.Should().Contain("put each screenshot beside the finding or the map entry it supports");
         prompt.Should().Contain($"DRIVEN: {ReviewResultParser.ExampleDrivenFlowPlaceholder};");
