@@ -414,6 +414,18 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "lower-ranked peer does not watch. A single-node install is unaffected. Read once at daemon start.")]
         public int? AutoPrReviewMintHold { get; init; }
 
+        [CommandOption("--session-containment <true|false>")]
+        [Description(
+            "Whether every agent session the daemon spawns on macOS runs under a one-rule seatbelt profile that "
+            + "lets it signal only processes it started (default true; no effect on Linux or Windows). It exists "
+            + "because a dispatched session's own cleanup command (a BSD pkill whose -P was read as a pattern) "
+            + "once signalled dozens of the operator's own processes, and it is a stopgap until Claude Code's own "
+            + "sandbox can run a headless browser. Set false to turn it off, for example when a task needs "
+            + "something the profile blocks: a tool that applies its own seatbelt sandbox, or a setuid binary such "
+            + "as sudo. The boundary and the known incompatibilities are recorded on SessionContainment.Profile. "
+            + "Read once at daemon start.")]
+        public bool? SessionContainment { get; init; }
+
         [CommandOption("--interactive-claim-stale-after-days <DAYS>")]
         [Description(
             "How many days an interactive claim (h9k task work) can sit untouched before h9k status nudges "
@@ -529,7 +541,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.SpendPeriod is null && settings.ReviewStageComposition is null
             && settings.MessagePollActiveMin is null && settings.MessagePollActiveMax is null
             && settings.MessagePollIdleMin is null && settings.MessagePollIdleMax is null
-            && settings.AutoPrReviewMintHold is null;
+            && settings.AutoPrReviewMintHold is null && settings.SessionContainment is null;
 
         if (onlyImmediateEffectSettingsChanged)
         {
@@ -569,7 +581,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.ReviewStageComposition is null
             && settings.MessagePollActiveMin is null && settings.MessagePollActiveMax is null
             && settings.MessagePollIdleMin is null && settings.MessagePollIdleMax is null
-            && settings.AutoPrReviewMintHold is null
+            && settings.AutoPrReviewMintHold is null && settings.SessionContainment is null
             && settings.InviteExpiryHours is null && settings.ReleaseChannel is null
             && settings.LessonPromptMaxLessons is null && settings.LessonPromptMaxCharacters is null)
         {
@@ -875,6 +887,12 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         {
             operating.AutoPrReviewMintHoldSeconds = mintHoldSeconds;
             changed.Add($"auto-pr-review-mint-hold = {mintHoldSeconds}s");
+        }
+
+        if (settings.SessionContainment is { } sessionContainment)
+        {
+            operating.SessionContainment = sessionContainment;
+            changed.Add($"session-containment = {(sessionContainment ? "on" : "off")}");
         }
 
         if (settings.InteractiveClaimStaleAfterDays is { } staleAfterDays)

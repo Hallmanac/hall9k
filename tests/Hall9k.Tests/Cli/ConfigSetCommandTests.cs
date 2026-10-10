@@ -873,6 +873,20 @@ public sealed class ConfigSetCommandTests
         changed.Should().ContainSingle().Which.Should().Be("auto-pr-review-mint-hold = 0s");
     }
 
+    [Fact]
+    public void Session_containment_alone_is_a_change_and_false_is_written_as_off()
+    {
+        ConfigSetCommand.Settings settings = new() { SessionContainment = false };
+        OperatingSettings operating = new();
+        List<string> changed = [];
+
+        ConfigSetCommand.Validate(settings);
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.SessionContainment.Should().BeFalse();
+        changed.Should().ContainSingle().Which.Should().Be("session-containment = off");
+    }
+
     /// <summary>
     /// The lesson-prompt caps are refused here rather than silently accepted and clamped later
     /// (idea d805fd8b, piece 5). <c>LessonInjectionCaps.Resolve</c> clamps whatever it reads

@@ -881,6 +881,7 @@ public static class CliCommandTree
                 .WithExample("config", "set", "--interactive-claim-stale-after-days", "5")
                 .WithExample("config", "set", "--release-channel", "all")
                 .WithExample("config", "set", "--spend-budget", "5000000", "--spend-period", "week")
+                .WithExample("config", "set", "--session-containment", "false")
                 .WithExample("config", "set", "--review-stage-composition", "skip-final-pass", "--accept-reduced-review");
         });
 

@@ -173,6 +173,28 @@ public sealed class DaemonOptionsBindingTests
     }
 
     [Fact]
+    public void A_session_containment_value_from_outside_the_resolvers_own_sources_is_named_as_ignored()
+    {
+        IConfigurationSection section = Section(("SessionContainment", "false"));
+        OperatingSettingsReport report = ReportWithCeiling(maxConcurrentTaskRuns: 1);
+
+        IReadOnlyList<string> messages = DaemonOptionsBinding.DescribeConfigurationSourcesTheResolverIgnores(section, report);
+
+        messages.Should().ContainSingle(message =>
+            message.Contains("SessionContainment") && message.Contains("containment on"),
+            "the daemon keeps containment on whatever another source says, and nothing said so");
+    }
+
+    [Fact]
+    public void A_session_containment_value_that_agrees_with_the_resolvers_answer_is_silent()
+    {
+        IConfigurationSection section = Section(("SessionContainment", "True"));
+        OperatingSettingsReport report = ReportWithCeiling(maxConcurrentTaskRuns: 1);
+
+        DaemonOptionsBinding.DescribeConfigurationSourcesTheResolverIgnores(section, report).Should().BeEmpty();
+    }
+
+    [Fact]
     public void A_spend_period_value_from_outside_the_resolvers_own_sources_is_named_as_ignored()
     {
         IConfigurationSection section = Section(("SpendPeriod", "day"));
@@ -361,5 +383,6 @@ public sealed class DaemonOptionsBindingTests
                 Hall9k.Domain.Features.Run.ReviewStageComposition.FullPipeline.Value, SettingOrigin.Default, null),
             new ResolvedSetting<string?>(null, SettingOrigin.Default, null),
             new ResolvedSetting<int>(OperatingSettings.DefaultAutoPrReviewMintHoldSeconds, SettingOrigin.Default, null),
-            []);
+            [],
+            new ResolvedSetting<bool>(OperatingSettings.DefaultSessionContainment, SettingOrigin.Default, null));
 }

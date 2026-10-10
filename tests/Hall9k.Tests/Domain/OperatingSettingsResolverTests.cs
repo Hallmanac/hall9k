@@ -56,6 +56,7 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         "Hall9k__AutoPrReviewMintHoldSeconds",
         "Hall9k__SpendBudgetTokens",
         "Hall9k__SpendPeriod",
+        "Hall9k__SessionContainment",
     ];
 
     private readonly ScopedTestHome scopedHome = new();
@@ -399,6 +400,50 @@ public sealed class OperatingSettingsResolverTests : IDisposable
 
         report.AutoPrReviewMintHold.Value.Should().Be(90);
         report.AutoPrReviewMintHold.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
+    }
+
+    [Fact]
+    public async Task Session_containment_defaults_to_on()
+    {
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.SessionContainment.Value.Should().BeTrue();
+        report.SessionContainment.Origin.Should().Be(SettingOrigin.Default);
+    }
+
+    [Fact]
+    public async Task Session_containment_set_false_in_the_config_file_turns_it_off()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.SessionContainment = false, CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.SessionContainment.Value.Should().BeFalse();
+        report.SessionContainment.Origin.Should().Be(SettingOrigin.PlatformConfigFile);
+    }
+
+    [Fact]
+    public async Task A_session_containment_environment_variable_outranks_the_config_file()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.SessionContainment = false, CancellationToken.None);
+        Environment.SetEnvironmentVariable("Hall9k__SessionContainment", "true");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.SessionContainment.Value.Should().BeTrue();
+        report.SessionContainment.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
+    }
+
+    [Fact]
+    public async Task An_unusable_session_containment_environment_variable_never_turns_containment_off()
+    {
+        Environment.SetEnvironmentVariable("Hall9k__SessionContainment", "off");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.SessionContainment.Value.Should().BeTrue("a value the resolver cannot read must fall back to on, never to off");
+        report.UnusableEnvironmentVariables.Should().ContainSingle(
+            warning => warning.Contains("Hall9k__SessionContainment") && warning.Contains("\"off\""));
     }
 
     [Fact]
