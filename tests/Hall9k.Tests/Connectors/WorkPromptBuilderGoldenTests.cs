@@ -387,7 +387,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendForegroundGatesRule(prompt, TimeSpan.FromMinutes(10), sessionRunsGates: false);
-        HelperProcessCarveOut.AssertAbsent(prompt.ToString(), "a read-only session");
+        HelperProcessCarveOut.AssertBanOnly(prompt.ToString(), "a read-only session");
         AssertMatchesGolden("append-foreground-gates-rule-session-does-not-run-gates", PromptLineEndings.Finish(prompt));
     }
 

@@ -1302,7 +1302,8 @@ public static class WorkPromptBuilder
     /// <para>
     /// <paramref name="allowsHelperProcess"/> adds the helper-process exception to the variant that
     /// does not run gates, for the one such leg that stands the product up (a driving design
-    /// review). A session that runs gates always carries it; the read-only legs never do.
+    /// review). A session that runs gates always carries it; the read-only legs never do. The ban on
+    /// stopping a process by name, pattern, or port is separate and rides in every variant.
     /// </para>
     /// </summary>
     public static void AppendForegroundGatesRule(
@@ -1337,6 +1338,12 @@ public static class WorkPromptBuilder
             prompt.AppendLine();
             AppendFragment(prompt, file, "helper-process-exception");
         }
+
+        // The ban on stopping a process by name, pattern, or port goes to every variant, the
+        // read-only legs included: a reviewer that finds a stale or hung process while checking
+        // something is exactly the session that could repeat the pkill incident this rule exists
+        // for, whether or not it was ever allowed to start a server of its own.
+        AppendFragment(prompt, file, "never-stop-by-name");
 
         AppendNoHostLoadForFlakeReproductionRule(prompt, "  ", sessionRunsGates);
     }
