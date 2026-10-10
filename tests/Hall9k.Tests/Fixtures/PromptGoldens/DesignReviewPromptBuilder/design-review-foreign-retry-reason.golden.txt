@@ -343,6 +343,11 @@ outright, with no re-prompt: the owner retries the task to dispatch a fresh revi
   `BASH_DEFAULT_TIMEOUT_MS`, 20 minutes today — request an explicit
   `timeout` up to `BASH_MAX_TIMEOUT_MS`, 40 minutes today, in
   case anything you do run needs it.
+  Never stop any process by name, pattern, or port: no `pkill`, `killall`,
+  `pgrep ... | xargs kill`, `kill $(lsof -t ...)`, `taskkill /IM`, or `Stop-Process -Name`,
+  because those reach processes this session never started, the operator's own among them (a
+  `pkill` once sent SIGTERM to about 64 of them). And never send a kill or cleanup command's
+  stderr to /dev/null: a refusal or a wrong match is exactly what you need to see.
   Never generate host load to reproduce or prove a flaky or timing-dependent test: no
   parallel copies of a suite or test, no stress or spin loops, no deliberate memory
   pressure, no CPU pinning — nothing whose purpose is to make a flake appear or to prove

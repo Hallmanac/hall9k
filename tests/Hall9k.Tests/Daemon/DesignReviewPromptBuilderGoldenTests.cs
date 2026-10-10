@@ -78,10 +78,10 @@ public sealed class DesignReviewPromptBuilderGoldenTests : IDisposable
     [Fact]
     public void A_static_design_review_matches_its_golden()
     {
-        // A review that never starts the product is not handed the helper-process exception.
+        // A review that never starts the product is not handed the helper-process exception, only the ban.
         string prompt = DesignReviewPromptBuilder.Build(Request(
             new ReviewDriveDecision(ReviewPersona.Designer, SettingOn: false, ProjectHasRunSkill: true)));
-        HelperProcessCarveOut.AssertAbsent(prompt, "the static design review");
+        HelperProcessCarveOut.AssertBanOnly(prompt, "the static design review");
         AssertMatchesGolden("design-review-static", prompt);
     }
 

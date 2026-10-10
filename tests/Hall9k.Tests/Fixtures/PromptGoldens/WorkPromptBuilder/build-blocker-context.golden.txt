@@ -272,11 +272,12 @@ What exists now: the middleware pipeline registers a rate limiter by default.
   trailing `&`, no `setsid`, and no `disown`, and stop it before your final message with
   `TaskStop`, by the id `run_in_background` returned. If `TaskStop` is not in your tool list yet,
   load it through `ToolSearch` first (`select:TaskStop`). That is the one supported way to start
-  and stop a helper process. Never stop any process by name, pattern, or port: no `pkill`,
-  `killall`, `pgrep ... | xargs kill`, `kill $(lsof -t ...)`, `taskkill /IM`, or
-  `Stop-Process -Name`, because those reach processes this session never started, the operator's
-  own among them (a `pkill` once sent SIGTERM to about 64 of them). And never send a kill or
-  cleanup command's stderr to /dev/null: a refusal or a wrong match is exactly what you need to see.
+  and stop a helper process.
+  Never stop any process by name, pattern, or port: no `pkill`, `killall`,
+  `pgrep ... | xargs kill`, `kill $(lsof -t ...)`, `taskkill /IM`, or `Stop-Process -Name`,
+  because those reach processes this session never started, the operator's own among them (a
+  `pkill` once sent SIGTERM to about 64 of them). And never send a kill or cleanup command's
+  stderr to /dev/null: a refusal or a wrong match is exactly what you need to see.
   Never generate host load to reproduce or prove a flaky or timing-dependent test: no
   parallel copies of a suite or test, no stress or spin loops, no deliberate memory
   pressure, no CPU pinning — nothing whose purpose is to make a flake appear or to prove

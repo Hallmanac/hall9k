@@ -4230,7 +4230,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
             $"the {leg} leg's prompt must name the actual foreground ceiling so the session knows the full suite fits");
         if (leg is "verify" or "commit recovery")
         {
-            HelperProcessCarveOut.AssertAbsent(prompt, $"the {leg} leg is read-only and starts no server");
+            HelperProcessCarveOut.AssertBanOnly(prompt, $"the {leg} leg is read-only and starts no server");
         }
         else
         {
