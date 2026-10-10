@@ -389,6 +389,16 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
         AssertMatchesGolden("append-foreground-gates-rule-session-does-not-run-gates", PromptLineEndings.Finish(prompt));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AppendForegroundGatesRule_states_the_helper_process_carve_out_in_both_variants(bool sessionRunsGates)
+    {
+        StringBuilder prompt = new();
+        WorkPromptBuilder.AppendForegroundGatesRule(prompt, TimeSpan.FromMinutes(10), sessionRunsGates);
+        HelperProcessCarveOut.AssertStated(prompt.ToString(), $"sessionRunsGates is {sessionRunsGates}");
+    }
+
     [Fact]
     public void AppendNoHostLoadForFlakeReproductionRule_session_runs_gates_matches_its_golden()
     {

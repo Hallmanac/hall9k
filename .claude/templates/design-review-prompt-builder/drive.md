@@ -21,14 +21,16 @@ How to run it here without stranding anything:
 - **An ephemeral port, every time.** Another session may be running this same project on this
   same machine right now. Bind port 0 where the stack allows it, or pick a high port and check it
   is free first; never take the project's own default port. Report the port you actually used.
-- **Start it detached from your own turn, not with the harness's background tools.** Launch it
-  the way a person would from a shell — a detached process, its output redirected to a file under
-  this run's own directory — and then poll for readiness with ordinary foreground commands. The
-  harness's `run_in_background`, `Monitor` and `ScheduleWakeup` are a different thing and are
-  never the answer: your process is killed the moment your final message ends, so nothing they
-  schedule ever fires.
-- **Tear it down before you finish.** Kill the process tree you started, and say in your report
-  that you did. A dev server left listening outlives this session and collides with the next one.
+- **Start it as a helper process, the supported way.** Start the plain server command with
+  Bash `run_in_background` and stop it with `TaskStop`, by the id `run_in_background` returned,
+  exactly as the foreground-gates rule in this prompt says: no `nohup`, no subshell, no trailing `&`, no
+  `setsid`, no `disown`. Send its output to a file under this run's own directory, and poll for
+  readiness with ordinary foreground commands. Never use `Monitor` or `ScheduleWakeup`: your
+  process is killed the moment your final message ends, so nothing they schedule ever fires.
+- **Tear it down before you finish.** Stop it with `TaskStop` by id, and say in your report that
+  you did. Never stop it by name, pattern, or port, and never kill a process tree by hand: a
+  dev server left listening outlives this session and collides with the next one, and a kill by
+  pattern reaches processes that are not yours.
 - **If it will not come up, say so and carry on.** A product that would not start is a fact worth
   reporting, in its own words, with what you tried. It is not a reason to abandon the review: read
   the change statically instead and mark your findings accordingly.
