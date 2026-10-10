@@ -29,6 +29,15 @@ public static partial class HelperProcessCarveOut
         flat.Should().Contain("never send a kill or cleanup command's stderr to /dev/null", because);
     }
 
+    /// <summary>Asserts a read-only leg is not handed the exception to start a server.</summary>
+    public static void AssertAbsent(string prompt, string because)
+    {
+        string flat = Whitespace().Replace(prompt, " ");
+
+        flat.Should().NotContain("One exception, for a helper process", because);
+        flat.Should().NotContain("start it with Bash `run_in_background`", because);
+    }
+
     [GeneratedRegex(@"\s+")]
     private static partial Regex Whitespace();
 }

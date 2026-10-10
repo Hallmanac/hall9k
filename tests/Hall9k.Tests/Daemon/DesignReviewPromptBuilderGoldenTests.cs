@@ -43,22 +43,16 @@ public sealed class DesignReviewPromptBuilderGoldenTests : IDisposable
     }
 
     [Fact]
-    public void A_driven_design_review_matches_its_golden() =>
-        AssertMatchesGolden("design-review-driven", DesignReviewPromptBuilder.Build(Request(
+    public void A_driven_design_review_matches_its_golden()
+    {
+        // The driven review is told to start the product and stop it, so it is handed the one
+        // supported route for both.
+        string prompt = DesignReviewPromptBuilder.Build(Request(
             new ReviewDriveDecision(ReviewPersona.Designer, SettingOn: true, ProjectHasRunSkill: true),
-            "# Running hall9k locally\n\n1. `docker compose up -d`\n2. `dotnet run --project src/Web`\n")));
-
-    /// <summary>
-    /// The driven review is told to start the product and stop it, so it must be handed the one
-    /// supported route for both, and the ban on stopping anything by name, pattern, or port.
-    /// </summary>
-    [Fact]
-    public void A_driven_design_review_states_the_helper_process_route() =>
-        HelperProcessCarveOut.AssertStated(
-            DesignReviewPromptBuilder.Build(Request(
-                new ReviewDriveDecision(ReviewPersona.Designer, SettingOn: true, ProjectHasRunSkill: true),
-                "# Running hall9k locally\n\n1. `dotnet run --project src/Web`\n")),
-            "the driven design review");
+            "# Running hall9k locally\n\n1. `docker compose up -d`\n2. `dotnet run --project src/Web`\n"));
+        HelperProcessCarveOut.AssertStated(prompt, "the driven design review");
+        AssertMatchesGolden("design-review-driven", prompt);
+    }
 
     /// <summary>
     /// A retry reason another owner's node replicated reaches the design session as a fenced,
@@ -82,9 +76,14 @@ public sealed class DesignReviewPromptBuilderGoldenTests : IDisposable
     }
 
     [Fact]
-    public void A_static_design_review_matches_its_golden() =>
-        AssertMatchesGolden("design-review-static", DesignReviewPromptBuilder.Build(Request(
-            new ReviewDriveDecision(ReviewPersona.Designer, SettingOn: false, ProjectHasRunSkill: true))));
+    public void A_static_design_review_matches_its_golden()
+    {
+        // A review that never starts the product is not handed the helper-process exception.
+        string prompt = DesignReviewPromptBuilder.Build(Request(
+            new ReviewDriveDecision(ReviewPersona.Designer, SettingOn: false, ProjectHasRunSkill: true)));
+        HelperProcessCarveOut.AssertAbsent(prompt, "the static design review");
+        AssertMatchesGolden("design-review-static", prompt);
+    }
 
     /// <summary>
     /// The standing run-skill drift question (idea b9b09779, piece 1) reaches this review too.

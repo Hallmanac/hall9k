@@ -365,12 +365,12 @@ a missing verdict — or a needs-fixes verdict naming nothing — fails this run
 outright, with no re-prompt: the owner retries the task to dispatch a fresh review.
 
   Never start anything with the harness's own background tools — Bash's
-  `run_in_background`, `Monitor`, `ScheduleWakeup`, or any other scheduled check-in (the one
-  exception, for a helper process, is below) — and never end your turn with one of those
-  still pending: this session's process is killed the instant your final message ends, so a
-  background task left running is left waiting on a notification that can never arrive, and
-  the next thing to touch this worktree — another gate, or another session — starts while it
-  is still writing to it. A command run with no explicit `timeout` only gets
+  `run_in_background`, `Monitor`, `ScheduleWakeup`, or any other scheduled check-in —
+  and never end your turn with one of those still pending: this session's process is
+  killed the instant your final message ends, so a background task left running is
+  left waiting on a notification that can never arrive, and the next thing to touch
+  this worktree — another gate, or another session — starts while it is still
+  writing to it. A command run with no explicit `timeout` only gets
   `BASH_DEFAULT_TIMEOUT_MS`, 20 minutes today — request an explicit
   `timeout` up to `BASH_MAX_TIMEOUT_MS`, 40 minutes today, in
   case anything you do run needs it.
