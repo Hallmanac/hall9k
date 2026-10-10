@@ -1299,9 +1299,14 @@ public static class WorkPromptBuilder
     /// read-only reviewer to build and test in a worktree a sibling pass was reading, and told a
     /// commit-only recovery session to run a suite it had just been told not to wait on).
     /// </para>
+    /// <para>
+    /// <paramref name="allowsHelperProcess"/> adds the helper-process exception to the variant that
+    /// does not run gates, for the one such leg that stands the product up (a driving design
+    /// review). A session that runs gates always carries it; the read-only legs never do.
+    /// </para>
     /// </summary>
     public static void AppendForegroundGatesRule(
-        StringBuilder prompt, TimeSpan commandTimeout, bool sessionRunsGates = true)
+        StringBuilder prompt, TimeSpan commandTimeout, bool sessionRunsGates = true, bool allowsHelperProcess = false)
     {
         // defaultCeilingMinutes rounds UP (cycle 4, adversarial lens, this method's own prior
         // finding): ClaudeSettingsFile.Build sizes BASH_DEFAULT_TIMEOUT_MS straight from the
@@ -1321,6 +1326,17 @@ public static class WorkPromptBuilder
             file, sessionRunsGates ? "session-runs-gates" : "session-does-not-run-gates",
             ("DefaultCeilingMinutes", defaultCeilingMinutes.ToString(CultureInfo.InvariantCulture)),
             ("ForegroundCeilingMinutes", foregroundCeilingMinutes.ToString(CultureInfo.InvariantCulture)));
+
+        // The helper-process exception (the one supported route to start and stop a dev server)
+        // follows a session that runs gates, which is the one that builds and measures, and a
+        // session that does not only when it drives the product (allowsHelperProcess). The
+        // read-only legs never get it: they are forbidden from writing into a worktree a sibling
+        // pass is reading, and a dev server that builds as it starts would do exactly that.
+        if (sessionRunsGates || allowsHelperProcess)
+        {
+            prompt.AppendLine();
+            AppendFragment(prompt, file, "helper-process-exception");
+        }
 
         AppendNoHostLoadForFlakeReproductionRule(prompt, "  ", sessionRunsGates);
     }

@@ -80,11 +80,15 @@ public static class DesignReviewPromptBuilder
 
         prompt.AppendLine();
         // sessionRunsGates: false — this session never runs the project's verification gates.
-        // It may well start the product itself, which the "does not run gates" wording allows
-        // for in as many words ("in case anything you do run needs it"); what it must not do is
-        // reach for a harness background tool, which both variants forbid identically.
+        // A driving review does start the product, so it alone among the read-only legs is handed
+        // the helper-process exception (the one supported way to start and stop that server);
+        // a static review is not, and neither variant lets it reach for any other harness
+        // background tool.
         WorkPromptBuilder.AppendForegroundGatesRule(
-            prompt, request.CommandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout, sessionRunsGates: false);
+            prompt,
+            request.CommandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout,
+            sessionRunsGates: false,
+            allowsHelperProcess: drive.Drives);
         if (drive.Drives)
         {
             // That rule's own no-host-load half ends with "this session runs nothing itself",

@@ -75,27 +75,15 @@ stating what changed since — not restating the objection it already answered.
   build or fix session from backgrounding a gate applies here too, for anything else
   you run:
   Never start anything with the harness's own background tools — Bash's
-  `run_in_background`, `Monitor`, `ScheduleWakeup`, or any other scheduled check-in (the one
-  exception, for a helper process, is below) — and never end your turn with one of those
-  still pending: this session's process is killed the instant your final message ends, so a
-  background task left running is left waiting on a notification that can never arrive, and
-  the next thing to touch this worktree — another gate, or another session — starts while it
-  is still writing to it. A command run with no explicit `timeout` only gets
+  `run_in_background`, `Monitor`, `ScheduleWakeup`, or any other scheduled check-in —
+  and never end your turn with one of those still pending: this session's process is
+  killed the instant your final message ends, so a background task left running is
+  left waiting on a notification that can never arrive, and the next thing to touch
+  this worktree — another gate, or another session — starts while it is still
+  writing to it. A command run with no explicit `timeout` only gets
   `BASH_DEFAULT_TIMEOUT_MS`, 30 minutes today — request an explicit
   `timeout` up to `BASH_MAX_TIMEOUT_MS`, 60 minutes today, in
   case anything you do run needs it.
-
-  One exception, for a helper process this session itself needs, such as a dev server for a
-  measurement or a browser check (never a build or test gate): start it with Bash
-  `run_in_background` as the plain server command, with no `nohup`, no `( ... & )` subshell, no
-  trailing `&`, no `setsid`, and no `disown`, and stop it before your final message with
-  `TaskStop`, by the id `run_in_background` returned. If `TaskStop` is not in your tool list yet,
-  load it through `ToolSearch` first (`select:TaskStop`). That is the one supported way to start
-  and stop a helper process. Never stop any process by name, pattern, or port: no `pkill`,
-  `killall`, `pgrep ... | xargs kill`, `kill $(lsof -t ...)`, `taskkill /IM`, or
-  `Stop-Process -Name`, because those reach processes this session never started, the operator's
-  own among them (a `pkill` once sent SIGTERM to about 64 of them). And never send a kill or
-  cleanup command's stderr to /dev/null: a refusal or a wrong match is exactly what you need to see.
   Never generate host load to reproduce or prove a flaky or timing-dependent test: no
   parallel copies of a suite or test, no stress or spin loops, no deliberate memory
   pressure, no CPU pinning — nothing whose purpose is to make a flake appear or to prove

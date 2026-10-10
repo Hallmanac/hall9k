@@ -378,6 +378,7 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendForegroundGatesRule(prompt, TimeSpan.FromMinutes(10));
+        HelperProcessCarveOut.AssertStated(prompt.ToString(), "a session that runs gates");
         AssertMatchesGolden("append-foreground-gates-rule-session-runs-gates", PromptLineEndings.Finish(prompt));
     }
 
@@ -386,17 +387,8 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendForegroundGatesRule(prompt, TimeSpan.FromMinutes(10), sessionRunsGates: false);
+        HelperProcessCarveOut.AssertAbsent(prompt.ToString(), "a read-only session");
         AssertMatchesGolden("append-foreground-gates-rule-session-does-not-run-gates", PromptLineEndings.Finish(prompt));
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void AppendForegroundGatesRule_states_the_helper_process_carve_out_in_both_variants(bool sessionRunsGates)
-    {
-        StringBuilder prompt = new();
-        WorkPromptBuilder.AppendForegroundGatesRule(prompt, TimeSpan.FromMinutes(10), sessionRunsGates);
-        HelperProcessCarveOut.AssertStated(prompt.ToString(), $"sessionRunsGates is {sessionRunsGates}");
     }
 
     [Fact]

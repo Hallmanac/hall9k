@@ -4228,7 +4228,14 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("ScheduleWakeup");
         prompt.Should().Contain("BASH_MAX_TIMEOUT_MS",
             $"the {leg} leg's prompt must name the actual foreground ceiling so the session knows the full suite fits");
-        HelperProcessCarveOut.AssertStated(prompt, $"the {leg} leg");
+        if (leg is "verify" or "commit recovery")
+        {
+            HelperProcessCarveOut.AssertAbsent(prompt, $"the {leg} leg is read-only and starts no server");
+        }
+        else
+        {
+            HelperProcessCarveOut.AssertStated(prompt, $"the {leg} leg");
+        }
     }
 
     /// <summary>
