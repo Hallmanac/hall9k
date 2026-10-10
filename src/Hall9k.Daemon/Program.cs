@@ -190,6 +190,7 @@ builder.Services.AddSingleton<ILedgerCommitReader, GitLedgerCommitReader>();
 builder.Services.AddSingleton(services => new TrackerClaimGate(
     services.GetRequiredService<ProcessRunner>(), services.GetRequiredService<JiraRequester>()));
 builder.Services.AddSingleton<DispatchEngine>();
+builder.Services.AddSingleton(SessionContainment.ForCurrentPlatform());
 builder.Services.AddSingleton<IExecutor, ClaudeExecutor>();
 builder.Services.AddSingleton<VerificationRunner>();
 // A factory rather than plain AddSingleton<ReviewEngine>(): its constructor takes TWO

@@ -430,7 +430,7 @@ public sealed class ModelPolicyTests
     {
         using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
         ClaudeExecutor executor = new(
-            NullLogger<ClaudeExecutor>.Instance, new FakeProcessManager(), Options.Create(new DaemonOptions()));
+            NullLogger<ClaudeExecutor>.Instance, new FakeProcessManager(), Options.Create(new DaemonOptions()), SessionContainment.Off);
         AgentSpawnRequest request = new(
             DomainId.New(), DomainId.New(), "/tmp/worktree", "/tmp/run", "prompt", ExecutorMode.Subscription,
             AgentModel.Unknown, AgentEffort.Unknown, SkipPermissions: false)

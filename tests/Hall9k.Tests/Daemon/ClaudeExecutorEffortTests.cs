@@ -91,7 +91,7 @@ public sealed class ClaudeExecutorEffortTests : IDisposable
         DaemonOptions options, AgentEffort? requestEffort = null)
     {
         FakeProcessManager processes = new();
-        ClaudeExecutor executor = new(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(options));
+        ClaudeExecutor executor = new(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(options), SessionContainment.Off);
         AgentSpawnRequest request = new(
             DomainId.New(), DomainId.New(), Path.GetTempPath(), runDirectory, "prompt",
             ExecutorMode.Subscription, AgentModel.Sonnet, requestEffort ?? options.ResolveEffort(AgentRole.Build, null, null),

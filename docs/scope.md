@@ -1306,6 +1306,20 @@ a run with no task, its own model role (`h9k config set --model-courier`, `claud
 default — cheap by construction, unlike every other role's blank shipped opinion), counted in
 `h9k status`'s spend line the same as any other role's.
 
+### The macOS signal fence
+
+On macOS, every agent session the daemon spawns through the executor runs under `/usr/bin/sandbox-exec`
+with a one-rule seatbelt profile that lets the session signal only processes it started, detached and
+re-grouped ones included. It exists because a dispatched session's own cleanup command (`pkill -f "vite"
+-P 1`, which BSD pkill reads as three patterns) once sent SIGTERM to about sixty of the operator's own
+processes, and it is a stated stopgap until Claude Code's own sandbox can run a headless browser. Before
+each contained spawn the executor confirms `sandbox-exec` exists and applies the profile; if either
+fails, no agent starts and the run's launch failure names containment. `h9k config set
+--session-containment false` turns it off at the daemon's next start. It does not cover Docker,
+launchctl, Apple Events, file writes, sessions started by `h9k task start` or `h9k task delegate`, or
+Linux and Windows, and it blocks anything that applies its own seatbelt sandbox and every setuid binary
+except `/bin/ps`. The profile constant's doc comment (`SessionContainment.Profile`) is the full boundary.
+
 ### The help tree
 
 Every command carries a domain-language description and at least one worked example, enforced by
