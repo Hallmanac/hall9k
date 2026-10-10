@@ -72,6 +72,16 @@ public sealed class DaemonOptions
     /// <summary>The window <see cref="SpendBudgetTokens"/> resets on — see <see cref="OperatingSettings.SpendPeriod"/>.</summary>
     public string SpendPeriod { get; internal set; } = OperatingSettings.DefaultSpendPeriod;
 
+    /// <summary>
+    /// Whether <see cref="Execution.ClaudeExecutor"/> runs every agent session under the macOS
+    /// signal-fence profile (<see cref="Execution.SessionContainment.Profile"/>); inert on Linux and
+    /// Windows. On by default. Resolved through <see cref="OperatingSettingsResolver"/> rather than
+    /// plain binding because a malformed value must fall back to on, never bind to the
+    /// <see langword="false"/> that <c>ConfigurationBinder</c> would give it, and it takes effect at
+    /// the daemon's next start like every other operating setting.
+    /// </summary>
+    public bool SessionContainment { get; internal set; } = OperatingSettings.DefaultSessionContainment;
+
     /// <summary>Fallback sweep interval; the doorbell usually wakes the loop sooner.</summary>
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(5);
 

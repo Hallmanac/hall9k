@@ -22,10 +22,11 @@ internal static class DaemonOptionsBinding
 {
     /// <summary>
     /// Every setting <see cref="Hall9k.Domain.Infrastructure.Persistence.OperatingSettingsResolver"/>
-    /// resolves on its own precedence walk, so a generic <c>Bind()</c> must never see them: four —
+    /// resolves on its own precedence walk, so a generic <c>Bind()</c> must never see them: five —
     /// <see cref="DaemonOptions.MaxConcurrentTaskRuns"/>, <see cref="DaemonOptions.SessionCapPerRun"/>,
-    /// <see cref="DaemonOptions.SpendBudgetTokens"/>, <see cref="DaemonOptions.SpendPeriod"/> — are
-    /// then set by <c>PostConfigure</c> from that resolver's report, and the fifth
+    /// <see cref="DaemonOptions.SpendBudgetTokens"/>, <see cref="DaemonOptions.SpendPeriod"/>,
+    /// <see cref="DaemonOptions.SessionContainment"/> — are
+    /// then set by <c>PostConfigure</c> from that resolver's report, and the sixth
     /// (<see cref="DaemonOptions.MaxConcurrentAgentSessions"/>) is retired and read by nothing at
     /// all, so it is simply excluded rather than set again.
     /// </summary>
@@ -36,6 +37,7 @@ internal static class DaemonOptionsBinding
         nameof(DaemonOptions.MaxConcurrentAgentSessions),
         nameof(DaemonOptions.SpendBudgetTokens),
         nameof(DaemonOptions.SpendPeriod),
+        nameof(DaemonOptions.SessionContainment),
     ];
 
     /// <summary>
@@ -100,6 +102,11 @@ internal static class DaemonOptionsBinding
         AddIfIgnored(
             section, nameof(DaemonOptions.SpendPeriod), "spend-period",
             "--spend-period", report.SpendPeriod.Value, report.UnusableEnvironmentVariables,
+            report.ConfigFileProblem, messages);
+
+        AddIfIgnored(
+            section, nameof(DaemonOptions.SessionContainment), "session-containment",
+            "--session-containment", report.SessionContainment.Value, report.UnusableEnvironmentVariables,
             report.ConfigFileProblem, messages);
         return messages;
     }
@@ -198,6 +205,36 @@ internal static class DaemonOptionsBinding
             + $"resolved only from the {OperatingSettingsResolver.EnvironmentPrefix}{key} environment variable and "
             + $"the platform config file (Decisions Log #120). Set it through one of those instead: "
             + $"h9k config set {flag} <n>, or export {OperatingSettingsResolver.EnvironmentPrefix}{key}=<n>.");
+    }
+
+    /// <summary>
+    /// <see cref="AddIfIgnored(IConfigurationSection, string, string, string, int, List{string})"/>'s
+    /// own check, widened for <see cref="DaemonOptions.SessionContainment"/>: a boolean, so a raw value
+    /// that does not parse as one is still named, since the resolver would have fallen back past it.
+    /// </summary>
+    private static void AddIfIgnored(
+        IConfigurationSection section, string key, string flagLabel, string flag, bool effectiveValue,
+        IReadOnlyList<string> unusableEnvironmentVariables, ConfigFileProblem? configFileProblem,
+        List<string> messages)
+    {
+        string? raw = section[key];
+        if (raw is null || (bool.TryParse(raw.Trim(), out bool rawValue) && rawValue == effectiveValue))
+        {
+            return;
+        }
+
+        if (AlreadyExplainedAsUnusable(key, flagLabel, unusableEnvironmentVariables, configFileProblem))
+        {
+            return;
+        }
+
+        messages.Add(
+            $"{section.Path}:{key} resolves to \"{raw}\" through appsettings.json, a command-line argument, or "
+            + "another configuration source the daemon's operating-settings resolver does not read, so the daemon "
+            + $"runs with containment {(effectiveValue ? "on" : "off")} instead, since {flagLabel} is "
+            + $"resolved only from the {OperatingSettingsResolver.EnvironmentPrefix}{key} environment variable and "
+            + "the platform config file. Set it through one of those instead: "
+            + $"h9k config set {flag} <true|false>, or export {OperatingSettingsResolver.EnvironmentPrefix}{key}=<true|false>.");
     }
 
     /// <summary>

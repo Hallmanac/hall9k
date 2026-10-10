@@ -44,7 +44,8 @@ public sealed class OperatingSettingsRenderingTests
                 effort, effortOrigin, effortOrigin == SettingOrigin.PlatformConfigFile ? Hall9kDatabase.ConfigFile : null),
             new ResolvedSetting<int>(
                 mintHold, mintHoldOrigin, mintHoldOrigin == SettingOrigin.PlatformConfigFile ? Hall9kDatabase.ConfigFile : null),
-            effortByRole ?? []);
+            effortByRole ?? [],
+            new ResolvedSetting<bool>(OperatingSettings.DefaultSessionContainment, SettingOrigin.Default, null));
 
     [Fact]
     public void The_mint_hold_prints_in_whole_seconds_with_its_origin()
@@ -73,6 +74,16 @@ public sealed class OperatingSettingsRenderingTests
 
         OperatingSettingsRendering.Rows(report).Single(r => r.Label == "auto-pr-review-mint-hold").Value
             .Should().StartWith("0s, this node never defers");
+    }
+
+    [Fact]
+    public void The_session_containment_row_says_what_it_does_and_where_it_does_nothing()
+    {
+        OperatingSettingsReport report = ReportWithOneRole(nameof(RoleModelSettings.Build), null);
+
+        OperatingSettingsRendering.Rows(report).Single(r => r.Label == "session-containment").Value
+            .Should().Be(
+                "on, macOS agent sessions can signal only processes they started; inert on Linux and Windows (default)");
     }
 
     [Fact]

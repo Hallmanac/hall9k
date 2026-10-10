@@ -60,6 +60,7 @@ public static class OperatingSettingsRendering
             ("review-stage-composition",
                 $"{report.ReviewStageComposition.Value} ({report.ReviewStageComposition.DescribeOrigin()})"),
             ("auto-pr-review-mint-hold", DescribeAutoPrReviewMintHold(report)),
+            ("session-containment", DescribeSessionContainment(report)),
         ];
 
         rows.AddRange(report.ModelByRole.Select(role => (
@@ -87,6 +88,15 @@ public static class OperatingSettingsRendering
         report.AutoPrReviewMintHold.Value <= 0
             ? $"0s, this node never defers a review request to a fleet peer ({report.AutoPrReviewMintHold.DescribeOrigin()})"
             : $"{report.AutoPrReviewMintHold.Value}s ({report.AutoPrReviewMintHold.DescribeOrigin()})";
+
+    /// <summary>
+    /// The session-containment row's value: says what the setting does and where it does nothing, since
+    /// "true" alone does not tell a Linux or Windows operator it has no effect there.
+    /// </summary>
+    private static string DescribeSessionContainment(OperatingSettingsReport report) =>
+        report.SessionContainment.Value
+            ? $"on, macOS agent sessions can signal only processes they started; inert on Linux and Windows ({report.SessionContainment.DescribeOrigin()})"
+            : $"off, agent sessions run with no signal fence ({report.SessionContainment.DescribeOrigin()})";
 
     /// <summary>
     /// The effort row's value: "not set" reads as no <c>effortLevel</c> in the settings file, which

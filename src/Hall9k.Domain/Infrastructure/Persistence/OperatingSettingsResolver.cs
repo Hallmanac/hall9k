@@ -121,11 +121,42 @@ public static class OperatingSettingsResolver
             "auto-pr-review-mint-hold",
             unparseableValueFallsBackRatherThanCrashing: false);
 
+        ResolvedSetting<bool> sessionContainment = ResolveSessionContainment(
+            configured.SessionContainment, unusableEnvironmentVariables);
+
         return new OperatingSettingsReport(
             concurrency, read.MaxConcurrentAgentSessionsIsFabricatedZero, maxConcurrentTaskRuns, convertedFromLegacy,
             shadowsConfigFileValue, sessionCapPerRun, defaultModel, roles, read.Problem, unusableEnvironmentVariables,
             maxComplianceReviewCycles, maxAdversarialReviewCycles, maxFinalFullPassRounds, lifetimeReviewCycleBudget,
-            spendBudgetTokens, spendPeriod, reviewStageComposition, effort, autoPrReviewMintHold, effortByRole);
+            spendBudgetTokens, spendPeriod, reviewStageComposition, effort, autoPrReviewMintHold, effortByRole,
+            sessionContainment);
+    }
+
+    /// <summary>
+    /// Whether macOS agent sessions run under the signal-fence profile. A boolean, so the only
+    /// recognized words are <c>true</c> and <c>false</c>; anything else is treated as absent at the
+    /// level that supplied it and falls through to the next, ending at on. It can therefore never
+    /// resolve to off by accident, which is why this key is resolver-owned rather than bound by
+    /// <c>ConfigurationBinder</c>.
+    /// </summary>
+    private static ResolvedSetting<bool> ResolveSessionContainment(bool? configured, List<string> unusable)
+    {
+        string environmentVariable = $"{EnvironmentPrefix}SessionContainment";
+        if (GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
+        {
+            if (bool.TryParse(fromEnvironment.Trim(), out bool parsed))
+            {
+                return new ResolvedSetting<bool>(parsed, SettingOrigin.EnvironmentVariable, environmentVariable);
+            }
+
+            unusable.Add(
+                $"{environmentVariable} is set to \"{fromEnvironment}\", which is neither \"true\" nor \"false\", "
+                + "so it is treated as absent, and session-containment falls back to the config file or default (on) instead.");
+        }
+
+        return configured is { } value
+            ? new ResolvedSetting<bool>(value, SettingOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile)
+            : new ResolvedSetting<bool>(OperatingSettings.DefaultSessionContainment, SettingOrigin.Default, null);
     }
 
     /// <summary>

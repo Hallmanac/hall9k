@@ -973,6 +973,7 @@ also appear elsewhere on this page stays where it is.
 | `h9k config set --message-poll-idle-min <seconds>` | Sets the fast end of the cadence for a node with nothing to send, read, or hold, 30 seconds by default. |
 | `h9k config set --message-poll-idle-max <seconds>` | Sets the slow end of that idle cadence, 45 seconds by default, which may not fall below the floor. |
 | `h9k config set --auto-pr-review-mint-hold <seconds>` | Sets how long this node holds a GitHub review request that a lower-ranked node of the same owner is expected to mint the task for, 300 seconds by default. `0` means this node never defers. |
+| `h9k config set --session-containment <true\|false>` | Turns the macOS signal fence around every daemon-dispatched agent session on or off, on by default. Read at the daemon's next start; inert on Linux and Windows. |
 | `h9k config set --invite-expiry-hours <hours>` | Sets how long a newly minted invite stays valid, 72 hours by default. |
 
 ### Recovery

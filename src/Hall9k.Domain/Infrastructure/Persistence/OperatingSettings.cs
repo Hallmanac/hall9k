@@ -306,6 +306,18 @@ public sealed class OperatingSettings
     public const string DefaultSpendPeriod = "week";
 
     /// <summary>
+    /// Whether every agent session the daemon spawns on macOS runs under the signal-fence seatbelt
+    /// profile (<c>Hall9k.Daemon.Execution.SessionContainment.Profile</c>, whose doc comment records
+    /// the boundary and the known incompatibilities). Inert on Linux and Windows. Null defers to
+    /// <see cref="DefaultSessionContainment"/>; false is the only way to turn it off, and it takes
+    /// effect at the daemon's next start like every other operating setting.
+    /// </summary>
+    public bool? SessionContainment { get; set; }
+
+    /// <summary>The shipped default for <see cref="SessionContainment"/>: contained.</summary>
+    public const bool DefaultSessionContainment = true;
+
+    /// <summary>
     /// This node's launch text, one <see cref="LaunchText"/> per agent CLI (task: an operator
     /// starts a lean node or project orchestrator window) — the exact command line
     /// <c>h9k orchestrator node</c> prints for the node window. Null or empty means nothing has

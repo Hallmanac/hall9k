@@ -147,7 +147,7 @@ catch (Exception exception) when (exception is not OperationCanceledException)
 }
 
 // DaemonOptionsBinding.ResolverOwnedKeys — MaxConcurrentTaskRuns, SessionCapPerRun,
-// MaxConcurrentAgentSessions, SpendBudgetTokens and SpendPeriod — are excluded from this generic
+// MaxConcurrentAgentSessions, SpendBudgetTokens, SpendPeriod and SessionContainment — are excluded from this generic
 // Bind() and resolved separately (DaemonOptionsBinding's own doc explains why an internal setter
 // alone does not keep ConfigurationBinder away from a key). The retired-key conversion (Decisions
 // Log #111) needs the same per-precedence-level walk h9k config show and h9k daemon status already
@@ -168,6 +168,7 @@ builder.Services.PostConfigure<DaemonOptions>(options =>
     options.SessionCapPerRun = concurrencyReport.SessionCapPerRun.Value;
     options.SpendBudgetTokens = concurrencyReport.SpendBudgetTokens.Value;
     options.SpendPeriod = concurrencyReport.SpendPeriod.Value;
+    options.SessionContainment = concurrencyReport.SessionContainment.Value;
 });
 
 // bindableDaemonSection above already has these keys stripped out, so this walks the

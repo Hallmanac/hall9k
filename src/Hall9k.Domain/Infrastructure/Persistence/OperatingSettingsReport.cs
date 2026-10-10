@@ -194,6 +194,11 @@ public sealed record ConfigFileReadResult(
 /// (<c>DaemonOptions.AutoPrReviewMintHoldSeconds</c>), resolved the environment-then-file-then-default
 /// way the review-cycle caps are. Zero means this node never defers.
 /// </param>
+/// <param name="SessionContainment">
+/// Whether the daemon runs each macOS agent session under the signal-fence profile
+/// (<see cref="OperatingSettings.SessionContainment"/>), resolved environment-then-file-then-default.
+/// An unusable value is treated as absent, so it can only ever fall back to on, never to off.
+/// </param>
 public sealed record OperatingSettingsReport(
     ResolvedSetting<int> MaxConcurrentAgentSessions,
     bool MaxConcurrentAgentSessionsIsFabricatedZero,
@@ -214,4 +219,5 @@ public sealed record OperatingSettingsReport(
     ResolvedSetting<string> ReviewStageComposition,
     ResolvedSetting<string?> Effort,
     ResolvedSetting<int> AutoPrReviewMintHold,
-    IReadOnlyList<RoleEffortSetting> EffortByRole);
+    IReadOnlyList<RoleEffortSetting> EffortByRole,
+    ResolvedSetting<bool> SessionContainment);
