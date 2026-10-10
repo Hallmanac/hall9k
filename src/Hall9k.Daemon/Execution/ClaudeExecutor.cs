@@ -18,7 +18,8 @@ namespace Hall9k.Daemon.Execution;
 /// default changed on a Tuesday is not a platform decision.
 /// </summary>
 public sealed class ClaudeExecutor(
-    ILogger<ClaudeExecutor> logger, IProcessManager processManager, IOptions<DaemonOptions> options) : IExecutor
+    ILogger<ClaudeExecutor> logger, IProcessManager processManager, IOptions<DaemonOptions> options,
+    SessionContainment containment) : IExecutor
 {
     public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
     {
@@ -70,7 +71,14 @@ public sealed class ClaudeExecutor(
                 options.Value.VerifyGateTimeout, guardReviewThreadReplies: true, effort: request.Effort);
         await File.WriteAllTextAsync(SettingsFile(request, runDirectory), settingsContent, cancellationToken);
 
-        string command = $"\"{ClaudeBinary()}\" {string.Join(' ', Arguments(request, runDirectory))}";
+        // On macOS the claude command runs under the signal-fence seatbelt profile (task: a
+        // dispatched session's own cleanup command killed processes it never started). Applied
+        // here, at the one spawn site, so the process managers stay policy-free; a failed
+        // pre-spawn check throws before any process exists, and the caller records the message
+        // as the run's launch failure.
+        string command = containment.Apply(
+            $"\"{ClaudeBinary()}\" {string.Join(' ', Arguments(request, runDirectory))}",
+            options.Value.SessionContainment);
 
         // The child inherits the owner's environment (log #1) with the caller's additions on
         // top — the caller states what this particular session needs, and nothing else changes.

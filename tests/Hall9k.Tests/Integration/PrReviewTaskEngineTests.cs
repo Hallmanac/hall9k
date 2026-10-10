@@ -204,7 +204,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         VerificationRunner verification = new(
             store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
-            new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes);
+            new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions()), SessionContainment.Off), processes);
         LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
         RefusingInspector inspector = new();
         RefusingWorktreeManager closeoutWorktrees = new();
@@ -214,7 +214,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             RecordingProcessRunner.Succeeding(string.Empty).Runner, FakeJiraRequester.NeverInvoked(),
             Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
         ReviewEngine review = new(
-            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes, verification,
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions()), SessionContainment.Off), processes, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
             RecordingProcessRunner.NeverInvoked(),
@@ -223,22 +223,22 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
                 NullLogger<StackedParentWatch>.Instance),
             launchHold, inspector, closeout);
         PrReviewEngine prReview = new(
-            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions()), SessionContainment.Off), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), launchHold,
             Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
         SpikeEngine spike = new(
-            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions()), SessionContainment.Off), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), node,
             Options.Create(new DaemonOptions()), NullLogger<SpikeEngine>.Instance);
         PrimarySessionResumer primarySessionResumer = new(
-            new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())),
+            new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions()), SessionContainment.Off),
             Options.Create(new DaemonOptions()));
         RunSupervisor supervisor = new(
             store, node, processes, verification, review, prReview, spike,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance), primarySessionResumer,
             launchHold, Options.Create(new DaemonOptions()), NullLogger<RunSupervisor>.Instance);
         BlockerContextAssembler blockerContext = new(
-            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())),
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions()), SessionContainment.Off),
             processes, Options.Create(new DaemonOptions()), NullLogger<BlockerContextAssembler>.Instance);
         return new RunLauncher(
             store, new RefusingWorktreeManager(), new RefusingExecutor("The withdrawal/recall tests never dispatch a run — nothing here should ever spawn an agent."), supervisor, blockerContext, inspector,
@@ -3140,7 +3140,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         VerificationRunner verification = new(
             store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
-            new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes);
+            new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions()), SessionContainment.Off), processes);
         LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
         // Every run this factory's ReviewEngine drives is a fresh, non-follow-up run, so its own
         // already-merged guard (RunAggregate.IsFollowUp) always returns before ever reaching
@@ -3154,7 +3154,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             RecordingProcessRunner.NeverInvoked(), FakeJiraRequester.NeverInvoked(),
             Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
         ReviewEngine review = new(
-            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes, verification,
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions()), SessionContainment.Off), processes, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
             RecordingProcessRunner.NeverInvoked(),
@@ -3163,15 +3163,15 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
                 NullLogger<Hall9k.Daemon.Closeout.StackedParentWatch>.Instance),
             launchHold, reviewInspector, unusedCloseout);
         PrReviewEngine prReview = new(
-            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions()), SessionContainment.Off), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), launchHold,
             Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
         SpikeEngine spike = new(
-            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions()), SessionContainment.Off), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), node,
             Options.Create(new DaemonOptions()), NullLogger<SpikeEngine>.Instance);
         PrimarySessionResumer primarySessionResumer = new(
-            new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())),
+            new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions()), SessionContainment.Off),
             Options.Create(new DaemonOptions()));
         return new RunSupervisor(store, node, processes, verification, review, prReview, spike,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),

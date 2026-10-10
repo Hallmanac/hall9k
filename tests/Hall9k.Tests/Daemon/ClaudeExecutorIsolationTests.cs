@@ -98,7 +98,7 @@ public sealed class ClaudeExecutorIsolationTests
             FakeProcessManager processManager = new();
             ClaudeExecutor executor = new(
                 NullLogger<ClaudeExecutor>.Instance, processManager,
-                Options.Create(new DaemonOptions()));
+                Options.Create(new DaemonOptions()), SessionContainment.Off);
 
             Guid runId = DomainId.New();
             AgentSpawnRequest request = new(
@@ -136,7 +136,7 @@ public sealed class ClaudeExecutorIsolationTests
             FakeProcessManager processManager = new();
             ClaudeExecutor executor = new(
                 NullLogger<ClaudeExecutor>.Instance, processManager,
-                Options.Create(new DaemonOptions()));
+                Options.Create(new DaemonOptions()), SessionContainment.Off);
 
             Guid taskId = DomainId.New();
             AgentSpawnRequest request = new(
@@ -174,7 +174,7 @@ public sealed class ClaudeExecutorIsolationTests
             FakeProcessManager processManager = new();
             ClaudeExecutor executor = new(
                 NullLogger<ClaudeExecutor>.Instance, processManager,
-                Options.Create(new DaemonOptions()));
+                Options.Create(new DaemonOptions()), SessionContainment.Off);
 
             AgentSpawnRequest request = new(
                 DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
@@ -213,7 +213,7 @@ public sealed class ClaudeExecutorIsolationTests
             TimeSpan configuredTimeout = TimeSpan.FromMinutes(30);
             ClaudeExecutor executor = new(
                 NullLogger<ClaudeExecutor>.Instance, new FakeProcessManager(),
-                Options.Create(new DaemonOptions { VerifyGateTimeout = configuredTimeout }));
+                Options.Create(new DaemonOptions { VerifyGateTimeout = configuredTimeout }), SessionContainment.Off);
 
             AgentSpawnRequest request = new(
                 DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
@@ -254,7 +254,7 @@ public sealed class ClaudeExecutorIsolationTests
         {
             ClaudeExecutor executor = new(
                 NullLogger<ClaudeExecutor>.Instance, new FakeProcessManager(),
-                Options.Create(new DaemonOptions()));
+                Options.Create(new DaemonOptions()), SessionContainment.Off);
 
             AgentSpawnRequest request = new(
                 DomainId.New(), DomainId.New(), "/tmp/pr-review-checkout", runDirectory, "prompt",
@@ -291,7 +291,7 @@ public sealed class ClaudeExecutorIsolationTests
         {
             ClaudeExecutor executor = new(
                 NullLogger<ClaudeExecutor>.Instance, new FakeProcessManager(),
-                Options.Create(new DaemonOptions()));
+                Options.Create(new DaemonOptions()), SessionContainment.Off);
 
             AgentSpawnRequest request = new(
                 DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
@@ -327,7 +327,7 @@ public sealed class ClaudeExecutorIsolationTests
         {
             ClaudeExecutor executor = new(
                 NullLogger<ClaudeExecutor>.Instance, new FakeProcessManager(),
-                Options.Create(new DaemonOptions()));
+                Options.Create(new DaemonOptions()), SessionContainment.Off);
 
             AgentSpawnRequest request = new(
                 DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
