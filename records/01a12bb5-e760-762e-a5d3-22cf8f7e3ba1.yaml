@@ -1,0 +1,20 @@
+hall9k-task-record: 1
+task-id: 01a12bb5-e760-762e-a5d3-22cf8f7e3ba1
+project: hall9k
+type: content
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#722
+objective: The repository carries the approved CODE_OF_CONDUCT.md, and the README ends with the approved License section
+criteria:
+  - CODE_OF_CONDUCT.md at the repository root is byte-identical to /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/fd736bba-ready-the-public-hall9k-repo-for-outside-contributors-apache/workspace/drafts/CODE_OF_CONDUCT.md
+  - |-
+    README.md gains the ## License heading and its paragraph from part 2's fenced block in /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/fd736bba-ready-the-public-hall9k-repo-for-outside-contributors-apache/workspace/drafts/README-sections.md, word for word, as the README's last section; this task does not change the Contributing section, add the Security section, or change the opening paragraph
+  - Every relative link in the text this task adds resolves to a file in the repository
+  - No other README text changes
+dependencies: [01a12bb5-e49f-71b8-9a15-903859e13834]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/8f7e3ba1-the-repository-carries-the-app
+published: 2026-10-11 16:12:55Z
+context: Items E and F of idea fd736bba (walk notes /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/fd736bba-ready-the-public-hall9k-repo-for-outside-contributors-apache/workspace/notes.md). Approved by Brian word for word. The README's Contributing section (it links CONTRIBUTING.md), its Security section (it links SECURITY.md), and the opening-paragraph sentence land with 1039a836, not here. The License section waits on 59e13834 because it links LICENSE and describes the release archives that task builds. Idea aa256292 (a short README) touches the same file; whichever lands second rebases.
