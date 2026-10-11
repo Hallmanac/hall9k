@@ -181,6 +181,27 @@ public sealed class TaskAggregate
     /// </summary>
     public CloseLinkedIssueRule? CloseLinkedIssue { get; private set; }
     public int LeaseGeneration { get; private set; }
+
+    /// <summary>
+    /// How many consecutive launches have failed because git could not reach origin, as of the
+    /// latest <see cref="Events.TaskRequeued"/> with <see cref="RequeueReason.LaunchNetworkRetry"/>;
+    /// zero when none. Survives the claim that follows (the next failure needs it to count on), so
+    /// it is only meaningful together with <see cref="LaunchNetworkRetryLeaseGeneration"/>: see
+    /// <see cref="Handlers.TaskDecider.NextLaunchNetworkAttempt"/>.
+    /// </summary>
+    public int LaunchNetworkRetryAttempt { get; private set; }
+
+    /// <summary>The lease generation of the claim whose launch failed, so a later failure counts as consecutive only when it is the very next claim.</summary>
+    public int LaunchNetworkRetryLeaseGeneration { get; private set; }
+
+    /// <summary>
+    /// The earliest moment any node may claim this task, while it waits out a launch network
+    /// backoff; null otherwise. Cleared by the claim that ends the wait. The one thing
+    /// <see cref="Handlers.TaskDecider.Claim"/> and the dispatcher's queue read both decide from,
+    /// through <see cref="Handlers.TaskDecider.IsPastLaunchNetworkBackoff"/>.
+    /// </summary>
+    public DateTimeOffset? LaunchNetworkRetryNotBefore { get; private set; }
+
     public Guid? ClaimedByNodeId { get; private set; }
 
     /// <summary>
@@ -1670,6 +1691,9 @@ public sealed class TaskAggregate
         }
 
         LeaseGeneration = @event.LeaseGeneration;
+        // The wait is over once someone claims; the attempt count stays, because the launch this
+        // claim starts may fail the same way and has to count on from it.
+        LaunchNetworkRetryNotBefore = null;
         ClaimedByNodeId = @event.NodeId;
         CurrentRunId = @event.RunId;
         _runIds.Add(@event.RunId);
@@ -1983,6 +2007,13 @@ public sealed class TaskAggregate
         // next claim ran an unrequested full review instead of retrying the follow-up.
         PendingMentionFollowUpAfterPreflight = @event.Reason == RequeueReason.PrReviewPreflightSafeMentionFollowUp
             || @event.Reason == RequeueReason.PrReviewPreflightRetryMentionFollowUp;
+        // Every requeue states the launch network backoff afresh: a network requeue starts or
+        // extends it, any other reason ends the run of consecutive failures (the count starts again
+        // at one for the next network failure), and nothing else about the requeue differs.
+        bool isLaunchNetworkRetry = @event.Reason == RequeueReason.LaunchNetworkRetry;
+        LaunchNetworkRetryAttempt = isLaunchNetworkRetry ? @event.LaunchNetworkRetryAttempt ?? 0 : 0;
+        LaunchNetworkRetryLeaseGeneration = isLaunchNetworkRetry ? LeaseGeneration : 0;
+        LaunchNetworkRetryNotBefore = isLaunchNetworkRetry ? @event.LaunchNetworkRetryNotBefore : null;
         // The second exit door alongside Apply(TaskHandedBack) (design ruling R6, amended
         // 2026-09-05): a default h9k task release is the human's own explicit act of returning
         // the task to the machine, so it clears the flag exactly as handback does. Every other

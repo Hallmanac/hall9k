@@ -1539,9 +1539,65 @@ public static class TaskDecider
                 + $"claims it. h9k task assign {task.Id} --node clears the placement, or names a different node.");
         }
 
+        if (!IsPastLaunchNetworkBackoff(task.LaunchNetworkRetryNotBefore, claimedAt))
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is waiting out a launch network backoff until {task.LaunchNetworkRetryNotBefore:u}; "
+                + "git could not reach origin when its launch last checked out, so it is not claimed again before then.");
+        }
+
         return new TaskClaimed(
             task.Id, nodeId, ownerId, task.LeaseGeneration + 1, runId, claimedAt,
             OwnerRootFingerprint: ownerRootFingerprint, ResumesBranch: resumesBranch);
+    }
+
+    /// <summary>
+    /// Whether a task's launch network backoff (<see cref="TaskAggregate.LaunchNetworkRetryNotBefore"/>)
+    /// has passed at <paramref name="now"/>, the single predicate both the daemon's own queue read
+    /// (<c>DispatchEngine.ReadQueueAsync</c>, which skips the row) and <see cref="Claim"/> apply, the
+    /// same never-disagree discipline <see cref="IsPlacedOnThisNode"/> follows. Null (no backoff
+    /// recorded) admits every claim; a recorded moment admits the claim only once it has arrived.
+    /// </summary>
+    public static bool IsPastLaunchNetworkBackoff(DateTimeOffset? notBefore, DateTimeOffset now) =>
+        notBefore is null || notBefore <= now;
+
+    /// <summary>
+    /// Which consecutive launch network failure the one being recorded is: one more than the
+    /// previous failure's count when that failure was the claim immediately before the one now
+    /// failing, one otherwise. Keyed on the lease generation rather than cleared by every event
+    /// that returns a task to the queue, because every such return (a requeue for another reason, a
+    /// reopen, a retry, none of which need append anything of their own about this) is followed by
+    /// a claim before the next launch can fail, so a generation that is not exactly one past the
+    /// recorded one means the run of consecutive failures was broken. <paramref name="task"/> is
+    /// read at the failing claim, so its own <see cref="TaskAggregate.LeaseGeneration"/> is that
+    /// claim's.
+    /// </summary>
+    public static int NextLaunchNetworkAttempt(TaskAggregate task) =>
+        task.LaunchNetworkRetryAttempt > 0
+        && task.LaunchNetworkRetryLeaseGeneration + 1 == task.LeaseGeneration
+            ? task.LaunchNetworkRetryAttempt + 1
+            : 1;
+
+    /// <summary>The wait after the <paramref name="attempt"/>th consecutive launch network failure: <paramref name="initial"/>, doubling with each one.</summary>
+    public static TimeSpan LaunchNetworkBackoff(int attempt, TimeSpan initial) =>
+        initial * Math.Pow(2, Math.Max(attempt, 1) - 1);
+
+    /// <summary>
+    /// Gives a claim back because its launch's checkout could not reach origin, with the attempt,
+    /// the bound in force, the earliest next claim and git's error recorded on the event itself.
+    /// Otherwise exactly <see cref="Requeue"/>, which is what a lease-expiry requeue is.
+    /// </summary>
+    public static TaskRequeued RequeueAfterLaunchNetworkError(
+        TaskAggregate task, int attempt, int bound, TimeSpan backoff, string gitError, DateTimeOffset requeuedAt)
+    {
+        TaskRequeued requeued = Requeue(task, RequeueReason.LaunchNetworkRetry, requeuedAt);
+        return requeued with
+        {
+            LaunchNetworkRetryAttempt = attempt,
+            LaunchNetworkRetryBound = bound,
+            LaunchNetworkRetryNotBefore = requeuedAt + backoff,
+            LaunchNetworkRetryError = gitError,
+        };
     }
 
     /// <summary>
