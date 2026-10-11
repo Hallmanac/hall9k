@@ -548,7 +548,8 @@ On a public repository, a review request or mention must come from a declared ha
 before it mints and starts a task unattended — the bar is team membership, never GitHub collaborator
 status, and it is matched on the author's numeric GitHub id, never their login. A private or
 internal repository keeps the collaborator behaviour above by default: no membership check at all.
-`h9k project set <name> --review-requires-membership on|off|default` overrides that default in
+`h9k project set <name> --review-requires-membership on|off|default` (which also gates closeout's review
+feedback, see `h9k pr feedback`) overrides that default in
 either direction; `default` clears the override so the daemon decides fresh every sweep from a live
 `gh repo view --json isPrivate` read, which `h9k project show` also reports alongside its own read
 time. A non-member's (or a bot's) request still mints the `pr-review` task — it is published but
@@ -1001,6 +1002,18 @@ effect another person sees: on a park where a lap deliberately said nothing to a
 a disagreement with their changes-requested finding, or a decline or route of a thread they
 opened — it takes `--post-reply-as-written`, `--post-reply "<text>"`, or `--post-nothing`
 alongside your verdict, and that choice is the only way those words ever reach the reviewer.
+
+`h9k pr feedback <task> [<feedback>] [--go | --decline]` answers feedback from outside the project's
+roster (the trust chain's declared GitHub accounts, matched on numeric account id). On a public
+repository, or wherever `--review-requires-membership` is on, closeout dispatches no lap for a
+non-member's changes-requested review or unresolved review thread and no session reads it. It raises one
+needs-you item per review or thread on `h9k status` (the reviewer's login, the kind of feedback and
+its link, never its text), and a pre-approved task does not merge while one is undecided. `--go` has
+the next poll dispatch one fix lap carrying that feedback, even if the head has moved since;
+`--decline` dispatches nothing, releasing a review's merge hold while a declined thread stays
+unresolved and keeps holding it. Name the feedback by its link or thread id, or an unambiguous
+fragment; with no feedback named the command lists what the task holds. Only the task's owner can run
+it, and the go replicates as an owner-only act.
 
 `h9k pr resolve <task>` dispatches a follow-up lap onto a done task's existing pull request branch and
 resets the closeout monitor's automatic retry budget. The flag says which problem the lap is for:
