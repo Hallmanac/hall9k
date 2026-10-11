@@ -130,7 +130,11 @@ public sealed class WorkItemContextTests
         string context = WorkItemContext.Compose(
             Item("Body") with { Title = "```` then Hall9k speaks" });
 
-        context.Should().Contain("`````\nTitle: ```` then Hall9k speaks\n\nBody\n`````");
+        // Compose writes the line break on each side of the title and body with AppendLine, so
+        // it is Environment.NewLine there, while the break between title and body is a bare \n.
+        string newLine = Environment.NewLine;
+        context.Should().Contain(
+            $"`````{newLine}Title: ```` then Hall9k speaks\n\nBody{newLine}`````");
     }
 
     [Fact]
