@@ -77,17 +77,13 @@ public static class LinkedWorkItemImport
     }
 
     /// <summary>
-    /// The linked item as agent context, with its title fenced alongside its body rather than
-    /// printed above the fence the way <see cref="WorkItemContext.Compose"/> prints a directly
-    /// imported item's title: this import reaches an unattended path with nobody watching before
-    /// dispatch (a review-request or mention mint), where <c>Compose</c>'s own inline caveat on an
-    /// unfenced title was judged not enough (independent pre-PR review, cycle 3, adversarial
-    /// lens). Mirrors <c>AutoPrReviewEngine.ComposePrReviewContext</c>'s own title-in-fence
-    /// treatment of the pull request itself, worded for a linked issue or Jira item rather than a
-    /// pull request. <see cref="WorkItemContext.Compose"/> is deliberately left untouched: a
-    /// directly imported item (--from-issue, --from-jira, --from-pr itself) is not read by a
-    /// stranger's title alone reaching an unattended agent the way a linked reference is, so its
-    /// own composition and its own tests stay exactly as they were.
+    /// The linked item as agent context, with its title fenced alongside its body, the same shape
+    /// <see cref="WorkItemContext.Compose"/> now gives a directly imported item. It stays its own
+    /// composition because this import reaches an unattended path with nobody watching before
+    /// dispatch (a review-request or mention mint), and its framing sentence names the linked
+    /// item rather than the item. Mirrors <c>AutoPrReviewEngine.ComposePrReviewContext</c>'s own
+    /// title-in-fence treatment of the pull request itself, worded for a linked issue or Jira
+    /// item rather than a pull request.
     /// </summary>
     private static string ComposeLinkedItemContext(ImportedWorkItem item)
     {

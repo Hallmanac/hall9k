@@ -1849,21 +1849,12 @@ public sealed class AutoPrReviewEngine(
 
     /// <summary>
     /// The pr-review-specific sibling of <see cref="WorkItemContext.Compose"/>: the same
-    /// provenance header and quoted-source framing, except the title travels inside the fence
-    /// with the body instead of printing on its own unfenced line above it (independent pre-PR
-    /// review, cycle 1, conformance lens: WorkItemContext.cs:52). Every other import type reaches
-    /// <c>WorkItemContext.Compose</c> through a human who read and confirmed the title before
-    /// typing <c>h9k task add</c> — the caveat that method prints beside the title is aimed at
-    /// that human, not at the agent. An auto-minted pr-review task on a public repository skips
-    /// that human entirely: GitHub's own reviewer-assignment webhook mints it straight from the
-    /// pull request, so the title is exactly the attacker-authored text this platform's own
-    /// quoting discipline exists to fence, and an unfenced title line is this platform's widest
-    /// surface for it.
-    /// <para>
-    /// <see cref="WorkItemContext.Compose"/> itself, and its two title tests, are left unchanged:
-    /// this is a separate composition step for the two callers that mint a pr-review task, not a
-    /// change to the shared one every other import type still uses.
-    /// </para>
+    /// provenance header and quoted-source shape, with the title inside the fence beside the body
+    /// (independent pre-PR review, cycle 1, conformance lens). <c>Compose</c> fences the title
+    /// the same way now; this composition stays separate because an auto-minted pr-review task on
+    /// a public repository is minted straight from GitHub's own reviewer-assignment webhook with
+    /// no human reading the title first, and its framing sentence names the pull request rather
+    /// than an item.
     /// </summary>
     internal static string ComposePrReviewContext(ImportedWorkItem imported, string? additionalContext)
     {
