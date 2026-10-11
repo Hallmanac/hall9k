@@ -51,14 +51,15 @@ public sealed class GateDurationHistory(IReadOnlyList<GateDuration> samples)
     /// sample is excluded outright, whichever classification is asked for (independent pre-PR
     /// review, cycle 1, both lenses, medium): it recorded a gate that never ran at all, at a zero
     /// duration, and averaging that in against genuine passing runs of the same gate drags the
-    /// baseline down until a real run trips this comparison as a false anomaly.
+    /// baseline down until a real run trips this comparison as a false anomaly. A
+    /// <see cref="GateDuration.PathScopeSkipped"/> sample is excluded for the same reason.
     /// </summary>
     public GateDurationComparison? Compare(string gateName, TimeSpan observed, bool ranFullScope)
     {
         TimeSpan[] matching =
         [
             .. samples
-                .Where(gate => gate.Gate == gateName && gate.Passed && !gate.HostCoupledSkipped
+                .Where(gate => gate.Gate == gateName && gate.Passed && !gate.HostCoupledSkipped && !gate.PathScopeSkipped
                     && gate.RanFullScope == ranFullScope)
                 .Take(MaxSamples)
                 .Select(gate => gate.Duration),
@@ -185,7 +186,7 @@ public static class GateDurationHistoryQuery
 
         return runs
             .SelectMany(run => run.GateDurations ?? [])
-            .Where(gate => gate.Gate == gateName && gate.RanFullScope && !gate.HostCoupledSkipped)
+            .Where(gate => gate.Gate == gateName && gate.RanFullScope && !gate.HostCoupledSkipped && !gate.PathScopeSkipped)
             .Select(gate => (TimeSpan?)gate.Duration)
             .FirstOrDefault();
     }
