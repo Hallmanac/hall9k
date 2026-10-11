@@ -264,12 +264,13 @@ public sealed class WorkPromptBuilderTests
     public void Recompose_checklist_lists_no_command_when_the_gate_set_is_unaccepted_and_lists_it_once_accepted()
     {
         ProjectDetails unaccepted = SomeProject();
-        unaccepted.VerifyCommands.Add(new VerifyCommand("test", "dotnet test"));
+        unaccepted.VerifyCommands.Add(new VerifyCommand("test", "dotnet test", PathSet: ["src/"]));
 
         StringBuilder unacceptedPrompt = new();
         WorkPromptBuilder.AppendCheckpointCommitRules(unacceptedPrompt, unaccepted, _worktreePath);
 
         unacceptedPrompt.ToString().Should().NotContain("- `dotnet test`");
+        unacceptedPrompt.ToString().Should().NotContain("Scoped to the paths", "an unaccepted gate set prints no path set either");
         Flatten(unacceptedPrompt.ToString()).Should().Contain(
             "has changed and has not yet been accepted on this node, so its commands are not listed here");
 
@@ -349,19 +350,6 @@ public sealed class WorkPromptBuilderTests
         empty.ToString().Should().Be(none.ToString());
     }
 
-    [Fact]
-    public void An_unaccepted_gate_set_prints_no_path_set()
-    {
-        ProjectDetails project = SomeProject();
-        project.VerifyCommands.Add(new VerifyCommand("test", "dotnet test", PathSet: ["src/"]));
-
-        StringBuilder prompt = new();
-        WorkPromptBuilder.AppendCheckpointCommitRules(prompt, project, _worktreePath);
-
-        prompt.ToString().Should().NotContain("Scoped to the paths");
-        prompt.ToString().Should().NotContain("dotnet test");
-    }
-
     /// <summary>
     /// Both of a delegated contractor's gate lists (the no-base suite list and the recompose
     /// checklist) go through the same helper, so each names the scoped gate's path set and rule.
@@ -375,15 +363,26 @@ public sealed class WorkPromptBuilderTests
             new VerifyCommand("build", "dotnet build"),
             new VerifyCommand("web", "npm test", PathSet: ["Web/"]));
 
-        string prompt = WorkPromptBuilder.Build(
-            SomeTask(), project, "task/1-slug", _worktreePath, resumesPreviousWork: true,
-            isDeliberateHeadlessStart: true, isDelegatedContractor: true, delegationNote: "Picking up midway.",
-            delegationBaseCommit: baseCommitReadable ? "abc1234" : null);
+        string prompt = ContractorPrompt(SomeTask(), project, baseCommitReadable);
 
         prompt.Should().Contain("  - `npm test`\n    Scoped to the paths: `Web/`\n");
         Flatten(prompt).Should().Contain(ScopeRuleLead);
         prompt.Should().NotContain("- `dotnet build`\n    Scoped", "an unscoped gate's line is unchanged");
+
+        VerifyCommand hostCoupled = new("test", "dotnet test", HostCoupledFilter: "Category!=RequiresDocker", PathSet: ["src/"]);
+        TaskDetails task = SomeTask();
+        string withPathSet = ContractorPrompt(task, ProjectWithGates(hostCoupled), baseCommitReadable);
+        string withoutPathSet = ContractorPrompt(task, ProjectWithGates(hostCoupled with { PathSet = null }), baseCommitReadable);
+
+        withPathSet.Should().Be(withoutPathSet, "a gate both host-coupled and scoped prints the host-coupled line alone");
+        withPathSet.Should().NotContain("Scoped to the paths");
     }
+
+    private string ContractorPrompt(TaskDetails task, ProjectDetails project, bool baseCommitReadable) =>
+        WorkPromptBuilder.Build(
+            task, project, "task/1-slug", _worktreePath, resumesPreviousWork: true,
+            isDeliberateHeadlessStart: true, isDelegatedContractor: true, delegationNote: "Picking up midway.",
+            delegationBaseCommit: baseCommitReadable ? "abc1234" : null);
 
     [Fact]
     public void Timeout_reminder_names_no_gate_honestly_when_the_project_configures_none()
