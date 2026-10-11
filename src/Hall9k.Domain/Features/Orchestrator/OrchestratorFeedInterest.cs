@@ -2,6 +2,7 @@ using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Trust;
 
@@ -24,7 +25,7 @@ namespace Hall9k.Domain.Features.Orchestrator;
 /// cannot leave a dangling entry behind.
 /// </para>
 /// <para>
-/// <b>Four entries also read something beyond the type</b> (<see cref="Admits(object)"/>), and
+/// <b>Five entries also read something beyond the type</b> (<see cref="Admits(object)"/>), and
 /// all four only ever decide whether the event is an item at all, never which band it lands in.
 /// <see cref="MessageReceived"/> is admitted only for a message
 /// from a person or another node's window, never for the JSON payloads the daemon's own reactors
@@ -39,7 +40,10 @@ namespace Hall9k.Domain.Features.Orchestrator;
 /// node's own window for work it never touched. <see cref="PullRequestReviewAuthorResponded"/>
 /// takes the same origin gate for the same reason: the watch that recorded it is this node's own,
 /// so a teammate's node holding a replicated copy of the owner's review task has nobody on it to
-/// tell that the owner's review moved.
+/// tell that the owner's review moved. <see cref="TaskRequeued"/> is admitted only for a launch
+/// that could not reach origin (<see cref="RequeueReason.LaunchNetworkRetry"/>): a lease expiry, a
+/// pre-flight requeue or a release is routine give-and-take that adds no item, while a task that
+/// is now slow instead of failed is news an orchestrator can use.
 /// </para>
 /// <para>
 /// <b>One entry's band depends on more than its type.</b> <see cref="TaskAbandoned"/> and
@@ -135,6 +139,8 @@ public static class OrchestratorFeedInterest
         [typeof(PullRequestMerged)] = OrchestratorFeedLevel.Transitions,
         [typeof(TaskResolved)] = OrchestratorFeedLevel.Transitions,
         [typeof(TaskFailed)] = OrchestratorFeedLevel.Transitions,
+        // A launch waiting out a network error, admitted only for that requeue reason (see Admits).
+        [typeof(TaskRequeued)] = OrchestratorFeedLevel.Transitions,
         [typeof(TaskAbandoned)] = OrchestratorFeedLevel.Transitions,
 
         // Ideas logged or updated. IdeaDiscarded and IdeaPromoted are retired (backlog 31) and
@@ -252,6 +258,9 @@ public static class OrchestratorFeedInterest
         // A merge the daemon completed itself asks nothing of anybody; one GitHub refused is the
         // actionable half.
         PullRequestAutoMergeAttempted attempted => !attempted.Succeeded,
+        // Only the requeue that turns a failed launch into a slow one; every other requeue reason
+        // is routine and stays out of the feed, as it always has.
+        TaskRequeued requeued => requeued.Reason == RequeueReason.LaunchNetworkRetry,
         // A peer's own daemon rebuilt this run, not this node's — never this node's own thing to
         // act on, and never worth paging this node's window over (task: a run stream whose first
         // event is a reconstruction — 14 replays landing on restart must not page the window).

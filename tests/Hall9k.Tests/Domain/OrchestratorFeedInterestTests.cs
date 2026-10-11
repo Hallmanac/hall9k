@@ -5,6 +5,7 @@ using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Persistence;
@@ -92,6 +93,7 @@ public sealed class OrchestratorFeedInterestTests
     [InlineData(typeof(PullRequestMerged))]
     [InlineData(typeof(TaskResolved))]
     [InlineData(typeof(TaskFailed))]
+    [InlineData(typeof(TaskRequeued))]
     [InlineData(typeof(TaskAbandoned))]
     // Ideas logged or updated.
     [InlineData(typeof(IdeaCaptured))]
@@ -202,6 +204,34 @@ public sealed class OrchestratorFeedInterestTests
 
         OrchestratorFeedInterest.Admits(succeeded, OrchestratorFeedLevel.Everything).Should().BeFalse();
         OrchestratorFeedInterest.Admits(refused, OrchestratorFeedLevel.Actionable).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A launch that could not reach origin is news, because the task is now slow rather than failed;
+    /// a lease expiry, a pre-flight requeue and a release are routine and add no item.
+    /// </summary>
+    [Fact]
+    public void Only_the_requeue_for_a_launch_network_error_is_a_feed_item()
+    {
+        TaskRequeued network = new(
+            Guid.NewGuid(), RequeueReason.LaunchNetworkRetry, At, LaunchNetworkRetryAttempt: 1,
+            LaunchNetworkRetryBound: 3, LaunchNetworkRetryNotBefore: At.AddMinutes(2),
+            LaunchNetworkRetryError: "Could not resolve host: github.com");
+
+        OrchestratorFeedInterest.Admits(network, OrchestratorFeedLevel.Default).Should().BeTrue();
+        foreach (RequeueReason reason in new[]
+        {
+            RequeueReason.LeaseExpired, RequeueReason.RunFailedRetryable, RequeueReason.HumanRequested,
+            RequeueReason.PrReviewPreflightSafe, RequeueReason.PrReviewPreflightRetry,
+        })
+        {
+            OrchestratorFeedInterest.Admits(new TaskRequeued(Guid.NewGuid(), reason, At), OrchestratorFeedLevel.Everything)
+                .Should().BeFalse($"a {reason} requeue adds no feed line");
+        }
+
+        OrchestratorFeedDescription.Of(network).Should().Be(
+            "the launch could not reach origin (attempt 1 of 3) and will retry after 2026-09-19 14:02:00Z: "
+            + "Could not resolve host: github.com");
     }
 
     /// <summary>
