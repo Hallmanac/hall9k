@@ -1342,6 +1342,7 @@ for the orchestrator window.
 ```bash
 h9k project set myproject --verify "build=dotnet build" --verify "test=dotnet test"
 h9k project set myproject --verify-gate-filter "test=Category=RequiresDocker"
+h9k project set myproject --verify-gate-paths "vitest=Web/react-apps/customer-portal/"   # run the vitest gate only when the diff touches that directory; NAME=none clears it
 h9k project set myproject --model claude-opus-5-5
 h9k project set myproject --orchestrator-model sonnet       # the model this project's orchestrator window runs on; 'default' clears it
 h9k project set myproject --orchestrator-effort high        # the effort this project's orchestrator window runs at; 'default' clears it
@@ -1469,6 +1470,36 @@ check. Your additions only widen it. Repeating the option replaces the whole lis
 additions, `default` clears them, and a glob starting with `!` is refused. A glob ending in `/`
 matches everything under that directory from the repository root, a glob with no `/` matches by
 file name at any depth, and anything else matches against the full path.
+
+`--verify-gate-paths "NAME=GLOB[,GLOB...]"` scopes one gate to a path set, so a diff confined to one
+part of a split repository runs only the gates that can observe it. Repeat the flag for more than
+one gate; `NAME=none` clears a gate's set, and a gate with no set runs on every pass exactly as it
+always has. On each verification pass the daemon decides every scoped gate against the changed-path
+list the non-executable skip above already reads, which is the whole branch against its base (or
+against its stacked fork point), never only the latest fix lap's commits. Paths that match the
+project's non-executable set are dropped first, so a README edit never wakes a scoped gate. A scoped
+gate runs when at least one remaining path matches its set, and otherwise it is recorded as skipped,
+which `h9k task show` prints as "skipped (path scope)". When every configured gate is skipped this
+way the pass still counts as passing, with a note saying no gate's path set matched the diff. When
+the changed paths cannot be read, or the list is empty, every gate runs whatever its path set.
+
+A path set uses the same glob rules as `--non-executable-path`: a glob ending in `/` matches
+everything under that directory from the repository root, a glob with no `/` matches a file name at
+any depth, and anything else matches the full path. A glob starting with `!` is an exclusion that
+wins over every positive glob in the same set, which is allowed here even though
+`--non-executable-path` refuses it. A set needs at least one positive glob, because one made only of
+exclusions would skip its gate on every run, and a glob cannot contain a comma. The shape that scopes
+a backend gate away from a front-end directory is `"**,!Web/react-apps/customer-portal/"`, and the
+gate for that directory is `"Web/react-apps/customer-portal/"`. A positive glob that misses a path
+skips its gate, so a directory prefix ending in `/` or the exclusion form is the safe shape; a glob
+such as `a/**/b` needs at least one directory between `a` and `b`, so it does not match `a/b`.
+
+The path set is part of the gate's configuration, so changing it holds runs on a node until that
+node accepts the new set with `h9k project accept-gates`, and `h9k project set --verify-gate-paths`
+on its own is refused against a gate set the node has not accepted. `h9k project accept-gates` and
+`h9k project show` both print each gate's path set. A fleet node on an older binary drops the field
+it does not know and runs every gate, which is the safe direction. A bare `--verify` rebuilds the
+list without path sets, so pass `--verify-gate-paths` in the same call to keep them.
 
 A pre-approved task's merge gate (`h9k task set-pre-approved`) waits, after a head is pushed, up to
 `Hall9k__ChecksRegistrationSettleWindow` (15 minutes by default) for GitHub to report even one

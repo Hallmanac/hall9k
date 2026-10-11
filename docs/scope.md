@@ -119,6 +119,13 @@ its final full pass, skips outright on every intermediate review-cycle pass in b
 own host-coupled gate on the same node — a run waiting its turn reports the wait as its own phase,
 never a failure.
 
+One `--verify` gate can also be scoped to a path set (`h9k project set --verify-gate-paths`), so a
+diff confined to one part of a split repository skips the gates that cannot observe it. The gate
+runs only when a path the whole branch changed against its base, minus the non-executable set,
+matches the set, and otherwise it is recorded as skipped and shown as "skipped (path scope)". Every
+gate runs when the changed paths cannot be read. [Operations](operations.md) has the glob rules and
+the cases where a glob that misses a path skips its gate.
+
 Before any gate runs, `VerificationRunner` classifies every path the run's branch changed against
 its base — deletions and renames included — against the project's non-executable-path set; when
 every one matches, the build and test gates are skipped outright and a `VerificationSkipped` fact
