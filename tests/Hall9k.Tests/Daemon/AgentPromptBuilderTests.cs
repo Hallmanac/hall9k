@@ -2177,11 +2177,14 @@ public sealed class AgentPromptBuilderTests : IDisposable
         return project;
     }
 
-    private static string RebaseChecklist(ProjectDetails project) =>
-        AgentPromptBuilder.BuildRebase(SomeTask(), project, "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+    private static string RebaseChecklist(ProjectDetails project, TaskDetails? task = null) =>
+        AgentPromptBuilder.BuildRebase(task ?? SomeTask(), project, "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
 
-    private static string ReviewFixChecklist(ProjectDetails project) =>
-        AgentPromptBuilder.BuildReviewFix(SomeTask(), project, "task/1-slug", "findings go here", cycle: 1);
+    private static string ReviewFixChecklist(ProjectDetails project, TaskDetails? task = null) =>
+        AgentPromptBuilder.BuildReviewFix(task ?? SomeTask(), project, "task/1-slug", "findings go here", cycle: 1);
+
+    private static VerifyCommand HostCoupledScopedGate() =>
+        new("test", "dotnet test", HostCoupledFilter: "Category!=RequiresDocker", PathSet: ["src/"]);
 
     /// <summary>
     /// Task: a session's own gate checklist names each scoped gate's path set. The rebase-family
@@ -2200,6 +2203,14 @@ public sealed class AgentPromptBuilderTests : IDisposable
         Flatten(prompt).Should().Contain(ScopeRuleLead);
         Flatten(prompt).Should().Contain("a `!` entry excludes and wins over any other entry");
         prompt.Split("Scoped to the paths").Length.Should().Be(2, "only the scoped gate carries the rule");
+
+        VerifyCommand hostCoupled = HostCoupledScopedGate();
+        TaskDetails task = SomeTask();
+        string withPathSet = RebaseChecklist(ProjectWithGates(hostCoupled), task);
+        string withoutPathSet = RebaseChecklist(ProjectWithGates(hostCoupled with { PathSet = null }), task);
+
+        withPathSet.Should().Be(withoutPathSet, "a gate both host-coupled and scoped prints the host-coupled line alone");
+        withPathSet.Should().NotContain("Scoped to the paths");
     }
 
     [Fact]
@@ -2212,6 +2223,14 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("     - `dotnet build`\n     - `npm test`\n       Scoped to the paths: `Web/`\n");
         Flatten(prompt).Should().Contain(ScopeRuleLead);
         prompt.Split("Scoped to the paths").Length.Should().Be(2, "only the scoped gate carries the rule");
+
+        VerifyCommand hostCoupled = HostCoupledScopedGate();
+        TaskDetails task = SomeTask();
+        string withPathSet = ReviewFixChecklist(ProjectWithGates(hostCoupled), task);
+        string withoutPathSet = ReviewFixChecklist(ProjectWithGates(hostCoupled with { PathSet = null }), task);
+
+        withPathSet.Should().Be(withoutPathSet, "a gate both host-coupled and scoped prints the host-coupled line alone");
+        withPathSet.Should().NotContain("Scoped to the paths");
     }
 
     /// <summary>
