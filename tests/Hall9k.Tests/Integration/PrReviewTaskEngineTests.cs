@@ -1265,8 +1265,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
                 "the linked issue #9202 is imported alongside the pull request, exactly as h9k task add --from-pr does");
 
             // The title only reaches the agent inside the same fence as the linked issue's body —
-            // never on a line above it the way a directly imported item's title sits above
-            // WorkItemContext.Compose's own fence — and the fence itself is wide enough that the
+            // never on a line above it — and the fence itself is wide enough that the
             // title's own triple-backtick run cannot close it early.
             string titledLinkedBody = $"Title: {linkedIssueTitle}\n\n{linkedIssueBody}";
             string fence = RelayedText.FenceFor(titledLinkedBody);
