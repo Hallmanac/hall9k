@@ -16,7 +16,3 @@ origin-branch: task/a44e8a80-docs-and-test-fixtures-use-neu
 published: 2026-10-11 16:13:25Z
 context: |-
   Item F hygiene of idea fd736bba (walk notes /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/fd736bba-ready-the-public-hall9k-repo-for-outside-contributors-apache/workspace/notes.md). The name is AgelessRx (21 files on origin/main: 2 skills, PLAN.md, docs/cli.md, the embedded v0 decisions log, one production comment in WritingConventions.cs, 15 test files). An ordinary forward commit; no history rewrite (Brian's ruling). Neutral examples: example-org, acme; use example.com for email addresses and hosts (acme.com is a registered domain). PLAN.md's line about 547 points at an internal page an outside contributor cannot open, so dropping the line is fine where a rename would leave nothing useful. Independent of every other fd736bba task. Note to the window, not a criterion: at this task's closeout, and again after d82841ca, a1af8b15, 0e866341 and 4525f3df merge, re-run the grep on main; a reintroduction goes back to that task's own review lap, not to a new chore.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-10-11 21:38:50Z
