@@ -2302,8 +2302,8 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
     /// drafted its answer with em dashes, resolved as written, and the comment the reviewer
     /// actually reads carries none.
     /// <para>
-    /// Origin incident (2026-09-09): follow-up run 01a085d9 of arx-platform task 01a083d8 answered
-    /// a Copilot review on example-org/acme-platform#2042 with a top-level comment under Brian's login
+    /// Origin incident (2026-09-09): follow-up run 01a085d9 of task 01a083d8 answered a Copilot
+    /// review on a client repository's pull request with a top-level comment under Brian's login
     /// carrying em dashes in most of its paragraphs. So the disagreement here is the one with no
     /// thread id, which is exactly that shape: a review BODY is unthreadable, so the answer is a
     /// top-level <c>gh pr comment</c>.
