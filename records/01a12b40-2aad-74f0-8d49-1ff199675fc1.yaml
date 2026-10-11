@@ -1,0 +1,17 @@
+hall9k-task-record: 1
+task-id: 01a12b40-2aad-74f0-8d49-1ff199675fc1
+project: hall9k
+type: spike
+pre-approved: on
+model: claude-sonnet-5-5
+external-reference: github:Hallmanac/hall9k#713
+objective: A dispatched session on the Mac starts a helper server, screenshots it with a headless browser, and stops it, all under the macOS signal fence, proving the fence (#711) and the helper-server route (#712) work together
+criteria:
+  - The findings document records each step's command and exit status, the screenshot path, the h9k call's output, and the TaskStop result
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/99675fc1-a-dispatched-session-on-the-ma
+published: 2026-10-11 13:56:35Z
+context: Throwaway smoke test for idea 1ca8cda1 (cards 357d5141 and 7e8e92a1). Serve any static page, for example python3 -m http.server on a free port in a temp directory you create, started as a background Bash task. Use the already cached Playwright Chromium (npx playwright screenshot or a tiny node script). Run h9k status or h9k task show for this task once. If any step is refused by the sandbox, record the exact error and stop; do not work around the fence. Never stop a process by name, and never delete anything outside your own temp directory or worktree.
