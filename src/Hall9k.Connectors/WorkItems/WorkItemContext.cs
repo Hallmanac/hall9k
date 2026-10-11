@@ -145,9 +145,9 @@ public static class WorkItemContext
 
     /// <summary>
     /// The pr-review sibling of <see cref="NonInstructionFraming"/>, for
-    /// <c>AutoPrReviewEngine.ComposePrReviewContext</c>: it names both the title and the body,
-    /// since that composition quotes both inside one fence, where <see cref="Compose"/> quotes
-    /// only the body. <see cref="CarriesQuotedDescription"/> checks for this sentence too, so the
+    /// <c>AutoPrReviewEngine.ComposePrReviewContext</c>: both composers quote the title and the
+    /// body inside one fence, and the two sentences differ only in naming the pull request rather
+    /// than the item. <see cref="CarriesQuotedDescription"/> checks for this sentence too, so the
     /// two composers stay interchangeable for every prompt rule keyed on it.
     /// </summary>
     public const string PrReviewNonInstructionFraming =
