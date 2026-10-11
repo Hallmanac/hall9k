@@ -425,6 +425,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Dependency", $"[red]{details.DependencyFailureReason.EscapeMarkup()}[/]");
         }
 
+        if (LaunchNetworkRetryMarkup(details) is { } launchWait)
+        {
+            header.AddRow("Launch", launchWait);
+        }
+
         // A reviewer's own lap (Decisions Log #149): open, or ended with the verdict it submitted.
         // Both rows are worth the space for the same reason: the whole deliverable of a pr-review
         // task is a review that lives on somebody else's pull request, so without this the task's
@@ -2808,6 +2813,21 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             : $"[yellow]{provider.EscapeMarkup()}[/]{board} [dim]— requested, waiting for the daemon "
               + "to dispatch the session (h9k daemon status)[/]";
     }
+
+    /// <summary>
+    /// The row a task waiting out a launch network backoff gets: that its launch is waiting to
+    /// retry after a network error, which attempt of how many, the earliest moment a claim may
+    /// happen, and git's own error. Null once the task is claimed again or requeued for any other
+    /// reason, which is when the projection clears these fields, and for a task no longer Queued.
+    /// The bound is the one the requeue event carried; the CLI cannot read the daemon's options.
+    /// </summary>
+    internal static string? LaunchNetworkRetryMarkup(TaskDetails details) =>
+        details.State == TaskState.Queued && details.LaunchNetworkRetryNotBefore is { } notBefore
+            ? $"[yellow]waiting to retry after a network error[/] [dim](attempt {details.LaunchNetworkRetryAttempt} "
+                + $"of {details.LaunchNetworkRetryBound}): git could not reach origin. The next claim may happen no "
+                + $"earlier than {notBefore.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz}. "
+                + $"Git said: {ExternalText.OneLineMarkup(details.LaunchNetworkRetryError ?? string.Empty)}[/]"
+            : null;
 
     /// <summary>
     /// A Jira write outstanding on this task (Brian's design, 2026-08-28): pending on a rejected

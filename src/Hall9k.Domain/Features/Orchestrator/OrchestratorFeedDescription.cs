@@ -3,6 +3,7 @@ using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -139,6 +140,13 @@ public static class OrchestratorFeedDescription
             PullRequestMerged => "done: the pull request merged",
             TaskResolved resolved => $"closed as done by hand: {Quote(resolved.Reason)}",
             TaskFailed failed => $"the task failed: {Quote(failed.Reason)}",
+            // The feed admits only the network requeue (OrchestratorFeedInterest.Admits); the plain
+            // sentence for any other reason is what a reader of the raw log would get, never a feed item.
+            TaskRequeued requeued => requeued.Reason == RequeueReason.LaunchNetworkRetry
+                ? $"the launch could not reach origin (attempt {requeued.LaunchNetworkRetryAttempt} of "
+                    + $"{requeued.LaunchNetworkRetryBound}) and will retry after "
+                    + $"{requeued.LaunchNetworkRetryNotBefore?.UtcDateTime:u}: {Quote(requeued.LaunchNetworkRetryError)}"
+                : "the task went back to the queue",
             TaskAbandoned abandoned when abandoned.Reason.IsBlank() => "abandoned",
             TaskAbandoned abandoned => $"abandoned: {Quote(abandoned.Reason)}",
 
