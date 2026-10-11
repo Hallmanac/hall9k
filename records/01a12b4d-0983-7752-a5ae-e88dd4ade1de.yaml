@@ -16,3 +16,7 @@ origin-branch: task/d4ade1de-a-dispatched-session-on-the-ma
 published: 2026-10-11 14:10:33Z
 context: |-
   Throwaway follow-up to smoke spike 99675fc1 for idea 1ca8cda1. kill -0 sends no signal; it only checks permission, so both probes are harmless. Run exactly: kill -0 $$; echo $?   then   kill -0 59965; echo $?   then   ps -p 59965 -o pid,comm to show the target exists. Send no other signal to any process, never use pkill, killall, or kill without -0, and do not try to work around a refusal. If the second probe succeeds, record that plainly: it means the fence was not applied.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-10-11 14:10:44Z
