@@ -29,8 +29,8 @@ internal sealed record HeldFeedback(
 /// <param name="Raise">Feedback seen for the first time, each of which becomes exactly one needs-you item.</param>
 /// <param name="Withdraw">
 /// Keys of items whose feedback is gone from GitHub, which no longer ask anything of the owner, and of
-/// approved threads whose approved text has since been edited, whose approval ends here so the next
-/// poll raises them again for the owner to read afresh.
+/// approved reviews and threads whose approved text has since been edited, whose approval ends here so
+/// the next poll raises them again for the owner to read afresh.
 /// </param>
 /// <param name="HoldsMerge">
 /// Whether a pre-approved merge must wait: an item still waits on the owner, a non-member's thread is
@@ -127,9 +127,10 @@ internal static class FeedbackMembershipGate
         List<HeldFeedback> raise = [];
         bool holdsMerge = false;
 
-        IReadOnlyList<ChangesRequestedReview> admitted = DecideReviews(snapshot, roster, items, raise, ref holdsMerge);
+        List<string> editedReviews = [];
+        IReadOnlyList<ChangesRequestedReview> admitted = DecideReviews(snapshot, roster, items, raise, editedReviews, ref holdsMerge);
         (IReadOnlyList<string> withheld, IReadOnlyList<ReadableReviewThread> readable, IReadOnlyList<string> edited) =
-            DecideThreads(snapshot, roster, items, raise, ref holdsMerge);
+            DecideThreads(snapshot, roster, items, raise, editedReviews, ref holdsMerge);
 
         HashSet<string> withheldSet = [.. withheld];
         IReadOnlyList<string> threadIds = [.. snapshot.ThreadIds.Where(id => !withheldSet.Contains(id))];
@@ -155,7 +156,7 @@ internal static class FeedbackMembershipGate
         return new FeedbackGateOutcome(
             effective,
             DistinctByKey(raise),
-            roster is null ? [] : [.. WithdrawnKeys(snapshot, items).Concat(edited).Distinct()],
+            roster is null ? [] : [.. WithdrawnKeys(snapshot, items).Concat(edited).Concat(editedReviews).Distinct()],
             holdsMerge,
             WaitingOnRoster: roster is null && holdsMerge);
     }
@@ -166,13 +167,18 @@ internal static class FeedbackMembershipGate
     /// <summary>
     /// The reviews that may drive a lap: a member's, on the head as always, and a non-member's the owner
     /// approved. A non-member's review is raised once and otherwise holds the merge until decided,
-    /// whether or not the head has moved since it was written, because it still stands on GitHub.
+    /// whether or not the head has moved since it was written, because it still stands on GitHub. An
+    /// approved review that no longer reads as the copy kept with its item carries nothing and has its
+    /// approval ended (its key goes into <paramref name="edited"/>), so the next poll raises it again
+    /// with what it says now: the owner reads a review at its GitHub link, never the copy, so only a
+    /// copy that still matches the live review can be the text they were shown.
     /// </summary>
     private static IReadOnlyList<ChangesRequestedReview> DecideReviews(
         PullRequestSnapshot snapshot,
         IReadOnlyCollection<long>? roster,
         IReadOnlyDictionary<string, NonMemberFeedbackItem> items,
         List<HeldFeedback> raise,
+        List<string> edited,
         ref bool holdsMerge)
     {
         HashSet<string> onHead = [.. snapshot.ChangesRequested.Select(review => review.ReviewUrl)];
@@ -210,10 +216,21 @@ internal static class FeedbackMembershipGate
                     }
                     else if (item.Status == NonMemberFeedbackStatus.Admitted)
                     {
-                        // The go dispatches ONE lap, and it covers the review the owner was shown: the copy
-                        // kept with the item, never a live read, so words the stranger edits in after the
-                        // go are not carried. The live review stands in only for an item that kept none.
-                        // Once the head has moved the copy can be carried only until a lap has carried it.
+                        if (item.Review is { } kept && ReadsDifferently(review, kept))
+                        {
+                            // The owner reads a review at its GitHub link, so what they approved is what it
+                            // says there, and the copy kept when it was first held is no longer that. The gate
+                            // cannot tell whether the edit came before the go or after it, so neither text is
+                            // carried: the approval ends and the next poll raises the review again.
+                            edited.Add(review.ReviewUrl);
+                            holdsMerge = true;
+                            break;
+                        }
+
+                        // The go dispatches ONE lap, and it covers the review as kept with the item, which
+                        // is the live review's own text, since a copy that differs ended the approval above.
+                        // The live review stands in only for an item that kept none. Once the head has moved
+                        // the copy can be carried only until a lap has carried it.
                         ChangesRequestedReview? carried = isOnHead
                             ? item.Review ?? review
                             : item.Dispatched ? null : item.Review;
@@ -240,6 +257,7 @@ internal static class FeedbackMembershipGate
         IReadOnlyCollection<long>? roster,
         IReadOnlyDictionary<string, NonMemberFeedbackItem> items,
         List<HeldFeedback> raise,
+        IReadOnlyCollection<string> editedReviews,
         ref bool holdsMerge)
     {
         Dictionary<string, UnresolvedReviewThread> details = [];
@@ -301,8 +319,8 @@ internal static class FeedbackMembershipGate
                     break;
                 case Who.NonMember:
                     DecideStrangersThread(
-                        id, thread, opener, openerLogin, roster, items, reviewOfThread.GetValueOrDefault(id), raise, withheld,
-                        readable, edited, ref holdsMerge);
+                        id, thread, opener, openerLogin, roster, items, reviewOfThread.GetValueOrDefault(id), editedReviews, raise,
+                        withheld, readable, edited, ref holdsMerge);
                     break;
                 default:
                     readable.Add(new ReadableReviewThread(
@@ -341,6 +359,7 @@ internal static class FeedbackMembershipGate
         IReadOnlyCollection<long>? roster,
         IReadOnlyDictionary<string, NonMemberFeedbackItem> items,
         ChangesRequestedReview? coveringReview,
+        IReadOnlyCollection<string> editedReviews,
         List<HeldFeedback> raise,
         List<string> withheld,
         List<ReadableReviewThread> readable,
@@ -379,7 +398,8 @@ internal static class FeedbackMembershipGate
             // and is not asked a second time for each of its threads. The review's go carries the review's
             // own copy of what was said, so no comment in the thread is named for a session to read.
             if (items.TryGetValue(coveringReview.ReviewUrl, out NonMemberFeedbackItem? reviewItem)
-                && reviewItem.Status == NonMemberFeedbackStatus.Admitted)
+                && reviewItem.Status == NonMemberFeedbackStatus.Admitted
+                && !editedReviews.Contains(coveringReview.ReviewUrl))
             {
                 readable.Add(new ReadableReviewThread(
                     threadId, openerLogin, FeedbackAdmission.OwnerApproved, ReadableCommentIds(thread, roster)));
@@ -416,6 +436,10 @@ internal static class FeedbackMembershipGate
                 .Take(MaxCopiedCommentsPerThread)
                 .Select(comment => new ThreadCommentCopy(comment.Id, comment.Body ?? ""))]
             : [];
+
+    /// <summary>Whether the review the owner was shown still stands but its findings say something else now.</summary>
+    private static bool ReadsDifferently(ChangesRequestedReview live, ChangesRequestedReview kept) =>
+        !live.Findings.SequenceEqual(kept.Findings);
 
     private static UnresolvedThreadComment? Live(UnresolvedReviewThread thread, ThreadCommentCopy copy, long? openerAccountId) =>
         openerAccountId is { } accountId

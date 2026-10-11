@@ -116,7 +116,7 @@ public sealed class NonMemberFeedbackPaneTests
         string declinedReview = PullRequestFeedbackCommand.ComposeConfirmation(ReviewItem(), go: false);
         string declinedThread = PullRequestFeedbackCommand.ComposeConfirmation(ThreadItem(), go: false);
 
-        go.Should().Contain("Go recorded").And.Contain("one fix lap").And.Contain("@stranger").And.Contain(ReviewUrl);
+        go.Should().Contain("Go recorded").And.Contain("one fix lap").And.Contain("h9k pr resolve").And.Contain("@stranger").And.Contain(ReviewUrl);
         declinedReview.Should().Contain("no longer holds a pre-approved merge");
         declinedThread.Should().Contain("stays unresolved on GitHub").And.Contain("keeps holding a pre-approved merge");
         new[] { go, declinedReview, declinedThread }.Should().OnlyContain(text => !text.Contains(StrangersWords));

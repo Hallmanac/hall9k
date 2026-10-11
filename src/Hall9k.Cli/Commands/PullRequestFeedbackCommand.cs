@@ -49,7 +49,8 @@ public sealed class PullRequestFeedbackCommand : Hall9kAsyncCommand<PullRequestF
         [CommandOption("--go")]
         [Description(
             "Give the go: read this feedback like a member's. The next closeout poll dispatches one fix lap "
-            + "carrying it, even if the pull request's head has moved since it was written. Only you can say this "
+            + "carrying it, even if the pull request's head has moved since it was written; a parked run waits "
+            + "for h9k pr resolve first. Only you can say this "
             + "for a stranger's words: it is what lets them reach a session that skips permissions.")]
         public bool Go { get; init; }
 
@@ -142,7 +143,8 @@ public sealed class PullRequestFeedbackCommand : Hall9kAsyncCommand<PullRequestF
     {
         string subject = $"{item.Kind.Noun} from @{ExternalText.OneLine(item.Reviewer)} ({ExternalText.OneLine(item.Url)})";
         return go
-            ? $"Go recorded for the {subject}. The next closeout poll dispatches one fix lap that carries it."
+            ? $"Go recorded for the {subject}. The next closeout poll dispatches one fix lap that carries it, unless the task's run is parked: "
+                + "a parked run dispatches nothing until you resolve the park with h9k pr resolve."
             : item.Kind == NonMemberFeedbackKind.Thread
                 ? $"Declined the {subject}. Nothing is dispatched for it; the thread stays unresolved on GitHub and keeps holding a pre-approved merge until it is resolved there."
                 : $"Declined the {subject}. Nothing is dispatched for it, and it no longer holds a pre-approved merge here. "
