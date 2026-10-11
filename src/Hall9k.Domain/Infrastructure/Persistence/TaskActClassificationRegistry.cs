@@ -73,6 +73,14 @@ public static class TaskActClassificationRegistry
         [typeof(JiraWriteSucceeded)] = TaskActClassification.MemberSafe,
         [typeof(PublicationTokensRecorded)] = TaskActClassification.MemberSafe,
 
+        // The owner's go or decline on a stranger's feedback is the one act that lets non-member text
+        // reach a skip-permissions session, so a Member-role sender can never apply it; the held and
+        // withdrawn observations are the running node's own reading of GitHub.
+        [typeof(NonMemberFeedbackAdmitted)] = TaskActClassification.OwnerOnly,
+        [typeof(NonMemberFeedbackDeclined)] = TaskActClassification.OwnerOnly,
+        [typeof(NonMemberFeedbackHeld)] = TaskActClassification.MemberSafe,
+        [typeof(NonMemberFeedbackWithdrawn)] = TaskActClassification.MemberSafe,
+
         // The pull-request review pre-flight's own park (idea 6be68ee2, finding 1, phase one)
         // clears the current claim and assignment unconditionally, the identical shape
         // TaskInteractiveClaimUnassigned and TaskRequeued give a member's own give-back — a forged

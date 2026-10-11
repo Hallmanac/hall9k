@@ -31,6 +31,16 @@ public sealed record ReviewMembershipGateSetting(ReviewMembershipPolicy Policy, 
     /// <summary>How the effective value is described wherever origin is printed: 'explicit' or 'default'.</summary>
     public string Origin => Recorded ? "explicit" : "default";
 
+    /// <summary>
+    /// Whether the membership gate applies to a repository at all: an explicit setting wins, otherwise
+    /// it is on unless the repository is known to be private or internal, and a visibility that was
+    /// never read, or whose read failed (null), is on. The one formula every gate reader shares: the
+    /// review-request and mention gate, closeout's review-feedback gate, and the CLI's own best-effort
+    /// reading of the last observation.
+    /// </summary>
+    public static bool GateIsOn(bool? isPrivate, bool? explicitSetting) =>
+        explicitSetting ?? isPrivate != true;
+
     public static ReviewMembershipGateSetting From(ProjectSettingsHistory history) =>
         history.LastRecordedTeamField(
             change => change.ReviewRequiresMembership, _ => Optional<ReviewMembershipPolicy>.None) is { HasValue: true } recorded

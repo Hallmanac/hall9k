@@ -358,6 +358,20 @@ public sealed class TaskDetails
     public List<ChangesRequestedReview> ChangesRequestedReviews { get; set; } = [];
     /// <summary>See <see cref="TaskReopened.HumanReviewThreads"/>'s own doc — mirrors <see cref="TaskAggregate.KnownHumanReviewThreads"/>.</summary>
     public List<ReviewThreadReference> HumanReviewThreads { get; set; } = [];
+    /// <summary>See <see cref="TaskReopened.ReviewReadScope"/>'s own doc — mirrors <see cref="TaskAggregate.ReviewReadScope"/>.</summary>
+    public ReviewReadScope? ReviewReadScope { get; set; }
+    /// <summary>
+    /// Every piece of non-member feedback held for the owner, in the status the owner and GitHub have
+    /// left it — mirrors <see cref="TaskAggregate.NonMemberFeedback"/>. What <c>h9k status</c> lists and
+    /// <c>h9k pr feedback</c> resolves a key against.
+    /// </summary>
+    public List<NonMemberFeedbackItem> NonMemberFeedback { get; set; } = [];
+    /// <summary>
+    /// Whether any item in <see cref="NonMemberFeedback"/> still waits on the owner, kept as a plain
+    /// flag because a stored list cannot be filtered in a query: it is how <c>h9k status</c> finds the
+    /// tasks with something to show without loading every task.
+    /// </summary>
+    public bool HasUndecidedNonMemberFeedback { get; set; }
     public string? FollowUpReason { get; set; }
     public string? FailureReason { get; set; }
     /// <summary>
@@ -1432,6 +1446,15 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.StackReplayOntoCommit = @event.Data.StackReplayOntoCommit;
         view.ChangesRequestedReviews = [.. @event.Data.ChangesRequestedReviews ?? []];
         view.HumanReviewThreads = [.. @event.Data.HumanReviewThreads ?? []];
+        view.ReviewReadScope = @event.Data.ReviewReadScope;
+        foreach (ChangesRequestedReview carried in @event.Data.ChangesRequestedReviews ?? [])
+        {
+            int at = view.NonMemberFeedback.FindIndex(item => item.Key == carried.ReviewUrl);
+            if (at >= 0)
+            {
+                view.NonMemberFeedback[at] = view.NonMemberFeedback[at] with { Dispatched = true };
+            }
+        }
         view.FollowUpReason = @event.Data.Reason;
         view.ClaimedByNodeId = null;
         view.DependencyOverrideAcknowledged = false;
@@ -1450,6 +1473,49 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         ForgetPrReviewFollowThrough(view);
         view.FinishedAt = null;
         EndAnyOpenReviewLap(view);
+    }
+
+    public void Apply(IEvent<NonMemberFeedbackHeld> @event, TaskDetails view)
+    {
+        int at = view.NonMemberFeedback.FindIndex(item => item.Key == @event.Data.FeedbackKey);
+        if (at >= 0 && view.NonMemberFeedback[at].Status != NonMemberFeedbackStatus.Withdrawn)
+        {
+            return;
+        }
+
+        NonMemberFeedbackItem held = new(
+            @event.Data.FeedbackKey, @event.Data.Kind, @event.Data.Reviewer, @event.Data.Url,
+            @event.Data.ObservedAt, NonMemberFeedbackStatus.Undecided, @event.Data.Review);
+        if (at >= 0)
+        {
+            view.NonMemberFeedback[at] = held;
+        }
+        else
+        {
+            view.NonMemberFeedback.Add(held);
+        }
+
+        view.HasUndecidedNonMemberFeedback = true;
+    }
+
+    public void Apply(IEvent<NonMemberFeedbackAdmitted> @event, TaskDetails view) =>
+        SetNonMemberFeedbackStatus(view, @event.Data.FeedbackKey, NonMemberFeedbackStatus.Admitted);
+
+    public void Apply(IEvent<NonMemberFeedbackDeclined> @event, TaskDetails view) =>
+        SetNonMemberFeedbackStatus(view, @event.Data.FeedbackKey, NonMemberFeedbackStatus.Declined);
+
+    public void Apply(IEvent<NonMemberFeedbackWithdrawn> @event, TaskDetails view) =>
+        SetNonMemberFeedbackStatus(view, @event.Data.FeedbackKey, NonMemberFeedbackStatus.Withdrawn);
+
+    private static void SetNonMemberFeedbackStatus(TaskDetails view, string key, NonMemberFeedbackStatus status)
+    {
+        int at = view.NonMemberFeedback.FindIndex(item => item.Key == key);
+        if (at >= 0)
+        {
+            view.NonMemberFeedback[at] = view.NonMemberFeedback[at] with { Status = status };
+        }
+
+        view.HasUndecidedNonMemberFeedback = view.NonMemberFeedback.Exists(item => item.Status.NeedsOwner);
     }
 
     public void Apply(IEvent<TaskFailed> @event, TaskDetails view)
@@ -1547,6 +1613,7 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.StackReplayUpstreamCommit = null;
         view.StackReplayOntoCommit = null;
         view.ChangesRequestedReviews = [];
+        view.ReviewReadScope = null;
         view.HumanReviewThreads = [];
         view.FollowUpReason = null;
         view.RetryBranch = null;
