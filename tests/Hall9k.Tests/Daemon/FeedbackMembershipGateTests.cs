@@ -575,6 +575,23 @@ public sealed class FeedbackMembershipGateTests
     }
 
     [Fact]
+    public void An_approved_review_whose_finding_only_moved_to_another_line_keeps_its_approval()
+    {
+        ChangesRequestedReview held = Review("stranger", StrangerId, 20);
+        TaskAggregate task = TaskAfter(HeldEvents(Decide(Public(held))));
+        task.Apply(TaskDecider.AdmitNonMemberFeedback(task, ReviewUrl(20), Now, DomainId.New()));
+        ChangesRequestedReview moved = held with
+        {
+            Findings = [.. held.Findings.Select(finding => finding with { Location = "src/Limiter.cs:45" })],
+        };
+
+        FeedbackGateOutcome outcome = Decide(Public(moved), task.NonMemberFeedback);
+
+        outcome.Withdraw.Should().BeEmpty("a push that shifts the code under a comment is not an edit of the review");
+        outcome.Snapshot.ChangesRequested.Should().ContainSingle().Which.AdmittedAs.Should().Be(FeedbackAdmission.OwnerApproved);
+    }
+
+    [Fact]
     public void A_thread_a_mannequin_opened_is_a_non_members_not_a_bots()
     {
         PullRequestReviewer mannequin = new("imported", ReviewerKind.Mannequin);

@@ -437,9 +437,13 @@ internal static class FeedbackMembershipGate
                 .Select(comment => new ThreadCommentCopy(comment.Id, comment.Body ?? ""))]
             : [];
 
-    /// <summary>Whether the review the owner was shown still stands but its findings say something else now.</summary>
+    /// <summary>
+    /// Whether the review the owner was shown still stands but its findings say something else now.
+    /// Only the finding text counts: a finding's location is read from GitHub's live line on every
+    /// poll, so it moves when a push shifts the code above it without anyone editing the review.
+    /// </summary>
     private static bool ReadsDifferently(ChangesRequestedReview live, ChangesRequestedReview kept) =>
-        !live.Findings.SequenceEqual(kept.Findings);
+        !live.Findings.Select(finding => finding.Body).SequenceEqual(kept.Findings.Select(finding => finding.Body), StringComparer.Ordinal);
 
     private static UnresolvedThreadComment? Live(UnresolvedReviewThread thread, ThreadCommentCopy copy, long? openerAccountId) =>
         openerAccountId is { } accountId
