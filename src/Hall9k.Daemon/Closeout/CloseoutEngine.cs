@@ -1639,7 +1639,7 @@ public sealed class CloseoutEngine(
         List<object> events =
         [
             .. gate.Raise.Select(held => new NonMemberFeedbackHeld(
-                task.Id, held.Key, held.Kind, held.Reviewer, held.Url, now, held.Review, held.CommentIds)),
+                task.Id, held.Key, held.Kind, held.Reviewer, held.Url, now, held.Review, held.CommentCopies)),
             .. gate.Withdraw.Select(key => new NonMemberFeedbackWithdrawn(task.Id, key, now)),
         ];
         if (events.Count == 0)

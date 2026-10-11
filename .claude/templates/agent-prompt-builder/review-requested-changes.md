@@ -22,9 +22,11 @@ Why this follow-up was dispatched: {{Reason}}
   a pull request carrying more than 100 review threads exceeds the provider's own
   page cap, and a reviewer may have submitted something new since. If a finding the
   review plainly refers to is not above, read that one review at its own address
-  (under its heading above) and say so in your summary. Read nothing else on the pull
-  request's review conversation: other reviews and comments may belong to accounts
-  outside the project's roster, which this lap is not allowed to read.
+  (under its heading above) and say so in your summary. The one exception is a review the
+  owner approved from outside the project's roster: only what is quoted above was approved,
+  and the review itself may have been edited since, so never read an approved review live.
+  Read nothing else on the pull request's review conversation: other reviews and comments
+  may belong to accounts outside the project's roster, which this lap is not allowed to read.
 ===resolve-skill===
 - Use the resolve-review-threads skill for the mechanics of replying inside a thread
   and resolving it (the thread ids are already given above, as each finding's
@@ -79,8 +81,16 @@ its body and its comments are at `gh api {{ReviewRoute}}` and `gh api {{ReviewRo
 open it at its own address above.
 ===findings-omitted-over-budget===
 [remaining findings omitted, over this prompt's total budget for review text — read the rest at {{ReviewUrl}}]
+===findings-omitted-over-budget-approved===
+[remaining findings omitted, over this prompt's total budget for review text; they were not carried, and the review itself may have changed since the owner approved it, so there is nothing more of it you may read]
 ===finding-truncated===
 [truncated, read the rest at {{ReviewUrl}}]
+===finding-truncated-approved===
+[truncated: the rest of this text was not carried, and the review itself may have changed since the owner approved it, so there is nothing more of it you may read]
+===no-findings-in-approved-review===
+The review the owner approved carried no body and no inline comments, so there is nothing here to
+answer. Do not go looking for the review's text yourself, by any command: the owner approved what was
+shown to them, and the live review may say something else by now. Say so in your summary.
 ===handling-heading===
 ## How to handle each finding
 ===handling-intro===

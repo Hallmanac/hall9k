@@ -61,7 +61,10 @@ public sealed record NonMemberFeedbackStatus
     /// <summary>The owner declined. Nothing dispatches for it, and a review no longer holds the merge.</summary>
     public static readonly NonMemberFeedbackStatus Declined = new("Declined");
 
-    /// <summary>The feedback is gone from GitHub (review dismissed, thread resolved).</summary>
+    /// <summary>
+    /// The feedback is gone from GitHub (review dismissed, thread resolved), or a thread's approved text
+    /// was edited, which ends the approval; the next poll raises the thread again as a fresh item.
+    /// </summary>
     public static readonly NonMemberFeedbackStatus Withdrawn = new("Withdrawn");
 
     public static readonly NonMemberFeedbackStatus Unknown = new("");
@@ -106,11 +109,11 @@ public sealed record NonMemberFeedbackStatus
 /// outside the roster never dispatches a build lap; it raises a needs-you item). There is exactly
 /// one per <see cref="Key"/>, however many polls observe the feedback.
 /// <para>
-/// It carries who, what kind, and where, and never the feedback's text: the item is what a status
-/// row renders, and a stranger's words must not reach the owner's terminal unfenced any more than a
-/// session's prompt. The one exception is <see cref="Review"/>, the whole review as observed, kept
-/// only so the owner's go can still dispatch it after the head has moved on; it is read by the
-/// prompt builder alone and never rendered by a status row.
+/// It carries who, what kind, and where, and the feedback's text only where the owner's go needs it
+/// pinned: <see cref="Review"/>, the whole review as observed, and <see cref="CommentCopies"/>, the
+/// opener's comments as observed. The item is what a status row renders, and a stranger's words must
+/// not reach the owner's terminal unfenced any more than a session's prompt, so those two are read by
+/// the gate and the prompt builder alone and never rendered by a status row.
 /// </para>
 /// </summary>
 /// <param name="Key">The review's url, or the thread's node id.</param>
@@ -118,10 +121,10 @@ public sealed record NonMemberFeedbackStatus
 /// <param name="Url">The link the owner opens to read it themselves.</param>
 /// <param name="Review">For a review: the review as observed. Null for a thread.</param>
 /// <param name="Dispatched">For a review: whether a lap already carried it. A go dispatches one lap, not one per poll.</param>
-/// <param name="CommentIds">
-/// For a thread: the ids of the comments in it when it was held, which is all the owner's go covers;
-/// a comment added afterwards, even by the same account, was never shown to the owner. Ids only, never
-/// text. Null for a review.
+/// <param name="CommentCopies">
+/// For a thread: the opener's comments as they read when it was held, which is all the owner's go
+/// covers. A comment added afterwards, even by the same account, was never shown to the owner, and one
+/// whose text has changed since is no longer the text approved. Null for a review.
 /// </param>
 /// <param name="AssessmentUrl">
 /// The link to an evaluator's assessment of the feedback, shown beside the item so the owner can
@@ -137,4 +140,4 @@ public sealed record NonMemberFeedbackItem(
     ChangesRequestedReview? Review = null,
     bool Dispatched = false,
     string? AssessmentUrl = null,
-    IReadOnlyList<string>? CommentIds = null);
+    IReadOnlyList<ThreadCommentCopy>? CommentCopies = null);

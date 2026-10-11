@@ -504,7 +504,7 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
             {
                 if (ReadString(comment, "id") is { } commentId)
                 {
-                    comments.Add(new UnresolvedThreadComment(commentId, ReadActor(comment)));
+                    comments.Add(new UnresolvedThreadComment(commentId, ReadActor(comment), ReadString(comment, "body")));
                 }
             }
         }

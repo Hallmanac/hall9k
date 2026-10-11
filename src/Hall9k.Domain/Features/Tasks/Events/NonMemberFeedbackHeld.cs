@@ -9,17 +9,21 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// build lap; it raises a needs-you item). One per <paramref name="FeedbackKey"/>, however many
 /// polls observe it again.
 /// <para>
-/// It carries who, what kind and where. It never carries a thread's text, since a stranger's words
-/// must not travel on a record anything renders; for a review it carries the whole review as
-/// observed in <paramref name="Review"/>, which only the owner's go can ever turn into a prompt, so
-/// that the go still works after the head has moved on.
+/// It carries who, what kind and where, and the stranger's text only where the owner's go will need
+/// it: the whole review as observed in <paramref name="Review"/>, or the opener's comments as observed
+/// in <paramref name="CommentCopies"/>. Only the owner's go can turn either into a prompt, so the go
+/// covers what was held rather than whatever the author has edited it into since, and still works
+/// after the head has moved on. Nothing that renders a status row reads them.
 /// </para>
 /// </summary>
 /// <param name="FeedbackKey">The review's url, or the thread's node id.</param>
 /// <param name="Reviewer">The login that wrote it; <c>ghost</c> for a deleted account.</param>
 /// <param name="Url">The link the owner opens to read it themselves. Blank when the provider reported none.</param>
 /// <param name="Review">For a review: the review as observed. Null for a thread.</param>
-/// <param name="CommentIds">For a thread: the ids of its comments as observed, never their text. Null for a review.</param>
+/// <param name="CommentCopies">
+/// For a thread: the opener's own comments as observed, each with its text, which is all the owner's go
+/// can cover. Null for a review.
+/// </param>
 public sealed record NonMemberFeedbackHeld(
     Guid Id,
     string FeedbackKey,
@@ -28,4 +32,4 @@ public sealed record NonMemberFeedbackHeld(
     string Url,
     DateTimeOffset ObservedAt,
     ChangesRequestedReview? Review = null,
-    IReadOnlyList<string>? CommentIds = null);
+    IReadOnlyList<ThreadCommentCopy>? CommentCopies = null);

@@ -50,6 +50,39 @@ public sealed class ManualResolveReadScopeTests(PostgresFixture postgres) : ICla
             .Should().BeNull();
     }
 
+    [Fact]
+    public async Task An_unrestricted_scope_recorded_while_the_gate_was_off_is_dropped_once_the_gate_is_on()
+    {
+        Guid projectId = await ObserveVisibilityAsync(isPrivate: false);
+        await using IQuerySession query = postgres.Store.QuerySession();
+
+        (await PullRequestResolveCommand.CarriedReadScopeAsync(
+                ReviewReadScope.AllThreads, query, projectId, CancellationToken.None))
+            .Should().BeNull("the repository is public now, so the earlier scope no longer says what may be read");
+    }
+
+    [Fact]
+    public async Task An_unrestricted_scope_is_kept_while_the_gate_is_still_off()
+    {
+        Guid projectId = await ObserveVisibilityAsync(isPrivate: true);
+        await using IQuerySession query = postgres.Store.QuerySession();
+
+        (await PullRequestResolveCommand.CarriedReadScopeAsync(
+                ReviewReadScope.AllThreads, query, projectId, CancellationToken.None))
+            .Should().Be(ReviewReadScope.AllThreads);
+    }
+
+    [Fact]
+    public async Task A_restricted_scope_a_poll_recorded_is_carried_as_it_was()
+    {
+        Guid projectId = await ObserveVisibilityAsync(isPrivate: true);
+        await using IQuerySession query = postgres.Store.QuerySession();
+        ReviewReadScope recorded = new([], ["PRRT_withheld"]);
+
+        (await PullRequestResolveCommand.CarriedReadScopeAsync(recorded, query, projectId, CancellationToken.None))
+            .Should().BeSameAs(recorded, "a restricted scope only ever reads less than the gate now allows");
+    }
+
     private async Task<Guid> ObserveVisibilityAsync(bool isPrivate)
     {
         Guid projectId = DomainId.New();

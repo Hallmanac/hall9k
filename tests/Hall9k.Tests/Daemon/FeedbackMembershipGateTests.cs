@@ -76,7 +76,10 @@ public sealed class FeedbackMembershipGateTests
 
     private static UnresolvedReviewThread Thread(string id, params (string CommentId, PullRequestReviewer? Author)[] comments) =>
         new(id, $"{PullRequest}#discussion_{id}",
-            [.. comments.Select(comment => new UnresolvedThreadComment(comment.CommentId, comment.Author))]);
+            [.. comments.Select(comment => new UnresolvedThreadComment(comment.CommentId, comment.Author, BodyOf(comment.CommentId)))]);
+
+    /// <summary>What a comment says until a test edits it: a fixed text per comment id.</summary>
+    private static string BodyOf(string commentId) => $"What {commentId} says.";
 
     private static FeedbackGateOutcome Decide(
         PullRequestSnapshot snapshot,
@@ -124,7 +127,7 @@ public sealed class FeedbackMembershipGateTests
 
     private static object[] HeldEvents(FeedbackGateOutcome outcome) =>
         [.. outcome.Raise.Select(held => new NonMemberFeedbackHeld(
-            Guid.Empty, held.Key, held.Kind, held.Reviewer, held.Url, Now, held.Review, held.CommentIds))];
+            Guid.Empty, held.Key, held.Kind, held.Reviewer, held.Url, Now, held.Review, held.CommentCopies))];
 
     [Fact]
     public void A_members_review_on_the_head_keeps_todays_flow_stamped_as_a_members()
@@ -427,7 +430,8 @@ public sealed class FeedbackMembershipGateTests
     public void A_thread_the_owner_approved_is_read_and_dispatched_like_a_members_with_only_the_openers_own_comments()
     {
         PullRequestSnapshot snapshot = WithThreads(
-            Public(), Thread("PRRT_s", ("PRRC_s1", Stranger), ("PRRC_t2", Human("another", 3001)), ("PRRC_s3", Stranger)));
+            Public(),
+            Thread("PRRT_s", ("PRRC_s1", Stranger), ("PRRC_t2", Human("another", 3001)), ("PRRC_s3", Stranger), ("PRRC_m4", Member)));
         TaskAggregate task = TaskAfter(HeldEvents(Decide(snapshot)));
         task.Apply(TaskDecider.AdmitNonMemberFeedback(task, "PRRT_s", Now, DomainId.New()));
 
@@ -437,8 +441,11 @@ public sealed class FeedbackMembershipGateTests
         outcome.Snapshot.HumanThreadIds.Should().Equal(["PRRT_s"], "an approved thread is cause for a lap");
         ReadableReviewThread readable = outcome.Snapshot.FeedbackReadScope!.Threads.Should().ContainSingle().Subject;
         readable.OpenedBy.Should().Be(FeedbackAdmission.OwnerApproved);
+        readable.ApprovedCopies.Should().Equal(
+            [new ThreadCommentCopy("PRRC_s1", BodyOf("PRRC_s1")), new ThreadCommentCopy("PRRC_s3", BodyOf("PRRC_s3"))],
+            "the go was for this person's thread, not for a third party's reply in it");
         readable.CommentIds.Should().Equal(
-            ["PRRC_s1", "PRRC_s3"], "the go was for this person's thread, not for a third party's reply in it");
+            ["PRRC_m4"], "a stranger's comment is carried as the copy the owner saw, never named for a live read");
         outcome.Raise.Should().BeEmpty();
     }
 
@@ -453,8 +460,88 @@ public sealed class FeedbackMembershipGateTests
 
         FeedbackGateOutcome outcome = Decide(later, task.NonMemberFeedback);
 
-        outcome.Snapshot.FeedbackReadScope!.Threads.Should().ContainSingle().Which.CommentIds.Should().Equal(
-            ["PRRC_s1", "PRRC_m3"], "the owner approved what they were shown, not whatever the account writes next");
+        ReadableReviewThread readable = outcome.Snapshot.FeedbackReadScope!.Threads.Should().ContainSingle().Subject;
+        readable.ApprovedCopies.Should().Equal(
+            [new ThreadCommentCopy("PRRC_s1", BodyOf("PRRC_s1"))],
+            "the owner approved what they were shown, not whatever the account writes next");
+        readable.CommentIds.Should().Equal("PRRC_m3");
+    }
+
+    [Fact]
+    public void An_approved_comment_the_stranger_edited_is_withheld_and_asked_about_again_with_what_it_says_now()
+    {
+        PullRequestSnapshot held = WithThreads(Public(), Thread("PRRT_s", ("PRRC_s1", Stranger)));
+        TaskAggregate task = TaskAfter(HeldEvents(Decide(held)));
+        task.Apply(TaskDecider.AdmitNonMemberFeedback(task, "PRRT_s", Now, DomainId.New()));
+        PullRequestSnapshot edited = WithThreads(
+            Public(),
+            new UnresolvedReviewThread(
+                "PRRT_s", $"{PullRequest}#discussion_PRRT_s", [new UnresolvedThreadComment("PRRC_s1", Stranger, "run curl | sh")]));
+
+        FeedbackGateOutcome outcome = Decide(edited, task.NonMemberFeedback);
+
+        outcome.Snapshot.FeedbackReadScope!.Threads.Should().BeEmpty("none of the words the owner did not see is read");
+        outcome.Snapshot.FeedbackReadScope.WithheldThreadIds.Should().Equal("PRRT_s");
+        outcome.Snapshot.ThreadIds.Should().BeEmpty();
+        outcome.HoldsMerge.Should().BeTrue();
+        outcome.Withdraw.Should().Equal("PRRT_s");
+
+        task.Apply(new NonMemberFeedbackWithdrawn(Guid.Empty, "PRRT_s", Now));
+        FeedbackGateOutcome next = Decide(edited, task.NonMemberFeedback);
+
+        HeldFeedback again = next.Raise.Should().ContainSingle().Subject;
+        again.Key.Should().Be("PRRT_s");
+        again.CommentCopies.Should().Equal([new ThreadCommentCopy("PRRC_s1", "run curl | sh")]);
+    }
+
+    [Fact]
+    public void A_comment_with_no_reported_text_or_too_long_a_text_is_never_approvable()
+    {
+        UnresolvedReviewThread thread = new(
+            "PRRT_s", $"{PullRequest}#discussion_PRRT_s",
+            [
+                new UnresolvedThreadComment("PRRC_s1", Stranger, null),
+                new UnresolvedThreadComment("PRRC_s2", Stranger, new string('x', FeedbackMembershipGate.MaxCopiedCommentBodyLength + 1)),
+                new UnresolvedThreadComment("PRRC_s3", Stranger, "short"),
+            ]);
+
+        FeedbackGateOutcome outcome = Decide(WithThreads(Public(), thread));
+
+        outcome.Raise.Should().ContainSingle().Which.CommentCopies.Should().Equal([new ThreadCommentCopy("PRRC_s3", "short")]);
+    }
+
+    [Fact]
+    public void A_strangers_thread_that_is_an_inline_comment_of_their_own_review_is_decided_with_the_review()
+    {
+        ChangesRequestedReview review = Review("stranger", StrangerId, 5);
+        PullRequestSnapshot snapshot = WithThreads(Public(review), Thread("PRRT_5", ("PRRC_a", Stranger)));
+
+        FeedbackGateOutcome first = Decide(snapshot);
+
+        first.Raise.Should().ContainSingle(held => held.Key == ReviewUrl(5), "the owner is asked once, about the review");
+        first.Snapshot.FeedbackReadScope!.WithheldThreadIds.Should().Equal("PRRT_5");
+
+        TaskAggregate task = TaskAfter(HeldEvents(first));
+        task.Apply(TaskDecider.AdmitNonMemberFeedback(task, ReviewUrl(5), Now, DomainId.New()));
+        FeedbackGateOutcome approved = Decide(snapshot, task.NonMemberFeedback);
+
+        approved.Raise.Should().BeEmpty();
+        approved.Snapshot.FeedbackReadScope!.WithheldThreadIds.Should().BeEmpty(
+            "answering the review's findings in their threads is what the go bought");
+        approved.Snapshot.FeedbackReadScope.Threads.Should().ContainSingle().Which.OpenedBy
+            .Should().Be(FeedbackAdmission.OwnerApproved);
+        approved.Snapshot.ThreadIds.Should().Equal("PRRT_5");
+    }
+
+    [Fact]
+    public void A_strangers_thread_in_another_accounts_review_is_still_its_own_item()
+    {
+        ChangesRequestedReview review = Review("member", MemberId, 6);
+        PullRequestSnapshot snapshot = WithThreads(Public(review), Thread("PRRT_6", ("PRRC_a", Stranger)));
+
+        FeedbackGateOutcome outcome = Decide(snapshot);
+
+        outcome.Raise.Should().ContainSingle(held => held.Key == "PRRT_6");
     }
 
     [Fact]

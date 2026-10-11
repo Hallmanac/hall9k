@@ -6,14 +6,14 @@ namespace Hall9k.Daemon.Closeout;
 
 /// <summary>One piece of non-member feedback this poll saw for the first time, to be held for the owner.</summary>
 /// <param name="Review">For a review: the review as observed. Null for a thread.</param>
-/// <param name="CommentIds">For a thread: the ids of the comments in it as observed, which is all the owner's go can ever cover. Null for a review.</param>
+/// <param name="CommentCopies">For a thread: the opener's comments as observed, which is all the owner's go can ever cover. Null for a review.</param>
 internal sealed record HeldFeedback(
     string Key,
     NonMemberFeedbackKind Kind,
     string Reviewer,
     string Url,
     ChangesRequestedReview? Review,
-    IReadOnlyList<string>? CommentIds = null);
+    IReadOnlyList<ThreadCommentCopy>? CommentCopies = null);
 
 /// <summary>
 /// What the membership gate made of one poll's review feedback (task: a changes-requested review or an
@@ -27,7 +27,11 @@ internal sealed record HeldFeedback(
 /// bar a read scope that says everything is readable, wherever the gate is off.
 /// </param>
 /// <param name="Raise">Feedback seen for the first time, each of which becomes exactly one needs-you item.</param>
-/// <param name="Withdraw">Keys of items whose feedback is gone from GitHub, which no longer ask anything of the owner.</param>
+/// <param name="Withdraw">
+/// Keys of items whose feedback is gone from GitHub, which no longer ask anything of the owner, and of
+/// approved threads whose approved text has since been edited, whose approval ends here so the next
+/// poll raises them again for the owner to read afresh.
+/// </param>
 /// <param name="HoldsMerge">
 /// Whether a pre-approved merge must wait: an item still waits on the owner, a non-member's thread is
 /// still unresolved, or the roster is not known and human feedback exists that cannot be classified.
@@ -76,6 +80,16 @@ internal static class FeedbackMembershipGate
     /// </summary>
     internal const int MaxReadableCommentIds = 500;
 
+    /// <summary>
+    /// The longest comment body a held thread keeps a copy of, which is also the longest the prompt
+    /// carries whole. A longer one is simply never approvable, so no copy is ever cut short and a
+    /// session is never pointed back at the live comment to read the rest.
+    /// </summary>
+    internal const int MaxCopiedCommentBodyLength = 20_000;
+
+    /// <summary>How many of a held thread's opener's comments are copied; the rest are never read.</summary>
+    internal const int MaxCopiedCommentsPerThread = 20;
+
     private enum Who
     {
         Member,
@@ -114,7 +128,7 @@ internal static class FeedbackMembershipGate
         bool holdsMerge = false;
 
         IReadOnlyList<ChangesRequestedReview> admitted = DecideReviews(snapshot, roster, items, raise, ref holdsMerge);
-        (IReadOnlyList<string> withheld, IReadOnlyList<ReadableReviewThread> readable) =
+        (IReadOnlyList<string> withheld, IReadOnlyList<ReadableReviewThread> readable, IReadOnlyList<string> edited) =
             DecideThreads(snapshot, roster, items, raise, ref holdsMerge);
 
         HashSet<string> withheldSet = [.. withheld];
@@ -139,7 +153,10 @@ internal static class FeedbackMembershipGate
         };
 
         return new FeedbackGateOutcome(
-            effective, DistinctByKey(raise), roster is null ? [] : WithdrawnKeys(snapshot, items), holdsMerge,
+            effective,
+            DistinctByKey(raise),
+            roster is null ? [] : [.. WithdrawnKeys(snapshot, items).Concat(edited).Distinct()],
+            holdsMerge,
             WaitingOnRoster: roster is null && holdsMerge);
     }
 
@@ -216,8 +233,9 @@ internal static class FeedbackMembershipGate
     /// <summary>
     /// Which unresolved threads a lap may see at all (those a member, a bot or an approved stranger
     /// opened) and, inside each, which comments it may read. Everything else is withheld by id.
+    /// <c>Edited</c> names the approved threads whose approved text no longer reads as it did.
     /// </summary>
-    private static (IReadOnlyList<string> Withheld, IReadOnlyList<ReadableReviewThread> Readable) DecideThreads(
+    private static (IReadOnlyList<string> Withheld, IReadOnlyList<ReadableReviewThread> Readable, IReadOnlyList<string> Edited) DecideThreads(
         PullRequestSnapshot snapshot,
         IReadOnlyCollection<long>? roster,
         IReadOnlyDictionary<string, NonMemberFeedbackItem> items,
@@ -231,8 +249,21 @@ internal static class FeedbackMembershipGate
         }
 
         HashSet<string> humanIds = [.. snapshot.HumanThreadIds];
+        Dictionary<string, ChangesRequestedReview> reviewOfThread = [];
+        foreach (ChangesRequestedReview review in snapshot.ChangesRequested.Concat(snapshot.StandingChangesRequested))
+        {
+            foreach (ChangesRequestedFinding finding in review.Findings)
+            {
+                if (finding.ThreadId is { Length: > 0 } findingThreadId)
+                {
+                    reviewOfThread.TryAdd(findingThreadId, review);
+                }
+            }
+        }
+
         List<string> withheld = [];
         List<ReadableReviewThread> readable = [];
+        List<string> edited = [];
 
         foreach (string id in snapshot.ThreadIds)
         {
@@ -270,17 +301,18 @@ internal static class FeedbackMembershipGate
                     break;
                 case Who.NonMember:
                     DecideStrangersThread(
-                        id, thread, opener, openerLogin, roster, items, raise, withheld, readable, ref holdsMerge);
+                        id, thread, opener, openerLogin, roster, items, reviewOfThread.GetValueOrDefault(id), raise, withheld,
+                        readable, edited, ref holdsMerge);
                     break;
                 default:
                     readable.Add(new ReadableReviewThread(
                         id, openerLogin, openerIs == Who.Bot ? FeedbackAdmission.Bot : FeedbackAdmission.Member,
-                        ReadableCommentIds(thread, roster, approvedAccountId: null, approvedCommentIds: null)));
+                        ReadableCommentIds(thread, roster)));
                     break;
             }
         }
 
-        return (withheld, CapNamedComments(readable));
+        return (withheld, CapNamedComments(readable), edited);
     }
 
     /// <summary>
@@ -308,17 +340,54 @@ internal static class FeedbackMembershipGate
         string openerLogin,
         IReadOnlyCollection<long>? roster,
         IReadOnlyDictionary<string, NonMemberFeedbackItem> items,
+        ChangesRequestedReview? coveringReview,
         List<HeldFeedback> raise,
         List<string> withheld,
         List<ReadableReviewThread> readable,
+        List<string> edited,
         ref bool holdsMerge)
     {
         if (items.TryGetValue(threadId, out NonMemberFeedbackItem? item)
             && item.Status == NonMemberFeedbackStatus.Admitted)
         {
+            IReadOnlyList<ThreadCommentCopy> approved = item.CommentCopies ?? [];
+            if (approved.Any(copy => ReadsDifferently(thread, copy, opener?.AccountId)))
+            {
+                // The owner approved words that are no longer there. Nothing of the thread is read, and
+                // the approval ends: the next poll raises the thread again, with what it says now.
+                withheld.Add(threadId);
+                holdsMerge = true;
+                edited.Add(threadId);
+                return;
+            }
+
             readable.Add(new ReadableReviewThread(
-                threadId, openerLogin, FeedbackAdmission.OwnerApproved,
-                ReadableCommentIds(thread, roster, approvedAccountId: opener?.AccountId, approvedCommentIds: item.CommentIds)));
+                threadId,
+                openerLogin,
+                FeedbackAdmission.OwnerApproved,
+                ReadableCommentIds(thread, roster),
+                [.. approved.Where(copy => StillReads(thread, copy, opener?.AccountId))]));
+            return;
+        }
+
+        if (coveringReview is { ReviewerAccountId: { } reviewer }
+            && reviewer == opener?.AccountId
+            && (item is null || item.Status == NonMemberFeedbackStatus.Withdrawn))
+        {
+            // The thread is one of the inline comments of a changes-requested review by the same account,
+            // and that review is already its own item: the owner decides the two together, on the review,
+            // and is not asked a second time for each of its threads. The review's go carries the review's
+            // own copy of what was said, so no comment in the thread is named for a session to read.
+            if (items.TryGetValue(coveringReview.ReviewUrl, out NonMemberFeedbackItem? reviewItem)
+                && reviewItem.Status == NonMemberFeedbackStatus.Admitted)
+            {
+                readable.Add(new ReadableReviewThread(
+                    threadId, openerLogin, FeedbackAdmission.OwnerApproved, ReadableCommentIds(thread, roster)));
+                return;
+            }
+
+            withheld.Add(threadId);
+            holdsMerge = true;
             return;
         }
 
@@ -328,29 +397,52 @@ internal static class FeedbackMembershipGate
         {
             raise.Add(new HeldFeedback(
                 threadId, NonMemberFeedbackKind.Thread, openerLogin, thread.Url, Review: null,
-                CommentIds: [.. thread.Comments.Where(comment => comment.Id.Length > 0).Select(comment => comment.Id)]));
+                CommentCopies: OpenersComments(thread, opener)));
         }
     }
 
     /// <summary>
-    /// The comments in a readable thread whose bodies a session may read: a bot's, a member's, and,
-    /// in a thread the owner approved, the approved opener's own among those the owner was shown
-    /// (<paramref name="approvedCommentIds"/>, held with the item). A comment the opener adds after the
-    /// go was never approved, so it is left out, as are a deleted account's and every other stranger's,
-    /// which is the whole of how a non-member's reply is never read. An approved thread whose item kept
-    /// no ids approves none of the stranger's comments.
+    /// The opener's own comments in a thread, with their text, as the owner's go will cover them: a
+    /// comment whose author is another account, one with no id or no reported text, and one past the
+    /// bounds are left out, which only ever means a session reads less. An opener with no account id (a
+    /// deleted account) has none.
     /// </summary>
-    private static IReadOnlyList<string> ReadableCommentIds(
-        UnresolvedReviewThread thread,
-        IReadOnlyCollection<long>? roster,
-        long? approvedAccountId,
-        IReadOnlyList<string>? approvedCommentIds) =>
+    private static IReadOnlyList<ThreadCommentCopy> OpenersComments(UnresolvedReviewThread thread, PullRequestReviewer? opener) =>
+        opener?.AccountId is { } accountId
+            ? [.. thread.Comments
+                .Where(comment => comment.Id.Length > 0
+                    && comment.Author?.AccountId == accountId
+                    && comment.Body is { Length: <= MaxCopiedCommentBodyLength })
+                .Take(MaxCopiedCommentsPerThread)
+                .Select(comment => new ThreadCommentCopy(comment.Id, comment.Body ?? ""))]
+            : [];
+
+    private static UnresolvedThreadComment? Live(UnresolvedReviewThread thread, ThreadCommentCopy copy, long? openerAccountId) =>
+        openerAccountId is { } accountId
+            ? thread.Comments.FirstOrDefault(comment => comment.Id == copy.Id && comment.Author?.AccountId == accountId)
+            : null;
+
+    /// <summary>Whether the comment the owner was shown is still on the thread, saying exactly what it said.</summary>
+    private static bool StillReads(UnresolvedReviewThread thread, ThreadCommentCopy copy, long? openerAccountId) =>
+        Live(thread, copy, openerAccountId) is { } live && string.Equals(live.Body, copy.Body, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Whether the comment the owner was shown is still on the thread but says something else now. A
+    /// comment that is gone is not this: there is nothing of it to read, so nothing to ask about.
+    /// </summary>
+    private static bool ReadsDifferently(UnresolvedReviewThread thread, ThreadCommentCopy copy, long? openerAccountId) =>
+        Live(thread, copy, openerAccountId) is { } live && !string.Equals(live.Body, copy.Body, StringComparison.Ordinal);
+
+    /// <summary>
+    /// The comments in a readable thread whose bodies a session may read by id: a bot's and a member's.
+    /// A stranger's are never here: an approved opener's are carried whole as copies instead, since a
+    /// comment read by id is read as it says when the session gets to it, and a deleted account's and
+    /// every other stranger's are never read at all, which is the whole of how a non-member's reply is
+    /// never read.
+    /// </summary>
+    private static IReadOnlyList<string> ReadableCommentIds(UnresolvedReviewThread thread, IReadOnlyCollection<long>? roster) =>
         [.. thread.Comments
-            .Where(comment => comment.Id.Length > 0
-                && (WhoIs(comment.Author, roster) is Who.Bot or Who.Member
-                    || (approvedAccountId is { } approved
-                        && comment.Author?.AccountId == approved
-                        && approvedCommentIds?.Contains(comment.Id) == true)))
+            .Where(comment => comment.Id.Length > 0 && WhoIs(comment.Author, roster) is Who.Bot or Who.Member)
             .Select(comment => comment.Id)];
 
     private static IReadOnlyList<string> WithdrawnKeys(

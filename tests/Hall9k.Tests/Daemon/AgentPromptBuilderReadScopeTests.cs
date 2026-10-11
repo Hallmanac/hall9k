@@ -157,6 +157,42 @@ public sealed class AgentPromptBuilderReadScopeTests : IDisposable
     }
 
     [Fact]
+    public void An_approved_strangers_comment_is_quoted_as_the_owner_saw_it_and_never_named_for_a_live_read()
+    {
+        TaskDetails task = SomeTask();
+        task.ReviewReadScope = new ReviewReadScope(
+            [
+                new ReadableReviewThread(
+                    "PRRT_a", "stranger", FeedbackAdmission.OwnerApproved, [], [new ThreadCommentCopy("PRRC_a1", Stranger)]),
+            ],
+            []);
+
+        string prompt = FollowUp(task);
+
+        prompt.Should().Contain(Stranger, "the owner approved exactly this text");
+        prompt.Should().Contain("Comment `PRRC_a1` from @stranger, exactly as the owner approved it");
+        prompt.Should().Contain("Thread `PRRT_a`, opened by @stranger").And.Contain("quoted below, so read none of it live");
+        prompt.Should().NotContain("comments `PRRC_a1`", "a live read would return whatever the author has edited it into");
+        prompt.Should().Contain("do not read anything its author wrote since");
+    }
+
+    [Fact]
+    public void An_approved_review_with_nothing_carried_is_never_read_live()
+    {
+        TaskDetails task = SomeTask();
+        task.ChangesRequestedReviews =
+        [
+            new ChangesRequestedReview(
+                "stranger", $"{PullRequest}#pullrequestreview-42", null, [], 2001, FeedbackAdmission.OwnerApproved),
+        ];
+
+        string prompt = ReviewLap(task);
+
+        prompt.Should().Contain("Do not go looking for the review's text yourself");
+        prompt.Should().NotContain("gh api repos/x/y/pulls/7/reviews/42");
+    }
+
+    [Fact]
     public void A_reply_a_non_member_left_in_a_members_thread_is_simply_not_named()
     {
         TaskDetails task = SomeTask();
