@@ -1404,7 +1404,7 @@ The check runs over composed prose only, never over the platform's own bookkeepi
 your task's objective and acceptance criteria. Those are this platform's voice and your own words
 respectively, and neither is text an agent wrote for you.
 
-Origin incident (2026-09-09): a review-feedback follow-up on `example-org/acme-platform#2042` posted a
+Origin incident (2026-09-09): a review-feedback follow-up on a client repository's pull request posted a
 summary comment under the owner's login with em dashes in most of its paragraphs. The rule existed
 in every orchestrator recipe on both nodes and in the operator's own user-level `CLAUDE.md`, and
 reached none of them, because `--setting-sources project` drops `CLAUDE.md` from a dispatched
