@@ -1,0 +1,22 @@
+hall9k-task-record: 1
+task-id: 01a12bb5-e49f-71b8-9a15-903859e13834
+project: hall9k
+type: chore
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#721
+objective: The repository carries the approved Apache-2.0 LICENSE and NOTICE at its root, and every release archive bundles LICENSE, NOTICE, and a generated THIRD-PARTY-NOTICES.txt, with CI's workflow token limited to read
+criteria:
+  - LICENSE and NOTICE at the repository root are byte-identical to /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/fd736bba-ready-the-public-hall9k-repo-for-outside-contributors-apache/workspace/drafts/LICENSE and /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/fd736bba-ready-the-public-hall9k-repo-for-outside-contributors-apache/workspace/drafts/NOTICE
+  - release.yml places LICENSE, NOTICE, and THIRD-PARTY-NOTICES.txt at the top level of every archive it builds (each tar.gz and each zip), before the archive step
+  - THIRD-PARTY-NOTICES.txt is generated at release time by a script committed in the repository that a contributor can also run locally against a publish output; it lists every package library in the published h9k.deps.json and h9kd.deps.json and the bundled Microsoft.NETCore.App and Microsoft.AspNetCore.App runtimes, each with its version and its license as an SPDX id, and the script fails the release when a listed package's license cannot be determined
+  - For each entry, the archive carries the full license text (the package's own license file where it ships one, otherwise the standard text for its SPDX id) with the copyright line the package declares, plus the contents of every THIRD-PARTY-NOTICES file shipped inside those packages and runtime packs; a URL alone does not meet this
+  - |-
+    ci.yml declares top-level permissions: contents: read, and both CI legs still pass
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/59e13834-the-repository-carries-the-app
+published: 2026-10-11 16:12:37Z
+context: |-
+  Item D of idea fd736bba (walk notes /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/fd736bba-ready-the-public-hall9k-repo-for-outside-contributors-apache/workspace/notes.md; Brian chose Apache-2.0, drafts approved word for word, land as written). The archives are self-contained and redistribute the .NET runtime and every NuGet dependency, so the notices must travel with them (MIT, BSD-3-Clause, and Apache require it). The shipped closure (80 packages in the installed build's h9k.deps.json and h9kd.deps.json, checked 2026-10-11 against the local NuGet cache) all declare SPDX license expressions: MIT, Apache-2.0, BSD-3-Clause (NetTopologySuite, NetTopologySuite.IO.PostGis, Polly.Core, Polly.Extensions, Polly.RateLimiting), PostgreSQL, and 0BSD. h9kd bundles the ASP.NET Core shared framework (Hall9k.ServiceDefaults.csproj FrameworkReference) as well as the .NET runtime. Both runtime packs and the OpenTelemetry packages ship their own THIRD-PARTY-NOTICES.TXT. Generator choice is the build's: prefer reading the restored packages' nuspec license metadata with no new third-party service; name the choice in the PR summary. Archive steps: release.yml about lines 119-130, after the Development-settings check at 105-113; extra top-level payload files are copied by InstallCommand.StageFromRelease and ignored by ValidateReleasePayload. NOTICE promises THIRD-PARTY-NOTICES.txt in the archives, so LICENSE and NOTICE land in the same PR as the release.yml change. The ci.yml permissions line is item G's. Nothing blocks this task. 8f7e3ba1's README License section links LICENSE and describes the archives' notices, so it lands after this one. Parked: running the license script in CI (needs a publish there); release.yml's own top-level permissions. Note to the window: criterion 2 is proved only by the first tag after merge; at that tag's closeout list the archives (tar -tzf, unzip -l) for the three files and keep the listing.
