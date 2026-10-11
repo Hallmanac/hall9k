@@ -174,19 +174,26 @@ public sealed class RunLauncher(
             // never the two-lens review below.
             if (isPrReview && (task.PendingMentionFollowUpAfterPreflight || task.AnswersMentionOnly))
             {
-                // An answer-only task's own dispatch answers the comment that minted it, read off the
-                // outcome row recorded for that mint rather than task.LatestMention*, which a second
-                // mention landing before this dispatch moves to a comment this lap was never minted
-                // for (the identical hazard the full review's mint addendum reads around). The pending
-                // flag cannot say which comment that is: the task's own first pre-flight sets it too,
-                // so every real first launch carries it. The one case where the latest comment IS the
-                // right one is a follow-up an attach actually claimed for it, whose own pre-flight
-                // requeued this dispatch, and that comment's own row says so (Attached, never
-                // AttachedNoFollowUp, which means no lap was dispatched for it). Falls back to the
-                // latest when no row is stored yet, which is the case at "now" speed, where this
-                // dispatch runs before the sweep records it.
-                ObservedReviewMention? mintingMention = null;
-                if (task.AnswersMentionOnly)
+                // Every follow-up answers the comment its own claim belongs to, never task.LatestMention*,
+                // which each observed mention overwrites, including one that earned no follow-up (a
+                // non-member's comment tagging the same login lands there while this task waits on its
+                // pre-flight). The attach that claimed the follow-up appended its mention in the same
+                // append, so the claim names the comment (MentionFollowUpClaimResolver).
+                MentionFollowUpClaimAnchors anchors = await MentionFollowUpClaimResolver.ResolveAsync(
+                    session, taskId, cancellationToken);
+                PullRequestMentionComment? comment = anchors.Claimed is { } claimedMention
+                    ? ToMentionComment(claimedMention)
+                    : null;
+
+                // An answer-only task's own first dispatch answers the comment that minted it, read off the
+                // outcome row recorded for that mint (the pending flag cannot say which comment that is: the
+                // task's own first pre-flight sets it too, so every real first launch carries it). The one
+                // case where a later comment is the right one is a follow-up an attach actually claimed for
+                // it, which the claim above resolves; a stream with no such claim keeps the row that says so
+                // (Attached, never AttachedNoFollowUp, which means no lap was dispatched for it). Falls back
+                // to the minting event itself when no row is stored yet, which is the case at "now" speed,
+                // where this dispatch runs before the sweep records it.
+                if (comment is null && task.AnswersMentionOnly)
                 {
                     IReadOnlyList<ObservedReviewMention> answerRows = await session.Query<ObservedReviewMention>()
                         .Where(mention => mention.TaskId == taskId)
@@ -196,20 +203,35 @@ public sealed class RunLauncher(
                             ReviewMentionOutcome.AnswerOnlyTaskCreatedParked.Value,
                             ReviewMentionOutcome.Attached.Value))
                         .ToListAsync(cancellationToken);
-                    mintingMention = answerRows.FirstOrDefault(mention =>
+                    ObservedReviewMention? mintingMention = answerRows.FirstOrDefault(mention =>
                             mention.Outcome == ReviewMentionOutcome.Attached
                             && mention.CommentId == task.LatestMentionCommentId)
                         ?? answerRows.FirstOrDefault(mention => mention.Outcome != ReviewMentionOutcome.Attached);
+                    comment = mintingMention is not null
+                        ? new(
+                            mintingMention.CommentId, mintingMention.CommentAuthorLogin, mintingMention.CommentBody,
+                            mintingMention.CommentUrl, mintingMention.CommentCreatedAt, mintingMention.CommentDatabaseId)
+                        : anchors.Minting is { } mintingEvent
+                            ? ToMentionComment(mintingEvent)
+                            : null;
                 }
 
-                PullRequestMentionComment comment = mintingMention is not null
-                    ? new(
-                        mintingMention.CommentId, mintingMention.CommentAuthorLogin, mintingMention.CommentBody,
-                        mintingMention.CommentUrl, mintingMention.CommentCreatedAt, mintingMention.CommentDatabaseId)
-                    : new(
-                        task.LatestMentionCommentId ?? string.Empty, task.LatestMentionAuthorLogin ?? string.Empty,
-                        task.LatestMentionBody ?? string.Empty, task.LatestMentionUrl ?? string.Empty,
-                        task.LatestMentionCreatedAt ?? DateTimeOffset.UtcNow, task.LatestMentionCommentDatabaseId);
+                if (comment is null && anchors.Only is { } onlyMention)
+                {
+                    comment = ToMentionComment(onlyMention);
+                }
+
+                if (comment is null)
+                {
+                    await SkipMentionFollowUpAsync(
+                        task, taskId, runId, leaseGeneration,
+                        new PullRequestMentionComment(string.Empty, string.Empty, string.Empty, string.Empty, DateTimeOffset.UtcNow),
+                        "the comment this follow-up was claimed for cannot be identified from the task's own history, "
+                        + "and answering the task's latest observed mention instead could answer a comment that never "
+                        + "earned a follow-up", cancellationToken);
+                    return;
+                }
+
                 Guid? priorReviewRunId = await OriginalReviewRunResolver.ResolveAsync(
                     session, task.RunIds, cancellationToken);
                 await LaunchPrReviewMentionFollowUpAsync(
@@ -1287,6 +1309,11 @@ public sealed class RunLauncher(
         }
     }
 
+    private static PullRequestMentionComment ToMentionComment(PullRequestReviewMentionObserved observed) =>
+        new(
+            observed.CommentId, observed.CommentAuthorLogin, observed.CommentBody, observed.CommentUrl,
+            observed.CommentCreatedAt, observed.CommentDatabaseId);
+
     /// <summary>
     /// How many times a mention follow-up's launch reads this install's own login before giving up
     /// on it, and the pause after each failed attempt. Bounded so a gh that is genuinely down
@@ -1364,7 +1391,7 @@ public sealed class RunLauncher(
             {
                 await RecordLaunchFailureAsync(
                     taskId, runId, leaseGeneration,
-                    $"The answer to {RelayedText.OneLine(comment.AuthorLogin).Trim()}'s comment on your own "
+                    $"The answer to {(comment.AuthorLogin.IsBlank() ? "the tagged" : RelayedText.OneLine(comment.AuthorLogin).Trim() + "'s")} comment on your own "
                     + $"pull request was not started: {reason.TrimEnd('.')}. Nothing was reviewed or posted. "
                     + "h9k task retry runs the answer lap again.", cancellationToken);
                 return;
