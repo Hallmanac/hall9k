@@ -32,7 +32,7 @@ generated `THIRD-PARTY-NOTICES.txt` at its top level, because the archives redis
 and every NuGet dependency. `release.yml` generates the third-party file from the published `h9k.deps.json`
 and `h9kd.deps.json` with `scripts/generate-third-party-notices.cs`, which reads each restored package's
 nuspec for its SPDX license and copyright, includes the package's own license file (or the standard text
-under `scripts/license-texts/`), and reproduces every notices file the packages and runtime packs ship. The
+under `scripts/license-texts/`, with the package's authors standing in when it declares no copyright), and reproduces every notices file the packages and runtime packs ship. The
 script fails the release when any listed package's license cannot be determined; a new license family means
 adding its text to `scripts/license-texts/`. To run it locally after a self-contained publish:
 `dotnet run scripts/generate-third-party-notices.cs -- <publish-dir>`.
