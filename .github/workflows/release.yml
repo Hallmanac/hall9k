@@ -94,6 +94,21 @@ jobs:
         shell: bash
         run: echo "${VERSION}" > "dist/${{ matrix.rid }}/VERSION"
 
+      # The archives redistribute the .NET runtime and every NuGet dependency, and MIT, BSD-3-Clause
+      # and Apache-2.0 all require their license and copyright notices to travel with the binaries,
+      # so each archive carries Hall9k's own LICENSE and NOTICE plus a THIRD-PARTY-NOTICES.txt
+      # generated from the exact deps.json files just published (scripts/generate-third-party-notices.cs;
+      # it can be run locally against any publish output). The script exits nonzero when a listed
+      # package's license cannot be determined, which fails the release rather than shipping an
+      # incomplete notice. The three files sit at the top level of the payload, beside VERSION, where
+      # InstallCommand.ValidateReleasePayload ignores them and StageFromRelease copies them.
+      - name: Bundle license notices
+        shell: bash
+        run: |
+          cp LICENSE NOTICE "dist/${{ matrix.rid }}/"
+          dotnet run scripts/generate-third-party-notices.cs -- "dist/${{ matrix.rid }}"
+          test -s "dist/${{ matrix.rid }}/THIRD-PARTY-NOTICES.txt"
+
       # A Development settings file has no business in a release payload: an installed
       # daemon always runs Production, so it would ship unread today and become tomorrow's
       # dev connection string or chatty flag riding into every install (origin: found in
