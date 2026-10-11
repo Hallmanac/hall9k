@@ -14,3 +14,7 @@
 ===gates-passed===
   The project's gates already ran and passed against this exact commit, immediately
   before this review was dispatched:
+===gate-path-scoped===
+    This gate is scoped to the paths {{PathSet}}. When a pass's diff touched none of them the
+    platform skipped it and recorded that, so it may NOT have run against this commit: whether
+    it passes here is unobserved, and a glob that misses a path skips it too.

@@ -352,6 +352,40 @@ public sealed class ProjectSetCommandTests
         act.Should().Throw<DomainValidationException>().WithMessage("*no positive glob*");
     }
 
+    [Theory]
+    [InlineData("test=/src/")]
+    [InlineData("test=./src/")]
+    [InlineData("test=src\\Services\\")]
+    [InlineData("test=**,!/src/legacy/")]
+    public void A_verify_gate_paths_glob_no_git_path_can_match_is_a_refusal_because_it_would_always_skip(string value)
+    {
+        Action act = () => ProjectSetCommand.ApplyGatePaths([new VerifyCommand("test", "dotnet test")], value);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*can never match*");
+    }
+
+    [Fact]
+    public void Changing_only_a_gates_path_set_validates_no_gate_against_clean_base()
+    {
+        VerifyCommand[] recorded = [new VerifyCommand("build", "dotnet build"), new VerifyCommand("test", "dotnet test")];
+        IReadOnlyList<VerifyCommand> resolved = ProjectSetCommand.ApplyGatePaths(recorded, "test=src/");
+
+        ProjectSetCommand.GatesChangedForValidation(resolved, recorded).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void A_changed_command_or_filter_is_still_validated_against_clean_base_whatever_its_path_set()
+    {
+        VerifyCommand[] recorded = [new VerifyCommand("build", "dotnet build", PathSet: ["src/"]), new VerifyCommand("test", "dotnet test")];
+        VerifyCommand[] resolved =
+        [
+            new VerifyCommand("build", "dotnet build -c Release", PathSet: ["src/"]),
+            new VerifyCommand("test", "dotnet test", HostCoupledFilter: "Category=RequiresDocker"),
+        ];
+
+        ProjectSetCommand.GatesChangedForValidation(resolved, recorded).Should().Equal(resolved);
+    }
+
     [Fact]
     public void A_verify_gate_paths_accepts_an_exclusion_beside_a_positive_glob()
     {
