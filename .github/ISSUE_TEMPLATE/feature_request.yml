@@ -1,0 +1,21 @@
+name: Feature request
+description: Suggest something Hall9k should do that it does not do today.
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like to happen
+      description: Describe the behaviour you want. A rough idea is fine.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you have tried instead
+      description: Workarounds or other tools you have used, if any.

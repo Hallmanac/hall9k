@@ -15,7 +15,9 @@ finish there: opening the pull request at closeout pushes to `origin`, and the a
 sweep that is on by default for every project cannot resolve a repository to watch either. Add
 a remote before registering, or register with `--repo` only to explore the CLI locally, not to
 run a task through (see [Register a
-project](#register-a-project-only-with-the-users-own-repository) below).
+project](#register-a-project-only-with-the-users-own-repository) below). On a public
+repository, a pull request or mention from someone who is not a member of your project never
+starts an agent on its own; it waits for you.
 
 You write a piece of work down, publish it, and queue it. A daemon on your own machine takes it
 from there:
@@ -781,10 +783,15 @@ bulk backlog mirroring, and merging your pull requests by default.
 
 ## Contributing
 
-Read [AGENTS.md](AGENTS.md) first; it is the contract for humans and agents alike. The short
-version: `dotnet build` and `dotnet test` are the gate, commits are authored as the repository
-owner with no bot attribution, agents reply inside review threads and never open one, and in this
-repository all new work enters through `h9k task add`.
+Hall9k takes contributions issues first: open an issue, and wait for it to be labelled
+`help wanted` before you open a pull request. [CONTRIBUTING.md](CONTRIBUTING.md) covers how to
+build, test, and sign off your commits. Agents working in this repository read
+[AGENTS.md](AGENTS.md) instead; it is their contract.
+
+## Security
+
+Please report security problems privately through the repository's Security tab, never in a
+public issue. [SECURITY.md](SECURITY.md) says what is in scope and what to expect.
 
 ## License
 
