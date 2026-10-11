@@ -30,7 +30,3 @@ context: |-
   Why a host-coupled gate's line ignores its path set: the session never runs that gate itself, and its one exception, a single touched test class scoped by name, already cannot fire on a diff that touches no test class.
 
   Out of scope: the generated project-home AGENTS.md "Build / test / run" list (ProjectAgentsDocument.cs about line 350), the QA session's settings allowlist (ClaudeSettingsFile.cs about line 440), telling a review lens which gates a pass skipped by path scope (the prompt builder reads configuration, not the last pass's results), local h9k task verify parity, the QA review's checks section, where the gates are a starting point for an end-to-end run the session scopes to its own map, the daemon has already verified, and a path-skipped gate has no honest end-to-end marker (park), the review lens's gates-already-answer-criterion fragment going stale for a path-skipped gate (park, with the passed-gates staleness), and anything d6c9e897 owns. Line numbers above drifted since 5fa78e34b; re-find them on the branch.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-10-11 18:16:18Z
