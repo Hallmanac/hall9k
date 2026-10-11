@@ -966,6 +966,25 @@ Per poll, in priority order:
   follow-up run is dispatched onto the branch with the rebase-onto-main prompt.
 - **Checks completed and failing.** Never acted on while any check is still pending. A follow-up
   run is dispatched onto the branch with the fix-the-CI prompt.
+- **Feedback from outside the project's roster, held for you** (a security fix; on a public
+  repository, or wherever `h9k project set --review-requires-membership` is on). A
+  changes-requested review or an unresolved review thread written by an account that is not in the
+  project's trust-chain roster, matched on its numeric GitHub account id and never its login,
+  dispatches no lap and is read by no session, because a session that runs without permission
+  prompts can be steered by what it reads and anyone can comment on a public pull request. The
+  poll raises exactly one needs-you item for it on `h9k status`, however many polls see it, naming
+  the reviewer's login, the kind of feedback and its link and quoting none of its text, and a
+  pre-approved task does not merge while the item is undecided. `h9k pr feedback <task> <feedback>
+  --go` is the owner's explicit go: the next poll dispatches one fix lap carrying that feedback,
+  even if the head has moved since, and tells the session which comments it may read. `--decline`
+  dispatches nothing and releases a review's merge hold; a declined thread stays unresolved on
+  GitHub and goes on holding the merge, as any unresolved thread does. Either answer clears the
+  item, and so does the feedback leaving GitHub (the review dismissed, the thread resolved). A
+  reply a non-member leaves inside a member's or a bot's thread raises no item; it is simply never
+  read. Bots, Copilot included, keep the automated path. When this node has not yet computed the
+  roster, a poll decides nothing about human feedback, holds the merge, and asks again (the daemon
+  log says so once per task); a private repository, or an explicit `off`, runs exactly as before. Mixed feedback runs the member's lap
+  with only the member's feedback, and the stranger's item is raised in the same poll.
 - **A human reviewer's changes-requested review on the current head.** Checked ahead of the
   thread branch below, because a changes-requested review ordinarily opens threads too and the
   narrower fact is the one that matters. The review's own body and every inline comment are

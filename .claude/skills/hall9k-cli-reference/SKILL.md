@@ -1709,6 +1709,9 @@ top-level comment that answers a review's own body (`--review`), and the only ro
 session has to either.
 
 ```bash
+h9k pr feedback <task>                         # list the feedback from outside the project's roster this task holds (reviewer, kind, link, status; never its text)
+h9k pr feedback <task> <link-or-thread-id> --go        # the owner's go: the next poll dispatches ONE fix lap carrying it, even if the head moved
+h9k pr feedback <task> <link-or-thread-id> --decline   # dispatch nothing; a declined review releases the merge hold, a declined thread stays unresolved and keeps holding it
 h9k pr reply <task> --thread PRRT_kwDO --disposition fix --body "Fixed above: the sentinel is reused now."
 h9k pr reply <task> --thread PRRT_kwDO --disposition decline --body "…"   # refused when a PERSON opened it
 h9k pr reply <task> --review "<pr url>#pullrequestreview-345" --disposition fix --body "…"       # a review BODY

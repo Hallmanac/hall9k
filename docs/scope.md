@@ -34,7 +34,10 @@ a standing changes-requested review (PLAN.md Decisions Log #152). A declined or 
 review thread is the narrower, comment-only case: that gets an evidence-based reply posted
 in-thread, leaving only the thread's resolve to the human (PLAN.md Decisions Log #159). Copilot's
 own changes-requested review stays on the automated thread path, disputing and resolving without a
-human in the loop. A branch
+human in the loop. On a public repository, and wherever the membership gate is on, a changes-requested
+review or an unresolved thread from an account outside the project's roster never reaches a lap at
+all: it raises one needs-you item and waits for the owner's `h9k pr feedback --go` or `--decline`,
+holding a pre-approved merge meanwhile (see `docs/concepts.md`). A branch
 obstructed only by a conflict with its own base gets a mechanical fix tried first: a plain fetch +
 rebase + force-push in the run's retained worktree, no agent session and no local gates, since
 GitHub's own CI on the push is treated as the authoritative gate here — the follow-up run only
@@ -786,7 +789,9 @@ declared hall9k team member — matched on their numeric GitHub id, never their 
 private or internal one keeps the collaborator behaviour above with no membership check at all
 (security review idea 6be68ee2, finding 1). `h9k project set <name> --review-requires-membership
 on|off|default` overrides the visibility-computed default either way; `default` has the daemon read
-the repository's own visibility fresh every sweep. A non-member's (or a bot's) request still mints
+the repository's own visibility fresh every sweep. The same setting and the same roster gate review
+feedback on a pull request this install is watching: a non-member's changes-requested review or
+unresolved thread is held for the owner's go rather than handed to a build lap. A non-member's (or a bot's) request still mints
 the task, published but held, not queued — `h9k task queue` is the human go — and this node's first
 sweep after a restart, before it has recomputed the project's declared members, skips rather than
 guesses and retries next sweep.
