@@ -9,7 +9,7 @@ namespace Hall9k.Tests.Daemon;
 
 /// <summary>
 /// What a mention of this install's login earns, decided with no database, no branch and no GitHub
-/// (decision dce39370). The origin case is AgelessRx/arx-platform#2166: a teammate's one question to
+/// (decision dce39370). The origin case is example-org/acme-platform#2166: a teammate's one question to
 /// the pull request's author minted a full two-lens review of the author's own pull request at $6.33.
 /// </summary>
 public sealed class MentionRoutingTests
@@ -71,9 +71,9 @@ public sealed class MentionRoutingTests
     [Fact]
     public void The_objective_names_the_commenter_and_the_owners_own_pull_request_and_never_says_review()
     {
-        string objective = MentionRouting.AnswerObjective("taylor-dennison", "AgelessRx/arx-platform#2166");
+        string objective = MentionRouting.AnswerObjective("taylor-dennison", "example-org/acme-platform#2166");
 
-        objective.Should().Be("Answer taylor-dennison's comment on your own pull request AgelessRx/arx-platform#2166");
+        objective.Should().Be("Answer taylor-dennison's comment on your own pull request example-org/acme-platform#2166");
         objective.Should().NotContainEquivalentOf("review");
     }
 

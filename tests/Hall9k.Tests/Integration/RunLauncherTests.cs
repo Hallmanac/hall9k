@@ -5026,7 +5026,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
-    /// AgelessRx/arx-platform#2166 from the task owner's side: a mention that tags another login
+    /// example-org/acme-platform#2166 from the task owner's side: a mention that tags another login
     /// reached this owner's task and, after a teammate's pre-flight, this install claimed the
     /// pending follow-up. The launch re-checks the stored comment against this install's own login,
     /// starts no session, records the skip, clears the pending flag, and hands the task back to the
@@ -5416,7 +5416,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
-    /// Decision dce39370, from AgelessRx/arx-platform#2166: a task minted to answer a comment on the
+    /// Decision dce39370, from example-org/acme-platform#2166: a task minted to answer a comment on the
     /// owner's own pull request is dispatched as the bounded answer lap on its very first claim, with
     /// no pending-follow-up flag, no prior report and no earlier run. The model pre-flight still sits
     /// in front of the checkout, so a safe verdict is seeded exactly as it is for any follow-up.

@@ -12,7 +12,7 @@ namespace Hall9k.Domain.Features.Project;
 /// (<see cref="WritingConventionsCheck"/>) reads before it posts any of it.
 /// <para>
 /// Origin incident (2026-09-09): follow-up run 01a085d9 of arx-platform task 01a083d8 answered a
-/// Copilot review on AgelessRx/arx-platform#2042 with a top-level comment under Brian's login
+/// Copilot review on example-org/acme-platform#2042 with a top-level comment under Brian's login
 /// carrying em dashes in most of its paragraphs. The rule against them existed in every
 /// orchestrator recipe on both nodes and in the operator's own user-level CLAUDE.md, and reached
 /// none of them: <c>--setting-sources project</c> drops CLAUDE.md from a dispatched session, and

@@ -525,7 +525,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
     /// <summary>
     /// A live pr-review task of another owner's, held by that owner's node and waiting on its pull
     /// request: the shape <see cref="SeedWaitingReviewAsync"/> seeds for this install, replicated in
-    /// from a teammate, and the shape AgelessRx/arx-platform#2166 had when a teammate's install
+    /// from a teammate, and the shape example-org/acme-platform#2166 had when a teammate's install
     /// claimed it.
     /// </summary>
     private static async Task<Guid> SeedTeammatesWaitingReviewAsync(
@@ -608,7 +608,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
     }
 
     /// <summary>
-    /// Decision dce39370, from AgelessRx/arx-platform#2166: a teammate's one question on a pull request
+    /// Decision dce39370, from example-org/acme-platform#2166: a teammate's one question on a pull request
     /// this install's own login wrote mints a task that answers it, never the two-lens review of the
     /// owner's own work. The login matches the pull request's author case-insensitively, and the
     /// objective, criterion and recorded outcome all say which shape ran.
@@ -1144,7 +1144,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
     }
 
     /// <summary>
-    /// AgelessRx/arx-platform#2166: a mention of this install's login on a pull request whose only
+    /// example-org/acme-platform#2166: a mention of this install's login on a pull request whose only
     /// live pr-review task is another owner's used to find that task by external reference alone and
     /// claim it. Now nothing is claimed, launched, appended or minted: the mention is recorded
     /// against no task, for the board to surface. <see cref="RefusingExecutor"/> and

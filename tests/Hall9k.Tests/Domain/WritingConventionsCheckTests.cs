@@ -192,7 +192,7 @@ public sealed class WritingConventionsCheckTests
     /// </summary>
     [Theory]
     [InlineData("Co-Authored-By: Claude <noreply.com>")]
-    [InlineData("Co-Authored-By: Brian Hall <brian@agelessrx.com>")]
+    [InlineData("Co-Authored-By: Brian Hall <brian@example.com>")]
     [InlineData("\U0001F916 Generated with Claude Code")]
     [InlineData("Generated with Claude Code (https://claude.ai/code)")]
     public void The_footer_shapes_this_platform_actually_sees_are_still_dropped(string footer) =>
@@ -258,7 +258,7 @@ public sealed class WritingConventionsCheckTests
     /// </summary>
     [Theory]
     [InlineData("Generated with Claude Code.")]
-    [InlineData("Co-Authored-By: Brian Hall brian@agelessrx.com")]
+    [InlineData("Co-Authored-By: Brian Hall brian@example.com")]
     public void A_footer_that_carries_only_a_name_is_still_dropped(string footer) =>
         Vet($"Bound the limiter.\n\n{footer}").Text.Should().Be("Bound the limiter.");
 
