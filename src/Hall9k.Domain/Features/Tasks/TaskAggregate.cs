@@ -2142,7 +2142,7 @@ public sealed class TaskAggregate
 
         _nonMemberFeedback[@event.FeedbackKey] = new NonMemberFeedbackItem(
             @event.FeedbackKey, @event.Kind, @event.Reviewer, @event.Url, @event.ObservedAt,
-            NonMemberFeedbackStatus.Undecided, @event.Review);
+            NonMemberFeedbackStatus.Undecided, @event.Review, CommentIds: @event.CommentIds);
     }
 
     public void Apply(NonMemberFeedbackAdmitted @event) =>

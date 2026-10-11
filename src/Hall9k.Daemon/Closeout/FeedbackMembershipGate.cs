@@ -6,8 +6,14 @@ namespace Hall9k.Daemon.Closeout;
 
 /// <summary>One piece of non-member feedback this poll saw for the first time, to be held for the owner.</summary>
 /// <param name="Review">For a review: the review as observed. Null for a thread.</param>
+/// <param name="CommentIds">For a thread: the ids of the comments in it as observed, which is all the owner's go can ever cover. Null for a review.</param>
 internal sealed record HeldFeedback(
-    string Key, NonMemberFeedbackKind Kind, string Reviewer, string Url, ChangesRequestedReview? Review);
+    string Key,
+    NonMemberFeedbackKind Kind,
+    string Reviewer,
+    string Url,
+    ChangesRequestedReview? Review,
+    IReadOnlyList<string>? CommentIds = null);
 
 /// <summary>
 /// What the membership gate made of one poll's review feedback (task: a changes-requested review or an
@@ -88,9 +94,17 @@ internal static class FeedbackMembershipGate
     {
         if (!AutoPrReviewObservation.MembershipGateIsOn(snapshot.RepositoryIsPrivate, explicitSetting))
         {
-            // Off: nothing is held, and an item raised while it was on no longer asks anything.
+            // Off: nothing is held, and an item raised while it was on no longer asks anything. Every
+            // review keeps its flow, so each is stamped as readable: the prompt withholds the text of a
+            // review with no admission, and an unstamped review here would send a lap its own fix with
+            // the review it is meant to fix taken out.
             return new FeedbackGateOutcome(
-                snapshot with { FeedbackReadScope = ReviewReadScope.AllThreads },
+                snapshot with
+                {
+                    ChangesRequestedReviews = StampedAsMembers(snapshot.ChangesRequested),
+                    StandingChangesRequestedReviews = StampedAsMembers(snapshot.StandingChangesRequested),
+                    FeedbackReadScope = ReviewReadScope.AllThreads,
+                },
                 [],
                 [.. items.Values.Where(item => item.Status.NeedsOwner).Select(item => item.Key)],
                 HoldsMerge: false);
@@ -128,6 +142,9 @@ internal static class FeedbackMembershipGate
             effective, DistinctByKey(raise), roster is null ? [] : WithdrawnKeys(snapshot, items), holdsMerge,
             WaitingOnRoster: roster is null && holdsMerge);
     }
+
+    private static IReadOnlyList<ChangesRequestedReview> StampedAsMembers(IReadOnlyList<ChangesRequestedReview> reviews) =>
+        [.. reviews.Select(review => review with { Admission = FeedbackAdmission.Member })];
 
     /// <summary>
     /// The reviews that may drive a lap: a member's, on the head as always, and a non-member's the owner
@@ -176,11 +193,12 @@ internal static class FeedbackMembershipGate
                     }
                     else if (item.Status == NonMemberFeedbackStatus.Admitted)
                     {
-                        // The go dispatches ONE lap. On the head the live review is what the ordinary flow
-                        // reads; once the head has moved only the copy kept with the item can still be
-                        // carried, and only until a lap has carried it.
+                        // The go dispatches ONE lap, and it covers the review the owner was shown: the copy
+                        // kept with the item, never a live read, so words the stranger edits in after the
+                        // go are not carried. The live review stands in only for an item that kept none.
+                        // Once the head has moved the copy can be carried only until a lap has carried it.
                         ChangesRequestedReview? carried = isOnHead
-                            ? review
+                            ? item.Review ?? review
                             : item.Dispatched ? null : item.Review;
                         if (carried is not null)
                         {
@@ -238,7 +256,7 @@ internal static class FeedbackMembershipGate
             Who openerIs = WhoIs(opener, roster);
             string openerLogin = opener?.Login ?? DeletedAccountLogin;
 
-            if (roster is null && thread.Comments.Any(comment => comment.Author is not { IsHuman: false }))
+            if (roster is null && thread.Comments.Any(comment => comment.Author is not { IsBot: true }))
             {
                 // A person wrote in this thread and nobody can say whether they are a member yet.
                 holdsMerge = true;
@@ -257,7 +275,7 @@ internal static class FeedbackMembershipGate
                 default:
                     readable.Add(new ReadableReviewThread(
                         id, openerLogin, openerIs == Who.Bot ? FeedbackAdmission.Bot : FeedbackAdmission.Member,
-                        ReadableCommentIds(thread, roster, approvedAccountId: null)));
+                        ReadableCommentIds(thread, roster, approvedAccountId: null, approvedCommentIds: null)));
                     break;
             }
         }
@@ -300,7 +318,7 @@ internal static class FeedbackMembershipGate
         {
             readable.Add(new ReadableReviewThread(
                 threadId, openerLogin, FeedbackAdmission.OwnerApproved,
-                ReadableCommentIds(thread, roster, approvedAccountId: opener?.AccountId)));
+                ReadableCommentIds(thread, roster, approvedAccountId: opener?.AccountId, approvedCommentIds: item.CommentIds)));
             return;
         }
 
@@ -308,21 +326,31 @@ internal static class FeedbackMembershipGate
         holdsMerge = true;
         if (item is null || item.Status == NonMemberFeedbackStatus.Withdrawn)
         {
-            raise.Add(new HeldFeedback(threadId, NonMemberFeedbackKind.Thread, openerLogin, thread.Url, Review: null));
+            raise.Add(new HeldFeedback(
+                threadId, NonMemberFeedbackKind.Thread, openerLogin, thread.Url, Review: null,
+                CommentIds: [.. thread.Comments.Where(comment => comment.Id.Length > 0).Select(comment => comment.Id)]));
         }
     }
 
     /// <summary>
     /// The comments in a readable thread whose bodies a session may read: a bot's, a member's, and,
-    /// in a thread the owner approved, the approved opener's own. A deleted account's, and every other
-    /// stranger's, are left out, which is the whole of how a non-member's reply is never read.
+    /// in a thread the owner approved, the approved opener's own among those the owner was shown
+    /// (<paramref name="approvedCommentIds"/>, held with the item). A comment the opener adds after the
+    /// go was never approved, so it is left out, as are a deleted account's and every other stranger's,
+    /// which is the whole of how a non-member's reply is never read. An approved thread whose item kept
+    /// no ids approves none of the stranger's comments.
     /// </summary>
     private static IReadOnlyList<string> ReadableCommentIds(
-        UnresolvedReviewThread thread, IReadOnlyCollection<long>? roster, long? approvedAccountId) =>
+        UnresolvedReviewThread thread,
+        IReadOnlyCollection<long>? roster,
+        long? approvedAccountId,
+        IReadOnlyList<string>? approvedCommentIds) =>
         [.. thread.Comments
             .Where(comment => comment.Id.Length > 0
                 && (WhoIs(comment.Author, roster) is Who.Bot or Who.Member
-                    || (approvedAccountId is { } approved && comment.Author?.AccountId == approved)))
+                    || (approvedAccountId is { } approved
+                        && comment.Author?.AccountId == approved
+                        && approvedCommentIds?.Contains(comment.Id) == true)))
             .Select(comment => comment.Id)];
 
     private static IReadOnlyList<string> WithdrawnKeys(
@@ -352,7 +380,7 @@ internal static class FeedbackMembershipGate
         [.. raise.DistinctBy(held => held.Key)];
 
     private static Who WhoIs(PullRequestReviewer? author, IReadOnlyCollection<long>? roster) =>
-        author is { IsHuman: false }
+        author is { IsBot: true }
             ? Who.Bot
             : WhoIs(author?.AccountId, roster);
 
