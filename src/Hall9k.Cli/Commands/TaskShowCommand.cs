@@ -2139,14 +2139,18 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// A host-coupled gate this pass deliberately never ran (<see cref="GateDuration.HostCoupledSkipped"/>)
     /// reads "skipped (host-coupled)" rather than a zero duration, so an intermediate review-cycle
     /// pass says which gate it left out on purpose instead of that gate reading like an
-    /// instantaneous pass (#225).
+    /// instantaneous pass (#225). A gate whose path set matched none of the diff
+    /// (<see cref="GateDuration.PathScopeSkipped"/>) reads "skipped (path scope)" for the same reason.
     /// </summary>
-    private static string FormatGateDurations(List<GateDuration>? gateDurations) =>
+    internal static string FormatGateDurations(List<GateDuration>? gateDurations) =>
         gateDurations is not { Count: > 0 } durations
             ? "-"
-            : string.Join(", ", durations.Select(gate => gate.HostCoupledSkipped
-                ? $"{gate.Gate.EscapeMarkup()} [dim]skipped (host-coupled)[/]"
-                : $"{gate.Gate.EscapeMarkup()} {DurationFormat.Short(gate.Duration)}{(gate.Passed ? string.Empty : " [red]✗[/]")}"));
+            : string.Join(", ", durations.Select(gate => gate switch
+            {
+                { HostCoupledSkipped: true } => $"{gate.Gate.EscapeMarkup()} [dim]skipped (host-coupled)[/]",
+                { PathScopeSkipped: true } => $"{gate.Gate.EscapeMarkup()} [dim]skipped (path scope)[/]",
+                _ => $"{gate.Gate.EscapeMarkup()} {DurationFormat.Short(gate.Duration)}{(gate.Passed ? string.Empty : " [red]✗[/]")}",
+            }));
 
     /// <summary>
     /// The Gates column's own entry point (task: a delivered diff that touches no buildable or
@@ -2201,8 +2205,9 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             // swept alongside GateDurationHistoryQuery's own identical filtering gap) — comparing
             // it here would never itself flag as anomalous (zero is never >= 1.5x an average), but
             // it is not "this pass's own gate duration" either, so it earns no place in a report
-            // whose whole point is what THIS run's own gates actually cost.
-            if (!gate.Passed || gate.HostCoupledSkipped)
+            // whose whole point is what THIS run's own gates actually cost. A path-scoped skip is
+            // the same fact for the same reason.
+            if (!gate.Passed || gate.HostCoupledSkipped || gate.PathScopeSkipped)
             {
                 continue;
             }

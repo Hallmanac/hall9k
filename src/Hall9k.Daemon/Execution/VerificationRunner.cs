@@ -358,11 +358,23 @@ public sealed partial class VerificationRunner(
         // RunPaths.ResolveCurrentDirectory (PLAN.md §16 #84).
         string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
 
+        // Which gates this pass runs at all (task: a verify gate can be scoped to a path set —
+        // origin: TaylorDenny, arx-platform #2218, about 30 minutes of .NET gates for a one-line
+        // front-end doc comment). Decided against the same changedPaths the non-executable skip
+        // above already read, whole-branch against its base (or stacked fork point) at every
+        // entry rather than the fix lap's own commits, so a scoped gate that ran earlier is never
+        // skipped by a later lap that touched only a path outside its set. An unreadable or empty
+        // list runs every gate, whatever its path set (GatePathScope.Decide).
+        IReadOnlyList<GatePathScope.GateDecision> gateDecisions =
+            GatePathScope.Decide(changedPaths, project.EffectiveNonExecutablePaths, gates);
+
         // Scoping only matters to a `dotnet test`-shaped gate — a project with no such gate (or
         // one that never reached this point, e.g. a build-only project) pays nothing extra: no
-        // git diff, no test-tree scan, no note beyond what verification always recorded.
+        // git diff, no test-tree scan, no note beyond what verification always recorded. Only the
+        // gates this pass will actually run take part: a path-skipped `dotnet test` gate is not
+        // one, so a pass whose every such gate was skipped decides its scope as if none existed.
         TestGateScope? scope = null;
-        if (gates.Any(gate => IsDotnetTestGate(gate.Command)))
+        if (gateDecisions.Any(decision => decision.Runs && IsDotnetTestGate(decision.Gate.Command)))
         {
             scope = scopeSinceSha is null
                 ? TestGateScope.Full(scopeContext)
@@ -447,8 +459,21 @@ public sealed partial class VerificationRunner(
         // that process was never holding.
         ActiveGate? pendingRecentlyEndedGate = recentlyEndedGate;
 
-        foreach (VerifyCommand gate in gates)
+        foreach ((VerifyCommand gate, bool gateRuns) in gateDecisions)
         {
+            // Decided before host-coupled handling and before anything below counts the gate, so a
+            // path-skipped gate never takes a host-coupled permit, never counts among this pass's
+            // `dotnet test` gates, and never makes ranFullScope false (task: a verify gate can be
+            // scoped to a path set).
+            if (!gateRuns)
+            {
+                gateDurations.Add(GatePathScopeOutcome.SkippedDuration(gate));
+                logger.LogInformation(
+                    "Run {RunId} gate '{Gate}' skipped: its path set matched none of the changed paths",
+                    runId, gate.Name);
+                continue;
+            }
+
             bool gateIsDotnetTest = IsDotnetTestGate(gate.Command);
             if (gateIsDotnetTest && !gate.IsHostCoupled)
             {
@@ -605,7 +630,7 @@ public sealed partial class VerificationRunner(
         // not the gate's own output, so the note must not assert the filter itself was the cause
         // when a suppressed VSTest summary is equally consistent with what was actually observed.
         string? note = scope is null
-            ? null
+            ? GatePathScopeOutcome.AllSkippedNote(gateDecisions)
             : !scope.IsScoped
                 ? $"Test gate ran full: {scope.Reason}"
                 : !anyTestGateFellBack
