@@ -80,9 +80,10 @@ public sealed record Worktree(string Path, string Branch, string StartPoint, str
 /// </summary>
 public sealed record CheckoutRefresh(bool UpToDate, string Detail);
 
-// Unsealed, against this repo's own seal-by-default rule, for exactly one subclass:
-// BranchGoneException below. Every catch site that wants "anything the worktree layer could not
-// do" still reads WorktreeException and keeps catching both.
+// Unsealed, against this repo's own seal-by-default rule, for exactly three subclasses:
+// BranchGoneException, PullRequestHeadMovedException and OriginUnreachableException below. Every
+// catch site that wants "anything the worktree layer could not do" still reads WorktreeException
+// and keeps catching all of them.
 public class WorktreeException(string message) : Exception(message);
 
 /// <summary>
@@ -94,7 +95,7 @@ public class WorktreeException(string message) : Exception(message);
 /// a machine that could not do the job, where starting over would discard work that is genuinely
 /// still there. A fetch that failed counts as one of those: origin was never actually read, so its
 /// silence about the branch says nothing, and <see cref="IWorktreeManager.CheckoutExistingAsync"/>
-/// raises the base type there rather than this one.
+/// raises <see cref="OriginUnreachableException"/> there rather than this one.
 /// <para>
 /// Origin incident (2026-09-19 14:33 and 14:35 EDT, task a56cf16e, runs 01a0baf1 and 01a0baf3):
 /// <c>h9k task take --force</c> pulled a task off a Mac node whose run had built for eleven minutes
@@ -125,6 +126,23 @@ public sealed class PullRequestHeadMovedException(string expectedHeadOid, string
 
     /// <summary>The oid this checkout's own fetch actually observed.</summary>
     public string ObservedHeadOid { get; } = observedHeadOid;
+}
+
+/// <summary>
+/// A checkout that needed origin and could not read it: the fetch of a pull request's head
+/// (<see cref="IWorktreeManager.CreatePrReviewCheckoutAsync"/>), or the fetch that decides whether
+/// a branch this node does not hold still exists on origin (<see cref="IWorktreeManager.CheckoutExistingAsync"/>).
+/// Typed so a caller can tell "git said no" from "git could not be asked" without parsing prose,
+/// but it does not itself say whether the failure was a passing network error: that is
+/// <see cref="GitNetworkFailure.IsTransient"/>'s question, asked of <see cref="GitError"/>, because a
+/// fetch can also fail for a reason waiting will not fix (no such ref, authentication refused).
+/// Derives from <see cref="WorktreeException"/> so every catch that already takes the base type,
+/// including the own-node retry's start-clean fallback, keeps taking this one unchanged.
+/// </summary>
+public sealed class OriginUnreachableException(string gitError, string message) : WorktreeException(message)
+{
+    /// <summary>Git's own error text for the failed fetch, carried apart from the message so a caller can classify and quote it.</summary>
+    public string GitError { get; } = gitError;
 }
 
 /// <summary>

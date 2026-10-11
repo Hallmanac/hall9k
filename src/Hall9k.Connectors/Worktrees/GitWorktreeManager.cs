@@ -160,14 +160,16 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             }
             else if (originUnreadable is { } fetchFailure)
             {
-                // A plain WorktreeException, deliberately: the branch is not here, but the fetch
+                // Never a BranchGoneException, deliberately: the branch is not here, but the fetch
                 // above failed, so refs/remotes/origin/* is whatever the last successful fetch
                 // left — on a node that never fetched this branch, nothing. Declaring it gone
                 // would turn an unreachable origin into "there is no work left anywhere" and let
                 // the callers below cut fresh over a branch another node really did push
-                // (adversarial review, cycle 1). This is a machine that could not do the job, and
-                // it fails the run loudly the same as any other.
-                throw new WorktreeException(
+                // (adversarial review, cycle 1). This is a machine that could not do the job; the
+                // typed exception lets the launcher wait out a passing network error rather than
+                // fail the task, and any other fetch failure still fails the run loudly.
+                throw new OriginUnreachableException(
+                    fetchFailure,
                     $"Branch {branch} is not in {repositoryPath} locally and origin could not be read " +
                     $"(git fetch origin failed: {fetchFailure}), so whether origin still holds it is " +
                     $"unknown — cannot resume it.");
@@ -204,10 +206,13 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             await BestEffortFetchAsync(repositoryPath, cancellationToken);
 
             string trackingRef = PrReviewTrackingRef(request.PullRequestNumber);
-            await RunGitAsync(
-                repositoryPath,
-                $"fetch origin \"+refs/pull/{request.PullRequestNumber}/head:{trackingRef}\"",
-                cancellationToken);
+            string fetchArguments = $"fetch origin \"+refs/pull/{request.PullRequestNumber}/head:{trackingRef}\"";
+            (int fetchExit, _, string fetchError) = await TryRunGitAsync(repositoryPath, fetchArguments, cancellationToken);
+            if (fetchExit != 0)
+            {
+                throw new OriginUnreachableException(
+                    fetchError.Trim(), $"git {fetchArguments} failed in {repositoryPath}: {fetchError.Trim()}");
+            }
 
             // A safe pre-flight verdict is bound to one judged oid (idea 6be68ee2, finding 1,
             // phase two): GitHub's own read at pre-flight time and this fetch are two separate
