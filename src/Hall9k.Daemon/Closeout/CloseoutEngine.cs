@@ -4,11 +4,10 @@ using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Execution;
-using Hall9k.Daemon.Review;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Connection;
-using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -20,14 +19,12 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
-using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
-using Marten.Events;
 using Marten.Exceptions;
 using Marten.Linq.MatchesSql;
 using Microsoft.Extensions.Options;
@@ -102,9 +99,13 @@ public sealed class CloseoutEngine(
     JiraRequester jiraRequester,
     IOptions<DaemonOptions> options,
     ILogger<CloseoutEngine> logger,
-    ILedger? ledger = null)
+    ILedger? ledger = null,
+    EnrolledNodeSnapshots? enrolledNodes = null)
 {
     private readonly DaemonOptions _options = options.Value;
+
+    /// <summary>The tasks whose roster wait has already been logged by this process, so a stuck roster says so once.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _rosterWaitLogged = [];
 
     /// <summary>The ledger a true completion's holder release goes through (idea 202383dc, A3b) — optional for the identical reason <c>DispatchEngine</c>'s own field is.</summary>
     private readonly ILedger _ledger = ledger ?? new GitLedger(
@@ -960,6 +961,23 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Inspected;
         }
 
+        // The membership gate on review feedback (task: a changes-requested review or an unresolved
+        // review thread from someone outside the project's trust-chain roster never dispatches a
+        // build lap). Ahead of every decision below on purpose: from here on the snapshot is the
+        // pull request as a lap may see it, with a non-member's feedback taken out, so no branch
+        // below can dispatch for it, count it as human engagement, or hand its text to a session.
+        // Its own appends land on the task stream, so the fence every later append is checked
+        // against moves with them.
+        (FeedbackGateOutcome gate, long fenceVersion)? gated = await ApplyFeedbackGateAsync(
+            session, task, project, fence.Version, snapshot, now, cancellationToken);
+        if (gated is null)
+        {
+            return InspectionOutcome.Inspected;
+        }
+
+        (FeedbackGateOutcome feedbackGate, long fenceVersion) = gated.Value;
+        snapshot = feedbackGate.Snapshot;
+
         // Checked ahead of the conflict read, and therefore ahead of checks and threads too
         // (task: a stacked pull-request edge exists as an explicit opt-in dependency). A stacked
         // child whose parent branch has moved is the strictly earlier fact: GitHub will often
@@ -974,7 +992,7 @@ public sealed class CloseoutEngine(
         // costs an unstacked pull request a single git or provider call.
         if (StackedParentWatch.IsStackedChild(run, project)
             && await TryReplayStackedChildAsync(
-                session, task, run, project, fence.Version, snapshot, now, cancellationToken))
+                session, task, run, project, fenceVersion, snapshot, now, cancellationToken))
         {
             return InspectionOutcome.Inspected;
         }
@@ -1013,7 +1031,7 @@ public sealed class CloseoutEngine(
                         + $"branch {project.BaseBranch} — a mechanical rebase onto {project.BaseBranch} would not "
                         + "address what GitHub reads as conflicting",
                         null)
-                    : await TryMechanicalRebaseAsync(session, fence.Version, project, run, task, cancellationToken);
+                    : await TryMechanicalRebaseAsync(session, fenceVersion, project, run, task, cancellationToken);
             session.Events.Append(run.Id, new PullRequestMechanicalRebaseAttempted(
                 run.Id, mechanical.Succeeded, mechanical.Detail, mechanical.PushedCommit, now));
 
@@ -1047,7 +1065,7 @@ public sealed class CloseoutEngine(
 
             session.Events.Append(run.Id, new PullRequestConflictObserved(run.Id, now));
             await DispatchFollowUpOrParkAsync(
-                session, task, run, fence.Version,
+                session, task, run, fenceVersion,
                 FollowUpKind.Rebase,
                 [snapshot.HeadCommit ?? "unknown-head"],
                 snapshot,
@@ -1146,7 +1164,7 @@ public sealed class CloseoutEngine(
             IReadOnlyList<ChangesRequestedReview> changesRequested = snapshot.ChangesRequested;
             session.Events.Append(run.Id, new PullRequestChangesRequested(run.Id, changesRequested, now));
             await DispatchFollowUpOrParkAsync(
-                session, task, run, fence.Version,
+                session, task, run, fenceVersion,
                 FollowUpKind.ReviewRequestedChanges,
                 // The reviews themselves are the obstruction identity: a review's url is unique to
                 // it, so the SAME reviewer submitting a fresh review after this lap pushes reads as
@@ -1172,7 +1190,7 @@ public sealed class CloseoutEngine(
             session.Events.Append(run.Id, new ReviewFeedbackReceived(
                 run.Id, snapshot.UnresolvedReviewThreadCount, now, snapshot.UnresolvedHumanThreadCount));
             await DispatchFollowUpOrParkAsync(
-                session, task, run, fence.Version,
+                session, task, run, fenceVersion,
                 FollowUpKind.ReviewFeedback,
                 outstandingThreadIds,
                 snapshot,
@@ -1192,7 +1210,7 @@ public sealed class CloseoutEngine(
         {
             session.Events.Append(run.Id, new PullRequestChecksFailed(run.Id, snapshot.FailingChecks, now));
             await DispatchFollowUpOrParkAsync(
-                session, task, run, fence.Version,
+                session, task, run, fenceVersion,
                 FollowUpKind.FailingChecks,
                 snapshot.FailingChecks,
                 snapshot,
@@ -1242,7 +1260,7 @@ public sealed class CloseoutEngine(
         // review that produced them was real. That is the moment a countersign is worth
         // asking for, and the only moment it is.
         bool reRequestedThisSweep = await RerequestReviewAfterFixesAsync(
-            session, run, project, fence.Version, task.PullRequestUrl, run.PullRequestNumber.Value,
+            session, run, project, fenceVersion, task.PullRequestUrl, run.PullRequestNumber.Value,
             snapshot, now, cancellationToken);
 
         // The owner's standing pre-approval (task: a task can be published pre-approved) only
@@ -1255,10 +1273,22 @@ public sealed class CloseoutEngine(
         // would merge past the very review this sweep just asked for. The next sweep reads the
         // request as an outstanding reviewer and decides fresh (independent pre-PR review,
         // cycle 1, both lenses).
+        if (task.PreApproval.MergesAutomatically && feedbackGate.HoldsMerge)
+        {
+            // A visible wait on the owner, never a park and never a merge: non-member feedback is
+            // still undecided, a non-member's thread is still unresolved, or the roster this
+            // decision needs has not been computed yet. The next poll asks again.
+            logger.LogInformation(
+                "Task {TaskId}: pre-approved, but feedback from outside the project's roster still holds "
+                + "the merge (undecided, unresolved, or the roster is not computed yet) — see h9k status",
+                task.Id);
+            return InspectionOutcome.Inspected;
+        }
+
         if (task.PreApproval.MergesAutomatically && !reRequestedThisSweep)
         {
             return await TryAutoMergeAsync(
-                session, task, run, project, fence.Version, snapshot, now, cancellationToken);
+                session, task, run, project, fenceVersion, snapshot, now, cancellationToken);
         }
 
         return InspectionOutcome.Inspected;
@@ -1562,6 +1592,81 @@ public sealed class CloseoutEngine(
             snapshot.OutstandingHumanReviewers, snapshot.HumanChangesRequestedBy,
             snapshot.HasEverRequestedHumanReviewer, snapshot.HumanReviewersAwaitingApproval));
         await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Runs <see cref="FeedbackMembershipGate"/> over one poll and commits what it decided to say:
+    /// one needs-you item per piece of non-member feedback seen for the first time, and the
+    /// withdrawal of items whose feedback is gone. Returns the gate's outcome with the task-stream
+    /// version every later append must be fenced against, or null when a concurrent write to the task
+    /// stream (the owner's go above all) won the race, in which case this poll defers to the next.
+    /// <para>
+    /// The roster comes from the message sweep's own last computation, in process
+    /// (<see cref="EnrolledNodeSnapshots"/>); this node having none is the gate's Unknown answer,
+    /// which holds human feedback and asks again, never a guess either way. The explicit setting is
+    /// read fresh each poll from the project's own history, and the repository's visibility rides the
+    /// snapshot, so neither is ever a stale value.
+    /// </para>
+    /// </summary>
+    private async Task<(FeedbackGateOutcome Gate, long FenceVersion)?> ApplyFeedbackGateAsync(
+        IDocumentSession session,
+        TaskAggregate task,
+        ProjectDetails project,
+        long fenceVersion,
+        PullRequestSnapshot snapshot,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        ReviewMembershipGateSetting setting =
+            await ReviewMembershipGateSetting.ResolveAsync(session, project.Id, cancellationToken);
+        FeedbackGateOutcome gate = FeedbackMembershipGate.Decide(
+            snapshot, setting.ExplicitValue, enrolledNodes?.TryGet(project.Id)?.MemberAccountIds, task.NonMemberFeedback);
+
+        if (gate.WaitingOnRoster && _rosterWaitLogged.TryAdd(task.Id, 0))
+        {
+            // The one hold no needs-you item explains, so it is said once per task per process rather
+            // than every poll: this node has not computed who the project's members are, which is what
+            // the trust chain's own message sweep supplies, and until it does no human feedback on this
+            // public repository is classified, dispatched or merged past.
+            logger.LogInformation(
+                "Task {TaskId}: human review feedback is waiting on this node's roster of the project's "
+                + "members, which it has not computed yet; nothing is dispatched for it and a pre-approved "
+                + "merge waits. If this persists, the project's trust chain is not being read here; "
+                + "h9k project set --review-requires-membership off keeps the earlier flow",
+                task.Id);
+        }
+
+        List<object> events =
+        [
+            .. gate.Raise.Select(held => new NonMemberFeedbackHeld(
+                task.Id, held.Key, held.Kind, held.Reviewer, held.Url, now, held.Review)),
+            .. gate.Withdraw.Select(key => new NonMemberFeedbackWithdrawn(task.Id, key, now)),
+        ];
+        if (events.Count == 0)
+        {
+            return (gate, fenceVersion);
+        }
+
+        session.Events.Append(task.Id, expectedVersion: fenceVersion + events.Count, events);
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            logger.LogDebug("Task {TaskId} changed while its non-member feedback was recorded; deferring to the next poll", task.Id);
+            return null;
+        }
+
+        foreach (HeldFeedback held in gate.Raise)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: {Kind} from @{Reviewer}, who is not in this project's roster, is held for the "
+                + "owner's decision and dispatches nothing: {Url} (h9k pr feedback)",
+                task.Id, held.Kind.Noun, held.Reviewer, held.Url);
+        }
+
+        return (gate, fenceVersion + events.Count);
     }
 
     /// <summary>
@@ -3269,7 +3374,7 @@ public sealed class CloseoutEngine(
     /// starter has one (AGENTS.md).
     /// </para>
     /// </summary>
-    private static bool HasHumanEngagement(TaskAggregate task, RunDetails run, PullRequestSnapshot snapshot, out string reason)
+    internal static bool HasHumanEngagement(TaskAggregate task, RunDetails run, PullRequestSnapshot snapshot, out string reason)
     {
         List<string> newHumanThreads = [.. snapshot.HumanThreadIds.Except(task.KnownHumanReviewThreadIds)];
         if (newHumanThreads.Count > 0)
@@ -3389,7 +3494,12 @@ public sealed class CloseoutEngine(
             // only the review-feedback one: the posting path refuses on this list whatever lap is
             // live, and a CI-fix lap that wanders into a person's thread is exactly as much the
             // thing being prevented.
-            humanReviewThreads: [.. snapshot.HumanThreads.Select(thread => thread.Reference)]));
+            humanReviewThreads: [.. snapshot.HumanThreads.Select(thread => thread.Reference)],
+            // The comments this lap's session may read, decided from the roster at this same poll.
+            // Carried on every kind, not only the two whose prompts render it: a manual
+            // h9k pr resolve hands the last one forward, and a CI-fix lap's would otherwise leave it
+            // with nothing.
+            reviewReadScope: snapshot.FeedbackReadScope));
 
         // The reopen hands the pull request to a successor, so this run's watch ends
         // with it — retire it in the same transaction (TASK-MODEL.md §2.2). A lost race

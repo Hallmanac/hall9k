@@ -104,6 +104,12 @@ public sealed class EnrolledNodeSnapshots
         _byProject[projectId] = new EnrolledFleetSnapshot(fleet, memberAccountIds, membersWithoutDeclaredAccount, chain);
     }
 
+    /// <summary>
+    /// Records a snapshot as given, for a test that needs a roster without a trust chain behind it
+    /// (the closeout feedback gate reads <see cref="EnrolledFleetSnapshot.MemberAccountIds"/> alone).
+    /// </summary>
+    internal void Set(Guid projectId, EnrolledFleetSnapshot snapshot) => _byProject[projectId] = snapshot;
+
     /// <summary>The last recorded snapshot for the project, or null when there is none.</summary>
     public EnrolledFleetSnapshot? TryGet(Guid projectId) =>
         _byProject.TryGetValue(projectId, out EnrolledFleetSnapshot? snapshot) ? snapshot : null;

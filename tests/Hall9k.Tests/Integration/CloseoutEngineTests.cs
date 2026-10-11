@@ -1,4 +1,3 @@
-using JasperFx.Events;
 using System.Diagnostics;
 using FluentAssertions;
 using Hall9k.Connectors.Processes;
@@ -23,7 +22,6 @@ using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
 using Marten;
-using Marten.Events;
 using Marten.Linq.MatchesSql;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -182,7 +180,10 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             IsMerged: false, IsClosed: false, MergedAt: null, ClosedAt: null,
             FailingChecks: [], HasPendingChecks: false, UnresolvedReviewThreadCount: 0,
             UnresolvedHumanThreadCount: 0, Reviewers: [], ErroredReview: null,
-            CopilotReviewState: ExternalReviewState.None, CopilotReviewThreadCount: 0);
+            CopilotReviewState: ExternalReviewState.None, CopilotReviewThreadCount: 0,
+            // A private repository, where the membership gate is off and every review keeps the flow it
+            // always had; the gate's own cases set this false and say who is on the roster.
+            RepositoryIsPrivate: true);
 
         /// <summary>
         /// A quiet pull request with a known head and a review history on it — what the
