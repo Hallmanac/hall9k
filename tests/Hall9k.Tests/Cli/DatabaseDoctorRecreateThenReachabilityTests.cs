@@ -104,6 +104,46 @@ public sealed class DatabaseDoctorRecreateThenReachabilityTests : IDisposable
             "the container was confirmed Running the whole time — the generic never-started advice does not fit here");
     }
 
+    [Fact]
+    public async Task A_refused_off_host_address_gets_the_other_host_hint_and_runs_no_docker_command()
+    {
+        RecordingProcessRunner runner = new(() => new(1, string.Empty, "unexpected call"));
+        ReachabilityReport refused = new(ReachabilityStatus.RefusedConnection, "Connection refused", "10.211.55.2", 5432, "hall9k");
+        Task<ReachabilityReport> Probe(CancellationToken token) => Task.FromResult(refused);
+
+        string checkOutput = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
+        {
+            await DatabaseDoctor.DiagnoseRefusedConnectionAsync(
+                refused, ConfiguredResolution(), "Host=10.211.55.2;Port=5432;Database=hall9k;Username=postgres;Password=test-password",
+                offerFixes: true, assumeYes: true, runner.Runner, Probe, ShortTimeout, ShortPollInterval, TimeProvider.System,
+                CancellationToken.None);
+        });
+
+        checkOutput.Should().Contain("Postgres on another host");
+        checkOutput.Should().Contain("10.211.55.2:5432");
+        checkOutput.Should().NotContain("Is Postgres running? Start it, then try again.");
+        runner.Calls.Should().BeEmpty("hall9k does not manage that Postgres, and docker may reach another machine's engine");
+    }
+
+    [Fact]
+    public async Task A_refused_local_address_without_a_fix_offered_keeps_the_generic_start_it_line()
+    {
+        RecordingProcessRunner runner = ConfirmedRunningContainerRunner();
+        ReachabilityReport refused = new(ReachabilityStatus.RefusedConnection, "Connection refused", "127.0.0.1", 5432, "hall9k");
+        Task<ReachabilityReport> Probe(CancellationToken token) => Task.FromResult(refused);
+
+        string checkOutput = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
+        {
+            await DatabaseDoctor.DiagnoseRefusedConnectionAsync(
+                refused, ConfiguredResolution(), TestConnectionString,
+                offerFixes: false, assumeYes: false, runner.Runner, Probe, ShortTimeout, ShortPollInterval, TimeProvider.System,
+                CancellationToken.None);
+        });
+
+        checkOutput.Should().Contain("Is Postgres running? Start it, then try again.");
+        checkOutput.Should().NotContain("Postgres on another host");
+    }
+
     /// <summary>
     /// A confirmed-Running <c>hall9k-postgres</c> — enough for the docker probes
     /// <see cref="DatabaseDoctor.DiagnoseRefusedConnectionAsync"/> makes on its own
