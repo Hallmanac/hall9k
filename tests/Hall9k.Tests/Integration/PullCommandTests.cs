@@ -341,7 +341,7 @@ public sealed class PullCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
                 $"hall9k-task-record: 1\ntask-id: {absentTaskId}\nproject: second-project\nobjective: Ship the thing\n",
                 ExpectedBlobId: null,
                 "seed task record",
-                new LedgerCommitter("Brian Hall", "brian@agelessrx.com"),
+                new LedgerCommitter("Brian Hall", "brian@example.com"),
                 new LedgerSigningKey("fake-key")),
             cts.Token);
 

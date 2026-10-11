@@ -544,4 +544,3 @@ here and in `docs/`, keeps pointing where it always did.
 - **Claude Code headless docs** - `claude -p`, `--bare`, `--output-format stream-json`, session resume: https://code.claude.com/docs/en/headless
 - **Claude Agent SDK** (TS/Python) - the upgrade path for mid-run control: https://platform.claude.com/docs/en/agent-sdk/typescript
 - **Anthropic C# SDK** (`Anthropic` NuGet) - raw Messages API client only; *not* an agent runtime: https://platform.claude.com/docs/en/api/sdks/csharp
-- **Unified API: Architecture & Conventions** (AgelessRx Confluence) - house API standards, relevant **only if/when the far-future web portal happens** (roadmap #7): https://agelessrx.atlassian.net/wiki/spaces/SD/pages/1219035141/Unified+API+Architecture+Conventions

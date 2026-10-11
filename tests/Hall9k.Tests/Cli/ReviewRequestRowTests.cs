@@ -420,7 +420,7 @@ public sealed class ReviewRequestRowTests
     }
 
     /// <summary>
-    /// The origin case, AgelessRx/arx-platform#2166: a teammate mentioned this viewer's login on a
+    /// The origin case, example-org/acme-platform#2166: a teammate mentioned this viewer's login on a
     /// pull request only another owner's task covers. The daemon touched nothing, so the row is the
     /// whole answer, and the covering teammate's task must not turn it into the informational line.
     /// </summary>

@@ -297,12 +297,12 @@ public sealed class PullRequestBodyTests
             + "One thing I deliberately left alone: the advisories need their own card.";
 
         string body = PullRequestBody.Build(
-            run, Task("jira:ARX-5817"), "Full suite green (4739 passed).",
-            new Uri("https://agelessrx.atlassian.net/browse/ARX-5817"),
-            Summary("ARX-5817 Add AGENTS.md at the repository root", prose));
+            run, Task("jira:ACME-5817"), "Full suite green (4739 passed).",
+            new Uri("https://example.com/browse/ACME-5817"),
+            Summary("ACME-5817 Add AGENTS.md at the repository root", prose));
 
         body.Should().Be(
-            $"Work item: [ARX-5817](https://agelessrx.atlassian.net/browse/ARX-5817){Environment.NewLine}"
+            $"Work item: [ACME-5817](https://example.com/browse/ACME-5817){Environment.NewLine}"
             + Environment.NewLine + prose + Environment.NewLine);
     }
 

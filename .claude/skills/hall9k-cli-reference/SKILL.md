@@ -1381,7 +1381,7 @@ are re-checked immediately before the platform posts anything it composed. A hit
 fix is rewritten (an em dash becomes a comma, a semicolon or a colon by context; an attribution
 alone on its line is dropped); one without is not posted at all, and the run carries on rather than
 failing. `default` restores the platform text. Origin incident (2026-09-09): a review-feedback
-follow-up on `AgelessRx/arx-platform#2042` posted its summary comment under the owner's login with
+follow-up on `example-org/acme-platform#2042` posted its summary comment under the owner's login with
 em dashes in most of its paragraphs, because the rule lived only in the orchestrator recipes and in
 the operator's own `CLAUDE.md`, which `--setting-sources project` drops from a dispatched session.
 

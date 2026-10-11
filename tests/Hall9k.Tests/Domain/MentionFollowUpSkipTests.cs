@@ -12,7 +12,7 @@ namespace Hall9k.Tests.Domain;
 
 /// <summary>
 /// A mention follow-up runs only when this install's own login is the one the stored comment tags
-/// and the comment is not its own. These tests replay AgelessRx/arx-platform#2166 from the task
+/// and the comment is not its own. These tests replay example-org/acme-platform#2166 from the task
 /// owner's side with no database, no branch and no GitHub: Brian (Hallmanac) answered Taylor in a
 /// comment that tagged @taylor-dennison, Taylor's install attached it to Brian's task and claimed
 /// a follow-up, a pre-flight requeued it, and Brian's own dispatcher then claimed the pending
@@ -22,7 +22,7 @@ public sealed class MentionFollowUpSkipTests
 {
     private static readonly DateTimeOffset Now = new(2026, 10, 1, 21, 21, 23, TimeSpan.Zero);
     private static readonly Guid Owner = DomainId.New();
-    private const string PullRequestUrl = "https://github.com/AgelessRx/arx-platform/pull/2166";
+    private const string PullRequestUrl = "https://github.com/example-org/acme-platform/pull/2166";
     private const string BrianLogin = "Hallmanac";
     private const string TaylorLogin = "taylor-dennison";
     private const string BrianReplyToTaylor = "@taylor-dennison yes, that endpoint is behind the flag now.";
@@ -199,10 +199,10 @@ public sealed class MentionFollowUpSkipTests
     {
         TaskAggregate task = new();
         task.Apply(TaskDecider.Add(
-            DomainId.New(), DomainId.New(), "Review pull request AgelessRx/arx-platform#2166",
+            DomainId.New(), DomainId.New(), "Review pull request example-org/acme-platform#2166",
             ["The findings report is walked with the owner (walk-pr-review-findings) and every finding is directed."],
-            TaskType.PrReview, agentContext: "Imported from github-pr:AgelessRx/arx-platform#2166.", constraints: null,
-            externalReference: new ExternalReference(WorkItemProvider.GitHubPullRequest, "AgelessRx/arx-platform#2166"),
+            TaskType.PrReview, agentContext: "Imported from github-pr:example-org/acme-platform#2166.", constraints: null,
+            externalReference: new ExternalReference(WorkItemProvider.GitHubPullRequest, "example-org/acme-platform#2166"),
             addedAt: Now, addedByOwnerId: Owner));
         task.Apply(TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now, Owner));
         task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner));

@@ -64,7 +64,7 @@ an assistant's register.
 
 ## What the platform adds
 
-One line, and only one: `Work item: [ARX-5817](https://…/browse/ARX-5817)` for a Jira card, or
+One line, and only one: `Work item: [ACME-5817](https://…/browse/ACME-5817)` for a Jira card, or
 `Work item: [#123](https://github.com/owner/repo/issues/123)` for a GitHub issue, as the body's
 first line when the task carries an external reference. Leave it out of a build session's own
 `PR SUMMARY:` block; the daemon writes it, and a copy of your own is dropped rather than shown
@@ -247,8 +247,8 @@ MassMessagingContracts.cs, MassMessageSkipReason.cs, and added
 AlterMassMessageBatchSentOrderIdsToJsonMigration.cs.
 
 ## Verification
-MSBuild succeeded on AgelessRx.Services, AgelessRx.Entities,
-AgelessRx.Migrations, Web/Admin. VSTest 47/47 passed.
+MSBuild succeeded on Acme.Services, Acme.Entities,
+Acme.Migrations, Web/Admin. VSTest 47/47 passed.
 ```
 
 **Good**, orientation, bullets for the list, a paragraph for the one decision that needs it, and

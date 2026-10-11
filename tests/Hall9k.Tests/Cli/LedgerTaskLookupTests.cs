@@ -121,7 +121,7 @@ public sealed class LedgerTaskLookupTests
                 $"hall9k-task-record: 1\ntask-id: {taskId}\nproject: {project.Name}\nobjective: Ship the thing\n",
                 ExpectedBlobId: null,
                 "seed task record",
-                new LedgerCommitter("Brian Hall", "brian@agelessrx.com"),
+                new LedgerCommitter("Brian Hall", "brian@example.com"),
                 new LedgerSigningKey("fake-key")),
             cancellationToken);
 }
