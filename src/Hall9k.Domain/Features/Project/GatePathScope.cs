@@ -52,4 +52,17 @@ public static class GatePathScope
     /// </summary>
     public static bool HasPositiveGlob(IReadOnlyList<string> pathSet) =>
         pathSet.Any(glob => glob.Length > 0 && !glob.StartsWith('!'));
+
+    /// <summary>
+    /// Whether a glob (a leading <c>!</c> aside) is written in a shape no path git reports can
+    /// match: <see cref="NonExecutablePathClassifier"/> normalizes the changed path, never the
+    /// rule, and git prints repository-relative paths with forward slashes and no leading
+    /// <c>/</c> or <c>./</c>. A gate scoped to one such glob would skip on every run, the same loss
+    /// of verification <see cref="HasPositiveGlob"/> guards against.
+    /// </summary>
+    public static bool CanNeverMatch(string glob)
+    {
+        string body = glob.StartsWith('!') ? glob[1..] : glob;
+        return body.StartsWith('/') || body.StartsWith("./", StringComparison.Ordinal) || body.Contains('\\');
+    }
 }

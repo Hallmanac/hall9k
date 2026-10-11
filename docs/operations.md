@@ -1486,7 +1486,7 @@ everything under that directory from the repository root, a glob with no `/` mat
 any depth, and anything else matches the full path. A glob starting with `!` is an exclusion that
 wins over every positive glob in the same set, which is allowed here even though
 `--non-executable-path` refuses it. A set needs at least one positive glob, because one made only of
-exclusions would skip its gate on every run, and a glob cannot contain a comma. The shape that scopes
+exclusions would skip its gate on every run, a glob cannot contain a comma, and a glob that starts with `/` or `./` or contains a backslash is refused, because git reports repository-relative paths with forward slashes and such a glob could never match one. The shape that scopes
 a backend gate away from a front-end directory is `"**,!Web/react-apps/customer-portal/"`, and the
 gate for that directory is `"Web/react-apps/customer-portal/"`. A positive glob that misses a path
 skips its gate, so a directory prefix ending in `/` or the exclusion form is the safe shape; a glob
@@ -1497,7 +1497,7 @@ node accepts the new set with `h9k project accept-gates`, and `h9k project set -
 on its own is refused against a gate set the node has not accepted. `h9k project accept-gates` and
 `h9k project show` both print each gate's path set. A fleet node on an older binary drops the field
 it does not know and runs every gate, which is the safe direction. A bare `--verify` rebuilds the
-list without path sets, so pass `--verify-gate-paths` in the same call to keep them.
+list without path sets (the command prints which gates lost one), so pass `--verify-gate-paths` in the same call to keep them. Changing only a gate's path set never re-runs that gate against a clean checkout of the base branch, since a path set does not change what the gate's command does.
 
 A pre-approved task's merge gate (`h9k task set-pre-approved`) waits, after a head is pushed, up to
 `Hall9k__ChecksRegistrationSettleWindow` (15 minutes by default) for GitHub to report even one

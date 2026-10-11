@@ -2142,6 +2142,29 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// A path-scoped gate is skipped, not run, when a pass's diff touches none of its paths, so the
+    /// review lens's gate status never lists it as observed (independent pre-PR review, cycle 1,
+    /// conformance lens): the gate's line names its scope and says whether it passed is unobserved,
+    /// and an unscoped gate's line stays exactly as before.
+    /// </summary>
+    [Theory]
+    [InlineData("Conformance")]
+    [InlineData("Adversarial")]
+    public void A_path_scoped_gate_is_listed_in_the_review_gate_status_as_possibly_skipped(string lens)
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands =
+            [new VerifyCommand("build", "dotnet build"), new VerifyCommand("test", "dotnet test", PathSet: ["src/", "!src/legacy/"])];
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
+
+        string prompt = AgentPromptBuilder.BuildReview(SomeTask(), project, "task/1-slug", cycle: 1, lens);
+
+        prompt.Should().Contain("- `dotnet test`\n    This gate is scoped to the paths src/, !src/legacy/.");
+        prompt.Should().Contain("whether\n    it passes here is unobserved");
+        prompt.Split("This gate is scoped to the paths").Length.Should().Be(2, "only the scoped gate carries the note");
+    }
+
+    /// <summary>
     /// A host-coupled gate's own bare command must not appear in the review lens's own
     /// gates-already-ran status list either (task: host-coupled suites run only in the node's
     /// serialized host gate) — a reviewer reading this list is not told to run anything, but the
@@ -2209,6 +2232,18 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().NotContain(
             "already answered by the",
             "the gate-status section below names no run when the gate set is unaccepted, so this claim would be an observation nobody made");
+    }
+
+    [Fact]
+    public void The_conformance_lens_is_told_a_path_scoped_gate_may_leave_a_criterion_unobserved()
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands = [new VerifyCommand("test", "dotnet test", PathSet: ["src/"])];
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
+
+        string prompt = AgentPromptBuilder.BuildReview(SomeTask(), project, "task/1-slug", cycle: 1, "Conformance");
+
+        Flatten(prompt).Should().Contain("path-scoped in that list");
     }
 
     /// <summary>

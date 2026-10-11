@@ -68,6 +68,10 @@ Acceptance criteria:
 - A criterion that asks for a passing build or test suite is already answered by the
   gate run named below: take that as the observation and spend your attention on the
   criteria only a reader can judge.
+===gates-path-scoped-caveat===
+  The exception is a gate marked as path-scoped in that list: it is skipped when the diff
+  touches none of its paths, so for a criterion that rests on such a gate the observation
+  may be missing. Judge that part from the code as written.
 ===hunting-hard-foreign===
 Hunting hard and finding nothing is a real outcome: if the pull request genuinely
 meets its own title and description, say so plainly and return {{MergeReadyWord}}.

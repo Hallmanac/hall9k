@@ -2833,6 +2833,10 @@ public static class AgentPromptBuilder
             && GateSetAcceptance.Decide(project.AcceptedVerifyCommands, project.VerifyCommands).Proceed)
         {
             AppendFragment(prompt, file, "gates-already-answer-criterion");
+            if (project.VerifyCommands.Any(gate => gate.IsPathScoped))
+            {
+                AppendFragment(prompt, file, "gates-path-scoped-caveat");
+            }
         }
 
         AppendReviewMechanics(
@@ -3657,6 +3661,14 @@ public static class AgentPromptBuilder
         foreach (VerifyCommand gate in gates)
         {
             AppendGateLine(prompt, gate, indent: "  ");
+            // A path-scoped gate is skipped, not run, when a pass's diff touches none of its paths
+            // (task: a verify gate can be scoped to a path set), and this prompt only holds the
+            // configuration, not what that pass recorded: say so rather than list the gate as
+            // observed (independent pre-PR review, cycle 1, conformance lens, medium).
+            if (gate.IsPathScoped)
+            {
+                AppendFragment(prompt, file, "gate-path-scoped", ("PathSet", OneLine(string.Join(", ", gate.PathSet))));
+            }
         }
     }
 

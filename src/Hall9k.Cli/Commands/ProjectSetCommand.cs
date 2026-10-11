@@ -118,7 +118,8 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "follows --non-executable-path's own rules: ending in '/' it matches any path under it "
             + "from the repository root, with no '/' it matches a file name at any depth, and "
             + "otherwise it matches the full path (a/**/b needs at least one directory between a and "
-            + "b). A glob prefixed with '!' is an exclusion that wins over every positive glob in the "
+            + "b). A glob starting with '/' or './', or containing a backslash, is refused: it can never "
+            + "match a path git reports, so its gate would skip on every run. A glob prefixed with '!' is an exclusion that wins over every positive glob in the "
             + "set, so \"**,!Web/react-apps/customer-portal/\" means everything outside that "
             + "directory; a set needs at least one positive glob, because one of only exclusions would "
             + "skip the gate on every run. A positive glob that misses a path skips its gate, so a "
@@ -682,6 +683,29 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 + "host-coupled again.[/]");
         }
 
+        // The same silence applies to a path set: ParseVerify builds every gate without one, so a
+        // bare --verify turns every previously scoped gate back into one that runs on every pass,
+        // the safe direction but a standing consequence the operator should see (independent pre-PR
+        // review, cycle 1, conformance lens, low). A gate this same invocation re-scopes through
+        // --verify-gate-paths is not named, since it lands with its set.
+        if (settings.Verify.Length > 0)
+        {
+            HashSet<string> rescopedGateNames =
+                [.. settings.VerifyGatePaths.Select(value => value.Split('=', 2)[0].Trim())];
+            string[] droppedPathSetGateNames =
+                [.. details.VerifyCommands
+                    .Where(gate => gate.IsPathScoped && !rescopedGateNames.Contains(gate.Name))
+                    .Select(gate => gate.Name.EscapeMarkup())];
+            if (droppedPathSetGateNames.Length > 0)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]--verify replaces the whole gate list: the path set of "
+                    + $"{string.Join(", ", droppedPathSetGateNames.Select(name => $"'{name}'"))} is not carried forward, "
+                    + "so each of those gates runs on every verification pass again. Pass --verify-gate-paths "
+                    + "\"NAME=GLOB[,GLOB...]\" in this same invocation to scope one again.[/]");
+            }
+        }
+
         // Folded into the same verifyCommands Optional, on top of whatever --verify itself just
         // set, or on top of the project's own already-recorded gates when --verify was not given
         // this invocation (#225): --verify-gate-filter and --verify-gate-paths name EXISTING gates
@@ -906,6 +930,12 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             // changed is still caught (ApplyHostCoupledGateFilter clears the old designee's filter
             // too, so both the old and new host-coupled gate are validated, and only them).
             //
+            // PathSet is left out of that comparison: it decides when a gate runs, never what its
+            // command does, so a bare --verify-gate-paths must not re-run the whole gate against a
+            // clean checkout, or refuse over a gate already broken on base that --accept-broken-gate
+            // cannot acknowledge without --verify (independent pre-PR review, cycle 1, adversarial
+            // lens, medium).
+            //
             // Unless this same invocation is also moving the checkout a gate would run against
             // (--home or --repo passed alongside --verify): an unchanged gate record is still
             // being attached to a repository it was never once run against, which record equality
@@ -917,7 +947,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             bool checkoutChanging = homeDirectory.HasValue || repositoryPath.HasValue;
             IReadOnlyList<VerifyCommand> changedGates = checkoutChanging
                 ? gatesToValidate
-                : [.. gatesToValidate.Where(gate => !details.VerifyCommands.Contains(gate))];
+                : GatesChangedForValidation(gatesToValidate, details.VerifyCommands);
             if (changedGates.Count > 0)
             {
                 bool acceptedBrokenGate = await ValidateGatesAgainstCleanBaseAsync(
@@ -1611,6 +1641,16 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
     }
 
     /// <summary>
+    /// The gates whose recorded configuration is about to change in a way that alters what runs:
+    /// compared with <see cref="VerifyCommand.PathSet"/> left out on both sides, because a path set
+    /// decides when a gate runs and never what its command does, so a bare --verify-gate-paths
+    /// validates nothing against a clean checkout.
+    /// </summary>
+    internal static IReadOnlyList<VerifyCommand> GatesChangedForValidation(
+        IReadOnlyList<VerifyCommand> resolved, IReadOnlyList<VerifyCommand> recorded) =>
+        [.. resolved.Where(gate => !recorded.Any(existing => existing with { PathSet = null } == gate with { PathSet = null }))];
+
+    /// <summary>
     /// Folds one --verify-gate-paths NAME=GLOB[,GLOB...] (or NAME=none) onto
     /// <paramref name="gates"/> (task: a verify gate can be scoped to a path set). Refuses what
     /// --verify-gate-filter refuses for a name (one that is not configured), and a set with no
@@ -1652,6 +1692,15 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 throw new DomainValidationException(
                     $"--verify-gate-paths for gate '{name}' has an empty glob in '{rawGlobs}'. Globs are "
                     + "separated by a comma and a glob cannot itself contain one.");
+            }
+
+            if (globs.FirstOrDefault(GatePathScope.CanNeverMatch) is { } unmatchable)
+            {
+                throw new DomainValidationException(
+                    $"--verify-gate-paths for gate '{name}' has the glob '{unmatchable}', which can never "
+                    + "match: git reports paths relative to the repository root, with forward slashes and no "
+                    + "leading '/' or './', so a gate scoped to it would skip on every run. Write it as "
+                    + "'src/Services/' (not '/src/Services/', './src/Services/' or 'src\\Services\\').");
             }
 
             if (!GatePathScope.HasPositiveGlob(globs))
