@@ -53,6 +53,9 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
     // could never have succeeded — the quota does not refill on a re-request.
     private const string QuotaLimitBodyMarker = "reached their quota limit";
 
+    /// <summary>What GitHub itself shows for an account that no longer exists.</summary>
+    private const string DeletedAccountLogin = "ghost";
+
     private static bool IsQuotaRefusalBody(string body) =>
         body.Contains(QuotaLimitBodyMarker, StringComparison.OrdinalIgnoreCase);
 
@@ -116,17 +119,24 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
     // thread oldest-first and so it is the NEWEST reply a 50+ comment thread would lose: the
     // thread's OPENER is what the starter and review-id reads above are, and every closeout
     // count keyed on them would misattribute a thread whose first comment fell off the page.
+    //
+    // Every author the membership gate matches is read with its numeric databaseId (User and Bot
+    // carry one; a Mannequin and a deleted account do not, and read as non-members), and the thread
+    // comments carry their own node id, which is how a lap's prompt names the exact comments a
+    // session may read. isPrivate rides the same call, so the gate never decides on a visibility read
+    // from a different poll.
     private const string ReviewsQuery =
         """
         query($owner: String!, $name: String!, $number: Int!) {
           repository(owner: $owner, name: $name) {
+            isPrivate
             pullRequest(number: $number) {
               author { login __typename }
               headRefOid
               mergeable
               reviewDecision
               reviewThreads(first: 100) {
-                nodes { id isResolved comments(first: 50) { nodes { author { login __typename } pullRequestReview { id } body url path line originalLine } } }
+                nodes { id isResolved comments(first: 50) { nodes { id author { login __typename ... on User { databaseId } ... on Bot { databaseId } } pullRequestReview { id } body url path line originalLine } } }
                 pageInfo { hasNextPage }
               }
               reviewRequests(first: 20) {
@@ -148,7 +158,7 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
                 nodes { id author { login __typename } body url commit { oid } }
               }
               standingReviews: reviews(last: 50, states: [APPROVED, CHANGES_REQUESTED, DISMISSED]) {
-                nodes { id author { login __typename } body url state submittedAt commit { oid } }
+                nodes { id author { login __typename ... on User { databaseId } ... on Bot { databaseId } } body url state submittedAt commit { oid } }
               }
             }
           }
@@ -203,7 +213,10 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
             ReviewThreadsTruncated: reviews.ReviewThreadsTruncated,
             RequestedHumanReviewerLogins: reviews.RequestedHumanReviewerLogins,
             ChangesRequestedReviews: reviews.ChangesRequestedReviews,
-            UnresolvedHumanThreadDetails: reviews.UnresolvedHumanThreadDetails);
+            UnresolvedHumanThreadDetails: reviews.UnresolvedHumanThreadDetails,
+            RepositoryIsPrivate: reviews.RepositoryIsPrivate,
+            StandingChangesRequestedReviews: reviews.StandingChangesRequestedReviews,
+            UnresolvedThreadDetails: reviews.UnresolvedThreadDetails);
     }
 
     /// <summary>
@@ -327,7 +340,10 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
         IReadOnlyList<string>? OutstandingReviewerLogins = null,
         bool ReviewThreadsTruncated = false,
         IReadOnlyList<string>? RequestedHumanReviewerLogins = null,
-        IReadOnlyList<ChangesRequestedReview>? ChangesRequestedReviews = null)
+        IReadOnlyList<ChangesRequestedReview>? ChangesRequestedReviews = null,
+        bool? RepositoryIsPrivate = null,
+        IReadOnlyList<ChangesRequestedReview>? StandingChangesRequestedReviews = null,
+        IReadOnlyList<UnresolvedReviewThread>? UnresolvedThreadDetails = null)
     {
         public static readonly ReviewObservation None =
             new(0, 0, [], null, null, [], [], [], [], ExternalReviewState.None, 0);
@@ -379,6 +395,7 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
         List<string> threadIds = [];
         List<string> humanThreadIds = [];
         List<UnresolvedHumanThread> humanThreads = [];
+        List<UnresolvedReviewThread> threadDetails = [];
         int copilotThreadCount = 0;
         foreach (JsonElement thread in reviewThreads.GetProperty("nodes").EnumerateArray())
         {
@@ -413,6 +430,7 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
             }
 
             threadIds.Add(id);
+            threadDetails.Add(ReadThreadAuthorship(thread, id));
             if (starter is { IsHuman: true })
             {
                 humanThreadIds.Add(id);
@@ -454,7 +472,45 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
             OutstandingReviewerLogins: ReadOutstandingReviewerLogins(pullRequest),
             ReviewThreadsTruncated: reviewThreadsTruncated,
             RequestedHumanReviewerLogins: ReadRequestedHumanReviewerLogins(pullRequest),
-            ChangesRequestedReviews: ReadChangesRequestedReviews(pullRequest, headCommit));
+            ChangesRequestedReviews: ReadChangesRequestedReviews(pullRequest, headCommit),
+            RepositoryIsPrivate: ReadRepositoryIsPrivate(document.RootElement),
+            StandingChangesRequestedReviews: ReadChangesRequestedReviews(pullRequest, headCommit, anyCommit: true),
+            UnresolvedThreadDetails: threadDetails);
+    }
+
+    /// <summary>
+    /// GitHub's own <c>repository.isPrivate</c> (true for private and internal), or null where the
+    /// payload carries none, which the membership gate reads as on rather than as public or private.
+    /// </summary>
+    private static bool? ReadRepositoryIsPrivate(JsonElement root) =>
+        root.GetProperty("data").GetProperty("repository").TryGetProperty("isPrivate", out JsonElement isPrivate)
+            && isPrivate.ValueKind is JsonValueKind.True or JsonValueKind.False
+                ? isPrivate.GetBoolean()
+                : null;
+
+    /// <summary>
+    /// One unresolved thread with the author of every comment in it, for the membership gate. The
+    /// comment id is the node id a session is told to read by; a comment the provider reported
+    /// without one cannot be named, so it is dropped here, which only ever withholds it.
+    /// </summary>
+    private static UnresolvedReviewThread ReadThreadAuthorship(JsonElement thread, string threadId)
+    {
+        List<UnresolvedThreadComment> comments = [];
+        if (thread.TryGetProperty("comments", out JsonElement commentList)
+            && commentList.TryGetProperty("nodes", out JsonElement nodes)
+            && nodes.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement comment in nodes.EnumerateArray())
+            {
+                if (ReadString(comment, "id") is { } commentId)
+                {
+                    comments.Add(new UnresolvedThreadComment(commentId, ReadActor(comment)));
+                }
+            }
+        }
+
+        string url = ThreadFirstComment(thread) is { } opener ? ReadString(opener, "url") ?? "" : "";
+        return new UnresolvedReviewThread(threadId, url, comments);
     }
 
     /// <summary>
@@ -485,28 +541,43 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
     /// still structurally gone from here without needing a rule of its own: their standing verdict
     /// is the later APPROVED or DISMISSED, which this drops.
     /// </para>
+    /// <para>
+    /// <paramref name="anyCommit"/> drops the head filter and reads every standing human
+    /// CHANGES_REQUESTED review, which is what the membership gate holds a non-member's review
+    /// against: a stranger's request for changes is the owner's to see whether or not the head has
+    /// since moved. It also admits a review whose author the provider reports as null (a deleted
+    /// account), under the login <c>ghost</c>, which the gate reads as a non-member; the head-bound
+    /// read keeps dropping one, as it always has, because nothing is waiting on a person who is gone.
+    /// </para>
     /// </summary>
     private static IReadOnlyList<ChangesRequestedReview> ReadChangesRequestedReviews(
-        JsonElement pullRequest, string? headCommit)
+        JsonElement pullRequest, string? headCommit, bool anyCommit = false)
     {
-        if (headCommit is null)
+        if (headCommit is null && !anyCommit)
         {
             return [];
         }
 
         string? author = ReadActor(pullRequest)?.Login;
         List<ChangesRequestedReview> reviews = [];
-        foreach ((string _, JsonElement review) in ReadStandingVerdictReviews(pullRequest))
+        foreach ((string _, JsonElement review) in ReadStandingVerdictReviews(pullRequest, includeDeletedAccounts: anyCommit))
         {
-            if (ReadActor(review) is not { IsHuman: true } reviewer
-                || string.Equals(reviewer.Login, author, StringComparison.OrdinalIgnoreCase)
+            PullRequestReviewer? reviewer = ReadActor(review);
+            if (reviewer is null && !anyCommit)
+            {
+                continue;
+            }
+
+            if (reviewer is { IsHuman: false }
+                || (reviewer is not null && string.Equals(reviewer.Login, author, StringComparison.OrdinalIgnoreCase))
                 || ReadReviewState(review) != "CHANGES_REQUESTED"
                 // Compared the way ReadCopilotReviewState compares the same two facts, rather
                 // than case-sensitively: one shape, one comparison. A null reviewedCommit is
                 // "cannot tell" per ReadReviewedCommit's contract and is dropped by this, which is
                 // the intended read — headCommit is non-null by the guard above, so the two are
                 // never both unobserved here the way they can be there.
-                || !string.Equals(ReadReviewedCommit(review), headCommit, StringComparison.OrdinalIgnoreCase))
+                || (!anyCommit
+                    && !string.Equals(ReadReviewedCommit(review), headCommit, StringComparison.OrdinalIgnoreCase)))
             {
                 continue;
             }
@@ -526,10 +597,11 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
             }
 
             reviews.Add(new ChangesRequestedReview(
-                reviewer.Login,
+                reviewer?.Login ?? DeletedAccountLogin,
                 review.GetProperty("url").GetString() ?? "",
                 ReadTimestamp(review, "submittedAt"),
-                findings));
+                findings,
+                reviewer?.AccountId));
         }
 
         return reviews;
@@ -1166,7 +1238,8 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
     /// nobody has requested changes.
     /// </para>
     /// </summary>
-    private static List<(string Login, JsonElement Review)> ReadStandingVerdictReviews(JsonElement pullRequest)
+    private static List<(string Login, JsonElement Review)> ReadStandingVerdictReviews(
+        JsonElement pullRequest, bool includeDeletedAccounts = false)
     {
         List<(string Login, JsonElement Review)> standingByLogin = [];
         if (!pullRequest.TryGetProperty("standingReviews", out JsonElement standing)
@@ -1179,20 +1252,24 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
 
         foreach (JsonElement review in nodes.EnumerateArray())
         {
-            if (ReadActor(review) is not { } reviewer || ReadReviewState(review) is null)
+            PullRequestReviewer? reviewer = ReadActor(review);
+            if ((reviewer is null && !includeDeletedAccounts) || ReadReviewState(review) is null)
             {
                 continue;
             }
 
+            // A deleted account has no login, and two of them are not one reviewer: each keeps its
+            // own review under the review's own url, never collapsed onto a shared name.
+            string login = reviewer?.Login ?? $"{DeletedAccountLogin}:{ReadString(review, "url")}";
             int seen = standingByLogin.FindIndex(
-                entry => string.Equals(entry.Login, reviewer.Login, StringComparison.OrdinalIgnoreCase));
+                entry => string.Equals(entry.Login, login, StringComparison.OrdinalIgnoreCase));
             if (seen >= 0)
             {
-                standingByLogin[seen] = (reviewer.Login, review);
+                standingByLogin[seen] = (login, review);
             }
             else
             {
-                standingByLogin.Add((reviewer.Login, review));
+                standingByLogin.Add((login, review));
             }
         }
 
@@ -1314,7 +1391,12 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
         }
 
         string typeName = author.TryGetProperty("__typename", out JsonElement type) ? type.GetString() ?? "" : "";
-        return new PullRequestReviewer(login, ReadKind(typeName, login));
+        long? accountId = author.TryGetProperty("databaseId", out JsonElement databaseId)
+            && databaseId.ValueKind == JsonValueKind.Number
+            && databaseId.TryGetInt64(out long parsedId)
+                ? parsedId
+                : null;
+        return new PullRequestReviewer(login, ReadKind(typeName, login), AccountId: accountId);
     }
 
     /// <summary>
