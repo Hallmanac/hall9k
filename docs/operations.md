@@ -426,6 +426,16 @@ so, and the rotation is yours to do by hand:
 - Update `connectionString` in `config.json` to match. Stop the daemon first (`h9k daemon stop`)
   and start it after (`h9k daemon start`), since a running daemon keeps the old string.
 
+A Postgres published on one specific address, the binding the first bullet recommends, can only
+start once that address exists. A Parallels Shared-network address such as `10.211.55.2` exists only
+once Parallels has brought up its Shared network, so after a reboot in which Docker starts first, that
+container cannot bind. Docker's documented rule is that [a restart policy only takes effect after a
+container starts successfully](https://docs.docker.com/engine/containers/start-containers-automatically/),
+so the container is not expected to be retried once the address appears. The fix is to start whatever
+brings that address up (Parallels and its virtual machine in the example), then run
+`docker start <container>` on that machine. This is Docker's documented behavior, not a failure anyone
+has observed.
+
 If this node's `docker` talks to another machine's engine (`DOCKER_HOST`, or a Docker context,
 set to an `ssh://` or `tcp://` address), the node's own compose file names that machine's
 `hall9k-postgres`. Never run `docker compose` from that file there: it would recreate the other
