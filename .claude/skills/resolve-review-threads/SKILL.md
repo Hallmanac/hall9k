@@ -1,6 +1,6 @@
 ---
 name: resolve-review-threads
-description: Triage every unresolved review thread on a pull request that you may read, whoever wrote it among members and bots, into fix, decline (with evidence), or route — before any fix work — then apply, reply in-thread, and resolve. Never reads a comment written by an account outside the project's roster of members unless the owner approved it. Use when a PR has unresolved review comments from Copilot, a teammate, or the author's own self-review.
+description: Triage every unresolved review thread on a pull request that you may read, whoever wrote it among members and bots, into fix, decline (with evidence), or route, before any fix work, then apply, reply in-thread, and resolve. Never reads a comment written by an account outside the project's roster of members unless the owner approved it. Use when a PR has unresolved review comments from Copilot, a teammate, or the author's own self-review.
 ---
 
 # Resolve pull-request review threads
