@@ -19,6 +19,7 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// <param name="Reviewer">The login that wrote it; <c>ghost</c> for a deleted account.</param>
 /// <param name="Url">The link the owner opens to read it themselves. Blank when the provider reported none.</param>
 /// <param name="Review">For a review: the review as observed. Null for a thread.</param>
+/// <param name="CommentIds">For a thread: the ids of its comments as observed, never their text. Null for a review.</param>
 public sealed record NonMemberFeedbackHeld(
     Guid Id,
     string FeedbackKey,
@@ -26,4 +27,5 @@ public sealed record NonMemberFeedbackHeld(
     string Reviewer,
     string Url,
     DateTimeOffset ObservedAt,
-    ChangesRequestedReview? Review = null);
+    ChangesRequestedReview? Review = null,
+    IReadOnlyList<string>? CommentIds = null);

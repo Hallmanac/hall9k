@@ -118,6 +118,11 @@ public sealed record NonMemberFeedbackStatus
 /// <param name="Url">The link the owner opens to read it themselves.</param>
 /// <param name="Review">For a review: the review as observed. Null for a thread.</param>
 /// <param name="Dispatched">For a review: whether a lap already carried it. A go dispatches one lap, not one per poll.</param>
+/// <param name="CommentIds">
+/// For a thread: the ids of the comments in it when it was held, which is all the owner's go covers;
+/// a comment added afterwards, even by the same account, was never shown to the owner. Ids only, never
+/// text. Null for a review.
+/// </param>
 /// <param name="AssessmentUrl">
 /// The link to an evaluator's assessment of the feedback, shown beside the item so the owner can
 /// read it before deciding. Always null today: the seam a later read-only evaluator fills.
@@ -131,4 +136,5 @@ public sealed record NonMemberFeedbackItem(
     NonMemberFeedbackStatus Status,
     ChangesRequestedReview? Review = null,
     bool Dispatched = false,
-    string? AssessmentUrl = null);
+    string? AssessmentUrl = null,
+    IReadOnlyList<string>? CommentIds = null);
