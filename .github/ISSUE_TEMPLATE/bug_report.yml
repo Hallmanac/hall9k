@@ -1,0 +1,48 @@
+name: Bug report
+description: Something in Hall9k does not work the way the docs say it should.
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. Security problems do not belong here; follow SECURITY.md instead.
+  - type: input
+    id: version
+    attributes:
+      label: Hall9k version
+      description: The output of `h9k --version`.
+      placeholder: "0.11.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple silicon)
+        - Windows (x64)
+        - Windows (ARM64)
+        - Linux (x64)
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of commands that shows the problem.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: Error text, `h9k doctor` output, or daemon log lines. Remove tokens and other secrets first.
+      render: text
