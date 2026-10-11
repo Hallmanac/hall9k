@@ -68,13 +68,19 @@ public enum ReviewerKind
 /// safe to leave undispatched. Null where the provider reported none, which reads as "nothing
 /// asked" only in combination with the thread's own text — never on its own.
 /// </param>
+/// <param name="AccountId">
+/// The account's numeric GitHub id (<c>databaseId</c>), which is what the membership gate matches
+/// on: a login can be renamed and a same-named impostor registered, an id cannot. Null where the
+/// provider reported none, which the gate reads as a non-member.
+/// </param>
 public sealed record PullRequestReviewer(
     string Login,
     ReviewerKind Kind,
     string? LastReviewedCommit = null,
     string? StandingReviewState = null,
     string? StandingReviewCommit = null,
-    string? LatestReviewBody = null)
+    string? LatestReviewBody = null,
+    long? AccountId = null)
 {
     /// <summary>An app account: the [bot] suffix decision downstream rests on this.</summary>
     public bool IsBot => Kind == ReviewerKind.Bot;
@@ -156,6 +162,34 @@ public sealed record UnresolvedHumanThread(string ThreadId, string Author, strin
     /// thread record here keeps.
     /// </summary>
     public ReviewThreadReference Reference => new(ThreadId, Author, Url);
+}
+
+/// <summary>
+/// One comment in an unresolved review thread, as far as the membership gate needs to know it
+/// (task: feedback from outside the project's trust chain never reaches a build lap). Never its
+/// words: the gate decides whose comment it is, and the prompt names it by id.
+/// </summary>
+/// <param name="Id">The comment's GraphQL node id, which is how a session is told to read exactly this one.</param>
+/// <param name="Author">
+/// Who wrote it. Null is a deleted account, which is nobody the roster can name and so reads as a
+/// non-member.
+/// </param>
+public sealed record UnresolvedThreadComment(string Id, PullRequestReviewer? Author);
+
+/// <summary>
+/// One unresolved review thread with the authorship of every comment in it, whoever opened it.
+/// <see cref="UnresolvedHumanThread"/> says only which threads a person opened; the membership gate
+/// also needs the bot threads, and a non-member's reply inside a member's or a bot's thread, which
+/// no existing field carries.
+/// </summary>
+/// <param name="Comments">
+/// In the order GitHub returned them, the opener first. Empty when the provider returned none,
+/// which leaves the opener unknown and so a non-member.
+/// </param>
+public sealed record UnresolvedReviewThread(string ThreadId, string Url, IReadOnlyList<UnresolvedThreadComment> Comments)
+{
+    /// <summary>The thread's first comment: the reviewer's own, per the thread-starter invariant.</summary>
+    public UnresolvedThreadComment? Opener => Comments.Count > 0 ? Comments[0] : null;
 }
 
 /// <summary>
@@ -287,6 +321,18 @@ public sealed record UnresolvedHumanThread(string ThreadId, string Author, strin
 /// this was collected, and on a test fixture that never sets it, which reads as "no request
 /// observed" and therefore holds that gate rather than opening it.
 /// </para>
+/// <para>
+/// RepositoryIsPrivate is GitHub's own <c>repository.isPrivate</c>, true for a private or an internal
+/// repository, read in the same call as everything above so the membership gate decides on this poll's
+/// own visibility and never a stale one (task: feedback from outside the project's trust chain never
+/// reaches a build lap). Null where the provider did not report it, which the gate reads as on, the way
+/// <c>AutoPrReviewObservation.DecideMembershipGate</c> reads a failed visibility read.
+/// </para>
+/// <para>
+/// FeedbackReadScope is never set by the provider read: it is what the membership gate
+/// (<c>FeedbackMembershipGate</c>) adds to the snapshot it hands the rest of the poll, naming which
+/// threads and comments a dispatched lap's session may read.
+/// </para>
 /// </summary>
 public sealed record PullRequestSnapshot(
     bool IsMerged,
@@ -313,7 +359,11 @@ public sealed record PullRequestSnapshot(
     bool ReviewThreadsTruncated = false,
     IReadOnlyList<string>? RequestedHumanReviewerLogins = null,
     IReadOnlyList<ChangesRequestedReview>? ChangesRequestedReviews = null,
-    IReadOnlyList<UnresolvedHumanThread>? UnresolvedHumanThreadDetails = null)
+    IReadOnlyList<UnresolvedHumanThread>? UnresolvedHumanThreadDetails = null,
+    bool? RepositoryIsPrivate = null,
+    IReadOnlyList<ChangesRequestedReview>? StandingChangesRequestedReviews = null,
+    IReadOnlyList<UnresolvedReviewThread>? UnresolvedThreadDetails = null,
+    ReviewReadScope? FeedbackReadScope = null)
 {
     /// <summary>
     /// How a requested TEAM reviewer is recorded in every reviewer list here, since GitHub exposes
@@ -335,6 +385,24 @@ public sealed record PullRequestSnapshot(
     /// <c>FollowUpKind.ReviewFeedback</c> path exactly as before.
     /// </summary>
     public IReadOnlyList<ChangesRequestedReview> ChangesRequested => ChangesRequestedReviews ?? [];
+
+    /// <summary>
+    /// Every human CHANGES_REQUESTED review whose verdict still stands, whatever commit it was left
+    /// on, which the membership gate reads where <see cref="ChangesRequested"/> reads only the ones on
+    /// the head. A non-member's review is held for the owner whether or not the head has since moved,
+    /// and an item is withdrawn only when its review is gone from here. Falls back to
+    /// <see cref="ChangesRequested"/> on a read that predates this field, so a fixture that sets only
+    /// that one still means what it did.
+    /// </summary>
+    public IReadOnlyList<ChangesRequestedReview> StandingChangesRequested =>
+        StandingChangesRequestedReviews ?? ChangesRequested;
+
+    /// <summary>
+    /// Every unresolved thread with the authorship of each comment in it, or empty on a read that
+    /// predates this field. The membership gate treats a human thread it has no authorship for as a
+    /// non-member's rather than as nobody's.
+    /// </summary>
+    public IReadOnlyList<UnresolvedReviewThread> ThreadDetails => UnresolvedThreadDetails ?? [];
 
     /// <summary>Every unresolved thread's id, or empty when the provider read predates ids being collected.</summary>
     public IReadOnlyList<string> ThreadIds => UnresolvedReviewThreadIds ?? [];
