@@ -52,6 +52,12 @@ public static class EventScopeRegistry
         [typeof(JiraWriteFailed)] = EventScope.ProjectScoped,
         [typeof(JiraWriteRequested)] = EventScope.ProjectScoped,
         [typeof(JiraWriteSucceeded)] = EventScope.ProjectScoped,
+        // Non-member feedback held for the owner's go (task: feedback from outside the roster never
+        // dispatches a lap): a team-visible fact about the task, so a fleet node shows the same item.
+        [typeof(NonMemberFeedbackAdmitted)] = EventScope.ProjectScoped,
+        [typeof(NonMemberFeedbackDeclined)] = EventScope.ProjectScoped,
+        [typeof(NonMemberFeedbackHeld)] = EventScope.ProjectScoped,
+        [typeof(NonMemberFeedbackWithdrawn)] = EventScope.ProjectScoped,
         [typeof(PublicationTokensRecorded)] = EventScope.ProjectScoped,
         // The pull-request review pre-flight's own park (idea 6be68ee2, finding 1, phase one): a
         // team-visible fact about the task's own outcome, the same tier every other task-stream

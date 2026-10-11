@@ -1074,6 +1074,67 @@ public static class TaskDecider
     }
 
     /// <summary>
+    /// The item a <c>h9k pr feedback</c> argument names (task: a changes-requested review or an
+    /// unresolved review thread from someone outside the roster never dispatches a build lap): the
+    /// feedback's key, its link, or an unambiguous fragment of either. Only an item still waiting on
+    /// the owner can be decided; one already admitted, declined, or gone from GitHub says which.
+    /// </summary>
+    public static NonMemberFeedbackItem FindUndecidedNonMemberFeedback(TaskAggregate task, string feedback)
+    {
+        if (feedback.IsBlank())
+        {
+            throw new DomainValidationException(
+                "Name the feedback to decide: its link or thread id, or an unambiguous fragment of either. "
+                + "h9k pr feedback <task> with no feedback lists what is waiting.");
+        }
+
+        IReadOnlyList<NonMemberFeedbackItem> exact =
+        [
+            .. task.NonMemberFeedback.Values
+                .Where(item => item.Key == feedback || item.Url == feedback),
+        ];
+        IReadOnlyList<NonMemberFeedbackItem> matches = exact.Count > 0
+            ? exact
+            :
+            [
+                .. task.NonMemberFeedback.Values
+                    .Where(item => item.Key.Contains(feedback, StringComparison.OrdinalIgnoreCase)
+                        || item.Url.Contains(feedback, StringComparison.OrdinalIgnoreCase)),
+            ];
+
+        if (matches.Count == 0)
+        {
+            throw new DomainNotFoundException(
+                $"Task {task.Id} holds no non-member feedback matching '{feedback}'. "
+                + "h9k pr feedback <task> lists what it holds.");
+        }
+
+        if (matches.Count > 1)
+        {
+            throw new DomainValidationException(
+                $"'{feedback}' matches {matches.Count} pieces of feedback on task {task.Id}; use more of its link or id.");
+        }
+
+        NonMemberFeedbackItem item = matches[0];
+        return item.Status.NeedsOwner
+            ? item
+            : throw new DomainConflictException(
+                item.Status == NonMemberFeedbackStatus.Withdrawn
+                    ? $"The {item.Kind.Noun} from @{item.Reviewer} is gone from GitHub (dismissed or resolved), so there is nothing to decide."
+                    : $"The {item.Kind.Noun} from @{item.Reviewer} was already {item.Status.Value.ToLowerInvariant()}.");
+    }
+
+    /// <summary>The owner's go for one piece of non-member feedback: the next closeout poll dispatches the one lap that carries it.</summary>
+    public static NonMemberFeedbackAdmitted AdmitNonMemberFeedback(
+        TaskAggregate task, string feedback, DateTimeOffset admittedAt, Guid admittedByOwnerId) =>
+        new(task.Id, FindUndecidedNonMemberFeedback(task, feedback).Key, admittedAt, admittedByOwnerId);
+
+    /// <summary>The owner's decline for one piece of non-member feedback: nothing dispatches for it.</summary>
+    public static NonMemberFeedbackDeclined DeclineNonMemberFeedback(
+        TaskAggregate task, string feedback, DateTimeOffset declinedAt, Guid declinedByOwnerId) =>
+        new(task.Id, FindUndecidedNonMemberFeedback(task, feedback).Key, declinedAt, declinedByOwnerId);
+
+    /// <summary>
     /// Sets this task's own override of one or more of its four review-cycle caps (task: the
     /// review cycle caps become settable at three levels) — deliberately state-agnostic, unlike
     /// <see cref="Revise"/>: it is meant to be set "at any time", including against a task whose
@@ -2549,7 +2610,8 @@ public static class TaskDecider
         string? stackReplayOntoCommit = null,
         IReadOnlyList<ChangesRequestedReview>? changesRequestedReviews = null,
         DateTimeOffset? checksPendingSince = null,
-        IReadOnlyList<ReviewThreadReference>? humanReviewThreads = null)
+        IReadOnlyList<ReviewThreadReference>? humanReviewThreads = null,
+        ReviewReadScope? reviewReadScope = null)
     {
         if (task.State != TaskState.Done)
         {
@@ -2618,7 +2680,7 @@ public static class TaskDecider
             obstructionKey, obstructionSummary,
             knownHumanReviewThreadIds, knownPendingReviewRequestLogins, pullRequestHeadSha,
             stackReplayUpstreamCommit, stackReplayOntoCommit, changesRequestedReviews,
-            checksPendingSince, humanReviewThreads);
+            checksPendingSince, humanReviewThreads, reviewReadScope);
     }
 
     /// <summary>

@@ -535,6 +535,25 @@ public sealed class TaskAggregate
     private readonly List<ReviewThreadReference> _knownHumanReviewThreads = [];
     public IReadOnlyList<ReviewThreadReference> KnownHumanReviewThreads => _knownHumanReviewThreads;
 
+    /// <summary>
+    /// Every piece of non-member feedback closeout has held for the owner, by its key (a review's url
+    /// or a thread's node id), in whatever status the owner and GitHub have since left it (task: a
+    /// changes-requested review or an unresolved review thread from someone outside the roster never
+    /// dispatches a build lap). Kept for the life of the task rather than cleared on a reopen: the
+    /// entry is what makes a poll raise one item per piece of feedback, however many polls observe it.
+    /// </summary>
+    private readonly Dictionary<string, NonMemberFeedbackItem> _nonMemberFeedback = [];
+    public IReadOnlyDictionary<string, NonMemberFeedbackItem> NonMemberFeedback => _nonMemberFeedback;
+
+    /// <summary>
+    /// What the review-feedback lap may read of the pull request's unresolved threads — see
+    /// <see cref="TaskReopened.ReviewReadScope"/>'s own doc. Set by the latest reopen and kept across
+    /// the lap's own completion, the way <see cref="KnownHumanReviewThreads"/> is: a manual
+    /// <c>h9k pr resolve</c> reads it from a task that is Done by then. Null for a task never reopened,
+    /// which reads as a scope with nothing in it.
+    /// </summary>
+    public ReviewReadScope? ReviewReadScope { get; private set; }
+
     /// <summary>Reviewers with a pending review request, observed at the most recent automatic dispatch decision.</summary>
     private readonly List<string> _knownPendingReviewRequestLogins = [];
     public IReadOnlyList<string> KnownPendingReviewRequestLogins => _knownPendingReviewRequestLogins;
@@ -2110,6 +2129,39 @@ public sealed class TaskAggregate
         EndAnyPrReviewFollowThrough();
     }
 
+    public void Apply(NonMemberFeedbackHeld @event)
+    {
+        // A key already held (or admitted, or declined) is never re-raised: the engine checks before
+        // it appends. Only a withdrawn key comes back, as a fresh item, when the same thread is
+        // reopened on GitHub after the owner saw it go away.
+        if (_nonMemberFeedback.TryGetValue(@event.FeedbackKey, out NonMemberFeedbackItem? existing)
+            && existing.Status != NonMemberFeedbackStatus.Withdrawn)
+        {
+            return;
+        }
+
+        _nonMemberFeedback[@event.FeedbackKey] = new NonMemberFeedbackItem(
+            @event.FeedbackKey, @event.Kind, @event.Reviewer, @event.Url, @event.ObservedAt,
+            NonMemberFeedbackStatus.Undecided, @event.Review);
+    }
+
+    public void Apply(NonMemberFeedbackAdmitted @event) =>
+        SetNonMemberFeedbackStatus(@event.FeedbackKey, NonMemberFeedbackStatus.Admitted);
+
+    public void Apply(NonMemberFeedbackDeclined @event) =>
+        SetNonMemberFeedbackStatus(@event.FeedbackKey, NonMemberFeedbackStatus.Declined);
+
+    public void Apply(NonMemberFeedbackWithdrawn @event) =>
+        SetNonMemberFeedbackStatus(@event.FeedbackKey, NonMemberFeedbackStatus.Withdrawn);
+
+    private void SetNonMemberFeedbackStatus(string key, NonMemberFeedbackStatus status)
+    {
+        if (_nonMemberFeedback.TryGetValue(key, out NonMemberFeedbackItem? item))
+        {
+            _nonMemberFeedback[key] = item with { Status = status };
+        }
+    }
+
     public void Apply(TaskReopened @event)
     {
         FollowUpBranch = @event.Branch;
@@ -2118,6 +2170,16 @@ public sealed class TaskAggregate
         StackReplayUpstreamCommit = @event.StackReplayUpstreamCommit;
         StackReplayOntoCommit = @event.StackReplayOntoCommit;
         ChangesRequestedReviews = @event.ChangesRequestedReviews ?? [];
+        ReviewReadScope = @event.ReviewReadScope;
+        foreach (ChangesRequestedReview carried in @event.ChangesRequestedReviews ?? [])
+        {
+            // The owner's go dispatches ONE lap for a review: marking it carried is what stops a
+            // later poll, with the head moved on, from dispatching it a second time.
+            if (_nonMemberFeedback.TryGetValue(carried.ReviewUrl, out NonMemberFeedbackItem? item))
+            {
+                _nonMemberFeedback[carried.ReviewUrl] = item with { Dispatched = true };
+            }
+        }
 
         // Copied out before ANYTHING here clears a list, because a caller is allowed to hand the
         // reopen this aggregate's own exposed list straight back — h9k pr resolve does exactly
@@ -2677,6 +2739,7 @@ public sealed class TaskAggregate
         StackReplayUpstreamCommit = null;
         StackReplayOntoCommit = null;
         ChangesRequestedReviews = [];
+        ReviewReadScope = null;
         RetryBranch = null;
         RetryBranchResumesForeignNode = false;
         State = TaskState.Abandoned;

@@ -107,6 +107,15 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// <c>TaskListItem.CurrentRunId</c>, so the run that made the observation is unreachable from the
 /// row by the time it renders.
 /// </param>
+/// <param name="ReviewReadScope">
+/// For a <see cref="FollowUpKind.ReviewFeedback"/> reopen: which unresolved threads, and which
+/// comments inside them, the lap's session may read (task: a changes-requested review or an
+/// unresolved review thread from someone outside the project's trust-chain roster never reaches a
+/// build lap). Decided by closeout at dispatch from the roster, which only the daemon holds, and
+/// rendered into the prompt so the session reads the comments it names and nothing else. Null on
+/// every other kind and on events recorded before the gate existed, which the prompt reads as a
+/// scope with nothing in it rather than as permission to read everything.
+/// </param>
 public sealed record TaskReopened(
     Guid Id,
     Guid PreviousRunId,
@@ -125,4 +134,5 @@ public sealed record TaskReopened(
     string? StackReplayOntoCommit = null,
     IReadOnlyList<ChangesRequestedReview>? ChangesRequestedReviews = null,
     DateTimeOffset? ChecksPendingSince = null,
-    IReadOnlyList<ReviewThreadReference>? HumanReviewThreads = null);
+    IReadOnlyList<ReviewThreadReference>? HumanReviewThreads = null,
+    ReviewReadScope? ReviewReadScope = null);

@@ -49,8 +49,27 @@ public sealed record ChangesRequestedFinding(string Body, string? Location = nul
 /// GitHub's own submission timestamp, not this install's observation time. Null when the provider
 /// did not report one, which reads as unknown rather than as now.
 /// </param>
+/// <param name="ReviewerAccountId">
+/// The reviewer's numeric GitHub account id, the only thing the membership gate matches on (a login
+/// can be renamed and impersonated; an id cannot). Null where the provider reported none, and on every
+/// review stored before the gate existed, which reads as a non-member's.
+/// </param>
+/// <param name="Admission">
+/// Why a session may read this review, stamped by closeout when it dispatches the lap: a member's
+/// review, or one the owner approved. Null on every review stored before the gate existed.
+/// </param>
 public sealed record ChangesRequestedReview(
     string Reviewer,
     string ReviewUrl,
     DateTimeOffset? SubmittedAt,
-    IReadOnlyList<ChangesRequestedFinding> Findings);
+    IReadOnlyList<ChangesRequestedFinding> Findings,
+    long? ReviewerAccountId = null,
+    FeedbackAdmission? Admission = null)
+{
+    /// <summary>
+    /// Why a session may read this review, or <see cref="FeedbackAdmission.Unknown"/> when nothing
+    /// was recorded. A review stored before the membership gate existed carries no admission, so it
+    /// reads as a non-member's and its text never reaches a prompt.
+    /// </summary>
+    public FeedbackAdmission AdmittedAs => Admission ?? FeedbackAdmission.Unknown;
+}
