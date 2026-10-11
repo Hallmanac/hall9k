@@ -785,3 +785,8 @@ Read [AGENTS.md](AGENTS.md) first; it is the contract for humans and agents alik
 version: `dotnet build` and `dotnet test` are the gate, commits are authored as the repository
 owner with no bot attribution, agents reply inside review threads and never open one, and in this
 repository all new work enters through `h9k task add`.
+
+## License
+
+Hall9k is licensed under the [Apache License 2.0](LICENSE). Release archives include the
+licenses of the components bundled with them.
