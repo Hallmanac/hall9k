@@ -2164,6 +2164,106 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Split("This gate is scoped to the paths").Length.Should().Be(2, "only the scoped gate carries the note");
     }
 
+    private const string ScopeRuleLead = "Run this gate only when this branch's changes against its base, committed or not,";
+
+    private static ProjectDetails ProjectWithGates(params VerifyCommand[] gates)
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands = [.. gates];
+        project.AcceptedVerifyCommands = [.. gates];
+        return project;
+    }
+
+    private static string RebaseChecklist(ProjectDetails project) =>
+        AgentPromptBuilder.BuildRebase(SomeTask(), project, "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+
+    private static string ReviewFixChecklist(ProjectDetails project) =>
+        AgentPromptBuilder.BuildReviewFix(SomeTask(), project, "task/1-slug", "findings go here", cycle: 1);
+
+    /// <summary>
+    /// Task: a session's own gate checklist names each scoped gate's path set. The rebase-family
+    /// verification checklist and the review-fix self-check, the two run lists built here, print a
+    /// scoped ordinary gate's path set and the rule beneath its command, and leave an unscoped
+    /// gate's line as it was.
+    /// </summary>
+    [Fact]
+    public void The_rebase_checklist_names_a_scoped_gates_path_set_and_the_rule()
+    {
+        string prompt = RebaseChecklist(ProjectWithGates(
+            new VerifyCommand("build", "dotnet build"),
+            new VerifyCommand("web", "npm test", PathSet: ["Web/", "!Web/legacy/"])));
+
+        prompt.Should().Contain("    - `dotnet build`\n    - `npm test`\n      Scoped to the paths: `Web/`, `!Web/legacy/`\n");
+        Flatten(prompt).Should().Contain(ScopeRuleLead);
+        Flatten(prompt).Should().Contain("a `!` entry excludes and wins over any other entry");
+        prompt.Split("Scoped to the paths").Length.Should().Be(2, "only the scoped gate carries the rule");
+    }
+
+    [Fact]
+    public void The_review_fix_self_check_names_a_scoped_gates_path_set_and_the_rule()
+    {
+        string prompt = ReviewFixChecklist(ProjectWithGates(
+            new VerifyCommand("build", "dotnet build"),
+            new VerifyCommand("web", "npm test", PathSet: ["Web/"])));
+
+        prompt.Should().Contain("     - `dotnet build`\n     - `npm test`\n       Scoped to the paths: `Web/`\n");
+        Flatten(prompt).Should().Contain(ScopeRuleLead);
+        prompt.Split("Scoped to the paths").Length.Should().Be(2, "only the scoped gate carries the rule");
+    }
+
+    [Fact]
+    public void A_gate_both_host_coupled_and_scoped_prints_the_host_coupled_line_alone_in_both_run_lists()
+    {
+        VerifyCommand scoped = new("test", "dotnet test", HostCoupledFilter: "Category!=RequiresDocker", PathSet: ["src/"]);
+        VerifyCommand unscoped = scoped with { PathSet = null };
+
+        RebaseChecklist(ProjectWithGates(scoped)).Should().Be(RebaseChecklist(ProjectWithGates(unscoped)));
+        ReviewFixChecklist(ProjectWithGates(scoped)).Should().Be(ReviewFixChecklist(ProjectWithGates(unscoped)));
+        RebaseChecklist(ProjectWithGates(scoped)).Should().NotContain("Scoped to the paths");
+        ReviewFixChecklist(ProjectWithGates(scoped)).Should().NotContain("Scoped to the paths");
+    }
+
+    [Fact]
+    public void An_empty_path_set_prints_like_an_unscoped_gate_in_both_run_lists()
+    {
+        VerifyCommand empty = new("test", "dotnet test", PathSet: []);
+        VerifyCommand none = new("test", "dotnet test");
+
+        RebaseChecklist(ProjectWithGates(empty)).Should().Be(RebaseChecklist(ProjectWithGates(none)));
+        ReviewFixChecklist(ProjectWithGates(empty)).Should().Be(ReviewFixChecklist(ProjectWithGates(none)));
+    }
+
+    [Fact]
+    public void An_unaccepted_gate_set_prints_no_path_set_in_either_run_list()
+    {
+        ProjectDetails project = ProjectWithGates(new VerifyCommand("web", "npm test", PathSet: ["Web/"]));
+        project.AcceptedVerifyCommands = null;
+
+        RebaseChecklist(project).Should().NotContain("Scoped to the paths");
+        ReviewFixChecklist(project).Should().NotContain("Scoped to the paths");
+    }
+
+    /// <summary>
+    /// The review lens's list of gates that already passed is not a run list, so it never carries
+    /// the run rule. Its own note for a scoped gate (the parent task's, which says the gate may
+    /// have been skipped) stays exactly as it was, and an unscoped gate's line is unchanged.
+    /// </summary>
+    [Theory]
+    [InlineData("Conformance")]
+    [InlineData("Adversarial")]
+    public void The_review_gate_status_list_never_carries_the_run_rule(string lens)
+    {
+        ProjectDetails project = ProjectWithGates(
+            new VerifyCommand("build", "dotnet build"),
+            new VerifyCommand("web", "npm test", PathSet: ["Web/"]));
+
+        string prompt = AgentPromptBuilder.BuildReview(SomeTask(), project, "task/1-slug", cycle: 1, lens);
+
+        prompt.Should().Contain("- `dotnet build`\n  - `npm test`\n    This gate is scoped to the paths Web/.");
+        prompt.Should().NotContain("Scoped to the paths");
+        Flatten(prompt).Should().NotContain("Run this gate only when");
+    }
+
     /// <summary>
     /// A host-coupled gate's own bare command must not appear in the review lens's own
     /// gates-already-ran status list either (task: host-coupled suites run only in the node's

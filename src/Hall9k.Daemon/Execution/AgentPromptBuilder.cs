@@ -1279,7 +1279,7 @@ public static class AgentPromptBuilder
         {
             foreach (VerifyCommand gate in project.VerifyCommands)
             {
-                AppendGateLine(prompt, gate, indent: "    ");
+                AppendRunGateLine(prompt, gate, indent: "    ");
             }
         }
 
@@ -1309,8 +1309,10 @@ public static class AgentPromptBuilder
     /// sentence in its command's place naming the one thing this session may still run itself:
     /// the touched test class alone, scoped by name, never the gate's own full command (task:
     /// host-coupled suites run only in the node's serialized host gate). Shared by the rebase
-    /// checklist and the review-fix self-check's own touched-tests checklist so the two can never
-    /// say this differently.
+    /// checklist, the review-fix self-check's own touched-tests checklist and the review lens's
+    /// passed-gates list so they can never say this differently. Leaves out the gate's
+    /// path-scope rule, which only a run checklist wants: <see cref="AppendRunGateLine"/> adds
+    /// it, and the review lens's list of gates that already passed calls this one alone.
     /// </summary>
     private static void AppendGateLine(StringBuilder prompt, VerifyCommand gate, string indent)
     {
@@ -1320,6 +1322,19 @@ public static class AgentPromptBuilder
               + "(e.g. `dotnet test --filter \"FullyQualifiedName~ThatClass\"`), never the gate's own full "
               + "command."
             : $"{indent}- `{gate.Command}`");
+    }
+
+    /// <summary>
+    /// <see cref="AppendGateLine"/> for a checklist this session is told to run: the same line,
+    /// then, for an ordinary gate with a path set, that path set and the rule for when its own
+    /// branch's diff can reach the gate (task: a session's own gate checklist names each scoped
+    /// gate's path set). A host-coupled gate prints its line alone whether or not it has a path
+    /// set, so <see cref="WorkPromptBuilder.AppendGatePathScope"/> stays quiet for it.
+    /// </summary>
+    private static void AppendRunGateLine(StringBuilder prompt, VerifyCommand gate, string indent)
+    {
+        AppendGateLine(prompt, gate, indent);
+        AppendGatePathScope(prompt, gate, indent);
     }
 
     /// <summary>
@@ -4258,7 +4273,7 @@ public static class AgentPromptBuilder
             AppendFragment(prompt, file, "run-touched-tests-lead");
             foreach (VerifyCommand gate in project.VerifyCommands)
             {
-                AppendGateLine(prompt, gate, indent: "     ");
+                AppendRunGateLine(prompt, gate, indent: "     ");
             }
 
             int foregroundCeilingMinutes = WorkPromptBuilder.ForegroundCeilingMinutes(commandTimeout);

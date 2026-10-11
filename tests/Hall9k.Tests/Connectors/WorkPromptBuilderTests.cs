@@ -283,6 +283,108 @@ public sealed class WorkPromptBuilderTests
         acceptedPrompt.ToString().Should().Contain("- `dotnet test`");
     }
 
+    private const string ScopeRuleLead = "Run this gate only when this branch's changes against its base, committed or not,";
+
+    private static ProjectDetails ProjectWithGates(params VerifyCommand[] gates)
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands.AddRange(gates);
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
+        return project;
+    }
+
+    /// <summary>
+    /// Task: a session's own gate checklist names each scoped gate's path set. The recompose
+    /// checklist prints a scoped ordinary gate's command, then its path set as configured, then
+    /// the one rule for when this branch's diff can reach it; an unscoped gate's line is unchanged.
+    /// </summary>
+    [Fact]
+    public void Recompose_checklist_names_a_scoped_gates_path_set_and_the_rule()
+    {
+        ProjectDetails project = ProjectWithGates(
+            new VerifyCommand("build", "dotnet build"),
+            new VerifyCommand("web", "npm test", PathSet: ["Web/react-apps/customer-portal/", "!**/*.md"]));
+
+        StringBuilder prompt = new();
+        WorkPromptBuilder.AppendCheckpointCommitRules(prompt, project, _worktreePath);
+
+        string text = prompt.ToString();
+        text.Should().Contain("- `dotnet build`\n");
+        text.Should().NotContain("- `dotnet build`\n    ", "an unscoped gate's line carries nothing beneath it");
+        text.Should().Contain("  - `npm test`\n    Scoped to the paths: `Web/react-apps/customer-portal/`, `!**/*.md`\n");
+        Flatten(text).Should().Contain(ScopeRuleLead);
+        Flatten(text).Should().Contain("a `!` entry excludes and wins over any other entry");
+        Flatten(text).Should().Contain("When you are unsure whether a path matches, run it.");
+        Flatten(text).Should().Contain("Otherwise leave it to the daemon's own verification.");
+        Flatten(text).Should().Contain("A glob ending in `/` matches everything under that directory from the repository root;");
+        text.Split(ScopeRuleLead[..30]).Length.Should().Be(2, "only the scoped gate carries the rule");
+    }
+
+    [Fact]
+    public void Recompose_checklist_prints_a_host_coupled_gate_exactly_as_before_whatever_its_path_set()
+    {
+        VerifyCommand scoped = new("test", "dotnet test", HostCoupledFilter: "Category!=RequiresDocker", PathSet: ["src/"]);
+        VerifyCommand unscoped = scoped with { PathSet = null };
+
+        StringBuilder withPathSet = new();
+        WorkPromptBuilder.AppendCheckpointCommitRules(withPathSet, ProjectWithGates(scoped), _worktreePath);
+        StringBuilder withoutPathSet = new();
+        WorkPromptBuilder.AppendCheckpointCommitRules(withoutPathSet, ProjectWithGates(unscoped), _worktreePath);
+
+        withPathSet.ToString().Should().Be(withoutPathSet.ToString());
+        Flatten(withPathSet.ToString()).Should().Contain("`test` runs only in the daemon's own serialized host gate");
+        withPathSet.ToString().Should().NotContain("Scoped to the paths");
+    }
+
+    [Fact]
+    public void Recompose_checklist_treats_an_empty_path_set_as_unscoped()
+    {
+        StringBuilder empty = new();
+        WorkPromptBuilder.AppendCheckpointCommitRules(
+            empty, ProjectWithGates(new VerifyCommand("test", "dotnet test", PathSet: [])), _worktreePath);
+        StringBuilder none = new();
+        WorkPromptBuilder.AppendCheckpointCommitRules(
+            none, ProjectWithGates(new VerifyCommand("test", "dotnet test")), _worktreePath);
+
+        empty.ToString().Should().Be(none.ToString());
+    }
+
+    [Fact]
+    public void An_unaccepted_gate_set_prints_no_path_set()
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands.Add(new VerifyCommand("test", "dotnet test", PathSet: ["src/"]));
+
+        StringBuilder prompt = new();
+        WorkPromptBuilder.AppendCheckpointCommitRules(prompt, project, _worktreePath);
+
+        prompt.ToString().Should().NotContain("Scoped to the paths");
+        prompt.ToString().Should().NotContain("dotnet test");
+    }
+
+    /// <summary>
+    /// Both of a delegated contractor's gate lists (the no-base suite list and the recompose
+    /// checklist) go through the same helper, so each names the scoped gate's path set and rule.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_delegated_contractors_gate_lists_name_a_scoped_gates_path_set_and_the_rule(bool baseCommitReadable)
+    {
+        ProjectDetails project = ProjectWithGates(
+            new VerifyCommand("build", "dotnet build"),
+            new VerifyCommand("web", "npm test", PathSet: ["Web/"]));
+
+        string prompt = WorkPromptBuilder.Build(
+            SomeTask(), project, "task/1-slug", _worktreePath, resumesPreviousWork: true,
+            isDeliberateHeadlessStart: true, isDelegatedContractor: true, delegationNote: "Picking up midway.",
+            delegationBaseCommit: baseCommitReadable ? "abc1234" : null);
+
+        prompt.Should().Contain("  - `npm test`\n    Scoped to the paths: `Web/`\n");
+        Flatten(prompt).Should().Contain(ScopeRuleLead);
+        prompt.Should().NotContain("- `dotnet build`\n    Scoped", "an unscoped gate's line is unchanged");
+    }
+
     [Fact]
     public void Timeout_reminder_names_no_gate_honestly_when_the_project_configures_none()
     {

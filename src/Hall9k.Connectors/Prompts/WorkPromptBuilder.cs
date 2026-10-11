@@ -920,8 +920,34 @@ public static class WorkPromptBuilder
             else
             {
                 AppendFragment(prompt, file, "line", ("Command", gate.Command));
+                AppendGatePathScope(prompt, gate, indent: "  ");
             }
         }
+    }
+
+    /// <summary>
+    /// The scope rule beneath an ordinary gate's own line in a checklist this session is told to
+    /// run (task: a session's own gate checklist names each scoped gate's path set): the gate's
+    /// path set as configured and the one rule for when to run it, so an agent does not run a
+    /// gate its branch's diff cannot reach. Prints nothing for a gate with no path set or an empty
+    /// one. The daemon's own verification stays the authority, which is why the rule sends an
+    /// agent that is unsure to run the gate. A host-coupled gate never reaches this: the session
+    /// never runs it itself, so there is no run to scope. Shared with <c>AgentPromptBuilder</c>'s
+    /// own run checklists so the wording lives in one fragment; a prompt that merely reports which
+    /// gates already passed must not call it, because a run rule there would be wrong.
+    /// <paramref name="indent"/> is the indentation of the gate's own <c>- </c> line.
+    /// </summary>
+    public static void AppendGatePathScope(StringBuilder prompt, VerifyCommand gate, string indent)
+    {
+        if (gate.IsHostCoupled || !gate.IsPathScoped)
+        {
+            return;
+        }
+
+        AppendFragment(
+            prompt, $"{TemplateDirectory}/gate-line.md", "path-scope",
+            ("Indent", indent),
+            ("PathSet", string.Join(", ", gate.PathSet.Select(glob => $"`{RelayedText.OneLine(glob).Trim()}`"))));
     }
 
     /// <summary>

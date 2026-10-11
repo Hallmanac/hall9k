@@ -280,6 +280,29 @@ public sealed class QaReviewPromptTests : IDisposable
     }
 
     /// <summary>
+    /// The QA review's checks section is a starting point for an end-to-end run the session scopes
+    /// to its own map, so a scoped gate prints exactly as an unscoped one: no path set, no rule.
+    /// </summary>
+    [Fact]
+    public void A_scoped_gate_prints_in_the_checks_section_without_its_path_set_or_the_run_rule()
+    {
+        ProjectDetails scoped = SomeProject();
+        scoped.VerifyCommands = [new VerifyCommand("web", "npm run test:e2e", PathSet: ["Web/", "!Web/legacy/"])];
+        scoped.AcceptedVerifyCommands = [.. scoped.VerifyCommands];
+        ProjectDetails unscoped = SomeProject();
+        unscoped.VerifyCommands = [new VerifyCommand("web", "npm run test:e2e")];
+        unscoped.AcceptedVerifyCommands = [.. unscoped.VerifyCommands];
+
+        string prompt = QaReviewPromptBuilder.Build(Request(NoRunSkill, project: scoped));
+
+        prompt.Should().Contain("`web`: `npm run test:e2e`");
+        prompt.Should().NotContain("Web/");
+        prompt.Should().NotContain("Scoped to the paths");
+        prompt.Should().NotContain("Run this gate only when");
+        prompt.Should().Be(QaReviewPromptBuilder.Build(Request(NoRunSkill, project: unscoped)));
+    }
+
+    /// <summary>
     /// A node runs a project's verify gates only after its own operator has accepted that exact
     /// gate set (security review idea 6be68ee2, process-injection finding 1, the local half) —
     /// this is the one review session told to run the suite for real, so an unaccepted command
