@@ -1486,7 +1486,7 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         NonMemberFeedbackItem held = new(
             @event.Data.FeedbackKey, @event.Data.Kind, @event.Data.Reviewer, @event.Data.Url,
             @event.Data.ObservedAt, NonMemberFeedbackStatus.Undecided, @event.Data.Review,
-            CommentIds: @event.Data.CommentIds);
+            CommentCopies: @event.Data.CommentCopies);
         if (at >= 0)
         {
             view.NonMemberFeedback[at] = held;

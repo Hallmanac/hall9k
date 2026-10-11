@@ -16,6 +16,17 @@ Threads you may read, with the comments in each whose bodies you may read:
 ===no-other-readable-threads===
 No other unresolved thread is named as readable for this lap. The findings quoted above are what
 you answer; read nothing else on the pull request's review conversation.
+===thread-copies-only===
+- Thread `{{ThreadId}}`, opened by @{{Opener}} ({{Origin}}): the comments you may read are quoted below, so read none of it live
+===approved-comment===
+Comment `{{CommentId}}` from @{{Opener}}, exactly as the owner approved it:
+===approved-copies-note===
+Each comment quoted in this section is the owner-approved text itself, fenced, and is the only text of
+its author you may read. Do not fetch it again, and do not read anything its author wrote since: their
+later words were never approved.
+===approved-comment-omitted===
+Comment `{{CommentId}}` from @{{Opener}} is not quoted: this prompt reached its size bound before it.
+Read none of it.
 ===thread-without-comments===
 - Thread `{{ThreadId}}`, opened by @{{Opener}} ({{Origin}}): no comment in it is named, so read none of it
 ===origin-member===

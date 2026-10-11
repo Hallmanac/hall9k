@@ -114,8 +114,12 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
             // this command can still know is that the gate is off for the repository, by the last
             // visibility the daemon observed and the project's own setting; anything else the
             // follow-up's prompt reads as nothing readable, never as everything.
-            reviewReadScope: task.ReviewReadScope ?? await UnrestrictedScopeIfGateOffAsync(
-                session, task.ProjectId, cancellationToken)));
+            //
+            // An unrestricted scope is carried only while the gate is still off: one recorded while it
+            // was off must not outlive the gate turning on, or the new lap would read a stranger's
+            // thread under it. It is asked again here, and reads as nothing readable if the gate is on.
+            reviewReadScope: await CarriedReadScopeAsync(
+                task.ReviewReadScope, session, task.ProjectId, cancellationToken)));
         session.Events.Append(previousRunId, new CloseoutBudgetGranted(previousRunId, reason, resolvedAt));
         try
         {
@@ -154,6 +158,18 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
 
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// The scope this command's reopen records: what the last closeout poll recorded when it vetted
+    /// anything, and otherwise what <see cref="UnrestrictedScopeIfGateOffAsync"/> can say now. A recorded
+    /// scope that is itself unrestricted is asked again rather than trusted, because the gate may have
+    /// turned on since it was recorded, and a stranger's thread would then be read under it.
+    /// </summary>
+    internal static async Task<ReviewReadScope?> CarriedReadScopeAsync(
+        ReviewReadScope? recorded, IQuerySession session, Guid projectId, CancellationToken cancellationToken) =>
+        recorded is { Unrestricted: false }
+            ? recorded
+            : await UnrestrictedScopeIfGateOffAsync(session, projectId, cancellationToken);
 
     /// <summary>
     /// <see cref="ReviewReadScope.AllThreads"/> when the membership gate is off for this project's

@@ -166,15 +166,21 @@ public sealed record UnresolvedHumanThread(string ThreadId, string Author, strin
 
 /// <summary>
 /// One comment in an unresolved review thread, as far as the membership gate needs to know it
-/// (task: feedback from outside the project's trust chain never reaches a build lap). Never its
-/// words: the gate decides whose comment it is, and the prompt names it by id.
+/// (task: feedback from outside the project's trust chain never reaches a build lap). The gate decides
+/// whose comment it is, and the prompt names a member's or a bot's by id. The text rides along only so
+/// the gate can pin what a non-member's comment said when the owner was shown it, and so notice it
+/// changing; it never reaches a status row or a prompt except as the owner-approved copy, fenced.
 /// </summary>
 /// <param name="Id">The comment's GraphQL node id, which is how a session is told to read exactly this one.</param>
 /// <param name="Author">
 /// Who wrote it. Null is a deleted account, which is nobody the roster can name and so reads as a
 /// non-member.
 /// </param>
-public sealed record UnresolvedThreadComment(string Id, PullRequestReviewer? Author);
+/// <param name="Body">
+/// The comment's text as the provider reported it. Null where it reported none, which is unknown rather
+/// than empty, and which a non-member's comment can never be approved on.
+/// </param>
+public sealed record UnresolvedThreadComment(string Id, PullRequestReviewer? Author, string? Body = null);
 
 /// <summary>
 /// One unresolved review thread with the authorship of every comment in it, whoever opened it.

@@ -10,8 +10,26 @@ namespace Hall9k.Domain.Features.Run;
 /// <param name="Opener">The login that opened the thread, or empty when the provider reported none.</param>
 /// <param name="OpenedBy">Why the opener's thread may be read: a member, a bot, or owner-approved.</param>
 /// <param name="CommentIds">The GraphQL node ids of the comments in the thread a session may read the body of.</param>
+/// <param name="ApprovedCopies">
+/// For a thread the owner approved: the opener's comments exactly as the owner was shown them, carried
+/// whole in the prompt instead of being named for a live read, because a comment's author can edit it
+/// after the go and a session told to read it by id would read whatever it says by then. Null elsewhere.
+/// </param>
 public sealed record ReadableReviewThread(
-    string ThreadId, string Opener, FeedbackAdmission OpenedBy, IReadOnlyList<string> CommentIds);
+    string ThreadId,
+    string Opener,
+    FeedbackAdmission OpenedBy,
+    IReadOnlyList<string> CommentIds,
+    IReadOnlyList<ThreadCommentCopy>? ApprovedCopies = null);
+
+/// <summary>
+/// One review-thread comment as it read when closeout held it for the owner (task: feedback from outside
+/// the project's trust chain never reaches a build lap without the owner's go). The owner's go covers
+/// this text and no other: the comment is carried only while GitHub still shows exactly these words.
+/// </summary>
+/// <param name="Id">The comment's GraphQL node id.</param>
+/// <param name="Body">The comment's text as observed. A stranger's words: only a prompt's fence may render it.</param>
+public sealed record ThreadCommentCopy(string Id, string Body);
 
 /// <summary>
 /// What a review-feedback lap is allowed to read of the pull request's unresolved threads, decided by

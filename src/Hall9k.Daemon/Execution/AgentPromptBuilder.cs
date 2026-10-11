@@ -697,9 +697,21 @@ public static class AgentPromptBuilder
                 // they wanted would be reported as silent (independent pre-PR review, cycle 1,
                 // adversarial lens). What was actually observed is that closeout read none — so
                 // the session is pointed at the review itself before concluding either way.
-                AppendFragment(
-                    prompt, file, "no-findings-in-review",
-                    ("ReadReviewHint", ReadThisReviewHint(file, review.ReviewUrl)));
+                //
+                // An owner-approved review is the exception: what the owner approved is the copy held
+                // with it, which carries no findings, and the live review is whatever its author has
+                // written since, so a session is not pointed there.
+                if (review.AdmittedAs == FeedbackAdmission.OwnerApproved)
+                {
+                    AppendFragment(prompt, file, "no-findings-in-approved-review");
+                }
+                else
+                {
+                    AppendFragment(
+                        prompt, file, "no-findings-in-review",
+                        ("ReadReviewHint", ReadThisReviewHint(file, review.ReviewUrl)));
+                }
+
                 prompt.AppendLine();
                 continue;
             }
@@ -708,7 +720,12 @@ public static class AgentPromptBuilder
             {
                 if (totalFindingBodyLength >= MaxChangesRequestedTotalFindingBodyLength)
                 {
-                    prompt.AppendLine(Fragment(file, "findings-omitted-over-budget", ("ReviewUrl", review.ReviewUrl)));
+                    prompt.AppendLine(Fragment(
+                        file,
+                        review.AdmittedAs == FeedbackAdmission.OwnerApproved
+                            ? "findings-omitted-over-budget-approved"
+                            : "findings-omitted-over-budget",
+                        ("ReviewUrl", review.ReviewUrl)));
                     prompt.AppendLine();
                     break;
                 }
@@ -727,7 +744,7 @@ public static class AgentPromptBuilder
                 prompt.AppendLine(tags.Count > 0
                     ? $"{ReviewResultParser.FindingMarker} {string.Join("; ", tags)}"
                     : Fragment(file, "no-location-finding", ("FindingMarker", ReviewResultParser.FindingMarker)));
-                string body = FencedFindingBody(finding.Body, review.ReviewUrl);
+                string body = FencedFindingBody(finding.Body, review);
                 prompt.AppendLine(body);
                 prompt.AppendLine();
                 totalFindingBodyLength += body.Length;
@@ -807,7 +824,9 @@ public static class AgentPromptBuilder
             prompt.AppendLine(Fragment(file, "readable-heading"));
             prompt.AppendLine();
             int shown = 0;
+            int copiedLength = 0;
             bool omitted = false;
+            bool copiesQuoted = false;
             foreach (ReadableReviewThread thread in threads)
             {
                 string origin = thread.OpenedBy == FeedbackAdmission.Bot
@@ -819,15 +838,52 @@ public static class AgentPromptBuilder
                 string named = string.Join(", ", ids.Select(id => $"`{OneLine(id)}`"));
                 shown += ids.Count();
                 omitted |= shown >= MaxReadableCommentIds && thread.CommentIds.Count > ids.Count();
+                IReadOnlyList<ThreadCommentCopy> copies = thread.ApprovedCopies ?? [];
+                string threadFragment = named.Length > 0
+                    ? "readable-thread"
+                    : copies.Count > 0
+                        ? "thread-copies-only"
+                        : "thread-without-comments";
                 prompt.AppendLine(Fragment(
-                    file, named.Length == 0 ? "thread-without-comments" : "readable-thread",
+                    file, threadFragment,
                     ("ThreadId", OneLine(thread.ThreadId)),
                     ("Opener", OneLine(thread.Opener)),
                     ("Origin", origin),
                     ("CommentIds", named)));
+                foreach (ThreadCommentCopy copy in copies)
+                {
+                    copiesQuoted = true;
+                    prompt.AppendLine();
+                    if (copiedLength >= MaxChangesRequestedTotalFindingBodyLength)
+                    {
+                        prompt.AppendLine(Fragment(
+                            file, "approved-comment-omitted",
+                            ("CommentId", OneLine(copy.Id)), ("Opener", OneLine(thread.Opener))));
+                        continue;
+                    }
+
+                    // Whole and never cut: the gate keeps no copy over the bound this prompt carries, so a
+                    // truncation notice pointing back at the live comment cannot arise here.
+                    string fenced = RelayedText.Fenced(RelayedText.Printable(copy.Body));
+                    prompt.AppendLine(Fragment(
+                        file, "approved-comment", ("CommentId", OneLine(copy.Id)), ("Opener", OneLine(thread.Opener))));
+                    prompt.AppendLine(fenced);
+                    copiedLength += fenced.Length;
+                }
+
+                if (copies.Count > 0)
+                {
+                    prompt.AppendLine();
+                }
             }
 
             prompt.AppendLine();
+            if (copiesQuoted)
+            {
+                AppendFragment(prompt, file, "approved-copies-note");
+                prompt.AppendLine();
+            }
+
             if (omitted)
             {
                 AppendFragment(
@@ -901,13 +957,14 @@ public static class AgentPromptBuilder
     /// <see cref="MaxChangesRequestedFindingBodyLength"/>, with a labelled line pointing back at
     /// the review itself rather than silently dropping the rest — the same honesty
     /// <c>PullRequestBody.BoundedBlock</c> observes when it clips the platform's own authored
-    /// prose. The label is appended after the fence closes, never inside it: the fence is what
+    /// prose. (For an owner-approved review the label does not point back at the live review: what the
+    /// owner approved is the copy, and the live review is whatever its author has written since.) The label is appended after the fence closes, never inside it: the fence is what
     /// marks this text as the reviewer's own rather than the platform's, so the platform's own
     /// truncation notice has to sit outside it to stay recognisably the platform's, never a line a
     /// reviewer could have typed themselves to mimic it (independent pre-PR review, cycle 1,
     /// conformance finding).
     /// </summary>
-    private static string FencedFindingBody(string text, string reviewUrl)
+    private static string FencedFindingBody(string text, ChangesRequestedReview review)
     {
         string printable = RelayedText.Printable(text);
         bool wasTruncated = printable.Length > MaxChangesRequestedFindingBodyLength;
@@ -915,8 +972,11 @@ public static class AgentPromptBuilder
             ? printable[..RelayedText.CutLength(printable, MaxChangesRequestedFindingBodyLength)].TrimEnd()
             : printable;
         string fenced = RelayedText.Fenced(bounded);
+        string label = review.AdmittedAs == FeedbackAdmission.OwnerApproved
+            ? "finding-truncated-approved"
+            : "finding-truncated";
         return wasTruncated
-            ? $"{fenced}\n\n{Fragment($"{TemplateDirectory}/review-requested-changes.md", "finding-truncated", ("ReviewUrl", reviewUrl))}"
+            ? $"{fenced}\n\n{Fragment($"{TemplateDirectory}/review-requested-changes.md", label, ("ReviewUrl", review.ReviewUrl))}"
             : fenced;
     }
 
