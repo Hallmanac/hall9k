@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
+using Hall9k.Connectors.Verification;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -60,5 +61,31 @@ public sealed class VerifyGatesRowTests
         project.VerifyCommands.Add(new VerifyCommand("test", "dotnet test --filter Foo"));
 
         ProjectShowCommand.VerifyGatesRow(project).Should().Contain("not accepted on this node");
+    }
+
+    [Fact]
+    public void A_scoped_gate_prints_its_path_set()
+    {
+        ProjectDetails project = Project();
+        VerifyCommand gate = new("vitest", "npm test", PathSet: ["Web/react-apps/customer-portal/", "!Web/react-apps/customer-portal/legacy/"]);
+        project.VerifyCommands.Add(gate);
+        project.AcceptedVerifyCommands = [gate];
+
+        ProjectShowCommand.VerifyGatesRow(project)
+            .Should().Contain("Web/react-apps/customer-portal/, !Web/react-apps/customer-portal/legacy/");
+    }
+
+    [Fact]
+    public void Accept_gates_prints_a_scoped_gates_path_set()
+    {
+        GateSetAcceptanceDisplay.FormatGate(new VerifyCommand("test", "dotnet test", PathSet: ["src/", "!src/gen/"]))
+            .Should().Be("test: dotnet test [paths: src/, !src/gen/]");
+    }
+
+    [Fact]
+    public void Accept_gates_prints_an_unscoped_gate_exactly_as_before()
+    {
+        GateSetAcceptanceDisplay.FormatGate(new VerifyCommand("test", "dotnet test", HostCoupledFilter: "Category=Slow"))
+            .Should().Be("test: dotnet test [host-coupled: Category=Slow]");
     }
 }

@@ -104,6 +104,30 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "tests run in their own gate once per task, never in parallel with another run's copy).")]
         public string? HostCoupledGateFilter { get; init; }
 
+        [CommandOption("--verify-gate-paths <NAME=GLOB[,GLOB...]|NAME=none>")]
+        [Description(
+            "Scopes one of this project's --verify gates to a path set (task: a verify gate can be "
+            + "scoped to a path set, so a diff confined to one part of a split repo runs only the gates "
+            + "that can observe it): on each verification pass the daemon runs the gate only when at "
+            + "least one path the run's whole branch changed against its base (or its stacked fork "
+            + "point) matches the set, and otherwise records the gate as skipped (path scope). Repeat "
+            + "the flag for more than one gate; NAME=none clears that gate's set, and a gate with no "
+            + "set runs every pass as before. NAME must already be configured, by --verify in this "
+            + "same invocation or a prior one, and on a gate set this node has not accepted the flag "
+            + "needs --verify alongside it (the same refusal --verify-gate-filter makes). A glob "
+            + "follows --non-executable-path's own rules: ending in '/' it matches any path under it "
+            + "from the repository root, with no '/' it matches a file name at any depth, and "
+            + "otherwise it matches the full path (a/**/b needs at least one directory between a and "
+            + "b). A glob prefixed with '!' is an exclusion that wins over every positive glob in the "
+            + "set, so \"**,!Web/react-apps/customer-portal/\" means everything outside that "
+            + "directory; a set needs at least one positive glob, because one of only exclusions would "
+            + "skip the gate on every run. A positive glob that misses a path skips its gate, so a "
+            + "directory prefix ending in '/' or the exclusion form is the safe shape. Paths in the "
+            + "non-executable set never wake a scoped gate, and every gate runs when the changed paths "
+            + "cannot be read. A glob cannot contain a comma. A fleet node on an older binary drops "
+            + "this field and runs every gate.")]
+        public string[] VerifyGatePaths { get; init; } = [];
+
         [CommandOption("--accept-broken-gate")]
         [Description(
             "Records a --verify gate that fails when run once against a clean checkout of this "
@@ -660,40 +684,18 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
 
         // Folded into the same verifyCommands Optional, on top of whatever --verify itself just
         // set, or on top of the project's own already-recorded gates when --verify was not given
-        // this invocation (#225): --verify-gate-filter names an EXISTING gate
-        // rather than a whole new list, so it needs the resolved list either way.
-        if (settings.HostCoupledGateFilter is { } hostCoupledGateFilterValue)
+        // this invocation (#225): --verify-gate-filter and --verify-gate-paths name EXISTING gates
+        // rather than a whole new list, so each needs the resolved list either way.
+        IReadOnlyList<VerifyCommand>? foldedGates = FoldGateFlags(
+            details.Name,
+            details.VerifyCommands,
+            details.AcceptedVerifyCommands,
+            verifyCommands is { HasValue: true, Value: { } newlySetGates } ? newlySetGates : null,
+            settings.HostCoupledGateFilter,
+            settings.VerifyGatePaths);
+        if (foldedGates is not null)
         {
-            IReadOnlyList<VerifyCommand>? newlySetGates = verifyCommands is { HasValue: true, Value: { } newlyAssignedGates }
-                ? newlyAssignedGates
-                : null;
-            bool verifyPassedThisInvocation = newlySetGates is not null;
-            IReadOnlyList<VerifyCommand> gatesToMark = newlySetGates ?? details.VerifyCommands;
-
-            // A node runs a project's verify gates only after its own operator has accepted that
-            // exact gate set (security review idea 6be68ee2, process-injection finding 1, the local
-            // half) — the comment below this block reasons that the operator who just typed the
-            // gates into this command IS the accepting operator, but that only holds when --verify
-            // itself was passed. A bare --verify-gate-filter never shows the operator a single gate
-            // command: it folds whatever details.VerifyCommands already holds, which may be an
-            // unvetted set this node replicated in and never reviewed, and would otherwise record
-            // that whole list as accepted underneath a command whose only visible output is a gate
-            // name (independent pre-PR review, cycle 1, both lenses, medium). Refused here, before
-            // ValidateGatesAgainstCleanBaseAsync below ever runs the unreviewed command on this
-            // host, rather than silently accepting it.
-            if (!verifyPassedThisInvocation
-                && !GateSetAcceptance.Decide(details.AcceptedVerifyCommands, gatesToMark).Proceed)
-            {
-                throw new DomainConflictException(
-                    $"Project '{details.Name}'s current verify gate set has not been accepted on this "
-                    + $"node — --verify-gate-filter alone would record acceptance of a list this node "
-                    + "has never reviewed. Run h9k project accept-gates "
-                    + $"{details.Name} first, or pass --verify together with --verify-gate-filter to "
-                    + "set and accept a reviewed list in the same call.");
-            }
-
-            verifyCommands = Optional<IReadOnlyList<VerifyCommand>>.Of(
-                ApplyHostCoupledGateFilter(gatesToMark, hostCoupledGateFilterValue));
+            verifyCommands = Optional<IReadOnlyList<VerifyCommand>>.Of(foldedGates);
         }
 
         // Each gate is run once against a clean checkout of the base branch here, before it is
@@ -946,12 +948,12 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
 
         // A node runs a project's verify gates only after its own operator has accepted that exact
         // gate set (security review idea 6be68ee2, process-injection finding 1, the local half).
-        // --verify and --verify-gate-filter are the only flags that feed VerifyCommand.Fingerprint,
-        // and verifyCommands.HasValue is exactly "one of them was passed this invocation" — either
-        // --verify, where the operator just typed the gates into this very command, or a bare
-        // --verify-gate-filter, which the refusal above already limited to a gate list this node
-        // had already accepted (so this append only ever re-records that same list, now carrying
-        // the filter). Either way the operator who just ran this command IS the accepting operator,
+        // --verify, --verify-gate-filter and --verify-gate-paths are the only flags that feed
+        // VerifyCommand.Fingerprint, and verifyCommands.HasValue is exactly "one of them was passed
+        // this invocation" — either --verify, where the operator just typed the gates into this very
+        // command, or a bare --verify-gate-filter or --verify-gate-paths, which the refusal in
+        // FoldGateFlags already limited to a gate list this node had already accepted (so this
+        // append only ever re-records that same list, now carrying the filter or path set). Either way the operator who just ran this command IS the accepting operator,
         // so acceptance rides the same SaveChangesAsync as the settings event rather than a second
         // command: a node can never hold itself on its own local change.
         if (verifyCommands is { HasValue: true, Value: { } acceptedGates })
@@ -1547,6 +1549,123 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         }
 
         return new VerifyCommand(name, command);
+    }
+
+    /// <summary>
+    /// Folds --verify-gate-filter and --verify-gate-paths onto the gate list this invocation ends up
+    /// recording: <paramref name="verifyList"/> (what --verify just set) when it was passed, else
+    /// <paramref name="recorded"/>. Null when none of the three flags was passed. A bare filter or
+    /// path flag is refused on a recorded set this node has not accepted, decided once against what
+    /// was passed (never against the first fold's own output, which the second fold would
+    /// otherwise read as "--verify was passed"): either flag alone would record acceptance of a
+    /// list the operator was never shown.
+    /// </summary>
+    internal static IReadOnlyList<VerifyCommand>? FoldGateFlags(
+        string projectName,
+        IReadOnlyList<VerifyCommand> recorded,
+        IReadOnlyList<VerifyCommand>? accepted,
+        IReadOnlyList<VerifyCommand>? verifyList,
+        string? hostCoupledGateFilter,
+        IReadOnlyList<string> gatePaths)
+    {
+        if (hostCoupledGateFilter is null && gatePaths.Count == 0)
+        {
+            return verifyList;
+        }
+
+        IReadOnlyList<VerifyCommand> gates = verifyList ?? recorded;
+
+        // A node runs a project's verify gates only after its own operator has accepted that
+        // exact gate set (security review idea 6be68ee2, process-injection finding 1, the local
+        // half) — the operator who just typed the gates into this command IS the accepting
+        // operator, but that only holds when --verify itself was passed. A bare flag never shows
+        // the operator a single gate command: it folds whatever the project already holds, which
+        // may be an unvetted set this node replicated in and never reviewed, and would otherwise
+        // record that whole list as accepted underneath a command whose only visible output is a
+        // gate name (independent pre-PR review, cycle 1, both lenses, medium). Refused here, before
+        // ValidateGatesAgainstCleanBaseAsync ever runs the unreviewed command on this host.
+        if (verifyList is null && !GateSetAcceptance.Decide(accepted, gates).Proceed)
+        {
+            string flags = hostCoupledGateFilter is not null && gatePaths.Count > 0
+                ? "--verify-gate-filter and --verify-gate-paths"
+                : hostCoupledGateFilter is not null ? "--verify-gate-filter" : "--verify-gate-paths";
+            throw new DomainConflictException(
+                $"Project '{projectName}'s current verify gate set has not been accepted on this "
+                + $"node — {flags} alone would record acceptance of a list this node "
+                + "has never reviewed. Run h9k project accept-gates "
+                + $"{projectName} first, or pass --verify together with {flags} to "
+                + "set and accept a reviewed list in the same call.");
+        }
+
+        if (hostCoupledGateFilter is not null)
+        {
+            gates = ApplyHostCoupledGateFilter(gates, hostCoupledGateFilter);
+        }
+
+        foreach (string value in gatePaths)
+        {
+            gates = ApplyGatePaths(gates, value);
+        }
+
+        return gates;
+    }
+
+    /// <summary>
+    /// Folds one --verify-gate-paths NAME=GLOB[,GLOB...] (or NAME=none) onto
+    /// <paramref name="gates"/> (task: a verify gate can be scoped to a path set). Refuses what
+    /// --verify-gate-filter refuses for a name (one that is not configured), and a set with no
+    /// positive glob: <see cref="GatePathScope"/> would skip that gate on every run, a gate that
+    /// can never run being a misconfiguration and not a scope. A leading <c>!</c> is allowed here,
+    /// unlike --non-executable-path's own, because exclusion is how a path set says "everything
+    /// except" (its precedence is <see cref="NonExecutablePathClassifier"/>'s own).
+    /// </summary>
+    internal static IReadOnlyList<VerifyCommand> ApplyGatePaths(IReadOnlyList<VerifyCommand> gates, string value)
+    {
+        int separator = value.IndexOf('=');
+        if (separator <= 0)
+        {
+            throw new DomainValidationException(
+                $"--verify-gate-paths expects name=glob[,glob...] (or name=none to clear), got '{value}'.");
+        }
+
+        string name = value[..separator].Trim();
+        string rawGlobs = value[(separator + 1)..].Trim();
+        if (name.Length == 0 || rawGlobs.Length == 0)
+        {
+            throw new DomainValidationException(
+                $"--verify-gate-paths expects name=glob[,glob...] (or name=none to clear), got '{value}'.");
+        }
+
+        if (!gates.Any(gate => gate.Name == name))
+        {
+            throw new DomainValidationException(
+                $"--verify-gate-paths names gate '{name}', which is not configured. Configure it first "
+                + "with --verify, in this same invocation or a prior one.");
+        }
+
+        IReadOnlyList<string>? pathSet = null;
+        if (!ClearingWord(rawGlobs))
+        {
+            string[] globs = [.. rawGlobs.Split(',').Select(glob => glob.Trim())];
+            if (globs.Any(glob => glob.Length == 0 || glob == "!"))
+            {
+                throw new DomainValidationException(
+                    $"--verify-gate-paths for gate '{name}' has an empty glob in '{rawGlobs}'. Globs are "
+                    + "separated by a comma and a glob cannot itself contain one.");
+            }
+
+            if (!GatePathScope.HasPositiveGlob(globs))
+            {
+                throw new DomainValidationException(
+                    $"--verify-gate-paths for gate '{name}' has no positive glob ('{rawGlobs}'). A set of "
+                    + "only ! exclusions would skip the gate on every run; add a positive glob such as "
+                    + "'**' for everything outside the exclusions, or use name=none to run it every time.");
+            }
+
+            pathSet = globs;
+        }
+
+        return [.. gates.Select(gate => gate.Name == name ? gate with { PathSet = pathSet } : gate)];
     }
 
     /// <summary>

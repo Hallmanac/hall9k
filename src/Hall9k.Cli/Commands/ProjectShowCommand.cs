@@ -356,6 +356,9 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             $"{gate.Name.EscapeMarkup()} [dim]→[/] {gate.Command.EscapeMarkup()}"
             + (gate.HostCoupledFilter is { } filter
                 ? $" [dim](host-coupled, filter: {filter.EscapeMarkup()})[/]"
+                : string.Empty)
+            + (gate.IsPathScoped
+                ? $" [dim](runs only when the diff touches: {string.Join(", ", gate.PathSet.Select(glob => glob.EscapeMarkup()))})[/]"
                 : string.Empty)));
 
         return GateSetAcceptance.Decide(project.AcceptedVerifyCommands, project.VerifyCommands).Proceed

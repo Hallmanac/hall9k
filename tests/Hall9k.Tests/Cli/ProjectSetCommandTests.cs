@@ -273,4 +273,161 @@ public sealed class ProjectSetCommandTests
             .WithMessage("*'build'*")
             .WithMessage("*dotnet test*");
     }
+
+    /// <summary>
+    /// The pure half of <c>--verify-gate-paths</c> (task: a verify gate can be scoped to a path
+    /// set): composing the updated gate list without touching the project stream or spawning anything.
+    /// </summary>
+    [Fact]
+    public void A_verify_gate_paths_sets_the_named_gates_path_set_and_leaves_the_others_alone()
+    {
+        VerifyCommand[] gates =
+        [
+            new VerifyCommand("build", "dotnet build"),
+            new VerifyCommand("vitest", "npm test"),
+        ];
+
+        IReadOnlyList<VerifyCommand> updated = ProjectSetCommand.ApplyGatePaths(
+            gates, "vitest=Web/react-apps/customer-portal/, !Web/react-apps/customer-portal/legacy/");
+
+        updated.Should().Equal(
+            new VerifyCommand("build", "dotnet build"),
+            new VerifyCommand(
+                "vitest", "npm test", PathSet: ["Web/react-apps/customer-portal/", "!Web/react-apps/customer-portal/legacy/"]));
+    }
+
+    [Fact]
+    public void A_verify_gate_paths_keeps_the_gates_host_coupled_filter()
+    {
+        VerifyCommand[] gates = [new VerifyCommand("test", "dotnet test", HostCoupledFilter: "Category=RequiresDocker")];
+
+        ProjectSetCommand.ApplyGatePaths(gates, "test=src/")[0].HostCoupledFilter.Should().Be("Category=RequiresDocker");
+    }
+
+    [Fact]
+    public void A_verify_gate_paths_set_to_none_clears_only_that_gates_set()
+    {
+        VerifyCommand[] gates =
+        [
+            new VerifyCommand("build", "dotnet build", PathSet: ["src/"]),
+            new VerifyCommand("test", "dotnet test", PathSet: ["src/"]),
+        ];
+
+        IReadOnlyList<VerifyCommand> updated = ProjectSetCommand.ApplyGatePaths(gates, "test=none");
+
+        updated.Should().Equal(
+            new VerifyCommand("build", "dotnet build", PathSet: ["src/"]),
+            new VerifyCommand("test", "dotnet test"));
+    }
+
+    [Fact]
+    public void A_verify_gate_paths_naming_an_unconfigured_gate_is_a_refusal_naming_it()
+    {
+        Action act = () => ProjectSetCommand.ApplyGatePaths([new VerifyCommand("build", "dotnet build")], "test=src/");
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*'test'*")
+            .WithMessage("*--verify*");
+    }
+
+    [Theory]
+    [InlineData("not-a-name-paths-pair")]
+    [InlineData("test=")]
+    [InlineData("=src/")]
+    [InlineData("test=src/,,lib/")]
+    public void A_malformed_verify_gate_paths_is_a_refusal_naming_the_expected_shape(string value)
+    {
+        Action act = () => ProjectSetCommand.ApplyGatePaths([new VerifyCommand("test", "dotnet test")], value);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*--verify-gate-paths*");
+    }
+
+    [Theory]
+    [InlineData("test=!docs/")]
+    [InlineData("test=!docs/,!Playwright/")]
+    public void A_verify_gate_paths_with_only_exclusions_is_a_refusal_because_it_would_always_skip(string value)
+    {
+        Action act = () => ProjectSetCommand.ApplyGatePaths([new VerifyCommand("test", "dotnet test")], value);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*no positive glob*");
+    }
+
+    [Fact]
+    public void A_verify_gate_paths_accepts_an_exclusion_beside_a_positive_glob()
+    {
+        IReadOnlyList<VerifyCommand> updated = ProjectSetCommand.ApplyGatePaths(
+            [new VerifyCommand("test", "dotnet test")], "test=**,!Playwright/");
+
+        updated[0].PathSet.Should().Equal("**", "!Playwright/");
+    }
+
+    [Fact]
+    public void A_second_verify_gate_paths_for_the_same_gate_replaces_the_first()
+    {
+        IReadOnlyList<VerifyCommand> updated = ProjectSetCommand.FoldGateFlags(
+            "hall9k",
+            recorded: [new VerifyCommand("test", "dotnet test")],
+            accepted: [new VerifyCommand("test", "dotnet test")],
+            verifyList: null,
+            hostCoupledGateFilter: null,
+            gatePaths: ["test=src/", "test=lib/"]) ?? [];
+
+        updated[0].PathSet.Should().Equal("lib/");
+    }
+
+    [Fact]
+    public void A_filter_and_paths_together_without_verify_fold_both_onto_an_accepted_recorded_set()
+    {
+        VerifyCommand[] recorded = [new VerifyCommand("test", "dotnet test")];
+
+        IReadOnlyList<VerifyCommand> folded = ProjectSetCommand.FoldGateFlags(
+            "hall9k", recorded, accepted: recorded, verifyList: null,
+            hostCoupledGateFilter: "test=Category=RequiresDocker", gatePaths: ["test=src/"]) ?? [];
+
+        folded.Should().Equal(
+            new VerifyCommand("test", "dotnet test", HostCoupledFilter: "Category=RequiresDocker", PathSet: ["src/"]));
+    }
+
+    [Fact]
+    public void A_filter_and_paths_together_without_verify_on_an_unaccepted_set_is_one_refusal_naming_both_flags()
+    {
+        VerifyCommand[] recorded = [new VerifyCommand("test", "dotnet test")];
+
+        Action act = () => ProjectSetCommand.FoldGateFlags(
+            "hall9k", recorded, accepted: null, verifyList: null,
+            hostCoupledGateFilter: "test=Category=RequiresDocker", gatePaths: ["test=src/"]);
+
+        act.Should().Throw<DomainConflictException>()
+            .WithMessage("*--verify-gate-filter and --verify-gate-paths*")
+            .WithMessage("*accept-gates*");
+    }
+
+    [Fact]
+    public void A_bare_verify_gate_paths_on_an_unaccepted_set_is_refused_like_a_bare_filter()
+    {
+        Action act = () => ProjectSetCommand.FoldGateFlags(
+            "hall9k", [new VerifyCommand("test", "dotnet test")], accepted: null, verifyList: null,
+            hostCoupledGateFilter: null, gatePaths: ["test=src/"]);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*--verify-gate-paths alone*");
+    }
+
+    [Fact]
+    public void Verify_alongside_verify_gate_paths_folds_onto_the_list_verify_just_set_even_when_nothing_is_accepted()
+    {
+        VerifyCommand[] verifyList = [new VerifyCommand("test", "dotnet test")];
+
+        IReadOnlyList<VerifyCommand> folded = ProjectSetCommand.FoldGateFlags(
+            "hall9k", recorded: [], accepted: null, verifyList, hostCoupledGateFilter: null, gatePaths: ["test=src/"]) ?? [];
+
+        folded.Should().Equal(new VerifyCommand("test", "dotnet test", PathSet: ["src/"]));
+    }
+
+    [Fact]
+    public void No_gate_flag_leaves_the_gate_list_untouched()
+    {
+        ProjectSetCommand.FoldGateFlags(
+            "hall9k", [new VerifyCommand("test", "dotnet test")], accepted: null, verifyList: null,
+            hostCoupledGateFilter: null, gatePaths: []).Should().BeNull();
+    }
 }
