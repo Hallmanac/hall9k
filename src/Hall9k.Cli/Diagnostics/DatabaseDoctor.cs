@@ -1068,10 +1068,23 @@ public static class DatabaseDoctor
         // whatever this method actually returns (cycle-3 pre-PR review, both lenses).
         if (reachability.Status == ReachabilityStatus.RefusedConnection)
         {
-            AnsiConsole.MarkupLine(waitedForStartup
-                ? $"[dim]Still not answering after waiting up to {readinessTimeout.TotalSeconds:0}s for it to finish "
-                    + $"starting. Check docker logs {PostgresRuntime.ContainerName}, then try again.[/]"
-                : "[dim]Is Postgres running? Start it, then try again.[/]");
+            // An off-host address gets its own closing line: the "start it" advice there cannot be
+            // acted on from this machine, and a container published on one specific address stays
+            // stopped when that address was missing at Docker's start (Docker's restart policy only
+            // applies after a first successful start). Generic on purpose: no vendor detection, and
+            // no docker call, the same boundary CheckContainerPortBindingAsync documents.
+            string closingLine = (waitedForStartup, looksLocal) switch
+            {
+                (true, _) => $"[dim]Still not answering after waiting up to {readinessTimeout.TotalSeconds:0}s for it to finish "
+                    + $"starting. Check docker logs {PostgresRuntime.ContainerName}, then try again.[/]",
+                (false, true) => "[dim]Is Postgres running? Start it, then try again.[/]",
+                (false, false) => $"[dim]Start Postgres on {reachability.Host.EscapeMarkup()}:{reachability.Port}, on the machine that runs it, then try again. "
+                    + "A container published on one specific address stays stopped if that address did not exist yet when Docker "
+                    + "started, even after the address appears, until someone runs docker start on that machine (a Parallels "
+                    + "network address after a reboot is one example). See docs/operations.md's \"Postgres on another "
+                    + "host\" section.[/]",
+            };
+            AnsiConsole.MarkupLine(closingLine);
         }
 
         return reachability;
