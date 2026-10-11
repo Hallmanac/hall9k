@@ -487,6 +487,7 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
+        AppendReviewReadScope(prompt, task);
         AppendReviewerAttributionRules(prompt);
         AppendThreadTriageRules(prompt, project.Name);
         AppendThreadHandlingRules(prompt, project, task.Id, voiceSkill);
@@ -598,6 +599,7 @@ public static class AgentPromptBuilder
 
         AppendProjectHome(prompt, project);
         AppendChangesRequestedFindings(prompt, task);
+        AppendReviewReadScope(prompt, task, inReviewLap: true);
         AppendChangesRequestedHandlingRules(prompt, project, task.Id, voiceSkill);
         AppendChangesRequestedDisagreementRules(prompt, voiceSkill);
 
@@ -670,6 +672,16 @@ public static class AgentPromptBuilder
         int totalFindingBodyLength = 0;
         foreach (ChangesRequestedReview review in task.ChangesRequestedReviews)
         {
+            if (!review.AdmittedAs.MayBeRead)
+            {
+                // No admission was recorded: a review stored before the membership gate existed, or
+                // one the daemon never vouched for. It is treated as a non-member's, so neither its
+                // text nor even the address a session could read it at reaches the prompt.
+                prompt.AppendLine(Fragment(file, "review-withheld"));
+                prompt.AppendLine();
+                continue;
+            }
+
             string submitted = review.SubmittedAt is { } at
                 ? at.ToString("u", CultureInfo.InvariantCulture)
                 : Fragment(file, "time-not-reported");
@@ -685,7 +697,9 @@ public static class AgentPromptBuilder
                 // they wanted would be reported as silent (independent pre-PR review, cycle 1,
                 // adversarial lens). What was actually observed is that closeout read none — so
                 // the session is pointed at the review itself before concluding either way.
-                AppendFragment(prompt, file, "no-findings-in-review");
+                AppendFragment(
+                    prompt, file, "no-findings-in-review",
+                    ("ReadReviewHint", ReadThisReviewHint(file, review.ReviewUrl)));
                 prompt.AppendLine();
                 continue;
             }
@@ -722,13 +736,140 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
+    /// How a session is told to read ONE review it was handed and nothing around it (task: a
+    /// changes-requested review from outside the project's roster never reaches a build lap): the
+    /// review's own REST route, derived from the url the review carries, because
+    /// <c>gh pr view --json reviews</c> and every other listing returns the words of reviews it may not
+    /// read. A url that is not a pull-request review address falls back to opening it where it is.
+    /// </summary>
+    private static string ReadThisReviewHint(string file, string reviewUrl) =>
+        ReviewRestRoute(reviewUrl) is { } route
+            ? Fragment(file, "read-review-route", ("ReviewRoute", route))
+            : Fragment(file, "read-review-address");
+
+    /// <summary>
+    /// <c>https://github.com/o/r/pull/7#pullrequestreview-99</c> as <c>repos/o/r/pulls/7/reviews/99</c>,
+    /// or null for anything else, so a malformed url never becomes a command a session runs.
+    /// </summary>
+    internal static string? ReviewRestRoute(string reviewUrl)
+    {
+        if (!Uri.TryCreate(reviewUrl, UriKind.Absolute, out Uri? uri)
+            || !uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
+            || !uri.Fragment.StartsWith("#pullrequestreview-", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        string[] segments = uri.AbsolutePath.Trim('/').Split('/');
+        string reviewId = uri.Fragment["#pullrequestreview-".Length..];
+        return segments is [var owner, var repository, "pull", var number]
+            && IsRepositoryName(owner) && IsRepositoryName(repository)
+            && IsNumber(number) && IsNumber(reviewId)
+                ? $"repos/{owner}/{repository}/pulls/{number}/reviews/{reviewId}"
+                : null;
+    }
+
+    private static bool IsRepositoryName(string value) =>
+        value.Length > 0 && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-');
+
+    private static bool IsNumber(string value) => value.Length > 0 && value.All(char.IsAsciiDigit);
+
+    /// <summary>
+    /// Which unresolved review comments this lap's session may read, and which it must leave alone
+    /// (task: a changes-requested review or an unresolved review thread from someone outside the
+    /// project's trust-chain roster never reaches a build lap). The daemon decided it from the roster
+    /// at dispatch and recorded it on the reopen; this only renders it. No recorded scope reads as
+    /// nothing readable, never as everything: a reopen from before the gate, or a manual one on a task
+    /// closeout never dispatched, must not be a way round it.
+    /// </summary>
+    private static void AppendReviewReadScope(StringBuilder prompt, TaskDetails task, bool inReviewLap = false)
+    {
+        const string file = $"{TemplateDirectory}/review-read-scope.md";
+        prompt.AppendLine(Fragment(file, "heading"));
+        prompt.AppendLine();
+        ReviewReadScope? scope = task.ReviewReadScope;
+        if (scope is { Unrestricted: true })
+        {
+            AppendFragment(prompt, file, "unrestricted");
+            prompt.AppendLine();
+            return;
+        }
+
+        AppendFragment(prompt, file, "intro");
+        prompt.AppendLine();
+        IReadOnlyList<ReadableReviewThread> threads = scope?.Threads ?? [];
+        if (threads.Count == 0)
+        {
+            AppendFragment(prompt, file, inReviewLap ? "no-other-readable-threads" : "no-readable-threads");
+        }
+        else
+        {
+            prompt.AppendLine(Fragment(file, "readable-heading"));
+            prompt.AppendLine();
+            int shown = 0;
+            bool omitted = false;
+            foreach (ReadableReviewThread thread in threads)
+            {
+                string origin = thread.OpenedBy == FeedbackAdmission.Bot
+                    ? Fragment(file, "origin-bot")
+                    : thread.OpenedBy == FeedbackAdmission.OwnerApproved
+                        ? Fragment(file, "origin-approved")
+                        : Fragment(file, "origin-member");
+                IEnumerable<string> ids = thread.CommentIds.Take(MaxReadableCommentIds - shown);
+                string named = string.Join(", ", ids.Select(id => $"`{OneLine(id)}`"));
+                shown += ids.Count();
+                omitted |= shown >= MaxReadableCommentIds && thread.CommentIds.Count > ids.Count();
+                prompt.AppendLine(Fragment(
+                    file, named.Length == 0 ? "thread-without-comments" : "readable-thread",
+                    ("ThreadId", OneLine(thread.ThreadId)),
+                    ("Opener", OneLine(thread.Opener)),
+                    ("Origin", origin),
+                    ("CommentIds", named)));
+            }
+
+            prompt.AppendLine();
+            if (omitted)
+            {
+                AppendFragment(
+                    prompt, file, "more-comments-omitted",
+                    ("Shown", MaxReadableCommentIds.ToString(CultureInfo.InvariantCulture)));
+                prompt.AppendLine();
+            }
+
+            AppendFragment(prompt, file, "how-to-read");
+            prompt.AppendLine();
+            AppendFragment(prompt, file, "read-command");
+            prompt.AppendLine();
+            AppendFragment(prompt, file, "never-wider");
+        }
+
+        prompt.AppendLine();
+        if (scope is { WithheldThreadIds.Count: > 0 })
+        {
+            AppendFragment(
+                prompt, file, "withheld",
+                ("WithheldThreadIds", string.Join(", ", scope.WithheldThreadIds.Select(id => $"`{OneLine(id)}`"))));
+            prompt.AppendLine();
+        }
+
+        AppendFragment(prompt, file, "never-file-stranger-text");
+        prompt.AppendLine();
+    }
+
+    /// <summary>
+    /// How many comment ids the read-scope section names before it stops. The gate already caps a
+    /// scope at this many, so this only matters for a scope recorded under a larger cap; a comment not
+    /// named is a comment the session may not read, so cutting the list short only ever reads less.
+    /// </summary>
+    private const int MaxReadableCommentIds = Closeout.FeedbackMembershipGate.MaxReadableCommentIds;
+
+    /// <summary>
     /// How much of a single review body or inline comment rides into the prompt whole, before
     /// this session is pointed at the review itself for the rest. Well above anything a human
-    /// writes by hand reviewing a diff, because this is the one site in this builder a non-member
-    /// reaches at all — <c>GitHubPullRequestInspector.ReadChangesRequestedReviews</c> admits a
-    /// CHANGES_REQUESTED review from any human who is not the pull request's own author, with no
-    /// association filter — so the bound exists to cap a deliberately oversized paste, not to fit
-    /// an honest review.
+    /// writes by hand reviewing a diff, because this is the one site in this builder where an outsider's
+    /// own words can arrive at all, once the owner has approved them (<c>FeedbackMembershipGate</c>
+    /// holds every other non-member's review back) — so the bound exists to cap a deliberately
+    /// oversized paste, not to fit an honest review.
     /// </summary>
     private const int MaxChangesRequestedFindingBodyLength = 20_000;
 

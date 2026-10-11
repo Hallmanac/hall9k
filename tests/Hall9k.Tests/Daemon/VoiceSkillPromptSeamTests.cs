@@ -6,7 +6,6 @@ using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
-using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -501,7 +500,7 @@ public sealed class VoiceSkillPromptSeamTests : IDisposable
             new ChangesRequestedReview(
                 "teammate", "https://github.com/x/y/pull/7#pullrequestreview-42",
                 new DateTimeOffset(2026, 9, 14, 12, 15, 0, TimeSpan.Zero),
-                [new ChangesRequestedFinding("This limiter never resets.", "src/Limiter.cs:42", "PRRT_abc")]),
+                [new ChangesRequestedFinding("This limiter never resets.", "src/Limiter.cs:42", "PRRT_abc")], Admission: FeedbackAdmission.Member),
         ];
         return task;
     }
