@@ -27,6 +27,12 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// and the dispatcher's queue read both honour it through one predicate.
 /// </param>
 /// <param name="LaunchNetworkRetryError">Git's own error text for the failed fetch, flattened to one line.</param>
+/// <param name="LaunchNetworkRetryMentionFollowUp">
+/// True when the launch that could not reach origin was a pr-review mention follow-up's own
+/// checkout, so the requeue must keep the follow-up owed: the next claim answers the mentioning
+/// comment again (<see cref="TaskAggregate.PendingMentionFollowUpAfterPreflight"/>) instead of
+/// running an unrequested full review. Only read for <see cref="RequeueReason.LaunchNetworkRetry"/>.
+/// </param>
 public sealed record TaskRequeued(
     Guid Id,
     RequeueReason Reason,
@@ -35,4 +41,5 @@ public sealed record TaskRequeued(
     int? LaunchNetworkRetryAttempt = null,
     int? LaunchNetworkRetryBound = null,
     DateTimeOffset? LaunchNetworkRetryNotBefore = null,
-    string? LaunchNetworkRetryError = null);
+    string? LaunchNetworkRetryError = null,
+    bool LaunchNetworkRetryMentionFollowUp = false);

@@ -1586,9 +1586,12 @@ public static class TaskDecider
     /// Gives a claim back because its launch's checkout could not reach origin, with the attempt,
     /// the bound in force, the earliest next claim and git's error recorded on the event itself.
     /// Otherwise exactly <see cref="Requeue"/>, which is what a lease-expiry requeue is.
+    /// <paramref name="mentionFollowUp"/> is true when the failed launch was a pr-review mention
+    /// follow-up's own checkout, which keeps the follow-up owed across the wait.
     /// </summary>
     public static TaskRequeued RequeueAfterLaunchNetworkError(
-        TaskAggregate task, int attempt, int bound, TimeSpan backoff, string gitError, DateTimeOffset requeuedAt)
+        TaskAggregate task, int attempt, int bound, TimeSpan backoff, string gitError, DateTimeOffset requeuedAt,
+        bool mentionFollowUp = false)
     {
         TaskRequeued requeued = Requeue(task, RequeueReason.LaunchNetworkRetry, requeuedAt);
         return requeued with
@@ -1597,6 +1600,7 @@ public static class TaskDecider
             LaunchNetworkRetryBound = bound,
             LaunchNetworkRetryNotBefore = requeuedAt + backoff,
             LaunchNetworkRetryError = gitError,
+            LaunchNetworkRetryMentionFollowUp = mentionFollowUp,
         };
     }
 

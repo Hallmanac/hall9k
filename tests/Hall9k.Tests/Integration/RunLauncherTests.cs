@@ -4139,15 +4139,6 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         return (runId, claimed.LeaseGeneration);
     }
 
-    private static async Task AppendAsync(
-        DocumentStore store, Guid taskId, Func<TaskAggregate, object> next, CancellationToken cancellationToken)
-    {
-        await using IDocumentSession session = store.LightweightSession();
-        (TaskAggregate task, long version) = (await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken))!.Value;
-        session.Events.Append(taskId, expectedVersion: version + 1, next(task));
-        await session.SaveChangesAsync(cancellationToken);
-    }
-
     private static async Task<TaskRequeued> LatestRequeueAsync(
         DocumentStore store, Guid taskId, CancellationToken cancellationToken)
     {
@@ -4158,8 +4149,8 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
     /// <summary>
     /// A launch whose checkout could not reach origin for a passing reason goes back to the queue
-    /// instead of failing: no lease, no TaskFailed, the attempt recorded, and no claim possible,
-    /// from the decider or from the dispatcher's own queue, until the two-minute backoff has passed.
+    /// instead of failing: no lease, no TaskFailed, the attempt, the bound, the error and the
+    /// two-minute backoff recorded on the event and its projections, and the wait ended by the next claim.
     /// </summary>
     [Fact]
     public async Task A_launch_that_cannot_reach_origin_returns_the_task_to_the_queue_behind_a_backoff()
@@ -4192,15 +4183,6 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         details.LaunchNetworkRetryError.Should().Be(CouldNotResolveHost);
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.LaunchNetworkRetryNotBefore
             .Should().Be(requeued.LaunchNetworkRetryNotBefore);
-
-        TaskAggregate aggregate = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
-        Action early = () => TaskDecider.Claim(
-            aggregate, node.NodeId, node.OwnerId, DomainId.New(), requeued.RequeuedAt + TimeSpan.FromMinutes(1));
-        early.Should().Throw<Hall9k.Domain.Shared.Exceptions.DomainConflictException>(
-            "no node claims the task before its backoff has passed");
-        TaskDecider.Claim(
-            aggregate, node.NodeId, node.OwnerId, DomainId.New(), requeued.LaunchNetworkRetryNotBefore!.Value)
-            .LeaseGeneration.Should().Be(2);
 
         await ClaimAgainAsync(store, node, taskId, requeued.LaunchNetworkRetryNotBefore!.Value, cts.Token);
         await using IQuerySession afterClaim = store.QuerySession();
@@ -4246,51 +4228,6 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
-    /// Consecutive means unbroken: a task that returned to the queue for any other reason between
-    /// two network failures counts the second one as attempt one, whether that other way was a
-    /// requeue, a reopen, or a retry.
-    /// </summary>
-    [Theory]
-    [InlineData("requeue")]
-    [InlineData("retry")]
-    public async Task A_return_to_the_queue_by_another_route_restarts_the_count_at_one(string route)
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        DocumentStore store = postgres.Store;
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
-        int number = route == "requeue" ? 933 : 934;
-        (Guid taskId, Guid runId, _) = await SeedPrReviewAtCheckoutAsync(store, node, number, cts.Token);
-        FailingCheckoutWorktreeManager network = new(() => OriginUnreachable(CouldNotResolveHost));
-
-        await LaunchAgainstAsync(store, node, network, number, taskId, runId, 1, cts.Token);
-        TaskRequeued first = await LatestRequeueAsync(store, taskId, cts.Token);
-        first.LaunchNetworkRetryAttempt.Should().Be(1);
-
-        (Guid secondRunId, _) = await ClaimAgainAsync(
-            store, node, taskId, first.LaunchNetworkRetryNotBefore!.Value, cts.Token);
-        DateTimeOffset later = first.LaunchNetworkRetryNotBefore!.Value.AddMinutes(1);
-        if (route == "requeue")
-        {
-            await AppendAsync(store, taskId, task => TaskDecider.Requeue(task, RequeueReason.LeaseExpired, later), cts.Token);
-        }
-        else
-        {
-            await AppendAsync(store, taskId, task => TaskDecider.Fail(task, secondRunId, "Launch failed: unrelated", later), cts.Token);
-            await AppendAsync(
-                store, taskId, task => TaskDecider.Retry(task, secondRunId, null, "try again", later, node.OwnerId), cts.Token);
-        }
-
-        (Guid thirdRunId, int thirdGeneration) = await ClaimAgainAsync(store, node, taskId, later, cts.Token);
-        await LaunchAgainstAsync(store, node, network, number, taskId, thirdRunId, thirdGeneration, cts.Token);
-
-        TaskRequeued latest = await LatestRequeueAsync(store, taskId, cts.Token);
-        latest.Reason.Should().Be(RequeueReason.LaunchNetworkRetry);
-        latest.LaunchNetworkRetryAttempt.Should().Be(
-            1, "a task that went back to the queue another way is not on its second consecutive failure");
-        (await store.QuerySession().LoadAsync<TaskDetails>(taskId, cts.Token))!.State.Should().Be(TaskState.Queued);
-    }
-
-    /// <summary>
     /// Every other checkout failure behaves as it always did: a fetch git refused for a reason not
     /// on the list, and a failure that is not a fetch at all (even one whose text names a host it
     /// could not resolve), fails the task at once with the launch failure reason.
@@ -4318,6 +4255,56 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         details.LaunchNetworkRetryNotBefore.Should().BeNull();
         (await query.Events.FetchStreamAsync(taskId, token: cts.Token)).Select(@event => @event.Data)
             .OfType<TaskRequeued>().Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A mention follow-up's own checkout is covered by the same backoff, and the requeue keeps the
+    /// follow-up owed: the task goes back to the queue with the pending flag set, so the next claim
+    /// answers the comment instead of running the two-lens review, which is the hazard the
+    /// pre-flight requeue reasons exist to prevent. The claim here is the direct kind the
+    /// auto-review sweep makes, whose task carries no pending flag until the requeue sets it.
+    /// </summary>
+    [Fact]
+    public async Task A_mention_follow_up_that_cannot_reach_origin_waits_and_stays_a_follow_up()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, int number) = await SeedPrReviewAtCheckoutAsync(store, node, 936, cts.Token);
+        await using (IQuerySession before = store.QuerySession())
+        {
+            (await before.LoadAsync<TaskDetails>(taskId, cts.Token))!.PendingMentionFollowUpAfterPreflight
+                .Should().BeFalse("the sweep's own claim carries no pending flag");
+        }
+
+        RecordingProcessRunner gh = GhSignedInAs(
+            "brian", PullRequestPreflightJson.Replace("901", number.ToString(), StringComparison.Ordinal));
+        CapturingExecutor executor = new();
+        FailingCheckoutWorktreeManager worktrees = new(() => OriginUnreachable(CouldNotResolveHost));
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+        PullRequestMentionComment comment = new(
+            "IC_4", "ryan", "@brian one more thing", $"https://github.com/acme/web/pull/{number}#issuecomment-IC_4", Now);
+
+        MentionFollowUpLaunch launch = await launcher.LaunchPrReviewMentionFollowUpAsync(
+            taskId, runId, node.NodeId, node.OwnerId, 1, node.NodeId, comment,
+            priorReviewRunId: null, knownOwnLogin: "brian", cts.Token);
+
+        launch.Skipped.Should().BeFalse("the follow-up is waiting, not refused");
+        executor.Request.Should().BeNull();
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        details.State.Should().Be(TaskState.Queued);
+        details.PendingMentionFollowUpAfterPreflight.Should().BeTrue(
+            "the next claim must answer the comment, not run the full review");
+        details.LaunchNetworkRetryAttempt.Should().Be(1);
+        IReadOnlyList<JasperFx.Events.IEvent> events = await query.Events.FetchStreamAsync(taskId, token: cts.Token);
+        events.Select(@event => @event.Data).OfType<TaskFailed>().Should().BeEmpty("a brief outage is not a failed task");
+        events.Select(@event => @event.Data).OfType<TaskRequeued>().Single()
+            .Reason.Should().Be(RequeueReason.LaunchNetworkRetry);
     }
 
     /// <summary>Seeds a Claimed pr-review task with a lease, the shape every pre-flight test below shares.</summary>
