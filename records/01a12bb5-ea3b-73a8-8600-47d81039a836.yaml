@@ -1,0 +1,19 @@
+hall9k-task-record: 1
+task-id: 01a12bb5-ea3b-73a8-8600-47d81039a836
+project: hall9k
+type: chore
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#723
+objective: The repository carries the approved SECURITY.md, CONTRIBUTING.md, SUPPORT.md, issue forms, and pull request template, and the README gains its Contributing and Security sections and corrected opening paragraph, landing only after the feedback-lap membership gate has merged
+criteria:
+  - SECURITY.md, CONTRIBUTING.md, and SUPPORT.md at the repository root, and .github/ISSUE_TEMPLATE/bug_report.yml, .github/ISSUE_TEMPLATE/feature_request.yml, .github/ISSUE_TEMPLATE/config.yml, and .github/pull_request_template.md, are byte-identical to the same paths under /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/fd736bba-ready-the-public-hall9k-repo-for-outside-contributors-apache/workspace/drafts/; the branch adds no .github/dco.yml
+  - README.md's Contributing section is replaced by part 1 of /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/fd736bba-ready-the-public-hall9k-repo-for-outside-contributors-apache/workspace/drafts/README-sections.md, the Security section from part 2 is placed between the Contributing and License sections, and part 3's sentence is added word for word as the last sentence of the paragraph that says the auto-pr-review sweep is on by default for every project; no other README text changes
+  - Every relative link in the added files resolves to a file in the repository
+dependencies: [01a12bab-5640-77a3-988d-af05a1af8b15, 01a12bb5-e49f-71b8-9a15-903859e13834, 01a12bb5-e760-762e-a5d3-22cf8f7e3ba1]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/1039a836-the-repository-carries-the-app
+published: 2026-10-11 16:13:04Z
+context: |-
+  Items E and F of idea fd736bba (walk notes /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/fd736bba-ready-the-public-hall9k-repo-for-outside-contributors-apache/workspace/notes.md landing plan: with or after task A). Blocked by a1af8b15 (the membership gate, which gates both reviews and threads) because SECURITY.md invites prompt-injection reports and that gate closes a known one; blocked by 59e13834 and 8f7e3ba1 because CONTRIBUTING.md links LICENSE and CODE_OF_CONDUCT.md and the README's section order is Contributing, Security, License. Approved by Brian word for word; one factual fix made to drafts/CONTRIBUTING.md by the window on 2026-10-11 (the retired Category=Hall9kHome trait is Category=Environment on main, tests/Hall9k.Tests/README.md about line 98). .github/dco.yml and the DCO GitHub App are held out of this task: the app exempts a member's commit only when it is cryptographically verified, every Hall9k commit is unsigned, and closeout reads any failing check as failing CI, so Brian rules how Hall9k's own commits pass the check before the file lands or the app is installed. Once 0e866341 ships, non-member review feedback starts a read-only evaluator; part 3's sentence still holds. Note to the window, not a criterion: enable Discussions (Q&A, Ideas, Announcements) before this merges, since config.yml and SUPPORT.md link it.
