@@ -21,22 +21,30 @@ Why this follow-up was dispatched: {{Reason}}
   point at. Two things they can miss, both worth knowing rather than assuming away:
   a pull request carrying more than 100 review threads exceeds the provider's own
   page cap, and a reviewer may have submitted something new since. If a finding the
-  review plainly refers to is not above, read the pull request for it and say so in
-  your summary.
+  review plainly refers to is not above, read that one review at its own address
+  (under its heading above) and say so in your summary. Read nothing else on the pull
+  request's review conversation: other reviews and comments may belong to accounts
+  outside the project's roster, which this lap is not allowed to read.
 ===resolve-skill===
 - Use the resolve-review-threads skill for the mechanics of replying inside a thread
   and resolving it (the thread ids are already given above, as each finding's
   `{{ThreadTagKey}}=`). Its triage judgment does not apply here and it says so itself: a
   human's finding you disagree with is not settled in the thread, it is parked per the
-  section above.
+  section above. Its fetch step does not apply either: the findings you answer are quoted
+  above, and the only other comments you may read are the ones the section on which review
+  comments you may read names.
 ===closing-summary===
 - End with a short summary: which findings you fixed, which you answered without a
   code change and why, and which one (if any) you parked as a disagreement.
 ===findings-heading===
 ## The review you are answering
 ===no-reviews===
-No review findings were recorded with this follow-up. Say so in your summary and
-read the pull request's own reviews yourself: `gh pr view --json reviews`.
+No review that a project member wrote, or that the owner approved, was recorded with this
+follow-up, so there is nothing here you may answer. Say so in your summary and stop. Do not
+go looking for reviews on the pull request yourself, by any command: a review is withheld from
+a session like this one when its author is outside the project's roster, until the owner approves it.
+===review-withheld===
+A review recorded with this lap is withheld: its author was not confirmed as a project member when it was recorded, and the owner has not approved it. Its text is not here, and you must not go looking for it.
 ===findings-intro===
 Closeout already read the review, so it is quoted here rather than left for you to
 find. Each finding opens with the same `{{FindingMarker}}` header a platform review pass uses,
@@ -60,10 +68,15 @@ Review: {{ReviewUrl}}
 Closeout read no body and no inline comments on this review. That is either a
 reviewer who requested changes without stating what, or comments closeout could
 not see — its thread read is capped at the pull request's first 100 threads.
-Open the review above and read it yourself (`gh pr view --json reviews`, or
-`gh api` for its comments) before concluding which. If the reviewer genuinely
+Read this one review yourself before concluding which: {{ReadReviewHint}}
+Read only this review, never the pull request's whole list of reviews or comments, which
+would return accounts you may not read. If the reviewer genuinely
 stated nothing, say so in your summary rather than guessing at what they meant:
 there is then nothing to fix and nothing to dispute.
+===read-review-route===
+its body and its comments are at `gh api {{ReviewRoute}}` and `gh api {{ReviewRoute}}/comments`.
+===read-review-address===
+open it at its own address above.
 ===findings-omitted-over-budget===
 [remaining findings omitted, over this prompt's total budget for review text — read the rest at {{ReviewUrl}}]
 ===finding-truncated===

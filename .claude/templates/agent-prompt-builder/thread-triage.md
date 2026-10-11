@@ -1,8 +1,8 @@
 ===heading===
 ## Triage every thread before you fix anything
 ===intro===
-Read every unresolved thread and the diff around it, then give each one exactly
-one disposition before changing any code:
+Read every unresolved thread you may read (the section above says which) and the diff
+around it, then give each one exactly one disposition before changing any code:
 ===fix-disposition===
 - **fix** — the finding is real and in scope. The only disposition that earns a
   code change.

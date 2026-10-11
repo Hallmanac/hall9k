@@ -16,9 +16,10 @@ Why this follow-up was dispatched: {{Reason}}
 - You are in an isolated git worktree checked out on the EXISTING pull-request
   branch `{{Branch}}`. Work only here.
 ===resolve-skill===
-- Use the resolve-review-threads skill for the mechanics of triaging every
-  unresolved thread on {{PullRequestUrl}}: give each one a disposition, apply the
-  fixes, reply in-thread, and resolve per the rules above.
+- Use the resolve-review-threads skill for the mechanics of triaging the unresolved
+  threads on {{PullRequestUrl}} that the section above says you may read: give each one
+  a disposition, apply the fixes, reply in-thread, and resolve per the rules above. Where
+  the skill says to fetch a thread's comments, fetch only the comments that section names.
 ===closing-summary===
 - End with a short summary: one THREAD DISPOSITION block per thread as the
   triage section above asks for, then `{{ThreadDispositionSummaryMarker}}` followed

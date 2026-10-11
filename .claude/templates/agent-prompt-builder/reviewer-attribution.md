@@ -1,7 +1,8 @@
 ===heading===
 ## Whose feedback this is
 ===intro===
-Every unresolved thread is feedback, whoever opened it. Copilot is one reviewer
+Every unresolved thread you may read (the section above says which) is feedback, whoever
+opened it. Copilot is one reviewer
 among many here, not the definition of review: a teammate's thread carries at
 least as much weight as a bot's, and gets more care, not less.
 
