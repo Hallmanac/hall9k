@@ -1004,7 +1004,8 @@ public sealed class RunLauncher(
         catch (OriginUnreachableException exception) when (GitNetworkFailure.IsTransient(exception.GitError))
         {
             logger.LogWarning(exception, "Launch of run {RunId} could not reach origin", runId);
-            await RecordLaunchNetworkRetryAsync(taskId, runId, leaseGeneration, exception.GitError, cancellationToken);
+            await RecordLaunchNetworkRetryAsync(
+                taskId, runId, leaseGeneration, exception.GitError, mentionFollowUp: false, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -1266,6 +1267,16 @@ public sealed class RunLauncher(
             await startSession.SaveChangesAsync(cancellationToken);
 
             supervisor.StartMonitoring(runId, runDirectory, taskId, agent.ProcessId, agent.StartedAt, cancellationToken);
+            return MentionFollowUpLaunch.Handled;
+        }
+        // The same wait LaunchAsync gives a checkout that could not reach origin, with the follow-up
+        // kept owed: the requeue says it was a mention follow-up's own launch, so the next claim
+        // answers the comment again instead of running the two-lens review.
+        catch (OriginUnreachableException exception) when (GitNetworkFailure.IsTransient(exception.GitError))
+        {
+            logger.LogWarning(exception, "Mention follow-up launch of run {RunId} could not reach origin", runId);
+            await RecordLaunchNetworkRetryAsync(
+                taskId, runId, leaseGeneration, exception.GitError, mentionFollowUp: true, cancellationToken);
             return MentionFollowUpLaunch.Handled;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -2584,9 +2595,12 @@ public sealed class RunLauncher(
     /// requeue's own effects on the task) carrying the attempt, the bound in force, the earliest
     /// next claim and git's error; the lease goes with it, so nothing holds the task while it waits.
     /// No run stream exists at checkout time, so there is none to retire.
+    /// <paramref name="mentionFollowUp"/> marks the requeue as a mention follow-up's own, so the
+    /// next claim is the follow-up again rather than a full review.
     /// </summary>
     private async Task RecordLaunchNetworkRetryAsync(
-        Guid taskId, Guid runId, int leaseGeneration, string gitError, CancellationToken cancellationToken)
+        Guid taskId, Guid runId, int leaseGeneration, string gitError, bool mentionFollowUp,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -2618,7 +2632,7 @@ public sealed class RunLauncher(
                 TimeSpan backoff = TaskDecider.LaunchNetworkBackoff(attempt, options.Value.LaunchNetworkRetryBackoff);
                 session.Events.Append(taskId, expectedVersion: current.Version + 1,
                     TaskDecider.RequeueAfterLaunchNetworkError(
-                        current.Task, attempt, bound, backoff, error, DateTimeOffset.UtcNow));
+                        current.Task, attempt, bound, backoff, error, DateTimeOffset.UtcNow, mentionFollowUp));
                 logger.LogWarning(
                     "Task {TaskId}: launch attempt {Attempt} of {Bound} could not reach origin ({Error}); "
                     + "requeued, not claimable for {Backoff}",

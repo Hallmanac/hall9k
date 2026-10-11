@@ -675,10 +675,31 @@ public sealed class GitWorktreeManagerTests : IDisposable
                 _repositoryPath, "task/pushed-from-another-node", DomainId.New(), DomainId.New()),
             cts.Token);
 
-        (await act.Should().ThrowAsync<WorktreeException>().WithMessage("*origin could not be read*"))
-            .Which.Should().NotBeOfType<BranchGoneException>(
-                "a branch declared gone on refs this node never fetched is a fresh cut over work "
-                + "that may be sitting on origin");
+        OriginUnreachableException thrown = (await act.Should().ThrowAsync<OriginUnreachableException>()
+            .WithMessage("*origin could not be read*")).Which;
+        thrown.Should().NotBeOfType<BranchGoneException>(
+            "a branch declared gone on refs this node never fetched is a fresh cut over work "
+            + "that may be sitting on origin");
+        thrown.GitError.Should().NotBeNullOrWhiteSpace("the launch network backoff classifies on git's own error");
+    }
+
+    /// <summary>
+    /// The other throw site the launch network backoff keys on: a pull-request checkout whose fetch of
+    /// the head ref cannot read origin raises the typed exception carrying git's own error, rather
+    /// than a bare <see cref="WorktreeException"/> the launcher would have to parse prose to classify.
+    /// </summary>
+    [Fact]
+    public async Task A_pull_request_checkout_whose_fetch_cannot_read_origin_raises_the_typed_exception()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        Git(_repositoryPath, $"remote set-url origin \"{Path.Combine(_root, "origin-that-was-never-there.git")}\"");
+
+        Func<Task> act = () => _manager.CreatePrReviewCheckoutAsync(
+            new PrReviewWorktreeRequest(_repositoryPath, 12, DomainId.New(), DomainId.New(), string.Empty), cts.Token);
+
+        OriginUnreachableException thrown = (await act.Should().ThrowAsync<OriginUnreachableException>()).Which;
+        thrown.GitError.Should().NotBeNullOrWhiteSpace();
+        thrown.Message.Should().Contain(thrown.GitError);
     }
 
     [Fact]

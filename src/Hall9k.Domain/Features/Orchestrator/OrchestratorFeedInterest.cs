@@ -26,7 +26,7 @@ namespace Hall9k.Domain.Features.Orchestrator;
 /// </para>
 /// <para>
 /// <b>Five entries also read something beyond the type</b> (<see cref="Admits(object)"/>), and
-/// all four only ever decide whether the event is an item at all, never which band it lands in.
+/// all five only ever decide whether the event is an item at all, never which band it lands in.
 /// <see cref="MessageReceived"/> is admitted only for a message
 /// from a person or another node's window, never for the JSON payloads the daemon's own reactors
 /// exchange (<see cref="MessageKind.MechanicalKindValues"/>) — the identical rule <c>h9k messages</c>

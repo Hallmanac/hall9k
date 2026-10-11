@@ -907,7 +907,9 @@ public sealed class TaskAggregate
     /// safe verdict exists yet. Recomputed fresh on every <see cref="Apply(Events.TaskRequeued)"/>
     /// from that event's own reason alone, never accumulated, so any other requeue (a lease expiry,
     /// a run failure, an ordinary safe or retried pre-flight verdict) clears it the same way it was
-    /// set.
+    /// set. The one other way to set it is a <see cref="RequeueReason.LaunchNetworkRetry"/> that
+    /// says the failed launch was a mention follow-up's own checkout
+    /// (<see cref="Events.TaskRequeued.LaunchNetworkRetryMentionFollowUp"/>).
     /// </summary>
     public bool PendingMentionFollowUpAfterPreflight { get; private set; }
 
@@ -2005,8 +2007,11 @@ public sealed class TaskAggregate
         // pre-flight abandoned — timeout, budget exhaustion, launch failure, or a dead process at
         // restart — while gating a mention follow-up lost the mention for good, because the very
         // next claim ran an unrequested full review instead of retrying the follow-up.
+        // A launch network retry of a mention follow-up's own checkout keeps it true for the same
+        // reason: the comment still has no answer, and the next claim must be the follow-up again.
         PendingMentionFollowUpAfterPreflight = @event.Reason == RequeueReason.PrReviewPreflightSafeMentionFollowUp
-            || @event.Reason == RequeueReason.PrReviewPreflightRetryMentionFollowUp;
+            || @event.Reason == RequeueReason.PrReviewPreflightRetryMentionFollowUp
+            || (@event.Reason == RequeueReason.LaunchNetworkRetry && @event.LaunchNetworkRetryMentionFollowUp);
         // Every requeue states the launch network backoff afresh: a network requeue starts or
         // extends it, any other reason ends the run of consecutive failures (the count starts again
         // at one for the next network failure), and nothing else about the requeue differs.

@@ -61,6 +61,20 @@ public sealed class TaskLaunchNetworkRetryTests
         task.LaunchNetworkRetryNotBefore.Should().Be(Now.AddMinutes(2));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void A_network_requeue_keeps_a_mention_follow_up_owed_only_when_the_failed_launch_was_one(bool mentionFollowUp)
+    {
+        TaskAggregate task = ClaimedTask();
+
+        task.Apply(TaskDecider.RequeueAfterLaunchNetworkError(
+            task, attempt: 1, bound: 3, TimeSpan.FromMinutes(2), "Could not resolve host: github.com", Now,
+            mentionFollowUp));
+
+        task.PendingMentionFollowUpAfterPreflight.Should().Be(mentionFollowUp);
+    }
+
     [Fact]
     public void Claim_refuses_a_task_until_its_backoff_has_passed_and_the_claim_ends_the_wait()
     {
