@@ -645,6 +645,78 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// The queue read's own half of the launch network backoff: a task requeued because git could not
+    /// reach origin is skipped by the dispatcher until its not-before time has passed, and claimed
+    /// at the next sweep after it, so a brief outage makes the task slow rather than lost.
+    /// </summary>
+    [Fact]
+    public async Task A_task_waiting_out_a_launch_network_backoff_is_claimed_only_once_it_has_passed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        DaemonOptions options = new() { MaxConcurrentTaskRuns = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
+        DispatchEngine engine = new(
+            store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
+            Options.Create(options), NullLogger<DispatchEngine>.Instance);
+
+        Guid waitingTaskId = await SeedNetworkRequeuedAsync(
+            store, node, DateTimeOffset.UtcNow.AddHours(1), cts.Token);
+        Guid elapsedTaskId = await SeedNetworkRequeuedAsync(
+            store, node, DateTimeOffset.UtcNow.AddMinutes(-1), cts.Token);
+
+        IReadOnlyList<ClaimedWork> claimed = await engine.ClaimEligibleAsync(cts.Token);
+        IReadOnlyList<Guid> claimedIds = [.. claimed.Select(work => work.TaskId)];
+
+        claimedIds.Should().NotContain(
+            waitingTaskId, "its backoff has an hour left, so the queue read leaves it for a later sweep");
+        claimedIds.Should().Contain(
+            elapsedTaskId, "its backoff has passed, so it is an ordinary queued task again");
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            (await query.LoadAsync<TaskListItem>(waitingTaskId, cts.Token))!.State.Should().Be(TaskState.Queued);
+            TaskListItem elapsed = (await query.LoadAsync<TaskListItem>(elapsedTaskId, cts.Token))!;
+            elapsed.State.Should().Be(TaskState.Claimed);
+            elapsed.LaunchNetworkRetryNotBefore.Should().BeNull("claiming ends the wait");
+        }
+
+        await using IDocumentSession cleanup = store.LightweightSession();
+        cleanup.Delete<TaskLease>(elapsedTaskId);
+        await cleanup.SaveChangesAsync(cts.Token);
+    }
+
+    /// <summary>
+    /// A task claimed once, then given back through the launch network requeue with the given
+    /// earliest next claim, the stream a failed launch leaves behind.
+    /// </summary>
+    private static async Task<Guid> SeedNetworkRequeuedAsync(
+        DocumentStore store, NodeContext node, DateTimeOffset notBefore, CancellationToken cancellationToken)
+    {
+        Guid id = DomainId.New();
+        TaskAggregate task = new();
+        TaskAdded added = TaskDecider.Add(
+            id, DomainId.New(), "Could not reach origin at launch", ["done"], TaskType.Chore, null, null, null, Now,
+            node.OwnerId);
+        task.Apply(added);
+        TaskPublished published = TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now, node.OwnerId);
+        task.Apply(published);
+        TaskAssigned assigned = TaskDecider.Assign(task, node.OwnerId, [], Now, node.OwnerId);
+        task.Apply(assigned);
+        TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, DomainId.New(), Now);
+        task.Apply(claimed);
+        TaskRequeued requeued = TaskDecider.RequeueAfterLaunchNetworkError(
+            task, attempt: 1, bound: 3, backoff: notBefore - Now, "Could not resolve host: github.com", Now);
+
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream<TaskAggregate>(id, added, published, assigned, claimed, requeued);
+        await session.SaveChangesAsync(cancellationToken);
+        return id;
+    }
+
+    /// <summary>
     /// One task, drafted, published, and assigned to <paramref name="ownerId"/> with the given
     /// advisory placement — the lifecycle <see cref="TaskSeed.Start"/> already walks, but that
     /// helper has no placement parameter, so this walks the same three events by hand rather than

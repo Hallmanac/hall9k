@@ -119,6 +119,13 @@ public sealed class TaskListItem
     /// </summary>
     public Guid? PlacedOnNodeId { get; set; }
     /// <summary>
+    /// Mirrors <see cref="TaskAggregate.LaunchNetworkRetryNotBefore"/>: carried on this lean row
+    /// because the daemon's own queue read is where it gates, through the same predicate
+    /// (<see cref="Handlers.TaskDecider.IsPastLaunchNetworkBackoff"/>) <see cref="Handlers.TaskDecider.Claim"/>
+    /// applies. Null when the task is not waiting out a launch network backoff.
+    /// </summary>
+    public DateTimeOffset? LaunchNetworkRetryNotBefore { get; set; }
+    /// <summary>
     /// When a human said "do this" — the moment that made the task claimable, and so the key
     /// the dispatcher queues on (Decisions Log #64). It is deliberately not <see cref="AddedAt"/>:
     /// a task drafted in January and assigned today is newer work than one drafted and assigned
@@ -777,6 +784,7 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
     public void Apply(IEvent<TaskClaimed> @event, TaskListItem view)
     {
         view.LeaseGeneration = @event.Data.LeaseGeneration;
+        view.LaunchNetworkRetryNotBefore = null;
         view.ClaimedByNodeId = @event.Data.NodeId;
         view.ClaimedByOwnerRootFingerprint = @event.Data.OwnerRootFingerprint;
         // Mirrors TaskAggregate.Apply(TaskClaimed): an interactive claim carries the Guid.Empty
@@ -814,6 +822,10 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         // closed out. Landing back on Blocked instead keeps this view honest with the aggregate
         // it mirrors.
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+        // Mirrors TaskAggregate.Apply(TaskRequeued): stated afresh by every requeue.
+        view.LaunchNetworkRetryNotBefore = @event.Data.Reason == RequeueReason.LaunchNetworkRetry
+            ? @event.Data.LaunchNetworkRetryNotBefore
+            : null;
     }
 
     /// <summary>Mirrors <see cref="TaskAggregate.Apply(Events.TaskHolderTakenOver)"/> — see <see cref="TakenOverFromNodeId"/>'s own doc.</summary>

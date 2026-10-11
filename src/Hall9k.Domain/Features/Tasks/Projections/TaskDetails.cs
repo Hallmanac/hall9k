@@ -153,6 +153,19 @@ public sealed class TaskDetails
     /// and <c>h9k status</c> name the node when it is set.
     /// </summary>
     public Guid? PlacedOnNodeId { get; set; }
+
+    /// <summary>
+    /// Set while the task waits out a launch network backoff (<see cref="RequeueReason.LaunchNetworkRetry"/>):
+    /// how many consecutive launches git could not reach origin for, the bound at which the launch
+    /// stops waiting, the earliest moment any node may claim it, and git's error. All null once the
+    /// task is claimed again or requeued for any other reason, which is when <c>h9k task show</c>
+    /// stops saying so. The bound is the one the event carried, because the CLI cannot read the
+    /// daemon's options.
+    /// </summary>
+    public int? LaunchNetworkRetryAttempt { get; set; }
+    public int? LaunchNetworkRetryBound { get; set; }
+    public DateTimeOffset? LaunchNetworkRetryNotBefore { get; set; }
+    public string? LaunchNetworkRetryError { get; set; }
     /// <summary>
     /// When a human said "do this": the moment that made the task claimable, and the key the
     /// dispatcher queues on once the concurrency ceiling makes the tail of the queue wait
@@ -1116,6 +1129,7 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
     public void Apply(IEvent<TaskClaimed> @event, TaskDetails view)
     {
         view.LeaseGeneration = @event.Data.LeaseGeneration;
+        ClearLaunchNetworkRetry(view);
         view.ClaimedByNodeId = @event.Data.NodeId;
         view.ClaimedByOwnerRootFingerprint = @event.Data.OwnerRootFingerprint;
         view.ClaimedAt = @event.Data.ClaimedAt;
@@ -1310,6 +1324,20 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         // closed out. Landing back on Blocked instead keeps this view honest with the aggregate
         // it mirrors and lets the ordinary Blocked-state dependency sweep pick it back up.
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+        // Mirrors TaskAggregate.Apply(TaskRequeued): a network requeue states the wait, any other
+        // reason ends it.
+        if (@event.Data.Reason == RequeueReason.LaunchNetworkRetry)
+        {
+            view.LaunchNetworkRetryAttempt = @event.Data.LaunchNetworkRetryAttempt;
+            view.LaunchNetworkRetryBound = @event.Data.LaunchNetworkRetryBound;
+            view.LaunchNetworkRetryNotBefore = @event.Data.LaunchNetworkRetryNotBefore;
+            view.LaunchNetworkRetryError = @event.Data.LaunchNetworkRetryError;
+        }
+        else
+        {
+            ClearLaunchNetworkRetry(view);
+        }
+
         // Mirrors TaskAggregate.Apply(TaskRequeued) — see PendingMentionFollowUpAfterPreflight's own doc.
         view.PendingMentionFollowUpAfterPreflight =
             @event.Data.Reason == RequeueReason.PrReviewPreflightSafeMentionFollowUp
@@ -1322,6 +1350,14 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         {
             view.InteractiveModeEnabled = false;
         }
+    }
+
+    private static void ClearLaunchNetworkRetry(TaskDetails view)
+    {
+        view.LaunchNetworkRetryAttempt = null;
+        view.LaunchNetworkRetryBound = null;
+        view.LaunchNetworkRetryNotBefore = null;
+        view.LaunchNetworkRetryError = null;
     }
 
     public void Apply(IEvent<QuestionAsked> @event, TaskDetails view)

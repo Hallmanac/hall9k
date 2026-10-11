@@ -948,6 +948,7 @@ public sealed class DispatchEngine(
     {
         Guid ownerId = node.OwnerId;
         Guid thisNodeId = node.NodeId;
+        DateTimeOffset now = DateTimeOffset.UtcNow;
 
         // Marker first (task 45136b29, idea fcaded0b's R7 ruling): a task a human recorded as
         // queue-first (h9k task revise --queue-first, or h9k task handback --first) takes the
@@ -997,6 +998,10 @@ public sealed class DispatchEngine(
             // already gives the owner match: an unplaced row (no other node named) is a candidate
             // for every node of the granted owner, a placed row only for the node it names.
             .Where(t => t.PlacedOnNodeId == null || t.PlacedOnNodeId == thisNodeId)
+            // Mirrors TaskDecider.IsPastLaunchNetworkBackoff exactly, the same never-disagree
+            // discipline: a task whose launch could not reach origin stays out of the queue until
+            // its backoff has passed, and Claim refuses it on the same clock.
+            .Where(t => t.LaunchNetworkRetryNotBefore == null || t.LaunchNetworkRetryNotBefore <= now)
             .OrderByDescending(t => t.QueuePriorityMarked)
             .ThenBy(t => t.AssignedAt)
             .ThenBy(t => t.AddedAt)
@@ -1550,6 +1555,14 @@ public sealed class DispatchEngine(
         // this claim — silent, like every other belt-and-suspenders re-check in this method, since
         // ReportNodePlacementSkips (below) is what actually informs an operator.
         if (!IsPlacedOnThisNode(task.PlacedOnNodeId, node.NodeId))
+        {
+            return null;
+        }
+
+        // The same belt and suspenders for the launch network backoff ReadQueueAsync filters on: a
+        // network requeue landing between the queue read and this claim is the only way to reach
+        // here, and Claim would refuse it with an exception this method has no use for.
+        if (!TaskDecider.IsPastLaunchNetworkBackoff(task.LaunchNetworkRetryNotBefore, DateTimeOffset.UtcNow))
         {
             return null;
         }

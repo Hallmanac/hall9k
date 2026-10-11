@@ -47,6 +47,13 @@ public sealed record RequeueReason
     /// <c>ObservedReviewMention</c> dedups it permanently).
     /// </summary>
     public static readonly RequeueReason PrReviewPreflightRetryMentionFollowUp = new("PrReviewPreflightRetryMentionFollowUp");
+    /// <summary>
+    /// A launch's worktree checkout could not reach origin because of a passing network error (git's
+    /// own error matched the named list in <c>GitNetworkFailure</c>), so the lease is given back and
+    /// the task waits out a doubling backoff (<c>TaskRequeued.LaunchNetworkRetryNotBefore</c>) before
+    /// any node claims it again, instead of failing a task a brief outage would have let through.
+    /// </summary>
+    public static readonly RequeueReason LaunchNetworkRetry = new("LaunchNetworkRetry");
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly RequeueReason Unknown = new("");
 
