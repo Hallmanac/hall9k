@@ -27,6 +27,16 @@ no .NET SDK bootstraps from that release directly; see [docs/INSTALL.md](INSTALL
 walkthrough (it is written to be followed by an AI agent as much as by a human) and the
 [README's Install section](../README.md#install) for the one-liners.
 
+**Every archive carries its own license notices.** Each release archive holds `LICENSE`, `NOTICE`, and a
+generated `THIRD-PARTY-NOTICES.txt` at its top level, because the archives redistribute the .NET runtime
+and every NuGet dependency. `release.yml` generates the third-party file from the published `h9k.deps.json`
+and `h9kd.deps.json` with `scripts/generate-third-party-notices.cs`, which reads each restored package's
+nuspec for its SPDX license and copyright, includes the package's own license file (or the standard text
+under `scripts/license-texts/`), and reproduces every notices file the packages and runtime packs ship. The
+script fails the release when any listed package's license cannot be determined; a new license family means
+adding its text to `scripts/license-texts/`. To run it locally after a self-contained publish:
+`dotnet run scripts/generate-third-party-notices.cs -- <publish-dir>`.
+
 **Tags publish as pre-releases, and clearing one is what releases it.** Every tag
 `release.yml` publishes is a GitHub pre-release. A release reaches `h9k update` and the bootstrap
 scripts only once it is cleared, with the plain GitHub CLI command:
