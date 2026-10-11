@@ -1,0 +1,21 @@
+hall9k-task-record: 1
+task-id: 01a12bab-7fcb-7581-9400-4625d82841ca
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#717
+objective: A mention follow-up always launches answering the comment its claim belongs to, never a mention observed after that claim, proven first by a test that reproduces the race and fixed only if it does
+criteria:
+  - |-
+    A test in the existing RunLauncher test harness (tests/Hall9k.Tests/Integration/RunLauncherTests.cs, which already seeds a PrReviewPreflightSafeMentionFollowUp requeue) drives this sequence: a member's comment earns a mention follow-up on an existing pr-review task, that follow-up's pre-flight requeues the task, a non-member's comment tagging the same login is then observed on the task, and the task is claimed and launched. It asserts that the session's prompt contains the member's comment and none of the non-member's. A second case asserts the same when the pre-flight parked unsafe and the task was queued again afterward.
+  - If that test fails on main, the fix makes it pass and the pull request description quotes the assertion's failure as observed on main. No mention follow-up launch answers a comment other than the one its claim belongs to. A further test shows that when that comment cannot be identified, nothing launches and the task records why, rather than answering the task's latest observed mention. The existing mention tests in RunLauncherTests and AutoPrReviewMentionEngineTests pass unchanged.
+  - If that test passes on main, the pull request adds it as a regression guard, changes no production code, and its description states the race does not reproduce and why, naming the code path that prevents it
+  - No new test touches git or calls GitHub
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/d82841ca-a-mention-follow-up-always-lau
+published: 2026-10-11 16:02:47Z
+context: |-
+  Security item from idea fd736bba (workspace notes.md, exposure finding 3; challenge verdict in this task's journal). TaskAggregate.Apply(PullRequestReviewMentionObserved) (src/Hall9k.Domain/Features/Tasks/TaskAggregate.cs about 2468-2483) overwrites LatestMention* for every observed mention, and AttachMentionAsync (src/Hall9k.Daemon/AutoPrReview/AutoPrReviewEngine.cs about 2339-2416) appends that event before its comment-author membership gate. RunLauncher.LaunchAsync's mint addendum (about 760-786) and its answer-only branch (about 175-212) already read the stored ObservedReviewMention row. A follow-up whose pre-flight requeued it (PendingMentionFollowUpAfterPreflight without AnswersMentionOnly) has no such row lookup and always reads LatestMention* (about 203-212). That branch is the suspected hole, and the parked-unsafe pre-flight (Apply(PrReviewPreflightParked)) reaches it too. The answer-only branch also matches an Attached row only when its comment id equals LatestMentionCommentId (about 199-202), so a later mention can make a member's attached follow-up answer the wrong member comment; pinning by claim rather than by latest fixes both. PullRequestReviewDuplicateConvergence re-appending carried mentions (about 145-204) also moves LatestMention* and is covered by the same outcome, not a second hole. The follow-up session runs without skip-permissions and never posts (RunLauncher.cs about 1229-1250), so the harm is getting around the comment-author gate and drafting the owner's reply to a stranger. Reproduce before fixing: no speculative fix. Out of scope: the walker's display fallback in TaskShowCommand.cs about 287-340 (read by the owner, who sees the author), a launch-time membership re-check (needs the author account id stored; separate draft, Brian 2026-10-11), and idea f894d344. Independent of task a1af8b15. Note to the window, not a criterion: Brian ruled 2026-10-11 that lifting the interaction limit (task C) no longer waits on this task, only on a1af8b15.
