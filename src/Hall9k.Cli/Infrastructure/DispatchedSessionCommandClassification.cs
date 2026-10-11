@@ -170,6 +170,10 @@ internal static class DispatchedSessionCommandClassification
 
             // ---- pr ----
             [typeof(PullRequestResolveCommand.Settings)] = (DispatchedSessionAccess.Refused, "pr resolve"),
+            // The owner's go on a stranger's feedback is the one act that lets non-member text reach a
+            // session that skips permissions, so a dispatched session must never be able to give
+            // itself one: refused outright, the listing form included.
+            [typeof(PullRequestFeedbackCommand.Settings)] = (DispatchedSessionAccess.Refused, "pr feedback"),
             [typeof(PullRequestReplyCommand.Settings)] = (DispatchedSessionAccess.Allowed, "pr reply"),
             [typeof(PullRequestReplyGuardCommand.Settings)] = (DispatchedSessionAccess.Allowed, "pr reply-guard"),
             [typeof(PrReviewGitOutputGuardCommand.Settings)] = (DispatchedSessionAccess.Allowed, "pr review-git-guard"),

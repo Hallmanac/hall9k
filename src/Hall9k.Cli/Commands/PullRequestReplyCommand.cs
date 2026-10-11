@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Processes;
-using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -200,6 +199,25 @@ public sealed class PullRequestReplyCommand : Hall9kAsyncCommand<PullRequestRepl
     {
         ReviewThreadDisposition disposition = ReviewThreadDisposition.Parse(settings.Disposition);
         string threadId = settings.Thread.Trim();
+
+        // A thread the membership gate withheld from this lap (its opener is outside the project's
+        // roster and the owner has not approved it) is not one a lap answers, whatever the
+        // disposition: not even a fix, whose held reply would be posted and the thread resolved by the
+        // platform's own push step. The prompt already says to leave it alone; this is what holds when
+        // a session reads one anyway.
+        if (task.ReviewReadScope is { Unrestricted: false } scope
+            && scope.WithheldThreadIds.Contains(threadId, StringComparer.Ordinal))
+        {
+            string withheld =
+                $"Thread {threadId} was opened by someone outside this project's roster, and the owner has not "
+                + "approved their feedback, so this lap does not answer it. Nothing was sent. Leave it "
+                + "untriaged and unresolved: the owner decides what it hears (h9k pr feedback).";
+            session.Events.Append(
+                runId, new ReviewThreadReplyRefused(runId, threadId, disposition, withheld, DateTimeOffset.UtcNow));
+            await session.SaveChangesAsync(cancellationToken);
+            throw new DomainValidationException(withheld);
+        }
+
         // Ordinal: a GraphQL node id is opaque and case-significant, so a near-match names a
         // different thread rather than the same one spelled differently.
         ReviewThreadReference? human = task.KnownHumanReviewThreads.FirstOrDefault(thread =>
@@ -319,6 +337,25 @@ public sealed class PullRequestReplyCommand : Hall9kAsyncCommand<PullRequestRepl
         ReviewThreadDisposition disposition = ReviewThreadDisposition.Parse(settings.Disposition);
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"No project {task.ProjectId} — cannot reach its repository to post.");
+
+        // The review-body twin of the thread refusal in ReplyInThreadAsync: a review from outside the
+        // roster that the owner has neither approved nor declined is held, and an answer to it is
+        // not this lap's to post. Checked ahead of the provider read, which would otherwise have
+        // this process fetch the review's text from GitHub for nothing.
+        string reviewKey = settings.Review.Trim();
+        if (task.NonMemberFeedback.TryGetValue(reviewKey, out NonMemberFeedbackItem? heldReview)
+            && heldReview.Status != NonMemberFeedbackStatus.Admitted
+            && heldReview.Status != NonMemberFeedbackStatus.Withdrawn)
+        {
+            string withheld =
+                $"Review {reviewKey} was written by someone outside this project's roster, and the owner has not "
+                + "approved their feedback, so this lap does not answer it. Nothing was sent. The owner decides "
+                + "what it hears (h9k pr feedback).";
+            session.Events.Append(runId, new ReviewBodyReplyRefused(
+                runId, reviewKey, heldReview.Reviewer, disposition, withheld, DateTimeOffset.UtcNow));
+            await session.SaveChangesAsync(cancellationToken);
+            throw new DomainValidationException(withheld);
+        }
 
         PullRequestReview review = await reviews.ReadAsync(
             task.PullRequestUrl, settings.Review.Trim(), project.RepositoryPath, cancellationToken);
