@@ -27,6 +27,13 @@ namespace Hall9k.Domain.Features.Run;
 /// passes ran the gate and which skipped it, rather than the skip reading as silence the way an
 /// absent entry would. Defaults false on a stream written before this field existed: no run ever
 /// skipped a gate for this reason before host-coupled gates existed.
+/// <see cref="PathScopeSkipped"/> is true only for a gate whose path set matched none of the paths
+/// the run changed (task: a verify gate can be scoped to a path set), recorded the same way as a
+/// host-coupled skip (zero <see cref="Duration"/>, <see cref="Passed"/> true) and likewise left
+/// out of <see cref="Queries.GateDurationHistoryQuery"/>'s samples. Unlike a host-coupled skip it
+/// keeps <see cref="RanFullScope"/> true: the gate had nothing to observe in this diff, so the
+/// pass is no narrower for it. Defaults false on a stream written before this field existed.
 /// </summary>
 public sealed record GateDuration(
-    string Gate, TimeSpan Duration, bool Passed, bool RanFullScope = true, bool HostCoupledSkipped = false);
+    string Gate, TimeSpan Duration, bool Passed, bool RanFullScope = true, bool HostCoupledSkipped = false,
+    bool PathScopeSkipped = false);

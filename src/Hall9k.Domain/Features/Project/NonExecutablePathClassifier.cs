@@ -54,7 +54,7 @@ public static class NonExecutablePathClassifier
     /// broken template edit). Checked against every rule up front, independent of iteration order,
     /// so an exclusion can never lose to a same-path positive rule purely because of list position.
     /// </summary>
-    private static string? MatchRule(string path, IReadOnlyList<string> rules)
+    internal static string? MatchRule(string path, IReadOnlyList<string> rules)
     {
         if (rules.Any(rule => rule.StartsWith('!') && Matches(path, rule[1..])))
         {

@@ -15,7 +15,7 @@ namespace Hall9k.Domain.Features.Project.Events;
 /// too). Recorded by three sources: <c>h9k project accept-gates</c> (an explicit review); the same
 /// <c>SaveChangesAsync</c> as <c>ProjectSettingsChanged</c>/<c>ProjectTeamSettingsChanged</c> when
 /// an operator changes gates locally with <c>h9k project set --verify</c> or
-/// <c>--verify-gate-filter</c> (so a node can never hold itself on its own local change); and the
+/// <c>--verify-gate-filter</c> or <c>--verify-gate-paths</c> (so a node can never hold itself on its own local change); and the
 /// daemon's own one-time baseline at its first start after this feature ships, for a project that
 /// already exists on this node with nothing accepted yet.
 /// </para>
