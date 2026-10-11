@@ -7,15 +7,20 @@
 // (release.yml publishes the two into one directory). Every package library and runtime pack those
 // files list is looked up in the restored NuGet cache (--packages, else NUGET_PACKAGES, else
 // ~/.nuget/packages) and read from its own .nuspec: the SPDX license expression, the copyright line
-// the package declares, and the package's own license file when it ships one. A package without its
-// own license file gets the standard text for its SPDX id from <license-texts>/<id>.txt, whose
-// {copyright} first line is replaced by the declared copyright (or dropped when none is declared).
+// the package declares, and the package's own license file when it ships one (named by a
+// license type="file" nuspec, else a LICENSE-shaped file at the package root or inside a root-level
+// LICENSE folder). A package without its own license file gets the standard text for its SPDX id
+// from <license-texts>/<id>.txt, whose {copyright} first line is replaced by the declared copyright,
+// or by "Copyright (c) <authors>" from the nuspec when it declares none. A license that requires
+// the notice to travel (every standard text here except 0BSD) with neither is an error, so a
+// redistributed license never refers to a copyright notice that is not there.
 // Every THIRD-PARTY-NOTICES file found inside a package or runtime pack is reproduced once, with the
 // packages that ship it.
 //
 // The script exits 1, writing nothing, when any listed package's license cannot be determined: no
-// restored copy in the cache, no SPDX expression in the nuspec, or an SPDX id with neither a license
-// file in the package nor a standard text here. A new license family shows up as a failed release
+// restored copy in the cache, neither an SPDX expression nor a license file in the nuspec, an SPDX id
+// with neither a license file in the package nor a standard text here, or an attribution-requiring
+// standard text with no copyright and no authors to put on it. A new license family shows up as a failed release
 // rather than a silently incomplete notice, and the fix is to add scripts/license-texts/<id>.txt.
 //
 // Restore first (dotnet publish does): the cache must hold the exact versions the deps.json files name.
@@ -128,6 +133,9 @@ Regex licenseFileName = new(@"^(LICENSE|LICENCE|COPYING)(\.(txt|md))?$", RegexOp
 Regex noticesFileName = new(@"^THIRD[-_ ]?PARTY[-_ ]?NOTICES?(\.(txt|md))?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 Regex spdxToken = new(@"[A-Za-z0-9.+\-]+", RegexOptions.CultureInvariant);
 
+// Standard texts that do not require a copyright notice to be kept; every other one here does.
+HashSet<string> attributionFreeLicenses = new(["0BSD"], StringComparer.Ordinal);
+
 List<Entry> entries = [];
 foreach (PackageRef package in libraries.Values)
 {
@@ -150,25 +158,34 @@ foreach (PackageRef package in libraries.Values)
     string? Field(string field) => metadata?.Elements().FirstOrDefault(e => e.Name.LocalName == field)?.Value.Trim();
     XElement? licenseElement = metadata?.Elements().FirstOrDefault(e => e.Name.LocalName == "license");
 
-    string? expression = licenseElement?.Attribute("type")?.Value == "expression" ? licenseElement.Value.Trim() : null;
+    string? licenseType = licenseElement?.Attribute("type")?.Value;
+    string? expression = licenseType == "expression" ? licenseElement?.Value.Trim() : null;
+    string? declaredLicenseFile = licenseType == "file" && licenseElement?.Value.Trim() is { Length: > 0 } fileName
+        ? Path.Combine(directory, fileName.Replace('\\', '/'))
+        : null;
+
     if (string.IsNullOrWhiteSpace(expression))
     {
-        problems.Add($"{label}: its nuspec declares no SPDX license expression (license element: {licenseElement?.ToString() ?? "absent"}, licenseUrl: {Field("licenseUrl") ?? "absent"}).");
-        continue;
+        if (declaredLicenseFile is null || !File.Exists(declaredLicenseFile))
+        {
+            problems.Add($"{label}: its nuspec declares neither an SPDX license expression nor an existing license file (license element: {licenseElement?.ToString() ?? "absent"}, licenseUrl: {Field("licenseUrl") ?? "absent"}).");
+            continue;
+        }
+
+        expression = $"license file {Path.GetFileName(declaredLicenseFile)} (no SPDX expression)";
     }
 
     string? copyright = Field("copyright") is { Length: > 0 } declared ? declared : null;
+    string? authors = Field("authors") is { Length: > 0 } declaredAuthors ? Regex.Replace(declaredAuthors, @"\s*[,;]\s*", ", ") : null;
 
     // The package's own license file wins over a standard text; a nuspec that points at one
-    // (license type="file") names it, otherwise a LICENSE-shaped file at the package root counts.
-    string? ownLicensePath = licenseElement?.Attribute("type")?.Value == "file"
-        ? Path.Combine(directory, licenseElement.Value.Trim())
-        : Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
-            .Order(StringComparer.Ordinal)
-            .FirstOrDefault(f => licenseFileName.IsMatch(Path.GetFileName(f)));
+    // (license type="file") names it, otherwise a LICENSE-shaped file at the package root, or inside
+    // a root-level LICENSE folder, counts.
+    string? ownLicensePath = declaredLicenseFile ?? FindOwnLicense(directory, licenseFileName);
 
     string text;
     string source;
+    string copyrightDisplay = copyright ?? "none declared by the package";
     if (ownLicensePath is not null && File.Exists(ownLicensePath))
     {
         text = Normalize(File.ReadAllText(ownLicensePath));
@@ -187,9 +204,20 @@ foreach (PackageRef package in libraries.Values)
             continue;
         }
 
+        // Only the copyright the package declares is a copyright; its authors are the next best
+        // attribution, and the text says so in the Copyright line of the entry.
+        string? noticeLine = copyright ?? (authors is null ? null : $"Copyright (c) {authors}");
+        if (noticeLine is null && identifiers.Any(id => !attributionFreeLicenses.Contains(id)))
+        {
+            problems.Add($"{label}: license '{expression}' requires its copyright notice to be kept, but the nuspec declares neither a copyright nor authors to put on it.");
+            continue;
+        }
+
+        copyrightDisplay = copyright
+            ?? (authors is null ? copyrightDisplay : $"none declared by the package; the license text carries its authors instead: {noticeLine}");
         text = string.Join(
             "\n\n",
-            identifiers.Select(id => ApplyCopyright(Normalize(File.ReadAllText(Path.Combine(textsRoot, $"{id}.txt"))), copyright)));
+            identifiers.Select(id => ApplyCopyright(Normalize(File.ReadAllText(Path.Combine(textsRoot, $"{id}.txt"))), noticeLine)));
         source = $"the standard text for {string.Join(", ", identifiers)}";
     }
 
@@ -199,7 +227,7 @@ foreach (PackageRef package in libraries.Values)
         .Order(StringComparer.Ordinal)
         .Select(f => new NoticesFile(Path.GetRelativePath(directory, f).Replace('\\', '/'), Normalize(File.ReadAllText(f))))];
 
-    entries.Add(new Entry(package, expression, copyright, source, text, notices));
+    entries.Add(new Entry(package, expression, copyrightDisplay, source, text, notices));
 }
 
 if (problems.Count > 0)
@@ -233,7 +261,7 @@ foreach (Entry entry in entries)
     output.Append("\n----------------------------------------------------------------------\n");
     output.Append($"{entry.Display} {entry.Package.Version}\n");
     output.Append($"License: {entry.Expression}\n");
-    output.Append($"Copyright: {entry.Copyright ?? "none declared by the package"}\n");
+    output.Append($"Copyright: {entry.Copyright}\n");
     output.Append($"License text: {entry.Source}\n");
     output.Append("----------------------------------------------------------------------\n\n");
     output.Append(entry.Text.TrimEnd('\n'));
@@ -275,6 +303,18 @@ static int Fail(string message)
     return 1;
 }
 
+static string? FindOwnLicense(string directory, Regex licenseFileName)
+{
+    string? atRoot = Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
+        .Order(StringComparer.Ordinal)
+        .FirstOrDefault(f => licenseFileName.IsMatch(Path.GetFileName(f)));
+    return atRoot ?? Directory.EnumerateDirectories(directory, "*", SearchOption.TopDirectoryOnly)
+        .Where(d => licenseFileName.IsMatch(Path.GetFileName(d)))
+        .SelectMany(d => Directory.EnumerateFiles(d, "*", SearchOption.TopDirectoryOnly))
+        .Order(StringComparer.Ordinal)
+        .FirstOrDefault(f => licenseFileName.IsMatch(Path.GetFileName(f)));
+}
+
 static string Normalize(string content) => content.Replace("\r\n", "\n").Replace('\r', '\n');
 
 static string ApplyCopyright(string template, string? copyright) => copyright is null
@@ -288,7 +328,7 @@ internal sealed record NoticesFile(string RelativePath, string Content);
 internal sealed record Entry(
     PackageRef Package,
     string Expression,
-    string? Copyright,
+    string Copyright,
     string Source,
     string Text,
     List<NoticesFile> Notices)
