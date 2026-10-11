@@ -1511,6 +1511,8 @@ on its own is refused against a gate set the node has not accepted. `h9k project
 it does not know and runs every gate, which is the safe direction. A bare `--verify` rebuilds the
 list without path sets (the command prints which gates lost one), so pass `--verify-gate-paths` in the same call to keep them. Changing only a gate's path set never re-runs that gate against a clean checkout of the base branch, since a path set does not change what the gate's command does.
 
+A session's own gate checklists name a scoped gate's path set too, so an agent does not run a gate its branch's diff cannot reach: the build's recompose checklist, a delegated contractor's two gate lists, the rebase-family verification checklist and the review-fix self-check each print an ordinary scoped gate's command, then its path set, then one rule. The rule says to run the gate only when this branch's changes against its base, committed or not, touch a path the set matches (a `!` entry wins), to run it when unsure whether a path matches, and otherwise to leave it to the daemon's own verification. That judgment covers every changed path, where the daemon drops the non-executable set first, so an agent runs a gate at least as often as the daemon would; the daemon's own pass stays the authority. A host-coupled gate's line, the review lens's list of gates that already passed, and the QA review's checks section do not carry the rule.
+
 A pre-approved task's merge gate (`h9k task set-pre-approved`) waits, after a head is pushed, up to
 `Hall9k__ChecksRegistrationSettleWindow` (15 minutes by default) for GitHub to report even one
 check run. An empty check rollup is indistinguishable from a repository that genuinely runs no CI
