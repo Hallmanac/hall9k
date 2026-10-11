@@ -18,12 +18,21 @@ namespace Hall9k.Connectors.Verification;
 /// </summary>
 public static class GateSetAcceptanceDisplay
 {
-    /// <summary>One gate, printable: its name, its command, and its host-coupled filter when it has one.</summary>
+    /// <summary>
+    /// One gate, printable: its name, its command, its host-coupled filter when it has one, and
+    /// its path set when it has one (a changed path set holds runs until accepted, so the operator
+    /// must be able to read it where they accept).
+    /// </summary>
     public static string FormatGate(VerifyCommand gate)
     {
         string line = RelayedText.Printable($"{gate.Name}: {gate.Command}");
-        return gate.HostCoupledFilter is { } filter
-            ? $"{line} [host-coupled: {RelayedText.Printable(filter)}]"
+        if (gate.HostCoupledFilter is { } filter)
+        {
+            line = $"{line} [host-coupled: {RelayedText.Printable(filter)}]";
+        }
+
+        return gate.IsPathScoped
+            ? $"{line} [paths: {string.Join(", ", gate.PathSet.Select(RelayedText.Printable))}]"
             : line;
     }
 
