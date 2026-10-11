@@ -538,6 +538,23 @@ public sealed class DaemonOptions
     public TimeSpan SessionErrorRetryBackoff { get; set; } = TimeSpan.FromSeconds(90);
 
     /// <summary>
+    /// How many consecutive launches may fail because git could not reach origin (a passing
+    /// network error, <c>GitNetworkFailure</c>) before the task is failed instead of waiting again.
+    /// The first failures requeue the task behind <see cref="LaunchNetworkRetryBackoff"/>; the
+    /// failure that reaches this count fails it with the attempts and git's last error in the reason.
+    /// Origin incident (2026-10-03, task 51939c4c in arx-platform): one fetch hit a flaky link and
+    /// failed the whole task, which needed a manual retry. Not an <c>h9k config</c> key.
+    /// </summary>
+    public int LaunchNetworkRetryMaxAttempts { get; set; } = 3;
+
+    /// <summary>
+    /// The wait before any node may claim a task whose launch could not reach origin: this long
+    /// after the first such failure, doubling with each consecutive one. Two minutes outlasts a
+    /// link that drops and recovers without holding a task back for long.
+    /// </summary>
+    public TimeSpan LaunchNetworkRetryBackoff { get; set; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>
     /// How fast a session's terminal result must have exited to be believed as this node never
     /// actually launching a working session, rather than a genuine agent failure (task: a
     /// session that exits at once with no work done is treated as the node failing to launch

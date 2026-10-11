@@ -998,6 +998,14 @@ public sealed class RunLauncher(
 
             supervisor.StartMonitoring(runId, runDirectory, taskId, agent.ProcessId, agent.StartedAt, cancellationToken);
         }
+        // A checkout that needed origin and could not read it because of a passing network error
+        // waits out a backoff instead of failing the task. Any other failure of the same fetch (no
+        // such ref, authentication refused) is not on the list and falls through to the catch below.
+        catch (OriginUnreachableException exception) when (GitNetworkFailure.IsTransient(exception.GitError))
+        {
+            logger.LogWarning(exception, "Launch of run {RunId} could not reach origin", runId);
+            await RecordLaunchNetworkRetryAsync(taskId, runId, leaseGeneration, exception.GitError, cancellationToken);
+        }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogError(exception, "Launch failed for run {RunId}", runId);
@@ -2566,6 +2574,74 @@ public sealed class RunLauncher(
                 "Run {RunId}: composed with project {ProjectId}'s own {Builder} prompt addendum, set over "
                 + "this project's usual length cap",
                 runId, project.Id, builder.Value);
+        }
+    }
+
+    /// <summary>
+    /// Gives the claim back because this launch's checkout could not reach origin, behind the same
+    /// generation fence <see cref="RecordLaunchFailureAsync"/> takes, or fails the task when this is
+    /// the bound's own consecutive attempt. The requeue is the ordinary give-back (a lease-expiry
+    /// requeue's own effects on the task) carrying the attempt, the bound in force, the earliest
+    /// next claim and git's error; the lease goes with it, so nothing holds the task while it waits.
+    /// No run stream exists at checkout time, so there is none to retire.
+    /// </summary>
+    private async Task RecordLaunchNetworkRetryAsync(
+        Guid taskId, Guid runId, int leaseGeneration, string gitError, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IDocumentSession session = store.LightweightSession();
+
+            // Read before the identity check, for the reason RecordLaunchFailureAsync gives.
+            (TaskAggregate Task, long Version)? fenced =
+                await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
+            if (!await GenerationFence.AllowsAsync(
+                session, logger, taskId, runId, leaseGeneration, nameof(TaskRequeued), cancellationToken))
+            {
+                return;
+            }
+
+            string error = RelayedText.OneLine(gitError).Trim();
+            int bound = Math.Max(options.Value.LaunchNetworkRetryMaxAttempts, 1);
+            int attempt = fenced is { } read ? TaskDecider.NextLaunchNetworkAttempt(read.Task) : 1;
+            if (attempt >= bound)
+            {
+                await RecordLaunchFailureAsync(
+                    taskId, runId, leaseGeneration,
+                    $"git could not reach origin on {attempt} consecutive launch attempts, so the task is failed "
+                    + $"rather than waited on again. Last git error: {error}", cancellationToken);
+                return;
+            }
+
+            if (fenced is { } current && current.Task.State == TaskState.Claimed)
+            {
+                TimeSpan backoff = TaskDecider.LaunchNetworkBackoff(attempt, options.Value.LaunchNetworkRetryBackoff);
+                session.Events.Append(taskId, expectedVersion: current.Version + 1,
+                    TaskDecider.RequeueAfterLaunchNetworkError(
+                        current.Task, attempt, bound, backoff, error, DateTimeOffset.UtcNow));
+                logger.LogWarning(
+                    "Task {TaskId}: launch attempt {Attempt} of {Bound} could not reach origin ({Error}); "
+                    + "requeued, not claimable for {Backoff}",
+                    taskId, attempt, bound, error, backoff);
+            }
+
+            session.Delete<TaskLease>(taskId);
+            try
+            {
+                await session.SaveChangesAsync(cancellationToken);
+            }
+            catch (EventStreamUnexpectedMaxEventIdException)
+            {
+                // A claim landed between LoadFencedAsync and this commit; the live generation owns
+                // the task now and this stale requeue must not land.
+                logger.LogInformation(
+                    "Task {TaskId}: lost the generation race requeueing after a network error; a newer claim committed first",
+                    taskId);
+            }
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Failed to record the launch network retry for run {RunId}", runId);
         }
     }
 

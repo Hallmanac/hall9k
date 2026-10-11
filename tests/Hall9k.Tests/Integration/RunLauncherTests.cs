@@ -379,8 +379,11 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     /// would make <c>h9k task show</c> tell a reader the artifacts are gone while they are on disk
     /// (both review lenses, cycle 1, against AGENTS.md's never-guess rule).
     /// </summary>
-    [Fact]
-    public async Task An_ordinary_retry_whose_checkout_merely_failed_starts_clean_without_claiming_the_branch_is_gone()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task An_ordinary_retry_whose_checkout_merely_failed_starts_clean_without_claiming_the_branch_is_gone(
+        bool originCouldNotBeReached)
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
@@ -433,7 +436,11 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         }
 
         CapturingExecutor executor = new();
-        UnusableRepositoryWorktreeManager worktrees = new();
+        // The unreachable-origin case is the one the network backoff must leave alone: this node's
+        // own retry still starts clean, since its own branch is not lost by a fetch that failed.
+        UnusableRepositoryWorktreeManager worktrees = originCouldNotBeReached
+            ? new(() => OriginUnreachable(CouldNotResolveHost))
+            : new();
         NotMergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
@@ -451,6 +458,120 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         RunDetails run = (await query.LoadAsync<RunDetails>(retriedRunId, cts.Token))!;
         run.StartedCleanAfterGoneBranch.Should().BeNull(
             "nothing here observed the branch missing from both sides, so nothing may claim it was");
+    }
+
+    /// <summary>
+    /// The other site the network backoff covers: a foreign-node resume of a branch this node does not
+    /// hold, when origin could not be read to say whether it still exists. Starting clean would
+    /// abandon another node's pushed work, so the launch waits and tries again instead.
+    /// </summary>
+    [Fact]
+    public async Task A_foreign_node_resume_that_cannot_reach_origin_waits_and_retries_instead_of_failing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        int leaseGeneration = await SeedForeignNodeResumeAsync(
+            store, node, taskId, DomainId.New(), DomainId.New(), DomainId.New(), runId,
+            "task/pushed-by-the-other-node", cts.Token);
+
+        CapturingExecutor executor = new();
+        UnusableRepositoryWorktreeManager worktrees = new(() => OriginUnreachable(CouldNotResolveHost));
+        NotMergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, leaseGeneration, cts.Token);
+
+        worktrees.CreateAsyncCalled.Should().BeFalse("a fetch that failed says nothing about whether the branch is gone");
+        executor.Request.Should().BeNull();
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.State.Should().Be(TaskState.Queued);
+        (await LatestRequeueAsync(store, taskId, cts.Token)).LaunchNetworkRetryAttempt.Should().Be(1);
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull();
+    }
+
+    /// <summary>
+    /// A reopened task's follow-up resumes its pull request branch, the third checkout the network
+    /// backoff covers, and a reopen between two network failures breaks the run of consecutive ones:
+    /// the failure after it is attempt one, not two.
+    /// </summary>
+    [Fact]
+    public async Task A_reopen_between_two_network_failures_restarts_the_count_at_the_follow_up_checkout()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid followUpRunId = DomainId.New();
+        const string branch = "task/reopened-for-review";
+        int leaseGeneration;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"reopen-network-{taskId:N}",
+                "/tmp/reopen-network-repo", null, "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Reopened after a network failure", ["done"], TaskType.Chore,
+                    null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
+            List<object> history = [.. lifecycle];
+            void Record(object @event)
+            {
+                history.Add(@event);
+                switch (@event)
+                {
+                    case Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed: aggregate.Apply(claimed); break;
+                    case Hall9k.Domain.Features.Tasks.Events.TaskRequeued requeued: aggregate.Apply(requeued); break;
+                    case Hall9k.Domain.Features.Tasks.Events.TaskCompleted completed: aggregate.Apply(completed); break;
+                    case Hall9k.Domain.Features.Tasks.Events.TaskReopened reopened: aggregate.Apply(reopened); break;
+                }
+            }
+
+            Record(TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, DomainId.New(), Now));
+            Record(TaskDecider.RequeueAfterLaunchNetworkError(
+                aggregate, attempt: 1, bound: 3, TimeSpan.FromMinutes(2), CouldNotResolveHost, Now));
+            Guid builtRunId = DomainId.New();
+            Record(TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, builtRunId, Now.AddMinutes(3)));
+            Record(TaskDecider.Complete(aggregate, builtRunId, PullRequestUrl, Now.AddMinutes(4)));
+            Record(TaskDecider.Reopen(
+                aggregate, builtRunId, branch, "Copilot threads.", FollowUpKind.ReviewFeedback,
+                automatic: true, Now.AddMinutes(5), node.OwnerId));
+            Record(TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, followUpRunId, Now.AddMinutes(6)));
+            leaseGeneration = aggregate.LeaseGeneration;
+            session.Events.StartStream<TaskAggregate>(taskId, [.. history]);
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = leaseGeneration, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        FailingCheckoutWorktreeManager worktrees = new(() => OriginUnreachable(CouldNotResolveHost));
+        NotMergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, followUpRunId, node.NodeId, node.OwnerId, leaseGeneration, cts.Token);
+
+        executor.Request.Should().BeNull("the follow-up never got a checkout to run in");
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.State.Should().Be(TaskState.Queued);
+        (await LatestRequeueAsync(store, taskId, cts.Token)).LaunchNetworkRetryAttempt.Should().Be(
+            1, "the reopen ended the earlier run of failures, so this is attempt one");
     }
 
     /// <summary>
@@ -2202,7 +2323,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     /// because only that one means there is no work left anywhere to abandon.
     /// <see cref="CreateAsyncCalled"/> is what proves the caller never fell back on this one.
     /// </summary>
-    private sealed class UnusableRepositoryWorktreeManager : IWorktreeManager
+    private sealed class UnusableRepositoryWorktreeManager(Func<Exception>? checkoutFailure = null) : IWorktreeManager
     {
         public bool CreateAsyncCalled { get; private set; }
 
@@ -2222,6 +2343,11 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         public Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken)
         {
             CheckoutExistingAttemptedBranch = request.Branch;
+            if (checkoutFailure is not null)
+            {
+                throw checkoutFailure();
+            }
+
             throw new WorktreeException(
                 $"git worktree add failed in {request.RepositoryPath}: could not read the repository "
                 + $"while checking out {request.Branch}.");
@@ -3926,6 +4052,272 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         run.ReviewStageComposition.Should().Be(ReviewStageComposition.FullPipeline,
             "both lenses always dispatch on a pr-review run, so this is the only value that is ever "
             + "actually true here — never the project's own None");
+    }
+
+    /// <summary>
+    /// Fails both checkouts the way <see cref="IWorktreeManager"/> reports them, with whatever
+    /// <paramref name="failure"/> builds, so a test chooses between a fetch that could not reach origin
+    /// for a passing reason, one git refused, and a failure that is not a fetch at all.
+    /// </summary>
+    private sealed class FailingCheckoutWorktreeManager(Func<Exception> failure) : IWorktreeManager
+    {
+        public Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("not exercised by this test");
+
+        public Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken) =>
+            throw failure();
+
+        public Task<Worktree> CreatePrReviewCheckoutAsync(PrReviewWorktreeRequest request, CancellationToken cancellationToken) =>
+            throw failure();
+
+        public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task DeletePrReviewTrackingRefAsync(string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task DeleteBranchEverywhereAsync(
+            string repositoryPath, string branch, RemoteBranchDeletionOwner remoteDeletion,
+            CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task PruneAsync(string repositoryPath, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task<CheckoutRefresh> RefreshReadingCheckoutAsync(
+            string checkoutPath, string branch, CancellationToken cancellationToken) =>
+            Task.FromResult(new CheckoutRefresh(UpToDate: true, "nothing here is a real repository"));
+
+        public Task<IAsyncDisposable> AcquireRepositoryLockAsync(string repositoryPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
+
+        public Task<IAsyncDisposable> AcquireCheckoutLockAsync(string checkoutPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
+    }
+
+    private const string CouldNotResolveHost =
+        "fatal: unable to access 'https://github.com/x/y.git/': Could not resolve host: github.com";
+
+    private static Exception OriginUnreachable(string gitError) =>
+        new OriginUnreachableException(gitError, $"git fetch origin failed in /tmp/repo: {gitError}");
+
+    /// <summary>A pr-review task claimed and past its pre-flight, so its next launch goes straight to the checkout.</summary>
+    private async Task<(Guid TaskId, Guid RunId, int PullRequestNumber)> SeedPrReviewAtCheckoutAsync(
+        DocumentStore store, NodeContext node, int pullRequestNumber, CancellationToken cancellationToken)
+    {
+        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, pullRequestNumber, cancellationToken);
+        await SeedSafePrReviewPreflightAsync(store, taskId, node.NodeId, headRefOid: string.Empty, cancellationToken);
+        return (taskId, runId, pullRequestNumber);
+    }
+
+    private Task LaunchAgainstAsync(
+        DocumentStore store, NodeContext node, IWorktreeManager worktrees, int pullRequestNumber,
+        Guid taskId, Guid runId, int leaseGeneration, CancellationToken cancellationToken)
+    {
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(
+            PullRequestPreflightJson.Replace("901", pullRequestNumber.ToString(), StringComparison.Ordinal));
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, new CapturingExecutor(),
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+        return launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, leaseGeneration, cancellationToken);
+    }
+
+    /// <summary>The same task claimed again by this node, as the dispatcher does once the backoff has passed.</summary>
+    private static async Task<(Guid RunId, int LeaseGeneration)> ClaimAgainAsync(
+        DocumentStore store, NodeContext node, Guid taskId, DateTimeOffset claimedAt, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        (TaskAggregate task, long version) = (await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken))!.Value;
+        Guid runId = DomainId.New();
+        Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, claimedAt);
+        session.Events.Append(taskId, expectedVersion: version + 1, claimed);
+        session.Store(new TaskLease
+        {
+            Id = taskId, NodeId = node.NodeId, LeaseGeneration = claimed.LeaseGeneration, HeartbeatAt = claimedAt,
+        });
+        await session.SaveChangesAsync(cancellationToken);
+        return (runId, claimed.LeaseGeneration);
+    }
+
+    private static async Task AppendAsync(
+        DocumentStore store, Guid taskId, Func<TaskAggregate, object> next, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        (TaskAggregate task, long version) = (await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken))!.Value;
+        session.Events.Append(taskId, expectedVersion: version + 1, next(task));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    private static async Task<TaskRequeued> LatestRequeueAsync(
+        DocumentStore store, Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<JasperFx.Events.IEvent> events = await query.Events.FetchStreamAsync(taskId, token: cancellationToken);
+        return events.Select(@event => @event.Data).OfType<TaskRequeued>().Last();
+    }
+
+    /// <summary>
+    /// A launch whose checkout could not reach origin for a passing reason goes back to the queue
+    /// instead of failing: no lease, no TaskFailed, the attempt recorded, and no claim possible,
+    /// from the decider or from the dispatcher's own queue, until the two-minute backoff has passed.
+    /// </summary>
+    [Fact]
+    public async Task A_launch_that_cannot_reach_origin_returns_the_task_to_the_queue_behind_a_backoff()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, int number) = await SeedPrReviewAtCheckoutAsync(store, node, 931, cts.Token);
+        FailingCheckoutWorktreeManager worktrees = new(() => OriginUnreachable(CouldNotResolveHost));
+
+        await LaunchAgainstAsync(store, node, worktrees, number, taskId, runId, 1, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        details.State.Should().Be(TaskState.Queued);
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull("a requeued task holds no lease");
+        IReadOnlyList<JasperFx.Events.IEvent> events = await query.Events.FetchStreamAsync(taskId, token: cts.Token);
+        events.Select(@event => @event.Data).OfType<TaskFailed>().Should().BeEmpty("a brief outage is not a failed task");
+
+        TaskRequeued requeued = events.Select(@event => @event.Data).OfType<TaskRequeued>().Single();
+        requeued.Reason.Should().Be(RequeueReason.LaunchNetworkRetry);
+        requeued.LaunchNetworkRetryAttempt.Should().Be(1);
+        requeued.LaunchNetworkRetryBound.Should().Be(3);
+        requeued.LaunchNetworkRetryError.Should().Be(CouldNotResolveHost);
+        requeued.LaunchNetworkRetryNotBefore.Should().Be(requeued.RequeuedAt + TimeSpan.FromMinutes(2));
+
+        details.LaunchNetworkRetryAttempt.Should().Be(1);
+        details.LaunchNetworkRetryBound.Should().Be(3);
+        details.LaunchNetworkRetryNotBefore.Should().Be(requeued.LaunchNetworkRetryNotBefore);
+        details.LaunchNetworkRetryError.Should().Be(CouldNotResolveHost);
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.LaunchNetworkRetryNotBefore
+            .Should().Be(requeued.LaunchNetworkRetryNotBefore);
+
+        TaskAggregate aggregate = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        Action early = () => TaskDecider.Claim(
+            aggregate, node.NodeId, node.OwnerId, DomainId.New(), requeued.RequeuedAt + TimeSpan.FromMinutes(1));
+        early.Should().Throw<Hall9k.Domain.Shared.Exceptions.DomainConflictException>(
+            "no node claims the task before its backoff has passed");
+        TaskDecider.Claim(
+            aggregate, node.NodeId, node.OwnerId, DomainId.New(), requeued.LaunchNetworkRetryNotBefore!.Value)
+            .LeaseGeneration.Should().Be(2);
+
+        await ClaimAgainAsync(store, node, taskId, requeued.LaunchNetworkRetryNotBefore!.Value, cts.Token);
+        await using IQuerySession afterClaim = store.QuerySession();
+        TaskDetails claimedAgain = (await afterClaim.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        claimedAgain.LaunchNetworkRetryNotBefore.Should().BeNull("claiming ends the wait h9k task show reports");
+        claimedAgain.LaunchNetworkRetryAttempt.Should().BeNull();
+    }
+
+    /// <summary>
+    /// The bound: two requeues, each waiting twice as long as the one before, and the third
+    /// consecutive failure fails the task with the attempts made and git's own last error.
+    /// </summary>
+    [Fact]
+    public async Task The_third_consecutive_network_failure_fails_the_task_naming_the_attempts_and_the_error()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, int number) = await SeedPrReviewAtCheckoutAsync(store, node, 932, cts.Token);
+        FailingCheckoutWorktreeManager worktrees = new(() => OriginUnreachable(CouldNotResolveHost));
+
+        await LaunchAgainstAsync(store, node, worktrees, number, taskId, runId, 1, cts.Token);
+        TaskRequeued first = await LatestRequeueAsync(store, taskId, cts.Token);
+
+        (Guid secondRunId, int secondGeneration) = await ClaimAgainAsync(
+            store, node, taskId, first.LaunchNetworkRetryNotBefore!.Value, cts.Token);
+        await LaunchAgainstAsync(store, node, worktrees, number, taskId, secondRunId, secondGeneration, cts.Token);
+        TaskRequeued second = await LatestRequeueAsync(store, taskId, cts.Token);
+        second.LaunchNetworkRetryAttempt.Should().Be(2);
+        (second.LaunchNetworkRetryNotBefore!.Value - second.RequeuedAt).Should().Be(
+            TimeSpan.FromMinutes(4), "the wait doubles with each consecutive retry");
+
+        (Guid thirdRunId, int thirdGeneration) = await ClaimAgainAsync(
+            store, node, taskId, second.LaunchNetworkRetryNotBefore!.Value, cts.Token);
+        await LaunchAgainstAsync(store, node, worktrees, number, taskId, thirdRunId, thirdGeneration, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        details.State.Should().Be(TaskState.Failed);
+        details.FailureReason.Should().Contain("3 consecutive").And.Contain(CouldNotResolveHost);
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull();
+        details.LaunchNetworkRetryNotBefore.Should().BeNull();
+    }
+
+    /// <summary>
+    /// Consecutive means unbroken: a task that returned to the queue for any other reason between
+    /// two network failures counts the second one as attempt one, whether that other way was a
+    /// requeue, a reopen, or a retry.
+    /// </summary>
+    [Theory]
+    [InlineData("requeue")]
+    [InlineData("retry")]
+    public async Task A_return_to_the_queue_by_another_route_restarts_the_count_at_one(string route)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        int number = route == "requeue" ? 933 : 934;
+        (Guid taskId, Guid runId, _) = await SeedPrReviewAtCheckoutAsync(store, node, number, cts.Token);
+        FailingCheckoutWorktreeManager network = new(() => OriginUnreachable(CouldNotResolveHost));
+
+        await LaunchAgainstAsync(store, node, network, number, taskId, runId, 1, cts.Token);
+        TaskRequeued first = await LatestRequeueAsync(store, taskId, cts.Token);
+        first.LaunchNetworkRetryAttempt.Should().Be(1);
+
+        (Guid secondRunId, _) = await ClaimAgainAsync(
+            store, node, taskId, first.LaunchNetworkRetryNotBefore!.Value, cts.Token);
+        DateTimeOffset later = first.LaunchNetworkRetryNotBefore!.Value.AddMinutes(1);
+        if (route == "requeue")
+        {
+            await AppendAsync(store, taskId, task => TaskDecider.Requeue(task, RequeueReason.LeaseExpired, later), cts.Token);
+        }
+        else
+        {
+            await AppendAsync(store, taskId, task => TaskDecider.Fail(task, secondRunId, "Launch failed: unrelated", later), cts.Token);
+            await AppendAsync(
+                store, taskId, task => TaskDecider.Retry(task, secondRunId, null, "try again", later, node.OwnerId), cts.Token);
+        }
+
+        (Guid thirdRunId, int thirdGeneration) = await ClaimAgainAsync(store, node, taskId, later, cts.Token);
+        await LaunchAgainstAsync(store, node, network, number, taskId, thirdRunId, thirdGeneration, cts.Token);
+
+        TaskRequeued latest = await LatestRequeueAsync(store, taskId, cts.Token);
+        latest.Reason.Should().Be(RequeueReason.LaunchNetworkRetry);
+        latest.LaunchNetworkRetryAttempt.Should().Be(
+            1, "a task that went back to the queue another way is not on its second consecutive failure");
+        (await store.QuerySession().LoadAsync<TaskDetails>(taskId, cts.Token))!.State.Should().Be(TaskState.Queued);
+    }
+
+    /// <summary>
+    /// Every other checkout failure behaves as it always did: a fetch git refused for a reason not
+    /// on the list, and a failure that is not a fetch at all (even one whose text names a host it
+    /// could not resolve), fails the task at once with the launch failure reason.
+    /// </summary>
+    [Theory]
+    [InlineData("couldn't find remote ref refs/pull/935/head", true)]
+    [InlineData("remote: Invalid username or password.\nfatal: Authentication failed for 'https://github.com/x/y.git/'", true)]
+    [InlineData(CouldNotResolveHost, false)]
+    public async Task A_checkout_failure_that_is_not_a_passing_network_error_fails_the_task_at_once(
+        string gitError, bool isTypedFetchFailure)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId, int number) = await SeedPrReviewAtCheckoutAsync(store, node, 935, cts.Token);
+        FailingCheckoutWorktreeManager worktrees = new(
+            () => isTypedFetchFailure ? OriginUnreachable(gitError) : new WorktreeException(gitError));
+
+        await LaunchAgainstAsync(store, node, worktrees, number, taskId, runId, 1, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        details.State.Should().Be(TaskState.Failed);
+        details.FailureReason.Should().StartWith("Launch failed: ");
+        details.LaunchNetworkRetryNotBefore.Should().BeNull();
+        (await query.Events.FetchStreamAsync(taskId, token: cts.Token)).Select(@event => @event.Data)
+            .OfType<TaskRequeued>().Should().BeEmpty();
     }
 
     /// <summary>Seeds a Claimed pr-review task with a lease, the shape every pre-flight test below shares.</summary>
