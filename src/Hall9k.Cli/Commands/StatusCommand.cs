@@ -227,6 +227,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         // The unfiltered rows, because the review-request pane names a task covering a request only
         // when that task is the viewer's own, and can only tell that from the row's own group.
         await WriteAutoPrReviewAsync(session, everyoneRows, now, cancellationToken);
+        await WriteNonMemberFeedbackAsync(session, everyoneRows, cancellationToken);
         await WriteCooperativeTakeAsync(session, now, cancellationToken);
         await WriteOwnerActAsync(session, now, cancellationToken);
 
@@ -1164,6 +1165,28 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         foreach (ReviewRequestRow request in pane.InReadingOrder)
         {
             AnsiConsole.MarkupLine(request.Markup);
+        }
+    }
+
+    /// <summary>
+    /// Feedback from someone outside the project's roster, held for the owner's go
+    /// (<see cref="NonMemberFeedbackPane"/>): one line per review or thread, in a list of its own
+    /// because a task row carries one attention cause and a running lap's state replaces it.
+    /// Degraded to a dim line on a failure, like every other section here.
+    /// </summary>
+    private static async Task WriteNonMemberFeedbackAsync(
+        IQuerySession session, IReadOnlyList<TaskStatusRow> rows, CancellationToken cancellationToken)
+    {
+        try
+        {
+            foreach (string line in await NonMemberFeedbackPane.ComposeAllAsync(session, rows, cancellationToken))
+            {
+                AnsiConsole.MarkupLine(line);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]non-member feedback: unavailable ({exception.Message})[/]");
         }
     }
 

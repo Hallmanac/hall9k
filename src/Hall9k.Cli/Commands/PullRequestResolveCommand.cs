@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
@@ -9,7 +11,6 @@ using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
 using JasperFx.Events;
 using Marten;
-using Marten.Events;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -106,7 +107,15 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
             // operator reaches for by hand. A thread the reviewer has since resolved only ever
             // makes that check refuse more, never less, and nothing here is fabricated: every
             // entry is an observation closeout actually made.
-            humanReviewThreads: [.. task.KnownHumanReviewThreads]));
+            humanReviewThreads: [.. task.KnownHumanReviewThreads],
+            // Carried forward for the same reason, and with the same limit: this command makes no
+            // provider read and holds no roster, so it can say only what the last closeout poll
+            // vetted as readable. A task closeout never dispatched has none, and then the one thing
+            // this command can still know is that the gate is off for the repository, by the last
+            // visibility the daemon observed and the project's own setting; anything else the
+            // follow-up's prompt reads as nothing readable, never as everything.
+            reviewReadScope: task.ReviewReadScope ?? await UnrestrictedScopeIfGateOffAsync(
+                session, task.ProjectId, cancellationToken)));
         session.Events.Append(previousRunId, new CloseoutBudgetGranted(previousRunId, reason, resolvedAt));
         try
         {
@@ -144,6 +153,24 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         }
 
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// <see cref="ReviewReadScope.AllThreads"/> when the membership gate is off for this project's
+    /// repository (a private or internal one by the last visibility the daemon observed, or an explicit
+    /// <c>--review-requires-membership off</c>), and null otherwise, including when no visibility has
+    /// ever been observed, which is the gate's own fail-closed reading.
+    /// </summary>
+    internal static async Task<ReviewReadScope?> UnrestrictedScopeIfGateOffAsync(
+        IQuerySession session, Guid projectId, CancellationToken cancellationToken)
+    {
+        ReviewMembershipGateSetting setting =
+            await ReviewMembershipGateSetting.ResolveAsync(session, projectId, cancellationToken);
+        ProjectRepositoryVisibility? visibility =
+            await session.LoadAsync<ProjectRepositoryVisibility>(projectId, cancellationToken);
+        return ReviewMembershipGateSetting.GateIsOn(visibility?.IsPrivate, setting.ExplicitValue)
+            ? null
+            : ReviewReadScope.AllThreads;
     }
 
     /// <summary>

@@ -50,6 +50,19 @@ public sealed class DispatchedSessionTreeTests
     }
 
     /// <summary>
+    /// The owner's go on a non-member's feedback is what lets a stranger's text reach a session that
+    /// skips permissions, so a dispatched session can never be allowed to give itself one (task: a
+    /// changes-requested review or an unresolved review thread from someone outside the roster never
+    /// reaches a build lap without the owner's go).
+    /// </summary>
+    [Fact]
+    public void The_owners_go_on_non_member_feedback_is_refused_to_a_dispatched_session()
+    {
+        DispatchedSessionCommandClassification.BySettingsType[typeof(Hall9k.Cli.Commands.PullRequestFeedbackCommand.Settings)]
+            .Should().Be((DispatchedSessionAccess.Refused, "pr feedback"));
+    }
+
+    /// <summary>
     /// Runs one printed example through the shipped tree, stopping the instant Spectre has bound
     /// and validated its settings — the same technique <see cref="CommandTreeHelpTests.Parse"/>
     /// uses to prove an example is runnable, repurposed here to capture which settings CLR type the

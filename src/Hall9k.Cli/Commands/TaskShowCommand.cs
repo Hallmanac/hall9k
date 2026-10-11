@@ -735,6 +735,13 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             // fix lap). Ordered by dispatch, which is the order the laps happened in.
             RunDetails[] everyRun = [.. runs.Select(r => runDetailsById.GetValueOrDefault(r.Id)).OfType<RunDetails>()];
             WriteChangesRequestedReviews(everyRun);
+            // Feedback from outside the project's roster that closeout is holding for the owner's go,
+            // named by reviewer, kind, link and status and never quoted.
+            foreach (string line in NonMemberFeedbackPane.ComposeTaskShowLines(details))
+            {
+                AnsiConsole.MarkupLine(line);
+            }
+
             // Its own block, across every run for the same reason: a thread lap's park is the one
             // place the drafted words live, and the run that drafted them is not the run watching
             // the pull request (task: a review-feedback follow-up never answers a human reviewer

@@ -184,13 +184,16 @@ public sealed class ProjectMembersCommand : Hall9kAsyncCommand<ProjectMembersCom
     /// <summary>
     /// The Login and Verified cells for one member: one line per distinct declared account, the two
     /// columns aligned line for line, or "unknown" in both when none of the member's nodes declares one.
+    /// Each login is followed by the numeric account id it was declared with, because that id is what
+    /// the membership gate matches on (a login can be renamed; a session told to read only members'
+    /// review comments needs the id to check an author against).
     /// </summary>
     internal static (string Login, string Standing) RenderAccounts(
         IReadOnlyList<DeclaredGitHubAccount> accounts, ProjectGitHubRoster roster) =>
         accounts.Count == 0
             ? ("[dim]unknown[/]", "[dim]unknown[/]")
             : (
-                string.Join("\n", accounts.Select(account => account.Login.EscapeMarkup())),
+                string.Join("\n", accounts.Select(account => $"{account.Login.EscapeMarkup()} (id {account.AccountId})")),
                 string.Join("\n", accounts.Select(account => DescribeStanding(roster.Check(account)))));
 
     internal static string DescribeStanding(DeclaredAccountStanding standing) =>

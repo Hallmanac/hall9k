@@ -556,6 +556,23 @@ public static class CliCommandTree
                 .WithExample("pr", "resolve", "28b19893")
                 .WithExample("pr", "resolve", "28b19893", "--checks")
                 .WithExample("pr", "resolve", "28b19893", "--rebase");
+            pullRequest.AddCommand<PullRequestFeedbackCommand>("feedback")
+                .WithDescription(
+                    "Decide feedback from someone outside the project's roster (the trust chain's declared GitHub "
+                    + "accounts, matched by numeric account id). On a public repository, or wherever h9k project "
+                    + "set --review-requires-membership is on, a changes-requested review or an unresolved review "
+                    + "thread such an account wrote dispatches no lap and is read by no session: closeout raises "
+                    + "one needs-you item for it on h9k status, naming the reviewer, the kind and the link, and "
+                    + "holds a pre-approved merge until you answer. --go has the next poll dispatch one fix lap "
+                    + "that carries that feedback, even if the head has moved since; --decline dispatches nothing "
+                    + "(a declined review stops holding the merge, a declined thread stays unresolved and keeps "
+                    + "holding it). With no feedback named it lists what the task holds, never the reviewer's own "
+                    + "words. Only you can give the go: it is what lets a stranger's text reach a session that "
+                    + "skips permissions.")
+                .WithExample("pr", "feedback", "28b19893")
+                .WithExample(
+                    "pr", "feedback", "28b19893", "\"https://github.com/a/b/pull/1#pullrequestreview-9\"", "--go")
+                .WithExample("pr", "feedback", "28b19893", "PRRT_kwDO", "--decline");
             pullRequest.AddCommand<PullRequestReplyCommand>("reply")
                 .WithDescription(
                     "Post one reply on a task's own pull request, inside a review thread (--thread) or as the "
