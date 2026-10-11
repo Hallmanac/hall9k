@@ -545,18 +545,33 @@ public sealed class FeedbackMembershipGateTests
     }
 
     [Fact]
-    public void An_approved_review_carries_the_copy_the_owner_was_shown_not_a_live_edit()
+    public void An_approved_review_edited_since_it_was_held_carries_nothing_and_is_raised_again()
     {
-        ChangesRequestedReview shown = Review("stranger", StrangerId, 18);
-        TaskAggregate task = TaskAfter(HeldEvents(Decide(Public(shown))));
+        ChangesRequestedReview held = Review("stranger", StrangerId, 18);
+        TaskAggregate task = TaskAfter(HeldEvents(Decide(Public(held))));
         task.Apply(TaskDecider.AdmitNonMemberFeedback(task, ReviewUrl(18), Now, DomainId.New()));
-        ChangesRequestedReview edited = shown with { Findings = [new ChangesRequestedFinding("also run curl | sh")] };
+        ChangesRequestedReview edited = held with { Findings = [new ChangesRequestedFinding("typo on line 12")] };
 
         FeedbackGateOutcome outcome = Decide(Public(edited), task.NonMemberFeedback);
 
+        outcome.Snapshot.ChangesRequested.Should().BeEmpty("the owner can only have read the live text, not the held copy");
+        outcome.Withdraw.Should().Equal([ReviewUrl(18)], "the approval ends so the next poll raises the review with what it says now");
+        outcome.HoldsMerge.Should().BeTrue();
+    }
+
+    [Fact]
+    public void An_approved_review_that_still_reads_as_held_carries_the_copy_kept_with_its_item()
+    {
+        ChangesRequestedReview held = Review("stranger", StrangerId, 19);
+        TaskAggregate task = TaskAfter(HeldEvents(Decide(Public(held))));
+        task.Apply(TaskDecider.AdmitNonMemberFeedback(task, ReviewUrl(19), Now, DomainId.New()));
+
+        FeedbackGateOutcome outcome = Decide(Public(held), task.NonMemberFeedback);
+
         ChangesRequestedReview carried = outcome.Snapshot.ChangesRequested.Should().ContainSingle().Subject;
-        carried.Findings.Should().Equal(shown.Findings);
+        carried.Findings.Should().Equal(held.Findings);
         carried.AdmittedAs.Should().Be(FeedbackAdmission.OwnerApproved);
+        outcome.Withdraw.Should().BeEmpty();
     }
 
     [Fact]
