@@ -202,6 +202,15 @@ internal static class AutoPrReviewObservation
     }
 
     /// <summary>
+    /// Whether the gate applies to a repository at all, by the rule <see cref="DecideMembershipGate"/>
+    /// opens with: an explicit <c>--review-requires-membership</c> wins, otherwise it is on unless the
+    /// repository is known to be private or internal. A visibility read that failed or was never made
+    /// (null) is on. Shared with the closeout feedback gate so the two can never disagree about it.
+    /// </summary>
+    public static bool MembershipGateIsOn(bool? isPrivate, bool? explicitSetting) =>
+        ReviewMembershipGateSetting.GateIsOn(isPrivate, explicitSetting);
+
+    /// <summary>
     /// Whether hall9k team membership gates this pull request's own review request or mention
     /// before it runs unattended (security review idea 6be68ee2, finding 1): a private or
     /// internal repository already required an owner's own grant to see it at all, so it keeps
@@ -237,8 +246,7 @@ internal static class AutoPrReviewObservation
     public static MembershipGateDecision DecideMembershipGate(
         bool? isPrivate, bool? explicitSetting, long? authorAccountId, IReadOnlyCollection<long>? memberAccountIds)
     {
-        bool gateOn = explicitSetting ?? isPrivate != true;
-        if (!gateOn)
+        if (!MembershipGateIsOn(isPrivate, explicitSetting))
         {
             return MembershipGateDecision.Run;
         }
