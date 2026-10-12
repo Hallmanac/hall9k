@@ -1,8 +1,12 @@
+using System.Text.Json;
 using FluentAssertions;
+using Hall9k.Cli.Commands;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
 using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Closeout;
+using Hall9k.Daemon.Execution;
+using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -14,6 +18,8 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Storage;
+using JasperFx.Events;
 using Hall9k.Tests.Fakes;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -202,6 +208,426 @@ public sealed class FeedbackGateEngineTests(PostgresFixture postgres) : IClassFi
         (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(RunState.Superseded);
     }
 
+
+    // ─── The read-only evaluator that assesses held feedback before the owner decides on it ───────────
+
+    private FeedbackEvaluators NewEvaluators(
+        EvaluatorExecutor executor, FakeProcessManager processes, Action<DaemonOptions>? configure = null)
+    {
+        DaemonOptions daemon = new() { NonMemberFeedbackEvaluatorTimeout = TimeSpan.FromSeconds(30) };
+        configure?.Invoke(daemon);
+        return new FeedbackEvaluators(
+            postgres.Store, executor, processes, Options.Create(daemon), NullLogger<FeedbackEvaluators>.Instance);
+    }
+
+    private async Task<TaskDetails> LoadTaskAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = postgres.Store.QuerySession();
+        return (await query.LoadAsync<TaskDetails>(taskId, cancellationToken))!;
+    }
+
+    private async Task<int> CountEventsAsync<T>(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = postgres.Store.QuerySession();
+        return (await query.Events.FetchStreamAsync(taskId, token: cancellationToken)).Count(e => e.Data is T);
+    }
+
+    private async Task GiveTheGoAsync(Guid taskId, string key, NodeContext node, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession decide = postgres.Store.LightweightSession();
+        TaskAggregate aggregate = (await decide.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!;
+        decide.Events.Append(taskId, TaskDecider.AdmitNonMemberFeedback(aggregate, key, Now, node.OwnerId));
+        await decide.SaveChangesAsync(cancellationToken);
+    }
+
+    [Fact]
+    public async Task A_held_item_dispatches_one_evaluator_across_polls_and_a_restart_and_shows_its_recommendation()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (Guid taskId, Guid runId, NodeContext node) = await SeedAwaitingReviewAsync(cts.Token);
+        FakeProcessManager processes = new();
+        EvaluatorExecutor executor = new(processes) { Assessment = $"Recommendation: decline\n\n{AssessmentProse}\n" };
+        FeedbackEvaluators evaluators = NewEvaluators(executor, processes);
+        FakeInspector inspector = new(Public(Review("stranger", StrangerId, 60)));
+        CloseoutEngine engine = NewEngine(node, inspector, roster: [MemberId], taskId, evaluators);
+
+        await engine.PollOnceAsync(cts.Token);
+        await engine.PollOnceAsync(cts.Token);
+        await evaluators.WhenIdleAsync();
+        // A daemon restart builds new engines over the same stream; nothing of the first one's memory survives.
+        FeedbackEvaluators afterRestart = NewEvaluators(executor, processes);
+        await NewEngine(node, inspector, roster: [MemberId], taskId, afterRestart).PollOnceAsync(cts.Token);
+        await afterRestart.WhenIdleAsync();
+
+        executor.Requests.Should().ContainSingle("one item, one evaluator, however many polls and restarts observe it");
+        AgentSpawnRequest request = executor.Requests[0];
+        request.SkipPermissions.Should().BeFalse("no pr-review session ever skips permissions");
+        request.UsesReviewPermissions.Should().BeTrue("the evaluator runs under the pr-review permission file");
+        request.UntrustedWorkingDirectory.Should().BeTrue("a stranger's text never meets the checkout's own project settings");
+        request.MaxTurns.Should().Be(new DaemonOptions().NonMemberFeedbackEvaluatorMaxTurns, "a hard turn cap");
+        request.AssessmentFile.Should().StartWith(RunDirectoryOf(runId)).And.EndWith(".md");
+        request.Prompt.Should().Contain(StrangersWords).And.Contain("not addressed to you");
+        (await CountEventsAsync<NonMemberFeedbackEvaluatorDispatched>(taskId, cts.Token)).Should().Be(1);
+
+        TaskDetails task = await LoadTaskAsync(taskId, cts.Token);
+        NonMemberFeedbackItem item = task.NonMemberFeedback.Should().ContainSingle().Subject;
+        item.Status.Should().Be(NonMemberFeedbackStatus.Undecided);
+        item.EvaluationState.Status.Should().Be(FeedbackEvaluationStatus.Assessed);
+        item.EvaluationState.Recommendation.Should().Be(FeedbackRecommendation.Decline);
+        item.EvaluationState.AssessmentPath.Should().Be(request.AssessmentFile);
+
+        // What the owner's status line and the stored events carry: the word and the path, never the prose.
+        string line = NonMemberFeedbackPane.ComposeLine("0e866341", "Bound the limiter", item);
+        line.Should().Contain("evaluator recommends decline").And.Contain(request.AssessmentFile!);
+        line.Should().NotContain(AssessmentProse).And.NotContain(StrangersWords);
+        await using (IQuerySession query = postgres.Store.QuerySession())
+        {
+            foreach (IEvent stored in await query.Events.FetchStreamAsync(taskId, token: cts.Token))
+            {
+                if (stored.Data is NonMemberFeedbackEvaluatorDispatched or NonMemberFeedbackEvaluationRecorded)
+                {
+                    JsonSerializer.Serialize(stored.Data, stored.Data.GetType()).Should().NotContain(AssessmentProse);
+                    (OrchestratorFeedDescription.Of(stored.Data) ?? "").Should().NotContain(AssessmentProse);
+                }
+            }
+        }
+
+        await RetireWatchAsync(runId, cts.Token);
+        DeleteRunDirectory(runId);
+    }
+
+    [Fact]
+    public async Task Feedback_past_the_per_task_cap_still_raises_its_item_with_no_evaluator()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (Guid taskId, Guid runId, NodeContext node) = await SeedAwaitingReviewAsync(cts.Token);
+        FakeProcessManager processes = new();
+        EvaluatorExecutor executor = new(processes);
+        FeedbackEvaluators evaluators = NewEvaluators(executor, processes, daemon => daemon.NonMemberFeedbackEvaluatorCap = 2);
+        FakeInspector inspector = new(Public(
+            Review("stranger", StrangerId, 61), Review("stranger", StrangerId, 62), Review("stranger", StrangerId, 63)));
+        CloseoutEngine engine = NewEngine(node, inspector, roster: [MemberId], taskId, evaluators);
+
+        await engine.PollOnceAsync(cts.Token);
+        await evaluators.WhenIdleAsync();
+        // A fourth review arrives later: the allowance is a lifetime one, not a per-poll one.
+        inspector.Snapshot = Public(
+            Review("stranger", StrangerId, 61), Review("stranger", StrangerId, 62), Review("stranger", StrangerId, 63),
+            Review("stranger", StrangerId, 64));
+        await engine.PollOnceAsync(cts.Token);
+        await evaluators.WhenIdleAsync();
+
+        executor.Requests.Should().HaveCount(2, "the daemon option caps one task's evaluators for its lifetime");
+        TaskDetails task = await LoadTaskAsync(taskId, cts.Token);
+        task.NonMemberFeedback.Should().HaveCount(4, "every piece of feedback still raises its needs-you item");
+        task.NonMemberFeedback.Should().OnlyContain(item => item.Status == NonMemberFeedbackStatus.Undecided);
+        task.NonMemberFeedback.Count(item => item.EvaluationState.Status == FeedbackEvaluationStatus.Assessed).Should().Be(2);
+        NonMemberFeedbackItem[] skipped = [.. task.NonMemberFeedback.Where(item => item.EvaluationState.Status == FeedbackEvaluationStatus.PastCap)];
+        skipped.Should().HaveCount(2);
+        skipped.Should().OnlyContain(item => item.EvaluationState.AssessmentPath == null);
+        NonMemberFeedbackPane.ComposeLine("0e866341", "Bound the limiter", skipped[0]).Should().Contain("no evaluator ran");
+        (await CountEventsAsync<NonMemberFeedbackEvaluatorDispatched>(taskId, cts.Token)).Should().Be(2);
+
+        await RetireWatchAsync(runId, cts.Token);
+        DeleteRunDirectory(runId);
+    }
+
+    [Fact]
+    public async Task An_evaluator_that_fails_leaves_the_item_saying_so_and_the_owners_go_still_dispatches_the_lap()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (Guid taskId, Guid runId, NodeContext node) = await SeedAwaitingReviewAsync(cts.Token);
+        FakeProcessManager processes = new();
+        EvaluatorExecutor executor = new(processes) { SpawnFailure = new InvalidOperationException("claude is not installed") };
+        FeedbackEvaluators evaluators = NewEvaluators(executor, processes);
+        ChangesRequestedReview strangers = Review("stranger", StrangerId, 65);
+        FakeInspector inspector = new(Public(strangers));
+        CloseoutEngine engine = NewEngine(node, inspector, roster: [MemberId], taskId, evaluators);
+
+        await engine.PollOnceAsync(cts.Token);
+        await evaluators.WhenIdleAsync();
+
+        NonMemberFeedbackItem item = (await LoadTaskAsync(taskId, cts.Token)).NonMemberFeedback.Should().ContainSingle().Subject;
+        item.Status.Should().Be(NonMemberFeedbackStatus.Undecided, "the item stays");
+        item.EvaluationState.Status.Should().Be(FeedbackEvaluationStatus.Failed);
+        item.EvaluationState.Reason.Should().Be("the evaluator could not be started");
+        NonMemberFeedbackPane.ComposeLine("0e866341", "Bound the limiter", item).Should().Contain("no assessment: the evaluator could not be started");
+
+        await GiveTheGoAsync(taskId, ReviewUrl(65), node, cts.Token);
+        await engine.PollOnceAsync(cts.Token);
+
+        TaskDetails task = await LoadTaskAsync(taskId, cts.Token);
+        task.FollowUpKind.Should().Be(FollowUpKind.ReviewRequestedChanges, "the go works exactly as without an evaluator");
+        task.ChangesRequestedReviews.Should().ContainSingle().Which.AdmittedAs.Should().Be(FeedbackAdmission.OwnerApproved);
+        DeleteRunDirectory(runId);
+    }
+
+    [Fact]
+    public async Task An_evaluator_that_wrote_nothing_or_a_recommendation_outside_the_three_words_is_a_failure()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        foreach ((string? assessment, string expectedReason) in new (string?, string)[]
+        {
+            (null, "the evaluator wrote no assessment"),
+            ("Recommendation: merge it now\n", "the evaluator's recommendation was not one of fix, decline or ask"),
+        })
+        {
+            (Guid taskId, Guid runId, NodeContext node) = await SeedAwaitingReviewAsync(cts.Token);
+            FakeProcessManager processes = new();
+            EvaluatorExecutor executor = new(processes) { Assessment = assessment };
+            FeedbackEvaluators evaluators = NewEvaluators(executor, processes);
+
+            await NewEngine(node, new FakeInspector(Public(Review("stranger", StrangerId, 66))), [MemberId], taskId, evaluators)
+                .PollOnceAsync(cts.Token);
+            await evaluators.WhenIdleAsync();
+
+            NonMemberFeedbackItem item = (await LoadTaskAsync(taskId, cts.Token)).NonMemberFeedback.Should().ContainSingle().Subject;
+            item.Status.Should().Be(NonMemberFeedbackStatus.Undecided);
+            item.EvaluationState.Status.Should().Be(FeedbackEvaluationStatus.Failed);
+            item.EvaluationState.Reason.Should().Be(expectedReason);
+            item.EvaluationState.Recommendation.Should().BeNull();
+            await RetireWatchAsync(runId, cts.Token);
+            DeleteRunDirectory(runId);
+        }
+    }
+
+    [Fact]
+    public async Task An_evaluator_past_its_timeout_is_terminated_and_recorded_as_failed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (Guid taskId, Guid runId, NodeContext node) = await SeedAwaitingReviewAsync(cts.Token);
+        FakeProcessManager processes = new();
+        EvaluatorExecutor executor = new(processes) { HoldOpen = true };
+        FeedbackEvaluators evaluators = NewEvaluators(
+            executor, processes, daemon => daemon.NonMemberFeedbackEvaluatorTimeout = TimeSpan.FromMilliseconds(300));
+
+        await NewEngine(node, new FakeInspector(Public(Review("stranger", StrangerId, 67))), [MemberId], taskId, evaluators)
+            .PollOnceAsync(cts.Token);
+        await evaluators.WhenIdleAsync();
+
+        NonMemberFeedbackItem item = (await LoadTaskAsync(taskId, cts.Token)).NonMemberFeedback.Should().ContainSingle().Subject;
+        item.EvaluationState.Status.Should().Be(FeedbackEvaluationStatus.Failed);
+        item.EvaluationState.Reason.Should().Be("the evaluator timed out");
+        processes.Terminations.Should().ContainSingle("the session that ran past its bound is ended");
+        await RetireWatchAsync(runId, cts.Token);
+        DeleteRunDirectory(runId);
+    }
+
+    [Fact]
+    public async Task The_owners_go_dispatches_the_lap_while_the_evaluator_is_still_running_and_a_late_assessment_changes_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (Guid taskId, Guid runId, NodeContext node) = await SeedAwaitingReviewAsync(cts.Token);
+        FakeProcessManager processes = new();
+        EvaluatorExecutor executor = new(processes) { HoldOpen = true };
+        FeedbackEvaluators evaluators = NewEvaluators(executor, processes);
+        ChangesRequestedReview strangers = Review("stranger", StrangerId, 68);
+        FakeInspector inspector = new(Public(strangers));
+        CloseoutEngine engine = NewEngine(node, inspector, roster: [MemberId], taskId, evaluators);
+        await engine.PollOnceAsync(cts.Token);
+        (await LoadTaskAsync(taskId, cts.Token)).NonMemberFeedback.Should().ContainSingle()
+            .Which.EvaluationState.Status.Should().Be(FeedbackEvaluationStatus.Running);
+
+        await GiveTheGoAsync(taskId, ReviewUrl(68), node, cts.Token);
+        inspector.Snapshot = Public() with { HeadCommit = "cafe2", StandingChangesRequestedReviews = [strangers] };
+        await engine.PollOnceAsync(cts.Token);
+
+        TaskDetails task = await LoadTaskAsync(taskId, cts.Token);
+        task.FollowUpKind.Should().Be(FollowUpKind.ReviewRequestedChanges, "the go does not wait for the evaluator");
+        (await CountEventsAsync<TaskReopened>(taskId, cts.Token)).Should().Be(1);
+
+        await executor.ReleaseAsync();
+        await evaluators.WhenIdleAsync();
+
+        task = await LoadTaskAsync(taskId, cts.Token);
+        task.NonMemberFeedback.Should().ContainSingle().Which.Status.Should().Be(NonMemberFeedbackStatus.Admitted);
+        (await CountEventsAsync<NonMemberFeedbackEvaluationRecorded>(taskId, cts.Token)).Should().Be(0,
+            "an assessment that lands after the owner acted changes nothing");
+        task.FollowUpKind.Should().Be(FollowUpKind.ReviewRequestedChanges);
+        DeleteRunDirectory(runId);
+    }
+
+    [Fact]
+    public async Task A_decline_while_the_evaluator_is_still_running_works_and_the_late_assessment_changes_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (Guid taskId, Guid runId, NodeContext node) = await SeedAwaitingReviewAsync(cts.Token, preApproval: PreApprovalMode.On);
+        FakeProcessManager processes = new();
+        EvaluatorExecutor executor = new(processes) { HoldOpen = true };
+        FeedbackEvaluators evaluators = NewEvaluators(executor, processes);
+        FakeInspector inspector = new(Public(Review("stranger", StrangerId, 69)));
+        CloseoutEngine engine = NewEngine(node, inspector, roster: [MemberId], taskId, evaluators);
+        await engine.PollOnceAsync(cts.Token);
+        inspector.MergeAttempts.Should().Be(0);
+
+        await using (IDocumentSession decide = postgres.Store.LightweightSession())
+        {
+            TaskAggregate aggregate = (await decide.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            decide.Events.Append(taskId, TaskDecider.DeclineNonMemberFeedback(aggregate, ReviewUrl(69), Now, node.OwnerId));
+            await decide.SaveChangesAsync(cts.Token);
+        }
+
+        await engine.PollOnceAsync(cts.Token);
+        await executor.ReleaseAsync();
+        await evaluators.WhenIdleAsync();
+
+        inspector.MergeAttempts.Should().Be(1, "declining releases the merge hold with the evaluator still running");
+        (await CountEventsAsync<NonMemberFeedbackEvaluationRecorded>(taskId, cts.Token)).Should().Be(0);
+        DeleteRunDirectory(runId);
+    }
+
+    [Fact]
+    public async Task A_mixed_poll_runs_the_members_lap_and_still_dispatches_the_strangers_evaluator()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (Guid taskId, Guid runId, NodeContext node) = await SeedAwaitingReviewAsync(cts.Token);
+        FakeProcessManager processes = new();
+        // Held open so the evaluator's own outcome cannot land in the middle of the poll it was dispatched in.
+        EvaluatorExecutor executor = new(processes) { Assessment = "Recommendation: ask\n", HoldOpen = true };
+        FeedbackEvaluators evaluators = NewEvaluators(executor, processes);
+        FakeInspector inspector = new(Public(Review("teammate", MemberId, 70), Review("stranger", StrangerId, 71)));
+
+        await NewEngine(node, inspector, roster: [MemberId], taskId, evaluators).PollOnceAsync(cts.Token);
+        await executor.ReleaseAsync();
+        await evaluators.WhenIdleAsync();
+
+        TaskDetails task = await LoadTaskAsync(taskId, cts.Token);
+        task.FollowUpKind.Should().Be(FollowUpKind.ReviewRequestedChanges);
+        task.ChangesRequestedReviews.Should().ContainSingle(review => review.ReviewUrl == ReviewUrl(70));
+        executor.Requests.Should().ContainSingle("the evaluator is for the stranger's review only");
+        executor.Requests[0].Prompt.Should().Contain("stranger's finding").And.NotContain("teammate's finding");
+        NonMemberFeedbackItem item = task.NonMemberFeedback.Should().ContainSingle(held => held.Key == ReviewUrl(71)).Subject;
+        item.EvaluationState.Recommendation.Should().Be(FeedbackRecommendation.Ask);
+        DeleteRunDirectory(runId);
+    }
+
+    [Fact]
+    public async Task A_dispatch_nothing_is_running_after_a_restart_is_recorded_as_failed_and_never_run_again()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (Guid taskId, Guid runId, NodeContext node) = await SeedAwaitingReviewAsync(cts.Token);
+        FakeProcessManager processes = new();
+        EvaluatorExecutor executor = new(processes) { HoldOpen = true };
+        FakeInspector inspector = new(Public(Review("stranger", StrangerId, 72)));
+        await NewEngine(node, inspector, [MemberId], taskId, NewEvaluators(executor, processes)).PollOnceAsync(cts.Token);
+
+        // The first daemon is gone with its session; a second one finds the dispatch on the stream and nothing running it.
+        FeedbackEvaluators afterRestart = NewEvaluators(executor, processes);
+        await NewEngine(node, inspector, [MemberId], taskId, afterRestart).PollOnceAsync(cts.Token);
+        await NewEngine(node, inspector, [MemberId], taskId, afterRestart).PollOnceAsync(cts.Token);
+
+        executor.Requests.Should().ContainSingle();
+        NonMemberFeedbackItem item = (await LoadTaskAsync(taskId, cts.Token)).NonMemberFeedback.Should().ContainSingle().Subject;
+        item.EvaluationState.Status.Should().Be(FeedbackEvaluationStatus.Failed);
+        item.EvaluationState.Reason.Should().Contain("daemon restarted");
+        await RetireWatchAsync(runId, cts.Token);
+        await executor.ReleaseAsync();
+        DeleteRunDirectory(runId);
+    }
+
+    private static void DeleteRunDirectory(Guid runId)
+    {
+        string directory = RunDirectoryOf(runId);
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private const string StrangersWords = "stranger's finding.";
+    private const string AssessmentProse = "This is the assessment prose that must never reach a status row or the feed.";
+
+    /// <summary>
+    /// A scripted evaluator session: it records every spawn, writes the assessment file the request
+    /// names (or none) and its own stream's result line, and can be held open to stand for a session
+    /// that is still running when the owner acts.
+    /// </summary>
+    private sealed class EvaluatorExecutor(FakeProcessManager processes) : IExecutor
+    {
+        private readonly object _gate = new();
+        private readonly List<(AgentSpawnRequest Request, int ProcessId)> _held = [];
+        private readonly List<AgentSpawnRequest> _requests = [];
+        private int _nextProcessId = 41_000;
+
+        /// <summary>Every spawn, as of now; sessions run side by side, so the list is guarded.</summary>
+        public IReadOnlyList<AgentSpawnRequest> Requests
+        {
+            get { lock (_gate) { return [.. _requests]; } }
+        }
+
+        public string? Assessment { get; set; } = "Recommendation: fix\n\nThe change serves the task.\n";
+
+        public bool HoldOpen { get; set; }
+
+        public Exception? SpawnFailure { get; set; }
+
+        public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            int processId;
+            lock (_gate)
+            {
+                _requests.Add(request);
+                if (SpawnFailure is { } failure)
+                {
+                    throw failure;
+                }
+
+                processId = _nextProcessId++;
+                if (HoldOpen)
+                {
+                    processes.MarkAlive(processId);
+                    _held.Add((request, processId));
+                }
+            }
+
+            if (!HoldOpen)
+            {
+                await FinishAsync(request, cancellationToken);
+            }
+
+            return new SpawnedAgent(processId, DateTimeOffset.UtcNow);
+        }
+
+        /// <summary>Lets every held session finish the way a real one does: its file, its result line, then its exit.</summary>
+        public async Task ReleaseAsync()
+        {
+            (AgentSpawnRequest Request, int ProcessId)[] held;
+            lock (_gate)
+            {
+                held = [.. _held];
+                _held.Clear();
+            }
+
+            foreach ((AgentSpawnRequest request, int processId) in held)
+            {
+                await FinishAsync(request, CancellationToken.None);
+                processes.MarkDead(processId);
+            }
+        }
+
+        private async Task FinishAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            Directory.CreateDirectory(request.RunDirectory);
+            if (Assessment is not null)
+            {
+                await File.WriteAllTextAsync(request.AssessmentFile!, Assessment, cancellationToken);
+            }
+
+            string line = JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["type"] = "result",
+                ["subtype"] = "success",
+                ["is_error"] = false,
+                ["usage"] = new Dictionary<string, long> { ["input_tokens"] = 100, ["output_tokens"] = 20 },
+                ["total_cost_usd"] = 0.01,
+                ["num_turns"] = 4,
+                ["result"] = "Recommendation given.",
+            });
+            await File.WriteAllTextAsync(
+                RunPaths.SessionStreamFile(request.RunDirectory, request.SessionArtifactName!), line + "\n", cancellationToken);
+        }
+    }
+
     /// <summary>
     /// A task finished with its pull request open and its run awaiting review, with no worktree and no
     /// repository behind either: the poll only ever reads GitHub through the scripted inspector.
@@ -236,7 +662,7 @@ public sealed class FeedbackGateEngineTests(PostgresFixture postgres) : IClassFi
         session.Events.StartStream<RunAggregate>(claimed.RunId,
             new RunDispatched(
                 claimed.RunId, taskId, node.NodeId, node.OwnerId, claimed.LeaseGeneration, DomainId.New(),
-                worktree, "task/limiter", ExecutorMode.Subscription, Now),
+                worktree, "task/limiter", ExecutorMode.Subscription, Now, RunDirectory: RunDirectoryOf(claimed.RunId)),
             new AgentSessionCompleted(claimed.RunId, Now),
             new VerificationPassed(claimed.RunId, Now),
             new PullRequestOpened(claimed.RunId, PullRequestUrl, 7, Now));
@@ -249,7 +675,12 @@ public sealed class FeedbackGateEngineTests(PostgresFixture postgres) : IClassFi
         return (taskId, claimed.RunId, node);
     }
 
-    private CloseoutEngine NewEngine(NodeContext node, FakeInspector inspector, long[]? roster, Guid taskId)
+    /// <summary>Where a seeded run's files land, under the temp directory so no test writes into the machine's own home.</summary>
+    private static string RunDirectoryOf(Guid runId) =>
+        Path.Combine(Path.GetTempPath(), $"hall9k-feedback-gate-run-{runId:N}");
+
+    private CloseoutEngine NewEngine(
+        NodeContext node, FakeInspector inspector, long[]? roster, Guid taskId, FeedbackEvaluators? evaluators = null)
     {
         EnrolledNodeSnapshots snapshots = new();
         if (roster is not null)
@@ -271,7 +702,8 @@ public sealed class FeedbackGateEngineTests(PostgresFixture postgres) : IClassFi
                 ChecksRegistrationSettleWindow = TimeSpan.FromMinutes(15),
             }),
             NullLogger<CloseoutEngine>.Instance,
-            enrolledNodes: snapshots);
+            enrolledNodes: snapshots,
+            feedbackEvaluators: evaluators);
     }
 
     private Guid ProjectOf(Guid taskId)
