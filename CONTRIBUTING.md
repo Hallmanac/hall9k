@@ -46,8 +46,9 @@ Signed-off-by: Your Name <you@example.com>
 
 The sign-off certifies that you wrote the change, or otherwise have the right to submit it, under
 the project's license. The full text is at [developercertificate.org](https://developercertificate.org).
-A check on every pull request fails until each commit is signed off. To fix a missing sign-off on
-your last commit, run `git commit --amend -s` and force-push your branch.
+No automated check enforces this, so the maintainer looks for the sign-off during review and will
+not merge a pull request with an unsigned commit. To fix a missing sign-off on your last commit,
+run `git commit --amend -s` and force-push your branch.
 
 Commit subjects start with a type and describe the change as a full sentence in the imperative:
 `fix: keep a lone carriage return from becoming a line break`. The types in use are `feat`, `fix`,

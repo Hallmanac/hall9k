@@ -16,8 +16,9 @@ sweep that is on by default for every project cannot resolve a repository to wat
 a remote before registering, or register with `--repo` only to explore the CLI locally, not to
 run a task through (see [Register a
 project](#register-a-project-only-with-the-users-own-repository) below). On a public
-repository, a pull request or mention from someone who is not a member of your project never
-starts an agent on its own; it waits for you.
+repository, a pull request or mention from someone who is not a member of your project does not
+start an agent on its own by default; it waits for you (`h9k project set <project>
+--review-requires-membership off` removes that hold).
 
 You write a piece of work down, publish it, and queue it. A daemon on your own machine takes it
 from there:
