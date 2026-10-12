@@ -90,7 +90,8 @@ public sealed class NonMemberFeedbackPaneTests
         };
 
         Plain(NonMemberFeedbackPane.ComposeLine("a1af8b15", "x", assessed))
-            .Should().Contain("evaluator recommends fix; read the assessment at /run/assessment-1.md");
+            .Should().Contain("evaluator recommends fix; read the assessment at /run/assessment-1.md")
+            .And.NotContain(StrangersWords);
         Plain(NonMemberFeedbackPane.ComposeLine("a1af8b15", "x", ThreadItem())).Should().NotContain("assessment");
     }
 
