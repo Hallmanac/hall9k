@@ -1293,6 +1293,37 @@ public sealed class EventReplicationInbox(
             }
         }
 
+        // A holder release that names a node other than the task's current holder is a late one: the
+        // releasing node gave the task back, another node has claimed it since, and the release only
+        // now replicated here. TaskHolderReleased carries no node id and Apply clears whatever
+        // HolderNodeId holds, so appending it would wipe the new holder's claim, and the new holder's
+        // closeout (which releases only when HolderNodeId is its own) would then leave the ledger
+        // record naming it for a finished task. Every release site appends only as the holder, so the
+        // origin node is who the release was for. Origin incident (2026-10-12): d6c9e897 and 149a9acb.
+        if (streamExists && eventType == typeof(TaskHolderReleased))
+        {
+            TaskAggregate? releasedTask =
+                await session.Events.AggregateStreamAsync<TaskAggregate>(effectiveStreamId, token: cancellationToken);
+            if (IsLateHolderRelease(releasedTask, record.OriginNodeId))
+            {
+                logger?.LogInformation(
+                    "Replicated holder release {OriginEventId} (origin {OriginNodeId} sequence {OriginSequence}) "
+                    + "reached task {TaskId} after node {HolderNodeId} claimed it — dropped, the current holder stays",
+                    record.OriginEventId, record.OriginNodeId, record.OriginSequence, effectiveStreamId,
+                    releasedTask?.HolderNodeId);
+                session.Store(new ReplicatedEventRecord
+                {
+                    Id = record.OriginEventId,
+                    StreamId = effectiveStreamId,
+                    ProjectId = projectId,
+                    AppliedAt = now,
+                    Applied = false,
+                });
+                await session.SaveChangesAsync(cancellationToken);
+                return 0;
+            }
+        }
+
         // A record for a stream this read already tried, and failed, to START
         // (streamsThatFailedToStartThisRead's own doc), or one a PAST read already tried and
         // failed to start — the identical fact, resolved before this read began and found here as
@@ -1976,6 +2007,14 @@ public sealed class EventReplicationInbox(
         typeof(TaskRevised),
         typeof(TaskAbandoned),
     };
+
+    /// <summary>
+    /// Whether a <see cref="TaskHolderReleased"/> from <paramref name="originNodeId"/> reached a task
+    /// that another node now holds. A task with no holder has nothing for the release to wipe, so it
+    /// applies as ever; so does one from the node the holder names.
+    /// </summary>
+    internal static bool IsLateHolderRelease(TaskAggregate? task, Guid originNodeId) =>
+        task?.HolderNodeId is { } holderNodeId && holderNodeId != originNodeId;
 
     /// <summary>
     /// The pure verdict behind the Task/Run act gate (idea 6be68ee2, trust-ledger finding 5): a
