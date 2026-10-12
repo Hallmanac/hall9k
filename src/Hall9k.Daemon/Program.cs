@@ -269,6 +269,7 @@ builder.Services.AddSingleton<RemoteStackedParentSweep>();
 builder.Services.AddSingleton<IReviewConversationReader>(services =>
     new GitHubReviewThreads(services.GetRequiredService<ProcessRunner>()));
 builder.Services.AddSingleton<PrReviewFollowThroughEngine>();
+builder.Services.AddSingleton<FeedbackEvaluators>();
 builder.Services.AddSingleton<CloseoutEngine>();
 builder.Services.AddSingleton<PullRequestReviewDuplicateConvergence>();
 builder.Services.AddSingleton<EnrolledNodeSnapshots>();

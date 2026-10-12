@@ -100,7 +100,8 @@ public sealed class CloseoutEngine(
     IOptions<DaemonOptions> options,
     ILogger<CloseoutEngine> logger,
     ILedger? ledger = null,
-    EnrolledNodeSnapshots? enrolledNodes = null)
+    EnrolledNodeSnapshots? enrolledNodes = null,
+    FeedbackEvaluators? feedbackEvaluators = null)
 {
     private readonly DaemonOptions _options = options.Value;
 
@@ -977,6 +978,23 @@ public sealed class CloseoutEngine(
 
         (FeedbackGateOutcome feedbackGate, long fenceVersion) = gated.Value;
         snapshot = feedbackGate.Snapshot;
+
+        // The read-only evaluator for held feedback (task: before the owner decides on a non-member's
+        // review feedback, an evaluator session assesses it against the task's intent). Right after
+        // the gate, in the same poll the item is raised, and before any lap below can supersede the
+        // run: it dispatches in the background, so nothing here waits on it, and the owner's go and
+        // decline are read by the polls to come whether or not it has finished.
+        if (feedbackEvaluators is not null)
+        {
+            long? evaluated = await feedbackEvaluators.ConsiderAsync(
+                session, task, project, run, feedbackGate.Raise, feedbackGate.Withdraw, fenceVersion, now, cancellationToken);
+            if (evaluated is null)
+            {
+                return InspectionOutcome.Inspected;
+            }
+
+            fenceVersion = evaluated.Value;
+        }
 
         // Checked ahead of the conflict read, and therefore ahead of checks and threads too
         // (task: a stacked pull-request edge exists as an explicit opt-in dependency). A stacked

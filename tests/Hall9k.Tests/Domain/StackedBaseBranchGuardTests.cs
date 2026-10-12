@@ -163,6 +163,15 @@ public sealed class StackedBaseBranchGuardTests
                 continue;
             }
 
+            // The feedback evaluator's own prompt (FeedbackEvaluatorPromptBuilder) is the identical name
+            // coincidence: it assesses one piece of a stranger's review feedback against the task's card,
+            // read-only, and carries neither the checkpoint/recompose protocol nor the self-review phase.
+            // There is no base for it to be handed.
+            if (lines[i].Contains("FeedbackEvaluatorPromptBuilder.Build(", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             // Long argument lists here, so a wider window than the git-call scan's three lines —
             // baseBranch sits last by convention (CancellationToken aside, prompts take none).
             string window = string.Join(' ', lines.Skip(i).Take(10));

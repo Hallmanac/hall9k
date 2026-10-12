@@ -185,6 +185,29 @@ public sealed class DaemonOptions
     public int PrReviewMentionFollowUpMaxTurns { get; set; } = 40;
 
     /// <summary>
+    /// The LIFETIME cap on how many read-only evaluator sessions closeout will ever dispatch for one
+    /// task's non-member feedback, the same shape as <see cref="AutoPrReviewMentionFollowUpCap"/>. The
+    /// evaluator is the first session a stranger can trigger by opening a review or a thread, so once
+    /// the interaction limit lifts, fifty threads must not mean fifty sessions billed to the owner.
+    /// Decided over the task's own stream (<c>TaskAggregate.NonMemberEvaluatorsDispatched</c>), so a
+    /// restart cannot reset it. Feedback past the cap still raises its needs-you item, which says so.
+    /// </summary>
+    public int NonMemberFeedbackEvaluatorCap { get; set; } = 3;
+
+    /// <summary>
+    /// The turn cap a feedback evaluator is spawned with, passed through as <c>claude -p --max-turns</c>
+    /// the way <see cref="PrReviewMentionFollowUpMaxTurns"/> bounds a mention follow-up: it reads one
+    /// piece of feedback, the task's card and parts of the diff, and writes one file.
+    /// </summary>
+    public int NonMemberFeedbackEvaluatorMaxTurns { get; set; } = 30;
+
+    /// <summary>
+    /// How long a feedback evaluator may run before the daemon terminates it and records the
+    /// evaluation as failed. Only the assessment is waiting on it: the owner's go and decline never are.
+    /// </summary>
+    public TimeSpan NonMemberFeedbackEvaluatorTimeout { get; set; } = TimeSpan.FromMinutes(20);
+
+    /// <summary>
     /// The ceiling on how many pull requests in one repository auto-pr-review may mint a task for
     /// within a rolling hour (task 7ae690f5) — a flood-control backstop distinct from
     /// <see cref="AutoPrReviewMintHoldSeconds"/>'s own per-request fleet coordination. Decided as a
