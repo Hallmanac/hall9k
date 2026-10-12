@@ -985,6 +985,19 @@ Per poll, in priority order:
   roster, a poll decides nothing about human feedback, holds the merge, and asks again (the daemon
   log says so once per task); a private repository, or an explicit `off`, runs exactly as before. Mixed feedback runs the member's lap
   with only the member's feedback, and the stranger's item is raised in the same poll.
+  Before you decide, a **read-only evaluator** assesses each item against the task's objective and
+  acceptance criteria. It is one background session per item, never per poll and never again after
+  a daemon restart, run under the pr-review permission file (never with permissions skipped) with a
+  turn cap and a timeout, and allowed one write beyond that file's usual ones: its own assessment
+  file in the run directory. It never posts, pushes or files an idea or a task, and its prompt fences
+  the feedback as data. It writes whether the change serves the task's intent, what it would change
+  and a recommendation of `fix`, `decline` or `ask`. `h9k status` and the feed show only that word
+  and the path of the assessment file, never the assessment's prose, because the orchestrator window
+  reads both with permissions bypassed; you read the file yourself. A task dispatches at most
+  `Hall9k__NonMemberFeedbackEvaluatorCap` (3) evaluators in its lifetime; feedback past the cap still
+  raises its item, which says no evaluator ran. An evaluator that fails, times out, writes nothing or
+  writes a recommendation outside the three words leaves the item in place saying so. Your go and
+  decline never wait for it, and an assessment that lands after you acted changes nothing.
 - **A human reviewer's changes-requested review on the current head.** Checked ahead of the
   thread branch below, because a changes-requested review ordinarily opens threads too and the
   narrower fact is the one that matters. The review's own body and every inline comment are

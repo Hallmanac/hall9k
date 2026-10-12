@@ -37,7 +37,8 @@ own changes-requested review stays on the automated thread path, disputing and r
 human in the loop. On a public repository, and wherever the membership gate is on, a changes-requested
 review or an unresolved thread from an account outside the project's roster never reaches a lap at
 all: it raises one needs-you item and waits for the owner's `h9k pr feedback --go` or `--decline`,
-holding a pre-approved merge meanwhile (see `docs/concepts.md`). A branch
+holding a pre-approved merge meanwhile, with a capped, read-only evaluator's recommendation (`fix`,
+`decline` or `ask`) and the path to its assessment beside the item (see `docs/concepts.md`). A branch
 obstructed only by a conflict with its own base gets a mechanical fix tried first: a plain fetch +
 rebase + force-push in the run's retained worktree, no agent session and no local gates, since
 GitHub's own CI on the push is treated as the authoritative gate here — the follow-up run only
