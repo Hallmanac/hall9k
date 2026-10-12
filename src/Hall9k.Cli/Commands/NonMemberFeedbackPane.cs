@@ -33,14 +33,27 @@ internal static class NonMemberFeedbackPane
             + $"[dim]Decide with:[/] h9k pr feedback {shortId.EscapeMarkup()} \"{key}\" --go [dim]or[/] --decline";
     }
 
-    /// <summary>Who, what kind, and where, as markup-safe text with no word of the feedback itself.</summary>
+    /// <summary>
+    /// Who, what kind, and where, as markup-safe text with no word of the feedback itself, then what
+    /// the evaluator made of it: only its recommendation word and the path of the assessment to read,
+    /// never a word of the assessment, since the orchestrator window reads this with permissions
+    /// bypassed. An evaluation that produced no assessment says so, and the item reads as it always has.
+    /// </summary>
     internal static string Describe(NonMemberFeedbackItem item)
     {
         string described =
             $"{item.Kind.Noun} from @{ExternalText.OneLineMarkup(item.Reviewer)} {ExternalText.OneLineMarkup(item.Url)}";
-        return item.AssessmentUrl.IsNotBlank()
-            ? $"{described} [dim](assessment: {ExternalText.OneLineMarkup(item.AssessmentUrl)})[/]"
-            : described;
+        FeedbackEvaluation evaluation = item.EvaluationState;
+        string? evaluator = evaluation.Status.Value switch
+        {
+            "Running" => "an evaluator is assessing it",
+            "Assessed" when evaluation.Recommendation is { IsRecognized: true } recommendation =>
+                $"evaluator recommends {recommendation.Value}; read the assessment at {ExternalText.OneLineMarkup(evaluation.AssessmentPath ?? "")}",
+            "Failed" => $"no assessment: {ExternalText.OneLineMarkup(evaluation.Reason ?? "the evaluator did not produce one")}",
+            "PastCap" => $"no evaluator ran: {ExternalText.OneLineMarkup(evaluation.Reason ?? "the task is past its evaluator allowance")}",
+            _ => null,
+        };
+        return evaluator is null ? described : $"{described} [dim]({evaluator})[/]";
     }
 
     /// <summary>

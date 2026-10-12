@@ -126,9 +126,10 @@ public sealed record NonMemberFeedbackStatus
 /// covers. A comment added afterwards, even by the same account, was never shown to the owner, and one
 /// whose text has changed since is no longer the text approved. Null for a review.
 /// </param>
-/// <param name="AssessmentUrl">
-/// The link to an evaluator's assessment of the feedback, shown beside the item so the owner can
-/// read it before deciding. Always null today: the seam a later read-only evaluator fills.
+/// <param name="Evaluation">
+/// Where the read-only evaluator's assessment of this feedback stands: not started, running, assessed
+/// (with its recommendation and the file to read), failed, or never dispatched because the task is past
+/// its evaluator cap. Advisory only: the owner's go and decline work the same in every state.
 /// </param>
 public sealed record NonMemberFeedbackItem(
     string Key,
@@ -139,5 +140,172 @@ public sealed record NonMemberFeedbackItem(
     NonMemberFeedbackStatus Status,
     ChangesRequestedReview? Review = null,
     bool Dispatched = false,
-    string? AssessmentUrl = null,
-    IReadOnlyList<ThreadCommentCopy>? CommentCopies = null);
+    FeedbackEvaluation? Evaluation = null,
+    IReadOnlyList<ThreadCommentCopy>? CommentCopies = null)
+{
+    /// <summary>The evaluator's state for this item, never null.</summary>
+    [JsonIgnore]
+    public FeedbackEvaluation EvaluationState => Evaluation ?? FeedbackEvaluation.None;
+
+    /// <summary>
+    /// The item once an evaluator is dispatched for it. An item that already has an evaluation (one
+    /// dispatched, or skipped past the cap) keeps it, so a replayed or doubled event cannot start a second.
+    /// </summary>
+    public NonMemberFeedbackItem WithEvaluatorDispatched(Guid sessionId, string assessmentPath) =>
+        EvaluationState.Status == FeedbackEvaluationStatus.Unknown
+            ? this with { Evaluation = new FeedbackEvaluation(FeedbackEvaluationStatus.Running, sessionId, assessmentPath) }
+            : this;
+
+    /// <summary>
+    /// The item once an evaluation outcome is recorded. A session's outcome lands only on the item that
+    /// session was dispatched for and only while it is running, so an outcome that arrives for an
+    /// earlier instance of a re-raised item, or twice, changes nothing; a skip lands only on an item no
+    /// evaluator has been considered for.
+    /// </summary>
+    public NonMemberFeedbackItem WithEvaluationRecorded(
+        FeedbackEvaluationStatus outcome, Guid? sessionId, FeedbackRecommendation? recommendation, string? reason)
+    {
+        FeedbackEvaluation current = EvaluationState;
+        bool lands = outcome == FeedbackEvaluationStatus.PastCap
+            ? current.Status == FeedbackEvaluationStatus.Unknown
+            : current.Status == FeedbackEvaluationStatus.Running && current.SessionId == sessionId;
+        return lands && outcome != FeedbackEvaluationStatus.Running && outcome != FeedbackEvaluationStatus.Unknown
+            ? this with
+            {
+                Evaluation = current with
+                {
+                    Status = outcome,
+                    Recommendation = outcome == FeedbackEvaluationStatus.Assessed ? recommendation : null,
+                    Reason = outcome == FeedbackEvaluationStatus.Assessed ? null : reason,
+                },
+            }
+            : this;
+    }
+}
+
+/// <summary>Where an evaluator's assessment of one piece of feedback stands.</summary>
+[JsonConverter(typeof(FeedbackEvaluationStatusJsonConverter))]
+public sealed record FeedbackEvaluationStatus
+{
+    /// <summary>No evaluator has been considered for the item yet; the next closeout poll decides.</summary>
+    public static readonly FeedbackEvaluationStatus Unknown = new("");
+
+    /// <summary>An evaluator was dispatched and has not recorded an outcome.</summary>
+    public static readonly FeedbackEvaluationStatus Running = new("Running");
+
+    /// <summary>The evaluator wrote an assessment with a recommendation of fix, decline or ask.</summary>
+    public static readonly FeedbackEvaluationStatus Assessed = new("Assessed");
+
+    /// <summary>The evaluator failed, timed out, wrote nothing, or wrote a recommendation outside fix, decline and ask.</summary>
+    public static readonly FeedbackEvaluationStatus Failed = new("Failed");
+
+    /// <summary>The task had already dispatched its lifetime allowance of evaluators, so none ran for this item.</summary>
+    public static readonly FeedbackEvaluationStatus PastCap = new("PastCap");
+
+    public string Value { get; }
+
+    private FeedbackEvaluationStatus(string value) => Value = value;
+
+    public static implicit operator string(FeedbackEvaluationStatus? value) => value?.Value ?? string.Empty;
+
+    public static implicit operator FeedbackEvaluationStatus(string? value) => value switch
+    {
+        "Running" => Running,
+        "Assessed" => Assessed,
+        "Failed" => Failed,
+        "PastCap" => PastCap,
+        _ => Unknown,
+    };
+
+    public bool Equals(FeedbackEvaluationStatus? other) => other is not null && Value == other.Value;
+
+    public override int GetHashCode() => Value.GetHashCode();
+
+    public override string ToString() => Value;
+
+    private sealed class FeedbackEvaluationStatusJsonConverter : JsonConverter<FeedbackEvaluationStatus>
+    {
+        public override FeedbackEvaluationStatus Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            reader.GetString();
+
+        public override void Write(Utf8JsonWriter writer, FeedbackEvaluationStatus value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(value.Value);
+    }
+}
+
+/// <summary>
+/// What an evaluator recommends the owner do with a piece of feedback. The only word of an assessment
+/// that ever reaches <c>h9k status</c> or the orchestrator feed, so it is a closed vocabulary parsed
+/// from the file's own first line and never free text.
+/// </summary>
+[JsonConverter(typeof(FeedbackRecommendationJsonConverter))]
+public sealed record FeedbackRecommendation
+{
+    /// <summary>The requested change serves the task's intent; the owner's go would dispatch a fix lap.</summary>
+    public static readonly FeedbackRecommendation Fix = new("fix");
+
+    /// <summary>The requested change misses the task's intent; the owner would decline it.</summary>
+    public static readonly FeedbackRecommendation Decline = new("decline");
+
+    /// <summary>The feedback cannot be judged without the owner or the reviewer saying more.</summary>
+    public static readonly FeedbackRecommendation Ask = new("ask");
+
+    /// <summary>No recommendation, or one outside the three words above.</summary>
+    public static readonly FeedbackRecommendation Unknown = new("");
+
+    public string Value { get; }
+
+    private FeedbackRecommendation(string value) => Value = value;
+
+    /// <summary>Whether this is one of the three words an assessment may recommend.</summary>
+    public bool IsRecognized => this != Unknown;
+
+    /// <summary>The recommendation a word names, matched exactly (ignoring case and surrounding space), or <see cref="Unknown"/>.</summary>
+    public static FeedbackRecommendation Parse(string? word) => word?.Trim().ToLowerInvariant() switch
+    {
+        "fix" => Fix,
+        "decline" => Decline,
+        "ask" => Ask,
+        _ => Unknown,
+    };
+
+    public static implicit operator string(FeedbackRecommendation? value) => value?.Value ?? string.Empty;
+
+    public static implicit operator FeedbackRecommendation(string? value) => Parse(value);
+
+    public bool Equals(FeedbackRecommendation? other) => other is not null && Value == other.Value;
+
+    public override int GetHashCode() => Value.GetHashCode();
+
+    public override string ToString() => Value;
+
+    private sealed class FeedbackRecommendationJsonConverter : JsonConverter<FeedbackRecommendation>
+    {
+        public override FeedbackRecommendation Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            reader.GetString();
+
+        public override void Write(Utf8JsonWriter writer, FeedbackRecommendation value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(value.Value);
+    }
+}
+
+/// <summary>
+/// One item's evaluator state. It carries a recommendation word, the path of the file the owner reads
+/// the assessment in, and a daemon-composed reason when no assessment exists; it never carries a word
+/// of the assessment itself, because the orchestrator window reads what renders this with permissions
+/// bypassed.
+/// </summary>
+/// <param name="Status">Where the evaluation stands.</param>
+/// <param name="SessionId">The evaluator session dispatched for this item, which ties its outcome to the item instance it was dispatched for.</param>
+/// <param name="AssessmentPath">The file the evaluator was asked to write, set once it is dispatched.</param>
+/// <param name="Recommendation">The recommendation word, once assessed.</param>
+/// <param name="Reason">Why there is no assessment, in the daemon's own words, for a failed or skipped evaluation.</param>
+public sealed record FeedbackEvaluation(
+    FeedbackEvaluationStatus Status,
+    Guid? SessionId = null,
+    string? AssessmentPath = null,
+    FeedbackRecommendation? Recommendation = null,
+    string? Reason = null)
+{
+    public static readonly FeedbackEvaluation None = new(FeedbackEvaluationStatus.Unknown);
+}

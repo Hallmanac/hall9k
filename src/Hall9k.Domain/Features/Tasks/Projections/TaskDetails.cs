@@ -1499,6 +1499,26 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.HasUndecidedNonMemberFeedback = true;
     }
 
+    public void Apply(IEvent<NonMemberFeedbackEvaluatorDispatched> @event, TaskDetails view)
+    {
+        int at = view.NonMemberFeedback.FindIndex(item => item.Key == @event.Data.FeedbackKey);
+        if (at >= 0)
+        {
+            view.NonMemberFeedback[at] =
+                view.NonMemberFeedback[at].WithEvaluatorDispatched(@event.Data.SessionId, @event.Data.AssessmentPath);
+        }
+    }
+
+    public void Apply(IEvent<NonMemberFeedbackEvaluationRecorded> @event, TaskDetails view)
+    {
+        int at = view.NonMemberFeedback.FindIndex(item => item.Key == @event.Data.FeedbackKey);
+        if (at >= 0)
+        {
+            view.NonMemberFeedback[at] = view.NonMemberFeedback[at].WithEvaluationRecorded(
+                @event.Data.Outcome, @event.Data.SessionId, @event.Data.Recommendation, @event.Data.Reason);
+        }
+    }
+
     public void Apply(IEvent<NonMemberFeedbackAdmitted> @event, TaskDetails view) =>
         SetNonMemberFeedbackStatus(view, @event.Data.FeedbackKey, NonMemberFeedbackStatus.Admitted);
 

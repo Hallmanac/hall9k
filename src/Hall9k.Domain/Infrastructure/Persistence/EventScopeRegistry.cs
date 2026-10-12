@@ -56,6 +56,8 @@ public static class EventScopeRegistry
         // dispatches a lap): a team-visible fact about the task, so a fleet node shows the same item.
         [typeof(NonMemberFeedbackAdmitted)] = EventScope.ProjectScoped,
         [typeof(NonMemberFeedbackDeclined)] = EventScope.ProjectScoped,
+        [typeof(NonMemberFeedbackEvaluationRecorded)] = EventScope.ProjectScoped,
+        [typeof(NonMemberFeedbackEvaluatorDispatched)] = EventScope.ProjectScoped,
         [typeof(NonMemberFeedbackHeld)] = EventScope.ProjectScoped,
         [typeof(NonMemberFeedbackWithdrawn)] = EventScope.ProjectScoped,
         [typeof(PublicationTokensRecorded)] = EventScope.ProjectScoped,

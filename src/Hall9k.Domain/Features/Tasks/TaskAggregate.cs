@@ -546,6 +546,14 @@ public sealed class TaskAggregate
     public IReadOnlyDictionary<string, NonMemberFeedbackItem> NonMemberFeedback => _nonMemberFeedback;
 
     /// <summary>
+    /// How many read-only feedback evaluators this task has ever dispatched, across every item and
+    /// every re-raise of one. Closeout compares it with the daemon's per-task allowance, so a stranger
+    /// opening fifty threads buys at most that many billed sessions; it is derived from the stream, so
+    /// a restart cannot reset it.
+    /// </summary>
+    public int NonMemberEvaluatorsDispatched { get; private set; }
+
+    /// <summary>
     /// What the review-feedback lap may read of the pull request's unresolved threads — see
     /// <see cref="TaskReopened.ReviewReadScope"/>'s own doc. Set by the latest reopen and kept across
     /// the lap's own completion, the way <see cref="KnownHumanReviewThreads"/> is: a manual
@@ -2143,6 +2151,24 @@ public sealed class TaskAggregate
         _nonMemberFeedback[@event.FeedbackKey] = new NonMemberFeedbackItem(
             @event.FeedbackKey, @event.Kind, @event.Reviewer, @event.Url, @event.ObservedAt,
             NonMemberFeedbackStatus.Undecided, @event.Review, CommentCopies: @event.CommentCopies);
+    }
+
+    public void Apply(NonMemberFeedbackEvaluatorDispatched @event)
+    {
+        NonMemberEvaluatorsDispatched++;
+        if (_nonMemberFeedback.TryGetValue(@event.FeedbackKey, out NonMemberFeedbackItem? item))
+        {
+            _nonMemberFeedback[@event.FeedbackKey] = item.WithEvaluatorDispatched(@event.SessionId, @event.AssessmentPath);
+        }
+    }
+
+    public void Apply(NonMemberFeedbackEvaluationRecorded @event)
+    {
+        if (_nonMemberFeedback.TryGetValue(@event.FeedbackKey, out NonMemberFeedbackItem? item))
+        {
+            _nonMemberFeedback[@event.FeedbackKey] =
+                item.WithEvaluationRecorded(@event.Outcome, @event.SessionId, @event.Recommendation, @event.Reason);
+        }
     }
 
     public void Apply(NonMemberFeedbackAdmitted @event) =>
