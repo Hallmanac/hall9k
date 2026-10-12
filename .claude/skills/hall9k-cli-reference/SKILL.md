@@ -218,11 +218,13 @@ Release — clearing the holder back to empty by the same conditional write, wit
 `TaskHolderReleased` event on the task's own stream — happens at the task's true completion (the
 merge/closeout that actually concludes it, not the earlier `TaskCompleted` that only opens the
 pull request), at `h9k task abandon`, at the sweep that finds a task whose holder is still
-this node but whose lease and run are both gone (lease expiry), and at an explicit
-`h9k task release <id>` on a task this node still names itself the holder of but that is no
-longer `TaskState.Claimed` at all — the window a Done or Blocked task with an open pull request
-deliberately survives into, since the holder is released only at true completion, abandonment, or
-lease expiry, never at the earlier `TaskCompleted`. That release never touches the
+this node but whose lease and run are both gone (lease expiry), at the same sweep when the task
+is Queued and placed on another node and this node has no lease or live run for it (a task moved
+off this node after a failure, which the placed node then claims on its own next sweep), and at an
+explicit `h9k task release <id>` on a task this node still names itself the holder of but that is
+not `TaskState.Claimed`, in any other state. Done or Blocked with an open pull request is the
+ordinary window, since the holder is released only at true completion, abandonment, or lease
+expiry, never at the earlier `TaskCompleted`. That release never touches the
 interactive-claim machinery `h9k task release` otherwise runs (a task in that window was never an
 interactive claim to begin with — `TaskAggregate.IsInteractiveClaim` was never set), and never
 reaches a *foreign* holder: a task this node does not hold refuses exactly as it always has. A

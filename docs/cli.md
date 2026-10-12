@@ -949,7 +949,7 @@ also appear elsewhere on this page stays where it is.
 | `h9k task handoff <id> --text "..."` | Leaves a note for whoever holds the task next, from the current holder only. |
 | `h9k task handoff <id> --file <path>` | Reads that note from a file instead of the command line. |
 | `h9k task handoff <id> --to <owner>` | Sends the nudge that a note was left to one owner's fleet, by root fingerprint, instead of to the whole project. |
-| `h9k task release <id>` | Beyond its ordinary use, releases just the ledger holder of a task this node still names itself holder of but no longer claims, leaving the task's own state as it was. |
+| `h9k task release <id>` | Beyond its ordinary use, releases just the ledger holder of a task this node still names itself holder of but does not have claimed (any state but Claimed), leaving the task's own state as it was. The dispatch sweep does this by itself for a Queued task placed on another node. |
 | `h9k task list --state HeldElsewhere` | Lists the claimed tasks that another node holds, and `--state attention-heldelsewhere` selects the same group the status pane counts. |
 | `h9k project set <project> --take-policy auto\|ask` | Chooses whether this project's holder answers a cooperative take request itself (`auto`, the default) or parks it for its person (`ask`). |
 | `h9k project set <project> --take-timeout <minutes>\|default` | Sets how long a take request waits for an answer before `--force` is named as the way on, thirty minutes by default. |
