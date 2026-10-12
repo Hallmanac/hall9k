@@ -86,6 +86,7 @@ public static class ClaimRequestEngine
     {
         StreamState fence = await FetchFenceAsync(session, taskId, cancellationToken);
         TaskAggregate task = await FetchAggregateAsync(session, taskId, fence, cancellationToken);
+        RequireTasksOwnProject(task, project, taskId);
 
         // Checked before anything is appended (self-review, this branch): a claim-request envelope
         // is addressed to whichever node the requester believed held the task at send time, and the
@@ -154,6 +155,7 @@ public static class ClaimRequestEngine
     {
         StreamState fence = await FetchFenceAsync(session, taskId, cancellationToken);
         TaskAggregate task = await FetchAggregateAsync(session, taskId, fence, cancellationToken);
+        RequireTasksOwnProject(task, project, taskId);
 
         if (task.HolderNodeId != myNodeId)
         {
@@ -294,6 +296,7 @@ public static class ClaimRequestEngine
     {
         StreamState fence = await FetchFenceAsync(session, taskId, cancellationToken);
         TaskAggregate task = await FetchAggregateAsync(session, taskId, fence, cancellationToken);
+        RequireTasksOwnProject(task, project, taskId);
 
         if (task.HolderNodeId != myNodeId)
         {
@@ -373,6 +376,22 @@ public static class ClaimRequestEngine
                 RunState.Dispatched.Value, RunState.Running.Value, RunState.Verifying.Value, RunState.UnderReview.Value))
             .OrderByDescending(run => run.DispatchedAt)
             .FirstOrDefaultAsync(cancellationToken);
+
+    /// <summary>
+    /// A claim request is acted on under the task's own project's take policy, repository and
+    /// outbox, never another project's: a request that arrived through project A's message naming
+    /// a task of project B would otherwise append B-scoped events and release B's ledger holder
+    /// under A's settings. Runs before any write.
+    /// </summary>
+    private static void RequireTasksOwnProject(TaskAggregate task, ProjectDetails project, Guid taskId)
+    {
+        if (task.ProjectId != project.Id)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} does not belong to project {project.Id} — a claim request is only acted on "
+                + "under the project the task itself belongs to, nothing recorded.");
+        }
+    }
 
     private static async Task<StreamState> FetchFenceAsync(IDocumentSession session, Guid taskId, CancellationToken cancellationToken) =>
         await session.Events.FetchStreamStateAsync(taskId, cancellationToken)

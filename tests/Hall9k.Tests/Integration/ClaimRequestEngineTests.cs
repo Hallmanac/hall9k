@@ -10,6 +10,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -17,6 +18,7 @@ using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
+using JasperFx.Events;
 using Marten;
 using Marten.Events;
 using Xunit;
@@ -47,6 +49,79 @@ public sealed class ClaimRequestEngineTests : IClassFixture<PostgresFixture>, IA
     {
         _scopedHome.Dispose();
         return Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task Same_project_request_records_the_take_request_before_it_is_answered()
+    {
+        (ProjectDetails project, Guid taskId, Guid myNodeId, BootstrapContext context) =
+            await SeedHeldTaskAsync(TakePolicy.Ask, ClaimGate.Off, externalReference: null);
+        FakeLedger ledger = new();
+        await SeedRecordAsync(ledger, taskId, new TaskRecordHolder("my-fingerprint", myNodeId, "MY-NODE", Now.AddHours(-2)));
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        (LedgerCommitter committer, LedgerSigningKey signingKey, string ownerFingerprint) =
+            await TaskRecordPublication.ResolveIdentityAsync(session, context, CancellationToken.None);
+        ClaimEnvelopeCodec.ClaimRequestRecord request = new(
+            taskId, DomainId.New(), DomainId.New(), "requester-fingerprint", "Picking this back up.", null);
+
+        await ClaimRequestEngine.ReceiveRequestAsync(
+            _postgres.Store, session, project, taskId, request, ledger, committer, signingKey, take: null, myNodeId,
+            ownerFingerprint, Now, CancellationToken.None);
+
+        IReadOnlyList<IEvent> events = await session.Events.FetchStreamAsync(taskId, token: CancellationToken.None);
+        events.Should().ContainSingle(@event => @event.Data is TaskTakeRequested);
+    }
+
+    [Fact]
+    public async Task A_request_under_another_projects_message_is_refused_with_nothing_recorded()
+    {
+        (ProjectDetails project, Guid taskId, Guid myNodeId, BootstrapContext context) =
+            await SeedHeldTaskAsync(TakePolicy.Auto, ClaimGate.Off, externalReference: null);
+        ProjectDetails otherProject = new()
+        {
+            Id = DomainId.New(),
+            Name = "other-project",
+            RepositoryPath = RepositoryPath,
+            BaseBranch = "main",
+            ClaimGate = ClaimGate.Off,
+            TakePolicy = TakePolicy.Auto,
+            BranchNameTemplate = BranchNameTemplate.Default,
+        };
+        FakeLedger ledger = new();
+        await SeedRecordAsync(ledger, taskId, new TaskRecordHolder("my-fingerprint", myNodeId, "MY-NODE", Now.AddHours(-2)));
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        (LedgerCommitter committer, LedgerSigningKey signingKey, string ownerFingerprint) =
+            await TaskRecordPublication.ResolveIdentityAsync(session, context, CancellationToken.None);
+        Guid requesterNodeId = DomainId.New();
+        Guid requesterOwnerId = DomainId.New();
+        ClaimEnvelopeCodec.ClaimRequestRecord request = new(
+            taskId, requesterNodeId, requesterOwnerId, "requester-fingerprint", "Not my project's task.", null);
+        int writesBefore = ledger.Writes.Count;
+        long versionBefore = (await session.Events.FetchStreamStateAsync(taskId, CancellationToken.None))!.Version;
+
+        Func<Task> receive = () => ClaimRequestEngine.ReceiveRequestAsync(
+            _postgres.Store, session, otherProject, taskId, request, ledger, committer, signingKey, take: null,
+            myNodeId, ownerFingerprint, Now, CancellationToken.None);
+        Func<Task> grant = () => ClaimRequestEngine.GrantAsync(
+            _postgres.Store, session, otherProject, taskId, requesterNodeId, requesterOwnerId, null, ledger,
+            committer, signingKey, take: null, myNodeId, ownerFingerprint, Now, CancellationToken.None);
+        Func<Task> refuse = () => ClaimRequestEngine.RefuseAsync(
+            _postgres.Store, session, otherProject, taskId, requesterNodeId, requesterOwnerId, "no", myNodeId,
+            ownerFingerprint, Now, CancellationToken.None);
+
+        await receive.Should().ThrowAsync<DomainConflictException>().WithMessage("*does not belong to project*");
+        await grant.Should().ThrowAsync<DomainConflictException>().WithMessage("*does not belong to project*");
+        await refuse.Should().ThrowAsync<DomainConflictException>().WithMessage("*does not belong to project*");
+
+        ledger.Writes.Should().HaveCount(writesBefore, "no ledger holder is released under another project's repository");
+        StreamState after = (await session.Events.FetchStreamStateAsync(taskId, CancellationToken.None))!;
+        after.Version.Should().Be(versionBefore, "nothing is appended to the task's own stream");
+        TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: CancellationToken.None))!;
+        task.HolderNodeId.Should().Be(myNodeId);
+        (await session.Query<MessageDetails>().ToListAsync(CancellationToken.None)).Should().BeEmpty(
+            "no reply is queued to the requester");
     }
 
     [Fact]
