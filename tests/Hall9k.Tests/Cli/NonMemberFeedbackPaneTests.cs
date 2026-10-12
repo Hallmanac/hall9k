@@ -81,11 +81,16 @@ public sealed class NonMemberFeedbackPaneTests
     }
 
     [Fact]
-    public void An_assessment_link_appears_beside_the_item_when_one_exists()
+    public void An_assessments_recommendation_and_path_appear_beside_the_item_when_one_exists()
     {
-        NonMemberFeedbackItem assessed = ThreadItem() with { AssessmentUrl = "https://example.test/assessment/1" };
+        NonMemberFeedbackItem assessed = ThreadItem() with
+        {
+            Evaluation = new FeedbackEvaluation(
+                FeedbackEvaluationStatus.Assessed, DomainId.New(), "/run/assessment-1.md", FeedbackRecommendation.Fix),
+        };
 
-        Plain(NonMemberFeedbackPane.ComposeLine("a1af8b15", "x", assessed)).Should().Contain("assessment: https://example.test/assessment/1");
+        Plain(NonMemberFeedbackPane.ComposeLine("a1af8b15", "x", assessed))
+            .Should().Contain("evaluator recommends fix; read the assessment at /run/assessment-1.md");
         Plain(NonMemberFeedbackPane.ComposeLine("a1af8b15", "x", ThreadItem())).Should().NotContain("assessment");
     }
 

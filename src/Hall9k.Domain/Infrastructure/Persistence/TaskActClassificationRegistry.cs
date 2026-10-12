@@ -79,6 +79,11 @@ public static class TaskActClassificationRegistry
         [typeof(NonMemberFeedbackAdmitted)] = TaskActClassification.OwnerOnly,
         [typeof(NonMemberFeedbackDeclined)] = TaskActClassification.OwnerOnly,
         [typeof(NonMemberFeedbackHeld)] = TaskActClassification.MemberSafe,
+        // The evaluator's own dispatch and outcome are what the running node records about its own
+        // session, and the outcome names a file on that node's disk that the owner is then pointed at,
+        // so a Member-role sender that holds nothing must not be able to forge either.
+        [typeof(NonMemberFeedbackEvaluationRecorded)] = TaskActClassification.Conditional,
+        [typeof(NonMemberFeedbackEvaluatorDispatched)] = TaskActClassification.Conditional,
         [typeof(NonMemberFeedbackWithdrawn)] = TaskActClassification.MemberSafe,
 
         // The pull-request review pre-flight's own park (idea 6be68ee2, finding 1, phase one)
