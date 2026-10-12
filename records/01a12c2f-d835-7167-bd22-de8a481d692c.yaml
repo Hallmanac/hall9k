@@ -1,0 +1,19 @@
+hall9k-task-record: 1
+task-id: 01a12c2f-d835-7167-bd22-de8a481d692c
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#739
+objective: A stacked child whose parent merged and whose run's recorded fork point the pre-push rebase already moved onto main's tip is not reopened for a no-op stack-replay lap; closeout settles the stack and treats it as an ordinary delivered pull request
+criteria:
+  - In the ParentMergedAligned arm of CloseoutEngine.TryReplayStackedChildAsync, when the run's recorded fork point (BaseCommit) already equals the base tip the branch sits on (the observation's boundary commit), closeout appends the retarget record (calling the provider to retarget only if the PR's base still names the parent branch) and does not reopen the task, so the run no longer reads as stacked and the pull request reaches the merge bar with no StackReplay lap, no gate run, and no lap counted
+  - A child whose recorded fork point was not advanced keeps today's no-op StackReplay (the shape where a fix session rebased by hand or GitHub retargeted the PR), and a child whose branch does not contain main's tip keeps today's replay
+  - The new condition is unit tested without touching git, either through StackedParentWatch's optional gitProcessRunner fake seam or by extracting it into a pure decision tested directly (as StackedCheckpointPolicy is); the existing ParentMergedAligned tests in StackedChildTests still pass; no new test creates a branch, touches git, or calls GitHub
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/481d692c-a-stacked-child-whose-parent-m
+published: 2026-10-12 14:01:25Z
+context: |-
+  Observed 2026-10-11 on 040cd5ed (PR #728, stacked on d6c9e897, which merged as #726 at 12:29) and again at 20:57 on 0e866341 (PR #736). The child was claimed at 12:21 on its parent's branch; after the parent merged, the pre-push rebase at 13:40:52 moved it onto main's tip and moved the run's recorded fork point (h9kd.log line 24500: "this run's own recorded fork point moves to 6a3b000947"; line 25124 for edadf1f6 on 0e866341). The PR opened against main. At 13:43:18 closeout's ParentMergedAligned arm (CloseoutEngine.cs, about lines 3866 to 3986) read the observed PR base correctly (line 24521, already aimed at main), skipped the retarget write, and then dispatched its deliberate no-op StackReplay (line 24522), whose purpose is to move BaseCommit onto main's tip because the arm assumes only a dispatched run ever does. Here the pre-push rebase had already done it, so the lap was pure waste: PR #728 was MERGEABLE, CLEAN, green, and pre-approved, and the reopen held its merge for about 33 minutes of slot wait plus a host gate. The missing check is "has the fork point already moved", not which base was read. The "still names" wording in the reopen message is StackedParentWatch's detail text built from the run's recorded base (StackedParentWatch.cs, about lines 840 to 845); misleading, but only a message. Update the arm's doc comment and StackedParentVerdict.ParentMergedAligned's doc, which both claim only a dispatched run moves the fork point. Challenge verdict and code references: this task's journal.md. Walk note (Brian, 2026-10-12): this is the normal end of a stack, not a parallel task.
