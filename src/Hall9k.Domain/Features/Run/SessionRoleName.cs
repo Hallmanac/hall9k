@@ -102,6 +102,16 @@ public static class SessionRoleName
     public const string StackAssessment = "stack-assessment";
 
     /// <summary>
+    /// The read-only session that assesses one piece of a non-member's review feedback against the
+    /// task's intent before the owner decides on it. Suffixed with a short id of the feedback key
+    /// through <see cref="FeedbackEvaluatorFor"/>, since one run can have several at once.
+    /// </summary>
+    public const string FeedbackEvaluator = "feedback-evaluator";
+
+    /// <summary>One feedback evaluator's session artifact name, distinct per piece of feedback so two never share a settings or stream file.</summary>
+    public static string FeedbackEvaluatorFor(string feedbackKeyHash) => $"{FeedbackEvaluator}-{feedbackKeyHash}";
+
+    /// <summary>
     /// The read-only session that composes a project's run skill (idea b9b09779, piece 4). The
     /// one role here whose <see cref="For"/> prefix is a PROJECT's short id rather than a task's:
     /// this session belongs to no task and no run at all, which is exactly the fact a reader of a

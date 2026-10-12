@@ -204,6 +204,37 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
             "the mention-answer write rule is built from the same normalization, not just the Read/Grep rules");
     }
 
+    /// <summary>
+    /// The feedback evaluator's one extra write (task: before the owner decides on a non-member's review
+    /// feedback, a read-only evaluator assesses it): its own assessment file, as a single path rule, and
+    /// nothing else added, removed or loosened.
+    /// </summary>
+    [Fact]
+    public void An_assessment_file_adds_exactly_one_write_path_and_nothing_else()
+    {
+        string[] Rules(string? assessmentFile)
+        {
+            using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+                TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run", assessmentFile: assessmentFile));
+            JsonElement permissions = document.RootElement.GetProperty("permissions");
+            return
+            [
+                .. permissions.GetProperty("allow").EnumerateArray().Select(element => $"allow:{element.GetString()}"),
+                .. permissions.GetProperty("deny").EnumerateArray().Select(element => $"deny:{element.GetString()}"),
+                $"mode:{permissions.GetProperty("defaultMode").GetString()}",
+            ];
+        }
+
+        string[] without = Rules(null);
+        string[] with = Rules("/tmp/run/feedback-assessment-0123456789ab.md");
+
+        with.Except(without).Should().Equal(["allow:Write(//tmp/run/feedback-assessment-0123456789ab.md)"]);
+        without.Except(with).Should().BeEmpty("no rule is removed to make room for it");
+        with.Count(rule => rule.StartsWith("allow:Write(", StringComparison.Ordinal)).Should().Be(2,
+            "mention-answer.md plus the one assessment file, and no directory-wide write");
+        with.Should().NotContain(rule => rule.Contains("--dangerously-skip-permissions", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void The_allow_list_carries_a_write_rule_for_the_mention_answer_file()
     {

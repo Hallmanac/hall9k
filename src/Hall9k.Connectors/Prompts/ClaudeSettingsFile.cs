@@ -418,9 +418,15 @@ public static class ClaudeSettingsFile
     /// co-occurs with a fork checkout). Null or empty for every other session.
     /// </param>
     /// <param name="effort">Identical to <see cref="Build"/>'s own parameter of the same name — carried through so a pr-review session is not silently run at Claude Code's default effort.</param>
+    /// <param name="assessmentFile">
+    /// The one file a non-member-feedback evaluator is asked to write, its own assessment of that
+    /// feedback, inside <paramref name="runDirectory"/>. Set only for an evaluator session, and adds
+    /// exactly one <c>Write</c> rule for exactly that path; null for every other session.
+    /// </param>
     public static string BuildForPrReview(
         TimeSpan commandTimeout, string worktreePath, string runDirectory,
-        IReadOnlyList<VerifyCommand>? qaGateCommands = null, AgentEffort? effort = null)
+        IReadOnlyList<VerifyCommand>? qaGateCommands = null, AgentEffort? effort = null,
+        string? assessmentFile = null)
     {
         long defaultMilliseconds = (long)commandTimeout.TotalMilliseconds;
         long maxMilliseconds = defaultMilliseconds * 2;
@@ -446,6 +452,13 @@ public static class ClaudeSettingsFile
             .. PrReviewAllowedTools,
             .. (qaGateCommands ?? []).Select(gate => $"Bash({EscapeJsonString(gate.Command)}:*)"),
         ];
+        if (assessmentFile is { Length: > 0 })
+        {
+            // The only write beyond mention-answer.md: a feedback evaluator's own assessment of its
+            // one piece of feedback. A path rule, never a directory, so it can write nowhere else.
+            allow.Add($"Write(/{EscapeJsonString(NormalizeForPermissionRule(assessmentFile))})");
+        }
+
         string allowJson = string.Join(", ", allow.Select(rule => $"\"{rule}\""));
         string denyJson = string.Join(", ", PrReviewDeniedTools.Select(tool => $"\"{tool}\""));
         return $$$"""{"includeCoAuthoredBy": false{{{effortLevel}}}, "env": {"BASH_DEFAULT_TIMEOUT_MS": "{{{defaultMilliseconds}}}", "BASH_MAX_TIMEOUT_MS": "{{{maxMilliseconds}}}"}, "permissions": {"defaultMode": "dontAsk", "allow": [{{{allowJson}}}], "deny": [{{{denyJson}}}]}, {{{PrReviewHooksJson}}}}""";

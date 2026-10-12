@@ -70,7 +70,9 @@ namespace Hall9k.Daemon.Execution;
 /// <c>PrReviewEngine.DispatchFollowOnSessionAsync</c>. Set together with <see cref="SkipPermissions"/>
 /// false — a project's own <c>SkipPermissions</c> setting is never consulted for any of the three
 /// (Brian's ruling, 2026-09-27: no pr-review session ever runs with permissions skipped, member or
-/// not). <see cref="QaGateCommands"/> rides beside it only for a QA persona session.
+/// not). <see cref="QaGateCommands"/> rides beside it only for a QA persona session, and
+/// <see cref="AssessmentFile"/> only for a non-member-feedback evaluator, the fourth spawn site
+/// (<c>FeedbackEvaluators</c>), which is what adds that one path to the permission file's writes.
 /// </para>
 /// </summary>
 public sealed record AgentSpawnRequest(
@@ -88,7 +90,8 @@ public sealed record AgentSpawnRequest(
     bool UntrustedWorkingDirectory = false,
     int? MaxTurns = null,
     bool UsesReviewPermissions = false,
-    IReadOnlyList<VerifyCommand>? QaGateCommands = null)
+    IReadOnlyList<VerifyCommand>? QaGateCommands = null,
+    string? AssessmentFile = null)
 {
     /// <summary>
     /// Environment variables layered onto the owner's environment for this session only.

@@ -289,6 +289,14 @@ public static class RunPaths
         Path.Combine(runDirectory, $"{sessionName}.stderr.log");
 
     /// <summary>
+    /// The assessment a feedback evaluator writes for one piece of non-member feedback, named by a
+    /// short hash of the feedback's key so each piece has a file of its own and the evaluator's
+    /// permission file can name exactly that path.
+    /// </summary>
+    public static string FeedbackAssessmentFile(string runDirectory, string feedbackKeyHash) =>
+        Path.Combine(runDirectory, $"feedback-assessment-{feedbackKeyHash}.md");
+
+    /// <summary>
     /// One review cycle's merged findings: every lens's verified findings under its own
     /// heading (log #59), written by the daemon when the cycle's last pass lands. This is the
     /// document the fix session is handed and the one a park points a human at, so the name
