@@ -290,11 +290,12 @@ public static class RunPaths
 
     /// <summary>
     /// The assessment a feedback evaluator writes for one piece of non-member feedback, named by a
-    /// short hash of the feedback's key so each piece has a file of its own and the evaluator's
-    /// permission file can name exactly that path.
+    /// short hash of the feedback's key and the evaluator's session id, so each evaluator has a file
+    /// of its own: a re-raised item's new evaluator can neither read nor overwrite the file of the
+    /// one it replaced, and the evaluator's permission file can name exactly that path.
     /// </summary>
-    public static string FeedbackAssessmentFile(string runDirectory, string feedbackKeyHash) =>
-        Path.Combine(runDirectory, $"feedback-assessment-{feedbackKeyHash}.md");
+    public static string FeedbackAssessmentFile(string runDirectory, string feedbackKeyHash, Guid sessionId) =>
+        Path.Combine(runDirectory, $"feedback-assessment-{feedbackKeyHash}-{sessionId:N}.md");
 
     /// <summary>
     /// One review cycle's merged findings: every lens's verified findings under its own

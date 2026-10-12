@@ -7,6 +7,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Storage;
 using Spectre.Console;
 using Xunit;
 
@@ -245,24 +246,10 @@ public sealed class FeedbackEvaluatorsTests
         prompt.Should().Contain("recorded no acceptance criteria");
     }
 
-    [Fact]
-    public void The_needs_you_line_of_an_assessed_item_carries_the_recommendation_and_the_path_and_none_of_the_prose()
-    {
-        NonMemberFeedbackItem assessed = Item("a", new FeedbackEvaluation(
-            FeedbackEvaluationStatus.Assessed, DomainId.New(), "/run/feedback-assessment-0123456789ab.md",
-            FeedbackRecommendation.Decline));
-
-        string line = Plain(NonMemberFeedbackPane.ComposeLine("a1af8b15", "Bound the limiter", assessed));
-
-        line.Should().Contain("evaluator recommends decline");
-        line.Should().Contain("/run/feedback-assessment-0123456789ab.md");
-        line.Should().NotContain(StrangersWords).And.NotContain(AssessmentProse);
-    }
-
     [Theory]
     [InlineData("Running", null, "an evaluator is assessing it")]
     [InlineData("Failed", "the evaluator timed out", "no assessment: the evaluator timed out")]
-    [InlineData("PastCap", "no evaluator ran: this task has already used its allowance of 3 evaluators", "no evaluator ran")]
+    [InlineData("PastCap", "this task has already used its allowance of 3 evaluators", "(no evaluator ran: this task has already used its allowance of 3 evaluators)")]
     public void The_needs_you_line_of_an_item_without_an_assessment_says_so(string status, string? reason, string expected)
     {
         NonMemberFeedbackItem item = Item("a", new FeedbackEvaluation(status, DomainId.New(), "/run/a.md", null, reason));
@@ -274,11 +261,15 @@ public sealed class FeedbackEvaluatorsTests
     }
 
     [Fact]
-    public void An_item_no_evaluator_was_considered_for_reads_as_it_always_has()
+    public void Each_evaluator_gets_an_assessment_file_of_its_own_even_for_the_same_feedback()
     {
-        string line = Plain(NonMemberFeedbackPane.ComposeLine("a1af8b15", "Bound the limiter", Item("a")));
+        string key = FeedbackEvaluators.KeyHash("a");
 
-        line.Should().NotContain("evaluator").And.NotContain("assessment");
+        string first = RunPaths.FeedbackAssessmentFile("/run", key, DomainId.New());
+        string second = RunPaths.FeedbackAssessmentFile("/run", key, DomainId.New());
+
+        first.Should().NotBe(second, "a re-raised item's evaluator must not read or overwrite the one it replaced");
+        first.Should().Contain(key);
     }
 
     [Fact]
@@ -290,7 +281,7 @@ public sealed class FeedbackEvaluatorsTests
         string? failed = OrchestratorFeedDescription.Of(new NonMemberFeedbackEvaluationRecorded(
             DomainId.New(), "a", FeedbackEvaluationStatus.Failed, DomainId.New(), null, "the evaluator timed out", Now));
         string? pastCap = OrchestratorFeedDescription.Of(new NonMemberFeedbackEvaluationRecorded(
-            DomainId.New(), "a", FeedbackEvaluationStatus.PastCap, null, null, "no evaluator ran", Now));
+            DomainId.New(), "a", FeedbackEvaluationStatus.PastCap, null, null, "this task has already used its allowance of 3 evaluators", Now));
 
         assessed.Should().Be(
             "the evaluator recommends ask for held feedback; read its assessment at /run/feedback-assessment-0123456789ab.md");

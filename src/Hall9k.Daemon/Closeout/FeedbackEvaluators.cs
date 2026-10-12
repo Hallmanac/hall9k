@@ -155,7 +155,7 @@ public sealed class FeedbackEvaluators(
             {
                 case FeedbackEvaluatorAction.Dispatch:
                     Guid sessionId = DomainId.New();
-                    string assessmentPath = RunPaths.FeedbackAssessmentFile(runDirectory, KeyHash(step.Item.Key));
+                    string assessmentPath = RunPaths.FeedbackAssessmentFile(runDirectory, KeyHash(step.Item.Key), sessionId);
                     events.Add(new NonMemberFeedbackEvaluatorDispatched(task.Id, step.Item.Key, sessionId, assessmentPath, now));
                     jobs.Add(new EvaluatorJob(
                         task.Id, task.Objective, task.AcceptanceCriteria, task.PullRequestUrl ?? run.PullRequestUrl ?? "",
@@ -166,8 +166,7 @@ public sealed class FeedbackEvaluators(
                 case FeedbackEvaluatorAction.PastCap:
                     events.Add(new NonMemberFeedbackEvaluationRecorded(
                         task.Id, step.Item.Key, FeedbackEvaluationStatus.PastCap, null, null,
-                        $"no evaluator ran: this task has already used its allowance of "
-                        + $"{_options.NonMemberFeedbackEvaluatorCap} evaluators",
+                        $"this task has already used its allowance of {_options.NonMemberFeedbackEvaluatorCap} evaluators",
                         now));
                     break;
                 default:
@@ -365,8 +364,13 @@ public sealed class FeedbackEvaluators(
         for (int attempt = 1; attempt <= RecordAttempts; attempt++)
         {
             await using IDocumentSession session = store.LightweightSession();
-            TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(job.TaskId, token: cancellationToken);
-            if (task is null
+            StreamState? fence = await session.Events.FetchStreamStateAsync(job.TaskId, cancellationToken);
+            TaskAggregate? task = fence is null
+                ? null
+                : await session.Events.AggregateStreamAsync<TaskAggregate>(
+                    job.TaskId, version: fence.Version, token: cancellationToken);
+            if (fence is null
+                || task is null
                 || !task.NonMemberFeedback.TryGetValue(job.Item.Key, out NonMemberFeedbackItem? current)
                 || !current.Status.NeedsOwner
                 || current.EvaluationState.SessionId != job.SessionId)
@@ -377,7 +381,9 @@ public sealed class FeedbackEvaluators(
                 return;
             }
 
-            session.Events.Append(job.TaskId, new NonMemberFeedbackEvaluationRecorded(
+            // Fenced to the version the item was judged against, so an owner's go or decline that commits
+            // in between loses this append to a retry that then sees the item decided and drops the outcome.
+            session.Events.Append(job.TaskId, expectedVersion: fence.Version + 1, new NonMemberFeedbackEvaluationRecorded(
                 job.TaskId, job.Item.Key,
                 recommendation is null ? FeedbackEvaluationStatus.Failed : FeedbackEvaluationStatus.Assessed,
                 job.SessionId, recommendation, recommendation is null ? reason : null, DateTimeOffset.UtcNow,
