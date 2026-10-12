@@ -484,6 +484,14 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
         Git(fixture.RepoPath, "checkout -q main");
         Git(fixture.RepoPath, $"merge -q --ff-only {fixture.ParentBranch}");
         Git(fixture.RepoPath, "push -q origin main");
+
+        // Another task's merge lands after the parent's, so the base tip is a commit the child's
+        // recorded fork point (the parent's head) does not already name. Without it the fast-forward
+        // makes the two the same commit, which is the shape closeout settles with no replay at all.
+        File.WriteAllText(Path.Combine(fixture.RepoPath, "OTHER-TASK.md"), "another task's own merge\n");
+        Git(fixture.RepoPath, "add -A");
+        Git(fixture.RepoPath, "-c user.name=Test -c user.email=t@t commit -qm \"another task merged\"");
+        Git(fixture.RepoPath, "push -q origin main");
         string baseTip = Git(fixture.RepoPath, "rev-parse HEAD").Trim();
 
         await using (IDocumentSession session = fixture.Store.LightweightSession())
@@ -543,6 +551,14 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
 
         Git(fixture.RepoPath, "checkout -q main");
         Git(fixture.RepoPath, $"merge -q --ff-only {fixture.ParentBranch}");
+        Git(fixture.RepoPath, "push -q origin main");
+
+        // Another task's merge lands after the parent's, so the base tip is a commit the child's
+        // recorded fork point (the parent's head) does not already name. Without it the fast-forward
+        // makes the two the same commit, which is the shape closeout settles with no replay at all.
+        File.WriteAllText(Path.Combine(fixture.RepoPath, "OTHER-TASK.md"), "another task's own merge\n");
+        Git(fixture.RepoPath, "add -A");
+        Git(fixture.RepoPath, "-c user.name=Test -c user.email=t@t commit -qm \"another task merged\"");
         Git(fixture.RepoPath, "push -q origin main");
         string baseTip = Git(fixture.RepoPath, "rev-parse HEAD").Trim();
 
@@ -2032,12 +2048,14 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
     /// <summary>
     /// The teammate's merge as a rebase merge lands it: their commit is replayed onto main under a
     /// NEW sha, which is exactly why the child's replay has to drop its own copy of the parent's
-    /// work rather than rebase plainly onto the base.
+    /// work rather than rebase plainly onto the base. Cherry-picked with <c>-x</c> for the reason
+    /// <see cref="MergeTheParentAsync"/> gives: without the trailer a fast run reproduces the
+    /// original's exact sha, which the child's own branch then already holds.
     /// </summary>
     private static void MergeTheParentOnOrigin(RemoteFixture fixture)
     {
         Git(fixture.RepoPath, "checkout -q main");
-        Git(fixture.RepoPath, $"-c user.name=Test -c user.email=t@t cherry-pick {fixture.ParentHeadCommit}");
+        Git(fixture.RepoPath, $"-c user.name=Test -c user.email=t@t cherry-pick -x {fixture.ParentHeadCommit}");
         Git(fixture.RepoPath, "push -q origin main");
     }
 

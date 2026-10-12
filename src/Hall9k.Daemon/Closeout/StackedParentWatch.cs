@@ -38,6 +38,13 @@ public enum StackedParentVerdict
     /// cycle 1, conformance and adversarial lenses: this is the 2026-09-14 shape, task 450b9d84,
     /// where the earlier fix for the replay-conflicts-by-construction defect answered this state
     /// with Aligned and never dispatched the retarget it still owed).
+    /// <para>
+    /// What closeout does past the retarget depends on the run's own recorded fork point
+    /// (<c>RunDetails.BaseCommit</c>), which a dispatched no-op stack replay moves onto the base tip
+    /// but which the run's own pre-push rebase can already have moved: where it already names the
+    /// observed tip, closeout records the retarget and dispatches nothing; where it does not, it
+    /// dispatches the no-op replay that records it (<see cref="StackedForkPointPolicy"/>).
+    /// </para>
     /// </summary>
     ParentMergedAligned,
 
