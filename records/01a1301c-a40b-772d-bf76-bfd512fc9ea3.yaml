@@ -1,0 +1,20 @@
+hall9k-task-record: 1
+task-id: 01a1301c-a40b-772d-bf76-bfd512fc9ea3
+project: hall9k
+type: content
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#737
+objective: Drop the DCO sign-off requirement from the contributor docs, relying on Apache-2.0 section 5 for inbound licensing
+criteria:
+  - |-
+    CONTRIBUTING.md's Commits section no longer asks for a Developer Certificate of Origin sign-off: the git commit -s instruction, the Signed-off-by example, the developercertificate.org link, the maintainer-checks-in-review sentence, and the amend instruction are removed, and the commit-subject paragraph stays unchanged
+  - CONTRIBUTING.md states in one or two full sentences that contributions are accepted under the project's Apache-2.0 license (section 5 of the license), so no separate sign-off or CLA is needed
+  - The 'Changes written with an AI agent' paragraph in CONTRIBUTING.md no longer refers to a sign-off; it says submitting the change is the contributor's promise that they have the right to submit it and stand behind it
+  - The checklist line 'Every commit is signed off (git commit -s).' is removed from .github/pull_request_template.md
+  - git grep -i -E 'sign-off|signed-off|certificate of origin|commit -s' over CONTRIBUTING.md, README.md, and .github/ returns nothing; no .github/dco.yml is added
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/12fc9ea3-drop-the-dco-sign-off-requirem
+published: 2026-10-12 12:35:59Z
