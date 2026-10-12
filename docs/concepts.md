@@ -1698,8 +1698,12 @@ is revoked on the source, or when the new project already has a root for that ow
 writes itself into the record before it claims the task, and if that write fails no run launches
 (a fetch, push, or signing failure holds the claim and it retries on the next sweep). The holder is
 cleared at true closeout, on `h9k task abandon`, when the holder's own run lease expires, when the
-holder grants a take request, and by `h9k task release` in the window after a task's work is
-delivered but before its pull request merges. The holder is the truth about who has a task; the lease
+holder grants a take request, by the dispatch sweep when a task this node still holds is queued
+for another node and nothing of it runs here (so a task moved off a node after a failure is
+claimed by its new node without anyone running `h9k task release`), and by `h9k task release` in
+any state but Claimed, typically in the window after a task's work is delivered but before its
+pull request merges. A release that reaches a node after a different node has claimed the task
+leaves the new holder in place. The holder is the truth about who has a task; the lease
 described under [Leases](#leases) is how the holding node keeps its own claim honest, not how two
 nodes decide between themselves. The write that sets a holder is conditional on the value the
 writer just read, so two nodes racing for one task never both win, and the loser is told who did.

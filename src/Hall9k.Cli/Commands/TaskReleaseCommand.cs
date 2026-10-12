@@ -52,12 +52,13 @@ namespace Hall9k.Cli.Commands;
 /// <para>
 /// A second, unrelated meaning lives here too (idea 202383dc, A3b, criterion 3): a task this node
 /// still names itself the ledger holder of, but that is no longer <see cref="TaskState.Claimed"/>
-/// at all — the window a Done or Blocked task with an open pull request deliberately survives
-/// into, since the holder is released only at true completion, <c>h9k task abandon</c>, or lease
-/// expiry, never at the earlier <c>TaskCompleted</c> that only opened the pull request. That is
-/// the first way a holder moves without one of those three, and until this existed the only lever
-/// on it was abandoning the task outright. This self-release never touches the interactive-claim
-/// machinery above (there is none to touch — <see cref="Hall9k.Domain.Features.Tasks.TaskAggregate.IsInteractiveClaim"/>
+/// at all, in any state but Claimed. The window a Done or Blocked task with an open pull request
+/// deliberately survives into is the ordinary case, since the holder is released only at true
+/// completion, <c>h9k task abandon</c>, or lease expiry, never at the earlier <c>TaskCompleted</c>
+/// that only opened the pull request; a Failed or NeedsHuman task is another. A Queued task placed
+/// on another node is released by the dispatch sweep without this command. That is the first way a
+/// holder moves by hand, and until this existed the only lever on it was abandoning the task
+/// outright. This self-release never touches the interactive-claim machinery above (there is none to touch — <see cref="Hall9k.Domain.Features.Tasks.TaskAggregate.IsInteractiveClaim"/>
 /// is never set for it), and never reaches past this node's own holder: a task this node does not
 /// hold refuses exactly as it always has, through the same decider guard every other refusal above
 /// goes through.
@@ -100,14 +101,13 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         await TaskOwnerGuard.AssertMayActAsync(session, task, context, cancellationToken);
 
         // The self-release lever criterion 3 calls for (idea 202383dc, A3b): a task the ledger
-        // still names this node the holder of, but that is no longer TaskState.Claimed at all —
-        // the window a Done or Blocked task with an open pull request deliberately survives into,
-        // since the holder is released only at true completion, h9k task abandon, or lease
-        // expiry, never at the earlier TaskCompleted. Claimed is excluded outright, headless and
-        // interactive alike: that state is a live run, the worktree/commit guards below exist for
-        // exactly that case, and releasing the ledger holder out from under a live run would race
-        // it — an active headless claim keeps its own refusal, via the interactive-claim decider
-        // below, exactly as before this existed.
+        // still names this node the holder of, in any state but Claimed. Done or Blocked with an
+        // open pull request is the ordinary window, since the holder is released only at true
+        // completion, h9k task abandon, or lease expiry, never at the earlier TaskCompleted.
+        // Claimed is excluded outright, headless and interactive alike: that state is a live run,
+        // the worktree/commit guards below exist for exactly that case, and releasing the ledger
+        // holder out from under a live run would race it. An active headless claim keeps its own
+        // refusal, via the interactive-claim decider below, exactly as before this existed.
         if (task.State != TaskState.Claimed && task.HolderNodeId == context.NodeId)
         {
             await ReleaseLedgerHolderOnlyAsync(session, store, context, task, taskId, fence, settings, cancellationToken);
