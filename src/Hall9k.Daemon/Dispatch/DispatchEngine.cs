@@ -261,7 +261,7 @@ public sealed class DispatchEngine(
             .ToListAsync(cancellationToken);
 
         int requeued = 0;
-        List<(Guid TaskId, Guid ProjectId)> holdersToRelease = [];
+        List<(Guid TaskId, Guid ProjectId, bool MovedElsewhere)> holdersToRelease = [];
         foreach (TaskLease lease in expired)
         {
             TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(
@@ -319,7 +319,7 @@ public sealed class DispatchEngine(
             session.Delete<TaskLease>(lease.Id);
             if (leaseEvents.Length > 1)
             {
-                holdersToRelease.Add((task.Id, task.ProjectId));
+                holdersToRelease.Add((task.Id, task.ProjectId, MovedElsewhere: false));
             }
 
             // The run the lease belonged to ends here too, in the same transaction — but only
@@ -368,11 +368,24 @@ public sealed class DispatchEngine(
                 lease.Id, lease.LeaseGeneration, lease.HeartbeatAt);
         }
 
+        foreach (TaskAggregate movedTask in await StageReleasesOfTasksPlacedElsewhereAsync(session, now, cancellationToken))
+        {
+            holdersToRelease.Add((movedTask.Id, movedTask.ProjectId, MovedElsewhere: true));
+        }
+
         await session.SaveChangesAsync(cancellationToken);
 
-        foreach ((Guid taskId, Guid projectId) in holdersToRelease)
+        foreach ((Guid taskId, Guid projectId, bool movedElsewhere) in holdersToRelease)
         {
             await ReleaseLedgerHolderBestEffortAsync(taskId, projectId, cancellationToken);
+
+            // A task moved to another node is no more concluded than an expired lease is: the new
+            // node's claim-time MirrorTrackerAssigneeBestEffortAsync would race a release mirrored
+            // here, so the tracker is left for that claim to rewrite.
+            if (movedElsewhere)
+            {
+                continue;
+            }
 
             // A lease expiry is a transient handback, not a conclusion, unlike the other two
             // release sites (closeout true completion, h9k task abandon) where the task really is
@@ -395,6 +408,66 @@ public sealed class DispatchEngine(
         await SweepPendingTrackerMirrorsAsync(cancellationToken);
 
         return requeued;
+    }
+
+    /// <summary>
+    /// Stages the local half of releasing every ledger holder this node still holds on a task that
+    /// is Queued and placed on another node, with nothing of it running here: the lease sweep needs
+    /// a lease, and a failure deletes it, so a task moved off this node after failing here would
+    /// otherwise keep naming this node while the placed node stood down from it on every sweep.
+    /// Keyed on state rather than on the failure that led here, so every route into
+    /// held-here-but-placed-elsewhere is covered. A Claimed task is never selected, nor is one this
+    /// node leases or runs: a claim appends <see cref="TaskClaimed"/> locally before any run starts,
+    /// so a placement change replicating in mid-run finds the task Claimed and releases nothing.
+    /// Origin incident (2026-10-08): three tasks failed on one node, were assigned to another, and
+    /// were stood down from about every 8 seconds for 66 hours until <c>h9k task release</c>.
+    /// </summary>
+    private async Task<IReadOnlyList<TaskAggregate>> StageReleasesOfTasksPlacedElsewhereAsync(
+        IDocumentSession session, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        Guid thisNodeId = node.NodeId;
+        IReadOnlyList<Guid> candidateIds = await session.Query<TaskListItem>()
+            .Where(t => t.MatchesSql("d.data ->> 'state' = ?", TaskState.Queued.Value))
+            .Where(t => t.PlacedOnNodeId != null && t.PlacedOnNodeId != thisNodeId)
+            .Select(t => t.Id)
+            .ToListAsync(cancellationToken);
+
+        List<TaskAggregate> released = [];
+        foreach (Guid candidateId in candidateIds)
+        {
+            TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                candidateId, token: cancellationToken);
+            if (task is not { HolderNodeId: { } holderNodeId, PlacedOnNodeId: { } placedOnNodeId }
+                || task.State != TaskState.Queued
+                || holderNodeId != thisNodeId
+                || placedOnNodeId == thisNodeId)
+            {
+                continue;
+            }
+
+            if (await session.LoadAsync<TaskLease>(candidateId, cancellationToken) is not null)
+            {
+                continue;
+            }
+
+            // A Queued task carries no current run, so the runs are asked for by task: a session
+            // another node's requeue left running here is still this node's to see through.
+            IReadOnlyList<RunDetails> localRuns = await session.Query<RunDetails>()
+                .Where(run => run.TaskId == candidateId && run.NodeId == thisNodeId)
+                .ToListAsync(cancellationToken);
+            if (localRuns.Any(run => run.State.IsLive || LocalRunProcessIsAlive(run)))
+            {
+                continue;
+            }
+
+            session.Events.Append(candidateId, TaskDecider.ReleaseHolder(task, now));
+            released.Add(task);
+            logger.LogInformation(
+                "Task {TaskId} is queued for node {PlacedOnNodeId} but this node still holds its ledger record — releasing the holder so the placed node can claim it",
+                candidateId, placedOnNodeId);
+        }
+
+        return released;
     }
 
     /// <summary>
