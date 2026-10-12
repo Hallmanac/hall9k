@@ -1,0 +1,20 @@
+hall9k-task-record: 1
+task-id: 01a13080-e98e-74fe-8caa-7d9aa45b104c
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#742
+objective: A claim request is acted on only when the task it names belongs to the project whose message carried it
+criteria:
+  - |-
+    A claim request naming a task that belongs to a different project than the message it arrived in is dropped without acting: nothing is appended to the task's stream, its ledger holder and tracker assignee are unchanged, no reply is queued to the requester, and the message is marked handled
+  - ClaimRequestEngine's receive, grant, and refuse each refuse, before any write, a project that is not the task's own, so no caller can act on a task under another project's take policy, repository, or outbox
+  - Tests in the existing ClaimRequestEngineTests seam (PostgresFixture, FakeLedger) cover a cross-project request dropped with nothing recorded, and a same-project request that still records TaskTakeRequested and grants or parks as today; no new test creates a branch, touches git, or calls GitHub
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/a45b104c-a-claim-request-is-acted-on-on
+published: 2026-10-12 14:28:03Z
+context: |-
+  Found 2026-10-12 by the read-only cross-project leak check (notes/cross-project-leak-check-2026-10-12-1013/journal.md, section 1, defect D1), read at origin/main cece31c74. ClaimRequestWatchLoop (about :167) takes the project from the message; ClaimRequestEngine.ReceiveRequestAsync (about :72-112) and GrantAsync act on request.TaskId with only a holder check (task.HolderNodeId != myNodeId), never checking the task's own project. A vouched member of one project can therefore send a claim request through that project's outbox naming a task of another project this node holds, and this node appends TaskTakeRequested (and possibly TaskHolderReleased) under the first project's TakePolicy; those events are ProjectScoped and resolve from the task's own project, so they replicate out through the other project's ledger. Integrity, not a read leak. Practical reach: needs the task id, and hall9k's task ids are public in its ledger refs. Fix shape: refuse with DomainConflictException, mark the message handled, record nothing; put the check in ReceiveRequestAsync, GrantAsync and the refuse path, or once in the watch loop after the task loads. Worse under take-policy auto (challenge): GrantAsync releases the holder in the message project's repository, finds no record there, gets HolderReleaseVerdict.NotHeld rather than Failed (TaskLedgerHolder.cs about :45-55), and appends TaskHolderReleased anyway, so the task's own stream says released while its own ledger still names this node, and the ClaimGranted reply is queued in the wrong project. Smallest placement: one guard beside the existing holder guard in each of the three engine methods, right after the aggregate loads; not only in the watch loop, whose taskForGate is a projection read before the fenced aggregate. Throwing DomainConflictException before the append reuses the loop's existing DomainException catch, which marks the message handled; no reply is owed, since an honest requester always queues under the task's own project. Challenge verdict in this task's journal. Walked with Brian 2026-10-12.
