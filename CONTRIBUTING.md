@@ -37,19 +37,6 @@ rest) are in [AGENTS.md](AGENTS.md#coding-standards). They apply to people as we
 
 ## Commits
 
-Every commit must carry a Developer Certificate of Origin sign-off. Add it with `git commit -s`,
-which appends a line like this:
-
-```
-Signed-off-by: Your Name <you@example.com>
-```
-
-The sign-off certifies that you wrote the change, or otherwise have the right to submit it, under
-the project's license. The full text is at [developercertificate.org](https://developercertificate.org).
-No automated check enforces this, so the maintainer looks for the sign-off during review and will
-not merge a pull request with an unsigned commit. To fix a missing sign-off on your last commit,
-run `git commit --amend -s` and force-push your branch.
-
 Commit subjects start with a type and describe the change as a full sentence in the imperative:
 `fix: keep a lone carriage return from becoming a line break`. The types in use are `feat`, `fix`,
 `refactor`, `test`, `docs`, `chore`, and `revert`. Keep each commit buildable and about one thing.
@@ -58,8 +45,8 @@ Commit subjects start with a type and describe the change as a full sentence in 
 
 You are welcome to use an AI coding agent to write your contribution; Hall9k exists to orchestrate
 them. You own the result, though. Understand every line you submit and be ready to explain it in
-review, because your sign-off is your promise that you have the right to submit it and stand behind
-it. Leave AI attribution out of commits and pull requests: no `Co-Authored-By` trailers naming an
+review, because submitting the change is your promise that you have the right to submit it and stand
+behind it. Leave AI attribution out of commits and pull requests: no `Co-Authored-By` trailers naming an
 agent, and no "generated with" lines.
 
 ## Pull requests
@@ -73,8 +60,9 @@ Pull requests merge by rebase, so the history stays linear.
 
 ## License
 
-By contributing, you agree that your contributions are licensed under the
-[Apache License 2.0](LICENSE), the same license that covers the rest of Hall9k.
+Contributions are accepted under the project's [Apache License 2.0](LICENSE), the same license that
+covers the rest of Hall9k, as section 5 of that license provides. That means no extra certification
+step and no contributor license agreement is needed.
 
 ## Code of Conduct
 
