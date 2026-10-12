@@ -3726,12 +3726,14 @@ public sealed class CloseoutEngine(
     /// no replay behind it — <see cref="StackedParentVerdict.ParentMergedAligned"/>, handled in its
     /// own early return below this comment rather than folded into the replay path further down. It
     /// still dispatches and still spends budget, though (independent pre-PR review, cycle 1,
-    /// adversarial lens): a no-op follow-up, upstream and onto both the base tip already held, is
-    /// the only path that ever moves this run's own recorded fork point onto the base it now
-    /// targets once the retarget lands — the same "later call"
-    /// <c>ReviewEngine.EnsureRebasedBeforeFinalPassAsync</c> defers to, and leaving this arm to
+    /// adversarial lens), unless the run's own recorded fork point already names that tip: a no-op
+    /// follow-up, upstream and onto both the base tip already held, is what moves a fork point the
+    /// run itself did not move onto the base it now targets once the retarget lands — the same "later
+    /// call" <c>ReviewEngine.EnsureRebasedBeforeFinalPassAsync</c> defers to, and leaving this arm to
     /// only retarget and return let that call never come, so every later range this task's own
-    /// reviewers read stayed open at the parent's old head.
+    /// reviewers read stayed open at the parent's old head. A fork point the run's own pre-push
+    /// rebase already moved (<see cref="StackedForkPointPolicy"/>) leaves that lap nothing to record,
+    /// so there the arm appends the retarget record and dispatches nothing.
     /// </para>
     /// <para>
     /// Two budgets bound this path, deliberately asymmetrically. The rebase budget below is the
@@ -3870,16 +3872,17 @@ public sealed class CloseoutEngine(
             // this state with plain Aligned, which this method returns false on above, and the
             // retarget it still owed was never dispatched).
             //
-            // The retarget alone is not enough, though (independent pre-PR review, cycle 1,
-            // adversarial lens): moving this run's own recorded fork point onto the base it now
-            // targets only ever happens inside a run's own pre-final-pass check, once that run
-            // reads itself as no longer a stacked child
-            // (ReviewEngine.EnsureRebasedBeforeFinalPassAsync's own "a later call here" doc) — and
-            // nothing else ever dispatches this task a follow-up run again once this sweep returns
-            // without one, so every later range a reviewer reads would stay open at the parent's
-            // old head. A no-op StackReplay dispatch is exactly what the ParentMerged path below
-            // already relies on for the identical reason, so this arm ends the same way when it can
-            // afford to: upstream and onto both name the base tip this child already holds, so the
+            // The retarget alone is not enough, though, unless the fork point already moved
+            // (independent pre-PR review, cycle 1, adversarial lens). A run's own recorded fork
+            // point moves onto the base it now targets in one of two places: its own pre-push
+            // rebase, which the settle branch below checks for first, or its own pre-final-pass
+            // check, once that run reads itself as no longer a stacked child
+            // (ReviewEngine.EnsureRebasedBeforeFinalPassAsync's own "a later call here" doc). For a
+            // fork point neither has moved, nothing else ever dispatches this task a follow-up run
+            // again once this sweep returns without one, so every later range a reviewer reads
+            // would stay open at the parent's old head. A no-op StackReplay dispatch is exactly what
+            // the ParentMerged path below already relies on for the identical reason, so this arm
+            // ends the same way when it can afford to: upstream and onto both name the base tip this child already holds, so the
             // dispatched run's own checkpoint finds nothing left to replay and records the moved
             // fork point instead.
             //
@@ -3894,6 +3897,43 @@ public sealed class CloseoutEngine(
             // is itself an automatic action spent on the parent's churn, so a child already past its
             // cap does not get a further one just because this one dispatches nothing to replay.
             bool alreadyOnBase = snapshot.BaseRefName is { } observedBase && observedBase == project.BaseBranch;
+
+            // The one case the no-op dispatch below has nothing to do: this run's own pre-push
+            // rebase already moved its recorded fork point onto the base tip this branch sits on, as
+            // it does for a child whose parent merged while it was still building. The retarget
+            // record is all that is left to write, and appending it is what stops the run reading as
+            // stacked, so the pull request reaches the merge bar as an ordinary delivered one with no
+            // lap, no gate run and nothing spent from either budget. The budget and follow-up
+            // verdicts below all guard that dispatch, so none of them is asked here.
+            if (StackedForkPointPolicy.ForkPointAlreadyOnBaseTip(run.BaseCommit, observation.BoundaryCommit))
+            {
+                StackedRetargetOutcome settled = alreadyOnBase
+                    ? StackedRetargetOutcome.AlreadyOnBase(observation.ParentBranch, project.BaseBranch)
+                    : await TryRetargetStackedChildAsync(
+                        run, project, observation.ParentBranch, cancellationToken);
+                session.Events.Append(run.Id, new StackedPullRequestRetargeted(
+                    run.Id, observation.ParentBranch, project.BaseBranch, observation.BoundaryCommit,
+                    settled.Succeeded, settled.Detail, now));
+                await session.SaveChangesAsync(cancellationToken);
+
+                if (settled.Succeeded)
+                {
+                    logger.LogInformation(
+                        "Task {TaskId}: stacked pull request {Url} is aimed at {BaseBranch} now and this run's "
+                        + "recorded fork point already names its tip, so no stack replay is dispatched — {Detail}",
+                        task.Id, task.PullRequestUrl, project.BaseBranch, settled.Detail);
+                }
+                else
+                {
+                    logger.LogWarning(
+                        "Task {TaskId}: could not retarget stacked pull request {Url} from {ParentBranch} onto "
+                        + "{BaseBranch} — {Detail}; the next sweep tries the retarget again",
+                        task.Id, task.PullRequestUrl, observation.ParentBranch, project.BaseBranch, settled.Detail);
+                }
+
+                return true;
+            }
+
             if (!alreadyOnBase && task.StackReplaysDispatched >= _options.MaxStackReplayRuns)
             {
                 await ParkForSpentRebaseBudgetAsync(
