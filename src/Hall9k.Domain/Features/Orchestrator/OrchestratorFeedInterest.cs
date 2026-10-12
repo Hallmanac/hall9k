@@ -86,6 +86,13 @@ public static class OrchestratorFeedInterest
         // (independent pre-PR review, cycle 1, conformance lens, medium).
         [typeof(OwnerActHeld)] = OrchestratorFeedLevel.Actionable,
 
+        // Feedback from outside the project's roster, held for the owner's go, and the read-only
+        // evaluator's recommendation on it: the second names a recommendation word and the path of
+        // the assessment file and never a word of the assessment, since this feed is read by a
+        // window with permissions bypassed.
+        [typeof(NonMemberFeedbackHeld)] = OrchestratorFeedLevel.Actionable,
+        [typeof(NonMemberFeedbackEvaluationRecorded)] = OrchestratorFeedLevel.Actionable,
+
         // Gate and run failures.
         [typeof(VerificationFailed)] = OrchestratorFeedLevel.Actionable,
         [typeof(SettlingGateRepairCapReached)] = OrchestratorFeedLevel.Actionable,

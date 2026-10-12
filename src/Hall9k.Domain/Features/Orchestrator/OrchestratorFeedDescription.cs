@@ -68,6 +68,12 @@ public static class OrchestratorFeedDescription
                 $"a {routed.Severity.Value} review finding at {Field(routed.Location, 60)} was routed onto a draft "
                 + "task nobody has published",
             QuestionAsked asked => $"an agent asked and stopped: {Quote(asked.Question)}",
+            // Only who, what kind and where: none of the stranger's own text is ever on the event's
+            // description, however much of it the event carries for the owner's go to pin.
+            NonMemberFeedbackHeld held =>
+                $"{held.Kind.Noun} from {Field(held.Reviewer, 40)}, who is not in the project's roster, is held for "
+                + $"the owner's go and dispatches nothing: {Field(held.Url, 120)} (h9k pr feedback)",
+            NonMemberFeedbackEvaluationRecorded recorded => EvaluationLine(recorded),
             OwnerActHeld held =>
                 $"{NodeLine(held.RequesterNodeId, labels)}'s own invite match asked this root for an owner-role "
                 + $"member write; it is held for approval (h9k project member approve … {held.InviteId})",
@@ -306,6 +312,18 @@ public static class OrchestratorFeedDescription
         string id = $"node {DomainId.Short(nodeId)}";
         return labels.LabelForNodeId(nodeId) is { } label ? $"{id} ({label})" : id;
     }
+
+    /// <summary>
+    /// How an evaluation ended, in the recommendation word and the assessment's path alone: the
+    /// assessment's prose was steered by a stranger's text and stays in its file.
+    /// </summary>
+    private static string EvaluationLine(NonMemberFeedbackEvaluationRecorded recorded) =>
+        recorded.Outcome == FeedbackEvaluationStatus.Assessed && recorded.Recommendation is { IsRecognized: true } recommendation
+            ? $"the evaluator recommends {recommendation.Value} for held feedback; read its assessment at "
+                + Field(recorded.AssessmentPath, 200)
+            : recorded.Outcome == FeedbackEvaluationStatus.PastCap
+                ? "held feedback has no evaluator assessment: the task is past its evaluator allowance"
+                : "held feedback has no evaluator assessment: the evaluator did not produce one";
 
     /// <summary>
     /// A leg's own word in a sentence, with the honest fallback for the value a stream written
