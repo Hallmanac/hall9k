@@ -2158,6 +2158,11 @@ public sealed class ReviewEngine(
         // DriveAsync and held across a dispatch that can itself run for hours, the same staleness
         // IsInteractiveModeEnabledAsync's own doc comment guards against for EnsureInteractiveProceedAsync.
         bool interactiveModeEnabled = await IsInteractiveModeEnabledAsync(context.TaskId, cancellationToken);
+        // The project's security-review switch, read as this pass is dispatched so a change to it
+        // lands from the next pass; nothing about it is recorded on the run. Only the adversarial
+        // lens ever reads the areas, so the conformance pass never pays for the lookup.
+        bool readSecurityAreas = lens == ReviewLens.Adversarial
+            && await IsSecurityReviewEnabledAsync(context.Project.Id, cancellationToken);
         string prompt = AgentPromptBuilder.BuildReview(
             context.Task, context.Project, context.Run.Branch, cycle, lens, mode, context.PriorRulings,
             priorHumanDirectedInteractions: context.PriorHumanDirectedInteractions,
@@ -2171,7 +2176,8 @@ public sealed class ReviewEngine(
             interactiveModeEnabledOverride: interactiveModeEnabled,
             priorHumanFixes: context.PriorHumanFixes,
             commandTimeout: _options.VerifyGateTimeout,
-            lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken));
+            lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken),
+            readSecurityAreas: readSecurityAreas);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // Every lens is review work, so they resolve the same role in the chain (log #33) — except
         // the mandatory FinalFullPass, which resolves its own knob (task: completing the per-stage
@@ -7137,7 +7143,7 @@ public sealed class ReviewEngine(
         }
     }
 
-    private static string FindingLabel(ReviewLens lens, ReviewFinding finding)
+    internal static string FindingLabel(ReviewLens lens, ReviewFinding finding)
     {
         string location = finding.Location.IsBlank() ? "(no location stated)" : $"`{finding.Location}`";
         string severity = finding.Severity == ReviewSeverity.Unknown ? "ungraded" : finding.Severity.Value.ToLowerInvariant();
@@ -7145,7 +7151,14 @@ public sealed class ReviewEngine(
         // routed, or carried exactly as its grade and scope already decide (idea b9b09779,
         // piece 1), and naming it here is what tells the fix session the change it is being asked
         // for is to how the application is run rather than to what it does.
-        string kind = finding.IsRunSkillDrift ? ", run-skill drift" : string.Empty;
+        // A security finding is named the same way, for the same reason: it is graded and routed
+        // like any other, and the label only says what sort of finding it is.
+        string kind = finding switch
+        {
+            { IsRunSkillDrift: true } => ", run-skill drift",
+            { IsSecurity: true } => ", security",
+            _ => string.Empty,
+        };
         return $"{location} — {LensLabel(lens)}, {severity}{kind}";
     }
 
@@ -8415,6 +8428,18 @@ public sealed class ReviewEngine(
         TaskDetails? task = await query.LoadAsync<TaskDetails>(context.TaskId, cancellationToken);
         ProjectDetails? project = await query.LoadAsync<ProjectDetails>(context.Project.Id, cancellationToken);
         return ReviewCapResolver.Resolve(task, project, _options);
+    }
+
+    /// <summary>
+    /// The project's security-review setting right now, read fresh off the store rather than off
+    /// <see cref="ReviewContext"/>, for the reason <see cref="IsInteractiveModeEnabledAsync"/>
+    /// documents: a pass can be dispatched hours after the context was loaded, and a change to
+    /// the setting should land from the very next pass.
+    /// </summary>
+    private async Task<bool> IsSecurityReviewEnabledAsync(Guid projectId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        return (await SecurityReviewSetting.ResolveAsync(query, projectId, cancellationToken)).IsOn;
     }
 
     /// <summary>

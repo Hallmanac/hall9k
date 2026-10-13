@@ -89,17 +89,30 @@ public static class SecurityReviewPromptBuilder
         prompt.AppendLine();
         AppendFragment(prompt, file, "intro");
         prompt.AppendLine();
-        AppendFragment(prompt, file, "injection");
-        prompt.AppendLine();
-        AppendFragment(prompt, file, "secrets");
-        prompt.AppendLine();
-        AppendFragment(prompt, file, "auth");
-        prompt.AppendLine();
-        AppendFragment(prompt, file, "unsafe-io");
-        prompt.AppendLine();
-        AppendFragment(prompt, file, "dependencies");
-        prompt.AppendLine();
-        AppendFragment(prompt, file, "ci");
+        AppendAreas(prompt);
+    }
+
+    /// <summary>
+    /// The six security areas, each read from <c>lenses.md</c> and separated by a blank line, with
+    /// no heading or framing of its own. The one place the six fragment names live, shared by this
+    /// persona's own prompt and the pre-PR Adversarial lens (<c>AgentPromptBuilder</c>), so an edit
+    /// to one of the six changes both. The file's own <c>heading</c> and <c>intro</c> are written
+    /// for the persona (its intro calls a change touching none of the areas a complete review) and
+    /// are deliberately not part of this; the Adversarial lens frames the areas in its own template.
+    /// </summary>
+    internal static void AppendAreas(StringBuilder prompt)
+    {
+        const string file = $"{TemplateDirectory}/lenses.md";
+        string[] areas = ["injection", "secrets", "auth", "unsafe-io", "dependencies", "ci"];
+        for (int index = 0; index < areas.Length; index++)
+        {
+            if (index > 0)
+            {
+                prompt.AppendLine();
+            }
+
+            AppendFragment(prompt, file, areas[index]);
+        }
     }
 
     private static void AppendReportShape(StringBuilder prompt)

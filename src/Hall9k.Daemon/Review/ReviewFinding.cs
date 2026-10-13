@@ -27,12 +27,14 @@ namespace Hall9k.Daemon.Review;
 /// </param>
 /// <param name="Kind">
 /// What kind of finding this is, read from the finding's own `kind=` tag (idea b9b09779, piece 1)
-/// — today only <see cref="ReviewFindingKind.RunSkillDrift"/>, the standing question's own
-/// answer. The kind never changes <see cref="Disposition"/>: a run-skill drift finding is fixed,
-/// routed, or carried as a ride-along on exactly the terms its grade and scope already decide,
-/// which is what "routed like any finding" means. It changes only how the finding reads —
-/// the merged findings document names it, so the fix session knows the change it is being asked
-/// to make is to how the application is run, not to what it does.
+/// — <see cref="ReviewFindingKind.RunSkillDrift"/>, the standing question's own answer, or
+/// <see cref="ReviewFindingKind.Security"/>, a finding a pre-PR Adversarial pass made in one of
+/// the six security areas. The kind never changes <see cref="Disposition"/>: a tagged finding is
+/// fixed, routed, or carried as a ride-along on exactly the terms its grade and scope already
+/// decide, which is what "routed like any finding" means. It changes only how the finding reads —
+/// the merged findings document names it, so the fix session knows a drift finding asks for a
+/// change to how the application is run rather than to what it does, and knows a security finding
+/// is one.
 /// </param>
 public sealed record ReviewFinding(
     ReviewSeverity Severity,
@@ -109,6 +111,9 @@ public sealed record ReviewFinding(
 
     /// <summary>True for the standing question's own finding — see <see cref="Kind"/>.</summary>
     public bool IsRunSkillDrift => Kind == ReviewFindingKind.RunSkillDrift;
+
+    /// <summary>True for a finding the Adversarial pass tagged as one of the six security areas; see <see cref="Kind"/>.</summary>
+    public bool IsSecurity => Kind == ReviewFindingKind.Security;
 
     /// <summary>The stream's record of this finding: its classification, never its text (log #6).</summary>
     public ReviewFindingRecord ToRecord(ReviewMode mode) =>

@@ -24,8 +24,9 @@ namespace Hall9k.Domain.Features.Run;
 /// </param>
 /// <param name="Kind">
 /// What kind of finding this is where the kind changes how it reads rather than how it routes
-/// (idea b9b09779, piece 1) — today only <see cref="ReviewFindingKind.RunSkillDrift"/>, the
-/// standing question's own answer. <see cref="ReviewFindingKind.Unknown"/> for the ordinary
+/// (idea b9b09779, piece 1) — <see cref="ReviewFindingKind.RunSkillDrift"/>, the standing
+/// question's own answer, or <see cref="ReviewFindingKind.Security"/>, a finding in one of the
+/// six security areas (idea b2a6f46c). <see cref="ReviewFindingKind.Unknown"/> for the ordinary
 /// finding, which is nearly all of them and every one recorded before kinds existed. Trailing and
 /// defaulted so an old stream deserializes unchanged.
 /// </param>

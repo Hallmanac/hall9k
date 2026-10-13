@@ -245,6 +245,33 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
         AssertMatchesGolden("build-review-adversarial", prompt);
     }
 
+    /// <summary>
+    /// The security-review setting off is the prompt as it was before the six areas existed: the
+    /// same fixture, byte for byte, with the setting passed explicitly rather than left at its default.
+    /// </summary>
+    [Fact]
+    public void BuildReview_adversarial_with_the_security_setting_off_matches_the_same_golden()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Adversarial, ReviewMode.FinalFullPass,
+            readSecurityAreas: false);
+        AssertMatchesGolden("build-review-adversarial", prompt);
+    }
+
+    /// <summary>The conformance lens never reads the security areas, whatever the setting says.</summary>
+    [Fact]
+    public void BuildReview_conformance_is_unchanged_with_the_security_setting_on()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 2, ReviewLens.Conformance, ReviewMode.Discovery,
+            priorRulings: [new ReviewParkResolution(1, ReviewVerdict.MergeReady, "The reviewer's read was wrong; git history proves it.", FixedInstant)],
+            priorHumanDirectedInteractions: [new ExternalInteractionRecord(FixedInstant, "Brian", "Skip the workaround.", true, "The workaround is no longer needed.")],
+            priorBoundaryApprovals: [new BoundaryApprovalRecord(FixedInstant)],
+            priorHumanFixes: [new HumanFixRecord(1, null, FixedInstant)],
+            readSecurityAreas: true);
+        AssertMatchesGolden("build-review-conformance", prompt);
+    }
+
     // ---- Replicated notes from another owner's node (security review idea 6be68ee2) ----
     //
     // New fixtures beside the ones above, which render text this node wrote itself and did not

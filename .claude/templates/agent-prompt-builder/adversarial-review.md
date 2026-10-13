@@ -46,6 +46,26 @@ nobody cleaned up after.
 ===defect-classes-tail===
 Those are where the last incident's defects were, not where the next one will be.
 Work through them, then keep going where they do not point.
+===security-areas-heading===
+## Security areas (read for these as well)
+===security-areas-intro===
+This project also has you read the diff, and every file it touches, for six security
+areas. They sit beside the defect hunt above, not instead of it: a change that touches
+none of them still gets the full review everywhere else, and finding nothing in these
+six areas does not end your review. Read for whether this change could actually be
+exploited or could actually leak something, and cite the specific line or file that
+shows it.
+===security-areas-tag===
+Tag each finding that falls in one of those six areas with `{{KindTagKey}}={{SecurityKind}}`
+in its header, beside its severity and scope, and tag no other finding that way:
+
+    {{FindingMarker}} {{SeverityTagKey}}=high; {{ScopeTagKey}}=in-scope; {{KindTagKey}}={{SecurityKind}}; {{AtTagKey}}={{ExampleLocationPlaceholder}}
+    {{DefectLabel}} what the change now allows, or leaks, and where.
+    {{ScenarioLabel}} how someone would exploit it.
+
+The tag says what kind of finding it is, never how urgent it is: grade and scope it against
+the same anchors as anything else, and the platform fixes, routes or carries it on exactly
+the terms its grade and scope already decide.
 ===how-to-review-heading===
 ## How to review
 ===read-in-surroundings===
