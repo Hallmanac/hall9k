@@ -587,7 +587,7 @@ reported, because nothing outside the fleet will answer and the hand command wal
 fleet; vouching that node back in starts the exchange over. `h9k status` shows each
 reconcile in progress or complete with its envelope and record counts and how many streams are
 still held tail-only, and `h9k project reconcile <project>` runs the whole thing again by hand.
-Origin: on 2026-09-21 the Mac held almost none of arx-platform's history while the Windows node
+Origin: on 2026-09-21 the Mac held almost none of a shared project's history while the Windows node
 held all of it, and a bootstrap that ranks one answerer had no way to notice.
 
 **Trust files and the chain reader** (idea 202383dc, T1): vouches, revocations, and project
@@ -967,9 +967,9 @@ github|jira`); with neither, the command refuses rather than guessing which trac
 work. Both references still go through the identical `RefuseSecondAdoptionAsync` dedup — a card
 already spoken for elsewhere is refused whether it is being adopted as this task's primary or its
 secondary. A card that genuinely needs several tasks working
-toward it (ARX-5510: one Jira card, eight pull requests) runs straight into that refusal if every
+toward it (PROJ-5510: one Jira card, eight pull requests) runs straight into that refusal if every
 task tries to adopt it, and the refusal is the guard working as designed, not a bug to route
-around; the pattern below is what the arx team found by trial and error against it. The epic
+around; the pattern below is what a teammate's team found by trial and error against it. The epic
 carries the card (`h9k epic link-jira <epic> <key-or-url>`, whose own `--help` still calls the
 argument "the Jira epic's key": it stores whatever key or URL it is given verbatim and unverified,
 epic or card alike, so this pattern's use of it for a card is not a misuse), exactly one member
@@ -983,7 +983,7 @@ either refuses it outright or, taken the other way out with `--no-existing-item`
 post-publish auto-tracking step mint a brand-new card or issue for it: exactly the second-card,
 second-closeout problem this pattern exists to avoid. A sibling published `--untracked` this way
 never carries an `ExternalReference` at all, permanently, so on a project whose branch template
-(below) uses `{key}` every sibling branch renders it `no-key`: for ARX-5510's eight tasks that is
+(below) uses `{key}` every sibling branch renders it `no-key`: for PROJ-5510's eight tasks that is
 one branch named for the owning task's card and seven named `no-key-<slug>`, distinguished only by
 slug and by `ResolveBranchNameAsync`'s own collision retry when two slugs coincide. Nothing about
 that is broken, but it is worth knowing before dispatch rather than discovering it there.
@@ -1361,7 +1361,7 @@ Releasing a task leaves the tracker assignment where it is.
 #121). `h9k project set <project> --branch-template "<TEXT>"` names a task's branch out of three
 tokens — `{shortid}` (the task's short id), `{slug}` (its objective, hyphenated, capped at 30
 characters) and `{key}` (the linked Jira key or GitHub issue number) — with everything else
-literal, so `--branch-template "{key}-{slug}"` cuts `ARX-14-add-rate-limiting`. The default is
+literal, so `--branch-template "{key}-{slug}"` cuts `PROJ-14-add-rate-limiting`. The default is
 `task/{shortid}-{slug}`, exactly what the platform cut before the setting existed, so a project
 that sets nothing sees no change at all; `none` restores it. Two rules make it safe rather than
 merely convenient. The template is rendered and checked as a legal git ref at `project set` time,

@@ -457,7 +457,7 @@ nothing happening. A record with no anchor for the wait says the length is unkno
 measuring from now. A
 Queued/Claimed task still carrying a pull-request URL is a follow-up in flight and says so
 ("follow-up on PR #24: building"), and where a check was still pending when that lap was
-dispatched the same line carries the wait's age beside it ("follow-up queued for PR #2042 · not
+dispatched the same line carries the wait's age beside it ("follow-up queued for PR #42 · not
 claimed yet; a check has been pending 9h") — which is the distinction the old single `ClosingOut`
 bucket could not make. **Done** appears only once the merge is observed; a run that ended without one stays
 Delivered and quotes the reason the run recorded, which is how a pull request closed without

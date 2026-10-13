@@ -42,8 +42,8 @@ lives beside the code it governs is easier to keep true than one behind a comman
   send, edit, or drop it (`h9k review resolve --post-reply-as-written` / `--post-reply "…"` /
   `--post-nothing`); replies route through `h9k pr reply`, which refuses the rest. A **fix**'s reply
   still posts in anyone's thread; a **bot's** thread is untouched (§16 #62, #152, #159). Origin: two
-  accurate replies posted under Brian's login minutes after a reviewer approved, arx-platform
-  PR #2021 (2026-09-09) and PR #2042 (2026-09-15), both deleted by hand.
+  accurate replies posted under Brian's login minutes after a reviewer approved, on two pull
+  requests in a teammate's project (2026-09-09 and 2026-09-15), both deleted by hand.
 - **Feedback reaches the platform only when a review is submitted.** GitHub hides an unsubmitted
   (`PENDING`) review's comments from the API entirely, so a reviewer part-way through a draft is
   invisible to the closeout monitor and to any agent reading the PR. Never read silence as "the

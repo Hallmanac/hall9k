@@ -156,16 +156,16 @@ Trust and reachability, again, are different problems.
 
 ### 5.3 Joining someone else's project
 
-Sarah does not need to know Brian's owner public key beforehand, and does not need to know it is
+Casey does not need to know Brian's owner public key beforehand, and does not need to know it is
 Brian at all. She trusts whoever holds the token.
 
-1. Sarah mints a project invite token and sends it however she likes — the channel needs
+1. Casey mints a project invite token and sends it however she likes — the channel needs
    **integrity, not secrecy**.
 2. Brian runs `h9k project join` on **any** of his nodes.
-3. That node finds Sarah's node (token addresses first, discovery as the safety net), handshakes,
+3. That node finds Casey's node (token addresses first, discovery as the safety net), handshakes,
    and sends: his **owner public key**, the HMAC proof over it, and his node certificate — all
    node-signed.
-4. Sarah's node verifies, adds the owner public key to the project's member list, and returns the
+4. Casey's node verifies, adds the owner public key to the project's member list, and returns the
    list plus project state.
 
 The token's whole job is bootstrapping exactly one fact: *this owner public key belongs to the
@@ -176,10 +176,10 @@ person I meant to invite.*
 | Field | Why |
 |---|---|
 | Project identifier | which project is being joined |
-| **Sarah's owner public key** | **the critical one** — without it you cannot verify her node certificate during the handshake and would be trusting whoever answered |
+| **Casey's owner public key** | **the critical one** — without it you cannot verify her node certificate during the handshake and would be trusting whoever answered |
 | Seed/node addresses | where to aim the first packet |
 | Expiry | so an intercepted token is not usable a year later |
-| Signature by Sarah's owner key over the above | so the token cannot be forged |
+| Signature by Casey's owner key over the above | so the token cannot be forged |
 
 The token does work at **two layers**, which is easy to miss: the owner public key is loaded
 **before connecting** so the QUIC verification hook (§8.4 step 3) can say yes, and the token itself
@@ -236,7 +236,7 @@ key"*, which is the promotion prompt above.
 
 ### 6.3 If there is no chain and no surviving node
 
-The floor, and it is not bad: **a project member re-invites you.** Sarah mints an ordinary project
+The floor, and it is not bad: **a project member re-invites you.** Casey mints an ordinary project
 token, you join with a brand-new owner key, and you are working again in one Slack message.
 
 The cost is honest and worth recording: your prior work is attributed to an owner key nobody vouches
@@ -443,7 +443,7 @@ nodes fully discover each other from one connection, and no registry exists anyw
 
 ### 7.5 Finding a project's peers
 
-You do not ask for *Sarah*. You maintain a set of connections and ask each one: do you carry project
+You do not ask for *Casey*. You maintain a set of connections and ask each one: do you carry project
 X?
 
 If none of your peers do, ask them to pass the question along — a **bounded gossip query**, capped by
@@ -457,16 +457,16 @@ If nobody answers, that is a real answer: nobody reachable has it right now. Ret
 
 ### 7.6 Shoulder-tapping
 
-**Sarah does not know you want her.** She holds a warm connection to the seed with heartbeats keeping
+**Casey does not know you want her.** She holds a warm connection to the seed with heartbeats keeping
 her mapping open, so the seed can **tap her on the shoulder**. The seed's real service is being
 reachable at a known address.
 
-**When the seed has no live connection to Sarah**, it asks the peers it does have. A peer still
-holding a path to Sarah becomes the shoulder-tapper — it nudges Sarah itself rather than handing her
+**When the seed has no live connection to Casey**, it asks the peers it does have. A peer still
+holding a path to Casey becomes the shoulder-tapper — it nudges Casey itself rather than handing her
 address back to the seed, and tells the asker where to aim. **The seed is a directory of first
 resort, not a switchboard.**
 
-**Addresses are hints, not facts.** If nobody holds a path, Sarah is genuinely offline — queue
+**Addresses are hints, not facts.** If nobody holds a path, Casey is genuinely offline — queue
 locally and sync later.
 
 **The introducer's actual service is synchronising the attempt** — telling both sides at roughly the
@@ -623,9 +623,9 @@ makes the enrolment ceremony (§5.2) pleasant.
 Both nodes have been announcing to the seed, so it knows the external address and port it
 **observed** each arriving from.
 
-> Brian's node asks the seed for Sarah's; the seed simultaneously nudges Sarah's node with Brian's.
+> Brian's node asks the seed for Casey's; the seed simultaneously nudges Casey's node with Brian's.
 > Both fire UDP at each other at roughly the same moment. Brian's packet leaves first, punches the
-> mapping in his router, reaches Sarah's router, and is dropped — she hasn't sent yet. Expected.
+> mapping in his router, reaches Casey's router, and is dropped — she hasn't sent yet. Expected.
 > Milliseconds later hers leaves, opens her mapping, and arrives at Brian's router, which recognises
 > the address he just sent to and lets it through. The path is now open both directions.
 
@@ -642,7 +642,7 @@ useless for anyone else. Common on mobile networks and some corporate setups. **
 (mobile tethering) has the same effect. **Blocked outbound UDP** is a different and harsher problem —
 see §10.
 
-The failure is **asymmetric and worth internalising**: if Sarah's firewall blocks outbound UDP, her
+The failure is **asymmetric and worth internalising**: if Casey's firewall blocks outbound UDP, her
 packet never leaves, so no mapping forms on her side — and Brian's packet, which left correctly and
 reached their border firewall, has nothing to slip through. *Brian's side did everything right and it
 still failed.*
@@ -945,9 +945,9 @@ be discovered while building rather than specified in the abstract.
 agreed in advance. Same messages, different scope — and this is why the project query's list is
 sometimes "all of them" and sometimes exactly one.
 
-**Gossip is project-shaped.** Sarah's event push travels to *her* project peers, who can read and
+**Gossip is project-shaped.** Casey's event push travels to *her* project peers, who can read and
 verify it, and onward to theirs — two or three hops and it is everywhere. So you need no connection to
-Sarah, only a connection to someone who eventually has one.
+Casey, only a connection to someone who eventually has one.
 
 Crucially it does **not** travel through nodes outside the project. They hold no project keys, so they
 would be forwarding an opaque blob they cannot verify — a spam vector for no benefit. **Cross-project
@@ -965,7 +965,7 @@ recipient dial the origin would defeat the point of gossip.
 - **A QUIC connection is cheap to hold but not free** — keepalives, state on both sides, and a home
   node may sleep or change networks. Connection migration helps: a warm connection survives a network
   change.
-- **The two-owner case is special.** With only you and Sarah there is no redundancy, so both sides
+- **The two-owner case is special.** With only you and Casey there is no redundancy, so both sides
   reconnect on startup and retry with backoff. **The seed matters far more here**: in a large mesh you
   can bootstrap from anyone, but with two nodes the seed may be the only possible introduction. And if
   she is simply offline, you just work — events queue and sync when she appears, which is the entire
@@ -978,8 +978,8 @@ The rule: **a certificate travels with anything that will be repeated by someone
 - **Transient messages** — queries, heartbeats, "do you carry project X" — carry a signature only.
   Identity was settled once in the handshake, and the message dies at the receiving node.
 - **Stored events** carry signature *and* certificate as part of their persisted form, because they
-  outlive the connection. Sarah's node relays your event to a third peer that has never handshaken
-  with your laptop, and that peer must verify independently rather than take Sarah's word for it.
+  outlive the connection. Casey's node relays your event to a third peer that has never handshaken
+  with your laptop, and that peer must verify independently rather than take Casey's word for it.
 
 **Do not build this yet.** There is nothing to relay to, and it would be dead weight in every
 aggregate today. What matters now is not foreclosing it: leave room for a signed envelope *around* an
@@ -1055,7 +1055,7 @@ exists on that machine. **Only cloning is ever lazy.**
 ### 13.1 Events written before P2P existed
 
 Pre-P2P events are unsigned. The tempting answer — "they never leave this machine, so nobody needs to
-verify them" — is **wrong**: history propagates. Sarah syncs your back catalogue, then relays it onward
+verify them" — is **wrong**: history propagates. Casey syncs your back catalogue, then relays it onward
 to a node that will ask, reasonably, who signed this.
 
 So a one-off migration is needed at the moment P2P is switched on. Two candidates:
@@ -1072,9 +1072,9 @@ Either is cheap and neither is owed today. It is a switch-on task, not a tax car
 
 ## 14. Claims across nodes
 
-**Claims are recorded against the OWNER, not the node.** Sarah needs to know *Brian* holds task ABC,
+**Claims are recorded against the OWNER, not the node.** Casey needs to know *Brian* holds task ABC,
 not which of his machines. The node key signs the event (who typed this); the payload records the
-claiming owner. Sarah's node resolves node → owner and rejects a duplicate claim from Brian's second
+claiming owner. Casey's node resolves node → owner and rejects a duplicate claim from Brian's second
 machine as a same-owner duplicate.
 
 `TaskClaimed(Id, NodeId, OwnerId, LeaseGeneration, RunId, ClaimedAt)` already carries exactly this
