@@ -1418,7 +1418,7 @@ h9k project set myproject --take-timeout 60                 # minutes a take req
 h9k project set myproject --non-executable-path "assets/**/*.png"   # add a glob to the paths whose diffs skip the verification gates; 'default' clears your additions
 h9k project set myproject --design-review-drive off         # the designer persona reads the diff only; on is the default
 h9k project set myproject --qa-review-drive on              # the QA persona may drive the running product; off is the default
-h9k project set myproject --security-review off             # the Security persona's own review; on is the default
+h9k project set myproject --security-review off             # the Security persona and the pre-PR Adversarial security areas; on is the default
 h9k project set myproject --discover-run-skill              # ask the daemon to rediscover how to stand the project up locally
 h9k project set myproject --orchestrator-feed actionable    # how much history the orchestrator feed carries; transitions is the default
 h9k project set myproject --courier-max-wait 120            # ceiling in seconds on the feed courier's batching wait; the default is 60
@@ -1461,6 +1461,14 @@ whose every changed path matches the project's own non-executable-path set skips
 reason — a diff that touches nothing buildable or testable cannot introduce the classes of defect
 it hunts for — but a change to a CI or release workflow file never matches that set, so it is
 never skipped on that account.
+
+The same `--security-review` switch governs the pre-PR review too: with it on (the default), every
+Adversarial pass, in Discovery and in the final full pass, also reads the diff for those six areas
+and tags each finding it makes there `kind=security`, which is graded and routed like any other
+finding of its severity and scope and is named as a security finding in the findings document the
+fix session reads. Turning the switch off removes the areas from the Adversarial prompt from the
+next pass on, with nothing recorded on the run. A review stage composition that runs no Adversarial
+pass (`ConformanceOnly`, `None`) does no pre-PR security reading, whatever the switch says.
 
 `h9k owner set --display-name '<name>' [--project <project>]` names what teammates see for this
 member: a label only, never part of any trust or cross-check decision. With `--project`, it sets
