@@ -11,7 +11,7 @@ namespace Hall9k.Cli.Commands;
 /// the container port-binding check
 /// (<see cref="DatabaseDoctor.CheckContainerPortBindingAsync(bool,System.Threading.CancellationToken)"/>,
 /// the same idea's finding 1), and the database doctor check (Decisions Log #58, #73), in that
-/// order. The home directory check runs first, and needs nothing else here — it is a single stat
+/// order, with the release check (<see cref="ReleaseDoctor"/>) after the tool check. The home directory check runs first, and needs nothing else here — it is a single stat
 /// against <see cref="Hall9k.Domain.Infrastructure.Storage.PlatformPaths.Home"/>, unconditional on
 /// every invocation, the same as the port-binding check below it. The tool check runs next — and
 /// needs no daemon and no reachable database itself — so it still runs on the database section's
@@ -63,6 +63,10 @@ public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
         HomeDirectoryPermissions.Check(settings.Yes);
 
         await ToolDoctor.RunAsync(cancellationToken);
+
+        // Needs no database and no daemon, so it runs ahead of the database section and survives its
+        // early return, like the tool check above it.
+        await ReleaseDoctor.RunAsync(cancellationToken);
 
         await DatabaseDoctor.CheckContainerPortBindingAsync(settings.Yes, cancellationToken);
 

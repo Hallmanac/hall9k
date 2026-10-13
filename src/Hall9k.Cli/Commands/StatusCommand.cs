@@ -63,7 +63,8 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         // to ~15s on at least one real machine, task 92da629d) is not "not running" — that
         // reading is exactly what invited a second h9k daemon start into the first spawn's
         // own singleton lock.
-        switch (DaemonProcess.ProbeBootStatus().State)
+        DaemonBootState daemonState = DaemonProcess.ProbeBootStatus().State;
+        switch (daemonState)
         {
             case DaemonBootState.Running:
                 break;
@@ -116,6 +117,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             // that nothing minted a task for leaves a board with no rows on it and a request
             // waiting, which is the origin incident's own shape.
             await WriteAutoPrReviewAsync(session, everyoneRows, DateTimeOffset.UtcNow, cancellationToken);
+            await WriteReleaseNoticeAsync(session, daemonState, cancellationToken);
             AnsiConsole.MarkupLine("[dim]Nothing tracked yet. Draft some work with h9k task add.[/]");
             return ExitCodes.Ok;
         }
@@ -223,6 +225,8 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]launch hold: unavailable ({exception.Message})[/]");
         }
+
+        await WriteReleaseNoticeAsync(session, daemonState, cancellationToken);
 
         // The unfiltered rows, because the review-request pane names a task covering a request only
         // when that task is the viewer's own, and can only tell that from the row's own group.
@@ -337,6 +341,28 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             "\n[dim]Browse it all:[/] h9k task list --include-archived "
             + "[dim](--project <name>, --state <state>) · per project:[/] h9k project list");
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// A newer release this node's daemon has already noticed (idea 93c1d24d, card 2), read from the
+    /// node's own record with no network call. Shown every time while this CLI is behind it, with no
+    /// daily limit: the once-a-day cadence belongs to the pushed feed notice, not to this line.
+    /// </summary>
+    private static async Task WriteReleaseNoticeAsync(
+        IQuerySession session, DaemonBootState daemonState, CancellationToken cancellationToken)
+    {
+        try
+        {
+            string? noticedTag = await ReleaseNoticeStatus.ReadNoticedTagAsync(session, cancellationToken);
+            if (ReleaseNoticeStatus.Line(noticedTag, CliVersion.Current, daemonState) is { } line)
+            {
+                AnsiConsole.MarkupLine(line);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]release notice: unavailable ({exception.Message})[/]");
+        }
     }
 
     /// <summary>
