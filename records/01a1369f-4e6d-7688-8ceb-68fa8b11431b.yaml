@@ -1,0 +1,24 @@
+hall9k-task-record: 1
+task-id: 01a1369f-4e6d-7688-8ceb-68fa8b11431b
+project: hall9k
+type: chore
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#747
+objective: Remove another project's identifiers from hall9k's current source tree, replacing them with consistent neutral stand-ins, so the public repository names no other project, organization, repository number, or teammate
+criteria:
+  - A case-insensitive PCRE search of every tracked file with the private patterns file (git grep -l -i -P -f <file>) returns nothing, covering code, tests, docs, skills, .claude/, and both legacy files; and a search for each name without a word boundary finds only innocent substrings inside ordinary identifiers, which the pull request lists by file and line without quoting any identifier.
+  - Every pull-request or issue number that points into the other project's repository is removed or made generic; references into other tools' trackers, fixture numbers on placeholder repositories, and the decisions-citation test's sentinel number are unchanged; the pull request says how many numbers were changed.
+  - |-
+    Replacements read naturally and consistently: test fixtures use neutral stand-ins that share no word with text the product renders (for example sample-project for a project name, and logins like reviewer-a and reviewer-b), each used the same way across files; comments that record where a rule came from keep the date and the lesson and refer to 'a teammate's project' or 'a teammate'; docs and the legacy files use whichever generic phrase reads best in the sentence.
+  - |-
+    Only names change: no test is deleted or weakened, every test asserts what it asserted before, production code changes only in comments and in string literals that are examples or help text, and both CI legs pass. A production literal that turns out to be real configuration rather than an example is left unchanged and named in the pull request (generically) for the maintainer.
+  - |-
+    Nothing the change produces leaks what it removes: commit messages, the pull-request title and body, every comment or reply this task's sessions post on the pull request, and this task's records use only generic wording; the patterns file is never copied into the repository, and no guard test that lists the identifiers is added.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/8b11431b-remove-another-project-s-ident
+published: 2026-10-13 19:01:22Z
+context: |-
+  The identifiers to remove are listed, as case-insensitive PCRE patterns, in the private file /Users/brianhallmanac/.hall9k/projects/hall9k/notes/naming-sweep-2026-10-13/terms.txt on this Mac. Search with git grep -l -i -P -f <file>; do not use -E, because macOS git grep -E silently ignores \b and misses about a third of the matches. Never copy the file, quote it, or name any of its entries in the repository, a commit message, the pull request, a PR comment or reply, or this task's records. On origin/main ddfd2d9ad the patterns match 94 tracked files: test fixtures that use the other project's name as a sample project and teammates' names and logins as sample commenters (about 51 files under tests/), code comments recording where a rule came from (src/), docs (including a design document whose protocol walkthrough uses one of the names as a persona: replace it with a neutral persona name), .claude/skills, and two legacy files embedded in src/Hall9k.Domain, the v0 decisions log and its sibling agents-standing-rules.md (Brian ruled both are swept; the importer keys entries by citation, so rewording never re-imports; ledger decision events already imported are outside the tree and out of scope, do not touch the ledger). Teammates' first names count. The word-boundary patterns do not split compound code identifiers (camelCase, underscores, joined logins, test method names), so also search each name without a word boundary and use judgment: at least one ordinary hall9k identifier contains a first name across a word join and must stay. Pull-request and issue numbers that point into the other project's repository count; hall9k's own PRs are below 1000, and references into other tools' trackers (the .NET runtime, the gh CLI, Claude Code), fixture numbers on placeholder repositories, and the decisions-citation test's sentinel number are innocent and stay. Stand-ins must share no word with text the product renders (for example not 'teammate' as a login, since tests assert on that word in rendered output). This is the first pass; a history rewrite is a separate, later idea and out of scope. Walked with Brian 2026-10-13, challenged the same day (verdict in this task's journal); house rule (2026-10-12): hall9k records refer to another project only generically.
