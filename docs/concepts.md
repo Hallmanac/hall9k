@@ -898,6 +898,15 @@ whatever the assignee declared. A pull request whose every changed path matches 
 non-executable-path set skips it for that reason, named in the report; a CI or release workflow
 file never matches that set, so a change to one still runs the review.
 
+The same `--security-review` switch governs a second place: with it on, every pre-PR Adversarial
+review pass, in Discovery and in the final full pass, also reads the diff for those six areas, using
+the very same area texts the Security persona is given, and tags each finding it makes there
+`kind=security`. Such a finding is graded, routed and fixed exactly as an untagged finding of the
+same severity and scope would be; the tag lets security findings be counted, and the findings
+document the fix session reads names the finding as a security finding. The switch is read as each
+pass is dispatched, so a change to it applies from the next pass. A review stage composition that
+runs no Adversarial pass (`ConformanceOnly`, `None`) does no pre-PR security reading at all.
+
 **Whether a review may run the product is a per-project consent.** Both of the declarable personas above (QA and the designer) can launch the
 running product on the review worktree, walk the changed flows through browser automation, and put a
 screenshot beside each finding it supports in a `Driven` section of the report, on an ephemeral port

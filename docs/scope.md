@@ -1045,7 +1045,10 @@ pr-review task's single worktree, reported in one report sectioned in that fixed
 none reads as the engineer's review, which is what every member gets today. A fourth persona,
 Security, is never declared this way at all — it reviews every pr-review task by default,
 gated only by the project's own `--security-review on|off` setting, and its section joins the
-report regardless of what the member declared. The QA review
+report regardless of what the member declared. That one switch also governs the same six security
+areas in the pre-PR Adversarial review (on by default, and read as each pass is dispatched); a
+review stage composition that runs no Adversarial pass (`ConformanceOnly`, `None`) does no pre-PR
+security reading. The QA review
 reads a pull request through a blast-radius map, a covered / new-test / walk-through verdict on
 every entry, and the project's end-to-end tests run on the review worktree. The designer's own
 review answers seven lenses in a fixed order (user experience, conformance to the proposed

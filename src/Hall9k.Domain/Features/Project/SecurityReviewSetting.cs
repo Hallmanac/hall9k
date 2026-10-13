@@ -49,8 +49,9 @@ public sealed record SecurityReviewSetting(bool IsOn, bool Recorded)
         "on" => true,
         "off" => false,
         _ => throw new DomainValidationException(
-            $"{optionName} takes 'on' or 'off' — whether the Security persona's own review is "
-            + "appended to every pr-review's persona plan for this project."),
+            $"{optionName} takes 'on' or 'off': whether this project's reviews read for the six security "
+            + "areas, both in the Security persona's own review of every pr-review and in the pre-PR "
+            + "Adversarial lens."),
     };
 
     public static SecurityReviewSetting From(ProjectSettingsHistory history) =>

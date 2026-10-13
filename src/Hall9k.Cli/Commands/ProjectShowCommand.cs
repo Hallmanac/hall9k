@@ -598,9 +598,10 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
     }
 
     /// <summary>
-    /// Whether the Security persona's own review is appended to every pr-review's persona plan for
-    /// this project (idea 6be68ee2, phase two), printed always on the same "off as a default and
-    /// off as a choice are different facts" terms <see cref="AutoPrReviewRow"/> and
+    /// Whether this project's reviews read for the six security areas (idea 6be68ee2, phase two;
+    /// idea b2a6f46c): the Security persona's own review appended to every pr-review's persona plan,
+    /// and the same areas in the pre-PR Adversarial lens. Printed always on the same "off as a
+    /// default and off as a choice are different facts" terms <see cref="AutoPrReviewRow"/> and
     /// <see cref="DesignReviewDriveRow"/> already state: this setting defaults to ON, so a bare
     /// "off" a reader could take for the platform's own initial state is exactly the confusion
     /// Decisions Log #161 names. Unlike those two, there is no "needs a run skill" caveat here —
@@ -613,9 +614,12 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         return setting.IsOn
             ? $"{value} [dim]— every pr-review here is also reviewed for injection, secrets handling, "
               + "authentication and authorization, unsafe process, file, or network use, dependency "
-              + "changes, and CI or release workflow changes, whatever the assignee declared. Turn it "
-              + $"off:[/] h9k project set {name} --security-review off"
-            : $"{value} [dim]— pr-review here runs only the personas the assignee declared; nothing "
+              + "changes, and CI or release workflow changes, whatever the assignee declared, and every "
+              + "pre-PR Adversarial review reads the diff for the same six areas (a review stage "
+              + "composition with no Adversarial pass, ConformanceOnly or None, does no pre-PR security "
+              + $"reading). Turn it off:[/] h9k project set {name} --security-review off"
+            : $"{value} [dim]— pr-review here runs only the personas the assignee declared, and the "
+              + "pre-PR Adversarial review does not read for the six security areas; nothing "
               + $"reviews for the classes of defect the Security persona hunts for. Turn it on:[/] "
               + $"h9k project set {name} --security-review on";
     }

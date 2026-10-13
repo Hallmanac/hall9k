@@ -1144,7 +1144,11 @@ place rather than an unreviewed pull request.
 A fourth persona, Security, cannot be declared at all — `--persona security` is refused by name —
 and instead reviews every pr-review task by default, gated only by the project's own
 `--security-review on|off` setting ([operations.md](operations.md#per-project-and-per-owner)). Its
-section joins the report in fixed order after the declared personas' own.
+section joins the report in fixed order after the declared personas' own. The same switch also
+governs the pre-PR Adversarial review: with it on, every Adversarial pass reads its diff for the
+same six security areas and tags what it finds there `kind=security`. A review stage composition
+that runs no Adversarial pass (`ConformanceOnly`, `None`) does no pre-PR security reading, whatever
+the switch says.
 
 `--display-name '<name>'` is the name teammates see for this member, set per project with
 `--project <project>` or, without it, as this machine's own default beneath every project that has
