@@ -55,6 +55,35 @@ or unreadable config file, or a channel value that is neither word, falls back t
 one-line warning. Either way, `h9k update` installs a release only once this platform's archive and
 `checksums.txt` are both attached to it, and says so when they are not.
 
+**The daemon tells you when a newer release exists, and never installs it.** Each node's daemon runs
+the same lookup about a minute after it starts and then every six hours
+(`h9k config set --release-check-interval-hours <n>`, whole hours, from 1 to 8760; `h9k config show`
+prints it; the new value governs the wait after the check in progress, with no daemon restart). It
+sees whatever the node's release channel sees, so on the default `cleared` channel nothing is
+announced until a release is cleared. When it finds a release newer than the version the daemon
+runs, it records a node-scoped event on the node's own stream (never replicated) and the news
+reaches you three ways:
+
+- **The orchestrator feed** carries one plain line per notice, in every project the node reads and
+  at every feed level (Actionable is the narrowest band), but never as an urgent item:
+  `hall9k 0.13.1 is available (this node runs 0.13.0); h9k update --restart installs it`. A notice
+  is announced at the next check after a release appears, repeated as `is still available` on the
+  first check at least 24 hours after the last notice while the node is behind, and restarted
+  whenever a still newer release appears. A daemon restart neither repeats a notice nor resets that
+  clock. A window is shown a notice only while the notice's tag is newer than the version the
+  reader itself runs (the courier's, or `h9k orchestrator feed`'s), so one that drains after an
+  update is never told to install what it already runs.
+- **`h9k status`** prints a line like the feed's every time it runs while this CLI is older than the
+  release the daemon last noticed, with no network call and no daily limit. It names
+  `h9k update --restart` when a daemon is running (a booting one counts) and plain `h9k update` when
+  none is, because a stopped daemon is deliberate on some nodes.
+- **`h9k doctor`** runs the lookup live and reports one of: current (a newer tag whose assets are
+  still uploading reads as current, with a note), a newer release available (naming the same two
+  commands by the same rule), or could not check, with the reason.
+
+A lookup that fails (`gh` missing or signed out, a timeout, unreadable output, a platform with no
+release build) records nothing and logs one warning per run of failures, not one per check.
+
 The mechanism, in short:
 
 - The bootstrap scripts (`scripts/install.sh`, `scripts/install.ps1`) fetch the latest release
@@ -1127,6 +1156,7 @@ h9k config set --message-poll-idle-min 60 --message-poll-idle-max 90       # and
 h9k config set --lesson-prompt-max-lessons 15               # how many recorded lessons any one dispatched prompt carries
 h9k config set --lesson-prompt-max-characters 4000          # and how many characters of lesson text
 h9k config set --release-channel all                       # let h9k update see pre-releases too (default: cleared)
+h9k config set --release-check-interval-hours 1             # how often the daemon looks for a newer release (default: 6, minimum 1)
 ```
 
 The four review-cycle caps (Decisions Log #112) — the conformance and adversarial track cycle
@@ -1245,6 +1275,7 @@ the file alone.
 | `lessonPromptMaxLessons` | `--lesson-prompt-max-lessons` | none | 15 |
 | `lessonPromptMaxCharacters` | `--lesson-prompt-max-characters` | none | 4000 |
 | `releaseChannel` | `--release-channel` (`cleared` or `all`) | none | `cleared` |
+| `releaseCheckIntervalHours` | `--release-check-interval-hours` (whole hours, 1 to 8760) | none | 6 |
 | `launchTexts` | none; `h9k orchestrator launch-text set` writes it | none | none; `launch-text show` prints a computed default |
 
 Every other `Hall9k__` option in the tables above has no flag and no dedicated key in this table.
