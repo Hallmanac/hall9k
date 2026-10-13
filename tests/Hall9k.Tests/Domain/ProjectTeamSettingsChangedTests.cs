@@ -62,13 +62,13 @@ public sealed class ProjectTeamSettingsChangedTests
         Guid projectId = DomainId.New();
         ProjectTeamSettingsChanged teamChanged = new(
             projectId, Now, DomainId.New(), ClaimGate: Optional<ClaimGate>.Of(ClaimGate.TrackerAssignee),
-            BranchNameTemplate: Optional<BranchNameTemplate>.Of(BranchNameTemplate.Parse("ARX-{shortid}-{slug}")));
+            BranchNameTemplate: Optional<BranchNameTemplate>.Of(BranchNameTemplate.Parse("PROJ-{shortid}-{slug}")));
 
         ProjectAggregate aggregate = new();
         aggregate.Apply(teamChanged);
 
         aggregate.ClaimGate.Should().Be(ClaimGate.TrackerAssignee);
-        aggregate.BranchNameTemplate.Should().Be(BranchNameTemplate.Parse("ARX-{shortid}-{slug}"));
+        aggregate.BranchNameTemplate.Should().Be(BranchNameTemplate.Parse("PROJ-{shortid}-{slug}"));
     }
 
     [Fact]

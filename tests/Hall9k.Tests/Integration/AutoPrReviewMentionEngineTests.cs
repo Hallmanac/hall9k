@@ -525,7 +525,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
     /// <summary>
     /// A live pr-review task of another owner's, held by that owner's node and waiting on its pull
     /// request: the shape <see cref="SeedWaitingReviewAsync"/> seeds for this install, replicated in
-    /// from a teammate, and the shape example-org/acme-platform#2166 had when a teammate's install
+    /// from a teammate, and the shape it had when a teammate's install
     /// claimed it.
     /// </summary>
     private static async Task<Guid> SeedTeammatesWaitingReviewAsync(
@@ -580,7 +580,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian what do you think of this approach?", Now.AddMinutes(5))]);
+            [("IC_1", "reviewer-a", "@brian what do you think of this approach?", Now.AddMinutes(5))]);
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("normal speed never launches"), gh),
             gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
@@ -591,7 +591,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         TaskListItem minted = (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token)).Single();
         minted.Type.Should().Be(TaskType.PrReview);
         minted.LatestMentionCommentId.Should().Be("IC_1");
-        minted.LatestMentionAuthorLogin.Should().Be("ryan");
+        minted.LatestMentionAuthorLogin.Should().Be("reviewer-a");
         // Task 7ae690f5: a fresh mention mint carries MintedTask true, so this task now counts as
         // auto-pr-review's own for the duplicate-convergence sweep and the hourly mint cap query,
         // exactly as a review-requested mint always has.
@@ -608,7 +608,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
     }
 
     /// <summary>
-    /// Decision dce39370, from example-org/acme-platform#2166: a teammate's one question on a pull request
+    /// Decision dce39370, from a teammate: a teammate's one question on a pull request
     /// this install's own login wrote mints a task that answers it, never the two-lens review of the
     /// owner's own work. The login matches the pull request's author case-insensitively, and the
     /// objective, criterion and recorded outcome all say which shape ran.
@@ -629,7 +629,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "taylor-dennison", "@brian just curious what the motivating factor is here?", Now.AddMinutes(5))],
+            [("IC_1", "reviewer-b", "@brian just curious what the motivating factor is here?", Now.AddMinutes(5))],
             pullRequestAuthor: ("BRIAN", 99, "OWNER"));
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("normal speed never launches"), gh),
@@ -641,7 +641,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         await using IQuerySession query = store.QuerySession();
         TaskListItem minted = (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token)).Single();
         minted.Type.Should().Be(TaskType.PrReview);
-        minted.Objective.Should().Be($"Answer taylor-dennison's comment on your own pull request {repository}#{number}");
+        minted.Objective.Should().Be($"Answer reviewer-b's comment on your own pull request {repository}#{number}");
         minted.Objective.Should().NotContain("Review pull request");
         minted.WasAutoPrReviewCreated.Should().BeTrue("the mint caps and convergence count it like any other auto-pr-review task");
 
@@ -673,8 +673,8 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian what do you think of this approach?", Now.AddMinutes(5))],
-            pullRequestAuthor: ("taylor-dennison", 7, "MEMBER"));
+            [("IC_1", "reviewer-a", "@brian what do you think of this approach?", Now.AddMinutes(5))],
+            pullRequestAuthor: ("reviewer-b", 7, "MEMBER"));
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("normal speed never launches"), gh),
             gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance,
@@ -725,8 +725,8 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian what do you think of this approach?", Now.AddMinutes(5))],
-            isPrivate: false, pullRequestAuthor: ("taylor-dennison", memberAccountId, "MEMBER"),
+            [("IC_1", "reviewer-a", "@brian what do you think of this approach?", Now.AddMinutes(5))],
+            isPrivate: false, pullRequestAuthor: ("reviewer-b", memberAccountId, "MEMBER"),
             commentAuthorAccountId: strangerAccountId);
         AutoPrReviewEngine engine = new(
             store, node,
@@ -746,8 +746,8 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         minted.PrReviewGateParkedAuthorAccountId.Should().Be(
             memberAccountId,
             "the park card names the pull request's own author, GitHub's own reading of it, even though this "
-            + "park was actually caused by the tagging comment's own author (ryan) failing the gate");
-        minted.PrReviewGateParkedAuthorLogin.Should().Be("taylor-dennison");
+            + "park was actually caused by the tagging comment's own author (reviewer-a) failing the gate");
+        minted.PrReviewGateParkedAuthorLogin.Should().Be("reviewer-b");
         minted.PrReviewGateParkedTitle.Should().Be(
             "Add rate limiting", "the card names the pull request's own title, never the platform-authored objective");
         minted.PrReviewGateParkedIsPrivate.Should().BeFalse();
@@ -788,7 +788,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian what do you think of this approach?", Now.AddMinutes(5))],
+            [("IC_1", "reviewer-a", "@brian what do you think of this approach?", Now.AddMinutes(5))],
             isPrivate: false, pullRequestAuthor: ("brian", memberAccountId, "OWNER"), commentAuthorAccountId: 999);
         AutoPrReviewEngine engine = new(
             store, node,
@@ -986,7 +986,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian does this handle the empty-list case?", Now.AddMinutes(5))]);
+            [("IC_1", "reviewer-a", "@brian does this handle the empty-list case?", Now.AddMinutes(5))]);
         CapturingExecutor executor = new();
         RunLauncher launcher = NewLauncher(store, node, new StubWorktreeManager(), executor, gh);
         AutoPrReviewEngine engine = new(
@@ -1013,7 +1013,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             minted.Id, claimed.CurrentRunId!.Value, node.NodeId, node.OwnerId, claimed.LeaseGeneration, cts.Token);
 
         executor.Request!.Prompt.Should().Contain("@brian does this handle the empty-list case?");
-        executor.Request.Prompt.Should().Contain("ryan");
+        executor.Request.Prompt.Should().Contain("reviewer-a");
         // The session's own working directory is the pull request checkout, a different directory
         // entirely from where its findings files land — the prompt must therefore name the exact
         // absolute path to write mention-answer.md to, never just the bare filename, or
@@ -1026,7 +1026,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
     }
 
     /// <summary>
-    /// Mints a task from a mention by ryan on a pull request, then rewrites only the stored minting
+    /// Mints a task from a mention by reviewer-a on a pull request, then rewrites only the stored minting
     /// row's comment body to <paramref name="storedBody"/> and relaunches the primary session. The
     /// row's mentioned login and the task's recorded tagged login stay as the mint wrote them, so a
     /// body that tags someone else proves the body, not the recorded login, decides. Returns the
@@ -1045,7 +1045,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         bool loginReadNow = true;
         ProcessRunner scripted = MentionScriptedGh(
-            repository, number, "brian", [("IC_1", "ryan", "@brian does this handle the empty-list case?", Now.AddMinutes(5))]);
+            repository, number, "brian", [("IC_1", "reviewer-a", "@brian does this handle the empty-list case?", Now.AddMinutes(5))]);
         ProcessRunner gh = (fileName, arguments, workingDirectory, environment) =>
             arguments.Contains("user") && !loginReadNow
                 ? Task.FromResult(new ProcessResult(1, string.Empty, "gh: not logged in"))
@@ -1092,11 +1092,11 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
 
         AgentSpawnRequest request = await RelaunchMintedReviewWithStoredBodyAsync(
-            "acme/mention-mint-other-login-test", 4251, "@taylor does this handle the empty-list case?",
+            "acme/mention-mint-other-login-test", 4251, "@casey does this handle the empty-list case?",
             loginReadable: true, cts.Token);
 
-        request.Prompt.Should().NotContain("mention-answer.md", "a comment aimed at taylor is not one brian was asked to answer");
-        request.Prompt.Should().NotContain("@taylor does this handle", "the addendum quotes the comment, and none was appended");
+        request.Prompt.Should().NotContain("mention-answer.md", "a comment aimed at casey is not one brian was asked to answer");
+        request.Prompt.Should().NotContain("@casey does this handle", "the addendum quotes the comment, and none was appended");
     }
 
     [Fact]
@@ -1144,7 +1144,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
     }
 
     /// <summary>
-    /// example-org/acme-platform#2166: a mention of this install's login on a pull request whose only
+    /// The origin case: a mention of this install's login on a pull request whose only
     /// live pr-review task is another owner's used to find that task by external reference alone and
     /// claim it. Now nothing is claimed, launched, appended or minted: the mention is recorded
     /// against no task, for the board to surface. <see cref="RefusingExecutor"/> and
@@ -1171,7 +1171,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian any thoughts on the rate limiter?", Now.AddMinutes(5))]);
+            [("IC_1", "reviewer-a", "@brian any thoughts on the rate limiter?", Now.AddMinutes(5))]);
         AutoPrReviewEngine engine = new(
             store, node,
             NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("a teammate's task is never launched on"), gh),
@@ -1212,7 +1212,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian could you take a look?", Now.AddDays(-14))]);
+            [("IC_1", "reviewer-a", "@brian could you take a look?", Now.AddDays(-14))]);
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("held mentions never dispatch"), gh),
             gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
@@ -1245,7 +1245,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian could you take a look?", Now.AddMinutes(5))]);
+            [("IC_1", "reviewer-a", "@brian could you take a look?", Now.AddMinutes(5))]);
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("off means off"), gh),
             gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
@@ -1284,7 +1284,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian one more question about this", Now.AddMinutes(5))]);
+            [("IC_1", "reviewer-a", "@brian one more question about this", Now.AddMinutes(5))]);
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("off silences the follow-up too"), gh),
             gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
@@ -1323,7 +1323,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian could you take a look?", Now.AddDays(-14))]);
+            [("IC_1", "reviewer-a", "@brian could you take a look?", Now.AddDays(-14))]);
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("stale mentions never dispatch"), gh),
             gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
@@ -1357,7 +1357,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian what do you think?", Now.AddMinutes(5))]);
+            [("IC_1", "reviewer-a", "@brian what do you think?", Now.AddMinutes(5))]);
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("normal speed never launches"), gh),
             gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
@@ -1424,7 +1424,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian one more question now that this merged", Now.AddMinutes(5))]);
+            [("IC_1", "reviewer-a", "@brian one more question now that this merged", Now.AddMinutes(5))]);
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("normal speed never launches"), gh),
             gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
@@ -1461,12 +1461,12 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         await using (IDocumentSession session = store.LightweightSession())
         {
             TaskAdded added = TaskDecider.Add(
-                doneTaskId, projectId, $"Answer taylor-dennison's comment on your own pull request {repository}#{number}",
+                doneTaskId, projectId, $"Answer reviewer-b's comment on your own pull request {repository}#{number}",
                 ["answer"], TaskType.PrReview, null, null,
                 new ExternalReference(WorkItemProvider.GitHubPullRequest, $"{repository}#{number}"),
                 Now.AddDays(-2), node.OwnerId);
             PullRequestReviewMentionObserved observed = new(
-                doneTaskId, $"https://github.com/{repository}/pull/{number}", "IC_0", "taylor-dennison",
+                doneTaskId, $"https://github.com/{repository}/pull/{number}", "IC_0", "reviewer-b",
                 "@brian why?", "https://example.test/IC_0", Now.AddDays(-2), Now.AddDays(-2),
                 MintedTask: true, MentionedLogin: "brian", AnswerOnly: true);
             TaskAggregate task = new();
@@ -1488,7 +1488,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "taylor-dennison", "@brian one more question", Now.AddMinutes(5))],
+            [("IC_1", "reviewer-b", "@brian one more question", Now.AddMinutes(5))],
             pullRequestAuthor: ("BRIAN", 99, "OWNER"));
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("normal speed never launches"), gh),
@@ -1534,7 +1534,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian one more question about this", Now.AddMinutes(5))]);
+            [("IC_1", "reviewer-a", "@brian one more question about this", Now.AddMinutes(5))]);
         CapturingExecutor executor = new();
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node, new StubWorktreeManager(), executor, gh),
@@ -1553,7 +1553,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         executor.Request.Should().NotBeNull("a bounded follow-up session was dispatched");
         executor.Request!.Prompt.Should().Contain("@brian one more question about this");
-        executor.Request.Prompt.Should().Contain("ryan");
+        executor.Request.Prompt.Should().Contain("reviewer-a");
         // Security review idea 6be68ee2, process-injection finding 1, Brian's ruling 2026-09-27:
         // a mention follow-up is one of the three real spawn sites that never skips permissions.
         executor.Request.SkipPermissions.Should().BeFalse();
@@ -1634,7 +1634,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian does the retry logic look right to you?", Now.AddMinutes(5))]);
+            [("IC_1", "reviewer-a", "@brian does the retry logic look right to you?", Now.AddMinutes(5))]);
         CapturingExecutor executor = new();
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node, new StubWorktreeManager(), executor, gh),
@@ -1686,7 +1686,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian does the retry logic look right to you?", Now.AddMinutes(5))],
+            [("IC_1", "reviewer-a", "@brian does the retry logic look right to you?", Now.AddMinutes(5))],
             isPrivate: false);
         CapturingExecutor executor = new();
         AutoPrReviewEngine engine = new(
@@ -1734,7 +1734,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian does the retry logic look right to you?", Now.AddMinutes(5))]);
+            [("IC_1", "reviewer-a", "@brian does the retry logic look right to you?", Now.AddMinutes(5))]);
         CapturingExecutor executor = new();
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node, new RefusingWorktreeManager(), executor, gh),
@@ -1878,7 +1878,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
                     PullRequestUrl = $"https://github.com/{repository}/pull/{number}",
                     MentionedLogin = "brian",
                     CommentId = $"IC_prior_{i}",
-                    CommentAuthorLogin = "ryan",
+                    CommentAuthorLogin = "reviewer-a",
                     CommentBody = "an earlier question",
                     CommentUrl = $"https://github.com/{repository}/pull/{number}#issuecomment-prior{i}",
                     CommentCreatedAt = Now.AddHours(-3),
@@ -1893,7 +1893,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_new", "ryan", "@brian one more question", Now.AddMinutes(5))]);
+            [("IC_new", "reviewer-a", "@brian one more question", Now.AddMinutes(5))]);
         AutoPrReviewEngine engine = new(
             store, node,
             NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("the lifetime cap holds this dispatch"), gh),
@@ -1945,7 +1945,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
                 PullRequestUrl = $"https://github.com/{repository}/pull/{number}",
                 MentionedLogin = "brian",
                 CommentId = "IC_prior",
-                CommentAuthorLogin = "ryan",
+                CommentAuthorLogin = "reviewer-a",
                 CommentBody = "an earlier question",
                 CommentUrl = $"https://github.com/{repository}/pull/{number}#issuecomment-prior",
                 CommentCreatedAt = Now.AddMinutes(-5),
@@ -1958,7 +1958,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_new", "ryan", "@brian and one more thing", Now.AddMinutes(1))]);
+            [("IC_new", "reviewer-a", "@brian and one more thing", Now.AddMinutes(1))]);
         AutoPrReviewEngine engine = new(
             store, node,
             NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("the cooldown holds this dispatch"), gh),
@@ -2000,7 +2000,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian one more question", Now.AddMinutes(5))]);
+            [("IC_1", "reviewer-a", "@brian one more question", Now.AddMinutes(5))]);
         EnrolledNodeSnapshots fleet = FleetOfThisNodeAnd(projectId, node, LowerRankedPeer);
         AutoPrReviewEngine engine = new(
             store, node,
@@ -2046,8 +2046,8 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "Taylor-Dennison", "@brian fixed in abc123, please look again", Now.AddMinutes(5))],
-            pullRequestAuthor: ("taylor-dennison", 4411L, "MEMBER"));
+            [("IC_1", "Reviewer-B", "@brian fixed in abc123, please look again", Now.AddMinutes(5))],
+            pullRequestAuthor: ("reviewer-b", 4411L, "MEMBER"));
         AutoPrReviewEngine engine = new(
             store, node,
             NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("an author's reply never launches a session"), gh),
@@ -2100,7 +2100,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         DateTimeOffset commentCreatedAt = Now.AddSeconds(-60);
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian what do you think?", commentCreatedAt)]);
+            [("IC_1", "reviewer-a", "@brian what do you think?", commentCreatedAt)]);
         EnrolledNodeSnapshots fleet = FleetOfThisNodeAnd(projectId, node, LowerRankedPeer);
 
         AutoPrReviewEngine holding = new(
@@ -2168,7 +2168,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ProcessRunner gh = MentionScriptedGh(
             repository, number, "brian",
-            [("IC_1", "ryan", "@brian what about this one?", Now.AddMinutes(5))]);
+            [("IC_1", "reviewer-a", "@brian what about this one?", Now.AddMinutes(5))]);
         AutoPrReviewEngine engine = new(
             store, node,
             NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("the hourly cap holds this mint"), gh),

@@ -182,7 +182,7 @@ public sealed class PartialReplicatedStreamRepairTests
             Native(taskId, new TaskDependencyCompleted(taskId, dependencyId, [], Now.AddHours(3)), version: 4),
             Native(
                 taskId,
-                new TrackerAssignmentObserved(taskId, "ARX-1", "account-id", "Brian Hall", Now.AddHours(4)),
+                new TrackerAssignmentObserved(taskId, "PROJ-1", "account-id", "Brian Hall", Now.AddHours(4)),
                 version: 5),
             Native(taskId, new TaskClaimed(taskId, thisNodeId, OwnerId, 1, abandonedRunId, Now.AddHours(4)), version: 6),
             Native(taskId, new TaskRequeued(taskId, RequeueReason.LeaseExpired, Now.AddHours(5)), version: 7),

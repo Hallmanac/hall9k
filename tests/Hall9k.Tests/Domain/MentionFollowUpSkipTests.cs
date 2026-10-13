@@ -12,9 +12,9 @@ namespace Hall9k.Tests.Domain;
 
 /// <summary>
 /// A mention follow-up runs only when this install's own login is the one the stored comment tags
-/// and the comment is not its own. These tests replay example-org/acme-platform#2166 from the task
-/// owner's side with no database, no branch and no GitHub: Brian (Hallmanac) answered Taylor in a
-/// comment that tagged @taylor-dennison, Taylor's install attached it to Brian's task and claimed
+/// and the comment is not its own. These tests replay a teammate's mention from the task
+/// owner's side with no database, no branch and no GitHub: Brian (Hallmanac) answered Casey in a
+/// comment that tagged @reviewer-b, Casey's install attached it to Brian's task and claimed
 /// a follow-up, a pre-flight requeued it, and Brian's own dispatcher then claimed the pending
 /// follow-up. The pre-launch gate must refuse it, and the skip must hand the task back.
 /// </summary>
@@ -22,18 +22,18 @@ public sealed class MentionFollowUpSkipTests
 {
     private static readonly DateTimeOffset Now = new(2026, 10, 1, 21, 21, 23, TimeSpan.Zero);
     private static readonly Guid Owner = DomainId.New();
-    private const string PullRequestUrl = "https://github.com/example-org/acme-platform/pull/2166";
+    private const string PullRequestUrl = "https://github.com/example-org/acme-platform/pull/5166";
     private const string BrianLogin = "Hallmanac";
-    private const string TaylorLogin = "taylor-dennison";
-    private const string BrianReplyToTaylor = "@taylor-dennison yes, that endpoint is behind the flag now.";
+    private const string CaseyLogin = "reviewer-b";
+    private const string BrianReplyToCasey = "@reviewer-b yes, that endpoint is behind the flag now.";
 
     [Fact]
     public void Gate_refuses_a_comment_that_tags_another_login()
     {
-        MentionFollowUpGate gate = MentionFollowUpGate.Decide(BrianLogin, "ryan", BrianReplyToTaylor);
+        MentionFollowUpGate gate = MentionFollowUpGate.Decide(BrianLogin, "reviewer-a", BrianReplyToCasey);
 
         gate.Proceed.Should().BeFalse();
-        gate.Reason.Should().Contain("by ryan does not tag Hallmanac");
+        gate.Reason.Should().Contain("by reviewer-a does not tag Hallmanac");
     }
 
     [Fact]
@@ -48,8 +48,8 @@ public sealed class MentionFollowUpSkipTests
     [Fact]
     public void Gate_refuses_when_the_own_login_could_not_be_read()
     {
-        MentionFollowUpGate unreadable = MentionFollowUpGate.Decide(null, TaylorLogin, "@Hallmanac thoughts?");
-        MentionFollowUpGate blank = MentionFollowUpGate.Decide("  ", TaylorLogin, "@Hallmanac thoughts?");
+        MentionFollowUpGate unreadable = MentionFollowUpGate.Decide(null, CaseyLogin, "@Hallmanac thoughts?");
+        MentionFollowUpGate blank = MentionFollowUpGate.Decide("  ", CaseyLogin, "@Hallmanac thoughts?");
 
         unreadable.Proceed.Should().BeFalse();
         blank.Proceed.Should().BeFalse();
@@ -60,7 +60,7 @@ public sealed class MentionFollowUpSkipTests
     [InlineData("cc @HALLMANAC, thoughts?")]
     public void Gate_lets_a_comment_by_someone_else_that_tags_this_login_through(string body)
     {
-        MentionFollowUpGate gate = MentionFollowUpGate.Decide(BrianLogin, TaylorLogin, body);
+        MentionFollowUpGate gate = MentionFollowUpGate.Decide(BrianLogin, CaseyLogin, body);
 
         gate.Proceed.Should().BeTrue();
         gate.Reason.Should().BeEmpty();
@@ -69,7 +69,7 @@ public sealed class MentionFollowUpSkipTests
     [Fact]
     public void Gate_does_not_read_a_longer_login_as_a_tag_of_this_one()
     {
-        MentionFollowUpGate gate = MentionFollowUpGate.Decide(BrianLogin, TaylorLogin, "@Hallmanac-2 can you look?");
+        MentionFollowUpGate gate = MentionFollowUpGate.Decide(BrianLogin, CaseyLogin, "@Hallmanac-2 can you look?");
 
         gate.Proceed.Should().BeFalse();
     }
@@ -77,7 +77,7 @@ public sealed class MentionFollowUpSkipTests
     [Fact]
     public void Gate_refuses_a_stored_comment_with_no_body()
     {
-        MentionFollowUpGate gate = MentionFollowUpGate.Decide(BrianLogin, TaylorLogin, string.Empty);
+        MentionFollowUpGate gate = MentionFollowUpGate.Decide(BrianLogin, CaseyLogin, string.Empty);
 
         gate.Proceed.Should().BeFalse();
     }
@@ -88,12 +88,12 @@ public sealed class MentionFollowUpSkipTests
         TaskAggregate task = WaitingPrReviewTask();
 
         PullRequestReviewMentionObserved observed = TaskDecider.ObservePrReviewMention(
-            task, PullRequestUrl, "IC_1", BrianLogin, BrianReplyToTaylor, "url", Now, Now, mentionedLogin: TaylorLogin);
+            task, PullRequestUrl, "IC_1", BrianLogin, BrianReplyToCasey, "url", Now, Now, mentionedLogin: CaseyLogin);
         task.Apply(observed);
 
-        observed.MentionedLogin.Should().Be(TaylorLogin);
+        observed.MentionedLogin.Should().Be(CaseyLogin);
         task.LatestMentionAuthorLogin.Should().Be(BrianLogin);
-        task.LatestMentionTaggedLogin.Should().Be(TaylorLogin);
+        task.LatestMentionTaggedLogin.Should().Be(CaseyLogin);
     }
 
     [Fact]
@@ -102,7 +102,7 @@ public sealed class MentionFollowUpSkipTests
         TaskAggregate task = WaitingPrReviewTask();
 
         task.Apply(TaskDecider.ObservePrReviewMention(
-            task, PullRequestUrl, "IC_1", BrianLogin, BrianReplyToTaylor, "url", Now, Now));
+            task, PullRequestUrl, "IC_1", BrianLogin, BrianReplyToCasey, "url", Now, Now));
 
         task.LatestMentionTaggedLogin.Should().BeNull("an older node's event names no tagged login, and null is unknown, never this install's own");
     }
@@ -113,13 +113,13 @@ public sealed class MentionFollowUpSkipTests
         TaskAggregate task = WaitingPrReviewTask();
         Guid reviewRunId = task.CurrentRunId!.Value;
         task.Apply(TaskDecider.ObservePrReviewMention(
-            task, PullRequestUrl, "IC_5940862269", BrianLogin, BrianReplyToTaylor, "url", Now, Now,
-            mentionedLogin: TaylorLogin));
+            task, PullRequestUrl, "IC_5940862269", BrianLogin, BrianReplyToCasey, "url", Now, Now,
+            mentionedLogin: CaseyLogin));
 
-        // Taylor's install claims the follow-up with the sentinel claim, its pre-flight comes back
+        // Casey's install claims the follow-up with the sentinel claim, its pre-flight comes back
         // safe, and the task is requeued still assigned to Brian.
-        Guid taylorRunId = DomainId.New();
-        task.Apply(TaskDecider.ClaimForMentionFollowUp(task, Owner, taylorRunId, Now, reportParkedAwaitingWalk: false));
+        Guid caseyRunId = DomainId.New();
+        task.Apply(TaskDecider.ClaimForMentionFollowUp(task, Owner, caseyRunId, Now, reportParkedAwaitingWalk: false));
         task.Apply(TaskDecider.Requeue(task, RequeueReason.PrReviewPreflightSafeMentionFollowUp, Now));
         task.PendingMentionFollowUpAfterPreflight.Should().BeTrue();
 
@@ -199,10 +199,10 @@ public sealed class MentionFollowUpSkipTests
     {
         TaskAggregate task = new();
         task.Apply(TaskDecider.Add(
-            DomainId.New(), DomainId.New(), "Review pull request example-org/acme-platform#2166",
+            DomainId.New(), DomainId.New(), "Review pull request example-org/acme-platform#5166",
             ["The findings report is walked with the owner (walk-pr-review-findings) and every finding is directed."],
-            TaskType.PrReview, agentContext: "Imported from github-pr:example-org/acme-platform#2166.", constraints: null,
-            externalReference: new ExternalReference(WorkItemProvider.GitHubPullRequest, "example-org/acme-platform#2166"),
+            TaskType.PrReview, agentContext: "Imported from github-pr:example-org/acme-platform#5166.", constraints: null,
+            externalReference: new ExternalReference(WorkItemProvider.GitHubPullRequest, "example-org/acme-platform#5166"),
             addedAt: Now, addedByOwnerId: Owner));
         task.Apply(TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now, Owner));
         task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner));

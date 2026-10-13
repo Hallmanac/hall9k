@@ -276,11 +276,11 @@ public sealed class OrchestratorFeedOwnershipTests
             [Candidate(5, abandoned, isReplicated: true, origin: Theirs)],
             OrchestratorFeedLevel.FromInput(level),
             ScopeWith(Own()),
-            Labelled("Ryan"));
+            Labelled("Jordan"));
 
         OrchestratorFeedItem item = read.Items.Should().ContainSingle().Subject;
         item.IsUrgent.Should().BeTrue();
-        item.Description.Should().Be("Ryan abandoned this task: superseded by the rewrite");
+        item.Description.Should().Be("Jordan abandoned this task: superseded by the rewrite");
         read.HasUrgentItem.Should().BeTrue();
     }
 
@@ -293,11 +293,11 @@ public sealed class OrchestratorFeedOwnershipTests
             [Candidate(5, resolved, isReplicated: true, origin: Theirs)],
             OrchestratorFeedLevel.Actionable,
             ScopeWith(Own()),
-            Labelled("Ryan"));
+            Labelled("Jordan"));
 
         OrchestratorFeedItem item = read.Items.Should().ContainSingle().Subject;
         item.IsUrgent.Should().BeTrue();
-        item.Description.Should().Be("Ryan closed this task as done by hand; no reason was recorded");
+        item.Description.Should().Be("Jordan closed this task as done by hand; no reason was recorded");
     }
 
     [Fact]

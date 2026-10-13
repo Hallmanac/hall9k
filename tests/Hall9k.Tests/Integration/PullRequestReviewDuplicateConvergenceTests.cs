@@ -25,7 +25,7 @@ namespace Hall9k.Tests.Integration;
 /// <summary>
 /// One GitHub review request, one live pr-review task across every node of the owner's fleet.
 /// <para>
-/// The incident these pin (arx-platform 2140, 2143 and 2147): two daemons of one owner each minted
+/// The incident these pin (three pull requests in a teammate's project): two daemons of one owner each minted
 /// a task for the same review request within seconds, because each sees the other's task only when
 /// replication lands, minutes later, after both dispatchers have claimed. Every test here uses two
 /// real stores exchanging events through the replication seam (<see cref="ReplicatedFleet"/>), and

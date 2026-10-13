@@ -2276,7 +2276,7 @@ public sealed class TaskDeciderTests
     {
         TaskAggregate task = DoneTask("https://github.com/x/y/pull/7");
         ReviewThreadReference[] observed =
-            [new ReviewThreadReference("PRRT_1", "jsmotherman", "https://github.com/x/y/pull/7#discussion_r1")];
+            [new ReviewThreadReference("PRRT_1", "reviewer-c", "https://github.com/x/y/pull/7#discussion_r1")];
 
         task.Apply(TaskDecider.Reopen(
             task, task.CurrentRunId!.Value, "task/abc", "Unresolved review comments.",
@@ -2328,7 +2328,7 @@ public sealed class TaskDeciderTests
             knownHumanReviewThreadIds: ["PRRT_1"],
             humanReviewThreads:
             [
-                new ReviewThreadReference("PRRT_1", "jsmotherman", "https://github.com/x/y/pull/7#discussion_r1"),
+                new ReviewThreadReference("PRRT_1", "reviewer-c", "https://github.com/x/y/pull/7#discussion_r1"),
             ]));
         task.KnownHumanReviewThreads.Should().HaveCount(1);
 

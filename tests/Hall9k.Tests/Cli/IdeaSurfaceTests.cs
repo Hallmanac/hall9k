@@ -59,14 +59,14 @@ public sealed class IdeaSurfaceTests
     public void The_browse_table_adds_an_assigned_column_only_when_somebody_holds_an_idea_and_still_fits_one_line_each(int width)
     {
         IReadOnlyList<IdeaRow> unheld = Rows();
-        IReadOnlyList<IdeaRow> held = [.. unheld.Select((row, index) => index == 1 ? row with { Assignee = "Ryan" } : row)];
+        IReadOnlyList<IdeaRow> held = [.. unheld.Select((row, index) => index == 1 ? row with { Assignee = "Jordan" } : row)];
 
         string[] without = Render(IdeaListCommand.Rows(unheld, showState: true, scoped: false, width, Now), width);
         string[] with = Render(IdeaListCommand.Rows(held, showState: true, scoped: false, width, Now), width);
 
         without[1].Should().NotContain("Assigned", "a list of ideas nobody holds reads exactly as it always did");
         with[1].Should().Contain("Assigned");
-        with.Should().Contain(line => line.Contains("Ryan"));
+        with.Should().Contain(line => line.Contains("Jordan"));
         with.Should().HaveCount(held.Count + 4, "the extra column narrows the note, it does not wrap it");
     }
 

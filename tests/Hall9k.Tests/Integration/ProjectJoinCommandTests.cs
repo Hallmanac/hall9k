@@ -788,7 +788,7 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
     /// on one project kept falling back to that same fingerprint on every later join — silently
     /// self-writing a root.yaml and an unvouched node.yaml into a second project's own ledger even
     /// when that project's own genesis already belonged to someone else entirely, exactly the
-    /// arx-platform incident this task's own Decisions Log entry describes.
+    /// incident in a teammate's project that this task's own Decisions Log entry describes.
     /// </summary>
     [Fact]
     public async Task An_install_that_already_self_established_a_root_on_one_project_defers_rather_than_writing_into_a_second_owners_project()

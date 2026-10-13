@@ -10,7 +10,7 @@ namespace Hall9k.Tests.Daemon;
 /// <summary>
 /// The covering-task decision both auto-pr-review triggers share, with no database, no branch and no
 /// GitHub: which of the live pr-review tasks on one pull request this install may treat as its own
-/// (<see cref="OwnerScopedCoverage"/>). The origin case is example-org/acme-platform#2166, where a
+/// (<see cref="OwnerScopedCoverage"/>). The origin case: a
 /// teammate's install found Brian's replicated task by external reference alone and claimed it.
 /// </summary>
 public sealed class OwnerScopedCoverageTests

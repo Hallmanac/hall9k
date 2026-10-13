@@ -1266,7 +1266,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
 
         arguments.Should().Equal(
             "pr", "create",
-            "--title", "ARX-4861: Resolve references in every host",
+            "--title", "PROJ-4861: Resolve references in every host",
             "--body-file", Path.Combine(runDirectory, "pr-body.md"),
             "--base", "main",
             "--head", "task/12345678-resolve-references");
@@ -1293,7 +1293,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
 
         File.Exists(RunPaths.PrSummaryFile(runDirectory)).Should().BeFalse("no session composed one");
         arguments.Should().ContainInOrder(
-            "--title", "ARX-4861: Turn an external work item into a task with one command");
+            "--title", "PROJ-4861: Turn an external work item into a task with one command");
         (await File.ReadAllTextAsync(Path.Combine(runDirectory, "pr-body.md")))
             .Should().Contain("## Acceptance criteria")
             .And.Contain("run narration", "with no authored body the run's own narration is what there is");
@@ -1312,7 +1312,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         Id = DomainId.New(),
         Objective = "Turn an external work item into a task with one command",
         AcceptanceCriteria = ["The importer refuses a closed issue"],
-        ExternalReference = "jira:ARX-4861",
+        ExternalReference = "jira:PROJ-4861",
     };
 
     private static void Git(string workingDirectory, string arguments)

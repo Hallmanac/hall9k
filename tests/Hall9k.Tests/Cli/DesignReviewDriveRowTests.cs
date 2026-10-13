@@ -25,7 +25,7 @@ public sealed class DesignReviewDriveRowTests
 
         row.Should().Contain("on");
         row.Should().Contain("default");
-        row.Should().Contain("h9k project set arx-platform --design-review-drive off");
+        row.Should().Contain("h9k project set sample-project --design-review-drive off");
     }
 
     [Fact]
@@ -37,7 +37,7 @@ public sealed class DesignReviewDriveRowTests
         row.Should().Contain("off");
         row.Should().Contain("explicit");
         row.Should().Contain("code-and-design-file only");
-        row.Should().Contain("h9k project set arx-platform --design-review-drive on");
+        row.Should().Contain("h9k project set sample-project --design-review-drive on");
     }
 
     /// <summary>
@@ -61,7 +61,7 @@ public sealed class DesignReviewDriveRowTests
         }
     }
 
-    private static ProjectDetails Project() => new() { Id = DomainId.New(), Name = "arx-platform" };
+    private static ProjectDetails Project() => new() { Id = DomainId.New(), Name = "sample-project" };
 
     private static string Rendered(string markup)
     {

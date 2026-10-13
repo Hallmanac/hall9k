@@ -60,14 +60,14 @@ public sealed class LedgerTaskLookupTests
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
         FakeLedger ledger = new();
         ProjectDetails hall9k = Project("hall9k", "/repo-hall9k");
-        ProjectDetails arx = Project("arx-platform", "/repo-arx");
-        await SeedRecordAsync(ledger, arx, TaskId, cts.Token);
+        ProjectDetails sample = Project("sample-project", "/repo-sample");
+        await SeedRecordAsync(ledger, sample, TaskId, cts.Token);
 
         IReadOnlyList<LedgerTaskLookup.Match> matches = await LedgerTaskLookup.FindAsync(
-            ledger, [hall9k, arx], DomainId.Short(TaskId), cts.Token);
+            ledger, [hall9k, sample], DomainId.Short(TaskId), cts.Token);
 
         matches.Should().ContainSingle();
-        matches[0].Project.Name.Should().Be("arx-platform");
+        matches[0].Project.Name.Should().Be("sample-project");
     }
 
     [Fact]

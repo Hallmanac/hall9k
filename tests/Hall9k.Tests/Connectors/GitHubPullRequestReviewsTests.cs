@@ -19,7 +19,7 @@ public sealed class GitHubPullRequestReviewsTests
     private const string ReviewUrl = PullRequestUrl + "#pullrequestreview-345";
 
     [Theory]
-    [InlineData("User", "jsmotherman", false)]
+    [InlineData("User", "reviewer-c", false)]
     [InlineData("Bot", "dependabot[bot]", true)]
     [InlineData("User", "copilot-pull-request-reviewer", true)]
     [InlineData("User", "Copilot", true)]
@@ -63,7 +63,7 @@ public sealed class GitHubPullRequestReviewsTests
         {
             html_url = ReviewUrl,
             pull_request_url = "https://api.github.com/repos/x/y/pulls/99",
-            user = new { login = "jsmotherman", type = "User" },
+            user = new { login = "reviewer-c", type = "User" },
         });
 
         Action act = () => GitHubPullRequestReviews.Parse(json, "x/y", 2042, ReviewUrl);

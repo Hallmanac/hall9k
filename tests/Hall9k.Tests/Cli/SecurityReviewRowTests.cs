@@ -24,7 +24,7 @@ public sealed class SecurityReviewRowTests
 
         row.Should().Contain("on");
         row.Should().Contain("default");
-        row.Should().Contain("h9k project set arx-platform --security-review off");
+        row.Should().Contain("h9k project set sample-project --security-review off");
     }
 
     [Fact]
@@ -35,7 +35,7 @@ public sealed class SecurityReviewRowTests
         row.Should().Contain("off");
         row.Should().Contain("explicit");
         row.Should().Contain("nothing");
-        row.Should().Contain("h9k project set arx-platform --security-review on");
+        row.Should().Contain("h9k project set sample-project --security-review on");
     }
 
     /// <summary>
@@ -59,7 +59,7 @@ public sealed class SecurityReviewRowTests
         }
     }
 
-    private static ProjectDetails Project() => new() { Id = DomainId.New(), Name = "arx-platform" };
+    private static ProjectDetails Project() => new() { Id = DomainId.New(), Name = "sample-project" };
 
     private static string Rendered(string markup)
     {

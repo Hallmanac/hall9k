@@ -666,10 +666,10 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
-    /// Brian and Ryan were both requested on one pull request, so each has a pr-review task and
-    /// Ryan's has replicated onto Brian's node. Brian is then removed: the removal the sweep reads
-    /// from GitHub is Brian's, so it recalls Brian's task and nothing else. Ryan's task is his
-    /// alone (decision 8a5822cc), whether it is told apart by the login it watches (ryan) or by
+    /// Brian and Jordan were both requested on one pull request, so each has a pr-review task and
+    /// Jordan's has replicated onto Brian's node. Brian is then removed: the removal the sweep reads
+    /// from GitHub is Brian's, so it recalls Brian's task and nothing else. Jordan's task is his
+    /// alone (decision 8a5822cc), whether it is told apart by the login it watches (reviewer-a) or by
     /// its owner (a second task that carries Brian's login but is held by a teammate's root).
     /// </summary>
     [Fact]
@@ -681,7 +681,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         string ownRoot = await EnsureOwnRootAsync(store, node, cts.Token);
         ownRoot.Should().NotBe(TeammateRoot);
         Guid projectId = DomainId.New();
-        const string repository = "acme/brian-and-ryan-requested";
+        const string repository = "acme/brian-and-reviewer-a-requested";
         const int number = 77;
 
         await using (IDocumentSession session = store.LightweightSession())
@@ -701,7 +701,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         }
 
         Guid brians = await SeedQueuedReviewAsync(store, projectId, repository, number, "Brian", node.OwnerId, ownRoot, cts.Token);
-        Guid ryans = await SeedQueuedReviewAsync(store, projectId, repository, number, "ryan", DomainId.New(), TeammateRoot, cts.Token);
+        Guid jordans = await SeedQueuedReviewAsync(store, projectId, repository, number, "reviewer-a", DomainId.New(), TeammateRoot, cts.Token);
         Guid sameLoginOtherOwner = await SeedQueuedReviewAsync(
             store, projectId, repository, number, "brian", DomainId.New(), TeammateRoot, cts.Token);
 
@@ -726,7 +726,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             (await query.Events.AggregateStreamAsync<TaskAggregate>(brians, token: cts.Token))!.State
                 .Should().Be(TaskState.Abandoned, "Brian's task never dispatched, so the recall concludes it");
 
-            foreach (Guid teammatesTask in new[] { ryans, sameLoginOtherOwner })
+            foreach (Guid teammatesTask in new[] { jordans, sameLoginOtherOwner })
             {
                 IReadOnlyList<object> stream = [.. (await query.Events.FetchStreamAsync(teammatesTask, token: cts.Token)).Select(recorded => recorded.Data)];
                 stream.Should().NotContain(
@@ -2728,7 +2728,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
     /// covered here (the resolve, which is what <see cref="SeedDeliveredPrReviewRunAsync"/> seeds)
     /// is the one they all share.
     /// <para>
-    /// Origin incident (2026-09-08, arx-platform #2023, task 2402246b): this went Done the moment
+    /// Origin incident (2026-09-08, a teammate's project, task 2402246b): this went Done the moment
     /// the review was posted, and nothing on the board watched the pull request from then on.
     /// </para>
     /// </summary>

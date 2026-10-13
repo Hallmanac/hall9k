@@ -6,7 +6,7 @@ using Xunit;
 namespace Hall9k.Tests.Domain;
 
 /// <summary>
-/// Task: a verify gate can be scoped to a path set (TaylorDenny, arx-platform #2218).
+/// Task: a verify gate can be scoped to a path set (a teammate's project).
 /// <see cref="GatePathScope"/> and <see cref="GatePathScopeOutcome"/> are pure functions, so every
 /// case here is a plain in-memory call: no branch, no commit, no container, no git.
 /// </summary>

@@ -837,7 +837,7 @@ public sealed class TaskPhaseSurfaceTests
     /// is routinely a queued or claimed follow-up now. The phase line says both halves: that the
     /// lap is dispatched or queued, and how long the check the merge is still waiting on has been
     /// pending — never the pendingness on its own as the reason nothing is happening, which is what
-    /// arx-platform PR #2042 read for nine hours.
+    /// a pull request in a teammate's project read for nine hours.
     /// </summary>
     [Fact]
     public void A_follow_up_row_says_how_long_a_check_has_been_pending_behind_it()
@@ -1060,7 +1060,7 @@ public sealed class TaskPhaseSurfaceTests
         // A landed review recorded while the CI picture was still incomplete must not read as the
         // all-clear the case above renders once checks settle (independent pre-PR review, cycle 3)
         // — but what it says about the checks is how long one has been pending, not that they might
-        // be (Decisions Log #164; origin: arx-platform PR #2042's dead .NET
+        // be (Decisions Log #164; origin: a teammate's project's dead .NET
         // Framework check read pending for nine hours). It no longer hedges the thread count
         // either: the sweep reads unresolved threads whatever the checks are doing now, so
         // "not yet confirmed resolved" would report a gap that is closed.
@@ -1502,7 +1502,7 @@ public sealed class TaskPhaseSurfaceTests
     }
 
     /// <summary>
-    /// Origin incident (task 0b2e0457 on #2165): the owner never submitted a review, yet the Waiting row
+    /// Origin incident (task 0b2e0457): the owner never submitted a review, yet the Waiting row
     /// read "waiting on the pull request's author" with a re-review suffix, as though a review of theirs
     /// were being answered. Once the latest observation records no submitted review the line says so and
     /// claims nothing about a request.

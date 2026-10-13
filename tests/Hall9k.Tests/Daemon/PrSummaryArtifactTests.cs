@@ -119,7 +119,7 @@ public sealed class PrSummaryArtifactTests : IDisposable
             "PR SUMMARY:\nTitle: Resolve references in every host\n\nEvery host uses the shared provider now.");
         PrSummaryParser.PrSummary? summary = PrSummaryArtifact.TryRead(NullLogger.Instance, Guid.Empty, _runDirectory);
 
-        PullRequestBody.Title(Task(), summary).Should().Be("ARX-4861: Resolve references in every host");
+        PullRequestBody.Title(Task(), summary).Should().Be("PROJ-4861: Resolve references in every host");
         PullRequestBody.Build(Run(), Task(), "run narration", sourceUrl: null, summary)
             .Should().Contain("Every host uses the shared provider now.")
             .And.NotContain("run narration")
@@ -138,7 +138,7 @@ public sealed class PrSummaryArtifactTests : IDisposable
 
         summary.Should().BeNull();
         PullRequestBody.Title(Task(), summary)
-            .Should().Be("ARX-4861: Turn an external work item into a task with one command");
+            .Should().Be("PROJ-4861: Turn an external work item into a task with one command");
         PullRequestBody.Build(Run(), Task(), "run narration", sourceUrl: null, summary)
             .Should().Contain("## Agent summary").And.Contain("run narration");
     }
@@ -161,6 +161,6 @@ public sealed class PrSummaryArtifactTests : IDisposable
         Id = DomainId.New(),
         Objective = "Turn an external work item into a task with one command",
         AcceptanceCriteria = ["The importer refuses a closed issue"],
-        ExternalReference = "jira:ARX-4861",
+        ExternalReference = "jira:PROJ-4861",
     };
 }

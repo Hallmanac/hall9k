@@ -27,7 +27,7 @@ namespace Hall9k.Tests.Integration;
 /// Two halves, both against a real store and a scripted <c>gh</c>: the three things the owner can
 /// do with a drafted reply, and the posting path that refuses a session trying to skip them.
 /// <para>
-/// Origin incidents, arx-platform PR #2021 (2026-09-09) and PR #2042 (2026-09-15): accurate
+/// Origin incidents, two pull requests in a teammate's project (2026-09-09 and 2026-09-15): accurate
 /// replies to two people, posted under Brian's login minutes after each approved, with no step
 /// where he saw the words first.
 /// </para>
@@ -481,7 +481,7 @@ public sealed class HumanThreadReplyTests(PostgresFixture postgres) : IClassFixt
             task, claimed.RunId, "task/limiter", "1 unresolved review thread, 1 of them started by a human reviewer.",
             FollowUpKind.ReviewFeedback, automatic: true, Now, node.OwnerId,
             knownHumanReviewThreadIds: [HumanThreadId],
-            humanReviewThreads: [new ReviewThreadReference(HumanThreadId, "jsmotherman", HumanThreadUrl)]);
+            humanReviewThreads: [new ReviewThreadReference(HumanThreadId, "reviewer-c", HumanThreadUrl)]);
         task.Apply(reopened);
         TaskClaimed followUpClaim = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
         session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed, completed, reopened, followUpClaim]);

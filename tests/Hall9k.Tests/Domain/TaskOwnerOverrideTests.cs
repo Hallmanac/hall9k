@@ -21,7 +21,7 @@ public sealed class TaskOwnerOverrideTests
     private static readonly TaskOwnerCheck UnknownOwner = new(TaskOwnerOutcome.Unknown, null, null, "creator");
 
     private static TaskOwnerOverrideDecision Decide(
-        TaskOwnerCheck check, string? holder, string? reason, OwnerRoleCheck? role = null, string? label = "Taylor") =>
+        TaskOwnerCheck check, string? holder, string? reason, OwnerRoleCheck? role = null, string? label = "Casey") =>
         TaskOwnerOverride.Decide(
             TaskId, "abandon", check, check.Outcome == TaskOwnerOutcome.Unknown ? null : label, null, holder, reason,
             role ?? OwnerRoleCheck.Passed);
@@ -43,12 +43,12 @@ public sealed class TaskOwnerOverrideTests
         TaskOwnerOverrideDecision decision = Decide(NotMine, holder: null, reason: null);
 
         decision.Outcome.Should().Be(TaskOwnerOverrideOutcome.Refused);
-        decision.Message.Should().Contain("Taylor").And.Contain("only that owner's nodes may act on it")
+        decision.Message.Should().Contain("Casey").And.Contain("only that owner's nodes may act on it")
             .And.Contain("--holder").And.Contain("--reason");
     }
 
     [Theory]
-    [InlineData("Taylor", null)]
+    [InlineData("Casey", null)]
     [InlineData(null, "closing it")]
     [InlineData("  ", "closing it")]
     public void The_holder_and_the_reason_are_required_together(string? holder, string? reason)
@@ -60,9 +60,9 @@ public sealed class TaskOwnerOverrideTests
     }
 
     [Theory]
-    [InlineData("Taylor")]
-    [InlineData("taylor")]
-    [InlineData("  TAYLOR  ")]
+    [InlineData("Casey")]
+    [InlineData("casey")]
+    [InlineData("  CASEY  ")]
     [InlineData("abcdef01")]
     [InlineData("ABCDEF0123456789")]
     public void The_holder_matches_the_owners_label_or_a_hex_prefix_of_the_root_of_at_least_eight_characters(string holder)
@@ -92,7 +92,7 @@ public sealed class TaskOwnerOverrideTests
         Decide(UnknownOwner, "unknown", "closing it", OwnerRoleCheck.NotChecked).Outcome
             .Should().Be(TaskOwnerOverrideOutcome.NeedsRoleCheck);
 
-        TaskOwnerOverrideDecision wrong = Decide(UnknownOwner, "Taylor", "closing it");
+        TaskOwnerOverrideDecision wrong = Decide(UnknownOwner, "Casey", "closing it");
         wrong.Outcome.Should().Be(TaskOwnerOverrideOutcome.Refused);
         wrong.Message.Should().Contain("creator").And.Contain("must be the word unknown");
     }
@@ -100,7 +100,7 @@ public sealed class TaskOwnerOverrideTests
     [Fact]
     public void A_failed_role_check_refuses_and_carries_why()
     {
-        TaskOwnerOverrideDecision decision = Decide(NotMine, "Taylor", "closing it", OwnerRoleCheck.Failed("no Owner role here"));
+        TaskOwnerOverrideDecision decision = Decide(NotMine, "Casey", "closing it", OwnerRoleCheck.Failed("no Owner role here"));
 
         decision.Outcome.Should().Be(TaskOwnerOverrideOutcome.Refused);
         decision.Message.Should().Contain("no Owner role here");
@@ -109,7 +109,7 @@ public sealed class TaskOwnerOverrideTests
     [Fact]
     public void A_passed_role_check_grants_the_override_recording_the_root_and_the_trimmed_reason()
     {
-        TaskOwnerOverrideDecision decision = Decide(NotMine, "Taylor", "  their node is gone  ");
+        TaskOwnerOverrideDecision decision = Decide(NotMine, "Casey", "  their node is gone  ");
 
         decision.Outcome.Should().Be(TaskOwnerOverrideOutcome.Override);
         decision.OnBehalfOfRootFingerprint.Should().Be(Owner);
@@ -129,7 +129,7 @@ public sealed class TaskOwnerOverrideTests
     public void The_role_check_is_not_asked_for_until_everything_cheaper_agrees()
     {
         Decide(NotMine, "Morgan", "closing it", OwnerRoleCheck.NotChecked).Outcome.Should().Be(TaskOwnerOverrideOutcome.Refused);
-        Decide(NotMine, "Taylor", null, OwnerRoleCheck.NotChecked).Outcome.Should().Be(TaskOwnerOverrideOutcome.Refused);
+        Decide(NotMine, "Casey", null, OwnerRoleCheck.NotChecked).Outcome.Should().Be(TaskOwnerOverrideOutcome.Refused);
     }
 
     /// <summary>An event written before the two fields existed must read back as an owner's own act.</summary>

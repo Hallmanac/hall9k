@@ -130,20 +130,20 @@ public sealed class ViewerBoardTests
         {
             ProjectMemberLabelsById = new Dictionary<Guid, ProjectMemberLabels>
             {
-                [ProjectId] = Labels(new ProjectMemberLabel(TeammateRoot, [], DisplayName.Parse("Ryan"), "ryan-gh")),
+                [ProjectId] = Labels(new ProjectMemberLabel(TeammateRoot, [], DisplayName.Parse("Jordan"), "jordan-gh")),
             },
         };
         TaskStatusRow row = TaskStatusComposer.Compose(review, context, StatusFixtures.Now);
 
-        row.TeammateOwner.Should().Be("Ryan");
-        row.Assignee.Should().Be("Ryan", "the Owner column names them too");
+        row.TeammateOwner.Should().Be("Jordan");
+        row.Assignee.Should().Be("Jordan", "the Owner column names them too");
         row.State.Should().Be(LifecycleState.Working);
         row.Objective.Should().Be("Review acme/widgets#9");
         row.Phase.HasPhase.Should().BeFalse();
         row.Attention.Should().Be(TaskAttention.None);
         row.AttentionMarkup.Should().BeEmpty();
         row.Facts.Should().BeEmpty();
-        row.DetailMarkup.Should().ContainSingle().Which.Should().Contain("a teammate's task, owned by Ryan");
+        row.DetailMarkup.Should().ContainSingle().Which.Should().Contain("a teammate's task, owned by Jordan");
 
         string everything = string.Join(' ', row.DetailMarkup) + row.AttentionMarkup + string.Join(' ', row.SummaryMarkup);
         everything.Should().NotContainAny("your review", "your threads", "needs you", "h9k task", "h9k review", "abandon");
@@ -251,7 +251,7 @@ public sealed class ViewerBoardTests
     {
         ProjectMemberLabels unnamed = Labels(
             new ProjectMemberLabel(ViewerRoot, [], DisplayName.None, null),
-            new ProjectMemberLabel(TeammateRoot, [], DisplayName.Parse("Ryan"), null));
+            new ProjectMemberLabel(TeammateRoot, [], DisplayName.Parse("Jordan"), null));
 
         IReadOnlyList<string> lines = StatusCommand.OwnerLabelNudgeLines([("hall9k", unnamed)], ViewerRoot);
 
@@ -389,7 +389,7 @@ public sealed class ViewerBoardTests
             Repository = "acme/widgets",
             Number = 9,
             MentionedLogin = "brian",
-            CommentAuthorLogin = "ryan",
+            CommentAuthorLogin = "reviewer-a",
             TaskId = taskId,
             Outcome = outcome,
         };

@@ -3008,10 +3008,10 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
     /// <summary>
     /// The FYI beside an approval (task: a review-feedback follow-up never answers a human
-    /// reviewer in the owner's name on its own). Origin incident, arx-platform PR #2021 on
-    /// 2026-09-09: John Mark approved and opened one thread saying his own pull request needed
+    /// reviewer in the owner's name on its own). Origin incident, a teammate's project on
+    /// 2026-09-09: a teammate approved and opened one thread saying their own pull request needed
     /// the same pattern; three minutes later closeout reopened the task on it and the lap
-    /// answered him under Brian's login. Nothing here was ever asked of this pull request, so
+    /// answered them under Brian's login. Nothing here was ever asked of this pull request, so
     /// nothing should have been dispatched.
     /// </summary>
     [Fact]
@@ -3034,10 +3034,10 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
                 UnresolvedHumanThreadDetails =
                 [
                     new UnresolvedHumanThread(
-                        "PRRT_fyi", "johnmark", "https://github.com/x/y/pull/7#discussion_r1",
+                        "PRRT_fyi", "reviewer-c", "https://github.com/x/y/pull/7#discussion_r1",
                         "Nice, my own PR needs the same pattern."),
                 ],
-                Reviewers = [FakeInspector.Approved("johnmark")],
+                Reviewers = [FakeInspector.Approved("reviewer-c")],
             },
         };
         await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
@@ -3057,7 +3057,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     /// The FYI exception is narrow on purpose: the same approval, the same person, and a thread
     /// that asks something dispatches exactly as it always has (task: a review-feedback follow-up
     /// never answers a human reviewer in the owner's name on its own). Origin incident,
-    /// arx-platform PR #2042 on 2026-09-15: jsmotherman approved and asked why a canary value
+    /// a teammate's project on 2026-09-15: a teammate approved and asked why a canary value
     /// rather than the sentinel. That question deserved a drafted answer, and this is the sweep
     /// that buys the lap to write one.
     /// </summary>
@@ -3083,9 +3083,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
                 UnresolvedHumanThreadDetails =
                 [
                     new UnresolvedHumanThread(
-                        "PRRT_asks", "jsmotherman", "https://github.com/x/y/pull/7#discussion_r2", body),
+                        "PRRT_asks", "reviewer-c", "https://github.com/x/y/pull/7#discussion_r2", body),
                 ],
-                Reviewers = [FakeInspector.Approved("jsmotherman")],
+                Reviewers = [FakeInspector.Approved("reviewer-c")],
             },
         };
         await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
@@ -4387,8 +4387,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     /// <summary>
     /// The ruling this branch implements (Brian, 2026-09-09 about 09:25 EDT; Decisions Log
     /// #164): a broken CI may be what the review found, so a lap that addresses
-    /// review feedback is never held behind a pending check. Origin incident: arx-platform PR #2042
-    /// (task 52634952, ARX-4861), whose .NET Framework build stage lost its hosted Azure DevOps
+    /// review feedback is never held behind a pending check. Origin incident: a pull request in a teammate's project
+    /// (task 52634952, PROJ-4861), whose .NET Framework build stage lost its hosted Azure DevOps
     /// agent at 00:10 and whose GitHub check never received a final status, so it read pending for
     /// nine hours while four Copilot threads sat unaddressed and every sweep stopped at that gate.
     /// </summary>

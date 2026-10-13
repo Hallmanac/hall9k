@@ -98,7 +98,7 @@ public sealed class GitHubReviewAssignmentsTests
                     {
                       "__typename": "ReviewRequestedEvent",
                       "createdAt": "2026-09-01T10:00:00Z",
-                      "actor": { "login": "ryan" },
+                      "actor": { "login": "reviewer-a" },
                       "requestedReviewer": { "__typename": "User", "login": "brian" }
                     },
                     {
@@ -110,7 +110,7 @@ public sealed class GitHubReviewAssignmentsTests
                     {
                       "__typename": "ReviewRequestedEvent",
                       "createdAt": "2026-09-03T09:15:00Z",
-                      "actor": { "login": "ryan" },
+                      "actor": { "login": "reviewer-a" },
                       "requestedReviewer": { "__typename": "User", "login": "brian" }
                     }
                   ]
@@ -132,7 +132,7 @@ public sealed class GitHubReviewAssignmentsTests
             TimelineJson, "brian", ReviewTimelineEventKind.Requested);
 
         actor.Found.Should().BeTrue();
-        actor.Login.Should().Be("ryan");
+        actor.Login.Should().Be("reviewer-a");
         actor.RequestedAt.Should().Be(new DateTimeOffset(2026, 9, 3, 9, 15, 0, TimeSpan.Zero));
     }
 
@@ -270,7 +270,7 @@ public sealed class GitHubReviewAssignmentsTests
                   "nodes": [
                     {
                       "id": "IC_1",
-                      "author": { "login": "ryan" },
+                      "author": { "login": "reviewer-a" },
                       "body": "@brian what do you think about this approach?",
                       "url": "https://github.com/acme/widgets/pull/42#issuecomment-1",
                       "createdAt": "2026-09-10T10:00:00Z"
@@ -365,7 +365,7 @@ public sealed class GitHubReviewAssignmentsTests
                       "nodes": [
                         {
                           "id": "IC_1",
-                          "author": { "login": "ryan" },
+                          "author": { "login": "reviewer-a" },
                           "body": "cc @acme/reviewers, can someone take a look?",
                           "url": "https://github.com/acme/widgets/pull/42#issuecomment-1",
                           "createdAt": "2026-09-10T10:00:00Z"
@@ -401,14 +401,14 @@ public sealed class GitHubReviewAssignmentsTests
                       "nodes": [
                         {
                           "id": "IC_1",
-                          "author": { "login": "ryan" },
+                          "author": { "login": "reviewer-a" },
                           "body": "@brianhall99, does this look right to you?",
                           "url": "https://github.com/acme/widgets/pull/42#issuecomment-1",
                           "createdAt": "2026-09-10T10:00:00Z"
                         },
                         {
                           "id": "IC_2",
-                          "author": { "login": "ryan" },
+                          "author": { "login": "reviewer-a" },
                           "body": "@brian, does this look right to you?",
                           "url": "https://github.com/acme/widgets/pull/42#issuecomment-2",
                           "createdAt": "2026-09-10T11:00:00Z"

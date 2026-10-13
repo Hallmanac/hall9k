@@ -1598,7 +1598,7 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
     }
 
     /// <summary>
-    /// The origin gap (arx#2201): the platform recorded no reviewed head, so the packet said "None
+    /// The origin gap (a teammate's project): the platform recorded no reviewed head, so the packet said "None
     /// were observed" under the commits heading while three commits had landed after the review. The
     /// reviewer's own CHANGES_REQUESTED review on GitHub names the commit it was posted against, and
     /// the range is computed from that. The fake git answers only for a range that starts there.

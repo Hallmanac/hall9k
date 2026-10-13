@@ -34,14 +34,14 @@ public sealed class BranchNameTemplateTests
         BranchNameTemplate.FromInput(null).Should().Be(BranchNameTemplate.Default);
     }
 
-    /// <summary>The arx-platform convention the field report asked for (Windows field report item 9).</summary>
+    /// <summary>The convention a teammate's project uses, which the field report asked for (Windows field report item 9).</summary>
     [Fact]
     public void A_tracker_keyed_template_renders_the_key_then_the_slug()
     {
         BranchNameTemplate template = BranchNameTemplate.Parse("{key}-{slug}");
 
-        template.Render(TaskId, "Add rate limiting to the auth endpoints", "ARX-14")
-            .Should().Be("ARX-14-add-rate-limiting-to-the-auth");
+        template.Render(TaskId, "Add rate limiting to the auth endpoints", "PROJ-14")
+            .Should().Be("PROJ-14-add-rate-limiting-to-the-auth");
     }
 
     [Fact]
@@ -58,7 +58,7 @@ public sealed class BranchNameTemplateTests
     /// anybody calls the issue nor something a branch name can carry without inventing directories.
     /// </summary>
     [Theory]
-    [InlineData("jira:ARX-14", "ARX-14")]
+    [InlineData("jira:PROJ-14", "PROJ-14")]
     [InlineData("github:Hallmanac/hall9k#42", "42")]
     [InlineData("github-pr:Hallmanac/hall9k#7", "7")]
     public void The_key_token_renders_the_item_as_people_say_it(string reference, string expected)
@@ -87,9 +87,9 @@ public sealed class BranchNameTemplateTests
     [Fact]
     public void An_objective_with_nothing_sluggable_still_renders_a_legal_ref()
     {
-        string branch = BranchNameTemplate.Parse("{key}/{slug}").Render(TaskId, "??? !!!", "ARX-14");
+        string branch = BranchNameTemplate.Parse("{key}/{slug}").Render(TaskId, "??? !!!", "PROJ-14");
 
-        branch.Should().Be("ARX-14/task");
+        branch.Should().Be("PROJ-14/task");
         LegalGitRef(branch).Should().BeTrue();
     }
 
@@ -234,7 +234,7 @@ public sealed class BranchNameTemplateTests
     [InlineData("feature/{key}/{shortid}")]
     public void The_collision_retry_suffix_stays_legal_against_any_accepted_template(string template)
     {
-        string branch = BranchNameTemplate.Parse(template).Render(TaskId, "Ship it", "ARX-14");
+        string branch = BranchNameTemplate.Parse(template).Render(TaskId, "Ship it", "PROJ-14");
 
         LegalGitRef($"{branch}-r{DomainId.Short(DomainId.New())[..4]}").Should().BeTrue();
     }
@@ -249,7 +249,7 @@ public sealed class BranchNameTemplateTests
     {
         string longest = new('x', 194);
 
-        string branch = BranchNameTemplate.Parse(longest).Render(TaskId, "Ship it", "ARX-14");
+        string branch = BranchNameTemplate.Parse(longest).Render(TaskId, "Ship it", "PROJ-14");
 
         branch.Should().HaveLength(194);
         $"{branch}-rbeef".Should().HaveLength(200);

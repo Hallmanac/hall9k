@@ -883,13 +883,13 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
         {
             seed.Store(new ProjectDetails { Id = projectId, RepositoryPath = "/dev/null", BaseBranch = "main" });
             TaskAdded added = TaskDecider.Add(
-                taskId, projectId, "Held by Ryan before anyone queues it", ["it is done"], TaskType.Chore,
+                taskId, projectId, "Held by Jordan before anyone queues it", ["it is done"], TaskType.Chore,
                 null, null, null, WorkClaimNow, holderId);
             TaskAggregate task = new();
             task.Apply(added);
             TaskPublished published = TaskDecider.Publish(task, TaskDependencyGraph.Empty, WorkClaimNow, holderId);
             seed.Events.StartStream<TaskAggregate>(
-                taskId, added, published, new TaskAssigneeSet(taskId, holderId, "ryan-root", WorkClaimNow, holderId));
+                taskId, added, published, new TaskAssigneeSet(taskId, holderId, "jordan-root", WorkClaimNow, holderId));
             await seed.SaveChangesAsync(cts.Token);
         }
 

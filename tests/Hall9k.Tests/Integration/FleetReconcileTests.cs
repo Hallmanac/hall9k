@@ -34,7 +34,7 @@ namespace Hall9k.Tests.Integration;
 /// <para>
 /// The invariant under test: every node in an owner's fleet holds every fleet- and team-scoped
 /// event of each project it registers, so any one of them is a sufficient answerer for a new
-/// teammate's bootstrap. Origin (Brian, 2026-09-21): the Mac held almost none of arx-platform's
+/// teammate's bootstrap. Origin (Brian, 2026-09-21): the Mac held almost none of a shared project's
 /// history while the Windows node held all of it.
 /// </para>
 /// </summary>
@@ -970,8 +970,8 @@ public sealed class FleetReconcileTests : IClassFixture<PostgresFixture>, IAsync
                 EventReplicationStreamId.ForFleetReconcile(nodeSilent, projectId), cts.Token))!;
             record.StalledAt.Should().Be(
                 Now + Retention + Retention, "the second silence is reported so a human can act on it");
-            StatusCommand.FleetReconcileLine(record, "arx-platform").Should()
-                .Contain("STALLED").And.Contain("h9k project reconcile arx-platform");
+            StatusCommand.FleetReconcileLine(record, "sample-project").Should()
+                .Contain("STALLED").And.Contain("h9k project reconcile sample-project");
         }
     }
 

@@ -131,11 +131,11 @@ public sealed class GitWorktreeManagerTests : IDisposable
         WorktreeRequest request = Request(
             "Add rate limiting to the auth endpoints",
             BranchNameTemplate.Parse("{key}-{slug}"),
-            externalReference: "jira:ARX-14");
+            externalReference: "jira:PROJ-14");
 
         Worktree worktree = await _manager.CreateAsync(request, cts.Token);
 
-        worktree.Branch.Should().Be("ARX-14-add-rate-limiting-to-the-auth");
+        worktree.Branch.Should().Be("PROJ-14-add-rate-limiting-to-the-auth");
         (_, string current) = TryGit(worktree.Path, "branch --show-current");
         current.Trim().Should().Be(worktree.Branch, "git took the templated name as a real ref");
     }
@@ -154,14 +154,14 @@ public sealed class GitWorktreeManagerTests : IDisposable
 
         Worktree first = await _manager.CreateAsync(
             new WorktreeRequest(
-                _repositoryPath, "main", taskId, DomainId.New(), "Same task twice", template, "jira:ARX-14"),
+                _repositoryPath, "main", taskId, DomainId.New(), "Same task twice", template, "jira:PROJ-14"),
             cts.Token);
         Worktree second = await _manager.CreateAsync(
             new WorktreeRequest(
-                _repositoryPath, "main", taskId, DomainId.New(), "Same task twice", template, "jira:ARX-14"),
+                _repositoryPath, "main", taskId, DomainId.New(), "Same task twice", template, "jira:PROJ-14"),
             cts.Token);
 
-        first.Branch.Should().Be("ARX-14-same-task-twice");
+        first.Branch.Should().Be("PROJ-14-same-task-twice");
         second.Branch.Should().StartWith(first.Branch + "-r");
         (_, string current) = TryGit(second.Path, "branch --show-current");
         current.Trim().Should().Be(second.Branch);
@@ -204,19 +204,19 @@ public sealed class GitWorktreeManagerTests : IDisposable
         // repository's refs/heads at all.
         string developer = Path.Combine(_root, "developer");
         Git(_root, $"clone \"{_originPath}\" \"{developer}\"");
-        Git(developer, "checkout -q -b ARX-14");
+        Git(developer, "checkout -q -b PROJ-14");
         File.WriteAllText(Path.Combine(developer, "UNRELATED.md"), "someone else's work\n");
         Git(developer, "add -A");
         Git(developer, "-c user.name=Dev -c user.email=d@d commit -qm unrelated");
-        Git(developer, "push -q origin ARX-14");
+        Git(developer, "push -q origin PROJ-14");
 
         WorktreeRequest request = Request(
-            "Add rate limiting", BranchNameTemplate.Parse("{key}"), externalReference: "jira:ARX-14");
+            "Add rate limiting", BranchNameTemplate.Parse("{key}"), externalReference: "jira:PROJ-14");
 
         Worktree worktree = await _manager.CreateAsync(request, cts.Token);
 
-        worktree.Branch.Should().NotBe("ARX-14", "that name already exists on origin");
-        worktree.Branch.Should().StartWith("ARX-14-r");
+        worktree.Branch.Should().NotBe("PROJ-14", "that name already exists on origin");
+        worktree.Branch.Should().StartWith("PROJ-14-r");
         (_, string current) = TryGit(worktree.Path, "branch --show-current");
         current.Trim().Should().Be(worktree.Branch);
     }

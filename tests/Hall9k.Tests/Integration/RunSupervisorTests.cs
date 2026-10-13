@@ -2940,11 +2940,11 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             humanReviewThreads:
             [
                 new ReviewThreadReference(
-                    "PRRT_human", "jsmotherman", "https://github.com/x/y/pull/1#discussion_r9"),
+                    "PRRT_human", "reviewer-c", "https://github.com/x/y/pull/1#discussion_r9"),
             ]);
 
         const string summary =
-            "THREAD DISPOSITION: thread=PRRT_human; disposition=decline; kind=human; author=jsmotherman\n"
+            "THREAD DISPOSITION: thread=PRRT_human; disposition=decline; kind=human; author=reviewer-c\n"
             + "The sentinel is load-bearing elsewhere; the canary is deliberately distinct.\n"
             + "SUMMARY:\n"
             + "DISAGREEMENT: thread=PRRT_human; disposition=decline; at=src/Limiter.cs:42\n"
@@ -2992,7 +2992,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
             store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.ReviewFeedback,
-            humanReviewThreads: [new ReviewThreadReference("PRRT_real", "jsmotherman", "https://x/1")]);
+            humanReviewThreads: [new ReviewThreadReference("PRRT_real", "reviewer-c", "https://x/1")]);
 
         const string summary =
             "SUMMARY:\n"
@@ -3032,11 +3032,11 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             humanReviewThreads:
             [
                 new ReviewThreadReference(
-                    "PRRT_human", "jsmotherman", "https://github.com/x/y/pull/1#discussion_r9"),
+                    "PRRT_human", "reviewer-c", "https://github.com/x/y/pull/1#discussion_r9"),
             ]);
 
         const string summary =
-            "THREAD DISPOSITION: thread=PRRT_human; disposition=decline; kind=human; author=jsmotherman\n"
+            "THREAD DISPOSITION: thread=PRRT_human; disposition=decline; kind=human; author=reviewer-c\n"
             + "The sentinel is load-bearing elsewhere; the canary is deliberately distinct.\n"
             + "SUMMARY:\n"
             + "Everything else on the pull request was already fine.\n"
@@ -3072,7 +3072,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     {
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new ReviewBodyReplyRefused(
-            runId, reviewUrl, "jsmotherman", ReviewThreadDisposition.Decline, "refused", Now));
+            runId, reviewUrl, "reviewer-c", ReviewThreadDisposition.Decline, "refused", Now));
         await session.SaveChangesAsync(cancellationToken);
     }
 
@@ -3156,7 +3156,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.ReviewRequestedChanges,
             changesRequestedReviews:
             [
-                new ChangesRequestedReview("jsmotherman", BodyReviewUrl, Now, [new ChangesRequestedFinding("Rename it.")]),
+                new ChangesRequestedReview("reviewer-c", BodyReviewUrl, Now, [new ChangesRequestedFinding("Rename it.")]),
             ]);
         await RecordBodyRefusalAsync(store, runId, cts.Token);
 
@@ -3190,7 +3190,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
             store, cts.Token, asFollowUp: true, followUpKind: kind,
             changesRequestedReviews: changesRequestedLap
-                ? [new ChangesRequestedReview("jsmotherman", BodyReviewUrl, Now, [new ChangesRequestedFinding("Rename it.")])]
+                ? [new ChangesRequestedReview("reviewer-c", BodyReviewUrl, Now, [new ChangesRequestedFinding("Rename it.")])]
                 : null);
         await RecordBodyRefusalAsync(store, runId, cts.Token);
 
@@ -3265,7 +3265,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
             store, cts.Token, asFollowUp: true, followUpKind: kind,
             changesRequestedReviews: changesRequestedLap
-                ? [new ChangesRequestedReview("jsmotherman", BodyReviewUrl, Now, [new ChangesRequestedFinding("Rename it.")])]
+                ? [new ChangesRequestedReview("reviewer-c", BodyReviewUrl, Now, [new ChangesRequestedFinding("Rename it.")])]
                 : null);
         await using (IDocumentSession session = store.LightweightSession())
         {
@@ -3336,7 +3336,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
             store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.ReviewFeedback,
-            humanReviewThreads: [new ReviewThreadReference("PRRT_human", "jsmotherman", "https://x/1")]);
+            humanReviewThreads: [new ReviewThreadReference("PRRT_human", "reviewer-c", "https://x/1")]);
 
         const string summary =
             "THREAD DISPOSITION: thread=PRRT_copilot; disposition=decline; kind=bot; author=copilot\n"

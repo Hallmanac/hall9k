@@ -144,7 +144,7 @@ public sealed class FleetReconcileRulesTests
 
         // An answer partly lost to an outbox squash is exactly this shape, and flattening the two
         // numbers into one would hide it.
-        StatusCommand.FleetReconcileLine(record, "arx-platform").Should().Contain("3 of 14 answering envelope(s) read");
+        StatusCommand.FleetReconcileLine(record, "sample-project").Should().Contain("3 of 14 answering envelope(s) read");
     }
 
     [Fact]
@@ -155,7 +155,7 @@ public sealed class FleetReconcileRulesTests
         FleetReconcileRules.NoteComplete(record, envelopeCount: 14, Now.AddMinutes(2));
         record.HeldTailOnlyStreams = 3;
 
-        string line = StatusCommand.FleetReconcileLine(record, "arx-platform");
+        string line = StatusCommand.FleetReconcileLine(record, "sample-project");
 
         line.Should().Contain("complete");
         line.Should().Contain("3 stream(s) held tail-only");
@@ -172,7 +172,7 @@ public sealed class FleetReconcileRulesTests
         record.CompletedAt.Should().Be(Now.AddMinutes(1), "a final answer closes the exchange");
         FleetReconcileRules.NeedsReAsk(record, Retention, Now.AddDays(30)).Should().BeFalse(
             "a peer that already said it holds nothing is not re-asked every two days forever");
-        StatusCommand.FleetReconcileLine(record, "bioage-calc").Should()
+        StatusCommand.FleetReconcileLine(record, "sample-project").Should()
             .Contain("nothing held here matches this request");
     }
 
@@ -218,7 +218,7 @@ public sealed class FleetReconcileRulesTests
         FleetReconcileRules.IsStalled(record, Retention, Now.AddDays(30)).Should().BeFalse(
             "and is never reported as a stall a human could clear");
 
-        string line = StatusCommand.FleetReconcileLine(record, "arx-platform");
+        string line = StatusCommand.FleetReconcileLine(record, "sample-project");
         line.Should().Contain("no longer part of this owner's fleet");
         line.Should().NotContain("h9k project reconcile", "that command walks the current fleet and cannot reach this");
     }

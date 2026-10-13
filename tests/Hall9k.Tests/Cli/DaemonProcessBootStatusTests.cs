@@ -31,7 +31,7 @@ public sealed class DaemonProcessBootStatusTests : IDisposable
 
         DaemonProcess.ProbeBootStatus().State.Should().Be(DaemonBootState.Starting,
             "a launch spawned moments ago, still short of its own pid file, must not read the same as down "
-            + "(task 92da629d — the Arx Windows node's ~15s pre-guard boot)");
+            + "(task 92da629d — a teammate's Windows node's ~15s pre-guard boot)");
     }
 
     [Fact]

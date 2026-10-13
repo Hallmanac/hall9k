@@ -230,7 +230,7 @@ public sealed class TaskLifecycleSurfaceTests
         // its own (PrReviewEngine.FinalizeAsync) — a non-blank URL here must not flip the answer
         // to the merge-observed wording the way it would for a merge-watching task type.
         string reason = TaskShowCommand.DoneReason(
-            TaskType.PrReview, "https://github.com/example-org/acme-platform/pull/1976");
+            TaskType.PrReview, "https://github.com/example-org/acme-platform/pull/5976");
 
         reason.Should().Be("the review was delivered");
         reason.Should().NotContain("merge", "no merge was ever watched for a pr-review task's own closeout");
@@ -242,11 +242,11 @@ public sealed class TaskLifecycleSurfaceTests
         // Windows field report item 12 (2026-09-03): PrReviewEngine.FinalizeAsync records the
         // reviewed pull request's own URL on TaskCompleted and completes the run alongside it —
         // reaching lifecycle Done exactly as an ordinary merged task does — even though that
-        // pull request (example-org/acme-platform#1976) sat open the whole time. Nothing here ever
+        // pull request (example-org/acme-platform#5976) sat open the whole time. Nothing here ever
         // watched it merge, so the reason must not claim otherwise.
         Guid runId = DomainId.New();
         TaskListItem task = StatusFixtures.Task(
-            TaskState.Done, runId, "https://github.com/example-org/acme-platform/pull/1976", type: TaskType.PrReview);
+            TaskState.Done, runId, "https://github.com/example-org/acme-platform/pull/5976", type: TaskType.PrReview);
         RunDetails run = StatusFixtures.Run(runId, RunState.Completed, sessionProcessId: null);
 
         TaskStatusRow row = StatusFixtures.Compose(task, run);

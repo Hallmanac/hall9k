@@ -28,7 +28,7 @@ namespace Hall9k.Tests.Integration;
 /// real store with the two <c>gh</c> reads faked: the review-conversation read and the
 /// <c>gh api user</c> login read.
 /// <para>
-/// Origin incident (2026-09-08, arx-platform #2023, task 2402246b): the pr-review task went Done
+/// Origin incident (2026-09-08, a teammate's project, task 2402246b): the pr-review task went Done
 /// the moment the review was posted, so when the author answered all five threads and pushed
 /// revisions the next day, nothing on the board watched the pull request. Every test here is one
 /// arm of the decision table that failure produced.
@@ -583,7 +583,7 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
     }
 
     /// <summary>
-    /// Origin incident (2026-09-30 and 2026-10-01, arx-platform #2176 and #2165): the watch opened
+    /// Origin incident (2026-09-30 and 2026-10-01, a teammate's project): the watch opened
     /// with the re-review baseline false, the reviewer had never submitted a review so their FIRST
     /// request still stood, and the first look read that as being asked back. Both ways a watch can
     /// open while that request stands: a walk closed without posting (no head recorded) and a
@@ -865,7 +865,7 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
     /// <summary>
     /// What a stream recorded before the review baseline existed looks like, for a watch that had
     /// already woken the reviewer on a re-review request nobody had made: a NeedsHuman task whose
-    /// last observation records the request and carries no review id (task 0b2e0457 on #2165).
+    /// last observation records the request and carries no review id (task 0b2e0457).
     /// </summary>
     private async Task SeedRecordedFalseWakeAsync(Guid taskId, Guid ownerId, CancellationToken cancellationToken)
     {

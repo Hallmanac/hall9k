@@ -67,7 +67,7 @@ public sealed class MentionFollowUpClaimResolverTests
     }
 
     private static PullRequestReviewMentionObserved Mention(string commentId) =>
-        new(TaskId, "https://github.com/acme/web/pull/1", commentId, "ryan", "@brian hi", $"u#{commentId}", Now, Now);
+        new(TaskId, "https://github.com/acme/web/pull/1", commentId, "reviewer-a", "@brian hi", $"u#{commentId}", Now, Now);
 
     private static TaskClaimed Claim(Guid nodeId, bool interactive = false) =>
         new(TaskId, nodeId, Guid.NewGuid(), 1, Guid.NewGuid(), Now,

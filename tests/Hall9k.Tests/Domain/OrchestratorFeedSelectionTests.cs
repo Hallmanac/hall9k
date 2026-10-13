@@ -75,7 +75,7 @@ public sealed class OrchestratorFeedSelectionTests
     /// sentence has to arrive whole for its unresolved-threads tail to be there at all.
     /// </summary>
     private const string OriginSummary =
-        "Hallmanac/arx-platform#2135 moved since your review: 2 replies in 2 threads, 2 new commits and a "
+        "Hallmanac/sample-project#5135 moved since your review: 2 replies in 2 threads, 2 new commits and a "
         + "re-review requested; 3 threads you opened are still unresolved on the pull request";
 
     [Fact]
@@ -108,7 +108,7 @@ public sealed class OrchestratorFeedSelectionTests
     public async Task A_response_that_is_only_new_commits_is_an_item_but_not_urgent()
     {
         OrchestratorFeedRead read = await Read(
-            [Candidate(5, Response("Hallmanac/arx-platform#2135 moved since your review: 2 new commits", 0, false))],
+            [Candidate(5, Response("Hallmanac/sample-project#5135 moved since your review: 2 new commits", 0, false))],
             OrchestratorFeedLevel.Actionable,
             startedFrom: 0);
 

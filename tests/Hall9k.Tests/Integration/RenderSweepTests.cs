@@ -1581,11 +1581,11 @@ public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<P
         await using (IDocumentSession session = store.LightweightSession())
         {
             RegisterProject(session, projectId, ownerId, "hall9k");
-            OwnerAggregate ryan = new();
-            OwnerRegistered registered = OwnerDecider.Register(knownAssignee, "Ryan", "ryan@test.local", RenderNow);
-            ryan.Apply(registered);
+            OwnerAggregate jordan = new();
+            OwnerRegistered registered = OwnerDecider.Register(knownAssignee, "Jordan", "jordan@test.local", RenderNow);
+            jordan.Apply(registered);
             session.Events.StartStream<OwnerAggregate>(
-                knownAssignee, registered, OwnerDecider.ClaimRoot(ryan, knownRoot, verified: true, RenderNow));
+                knownAssignee, registered, OwnerDecider.ClaimRoot(jordan, knownRoot, verified: true, RenderNow));
 
             foreach (Guid ideaId in new[] { heldByKnown, heldByStranger, heldByNobody })
             {
@@ -1603,7 +1603,7 @@ public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<P
         string ideasRoot = ProjectHomePaths.IdeasDirectory(_renderHome);
         string Rendered(Guid ideaId) => File.ReadAllText(Path.Combine(
             Directory.EnumerateDirectories(ideasRoot, $"{DomainId.Short(ideaId)}*").Single(), "idea.md"));
-        Rendered(heldByKnown).Should().Contain("assignee: Ryan");
+        Rendered(heldByKnown).Should().Contain("assignee: Jordan");
         Rendered(heldByStranger).Should().Contain($"assignee: {unknownRoot[..12]}");
         Rendered(heldByNobody).Should().NotContain("assignee:");
     }

@@ -324,7 +324,7 @@ public sealed class PullRequestBodyTests
     }
 
     /// <summary>
-    /// Origin incident, arx-platform PR #2042 (2026-09-09): a readiness-contract objective is an
+    /// Origin incident, a teammate's project (2026-09-09): a readiness-contract objective is an
     /// outcome sentence by rule (PLAN.md §4), so as a title it was 334 characters of contract with
     /// no key on the front. Both halves of that are fixed here.
     /// </summary>
@@ -334,19 +334,19 @@ public sealed class PullRequestBodyTests
         TaskDetails task = new()
         {
             Id = DomainId.New(),
-            Objective = "Every arx-platform host resolves Azure Key Vault references from App Configuration "
+            Objective = "Every sample-project host resolves Azure Key Vault references from App Configuration "
                 + "at startup through its managed identity, with the vault access delivered as scripts",
             AcceptanceCriteria = [],
-            ExternalReference = "jira:ARX-4861",
+            ExternalReference = "jira:PROJ-4861",
         };
 
         string title = PullRequestBody.Title(task, prSummary: null);
 
-        title.Should().StartWith("ARX-4861: Every arx-platform host resolves").And.EndWith("…");
+        title.Should().StartWith("PROJ-4861: Every sample-project host resolves").And.EndWith("…");
         title.Length.Should().BeLessThanOrEqualTo(72);
 
         string kept = title[..^1];
-        string full = $"ARX-4861: {task.Objective}";
+        string full = $"PROJ-4861: {task.Objective}";
         full.Should().StartWith(kept);
         full[kept.Length].Should().Be(' ', "the cut lands on a word boundary, not mid-word");
     }
@@ -364,18 +364,18 @@ public sealed class PullRequestBodyTests
     public void The_artifact_title_wins_over_the_objective()
     {
         string title = PullRequestBody.Title(
-            Task("jira:ARX-4861"), Summary("Resolve Key Vault references in every host", "Body."));
+            Task("jira:PROJ-4861"), Summary("Resolve Key Vault references in every host", "Body."));
 
-        title.Should().Be("ARX-4861: Resolve Key Vault references in every host");
+        title.Should().Be("PROJ-4861: Resolve Key Vault references in every host");
     }
 
     [Fact]
     public void A_key_the_session_already_wrote_is_not_written_twice()
     {
         string title = PullRequestBody.Title(
-            Task("jira:ARX-4861"), Summary("ARX-4861: Resolve Key Vault references", "Body."));
+            Task("jira:PROJ-4861"), Summary("PROJ-4861: Resolve Key Vault references", "Body."));
 
-        title.Should().Be("ARX-4861: Resolve Key Vault references");
+        title.Should().Be("PROJ-4861: Resolve Key Vault references");
     }
 
     /// <summary>
@@ -388,9 +388,9 @@ public sealed class PullRequestBodyTests
     public void A_longer_key_that_merely_starts_with_this_tasks_is_not_this_tasks_key()
     {
         string title = PullRequestBody.Title(
-            Task("jira:ARX-486"), Summary("ARX-4861 compatibility for the shared provider", "Body."));
+            Task("jira:PROJ-486"), Summary("PROJ-4861 compatibility for the shared provider", "Body."));
 
-        title.Should().Be("ARX-486: ARX-4861 compatibility for the shared provider");
+        title.Should().Be("PROJ-486: PROJ-4861 compatibility for the shared provider");
     }
 
     /// <summary>
@@ -434,7 +434,7 @@ public sealed class PullRequestBodyTests
 
     /// <summary>
     /// The bound is Hall9k's own, not GitHub's: 256 is the documented <em>issue</em> title limit
-    /// and demonstrably does not bind a pull request's, since PR #2042 opened with 334 characters.
+    /// and demonstrably does not bind a pull request's, since a pull request in a teammate's project opened with 334 characters.
     /// What matters here is that some bound applies and that it cuts rather than fails.
     /// </summary>
     [Fact]
@@ -529,9 +529,9 @@ public sealed class PullRequestBodyTests
     {
         PrSummary summary = Summary("Resolve Key Vault references", string.Empty);
 
-        PullRequestBody.Title(Task("jira:ARX-4861"), summary)
-            .Should().Be("ARX-4861: Resolve Key Vault references");
-        PullRequestBody.Build(Run(), Task("jira:ARX-4861"), "What I did.", sourceUrl: null, summary)
+        PullRequestBody.Title(Task("jira:PROJ-4861"), summary)
+            .Should().Be("PROJ-4861: Resolve Key Vault references");
+        PullRequestBody.Build(Run(), Task("jira:PROJ-4861"), "What I did.", sourceUrl: null, summary)
             .Should().Contain("## Acceptance criteria").And.Contain("## Agent summary");
     }
 
@@ -540,7 +540,7 @@ public sealed class PullRequestBodyTests
     /// (<c>RelayedText.WithoutClosingKeywords</c> over <c>RelayedText.Printable</c>) rather than a
     /// second, weaker rule of its own.
     /// <para>
-    /// "Fixes ARX-1" survives as prose, and that is the correct answer rather than a gap: GitHub's
+    /// "Fixes PROJ-1" survives as prose, and that is the correct answer rather than a gap: GitHub's
     /// closing keywords act only on GitHub issue references, and Hall9k never transitions a Jira
     /// card at all (Decisions Log #65 gives Jira a comment at merge and never a transition), so
     /// this sentence moves nothing. Wrapping it would garble the ordinary sentence a pull request
@@ -551,12 +551,12 @@ public sealed class PullRequestBodyTests
     public void An_authored_body_is_defused_the_same_way_every_other_relayed_segment_is()
     {
         string body = PullRequestBody.Build(
-            Run(), Task("jira:ARX-1"), agentSummary: null, sourceUrl: null,
-            Summary("A title", "Fixes ARX-1 on the way past.\u001b[2J\u202E\n\nCloses #500 too."));
+            Run(), Task("jira:PROJ-1"), agentSummary: null, sourceUrl: null,
+            Summary("A title", "Fixes PROJ-1 on the way past.\u001b[2J\u202E\n\nCloses #500 too."));
 
         body.Should().NotContain("\u001b").And.NotContain("\u202E");
         body.Should().Contain("Closes `#500`");
-        body.Should().Contain("Fixes ARX-1 on the way past.",
+        body.Should().Contain("Fixes PROJ-1 on the way past.",
             "a Jira key is not a closing instruction on either side, so it stays as written");
     }
 
