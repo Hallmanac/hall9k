@@ -760,7 +760,8 @@ public static class CliCommandTree
                 + "cannot reach a database, available here on demand (Decisions Log #58, #73). --yes "
                 + "remediates non-interactively, for a script or a dispatched agent; --no-configure "
                 + "withholds the one remediation that guesses, recording no connection string where "
-                + "none resolves (Decisions Log #118).")
+                + "none resolves (Decisions Log #118), and skips the live release check, which the "
+                + "restart hand-off has no use for while the daemon is down.")
             .WithExample("doctor")
             .WithExample("doctor", "--yes")
             .WithExample("doctor", "--yes", "--no-configure");

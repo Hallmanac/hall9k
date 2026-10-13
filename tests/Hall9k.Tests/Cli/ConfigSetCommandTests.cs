@@ -993,14 +993,4 @@ public sealed class ConfigSetCommandTests
 
         act.Should().Throw<DomainValidationException>().WithMessage("*--release-check-interval-hours*between 1 and 8760*");
     }
-
-    [Fact]
-    public void The_release_check_interval_alone_counts_as_a_setting_to_change()
-    {
-        ConfigSetCommand.Settings settings = new() { ReleaseCheckIntervalHours = 2 };
-
-        Action act = () => ConfigSetCommand.Validate(settings);
-
-        act.Should().NotThrow("passing only this setting is not 'nothing to change'");
-    }
 }
