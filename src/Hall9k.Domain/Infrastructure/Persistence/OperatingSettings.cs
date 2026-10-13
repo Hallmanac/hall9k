@@ -362,6 +362,25 @@ public sealed class OperatingSettings
     /// </summary>
     public string? ReleaseChannel { get; set; }
 
+    /// <summary>
+    /// How many whole hours the daemon waits between its checks for a newer hall9k release (idea
+    /// 93c1d24d, card 2). Null defers to <see cref="DefaultReleaseCheckIntervalHours"/>; a value
+    /// below <see cref="MinimumReleaseCheckIntervalHours"/> in a hand-edited file counts as the
+    /// minimum. Read only by <c>Hall9k.Connectors.Releases.ReleaseCheckIntervalSetting</c>, fresh
+    /// after every check, and by <c>h9k config show</c>: no <c>DaemonOptions</c> field binds it and
+    /// it has no environment variable, so a change needs no daemon restart.
+    /// </summary>
+    public int? ReleaseCheckIntervalHours { get; set; }
+
+    /// <summary>The six-hour default Brian ruled for idea 93c1d24d, card 2: fresh enough that a release reaches a node the same day, quiet enough to leave GitHub alone.</summary>
+    public const int DefaultReleaseCheckIntervalHours = 6;
+
+    /// <summary>One hour: the floor, so a node can never hammer GitHub's API.</summary>
+    public const int MinimumReleaseCheckIntervalHours = 1;
+
+    /// <summary>One year: the ceiling, past which a wait means "never" and an absurd value could overflow a <see cref="TimeSpan"/>.</summary>
+    public const int MaximumReleaseCheckIntervalHours = 24 * 365;
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
 }

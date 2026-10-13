@@ -141,6 +141,21 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
                 : $"config file value '{configured.ReleaseChannel}' is not cleared or all, so cleared applies";
         table.AddRow("release-channel", $"{releaseChannel.Channel.Value} ({releaseChannelOrigin})".EscapeMarkup());
 
+        // Not part of the report either, for the same reason: the daemon's release loop reads the file
+        // fresh after every check. The value shown is the one ReleaseCheckIntervalSetting.Interpret
+        // resolves, the same function the loop acts on, so a hand-edited value outside the bounds says so.
+        int releaseCheckIntervalHours = (int)ReleaseCheckIntervalSetting.Interpret(configured.ReleaseCheckIntervalHours).TotalHours;
+        string releaseCheckIntervalOrigin = configured.ReleaseCheckIntervalHours switch
+        {
+            null => "default",
+            { } hours when hours < OperatingSettings.MinimumReleaseCheckIntervalHours
+                || hours > OperatingSettings.MaximumReleaseCheckIntervalHours =>
+                $"config file value {hours} is outside {OperatingSettings.MinimumReleaseCheckIntervalHours} to "
+                + $"{OperatingSettings.MaximumReleaseCheckIntervalHours}, so {releaseCheckIntervalHours}h applies",
+            _ => "config file",
+        };
+        table.AddRow("release-check-interval-hours", $"{releaseCheckIntervalHours}h ({releaseCheckIntervalOrigin})".EscapeMarkup());
+
         // Not part of the report either, on the same reasoning: LessonPromptFeed reads the config
         // file fresh at every prompt composition rather than binding through DaemonOptions, so a
         // change is in force for the next dispatch with no daemon restart. Rendered through

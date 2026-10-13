@@ -962,4 +962,45 @@ public sealed class ConfigSetCommandTests
 
         act.Should().Throw<DomainValidationException>().WithMessage("*--release-channel*cleared*all*");
     }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(6)]
+    [InlineData(48)]
+    public void A_release_check_interval_of_at_least_one_hour_validates_and_is_written(int hours)
+    {
+        ConfigSetCommand.Settings settings = new() { ReleaseCheckIntervalHours = hours };
+        OperatingSettings operating = new();
+        List<string> changed = [];
+
+        ConfigSetCommand.Validate(settings);
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.ReleaseCheckIntervalHours.Should().Be(hours);
+        changed.Should().ContainSingle().Which.Should().Be($"release-check-interval-hours = {hours}");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(8761)]
+    [InlineData(int.MaxValue)]
+    public void A_release_check_interval_outside_one_hour_to_a_year_is_refused_naming_the_bounds(int hours)
+    {
+        ConfigSetCommand.Settings settings = new() { ReleaseCheckIntervalHours = hours };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*--release-check-interval-hours*between 1 and 8760*");
+    }
+
+    [Fact]
+    public void The_release_check_interval_alone_counts_as_a_setting_to_change()
+    {
+        ConfigSetCommand.Settings settings = new() { ReleaseCheckIntervalHours = 2 };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().NotThrow("passing only this setting is not 'nothing to change'");
+    }
 }
