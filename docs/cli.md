@@ -976,6 +976,7 @@ also appear elsewhere on this page stays where it is.
 | `h9k config set --auto-pr-review-mint-hold <seconds>` | Sets how long this node holds a GitHub review request that a lower-ranked node of the same owner is expected to mint the task for, 300 seconds by default. `0` means this node never defers. |
 | `h9k config set --session-containment <true\|false>` | Turns the macOS signal fence around every daemon-dispatched agent session on or off, on by default. Read at the daemon's next start; inert on Linux and Windows. |
 | `h9k config set --invite-expiry-hours <hours>` | Sets how long a newly minted invite stays valid, 72 hours by default. |
+| `h9k config set --release-check-interval-hours <hours>` | Sets how many whole hours the daemon waits between checks for a newer hall9k release, 6 by default, from 1 to 8760. The daemon only reports what it finds, through the orchestrator feed, `h9k status` and `h9k doctor`; it never updates anything. |
 
 ### Recovery
 
@@ -1641,6 +1642,14 @@ item, and takes precedence over it when both are present.
 
 `h9k install` · `h9k update` · `h9k uninstall [--purge-data]` · `h9k daemon start | stop | status` ·
 `h9k daemon autostart enable | disable` · `h9k daemon autostart launch`
+
+The daemon checks for a newer release every six hours and only ever tells you: through the
+orchestrator feed, a line in `h9k status`, and the release section of `h9k doctor`, which runs
+the lookup live and reports current, a newer release available (naming `h9k update --restart` when
+a daemon is running on this node and plain `h9k update` when none is), or could not check with the
+reason. It never updates anything itself; see
+[operations.md](operations.md#installing-on-a-bare-machine) for the cadence and
+`h9k config set --release-check-interval-hours`.
 
 `h9k daemon autostart launch` is the one command in this section nobody types: it is the vehicle
 the Windows logon task runs, and it exists to open `h9kd.log` with an append handle the daemon can
