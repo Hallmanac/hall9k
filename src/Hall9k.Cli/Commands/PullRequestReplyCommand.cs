@@ -25,8 +25,8 @@ namespace Hall9k.Cli.Commands;
 /// <b>What it refuses.</b> A decline or a route into a thread a PERSON opened. Telling a
 /// colleague their point does not hold is the implementer's to send, so the lap drafts it, closes
 /// with the <c>DISAGREEMENT:</c> block and <c>RESOLUTION: disputed</c>, and the run parks for the
-/// owner to send, edit, or drop it (<c>h9k review resolve</c>). Origin incidents: arx-platform
-/// PR #2021 on 2026-09-09 and PR #2042 on 2026-09-15, where accurate replies to two people went
+/// owner to send, edit, or drop it (<c>h9k review resolve</c>). Origin incidents: two pull requests
+/// in a teammate's project, on 2026-09-09 and 2026-09-15, where accurate replies to two people went
 /// out under Brian's login with no step where he saw them first.
 /// </para>
 /// <para>

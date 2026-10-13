@@ -1013,7 +1013,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     /// verdict, and its whole record on the same pull request. Naming it keeps the escape hatch
     /// (the second review is still available, through <c>--again</c> or <c>h9k pr review</c>) while
     /// making the existing record the default answer, which is what the origin incident wanted:
-    /// nothing on the board watched arx-platform #2023 after its review posted, and the only lever
+    /// nothing on the board watched a teammate's pull request after its review posted, and the only lever
     /// was a fresh adoption that knew nothing about the review it was repeating.
     /// </para>
     /// <para>

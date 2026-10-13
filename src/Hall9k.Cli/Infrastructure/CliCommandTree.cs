@@ -140,7 +140,7 @@ public static class CliCommandTree
                 .WithExample("project", "join", "hall9k")
                 .WithExample("project", "join", "hall9k", "--owner", "3f9c2a7e1b5d84a6f0c3e2b1a9d8c7f6e5d4c3b2a1908f7e6d5c4b3a29180716")
                 .WithExample("project", "join", "hall9k", "--invite", "invthbrpoigf3cbfnobm2o4rak3vrj")
-                .WithExample("project", "join", "bioage-calc", "--from-project", "hall9k");
+                .WithExample("project", "join", "sample-project", "--from-project", "hall9k");
             project.AddCommand<ProjectAssignKeyCommand>("assign-key")
                 .WithDescription(
                     "One-time backfill of the project's own key (idea 202383dc, M2) for a ledger whose "
@@ -1212,14 +1212,14 @@ public static class CliCommandTree
                     + "h9k idea move.")
                 .WithExample("idea", "assign", "28b19893")
                 .WithExample("idea", "assign", "28b19893", "brian")
-                .WithExample("idea", "assign", "28b19893", "taylor", "--holder", "Ryan", "--reason", "\"Ryan is out this week\"");
+                .WithExample("idea", "assign", "28b19893", "casey", "--holder", "Jordan", "--reason", "\"Jordan is out this week\"");
             idea.AddCommand<IdeaUnassignCommand>("unassign")
                 .WithDescription(
                     "Let go of an idea you hold: nobody holds it afterwards, so it falls back to its "
                     + "creator. Allowed only to the current assignee, or to an Owner-role member with "
                     + "--holder and --reason.")
                 .WithExample("idea", "unassign", "28b19893")
-                .WithExample("idea", "unassign", "28b19893", "--holder", "Ryan", "--reason", "\"Ryan left the team\"");
+                .WithExample("idea", "unassign", "28b19893", "--holder", "Jordan", "--reason", "\"Jordan left the team\"");
             idea.AddCommand<IdeaPromoteCommand>("promote")
                 .WithDescription(
                     "Sugar over the ordinary fan-out door: cuts exactly one task from the idea (its "
@@ -1232,7 +1232,7 @@ public static class CliCommandTree
                 .WithExample("idea", "promote", "28b19893")
                 .WithExample("idea", "promote", "28b19893", "--project", "hall9k")
                 .WithExample("idea", "promote", "28b19893", "--objective", "\"Give every idea a discovery workspace\"")
-                .WithExample("idea", "promote", "28b19893", "--holder", "Ryan", "--reason", "\"Ryan is out this week\"");
+                .WithExample("idea", "promote", "28b19893", "--holder", "Jordan", "--reason", "\"Jordan is out this week\"");
             idea.AddCommand<IdeaConcludeCommand>("conclude")
                 .WithDescription(
                     "One of an idea's two terminal acts, always explicit: discovery happened and "
@@ -1241,7 +1241,7 @@ public static class CliCommandTree
                     + "the idea's assignee, or its creator when nobody holds it, may conclude it, or an "
                     + "Owner-role member with --holder and --reason.")
                 .WithExample("idea", "conclude", "28b19893", "--reason", "\"Cut three tasks; discovery is done here\"")
-                .WithExample("idea", "conclude", "28b19893", "--holder", "Ryan", "--reason", "\"Ryan is out; the work shipped\"");
+                .WithExample("idea", "conclude", "28b19893", "--holder", "Jordan", "--reason", "\"Jordan is out; the work shipped\"");
             idea.AddCommand<IdeaArchiveCommand>("archive")
                 .WithDescription(
                     "An idea's other terminal act: discovery happened and nothing came of it. Recorded "
@@ -1250,7 +1250,7 @@ public static class CliCommandTree
                     + "idea's assignee, or its creator when nobody holds it, or an Owner-role member "
                     + "with --holder and --reason.")
                 .WithExample("idea", "archive", "28b19893", "--reason", "\"Superseded by the attachments design\"")
-                .WithExample("idea", "archive", "28b19893", "--holder", "Ryan", "--reason", "\"Ryan left; superseded\"");
+                .WithExample("idea", "archive", "28b19893", "--holder", "Jordan", "--reason", "\"Jordan left; superseded\"");
             idea.AddCommand<IdeaScopeCommand>("scope")
                 .WithDescription(
                     "Idea 8c5993c5: set this idea's own replication scope. private never leaves this "
@@ -1463,7 +1463,7 @@ public static class CliCommandTree
                 .WithExample("task", "assign", "28b19893", "--take")
                 .WithExample("task", "assign", "28b19893", "--node", "a1b2c3d4")
                 .WithExample("task", "assign", "28b19893", "--node")
-                .WithExample("task", "assign", "28b19893", "taylor", "--holder", "Ryan", "--reason", "\"Ryan is out this week\"");
+                .WithExample("task", "assign", "28b19893", "casey", "--holder", "Jordan", "--reason", "\"Jordan is out this week\"");
             task.AddCommand<TaskQueueCommand>("queue")
                 .WithDescription(
                     "Queue a published task: the go signal, and the only way a task becomes claimable. It "
@@ -1552,7 +1552,7 @@ public static class CliCommandTree
                     + "on it; an Owner-role member may do it on that owner's behalf with --holder and --reason, "
                     + "both required together.")
                 .WithExample("task", "unassign", "28b19893", "--reason", "\"The criteria missed the migration case\"")
-                .WithExample("task", "unassign", "28b19893", "--holder", "Taylor", "--reason", "\"Taylor left the project\"");
+                .WithExample("task", "unassign", "28b19893", "--holder", "Casey", "--reason", "\"Casey left the project\"");
             task.AddCommand<TaskDequeueCommand>("dequeue")
                 .WithDescription(
                     "Take a queued or blocked task back to Published and keep its assignee, so no node claims "
@@ -1563,7 +1563,7 @@ public static class CliCommandTree
                     + "member may do it on that owner's behalf with --holder and --reason, both required together.")
                 .WithExample("task", "dequeue", "28b19893")
                 .WithExample("task", "dequeue", "28b19893", "--reason", "\"Waiting on the schema change\"")
-                .WithExample("task", "dequeue", "28b19893", "--holder", "Taylor", "--reason", "\"Taylor is out this week\"");
+                .WithExample("task", "dequeue", "28b19893", "--holder", "Casey", "--reason", "\"Casey is out this week\"");
             task.AddCommand<TaskDraftCommand>("draft")
                 .WithDescription(
                     "Return a published task to Draft so it can be revised. Refused from Queued and Blocked "
@@ -1717,7 +1717,7 @@ public static class CliCommandTree
                     + "and saying why with --reason (both required together; the word unknown names a task "
                     + "whose owner this node cannot resolve), recorded on the event.")
                 .WithExample("task", "abandon", "28b19893", "--reason", "\"Superseded by the noun-first CLI work\"")
-                .WithExample("task", "abandon", "28b19893", "--holder", "Taylor", "--reason", "\"Taylor asked for this card to be closed\"");
+                .WithExample("task", "abandon", "28b19893", "--holder", "Casey", "--reason", "\"Casey asked for this card to be closed\"");
             task.AddCommand<TaskRetryCommand>("retry")
                 .WithDescription(
                     "Requeue a failed task for another run (human-only; Failed tasks only — Abandoned stays terminal). "
@@ -1740,7 +1740,7 @@ public static class CliCommandTree
                     + "label, a root fingerprint prefix of 8 or more hex characters, or the word unknown) and "
                     + "--reason.")
                 .WithExample("task", "resolve", "28b19893", "--reason", "\"Work merged as PR #7; only the daemon's push step failed\"")
-                .WithExample("task", "resolve", "28b19893", "--holder", "Taylor", "--reason", "\"Merged as PR #7 by Taylor; the push step failed\"")
+                .WithExample("task", "resolve", "28b19893", "--holder", "Casey", "--reason", "\"Merged as PR #7 by Casey; the push step failed\"")
                 .WithExample("task", "resolve", "28b19893", "--reason", "\"Objective met by hand in the worktree\"", "--pr", "https://github.com/x/y/pull/7");
             task.AddCommand<TaskWorkCommand>("work")
                 .WithDescription(

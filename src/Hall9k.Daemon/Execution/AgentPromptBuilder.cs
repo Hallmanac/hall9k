@@ -2318,7 +2318,7 @@ public static class AgentPromptBuilder
     /// the resolve. Until 2026-09-15 this prompt carved that out only for a reviewer whose
     /// <c>CHANGES_REQUESTED</c> verdict still stood (#152) and told a session to post its
     /// evidence into every other human thread — which is exactly what happened twice on
-    /// arx-platform, PR #2021 on 2026-09-09 and PR #2042 on 2026-09-15, both times beside an
+    /// a teammate's project, on 2026-09-09 and 2026-09-15, both times beside an
     /// APPROVAL and both times accurate. Accuracy was never the problem: a person addressed the
     /// owner and something else answered as him. So the carve-out is now the rule, and the
     /// verdict-reading instructions it used to depend on are gone with it, since the answer no

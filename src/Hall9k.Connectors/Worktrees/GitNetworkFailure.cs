@@ -8,7 +8,7 @@ namespace Hall9k.Connectors.Worktrees;
 /// anything not on the list (<c>couldn't find remote ref</c>, <c>Authentication failed</c>, a
 /// repository that is not found) is treated as final and fails the task at once, as it always did.
 /// <para>
-/// Origin incident (2026-10-03, task 51939c4c in arx-platform): a launch failed outright because
+/// Origin incident (2026-10-03, task 51939c4c in a teammate's project): a launch failed outright because
 /// <c>git fetch</c> of the pull request ref reported <c>Could not resolve host: github.com</c> on a
 /// flaky Parallels link, while the daemon's own database connection recovered by itself.
 /// </para>

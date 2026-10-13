@@ -965,12 +965,12 @@ public static class WorkPromptBuilder
     /// Skill order is stated rather than left to discovery, and it is the repo's rule first
     /// (Brian's addition to the design, 2026-09-09): a repository that ships its own
     /// PR-description rule has a house voice, and the platform's own skill exists to be the
-    /// fallback for one that does not. arx-platform's
+    /// fallback for one that does not. a teammate's project's
     /// <c>.claude/commands/git/pr-description.md</c> is the known case, which is why the prompt
     /// names that path outright instead of describing the shape and hoping.
     /// </para>
     /// <para>
-    /// Three of its bullets are the 2026-09-19 ruling (origin: bioage-calculator pull request #4,
+    /// Three of its bullets are the 2026-09-19 ruling (origin: a pull request in a teammate's project,
     /// a 3,837-byte body for a 56-line file). The sizing bullet says the body is proportionate to
     /// the diff, so a one-file or documentation-only change gets a couple of sentences rather than
     /// the full shape. The title bullet names the external key's form as the repository's own

@@ -68,7 +68,7 @@ internal static class PullRequestBody
     /// The outer bound on any title, authored or not. This is Hall9k's own bound and is
     /// deliberately not called GitHub's: the commonly quoted 256 is the documented limit on an
     /// <em>issue</em> title and demonstrably does not apply to a pull request's, since
-    /// arx-platform PR #2042 opened on 2026-09-09 with a 334-character title (recoverable from its
+    /// a pull request in a teammate's project opened on 2026-09-09 with a 334-character title (recoverable from its
     /// own rename event, which is how this task verified it rather than assuming). GitHub
     /// publishes no pull-request title limit at all, so a bound named after theirs would be a
     /// guess dressed as a fact (AGENTS.md: never guess at unobserved facts). 1024 is chosen to be
@@ -80,16 +80,16 @@ internal static class PullRequestBody
 
     /// <summary>
     /// The title with the external key on the front, exactly once. Idempotent by inspection rather
-    /// than by rule: a session that already wrote <c>ARX-4861: …</c>, as its repo's own rule tells
+    /// than by rule: a session that already wrote <c>PROJ-4861: …</c>, as its repo's own rule tells
     /// it to, keeps its own wording untouched.
     /// <para>
     /// The inspection is a whole-token one, not a bare <c>StartsWith</c>: keys share prefixes with
     /// each other, so a title opening on a DIFFERENT card whose key merely extends this task's —
-    /// <c>ARX-4861 compatibility …</c> under a task carrying <c>ARX-486</c> — reads as the key
+    /// <c>PROJ-4861 compatibility …</c> under a task carrying <c>PROJ-486</c> — reads as the key
     /// already being present and opens the pull request naming only the other card, which is the
     /// one shape the forced prefix exists to correct (independent pre-PR review, cycle 1, both
     /// lenses). Anything that is not a letter or a digit ends the token, so the ordinary
-    /// <c>ARX-486:</c>, <c>ARX-486 </c> and the bare key alone all still count as written.
+    /// <c>PROJ-486:</c>, <c>PROJ-486 </c> and the bare key alone all still count as written.
     /// </para>
     /// </summary>
     private static string WithExternalKey(string title, string? key) =>
@@ -256,8 +256,8 @@ internal static class PullRequestBody
     /// reduced-review note, and the run footer. The criteria live on the card, the review
     /// residuals live in the run record (<c>review-N-findings.md</c>, and
     /// <c>h9k task show</c> reads the same tally back from the run's own stream), and the
-    /// provenance is the run record too. Origin incident: bioage-calculator pull request #4
-    /// (ARX-5817, task 4442dd3a) opened on 2026-09-18 with a 3,837-byte, 36-line body for a
+    /// provenance is the run record too. Origin incident: a pull request in a teammate's project
+    /// (PROJ-5817, task 4442dd3a) opened on 2026-09-18 with a 3,837-byte, 36-line body for a
     /// 56-line file, of which roughly a third was these additions and the rest read like a
     /// transcript.
     /// </para>
@@ -323,7 +323,7 @@ internal static class PullRequestBody
     /// that item's URL, which GitHub turns into a cross-reference on the issue's own timeline.
     /// <para>
     /// The link text is the key people actually say out loud rather than the URL itself:
-    /// <c>[ARX-5817](https://…/browse/ARX-5817)</c> for a Jira card, <c>[#123](…/issues/123)</c>
+    /// <c>[PROJ-5817](https://…/browse/PROJ-5817)</c> for a Jira card, <c>[#123](…/issues/123)</c>
     /// for a GitHub issue. A reviewer scanning the top of a pull request reads the card number,
     /// not the host and path it happens to live under, and one short line is what makes the
     /// platform's single addition sit above the prose without competing with it.

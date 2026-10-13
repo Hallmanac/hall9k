@@ -3,7 +3,7 @@ namespace Hall9k.Domain.Features.Project;
 /// <summary>
 /// Decides, for one verification pass, which of a project's gates run and which skip out because
 /// their <see cref="VerifyCommand.PathSet"/> names none of the paths the run changed (task: a
-/// verify gate can be scoped to a path set, TaylorDenny, arx-platform #2218 — a one-line comment in
+/// verify gate can be scoped to a path set, a teammate's project — a one-line comment in
 /// a front-end file paid about 30 minutes of .NET gates that could not observe it). A pure
 /// function over a path list, the non-executable rule set and the gates, in the same spirit as
 /// <see cref="NonExecutablePathClassifier"/>: nothing here reads git or the filesystem, so

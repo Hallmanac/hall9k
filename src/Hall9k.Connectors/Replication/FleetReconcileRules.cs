@@ -13,7 +13,7 @@ namespace Hall9k.Connectors.Replication;
 /// <para>
 /// The invariant behind all of it: every node in an owner's fleet holds every fleet- and
 /// team-scoped event of each project it registers, so any one of them is a sufficient answerer for
-/// a teammate's own bootstrap. Brian, 2026-09-21: the Mac held almost none of arx-platform's
+/// a teammate's own bootstrap. Brian, 2026-09-21: the Mac held almost none of a shared project's
 /// history while the Windows node held all of it, and a member invited from either one must receive
 /// the whole project.
 /// </para>

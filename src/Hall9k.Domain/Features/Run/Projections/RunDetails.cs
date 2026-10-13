@@ -281,7 +281,7 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// When the provider's CI picture was FIRST observed still incomplete on the current run, and
     /// null the moment an observation reads it complete — how long a check has been pending, which
     /// is what the Delivered surfaces say instead of offering the pendingness itself as the reason
-    /// nothing is happening (Decisions Log #164; origin: arx-platform PR #2042's
+    /// nothing is happening (Decisions Log #164; origin: a teammate's project, whose
     /// .NET Framework check sat pending for nine hours after its hosted agent died, and the phase
     /// line all night said only that its checks may still be reporting). Set on the transition INTO
     /// pending and never refreshed by a later sweep that merely confirms the same still-pending

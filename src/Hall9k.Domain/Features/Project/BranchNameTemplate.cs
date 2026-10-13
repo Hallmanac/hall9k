@@ -318,8 +318,8 @@ public sealed record BranchNameTemplate
     }
 
     /// <summary>
-    /// The external key as branch-name material. Case is kept, because ARX-14 is how the team
-    /// writes it and a branch named arx-14 is a different thing to look at in a branch list.
+    /// The external key as branch-name material. Case is kept, because PROJ-14 is how the team
+    /// writes it and a branch named proj-14 is a different thing to look at in a branch list.
     /// Dots are deliberately not carried through even though git allows them mid-name: a key
     /// ending in <c>.lock</c> or containing <c>..</c> would render an illegal ref out of a
     /// template <see cref="Parse"/> had already accepted, and no real key needs one.

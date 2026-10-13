@@ -1107,7 +1107,7 @@ public sealed class CloseoutEngine(
         // Review feedback is detected ahead of every CI read below, and the pending-checks
         // short-circuit that used to precede it now yields to it (Brian's ruling, 2026-09-09
         // 09:25 EDT, Decisions Log #164): a broken CI may be what the review
-        // found, so the fix lap must be allowed to run. Origin incident: arx-platform PR #2042,
+        // found, so the fix lap must be allowed to run. Origin incident: a pull request in a teammate's project,
         // whose .NET Framework build stage lost its hosted agent and never received a final check
         // status, so the check read pending for nine hours while four Copilot threads sat
         // unaddressed and every sweep stopped at that gate.

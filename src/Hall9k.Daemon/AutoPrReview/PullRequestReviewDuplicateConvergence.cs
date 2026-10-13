@@ -19,7 +19,7 @@ namespace Hall9k.Daemon.AutoPrReview;
 /// seconds. Each node keeps its own <see cref="ObservedReviewRequest"/> record (its id is prefixed
 /// with the node's own id), and the store-level dedup in <c>AutoPrReviewEngine.CreateOneAsync</c>
 /// sees the peer's task only once replication lands, about two minutes later, after both
-/// dispatchers have claimed. In the incident (arx-platform 2140, 2143 and 2147) the loser's twin
+/// dispatchers have claimed. In the incident (three pull requests in a teammate's project) the loser's twin
 /// was queued on one node under a per-project ceiling of 0 and was claimed on the other after
 /// replication, and the two nodes ran different auto pr-review modes because
 /// <c>ProjectSettingsChanged</c> is node-scoped.

@@ -1153,7 +1153,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
                 // watermark is taken at the first follow-through poll, not at the review, so a lap
                 // opened before that poll, or on a task whose follow-through never opened, has none.
                 // Counting such a thread unchanged is what told a reviewer all eleven of theirs were
-                // quiet when every one had been resolved since (arx#2201).
+                // quiet when every one had been resolved since (a teammate's project).
                 if (watermark is null)
                 {
                     unbaselined++;

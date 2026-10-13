@@ -359,7 +359,7 @@ public sealed partial class VerificationRunner(
         string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
 
         // Which gates this pass runs at all (task: a verify gate can be scoped to a path set —
-        // origin: TaylorDenny, arx-platform #2218, about 30 minutes of .NET gates for a one-line
+        // origin: a teammate's project, about 30 minutes of .NET gates for a one-line
         // front-end doc comment). Decided against the same changedPaths the non-executable skip
         // above already read, whole-branch against its base (or stacked fork point) at every
         // entry rather than the fix lap's own commits, so a scoped gate that ran earlier is never
@@ -1436,7 +1436,7 @@ public sealed partial class VerificationRunner(
             // still wins: that assignment runs inside the shell after this process's environment is
             // inherited, not before it, so it simply overwrites this default for its own session.
             // Single-process MSBuild (-m:1), the field workaround's other half, is deliberately not
-            // set here: the arx workaround used both flags together, but only this cheap half
+            // set here: the field workaround used both flags together, but only this cheap half
             // ships now, since GateInfrastructureFailureClassifier's own MSB4166 recognition makes
             // a residual node-reuse crash cost a retry rather than a dead task.
             //
