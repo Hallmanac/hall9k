@@ -13,7 +13,7 @@ namespace Hall9k.Tests.Daemon;
 public sealed class MentionAnswerPromptTests
 {
     private static readonly PullRequestMentionComment Comment = new(
-        "IC_abc", "taylor-dennison", "@Hallmanac just curious what the motivating factor is here?",
+        "IC_abc", "reviewer-b", "@Hallmanac just curious what the motivating factor is here?",
         "https://github.com/acme/web/pull/7#issuecomment-1", new DateTimeOffset(2026, 10, 1, 15, 49, 0, TimeSpan.Zero));
 
     private static string Build(string? priorReport, bool ownPullRequest) =>

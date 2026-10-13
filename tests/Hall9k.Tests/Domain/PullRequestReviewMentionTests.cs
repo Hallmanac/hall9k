@@ -26,12 +26,12 @@ public sealed class PullRequestReviewMentionTests
         TaskAggregate task = QueuedPrReviewTask();
 
         PullRequestReviewMentionObserved observed = TaskDecider.ObservePrReviewMention(
-            task, "https://github.com/acme/widgets/pull/42", "IC_1", "ryan",
+            task, "https://github.com/acme/widgets/pull/42", "IC_1", "reviewer-a",
             "@brian what do you think?", "https://github.com/acme/widgets/pull/42#issuecomment-1", Now, Now);
         task.Apply(observed);
 
         task.LatestMentionCommentId.Should().Be("IC_1");
-        task.LatestMentionAuthorLogin.Should().Be("ryan");
+        task.LatestMentionAuthorLogin.Should().Be("reviewer-a");
         task.LatestMentionBody.Should().Be("@brian what do you think?");
         task.LatestMentionUrl.Should().Be("https://github.com/acme/widgets/pull/42#issuecomment-1");
         task.LatestMentionCreatedAt.Should().Be(Now);
@@ -44,7 +44,7 @@ public sealed class PullRequestReviewMentionTests
         TaskState before = task.State;
 
         task.Apply(TaskDecider.ObservePrReviewMention(
-            task, "https://github.com/acme/widgets/pull/42", "IC_1", "ryan", "@brian?", "url", Now, Now));
+            task, "https://github.com/acme/widgets/pull/42", "IC_1", "reviewer-a", "@brian?", "url", Now, Now));
 
         task.State.Should().Be(before, "a mention attaches to whatever state the task is already in");
     }
@@ -62,7 +62,7 @@ public sealed class PullRequestReviewMentionTests
         TaskAggregate task = QueuedPrReviewTask();
 
         PullRequestReviewMentionObserved observed = TaskDecider.ObservePrReviewMention(
-            task, "https://github.com/acme/widgets/pull/42", "IC_1", "ryan", "@brian?", "url", Now, Now);
+            task, "https://github.com/acme/widgets/pull/42", "IC_1", "reviewer-a", "@brian?", "url", Now, Now);
 
         observed.MintedTask.Should().BeFalse();
     }
@@ -73,10 +73,10 @@ public sealed class PullRequestReviewMentionTests
         TaskAggregate task = QueuedPrReviewTask();
 
         task.Apply(new PullRequestReviewMentionObserved(
-            task.Id, "https://github.com/acme/widgets/pull/42", "IC_1", "ryan", "@brian?", "url", Now, Now,
+            task.Id, "https://github.com/acme/widgets/pull/42", "IC_1", "reviewer-a", "@brian?", "url", Now, Now,
             MintedTask: true, MentionedLogin: "brian", AnswerOnly: true));
         task.Apply(TaskDecider.ObservePrReviewMention(
-            task, "https://github.com/acme/widgets/pull/42", "IC_2", "ryan", "@brian again?", "url", Now, Now));
+            task, "https://github.com/acme/widgets/pull/42", "IC_2", "reviewer-a", "@brian again?", "url", Now, Now));
 
         task.AnswersMentionOnly.Should().BeTrue("a later attach never turns an answer-only task back into a review");
     }
@@ -86,11 +86,11 @@ public sealed class PullRequestReviewMentionTests
     {
         TaskAggregate minted = QueuedPrReviewTask();
         minted.Apply(new PullRequestReviewMentionObserved(
-            minted.Id, "https://github.com/acme/widgets/pull/42", "IC_1", "ryan", "@brian?", "url", Now, Now,
+            minted.Id, "https://github.com/acme/widgets/pull/42", "IC_1", "reviewer-a", "@brian?", "url", Now, Now,
             MintedTask: true, MentionedLogin: "brian"));
         TaskAggregate adopted = QueuedPrReviewTask();
         adopted.Apply(TaskDecider.ObservePrReviewMention(
-            adopted, "https://github.com/acme/widgets/pull/42", "IC_1", "ryan", "@brian?", "url", Now, Now));
+            adopted, "https://github.com/acme/widgets/pull/42", "IC_1", "reviewer-a", "@brian?", "url", Now, Now));
 
         minted.AnswersMentionOnly.Should().BeFalse();
         adopted.AnswersMentionOnly.Should().BeFalse();
@@ -105,7 +105,7 @@ public sealed class PullRequestReviewMentionTests
             Now, Owner));
 
         Action act = () => TaskDecider.ObservePrReviewMention(
-            task, "https://github.com/acme/widgets/pull/42", "IC_1", "ryan", "@brian?", "url", Now, Now);
+            task, "https://github.com/acme/widgets/pull/42", "IC_1", "reviewer-a", "@brian?", "url", Now, Now);
 
         act.Should().Throw<DomainConflictException>();
     }
@@ -116,7 +116,7 @@ public sealed class PullRequestReviewMentionTests
         TaskAggregate task = QueuedPrReviewTask();
 
         Action act = () => TaskDecider.ObservePrReviewMention(
-            task, string.Empty, "IC_1", "ryan", "@brian?", "url", Now, Now);
+            task, string.Empty, "IC_1", "reviewer-a", "@brian?", "url", Now, Now);
 
         act.Should().Throw<DomainValidationException>();
     }
@@ -127,7 +127,7 @@ public sealed class PullRequestReviewMentionTests
         TaskAggregate task = QueuedPrReviewTask();
 
         Action act = () => TaskDecider.ObservePrReviewMention(
-            task, "https://github.com/acme/widgets/pull/42", string.Empty, "ryan", "@brian?", "url", Now, Now);
+            task, "https://github.com/acme/widgets/pull/42", string.Empty, "reviewer-a", "@brian?", "url", Now, Now);
 
         act.Should().Throw<DomainValidationException>();
     }

@@ -690,7 +690,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     /// The gap task 412afe6c closes: this prompt has always told the follow-up to post a top-level
     /// comment and to reply in threads, and said nothing at all about how any of it should read.
     /// Origin incident (2026-09-09): a follow-up's summary comment went out under Brian's login on
-    /// arx-platform#2042 with em dashes in most of its paragraphs.
+    /// a pull request in a teammate's project with em dashes in most of its paragraphs.
     /// </summary>
     [Fact]
     public void Follow_up_prompt_states_the_writing_conventions_the_comment_is_posted_under()

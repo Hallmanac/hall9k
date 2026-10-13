@@ -82,7 +82,7 @@ public sealed class AdvisoryReviewThreadsTests
     /// <summary>
     /// The origin incident's own wording is the important case here: "my own PR needs the same
     /// pattern" is a remark about somebody else's branch, which is why bare "needs" is
-    /// deliberately not one of the request phrases (arx-platform PR #2021, 2026-09-09).
+    /// deliberately not one of the request phrases (a teammate's project, 2026-09-09).
     /// </summary>
     [Theory]
     [InlineData("Nice, my own PR needs the same pattern.")]

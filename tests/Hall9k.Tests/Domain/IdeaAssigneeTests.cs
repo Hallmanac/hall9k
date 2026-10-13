@@ -188,9 +188,9 @@ public sealed class IdeaAssigneeTests
         TaskOwnerCheck check = new(TaskOwnerOutcome.NotOwner, CreatorRoot, null, null);
 
         TaskOwnerOverrideDecision decision = TaskOwnerOverride.Decide(
-            taskId, "abandon", check, "Ryan", null, holder: null, reason: null, OwnerRoleCheck.NotChecked);
+            taskId, "abandon", check, "Jordan", null, holder: null, reason: null, OwnerRoleCheck.NotChecked);
 
-        decision.Message.Should().StartWith($"Task {DomainId.Short(taskId)} belongs to Ryan");
+        decision.Message.Should().StartWith($"Task {DomainId.Short(taskId)} belongs to Jordan");
     }
 
     [Fact]
@@ -202,7 +202,7 @@ public sealed class IdeaAssigneeTests
         held.AssigneeOwnerFingerprint = AssigneeRoot;
 
         IdeaDocumentRenderer.Render(nobody, "hall9k").Should().NotContain("assignee:");
-        IdeaDocumentRenderer.Render(held, "hall9k", "Ryan").Should().Contain("assignee: Ryan");
+        IdeaDocumentRenderer.Render(held, "hall9k", "Jordan").Should().Contain("assignee: Jordan");
         IdeaDocumentRenderer.Render(held, "hall9k").Should().Contain("assignee: assignee-roo",
             "an assignee this node cannot name falls back to the root's short form, never to a blank");
     }
@@ -216,17 +216,17 @@ public sealed class IdeaAssigneeTests
         idea.ProjectId = projectId;
         idea.AssigneeOwnerId = assigneeId;
         idea.AssigneeOwnerFingerprint = AssigneeRoot;
-        OwnerDetails local = new() { Id = assigneeId, Name = "Ryan", RootFingerprint = AssigneeRoot };
+        OwnerDetails local = new() { Id = assigneeId, Name = "Jordan", RootFingerprint = AssigneeRoot };
         ProjectMemberLabels labels = new()
         {
             Id = projectId,
-            Labels = [new ProjectMemberLabel(AssigneeRoot, [], DisplayName.Trusted("Ryan Smith"), null)],
+            Labels = [new ProjectMemberLabel(AssigneeRoot, [], DisplayName.Trusted("Jordan Smith"), null)],
         };
 
         IdeaAssigneeLabel.Of(idea, new Dictionary<Guid, OwnerDetails> { [assigneeId] = local }, new Dictionary<Guid, ProjectMemberLabels>())
-            .Should().Be("Ryan");
+            .Should().Be("Jordan");
         IdeaAssigneeLabel.Of(idea, new Dictionary<Guid, OwnerDetails>(), new Dictionary<Guid, ProjectMemberLabels> { [projectId] = labels })
-            .Should().Be("Ryan Smith");
+            .Should().Be("Jordan Smith");
         idea.AssigneeOwnerFingerprint = null;
         IdeaAssigneeLabel.Of(idea, new Dictionary<Guid, OwnerDetails>(), new Dictionary<Guid, ProjectMemberLabels>())
             .Should().Be(DomainId.Short(assigneeId));

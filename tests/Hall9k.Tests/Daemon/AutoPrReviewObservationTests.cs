@@ -584,21 +584,21 @@ public sealed class AutoPrReviewObservationTests
         TaskAggregate task = FollowingThroughTask();
 
         AutoPrReviewObservation.IsPullRequestAuthorReply(
-            "taylor-dennison", "taylor-dennison", TaskDecider.AwaitsPrReviewFollowThrough(task))
+            "reviewer-b", "reviewer-b", TaskDecider.AwaitsPrReviewFollowThrough(task))
             .Should().BeTrue();
     }
 
     [Fact]
     public void The_author_is_matched_case_insensitively_because_github_logins_are()
     {
-        AutoPrReviewObservation.IsPullRequestAuthorReply("Taylor-Dennison", "taylor-dennison", awaitsFollowThrough: true)
+        AutoPrReviewObservation.IsPullRequestAuthorReply("Reviewer-B", "reviewer-b", awaitsFollowThrough: true)
             .Should().BeTrue();
     }
 
     [Fact]
     public void A_mention_from_anyone_other_than_the_pull_requests_author_is_not_an_author_reply()
     {
-        AutoPrReviewObservation.IsPullRequestAuthorReply("taylor-dennison", "ryan", awaitsFollowThrough: true)
+        AutoPrReviewObservation.IsPullRequestAuthorReply("reviewer-b", "reviewer-a", awaitsFollowThrough: true)
             .Should().BeFalse("it takes the ordinary follow-up path, exactly as today");
     }
 
@@ -609,7 +609,7 @@ public sealed class AutoPrReviewObservationTests
 
         TaskDecider.AwaitsPrReviewFollowThrough(task).Should().BeFalse("the report parks on the run stream while the task stays Claimed");
         AutoPrReviewObservation.IsPullRequestAuthorReply(
-            "taylor-dennison", "taylor-dennison", TaskDecider.AwaitsPrReviewFollowThrough(task))
+            "reviewer-b", "reviewer-b", TaskDecider.AwaitsPrReviewFollowThrough(task))
             .Should().BeFalse();
     }
 

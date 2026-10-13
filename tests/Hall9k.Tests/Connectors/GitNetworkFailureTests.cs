@@ -11,7 +11,7 @@ namespace Hall9k.Tests.Connectors;
 public sealed class GitNetworkFailureTests
 {
     [Fact]
-    public void The_error_that_failed_a_launch_in_arx_platform_is_transient()
+    public void The_error_that_failed_a_launch_in_a_teammates_project_is_transient()
     {
         GitNetworkFailure.IsTransient(
             "fatal: unable to access 'https://github.com/x/y.git/': Could not resolve host: github.com")

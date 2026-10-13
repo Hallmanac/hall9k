@@ -63,7 +63,7 @@ public sealed class AnswerOnlyPrReviewEndingTests
         // The event as an older stream wrote it: MintedTask true and no AnswerOnly field at all.
         TaskAggregate task = QueuedPrReviewTask();
         task.Apply(new PullRequestReviewMentionObserved(
-            task.Id, PullRequestUrl, "IC_1", "ryan", "@brian?", "url", Now, Now,
+            task.Id, PullRequestUrl, "IC_1", "reviewer-a", "@brian?", "url", Now, Now,
             MintedTask: true, MentionedLogin: "brian"));
         task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
 
@@ -96,7 +96,7 @@ public sealed class AnswerOnlyPrReviewEndingTests
     {
         TaskAggregate task = QueuedPrReviewTask();
         task.Apply(new PullRequestReviewMentionObserved(
-            task.Id, PullRequestUrl, "IC_1", "ryan", "@brian?", "url", Now, Now,
+            task.Id, PullRequestUrl, "IC_1", "reviewer-a", "@brian?", "url", Now, Now,
             MintedTask: true, MentionedLogin: "brian", AnswerOnly: answerOnly));
         task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
         return task;

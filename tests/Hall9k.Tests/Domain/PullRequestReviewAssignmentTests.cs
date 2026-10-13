@@ -27,7 +27,7 @@ public sealed class PullRequestReviewAssignmentTests
         TaskAggregate task = QueuedPrReviewTask();
 
         task.Apply(new PullRequestReviewAssignmentObserved(
-            task.Id, "https://github.com/acme/widgets/pull/42", "brian", "ryan", Now));
+            task.Id, "https://github.com/acme/widgets/pull/42", "brian", "reviewer-a", Now));
 
         task.AutoPrReviewAssigneeLogin.Should().Be("brian");
     }
@@ -37,10 +37,10 @@ public sealed class PullRequestReviewAssignmentTests
     {
         TaskAggregate task = QueuedPrReviewTask();
         task.Apply(new PullRequestReviewAssignmentObserved(
-            task.Id, "https://github.com/acme/widgets/pull/42", "brian", "ryan", Now));
+            task.Id, "https://github.com/acme/widgets/pull/42", "brian", "reviewer-a", Now));
 
         task.Apply(new PullRequestReviewAssignmentRecalled(
-            task.Id, "https://github.com/acme/widgets/pull/42", "ryan", Now, Concluded: false));
+            task.Id, "https://github.com/acme/widgets/pull/42", "reviewer-a", Now, Concluded: false));
 
         task.AutoPrReviewAssigneeLogin.Should().BeNull();
     }
@@ -50,10 +50,10 @@ public sealed class PullRequestReviewAssignmentTests
     {
         TaskAggregate task = QueuedPrReviewTask();
         task.Apply(new PullRequestReviewAssignmentObserved(
-            task.Id, "https://github.com/acme/widgets/pull/42", "brian", "ryan", Now));
+            task.Id, "https://github.com/acme/widgets/pull/42", "brian", "reviewer-a", Now));
 
         task.Apply(new PullRequestReviewAssignmentRecalled(
-            task.Id, "https://github.com/acme/widgets/pull/42", "ryan", Now, Concluded: true));
+            task.Id, "https://github.com/acme/widgets/pull/42", "reviewer-a", Now, Concluded: true));
 
         task.State.Should().Be(TaskState.Queued, "the event only observes; a following TaskAbandoned is what concludes it");
     }
@@ -66,13 +66,13 @@ public sealed class PullRequestReviewAssignmentTests
         // authority that gave it (PLAN.md §16 decision #34's amendment).
         TaskAggregate task = QueuedPrReviewTask();
         task.Apply(new PullRequestReviewAssignmentObserved(
-            task.Id, "https://github.com/acme/widgets/pull/42", "brian", "ryan", Now));
+            task.Id, "https://github.com/acme/widgets/pull/42", "brian", "reviewer-a", Now));
 
         PullRequestReviewAssignmentRecalled recalled = new(
-            task.Id, "https://github.com/acme/widgets/pull/42", "ryan", Now, Concluded: true);
+            task.Id, "https://github.com/acme/widgets/pull/42", "reviewer-a", Now, Concluded: true);
         task.Apply(recalled);
         TaskAbandoned abandoned = TaskDecider.Abandon(
-            task, "The GitHub reviewer assignment that created this task was recalled by ryan before the run ever dispatched.",
+            task, "The GitHub reviewer assignment that created this task was recalled by reviewer-a before the run ever dispatched.",
             Now, Owner);
         task.Apply(abandoned);
 

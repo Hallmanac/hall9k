@@ -21,7 +21,7 @@ public sealed class TaskQueueVerbsTests
         IReadOnlyList<string> mine = TaskAssignCommand.HoldOutcomeLines(
             TaskState.Published, "28b19893", "Brian", heldByActor: true, unchanged: false);
         IReadOnlyList<string> handedOff = TaskAssignCommand.HoldOutcomeLines(
-            TaskState.Published, "28b19893", "Ryan", heldByActor: false, unchanged: false);
+            TaskState.Published, "28b19893", "Jordan", heldByActor: false, unchanged: false);
 
         string.Join('\n', mine).Should().Contain("not queued").And.Contain("h9k task queue 28b19893");
         string.Join('\n', handedOff).Should().Contain("not queued").And.Contain("h9k task queue 28b19893");

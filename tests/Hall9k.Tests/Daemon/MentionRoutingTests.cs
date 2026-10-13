@@ -9,7 +9,7 @@ namespace Hall9k.Tests.Daemon;
 
 /// <summary>
 /// What a mention of this install's login earns, decided with no database, no branch and no GitHub
-/// (decision dce39370). The origin case is example-org/acme-platform#2166: a teammate's one question to
+/// (decision dce39370). The origin case: a teammate's one question to
 /// the pull request's author minted a full two-lens review of the author's own pull request at $6.33.
 /// </summary>
 public sealed class MentionRoutingTests
@@ -36,7 +36,7 @@ public sealed class MentionRoutingTests
     [Fact]
     public void A_mention_on_a_pull_request_someone_else_wrote_mints_the_full_review_as_it_does_today()
     {
-        MentionRouting.Decide(ReviewCoverage.Uncovered, "taylor-dennison", Own).Should().Be(MentionRoute.MintReview);
+        MentionRouting.Decide(ReviewCoverage.Uncovered, "reviewer-b", Own).Should().Be(MentionRoute.MintReview);
     }
 
     [Theory]
@@ -50,7 +50,7 @@ public sealed class MentionRoutingTests
 
     [Theory]
     [InlineData(Own)]
-    [InlineData("taylor-dennison")]
+    [InlineData("reviewer-b")]
     public void An_own_covering_task_attaches_whoever_wrote_the_pull_request(string authorLogin)
     {
         MentionRouting.Decide(CoveredBy(ReviewCoverageKind.Own), authorLogin, Own).Should().Be(MentionRoute.Attach);
@@ -71,9 +71,9 @@ public sealed class MentionRoutingTests
     [Fact]
     public void The_objective_names_the_commenter_and_the_owners_own_pull_request_and_never_says_review()
     {
-        string objective = MentionRouting.AnswerObjective("taylor-dennison", "example-org/acme-platform#2166");
+        string objective = MentionRouting.AnswerObjective("commenter-b", "example-org/acme-platform#5166");
 
-        objective.Should().Be("Answer taylor-dennison's comment on your own pull request example-org/acme-platform#2166");
+        objective.Should().Be("Answer commenter-b's comment on your own pull request example-org/acme-platform#5166");
         objective.Should().NotContainEquivalentOf("review");
     }
 
@@ -95,9 +95,9 @@ public sealed class MentionRoutingTests
     public void The_provenance_says_the_owner_wrote_the_pull_request_and_nothing_is_reviewed()
     {
         string provenance = MentionRouting.AnswerProvenance(
-            "taylor-dennison", Own, new DateTimeOffset(2026, 10, 1, 15, 49, 0, TimeSpan.Zero));
+            "reviewer-b", Own, new DateTimeOffset(2026, 10, 1, 15, 49, 0, TimeSpan.Zero));
 
-        provenance.Should().Contain("taylor-dennison tagged Hallmanac")
+        provenance.Should().Contain("reviewer-b tagged Hallmanac")
             .And.Contain("Hallmanac wrote this pull request")
             .And.Contain("does not review the owner's own work");
     }

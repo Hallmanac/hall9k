@@ -27,7 +27,7 @@ public sealed class ReviewRequestRowTests
     {
         ReviewRequestRow row = ReviewRequestPane.Compose(
             Observed(ReviewRequestOutcome.HeldSettingOff, Now.AddMinutes(-5)),
-            "arx-platform",
+            "sample-project",
             new AutoPrReviewSetting(AutoPrReviewSpeed.Off, Recorded: true),
             covering: null,
             Now);
@@ -35,8 +35,8 @@ public sealed class ReviewRequestRowTests
         row.NeedsYou.Should().BeTrue("the operator is the only one who can act on it");
         row.Markup.Should().Contain("a review of acme/widgets#2033 was requested of brian");
         row.Markup.Should().Contain("auto pr-review is off here");
-        row.Markup.Should().Contain("h9k task add --project arx-platform --from-pr 2033");
-        row.Markup.Should().Contain("h9k project set arx-platform --auto-pr-review normal");
+        row.Markup.Should().Contain("h9k task add --project sample-project --from-pr 2033");
+        row.Markup.Should().Contain("h9k project set sample-project --auto-pr-review normal");
     }
 
     [Fact]
@@ -49,7 +49,7 @@ public sealed class ReviewRequestRowTests
         held.HoldEndsAt = endsAt;
 
         ReviewRequestRow row = ReviewRequestPane.Compose(
-            held, "arx-platform", AutoPrReviewSetting.Unrecorded, covering: null, Now, holdLeaderName: "the-mac");
+            held, "sample-project", AutoPrReviewSetting.Unrecorded, covering: null, Now, holdLeaderName: "the-mac");
 
         row.NeedsYou.Should().BeFalse("the daemon is handling it and nothing is asked of the operator");
         row.Markup.Should().Contain("a review of acme/widgets#2033 was requested of brian");
@@ -67,7 +67,7 @@ public sealed class ReviewRequestRowTests
         held.HoldEndsAt = Now.AddMinutes(4);
 
         ReviewRequestRow row = ReviewRequestPane.Compose(
-            held, "arx-platform", AutoPrReviewSetting.Unrecorded, covering: null, Now);
+            held, "sample-project", AutoPrReviewSetting.Unrecorded, covering: null, Now);
 
         row.Markup.Should().Contain($"held for node {DomainId.Short(leader)},");
     }
@@ -78,7 +78,7 @@ public sealed class ReviewRequestRowTests
     {
         ReviewRequestRow row = ReviewRequestPane.Compose(
             Observed(ReviewRequestOutcome.HeldMintCapReached, Now.AddMinutes(-1)),
-            "arx-platform", AutoPrReviewSetting.Unrecorded, covering: null, Now);
+            "sample-project", AutoPrReviewSetting.Unrecorded, covering: null, Now);
 
         row.NeedsYou.Should().BeFalse("the cap is re-graded every sweep and resolves itself once the window rolls");
         row.Markup.Should().Contain("hourly auto-pr-review mint cap is reached");
@@ -94,7 +94,7 @@ public sealed class ReviewRequestRowTests
         held.HoldEndsAt = Now.AddMinutes(4);
 
         ReviewRequestRow row = ReviewRequestPane.Compose(
-            held, "arx-platform", AutoPrReviewSetting.Unrecorded,
+            held, "sample-project", AutoPrReviewSetting.Unrecorded,
             new CoveringReview(taskId, Live: true, "Queued", AutoCreated: true, GateParked: false), Now);
 
         row.Markup.Should().Contain($"task {DomainId.Short(taskId)} is created and reviewing").And.NotContain("held for");
@@ -107,7 +107,7 @@ public sealed class ReviewRequestRowTests
 
         ReviewRequestRow row = ReviewRequestPane.Compose(
             Observed(ReviewRequestOutcome.TaskCreated, Now.AddMinutes(-5), taskId),
-            "arx-platform",
+            "sample-project",
             AutoPrReviewSetting.Unrecorded,
             new CoveringReview(taskId, Live: true, "Working", AutoCreated: true, GateParked: false),
             Now);
@@ -126,7 +126,7 @@ public sealed class ReviewRequestRowTests
 
         ReviewRequestRow row = ReviewRequestPane.Compose(
             Observed(ReviewRequestOutcome.TaskCreated, Now.AddMinutes(-5), taskId),
-            "arx-platform",
+            "sample-project",
             AutoPrReviewSetting.Unrecorded,
             new CoveringReview(taskId, Live: stateWord != "Done", stateWord, AutoCreated: true, GateParked: false),
             Now);
@@ -142,7 +142,7 @@ public sealed class ReviewRequestRowTests
 
         ReviewRequestRow row = ReviewRequestPane.Compose(
             Observed(ReviewRequestOutcome.HeldSettingOff, Now.AddMinutes(-5)),
-            "arx-platform",
+            "sample-project",
             new AutoPrReviewSetting(AutoPrReviewSpeed.Off, Recorded: true),
             new CoveringReview(taskId, Live: true, "Working", AutoCreated: false, GateParked: false),
             Now);
@@ -170,7 +170,7 @@ public sealed class ReviewRequestRowTests
 
         ReviewRequestRow row = ReviewRequestPane.Compose(
             Observed(ReviewRequestOutcome.AlreadyCovered, Now.AddMinutes(-5), taskId),
-            "arx-platform",
+            "sample-project",
             settingOn
                 ? AutoPrReviewSetting.Unrecorded
                 : new AutoPrReviewSetting(AutoPrReviewSpeed.Off, Recorded: true),
@@ -195,7 +195,7 @@ public sealed class ReviewRequestRowTests
         request.ReviewerLogin = "otherbot";
 
         ReviewRequestRow row = ReviewRequestPane.Compose(
-            request, "arx-platform", new AutoPrReviewSetting(AutoPrReviewSpeed.Off, Recorded: true), null, Now);
+            request, "sample-project", new AutoPrReviewSetting(AutoPrReviewSpeed.Off, Recorded: true), null, Now);
 
         row.Markup.Should().Contain("was requested of otherbot");
         row.Markup.Should().NotContain("requested of you",
@@ -209,7 +209,7 @@ public sealed class ReviewRequestRowTests
         request.ReviewerLogin = string.Empty;
 
         ReviewRequestRow row = ReviewRequestPane.Compose(
-            request, "arx-platform", new AutoPrReviewSetting(AutoPrReviewSpeed.Off, Recorded: true), null, Now);
+            request, "sample-project", new AutoPrReviewSetting(AutoPrReviewSpeed.Off, Recorded: true), null, Now);
 
         row.Markup.Should().Contain("a login this row does not record");
     }
@@ -226,7 +226,7 @@ public sealed class ReviewRequestRowTests
         request.ReviewerLogin = "brian[bot]";
 
         ReviewRequestRow row = ReviewRequestPane.Compose(
-            request, "arx-platform", new AutoPrReviewSetting(AutoPrReviewSpeed.Off, Recorded: true), null, Now);
+            request, "sample-project", new AutoPrReviewSetting(AutoPrReviewSpeed.Off, Recorded: true), null, Now);
 
         Rendered(row.Markup).Should().Contain("was requested of brian[bot]");
     }
@@ -236,7 +236,7 @@ public sealed class ReviewRequestRowTests
     {
         ReviewRequestRow row = ReviewRequestPane.Compose(
             Observed(ReviewRequestOutcome.HeldSettingOff, Now.AddMinutes(-5)),
-            "arx-platform",
+            "sample-project",
             AutoPrReviewSetting.Unrecorded,
             covering: null,
             Now);
@@ -251,7 +251,7 @@ public sealed class ReviewRequestRowTests
     {
         ReviewRequestRow row = ReviewRequestPane.Compose(
             Observed(ReviewRequestOutcome.HeldBeforeCutoff, Now.AddDays(-14)),
-            "arx-platform",
+            "sample-project",
             AutoPrReviewSetting.Unrecorded,
             covering: null,
             Now);
@@ -259,7 +259,7 @@ public sealed class ReviewRequestRowTests
         row.NeedsYou.Should().BeTrue();
         row.Markup.Should().Contain("14d ago", "the age is what tells an operator this is one of the stale ones");
         row.Markup.Should().Contain("predates auto pr-review's start on this install");
-        row.Markup.Should().Contain("h9k task add --project arx-platform --from-pr 2033");
+        row.Markup.Should().Contain("h9k task add --project sample-project --from-pr 2033");
         row.Markup.Should().NotContain("--auto-pr-review normal",
             "turning the setting on would not start a stale request, so the row must not offer it as a lever");
     }
@@ -270,7 +270,7 @@ public sealed class ReviewRequestRowTests
         ObservedReviewRequest request = Observed(ReviewRequestOutcome.HeldRequestTimeUnknown, requestedAt: null);
 
         ReviewRequestRow row = ReviewRequestPane.Compose(
-            request, "arx-platform", AutoPrReviewSetting.Unrecorded, covering: null, Now);
+            request, "sample-project", AutoPrReviewSetting.Unrecorded, covering: null, Now);
 
         row.NeedsYou.Should().BeTrue();
         row.Markup.Should().Contain("requested-at time could not be read");
@@ -283,7 +283,7 @@ public sealed class ReviewRequestRowTests
         request.OutcomeDetail = "gh pr view exited 1";
 
         ReviewRequestRow row = ReviewRequestPane.Compose(
-            request, "arx-platform", AutoPrReviewSetting.Unrecorded, covering: null, Now);
+            request, "sample-project", AutoPrReviewSetting.Unrecorded, covering: null, Now);
 
         row.NeedsYou.Should().BeTrue();
         row.Markup.Should().Contain("could not adopt it (gh pr view exited 1)");
@@ -296,7 +296,7 @@ public sealed class ReviewRequestRowTests
         request.Outcome = "SomethingElseEntirely";
 
         ReviewRequestRow row = ReviewRequestPane.Compose(
-            request, "arx-platform", AutoPrReviewSetting.Unrecorded, covering: null, Now);
+            request, "sample-project", AutoPrReviewSetting.Unrecorded, covering: null, Now);
 
         row.NeedsYou.Should().BeTrue();
         row.Markup.Should().Contain("recorded by a newer build");
@@ -314,13 +314,13 @@ public sealed class ReviewRequestRowTests
     public void A_held_mention_asks_the_operator_and_names_who_tagged_it(string outcome, string expectedCause)
     {
         ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
-            ObservedMention(outcome), "arx-platform", covering: null);
+            ObservedMention(outcome), "sample-project", covering: null);
 
         row.NeedsYou.Should().BeTrue("a held mention is never retried, so it is only ever the operator's to take");
-        row.Markup.Should().Contain("a comment from ryan mentioned brian on acme/widgets#2033");
+        row.Markup.Should().Contain("a comment from reviewer-a mentioned brian on acme/widgets#2033");
         row.Markup.Should().Contain(expectedCause);
         row.Markup.Should().Contain("a mention already seen is never retried");
-        row.Markup.Should().Contain("h9k task add --project arx-platform --from-pr 2033");
+        row.Markup.Should().Contain("h9k task add --project sample-project --from-pr 2033");
     }
 
     [Fact]
@@ -329,7 +329,7 @@ public sealed class ReviewRequestRowTests
         ObservedReviewMention mention = ObservedMention("MintFailed");
         mention.OutcomeDetail = "gh pr view exited 1";
 
-        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "arx-platform", covering: null);
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "sample-project", covering: null);
 
         row.NeedsYou.Should().BeTrue();
         row.Markup.Should().Contain("could not adopt it (gh pr view exited 1)");
@@ -341,7 +341,7 @@ public sealed class ReviewRequestRowTests
         Guid taskId = DomainId.New();
 
         ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
-            ObservedMention("HeldSettingOff"), "arx-platform",
+            ObservedMention("HeldSettingOff"), "sample-project",
             new CoveringReview(taskId, Live: true, "Working", AutoCreated: true, GateParked: false));
 
         row.NeedsYou.Should().BeFalse("a task already covering the pull request is nothing to ask the operator");
@@ -360,7 +360,7 @@ public sealed class ReviewRequestRowTests
         Guid taskId = DomainId.New();
 
         ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
-            ObservedMention("TaskCreatedParked"), "arx-platform",
+            ObservedMention("TaskCreatedParked"), "sample-project",
             new CoveringReview(taskId, Live: true, "Working", AutoCreated: true, GateParked: true));
 
         row.NeedsYou.Should().BeTrue("the membership gate parked it; nothing has run yet");
@@ -374,7 +374,7 @@ public sealed class ReviewRequestRowTests
         ObservedReviewMention mention = ObservedMention("HeldSettingOff");
         mention.CommentAuthorLogin = string.Empty;
 
-        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "arx-platform", covering: null);
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "sample-project", covering: null);
 
         row.Markup.Should().Contain("a comment mentioned brian");
     }
@@ -390,7 +390,7 @@ public sealed class ReviewRequestRowTests
         ObservedReviewMention mention = ObservedMention("HeldSettingOff");
         mention.MentionedLogin = string.Empty;
 
-        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "arx-platform", covering: null);
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "sample-project", covering: null);
 
         row.Markup.Should().Contain("a login this row does not record");
     }
@@ -410,7 +410,7 @@ public sealed class ReviewRequestRowTests
         mention.OutcomeDetail = "recorded; auto-pr-review is off here, so no follow-up was dispatched";
 
         ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
-            mention, "arx-platform", new CoveringReview(taskId, Live: true, "Working", AutoCreated: true, GateParked: false));
+            mention, "sample-project", new CoveringReview(taskId, Live: true, "Working", AutoCreated: true, GateParked: false));
 
         row.NeedsYou.Should().BeTrue(
             "the task covers the pull request in general, but nothing ever answered this exact comment");
@@ -420,7 +420,7 @@ public sealed class ReviewRequestRowTests
     }
 
     /// <summary>
-    /// The origin case, example-org/acme-platform#2166: a teammate mentioned this viewer's login on a
+    /// The origin case: a teammate mentioned this viewer's login on a
     /// pull request only another owner's task covers. The daemon touched nothing, so the row is the
     /// whole answer, and the covering teammate's task must not turn it into the informational line.
     /// </summary>
@@ -434,10 +434,10 @@ public sealed class ReviewRequestRowTests
             : null;
 
         ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
-            ObservedMention("CoveredByTeammate"), "arx-platform", covering);
+            ObservedMention("CoveredByTeammate"), "sample-project", covering);
 
         row.NeedsYou.Should().BeTrue("a person asked this viewer something, and no task of theirs is answering it");
-        row.Markup.Should().Contain("a comment from ryan mentioned brian on acme/widgets#2033");
+        row.Markup.Should().Contain("a comment from reviewer-a mentioned brian on acme/widgets#2033");
         row.Markup.Should().Contain("this pull request is a teammate's review, so the reply happens on GitHub");
         row.Markup.Should().Contain("[link=https://github.com/acme/widgets/pull/2033#issuecomment-1]the comment[/]");
         row.Markup.Should().NotContain("Take it with", "every by-hand lever that exists is blind to whose task covers the pull request");
@@ -450,7 +450,7 @@ public sealed class ReviewRequestRowTests
         Guid taskId = DomainId.New();
 
         ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
-            ObservedMention("CoveredByTeammate"), "arx-platform",
+            ObservedMention("CoveredByTeammate"), "sample-project",
             new CoveringReview(taskId, Live: true, "Working", AutoCreated: false, GateParked: false));
 
         row.NeedsYou.Should().BeFalse();
@@ -461,7 +461,7 @@ public sealed class ReviewRequestRowTests
     public void A_teammate_covered_mention_whose_teammate_task_has_closed_is_informational()
     {
         ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
-            ObservedMention("CoveredByTeammate"), "arx-platform",
+            ObservedMention("CoveredByTeammate"), "sample-project",
             new CoveringReview(DomainId.New(), Live: false, "Done", AutoCreated: false, GateParked: false, Own: false));
 
         row.NeedsYou.Should().BeFalse("nothing is left running that the reply could be waiting on, and a recorded mention is never deleted");
@@ -480,13 +480,13 @@ public sealed class ReviewRequestRowTests
     {
         ReviewRequestRow row = ReviewRequestPane.Compose(
             Observed(ReviewRequestOutcome.FromInput(outcome), Now.AddMinutes(-5)),
-            "arx-platform",
+            "sample-project",
             new AutoPrReviewSetting(AutoPrReviewSpeed.Off, Recorded: true),
             new CoveringReview(DomainId.New(), Live: true, "Working", AutoCreated: true, GateParked: false, Own: false),
             Now);
 
         row.NeedsYou.Should().BeTrue();
-        row.Markup.Should().Contain(cause).And.Contain("h9k task add --project arx-platform --from-pr 2033");
+        row.Markup.Should().Contain(cause).And.Contain("h9k task add --project sample-project --from-pr 2033");
         row.Markup.Should().NotContain("teammate's");
     }
 
@@ -501,7 +501,7 @@ public sealed class ReviewRequestRowTests
         ObservedReviewMention mention = ObservedMention("AttachedNoFollowUp");
         mention.Outcome = "SomethingElseEntirely";
 
-        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "arx-platform", covering: null);
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "sample-project", covering: null);
 
         row.NeedsYou.Should().BeTrue();
         row.Markup.Should().Contain("recorded by a newer build");
@@ -516,14 +516,14 @@ public sealed class ReviewRequestRowTests
     public void An_author_reply_is_a_needs_you_row_with_the_reply_the_link_and_the_re_review_lever()
     {
         ObservedReviewMention mention = ObservedMention("AuthorReplied");
-        mention.CommentAuthorLogin = "taylor-dennison";
+        mention.CommentAuthorLogin = "reviewer-b";
         mention.CommentBody = "@brian fixed in abc123\n\n  \nplease look again\n\nthird line\nfourth line is not shown";
 
-        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "arx-platform", covering: null);
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "sample-project", covering: null);
 
         row.NeedsYou.Should().BeTrue();
         row.Markup.Should().Contain("the pull request's author answered your review on acme/widgets#2033");
-        row.Markup.Should().Contain("taylor-dennison replied");
+        row.Markup.Should().Contain("reviewer-b replied");
         row.Markup.Should().Contain("[link=https://github.com/acme/widgets/pull/2033#issuecomment-1]the comment[/]");
         row.Markup.Should().Contain("fixed in abc123").And.Contain("please look again").And.Contain("third line");
         row.Markup.Should().NotContain("fourth line");
@@ -537,7 +537,7 @@ public sealed class ReviewRequestRowTests
         ObservedReviewMention mention = ObservedMention("AuthorReplied");
         mention.CommentBody = "[red]loud[/] \u001b[2Jcleared \u202Ereversed";
 
-        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "arx-platform", covering: null);
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "sample-project", covering: null);
 
         row.Markup.Should().Contain("[[red]]loud[[/]]", "a commenter's brackets are text, never markup");
         row.Markup.Should().NotContain("\u001b").And.NotContain("\u202E");
@@ -551,7 +551,7 @@ public sealed class ReviewRequestRowTests
         ObservedReviewMention mention = ObservedMention("AuthorReplied");
 
         ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
-            mention, "arx-platform", covering: null, attachedToTeammate: true);
+            mention, "sample-project", covering: null, attachedToTeammate: true);
 
         row.NeedsYou.Should().BeFalse();
         row.Markup.Should().Contain("to a teammate's review");
@@ -577,7 +577,7 @@ public sealed class ReviewRequestRowTests
         ObservedReviewMention mention = ObservedMention("AuthorReplied");
         mention.CommentBody = string.Empty;
 
-        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "arx-platform", covering: null);
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "sample-project", covering: null);
 
         row.NeedsYou.Should().BeTrue();
         row.Markup.Should().Contain("--since-my-review");
@@ -620,7 +620,7 @@ public sealed class ReviewRequestRowTests
             PullRequestUrl = "https://github.com/acme/widgets/pull/2033",
             MentionedLogin = "brian",
             CommentId = "IC_1",
-            CommentAuthorLogin = "ryan",
+            CommentAuthorLogin = "reviewer-a",
             CommentBody = "@brian what do you think?",
             CommentUrl = "https://github.com/acme/widgets/pull/2033#issuecomment-1",
             CommentCreatedAt = Now.AddMinutes(-5),
@@ -632,15 +632,16 @@ public sealed class ReviewRequestRowTests
     [Fact]
     public void The_status_setting_line_is_printed_for_every_project_including_the_default()
     {
+        // The lines sort by project name, so the stand-in has to sort ahead of "hall9k" as the original did.
         IReadOnlyList<string> lines = ReviewRequestPane.SettingLines(
         [
             ("hall9k", AutoPrReviewSetting.Unrecorded),
-            ("arx-platform", new AutoPrReviewSetting(AutoPrReviewSpeed.Off, Recorded: true)),
+            ("alpha-project", new AutoPrReviewSetting(AutoPrReviewSpeed.Off, Recorded: true)),
         ]);
 
         lines.Should().HaveCount(2);
-        lines[0].Should().Contain("arx-platform").And.Contain("off").And.Contain("explicit")
-            .And.Contain("h9k project set arx-platform --auto-pr-review normal");
+        lines[0].Should().Contain("alpha-project").And.Contain("off").And.Contain("explicit")
+            .And.Contain("h9k project set alpha-project --auto-pr-review normal");
         lines[1].Should().Contain("hall9k").And.Contain("on").And.Contain("normal").And.Contain("default");
     }
 
@@ -652,7 +653,7 @@ public sealed class ReviewRequestRowTests
         row.Should().Contain("normal");
         row.Should().Contain("default");
         row.Should().Contain("nothing recorded here");
-        row.Should().Contain("h9k project set arx-platform --auto-pr-review off");
+        row.Should().Contain("h9k project set sample-project --auto-pr-review off");
     }
 
     [Fact]
@@ -664,7 +665,7 @@ public sealed class ReviewRequestRowTests
         row.Should().Contain("off");
         row.Should().Contain("explicit");
         row.Should().NotContain("nothing recorded here");
-        row.Should().Contain("h9k project set arx-platform --auto-pr-review normal");
+        row.Should().Contain("h9k project set sample-project --auto-pr-review normal");
     }
 
     /// <summary>
@@ -711,7 +712,7 @@ public sealed class ReviewRequestRowTests
         foreach ((ObservedReviewRequest request, AutoPrReviewSetting setting, CoveringReview? covering) in shapes)
         {
             ReviewRequestRow row = ReviewRequestPane.Compose(
-                request, "arx-platform [beta]", setting, covering, Now);
+                request, "sample-project [beta]", setting, covering, Now);
 
             Rendered(row.Markup).Should().Contain("a review of acme/widgets#2033 was requested of brian")
                 .And.NotContain("[dim]", "the markup was rendered, not printed as text");
@@ -719,7 +720,7 @@ public sealed class ReviewRequestRowTests
 
         foreach (string line in ReviewRequestPane.SettingLines(
         [
-            ("arx-platform [beta]", AutoPrReviewSetting.Unrecorded),
+            ("sample-project [beta]", AutoPrReviewSetting.Unrecorded),
             ("hall9k", new AutoPrReviewSetting(AutoPrReviewSpeed.Off, Recorded: true)),
         ]))
         {
@@ -765,7 +766,7 @@ public sealed class ReviewRequestRowTests
         string row = ProjectShowCommand.ClaimGateRow(Project(), recorded);
 
         row.Should().Contain($"off ({expectedOrigin})");
-        row.Should().Contain("h9k project set arx-platform --claim-gate tracker-assignee");
+        row.Should().Contain("h9k project set sample-project --claim-gate tracker-assignee");
     }
 
     /// <summary>
@@ -834,7 +835,7 @@ public sealed class ReviewRequestRowTests
             .Should().StartWith("tracker-assignee").And.Contain("h9k task queue <id> --take");
     }
 
-    private static ProjectDetails Project() => new() { Id = DomainId.New(), Name = "arx-platform" };
+    private static ProjectDetails Project() => new() { Id = DomainId.New(), Name = "sample-project" };
 
     private static ObservedReviewRequest Observed(
         ReviewRequestOutcome outcome, DateTimeOffset? requestedAt, Guid? taskId = null)

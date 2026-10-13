@@ -35,16 +35,16 @@ namespace Hall9k.Tests.Integration;
 public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, IAsyncLifetime
 {
     private static readonly DateTimeOffset Now = new(2026, 10, 4, 12, 0, 0, TimeSpan.Zero);
-    private static readonly string RyanRoot = new('2', 64);
-    private static readonly string TaylorRoot = new('3', 64);
+    private static readonly string JordanRoot = new('2', 64);
+    private static readonly string CaseyRoot = new('3', 64);
     private static readonly string OtherFleetNodeOwnerRoot = new('4', 64);
 
     private readonly PostgresFixture _postgres;
     private readonly ScopedTestHome _scopedHome = new();
     private BootstrapContext _me = null!;
     private string _myRoot = string.Empty;
-    private OwnerDetailsSeed _ryan = null!;
-    private OwnerDetailsSeed _taylor = null!;
+    private OwnerDetailsSeed _jordan = null!;
+    private OwnerDetailsSeed _casey = null!;
     private Guid _projectId;
 
     public IdeaAssigneeCommandTests(PostgresFixture postgres) => _postgres = postgres;
@@ -72,8 +72,8 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
             await session.SaveChangesAsync(cts.Token);
         }
 
-        _ryan = await SeedOwnerAsync("Ryan", RyanRoot, cts.Token);
-        _taylor = await SeedOwnerAsync("Taylor", TaylorRoot, cts.Token);
+        _jordan = await SeedOwnerAsync("Jordan", JordanRoot, cts.Token);
+        _casey = await SeedOwnerAsync("Casey", CaseyRoot, cts.Token);
         _projectId = DomainId.New();
         await using IDocumentSession projectSession = _postgres.Store.LightweightSession();
         projectSession.Store(new ProjectDetails
@@ -99,20 +99,20 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     public async Task An_assignee_hands_the_idea_to_another_member_whoever_captured_it()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid ideaId = await SeedIdeaAsync(createdBy: _ryan.Id, cts.Token, heldBy: Me, replicatedCreatorRoot: RyanRoot);
+        Guid ideaId = await SeedIdeaAsync(createdBy: _jordan.Id, cts.Token, heldBy: Me, replicatedCreatorRoot: JordanRoot);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         TaskOwnerOverrideDecision decision = await AuthorizeAsync(session, ideaId, "assign", cts.Token);
-        IdeaAssigneeSet? set = await AppendAsync(session, ideaId, _taylor, decision, cts.Token);
+        IdeaAssigneeSet? set = await AppendAsync(session, ideaId, _casey, decision, cts.Token);
 
         decision.Outcome.Should().Be(TaskOwnerOverrideOutcome.OwnAct);
         set.Should().NotBeNull();
-        set!.AssigneeOwnerRootFingerprint.Should().Be(TaylorRoot);
+        set!.AssigneeOwnerRootFingerprint.Should().Be(CaseyRoot);
         await using IQuerySession query = _postgres.Store.QuerySession();
         IdeaAggregate idea = (await query.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
-        idea.AssigneeOwnerId.Should().Be(_taylor.Id);
+        idea.AssigneeOwnerId.Should().Be(_casey.Id);
         idea.State.Should().Be(IdeaState.Captured);
-        (await query.LoadAsync<IdeaDetails>(ideaId, cts.Token))!.AssigneeOwnerFingerprint.Should().Be(TaylorRoot);
+        (await query.LoadAsync<IdeaDetails>(ideaId, cts.Token))!.AssigneeOwnerFingerprint.Should().Be(CaseyRoot);
     }
 
     [Fact]
@@ -124,21 +124,21 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             TaskOwnerOverrideDecision decision = await AuthorizeAsync(session, ideaId, "assign", cts.Token);
-            (await AppendAsync(session, ideaId, _ryan, decision, cts.Token)).Should().NotBeNull();
+            (await AppendAsync(session, ideaId, _jordan, decision, cts.Token)).Should().NotBeNull();
             decision.Outcome.Should().Be(TaskOwnerOverrideOutcome.OwnAct, "an unassigned idea is its creator's to hand on");
         }
 
         await using IDocumentSession guardSession = _postgres.Store.LightweightSession();
         IdeaAggregate idea = (await guardSession.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
         (await IdeaOwnerGuard.MayActAsync(guardSession, idea, _me, new FakeLedgerChainReader(TrustChain.Empty), cts.Token))
-            .Should().BeFalse("the creator handed it away, so it is Ryan's now, by the rule the receive gate applies");
+            .Should().BeFalse("the creator handed it away, so it is Jordan's now, by the rule the receive gate applies");
     }
 
     [Fact]
     public async Task A_member_taking_a_teammates_unassigned_idea_for_themselves_is_refused()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid ideaId = await SeedIdeaAsync(createdBy: _ryan.Id, cts.Token, replicatedCreatorRoot: RyanRoot);
+        Guid ideaId = await SeedIdeaAsync(createdBy: _jordan.Id, cts.Token, replicatedCreatorRoot: JordanRoot);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         Func<Task> take = () => AuthorizeAsync(session, ideaId, "assign", cts.Token);
@@ -152,16 +152,16 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     public async Task A_non_owner_member_naming_someone_else_is_refused_and_so_is_one_handing_on_a_held_idea()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid unassigned = await SeedIdeaAsync(createdBy: _ryan.Id, cts.Token, replicatedCreatorRoot: RyanRoot);
-        Guid heldByTaylor = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _taylor);
+        Guid unassigned = await SeedIdeaAsync(createdBy: _jordan.Id, cts.Token, replicatedCreatorRoot: JordanRoot);
+        Guid heldByCasey = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _casey);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
-        Func<Task> namesTaylor = () => AuthorizeAsync(session, unassigned, "assign", cts.Token);
-        Func<Task> creatorHandsOnAHeldIdea = () => AuthorizeAsync(session, heldByTaylor, "assign", cts.Token);
+        Func<Task> namesCasey = () => AuthorizeAsync(session, unassigned, "assign", cts.Token);
+        Func<Task> creatorHandsOnAHeldIdea = () => AuthorizeAsync(session, heldByCasey, "assign", cts.Token);
 
-        await namesTaylor.Should().ThrowAsync<DomainBusinessRuleException>();
+        await namesCasey.Should().ThrowAsync<DomainBusinessRuleException>();
         (await creatorHandsOnAHeldIdea.Should().ThrowAsync<DomainBusinessRuleException>()).Which.Message
-            .Should().Contain(TaylorRoot[..12], "the refusal names whose idea it is");
+            .Should().Contain(CaseyRoot[..12], "the refusal names whose idea it is");
     }
 
     [Fact]
@@ -171,7 +171,7 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
         Guid ideaId = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token, share: false);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
-        Func<Task> handOff = () => AppendAsync(session, ideaId, _ryan, TaskOwnerOverrideDecision.OwnAct, cts.Token);
+        Func<Task> handOff = () => AppendAsync(session, ideaId, _jordan, TaskOwnerOverrideDecision.OwnAct, cts.Token);
 
         (await handOff.Should().ThrowAsync<DomainConflictException>()).Which.Message.Should().Contain("h9k idea share");
         (await AppendAsync(session, ideaId, Me, TaskOwnerOverrideDecision.OwnAct, cts.Token))
@@ -195,18 +195,18 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     public async Task An_owner_role_override_assigns_an_idea_another_member_holds_and_records_whose_behalf_and_why()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid ideaId = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _ryan);
+        Guid ideaId = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _jordan);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
         TaskOwnerOverrideDecision decision = await IdeaOwnerGuard.AuthorizeAsync(
-            session, idea, _me, "assign", RyanRoot[..8], "Ryan is out this week", await ChainAsync(MembershipRole.Owner, cts.Token),
+            session, idea, _me, "assign", JordanRoot[..8], "Jordan is out this week", await ChainAsync(MembershipRole.Owner, cts.Token),
             new NodeKeyStore(), cts.Token);
         IdeaAssigneeSet? set = await AppendAsync(session, ideaId, Me, decision, cts.Token);
 
         decision.Outcome.Should().Be(TaskOwnerOverrideOutcome.Override);
-        set!.OnBehalfOfOwnerRootFingerprint.Should().Be(RyanRoot);
-        set.OverrideReason.Should().Be("Ryan is out this week");
+        set!.OnBehalfOfOwnerRootFingerprint.Should().Be(JordanRoot);
+        set.OverrideReason.Should().Be("Jordan is out this week");
         set.AssigneeOwnerRootFingerprint.Should().Be(_myRoot);
     }
 
@@ -214,12 +214,12 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     public async Task A_member_role_node_cannot_override_even_when_it_names_the_holder()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid ideaId = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _ryan);
+        Guid ideaId = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _jordan);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
         Func<Task> act = async () => await IdeaOwnerGuard.AuthorizeAsync(
-            session, idea, _me, "assign", RyanRoot[..8], "tidying", await ChainAsync(MembershipRole.Member, cts.Token),
+            session, idea, _me, "assign", JordanRoot[..8], "tidying", await ChainAsync(MembershipRole.Member, cts.Token),
             new NodeKeyStore(), cts.Token);
 
         (await act.Should().ThrowAsync<DomainBusinessRuleException>()).Which.Message.Should().Contain("Owner role");
@@ -229,12 +229,12 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     public async Task An_idea_with_no_project_has_no_role_to_override_with_and_says_how_to_get_one()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid ideaId = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _ryan, projectId: Guid.Empty);
+        Guid ideaId = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _jordan, projectId: Guid.Empty);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
         Func<Task> act = async () => await IdeaOwnerGuard.AuthorizeAsync(
-            session, idea, _me, "conclude", RyanRoot[..8], "tidying", await ChainAsync(MembershipRole.Owner, cts.Token),
+            session, idea, _me, "conclude", JordanRoot[..8], "tidying", await ChainAsync(MembershipRole.Owner, cts.Token),
             new NodeKeyStore(), cts.Token);
 
         (await act.Should().ThrowAsync<DomainBusinessRuleException>()).Which.Message
@@ -245,24 +245,24 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     public async Task Only_the_assignee_may_let_go_of_an_idea_and_an_owner_role_override_needs_the_holder_and_a_reason()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid heldByMe = await SeedIdeaAsync(createdBy: _ryan.Id, cts.Token, heldBy: Me, replicatedCreatorRoot: RyanRoot);
-        Guid heldByRyan = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _ryan);
+        Guid heldByMe = await SeedIdeaAsync(createdBy: _jordan.Id, cts.Token, heldBy: Me, replicatedCreatorRoot: JordanRoot);
+        Guid heldByJordan = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _jordan);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         (await UnassignAsync(session, heldByMe, holder: null, reason: null, MembershipRole.Member, cts.Token)).Should().Be(ExitCodes.Ok);
         (await session.Events.AggregateStreamAsync<IdeaAggregate>(heldByMe, token: cts.Token))!
             .AssigneeOwnerId.Should().BeNull();
 
-        Func<Task> creatorLetsGo = () => UnassignAsync(session, heldByRyan, holder: null, reason: null, MembershipRole.Owner, cts.Token);
+        Func<Task> creatorLetsGo = () => UnassignAsync(session, heldByJordan, holder: null, reason: null, MembershipRole.Owner, cts.Token);
         (await creatorLetsGo.Should().ThrowAsync<DomainBusinessRuleException>()).Which.Message
             .Should().Contain("--holder").And.Contain("--reason");
 
-        int overridden = await UnassignAsync(session, heldByRyan, RyanRoot[..8], "Ryan left the team", MembershipRole.Owner, cts.Token);
+        int overridden = await UnassignAsync(session, heldByJordan, JordanRoot[..8], "Jordan left the team", MembershipRole.Owner, cts.Token);
         overridden.Should().Be(ExitCodes.Ok);
-        IdeaAssigneeCleared cleared = (await session.Events.FetchStreamAsync(heldByRyan, token: cts.Token))
+        IdeaAssigneeCleared cleared = (await session.Events.FetchStreamAsync(heldByJordan, token: cts.Token))
             .Select(e => e.Data).OfType<IdeaAssigneeCleared>().Single();
-        cleared.OnBehalfOfOwnerRootFingerprint.Should().Be(RyanRoot);
-        cleared.OverrideReason.Should().Be("Ryan left the team");
+        cleared.OnBehalfOfOwnerRootFingerprint.Should().Be(JordanRoot);
+        cleared.OverrideReason.Should().Be("Jordan left the team");
     }
 
     [Fact]
@@ -328,11 +328,11 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     public async Task Concluding_archiving_or_promoting_an_idea_a_teammate_holds_or_created_is_refused_and_appends_nothing()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid creatorIsRyan = await SeedIdeaAsync(createdBy: _ryan.Id, cts.Token, replicatedCreatorRoot: RyanRoot);
-        Guid heldByTaylor = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _taylor);
+        Guid creatorIsJordan = await SeedIdeaAsync(createdBy: _jordan.Id, cts.Token, replicatedCreatorRoot: JordanRoot);
+        Guid heldByCasey = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _casey);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
-        foreach (Guid ideaId in new[] { creatorIsRyan, heldByTaylor })
+        foreach (Guid ideaId in new[] { creatorIsJordan, heldByCasey })
         {
             Func<Task> conclude = () => ConcludeAsync(session, ideaId, "done", holder: null, MembershipRole.Member, cts.Token);
             Func<Task> archive = () => ArchiveAsync(session, ideaId, "no", holder: null, MembershipRole.Member, cts.Token);
@@ -357,8 +357,8 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     public async Task The_creator_cannot_conclude_an_idea_they_handed_away_but_its_assignee_can_even_when_not_the_creator()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid handedAway = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _ryan);
-        Guid heldByMe = await SeedIdeaAsync(createdBy: _ryan.Id, cts.Token, heldBy: Me, replicatedCreatorRoot: RyanRoot);
+        Guid handedAway = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _jordan);
+        Guid heldByMe = await SeedIdeaAsync(createdBy: _jordan.Id, cts.Token, heldBy: Me, replicatedCreatorRoot: JordanRoot);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         Func<Task> creatorConcludes = () => ConcludeAsync(session, handedAway, "done", holder: null, MembershipRole.Member, cts.Token);
@@ -417,7 +417,7 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
             .Should().Contain("owner is unknown").And.Contain("creator cannot be resolved")
             .And.Contain("Owner-role member may conclude it").And.Contain("--holder");
 
-        Func<Task> wrongName = () => ConcludeAsync(session, ideaId, "stranded", RyanRoot[..8], MembershipRole.Owner, cts.Token);
+        Func<Task> wrongName = () => ConcludeAsync(session, ideaId, "stranded", JordanRoot[..8], MembershipRole.Owner, cts.Token);
         (await wrongName.Should().ThrowAsync<DomainBusinessRuleException>()).Which.Message.Should().Contain("must be the word unknown");
 
         (await ConcludeAsync(session, ideaId, "stranded", "unknown", MembershipRole.Owner, cts.Token)).Should().Be(ExitCodes.Ok);
@@ -451,32 +451,32 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     public async Task An_owner_role_member_concludes_archives_or_promotes_a_teammates_idea_by_naming_whose_it_is_and_why()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid toConclude = await SeedIdeaAsync(createdBy: _ryan.Id, cts.Token, replicatedCreatorRoot: RyanRoot);
-        Guid toArchive = await SeedIdeaAsync(createdBy: _ryan.Id, cts.Token, replicatedCreatorRoot: RyanRoot);
-        Guid toPromote = await SeedIdeaAsync(createdBy: _ryan.Id, cts.Token, replicatedCreatorRoot: RyanRoot);
+        Guid toConclude = await SeedIdeaAsync(createdBy: _jordan.Id, cts.Token, replicatedCreatorRoot: JordanRoot);
+        Guid toArchive = await SeedIdeaAsync(createdBy: _jordan.Id, cts.Token, replicatedCreatorRoot: JordanRoot);
+        Guid toPromote = await SeedIdeaAsync(createdBy: _jordan.Id, cts.Token, replicatedCreatorRoot: JordanRoot);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
-        (await ConcludeAsync(session, toConclude, "Ryan is out; it shipped", RyanRoot[..8], MembershipRole.Owner, cts.Token)).Should().Be(ExitCodes.Ok);
-        (await ArchiveAsync(session, toArchive, "Ryan left; superseded", RyanRoot[..8], MembershipRole.Owner, cts.Token)).Should().Be(ExitCodes.Ok);
-        (await PromoteAsync(session, toPromote, RyanRoot[..8], "Ryan is out this week", MembershipRole.Owner, cts.Token)).Should().Be(ExitCodes.Ok);
+        (await ConcludeAsync(session, toConclude, "Jordan is out; it shipped", JordanRoot[..8], MembershipRole.Owner, cts.Token)).Should().Be(ExitCodes.Ok);
+        (await ArchiveAsync(session, toArchive, "Jordan left; superseded", JordanRoot[..8], MembershipRole.Owner, cts.Token)).Should().Be(ExitCodes.Ok);
+        (await PromoteAsync(session, toPromote, JordanRoot[..8], "Jordan is out this week", MembershipRole.Owner, cts.Token)).Should().Be(ExitCodes.Ok);
 
         IdeaConcluded concluded = (await session.Events.FetchStreamAsync(toConclude, token: cts.Token))
             .Select(e => e.Data).OfType<IdeaConcluded>().Single();
-        concluded.OnBehalfOfOwnerRootFingerprint.Should().Be(RyanRoot);
-        concluded.OverrideReason.Should().Be("Ryan is out; it shipped");
+        concluded.OnBehalfOfOwnerRootFingerprint.Should().Be(JordanRoot);
+        concluded.OverrideReason.Should().Be("Jordan is out; it shipped");
         IdeaArchived archived = (await session.Events.FetchStreamAsync(toArchive, token: cts.Token))
             .Select(e => e.Data).OfType<IdeaArchived>().Single();
-        archived.OnBehalfOfOwnerRootFingerprint.Should().Be(RyanRoot);
+        archived.OnBehalfOfOwnerRootFingerprint.Should().Be(JordanRoot);
         IdeaConcluded promoted = (await session.Events.FetchStreamAsync(toPromote, token: cts.Token))
             .Select(e => e.Data).OfType<IdeaConcluded>().Single();
-        promoted.OverrideReason.Should().Be("Ryan is out this week");
+        promoted.OverrideReason.Should().Be("Jordan is out this week");
     }
 
     [Fact]
     public async Task Cutting_a_task_from_an_idea_stays_open_to_any_member_and_never_copies_the_assignee_onto_it()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid ideaId = await SeedIdeaAsync(createdBy: _ryan.Id, cts.Token, heldBy: _taylor, replicatedCreatorRoot: RyanRoot);
+        Guid ideaId = await SeedIdeaAsync(createdBy: _jordan.Id, cts.Token, heldBy: _casey, replicatedCreatorRoot: JordanRoot);
         Guid taskId = DomainId.New();
 
         // What h9k task add --from-idea writes, by a member who is neither the creator nor the assignee.
@@ -499,21 +499,21 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
         task.AssigneeOwnerFingerprint.Should().BeNull();
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.AssigneeOwnerId.Should().BeNull();
         (await query.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!
-            .AssigneeOwnerId.Should().Be(_taylor.Id, "cutting a task leaves who holds the idea alone");
+            .AssigneeOwnerId.Should().Be(_casey.Id, "cutting a task leaves who holds the idea alone");
     }
 
     [Fact]
     public async Task Show_and_list_say_who_holds_an_idea_and_the_honest_absence_when_nobody_does()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid held = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _ryan);
+        Guid held = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _jordan);
         Guid nobody = await SeedIdeaAsync(createdBy: _me.OwnerId, cts.Token);
 
         await using IQuerySession query = _postgres.Store.QuerySession();
         IdeaDetails heldDetails = (await query.LoadAsync<IdeaDetails>(held, cts.Token))!;
         IdeaDetails nobodyDetails = (await query.LoadAsync<IdeaDetails>(nobody, cts.Token))!;
 
-        (await IdeaShowCommand.AssigneeMarkupAsync(query, heldDetails, cts.Token)).Should().Be("Ryan");
+        (await IdeaShowCommand.AssigneeMarkupAsync(query, heldDetails, cts.Token)).Should().Be("Jordan");
         (await IdeaShowCommand.AssigneeMarkupAsync(query, nobodyDetails, cts.Token))
             .Should().Contain("nobody").And.Contain("its creator decides it").And.Contain("h9k idea assign");
         nobodyDetails.State = IdeaState.Concluded;
@@ -521,7 +521,7 @@ public sealed class IdeaAssigneeCommandTests : IClassFixture<PostgresFixture>, I
             .Should().NotContain("h9k idea assign", "an idea that has ended has nothing left to hold");
 
         Dictionary<Guid, OwnerDetails> owners = (await query.Query<OwnerDetails>().ToListAsync(cts.Token)).ToDictionary(o => o.Id);
-        IdeaRow.AssigneeLabel(heldDetails, owners, new Dictionary<Guid, ProjectMemberLabels>()).Should().Be("Ryan");
+        IdeaRow.AssigneeLabel(heldDetails, owners, new Dictionary<Guid, ProjectMemberLabels>()).Should().Be("Jordan");
         IdeaRow.AssigneeLabel(nobodyDetails, owners, new Dictionary<Guid, ProjectMemberLabels>()).Should().BeNull();
     }
 

@@ -157,7 +157,7 @@ public sealed class GitHubReviewThreadsTests
               {"id":"R2","state":"APPROVED","submittedAt":"2026-09-09T10:00:00Z","author":{"login":"Brian"},"commit":{"oid":"ccc"}},
               {"id":"R1","state":"CHANGES_REQUESTED","submittedAt":"2026-09-07T10:00:00Z","author":{"login":"brian"},"commit":{"oid":"aaa"}},
               {"id":"R3","state":"COMMENTED","submittedAt":"2026-09-08T10:00:00Z","author":null,"commit":{"oid":"bbb"}},
-              {"id":"R4","state":"DISMISSED","submittedAt":"2026-09-08T11:00:00Z","author":{"login":"ryan"},"commit":null}
+              {"id":"R4","state":"DISMISSED","submittedAt":"2026-09-08T11:00:00Z","author":{"login":"reviewer-a"},"commit":null}
             ],"pageInfo":{"hasPreviousPage":false}},
             "reviewRequests":{"nodes":[]}
             """));
@@ -169,8 +169,8 @@ public sealed class GitHubReviewThreadsTests
         brians.State.Should().Be("APPROVED");
         brians.SubmittedAt.Should().Be(DateTimeOffset.Parse("2026-09-09T10:00:00Z"));
         brians.CommitOid.Should().Be("ccc");
-        conversation.LatestReviewByLogin["ryan"].State.Should().Be("DISMISSED");
-        conversation.LatestReviewByLogin["ryan"].CommitOid.Should().BeNull("an absent commit is recorded as unknown");
+        conversation.LatestReviewByLogin["reviewer-a"].State.Should().Be("DISMISSED");
+        conversation.LatestReviewByLogin["reviewer-a"].CommitOid.Should().BeNull("an absent commit is recorded as unknown");
     }
 
     [Fact]
@@ -182,7 +182,7 @@ public sealed class GitHubReviewThreadsTests
             "reviews":{"nodes":[
               {"id":"R1","state":"CHANGES_REQUESTED","submittedAt":"2026-09-07T10:00:00Z","author":{"login":"brian"},"commit":{"oid":"aaa"}},
               {"id":"R2","state":"COMMENTED","submittedAt":"2026-09-08T10:00:00Z","author":{"login":"Brian"},"commit":{"oid":"bbb"}},
-              {"id":"R3","state":"COMMENTED","submittedAt":"2026-09-08T11:00:00Z","author":{"login":"ryan"},"commit":{"oid":"ccc"}}
+              {"id":"R3","state":"COMMENTED","submittedAt":"2026-09-08T11:00:00Z","author":{"login":"reviewer-a"},"commit":{"oid":"ccc"}}
             ],"pageInfo":{"hasPreviousPage":false}},
             "reviewRequests":{"nodes":[]}
             """));
@@ -193,7 +193,7 @@ public sealed class GitHubReviewThreadsTests
             new { Id = "R1", ReviewedCommitOid = "aaa" },
             options => options.ExcludingMissingMembers(),
             "the earlier changes-requested review is still their newest verdict");
-        conversation.LatestVerdictOf("ryan").Should().BeNull("a reviewer who only ever commented has given no verdict");
+        conversation.LatestVerdictOf("reviewer-a").Should().BeNull("a reviewer who only ever commented has given no verdict");
     }
 
     [Fact]

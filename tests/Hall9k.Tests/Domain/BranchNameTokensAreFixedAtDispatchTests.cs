@@ -105,17 +105,17 @@ public sealed class BranchNameTokensAreFixedAtDispatchTests
     {
         TaskAggregate linked = QueuedTask();
         linked.Apply(TaskDecider.LinkWorkItem(
-            linked, new ExternalReference(WorkItemProvider.Jira, "ARX-14"),
+            linked, new ExternalReference(WorkItemProvider.Jira, "PROJ-14"),
             observedTitle: "Add rate limiting", observedStatus: "In Progress",
             observedAt: Now, linkedAt: Now, linkedByOwnerId: Owner));
 
         Action relink = () => TaskDecider.LinkWorkItem(
-            linked, new ExternalReference(WorkItemProvider.Jira, "ARX-99"),
+            linked, new ExternalReference(WorkItemProvider.Jira, "PROJ-99"),
             observedTitle: "Something else", observedStatus: "To Do",
             observedAt: Now, linkedAt: Now, linkedByOwnerId: Owner);
 
         relink.Should().Throw<DomainConflictException>("a task carries one external item");
-        linked.ExternalReference!.Key.Should().Be("ARX-14");
+        linked.ExternalReference!.Key.Should().Be("PROJ-14");
     }
 
     /// <summary>
@@ -133,7 +133,7 @@ public sealed class BranchNameTokensAreFixedAtDispatchTests
         string branchCutAtDispatch = template.Render(task.Id, task.Objective, externalKey: null);
 
         task.Apply(TaskDecider.LinkWorkItem(
-            task, new ExternalReference(WorkItemProvider.Jira, "ARX-14"),
+            task, new ExternalReference(WorkItemProvider.Jira, "PROJ-14"),
             observedTitle: "Add rate limiting", observedStatus: "In Progress",
             observedAt: Now, linkedAt: Now, linkedByOwnerId: Owner));
 

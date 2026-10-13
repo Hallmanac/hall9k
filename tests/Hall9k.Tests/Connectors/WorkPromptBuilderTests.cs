@@ -746,7 +746,7 @@ public sealed class WorkPromptBuilderTests
     }
 
     /// <summary>
-    /// The sizing rule (2026-09-19, origin: bioage-calculator pull request #4, a 3,837-byte body
+    /// The sizing rule (2026-09-19, origin: a pull request in a teammate's project, a 3,837-byte body
     /// for a 56-line file). Without it the step asked for a shape and never for a size, and every
     /// element of that shape got filled in whether the change had one or not.
     /// </summary>
@@ -765,7 +765,7 @@ public sealed class WorkPromptBuilderTests
     /// The title's key form is the repository's, read off its own commit subjects, rather than the
     /// <c>KEY: title</c> shape <c>PullRequestBody.WithExternalKey</c> has to pick when it repairs
     /// a title that carries no key at all. A repository whose subjects write the key with no colon
-    /// gets a title that matches them (bioage-calculator's do).
+    /// gets a title that matches them (a teammate's project's do).
     /// </summary>
     [Fact]
     public void The_pull_request_summary_step_takes_the_keys_form_from_the_repositorys_commit_subjects()

@@ -23,7 +23,7 @@ namespace Hall9k.Tests.Integration;
 /// that already holds it, rather than a second one that knows nothing about the review it is
 /// repeating.
 /// <para>
-/// Origin gap (2026-09-08, arx-platform #2023): the only lever after a review closed out was a
+/// Origin gap (2026-09-08, a teammate's project): the only lever after a review closed out was a
 /// fresh adoption, which quietly abandoned the first task's findings, its verdict, and its whole
 /// record on the same pull request — and, for a review still waiting on its author, would have
 /// put two records of one conversation on the board.

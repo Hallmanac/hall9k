@@ -41,15 +41,15 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
 {
     private static readonly DateTimeOffset Now = new(2026, 10, 4, 12, 0, 0, TimeSpan.Zero);
     private static readonly string MyRoot = new('1', 64);
-    private static readonly string RyanRoot = new('2', 64);
-    private static readonly string TaylorRoot = new('3', 64);
+    private static readonly string JordanRoot = new('2', 64);
+    private static readonly string CaseyRoot = new('3', 64);
 
     private readonly PostgresFixture _postgres;
     private readonly ScopedTestHome _scopedHome = new();
     private readonly FakeLedgerChainReader _chain = new(TrustChain.Empty);
     private BootstrapContext _me = null!;
-    private OwnerDetailsSeed _ryan = null!;
-    private OwnerDetailsSeed _taylor = null!;
+    private OwnerDetailsSeed _jordan = null!;
+    private OwnerDetailsSeed _casey = null!;
     private Guid _projectId;
 
     public TaskAssigneeCommandTests(PostgresFixture postgres) => _postgres = postgres;
@@ -73,8 +73,8 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
             await session.SaveChangesAsync(cts.Token);
         }
 
-        _ryan = await SeedOwnerAsync("Ryan", RyanRoot, cts.Token);
-        _taylor = await SeedOwnerAsync("Taylor", TaylorRoot, cts.Token);
+        _jordan = await SeedOwnerAsync("Jordan", JordanRoot, cts.Token);
+        _casey = await SeedOwnerAsync("Casey", CaseyRoot, cts.Token);
         _projectId = DomainId.New();
         await using IDocumentSession projectSession = _postgres.Store.LightweightSession();
         projectSession.Store(new ProjectDetails
@@ -100,46 +100,46 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         Guid taskId = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token);
 
-        TaskAssigneeSet? set = await AssignAsync(taskId, _ryan, cts.Token);
+        TaskAssigneeSet? set = await AssignAsync(taskId, _jordan, cts.Token);
 
         set.Should().NotBeNull();
         await using IQuerySession query = _postgres.Store.QuerySession();
         TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
         task.State.Should().Be(TaskState.Draft);
-        task.AssigneeOwnerId.Should().Be(_ryan.Id);
-        task.AssigneeOwnerFingerprint.Should().Be(RyanRoot);
+        task.AssigneeOwnerId.Should().Be(_jordan.Id);
+        task.AssigneeOwnerFingerprint.Should().Be(JordanRoot);
         task.AssignedOwnerId.Should().BeNull();
         TaskListItem row = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
         row.State.Should().Be(TaskState.Draft);
-        row.AssigneeOwnerId.Should().Be(_ryan.Id);
+        row.AssigneeOwnerId.Should().Be(_jordan.Id);
         row.AssignedOwnerId.Should().BeNull();
 
         await using IDocumentSession guardSession = _postgres.Store.LightweightSession();
         (await TaskOwnerGuard.MayActAsync(guardSession, task, _me, cts.Token))
-            .Should().BeFalse("the creator handed it away, so it is Ryan's now, by the same rule the receive gate applies");
+            .Should().BeFalse("the creator handed it away, so it is Jordan's now, by the same rule the receive gate applies");
     }
 
     [Fact]
     public async Task An_assignee_hands_the_task_to_another_member_whoever_created_it()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid taskId = await SeedDraftAsync(createdBy: _ryan.Id, cts.Token, heldBy: Me);
+        Guid taskId = await SeedDraftAsync(createdBy: _jordan.Id, cts.Token, heldBy: Me);
 
-        TaskOwnerOverrideDecision decision = await AuthorizeAsync(taskId, _taylor, cts.Token);
-        TaskAssigneeSet? set = await AssignAsync(taskId, _taylor, cts.Token);
+        TaskOwnerOverrideDecision decision = await AuthorizeAsync(taskId, _casey, cts.Token);
+        TaskAssigneeSet? set = await AssignAsync(taskId, _casey, cts.Token);
 
         decision.Outcome.Should().Be(TaskOwnerOverrideOutcome.OwnAct);
         set.Should().NotBeNull();
         await using IQuerySession query = _postgres.Store.QuerySession();
         (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!
-            .AssigneeOwnerFingerprint.Should().Be(TaylorRoot);
+            .AssigneeOwnerFingerprint.Should().Be(CaseyRoot);
     }
 
     [Fact]
     public async Task A_member_taking_a_teammates_unassigned_draft_is_refused()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid taskId = await SeedDraftAsync(createdBy: _ryan.Id, cts.Token, replicatedCreatorRoot: RyanRoot);
+        Guid taskId = await SeedDraftAsync(createdBy: _jordan.Id, cts.Token, replicatedCreatorRoot: JordanRoot);
 
         Func<Task> take = () => AuthorizeAsync(taskId, Me, cts.Token);
 
@@ -151,10 +151,10 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     public async Task A_member_may_take_an_unassigned_published_task_for_themselves_but_not_name_someone_else()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid taskId = await SeedDraftAsync(createdBy: _ryan.Id, cts.Token, replicatedCreatorRoot: RyanRoot, publish: true);
+        Guid taskId = await SeedDraftAsync(createdBy: _jordan.Id, cts.Token, replicatedCreatorRoot: JordanRoot, publish: true);
 
         TaskOwnerOverrideDecision self = await AuthorizeAsync(taskId, Me, cts.Token);
-        Func<Task> other = () => AuthorizeAsync(taskId, _taylor, cts.Token);
+        Func<Task> other = () => AuthorizeAsync(taskId, _casey, cts.Token);
 
         self.Outcome.Should().Be(TaskOwnerOverrideOutcome.OwnAct, "a member may self-assign a free Published task, as h9k task start does");
         await other.Should().ThrowAsync<DomainBusinessRuleException>("a non-owner member may name only themselves");
@@ -164,12 +164,12 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     public async Task A_task_a_teammate_holds_refuses_even_a_self_assign_without_the_override()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid taskId = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _ryan, publish: true);
+        Guid taskId = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _jordan, publish: true);
 
         Func<Task> take = () => AuthorizeAsync(taskId, Me, cts.Token);
 
         (await take.Should().ThrowAsync<DomainBusinessRuleException>()).Which.Message
-            .Should().Contain("belongs to").And.Contain(RyanRoot[..12], "the refusal names whose task it is");
+            .Should().Contain("belongs to").And.Contain(JordanRoot[..12], "the refusal names whose task it is");
     }
 
     [Fact]
@@ -207,7 +207,7 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     public async Task Only_the_assignee_may_let_go_of_a_hold_and_an_Owner_role_override_needs_the_holder_and_a_reason()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid taskId = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _ryan);
+        Guid taskId = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _jordan);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
@@ -222,7 +222,7 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     public async Task Start_work_and_publish_queue_refuse_a_task_another_owner_holds_through_the_shared_check()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid held = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _ryan);
+        Guid held = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _jordan);
         Guid mine = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, heldBy: Me);
         Guid free = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token);
 
@@ -233,9 +233,9 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
             await TaskOwnerGuard.AssertNotHeldByAnotherOwnerAsync(session, task, _me, MyRoot, "it would queue over their hold.", cts.Token);
         }
 
-        Func<Task> heldByRyan = () => Check(held);
-        (await heldByRyan.Should().ThrowAsync<DomainConflictException>()).Which.Message
-            .Should().Contain("Ryan").And.Contain("h9k task unassign");
+        Func<Task> heldByJordan = () => Check(held);
+        (await heldByJordan.Should().ThrowAsync<DomainConflictException>()).Which.Message
+            .Should().Contain("Jordan").And.Contain("h9k task unassign");
         await Check(mine);
         await Check(free);
     }
@@ -265,21 +265,21 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
     public async Task The_owner_readers_read_the_assignee_so_the_board_and_the_guard_give_one_answer_for_a_held_draft()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid heldByRyan = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _ryan);
+        Guid heldByJordan = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _jordan);
 
         await using IQuerySession query = _postgres.Store.QuerySession();
-        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(heldByRyan, token: cts.Token))!;
+        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(heldByJordan, token: cts.Token))!;
         TaskOwnerFacts fromStream = await TaskOwnerFactsReader.ReadAsync(query, task, cts.Token);
-        TaskListItem row = (await query.LoadAsync<TaskListItem>(heldByRyan, cts.Token))!;
+        TaskListItem row = (await query.LoadAsync<TaskListItem>(heldByJordan, cts.Token))!;
         TaskOwnerFacts fromRow = TaskListItemOwnerFacts.From(row, _ => null, creator: null);
 
-        fromStream.Assigned.RootFingerprint.Should().Be(RyanRoot);
-        fromRow.Assigned.RootFingerprint.Should().Be(RyanRoot);
+        fromStream.Assigned.RootFingerprint.Should().Be(JordanRoot);
+        fromRow.Assigned.RootFingerprint.Should().Be(JordanRoot);
         fromStream.Creator.State.Should().Be(OwnerRootFactState.Absent, "the creator decides only when nobody holds the task");
         TaskListItemOwnerFacts.NeedsCreator(row).Should().BeFalse();
 
         IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(query, Now, cts.Token);
-        rows.Single(candidate => candidate.TaskId == heldByRyan).IsTeammates
+        rows.Single(candidate => candidate.TaskId == heldByJordan).IsTeammates
             .Should().BeTrue("the creator's own board no longer counts a task they handed away as theirs");
     }
 
@@ -431,7 +431,7 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using ScopedConnectionString connection = new(_postgres.ConnectionString);
         Guid free = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, publish: true);
-        Guid heldByRyan = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _ryan, publish: true);
+        Guid heldByJordan = await SeedDraftAsync(createdBy: _me.OwnerId, cts.Token, heldBy: _jordan, publish: true);
 
         (await RunCliAsync(cts.Token, "task", "queue", free.ToString())).Should().BeNull();
         TaskAggregate queuedFree = await ReadAsync(free, cts.Token);
@@ -439,14 +439,14 @@ public sealed class TaskAssigneeCommandTests : IClassFixture<PostgresFixture>, I
         queuedFree.AssigneeOwnerId.Should().Be(_me.OwnerId, "the actor became the assignee through the same TaskAssigned");
 
         await using IQuerySession before = _postgres.Store.QuerySession();
-        long versionBefore = (await before.Events.FetchStreamStateAsync(heldByRyan, token: cts.Token))!.Version;
-        Exception? refusal = await RunCliAsync(cts.Token, "task", "queue", heldByRyan.ToString());
+        long versionBefore = (await before.Events.FetchStreamStateAsync(heldByJordan, token: cts.Token))!.Version;
+        Exception? refusal = await RunCliAsync(cts.Token, "task", "queue", heldByJordan.ToString());
 
         refusal.Should().BeOfType<DomainConflictException>().Which.Message
-            .Should().Contain("Ryan").And.Contain("h9k task assign").And.Contain("<member>");
-        (await before.Events.FetchStreamStateAsync(heldByRyan, token: cts.Token))!.Version
+            .Should().Contain("Jordan").And.Contain("h9k task assign").And.Contain("<member>");
+        (await before.Events.FetchStreamStateAsync(heldByJordan, token: cts.Token))!.Version
             .Should().Be(versionBefore, "a refused queue appends nothing");
-        (await ReadAsync(heldByRyan, cts.Token)).State.Should().Be(TaskState.Published);
+        (await ReadAsync(heldByJordan, cts.Token)).State.Should().Be(TaskState.Published);
     }
 
     [Fact]

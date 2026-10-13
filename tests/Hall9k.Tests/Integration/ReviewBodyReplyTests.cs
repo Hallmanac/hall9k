@@ -51,7 +51,7 @@ public sealed class ReviewBodyReplyTests(PostgresFixture postgres) : IClassFixtu
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         (Guid taskId, Guid runId) = await SeedAsync(cts.Token);
-        RecordingProcessRunner gh = ScriptedGitHub(ReviewJson("jsmotherman", "User"));
+        RecordingProcessRunner gh = ScriptedGitHub(ReviewJson("reviewer-c", "User"));
 
         await ReplyAsync(taskId, "fix", "Every point is fixed above \u2014 the sentinel is reused now.", gh, cts.Token);
 
@@ -78,7 +78,7 @@ public sealed class ReviewBodyReplyTests(PostgresFixture postgres) : IClassFixtu
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         (Guid taskId, Guid runId) = await SeedAsync(cts.Token);
-        RecordingProcessRunner gh = ScriptedGitHub(ReviewJson("jsmotherman", "User"));
+        RecordingProcessRunner gh = ScriptedGitHub(ReviewJson("reviewer-c", "User"));
 
         Func<Task> act = () => ReplyAsync(taskId, disposition, "It already handles that case.", gh, cts.Token);
 
@@ -90,7 +90,7 @@ public sealed class ReviewBodyReplyTests(PostgresFixture postgres) : IClassFixtu
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         RefusedReviewBodyReplyRecord refused = run.RefusedReviewBodyReplies.Should().ContainSingle().Subject;
         refused.ReviewUrl.Should().Be(ReviewUrl, "the url as GitHub reported it");
-        refused.Author.Should().Be("jsmotherman");
+        refused.Author.Should().Be("reviewer-c");
         refused.Disposition.Value.ToLowerInvariant().Should().Be(disposition);
         run.ReviewBodyRepliesPosted.Should().BeEmpty();
 
@@ -155,7 +155,7 @@ public sealed class ReviewBodyReplyTests(PostgresFixture postgres) : IClassFixtu
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         (Guid taskId, Guid runId) = await SeedAsync(cts.Token);
-        RecordingProcessRunner gh = ScriptedGitHub(ReviewJson("jsmotherman", "User"));
+        RecordingProcessRunner gh = ScriptedGitHub(ReviewJson("reviewer-c", "User"));
 
         Func<Task> act = () => ReplyAsync(taskId, "fix", "Fixed above.", gh, cts.Token, reviewUrl);
 
@@ -169,7 +169,7 @@ public sealed class ReviewBodyReplyTests(PostgresFixture postgres) : IClassFixtu
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         (Guid taskId, Guid runId) = await SeedAsync(cts.Token);
-        RecordingProcessRunner gh = ScriptedGitHub(ReviewJson("jsmotherman", "User", pullRequestNumber: 99));
+        RecordingProcessRunner gh = ScriptedGitHub(ReviewJson("reviewer-c", "User", pullRequestNumber: 99));
 
         Func<Task> act = () => ReplyAsync(taskId, "fix", "Fixed above.", gh, cts.Token);
 
@@ -353,7 +353,7 @@ public sealed class ReviewBodyReplyTests(PostgresFixture postgres) : IClassFixtu
             if (recordRefusal)
             {
                 runEvents.Add(new ReviewBodyReplyRefused(
-                    runId, ReviewUrl, "jsmotherman", ReviewThreadDisposition.Decline, "refused", Now));
+                    runId, ReviewUrl, "reviewer-c", ReviewThreadDisposition.Decline, "refused", Now));
             }
 
             runEvents.Add(new HumanThreadReplyParked(

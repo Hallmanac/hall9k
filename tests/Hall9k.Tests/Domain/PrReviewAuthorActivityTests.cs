@@ -203,10 +203,10 @@ public sealed class PrReviewAuthorActivityTests
         string line = new PrReviewAuthorActivity(
                 ReplyCount: 5, ThreadsWithReplies: 5, NewCommitCount: 3, HeadMoved: true,
                 ReReviewNewlyRequested: false)
-            .Describe("example-org/acme-platform", 2023, openThreadCount: 5, openedThreadCount: 5);
+            .Describe("example-org/acme-platform", 5023, openThreadCount: 5, openedThreadCount: 5);
 
         line.Should().Be(
-            "example-org/acme-platform#2023 moved since your review: 5 replies in 5 threads and "
+            "example-org/acme-platform#5023 moved since your review: 5 replies in 5 threads and "
             + "3 new commits — 5 of your threads are still unresolved.");
         line.Should().NotContain(
             "author", "nothing in these counts says who wrote the replies, so the line never claims to");
