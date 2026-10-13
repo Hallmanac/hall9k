@@ -57,6 +57,11 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
 
     /// <summary>The undrained items: everything past this project's own cursor that
     /// <paramref name="level"/> admits, oldest first.</summary>
+    /// <param name="runningVersion">
+    /// The build version of whoever is reading: the courier passes the daemon's, <c>h9k
+    /// orchestrator feed</c> the CLI's. This reader sees neither, and a release notice is shown only
+    /// while its tag is newer than it (<see cref="OrchestratorFeedInterest.AdmitsForViewer"/>).
+    /// </param>
     /// <param name="now">
     /// This read's own clock, which decides how far a drain of it may move the cursor: everything
     /// stamped within <see cref="OrchestratorFeedSelection.SettlingWindow"/> of it is printed but
@@ -66,6 +71,7 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
         IQuerySession session,
         Guid projectId,
         OrchestratorFeedLevel level,
+        string runningVersion,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
@@ -76,7 +82,7 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
             .Take(MaxEventsPerRead)
             .ToListAsync(cancellationToken);
 
-        return await SelectAsync(session, projectId, level, raw, cursor, now, cancellationToken);
+        return await SelectAsync(session, projectId, level, runningVersion, raw, cursor, now, cancellationToken);
     }
 
     /// <summary>
@@ -84,6 +90,7 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
     /// never moves it. Ordered by sequence rather than by timestamp, so it reads in the same
     /// order a drain does even where two events share a recorded instant.
     /// </summary>
+    /// <param name="runningVersion">The reader's own build version; see <see cref="ReadUndrainedAsync"/>.</param>
     /// <param name="since">
     /// Any instant, in any offset. Converted to UTC before it is bound, because Npgsql refuses to
     /// write a <see cref="DateTimeOffset"/> carrying a non-zero offset to a
@@ -101,6 +108,7 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
         IQuerySession session,
         Guid projectId,
         OrchestratorFeedLevel level,
+        string runningVersion,
         DateTimeOffset since,
         DateTimeOffset now,
         CancellationToken cancellationToken)
@@ -113,7 +121,7 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
             .ToListAsync(cancellationToken);
 
         return await SelectAsync(
-            session, projectId, level, raw, OrchestratorFeedCursor.NeverDrained, now, cancellationToken);
+            session, projectId, level, runningVersion, raw, OrchestratorFeedCursor.NeverDrained, now, cancellationToken);
     }
 
     /// <summary>
@@ -147,6 +155,7 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
         IQuerySession session,
         Guid projectId,
         OrchestratorFeedLevel level,
+        string runningVersion,
         IReadOnlyList<IEvent> raw,
         long startedFrom,
         DateTimeOffset now,
@@ -155,7 +164,7 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
         IReadOnlyList<OwnerDetails> owners = await session.Query<OwnerDetails>().ToListAsync(cancellationToken);
         OwnerDetails? thisOwner = owners.FirstOrDefault();
         MemberLabelLookup labels = await LabelLookupAsync(session, projectId, thisOwner, cancellationToken);
-        OrchestratorFeedViewer viewer = await ViewerAsync(session, thisOwner, cancellationToken);
+        OrchestratorFeedViewer viewer = await ViewerAsync(session, thisOwner, runningVersion, cancellationToken);
         ScopeLookup lookup = new(
             session,
             projectId,
@@ -198,13 +207,13 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
     /// other pane finds them (<c>StatusCommand.WriteIdentityLineAsync</c>).
     /// </summary>
     private static async Task<OrchestratorFeedViewer> ViewerAsync(
-        IQuerySession session, OwnerDetails? owner, CancellationToken cancellationToken)
+        IQuerySession session, OwnerDetails? owner, string runningVersion, CancellationToken cancellationToken)
     {
         string machineName = Environment.MachineName;
         NodeDetails? node = (await session.Query<NodeDetails>()
             .Where(n => n.MachineName == machineName)
             .Take(1).ToListAsync(cancellationToken)).FirstOrDefault();
-        return new OrchestratorFeedViewer(owner?.RootFingerprint, owner?.Id, node?.Id);
+        return new OrchestratorFeedViewer(owner?.RootFingerprint, owner?.Id, node?.Id, runningVersion);
     }
 
     /// <summary>
@@ -216,6 +225,14 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
     {
         IQuerySession session = lookup.Session;
         Guid projectId = lookup.ProjectId;
+
+        // A node-stream event belongs to no project and every project reads it: answered before
+        // any session use, and a pure function so a unit test reaches this arm.
+        if (OrchestratorFeedScope.OfNodeNotice(candidate.Data, projectId) is { } nodeScope)
+        {
+            return nodeScope;
+        }
+
         if (candidate.Data is MessageReceived received)
         {
             // A message's own stream belongs to no project at all — the envelope carries this

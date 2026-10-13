@@ -1,11 +1,13 @@
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Trust;
+using Hall9k.Domain.Infrastructure;
 using Hall9k.Domain.Infrastructure.Ids;
 
 namespace Hall9k.Domain.Features.Orchestrator;
@@ -112,6 +114,9 @@ public static class OrchestratorFeedDescription
 
             // ─── A message from a person or another node's window ──────────────────────────────────
             MessageReceived received => MessageLine(received, labels),
+
+            // ─── A newer release exists ────────────────────────────────────────────────────────────
+            ReleaseNoticeIssued notice => ReleaseNoticeLine(notice),
 
             // ─── A root-key rotation landed on, or was voided from, a project's own ledger ──────────
             RootRotationObserved observed => $"root key rotated by {NodeLine(observed.PromotedNodeId, labels)}",
@@ -226,6 +231,15 @@ public static class OrchestratorFeedDescription
             _ => null,
         };
     }
+
+    /// <summary>
+    /// A release notice, worded as information. The feed is read by a window with permissions
+    /// bypassed, so the line states a fact and names the command that installs the release rather
+    /// than telling the reader to run it: nothing here ever updates the node by itself.
+    /// </summary>
+    private static string ReleaseNoticeLine(ReleaseNoticeIssued notice) =>
+        $"hall9k {Field(ReleaseTagVersion.Bare(notice.Tag), 40)} is {(notice.IsReminder ? "still " : string.Empty)}available "
+        + $"(this node runs {Field(notice.RunningVersion, 40)}); h9k update --restart installs it";
 
     /// <summary>
     /// The sentence for another owner ending this node's owner's task: who did it, named through the

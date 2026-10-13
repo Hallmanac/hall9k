@@ -99,7 +99,8 @@ public static class OrchestratorFeedSelection
 
             bool endedByAnotherRoot = OrchestratorFeedOwnership.IsEndFromAnotherRoot(candidate, viewer);
             bool admittedByBand = OrchestratorFeedInterest.Admits(
-                candidate.EventType, candidate.Data, level, candidate.IsReplicated);
+                    candidate.EventType, candidate.Data, level, candidate.IsReplicated)
+                && OrchestratorFeedInterest.AdmitsForViewer(candidate.Data, viewer);
             if (!admittedByBand && !endedByAnotherRoot)
             {
                 continue;
