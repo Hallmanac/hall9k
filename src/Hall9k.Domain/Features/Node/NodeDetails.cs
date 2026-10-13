@@ -71,6 +71,16 @@ public sealed class NodeDetails
     /// to launch sessions).
     /// </summary>
     public Guid? LaunchHoldLastProbedRunId { get; set; }
+
+    /// <summary>
+    /// The release tag this node's daemon last told its person about (<see cref="ReleaseNoticeIssued"/>),
+    /// first notice or reminder alike; null before any notice. What the daemon's cadence compares
+    /// the next found release against, and what <c>h9k status</c> reads with no network call.
+    /// </summary>
+    public string? LastReleaseNoticeTag { get; set; }
+
+    /// <summary>When <see cref="LastReleaseNoticeTag"/> was last announced, which the 24-hour reminder cadence is measured from.</summary>
+    public DateTimeOffset? LastReleaseNoticeAt { get; set; }
 }
 
 public sealed partial class NodeDetailsProjection : SingleStreamProjection<NodeDetails, Guid>
@@ -143,5 +153,11 @@ public sealed partial class NodeDetailsProjection : SingleStreamProjection<NodeD
     public void Apply(IEvent<ProjectGateAcceptanceBaselined> @event, NodeDetails view)
     {
         view.GateAcceptanceBaselinedAt = @event.Data.BaselinedAt;
+    }
+
+    public void Apply(IEvent<ReleaseNoticeIssued> @event, NodeDetails view)
+    {
+        view.LastReleaseNoticeTag = @event.Data.Tag;
+        view.LastReleaseNoticeAt = @event.Data.ObservedAt;
     }
 }

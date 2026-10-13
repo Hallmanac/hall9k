@@ -5,6 +5,7 @@ using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Replication;
 using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Releases;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Closeout;
@@ -21,6 +22,7 @@ using Hall9k.Daemon.Messaging;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Purge;
+using Hall9k.Daemon.Releases;
 using Hall9k.Daemon.Publication;
 using Hall9k.Daemon.Review;
 using Hall9k.Connectors.Worktrees;
@@ -300,6 +302,17 @@ builder.Services.AddSingleton<OrchestratorPresenceSweepEngine>();
 builder.Services.AddSingleton<CourierEngine>();
 builder.Services.AddSingleton<RunSkillSweepEngine>();
 builder.Services.AddSingleton<LocalLaunchSweepEngine>();
+// The release notice (idea 93c1d24d, card 2): the shared lookup through gh's ambient account (the
+// release is Hall9k's own repository, never a registered project's), the node stream as its memory,
+// and this daemon's own build as the version it compares against. It only informs.
+builder.Services.AddSingleton<IReleaseNoticeStore>(services =>
+    new MartenReleaseNoticeStore(services.GetRequiredService<IDocumentStore>()));
+builder.Services.AddSingleton(services => new ReleaseNoticeEngine(
+    LiveReleaseCheck.Create(new ProjectGitHubClient().AmbientProcessRunner, PlatformPaths.Home),
+    services.GetRequiredService<IReleaseNoticeStore>(),
+    DaemonVersion.Current,
+    TimeProvider.System,
+    services.GetRequiredService<ILogger<ReleaseNoticeEngine>>()));
 
 // Wolverine 6 (task 29b0ca1a, Marten 9 security upgrade): the message tables
 // (wolverine_outgoing_envelopes, wolverine_incoming_envelopes, wolverine_dead_letters, ...)
@@ -345,6 +358,20 @@ builder.Services.AddHostedService<OrchestratorPresenceSweepLoop>();
 builder.Services.AddHostedService<CourierSweepLoop>();
 builder.Services.AddHostedService<RunSkillSweepLoop>();
 builder.Services.AddHostedService<LocalLaunchSweepLoop>();
+builder.Services.AddHostedService(services =>
+{
+    NodeContext node = services.GetRequiredService<NodeContext>();
+    return new ReleaseNoticeLoop(
+        services.GetRequiredService<ReleaseNoticeEngine>(),
+        async cancellationToken =>
+        {
+            await node.WaitForInitializationAsync(cancellationToken);
+            return node.NodeId;
+        },
+        ReleaseCheckIntervalSetting.ReadAsync,
+        TimeProvider.System,
+        services.GetRequiredService<ILogger<ReleaseNoticeLoop>>());
+});
 builder.Services.AddHostedService<LogRotationService>();
 
 // Windows has no SIGTERM h9k daemon stop can send to an arbitrary process (Decisions Log

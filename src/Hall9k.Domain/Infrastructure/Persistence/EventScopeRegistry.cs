@@ -362,6 +362,11 @@ public static class EventScopeRegistry
         // 6be68ee2, process-injection finding 1) — the identical "never a team fact" reasoning
         // ReplicationSwitchedOn states immediately above.
         [typeof(ProjectGateAcceptanceBaselined)] = EventScope.NodeScoped,
+        // Idea 93c1d24d, card 2: this node's own record that its daemon told its person a newer
+        // release exists. Whether a release is newer depends on the version this node runs, so it is
+        // never a team fact, and another node reading it would be told about a release it may
+        // already have installed.
+        [typeof(ReleaseNoticeIssued)] = EventScope.NodeScoped,
 
         // Hall9k.Domain.Features.Orchestrator — idea 89471598, piece 1: whether an orchestrator
         // window is up for a project is a fact about one machine's own process table, and no
