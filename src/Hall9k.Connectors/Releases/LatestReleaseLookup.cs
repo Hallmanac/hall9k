@@ -29,6 +29,9 @@ public enum LatestReleaseOutcome
 
     /// <summary><c>gh</c> answered with JSON the lookup could not read.</summary>
     Unparseable,
+
+    /// <summary>release.yml builds nothing for this machine's platform, so there is no archive to look for.</summary>
+    UnsupportedPlatform,
 }
 
 /// <summary>
@@ -40,12 +43,13 @@ public enum LatestReleaseOutcome
 public sealed record LatestReleaseResult
 {
     private LatestReleaseResult(
-        LatestReleaseOutcome outcome, ReleaseChannelResolution channel, string? candidateTag, string command, string detail,
-        IReadOnlyList<string> missingAssets)
+        LatestReleaseOutcome outcome, ReleaseChannelResolution channel, string? candidateTag, DateTimeOffset? publishedAt,
+        string command, string detail, IReadOnlyList<string> missingAssets)
     {
         Outcome = outcome;
         Channel = channel;
         CandidateTag = candidateTag;
+        PublishedAt = publishedAt;
         Command = command;
         Detail = detail;
         MissingAssets = missingAssets;
@@ -59,6 +63,9 @@ public sealed record LatestReleaseResult
     /// <summary>The release the lookup chose, whether or not its assets are complete.</summary>
     public string? CandidateTag { get; }
 
+    /// <summary>When GitHub published <see cref="CandidateTag"/>; null when the answer carried no time.</summary>
+    public DateTimeOffset? PublishedAt { get; }
+
     /// <summary>The tag to install: set only when <see cref="Outcome"/> is <see cref="LatestReleaseOutcome.Found"/>.</summary>
     public string? Tag => Outcome == LatestReleaseOutcome.Found ? CandidateTag : null;
 
@@ -69,16 +76,18 @@ public sealed record LatestReleaseResult
     /// <summary>The asset names a <see cref="LatestReleaseOutcome.NotYetComplete"/> release still lacks.</summary>
     public IReadOnlyList<string> MissingAssets { get; }
 
-    internal static LatestReleaseResult Found(ReleaseChannelResolution channel, string tag) =>
-        new(LatestReleaseOutcome.Found, channel, tag, string.Empty, string.Empty, []);
+    internal static LatestReleaseResult Found(
+        ReleaseChannelResolution channel, string tag, DateTimeOffset? publishedAt = null) =>
+        new(LatestReleaseOutcome.Found, channel, tag, publishedAt, string.Empty, string.Empty, []);
 
     internal static LatestReleaseResult NotYetComplete(
-        ReleaseChannelResolution channel, string tag, IReadOnlyList<string> missingAssets) =>
-        new(LatestReleaseOutcome.NotYetComplete, channel, tag, string.Empty, string.Empty, missingAssets);
+        ReleaseChannelResolution channel, string tag, IReadOnlyList<string> missingAssets,
+        DateTimeOffset? publishedAt = null) =>
+        new(LatestReleaseOutcome.NotYetComplete, channel, tag, publishedAt, string.Empty, string.Empty, missingAssets);
 
     internal static LatestReleaseResult Failed(
         LatestReleaseOutcome outcome, ReleaseChannelResolution channel, string command, string detail) =>
-        new(outcome, channel, null, command, detail, []);
+        new(outcome, channel, null, null, command, detail, []);
 }
 
 /// <summary>
@@ -100,6 +109,25 @@ public sealed class LatestReleaseLookup(ProcessRunner gh, ReleaseChannelReader? 
     private const int ListLimit = 100;
 
     private readonly ReleaseChannelReader readChannel = readChannel ?? ReleaseChannelSetting.ReadAsync;
+
+    /// <summary>
+    /// <see cref="ResolveAsync"/> for a machine whose RID may be one release.yml builds nothing
+    /// for: a null <paramref name="rid"/> (from <see cref="ReleasePlatform.CurrentRid"/>) is an
+    /// <see cref="LatestReleaseOutcome.UnsupportedPlatform"/> result, so the daemon's check and
+    /// <c>h9k doctor</c> report it as a failure to check rather than each deciding what to do with a null.
+    /// </summary>
+    public async Task<LatestReleaseResult> ResolveForPlatformAsync(
+        string repository, string? rid, string workingDirectory, CancellationToken cancellationToken)
+    {
+        if (rid is not null)
+        {
+            return await ResolveAsync(repository, rid, workingDirectory, cancellationToken);
+        }
+
+        return LatestReleaseResult.Failed(
+            LatestReleaseOutcome.UnsupportedPlatform, await readChannel(cancellationToken), string.Empty,
+            $"release.yml builds {string.Join(", ", ReleasePlatform.SupportedRids)} only");
+    }
 
     public async Task<LatestReleaseResult> ResolveAsync(
         string repository, string rid, string workingDirectory, CancellationToken cancellationToken)
@@ -129,16 +157,25 @@ public sealed class LatestReleaseLookup(ProcessRunner gh, ReleaseChannelReader? 
     {
         const string command = "gh release view";
         List<string> arguments = tag is null ? ["release", "view"] : ["release", "view", tag];
-        arguments.AddRange(["--repo", repository, "--json", "tagName,assets"]);
+        arguments.AddRange(["--repo", repository, "--json", "tagName,assets,publishedAt"]);
 
         ProcessResult result = await RunAsync(command, arguments, workingDirectory, channel, cancellationToken);
 
         string? tagName;
+        DateTimeOffset? publishedAt = null;
         List<string> assetNames = [];
         try
         {
             using JsonDocument document = JsonDocument.Parse(result.StandardOutput);
             tagName = document.RootElement.GetProperty("tagName").GetString();
+
+            // Optional: a release's time is context for the notice, never a reason to refuse it.
+            if (document.RootElement.TryGetProperty("publishedAt", out JsonElement published)
+                && published.ValueKind == JsonValueKind.String && published.TryGetDateTimeOffset(out DateTimeOffset parsed))
+            {
+                publishedAt = parsed;
+            }
+
             foreach (JsonElement asset in document.RootElement.GetProperty("assets").EnumerateArray())
             {
                 if (asset.GetProperty("name").GetString() is { } name)
@@ -162,8 +199,8 @@ public sealed class LatestReleaseLookup(ProcessRunner gh, ReleaseChannelReader? 
         string archiveName = ReleasePlatform.ArchiveFileName(rid);
         List<string> missing = [.. new[] { archiveName, ChecksumsAssetName }.Where(required => !assetNames.Contains(required))];
         return missing.Count == 0
-            ? LatestReleaseResult.Found(channel, tagName)
-            : LatestReleaseResult.NotYetComplete(channel, tagName, missing);
+            ? LatestReleaseResult.Found(channel, tagName, publishedAt)
+            : LatestReleaseResult.NotYetComplete(channel, tagName, missing, publishedAt);
     }
 
     /// <summary>The published release tag with the highest version, or a <see cref="LookupFailedException"/> when there is none.</summary>
@@ -187,7 +224,7 @@ public sealed class LatestReleaseLookup(ProcessRunner gh, ReleaseChannelReader? 
 
                 // A tag BuildVersionOrdering cannot read never claims an order, so it can neither win nor beat a readable one.
                 if (!isDraft && tag is not null && IsVersion(tag)
-                    && (highest is null || BuildVersionOrdering.IsOlderThan(Bare(highest), Bare(tag))))
+                    && (highest is null || BuildVersionOrdering.IsOlderThan(ReleaseTagVersion.Bare(highest), ReleaseTagVersion.Bare(tag))))
                 {
                     highest = tag;
                 }
@@ -232,10 +269,7 @@ public sealed class LatestReleaseLookup(ProcessRunner gh, ReleaseChannelReader? 
         LatestReleaseOutcome outcome, ReleaseChannelResolution channel, string command, string detail) =>
         new(LatestReleaseResult.Failed(outcome, channel, command, detail));
 
-    // Release tags carry a leading v (v0.10.46); BuildVersionOrdering's own shape does not.
-    private static string Bare(string tag) => tag.TrimStart('v');
-
-    private static bool IsVersion(string tag) => Version.TryParse(Bare(tag).Split('-', 2)[0], out _);
+    private static bool IsVersion(string tag) => Version.TryParse(ReleaseTagVersion.Bare(tag).Split('-', 2)[0], out _);
 
     private sealed class LookupFailedException(LatestReleaseResult result) : Exception
     {

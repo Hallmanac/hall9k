@@ -241,6 +241,60 @@ public sealed class LatestReleaseLookupTests
         result.Channel.Warning.Should().Be("Release channel: could not use it; using cleared.");
     }
 
+    [Fact]
+    public async Task The_result_carries_the_time_gh_reports_for_the_release()
+    {
+        FakeGh gh = new(FakeRelease.Cleared("v0.10.46"))
+        {
+            ViewOutput = """{"tagName":"v0.10.46","publishedAt":"2026-10-13T14:30:00Z","assets":[{"name":"hall9k-osx-arm64.tar.gz"},{"name":"checksums.txt"}]}""",
+        };
+
+        LatestReleaseResult result = await Lookup(gh, ReleaseChannel.Cleared).ResolveAsync("o/r", Rid, ".", CancellationToken.None);
+
+        result.Outcome.Should().Be(LatestReleaseOutcome.Found);
+        result.PublishedAt.Should().Be(new DateTimeOffset(2026, 10, 13, 14, 30, 0, TimeSpan.Zero));
+        gh.Calls.Should().ContainSingle().Which.Should().Contain("--json tagName,assets,publishedAt");
+    }
+
+    [Theory]
+    [InlineData("""{"tagName":"v0.10.46","assets":[{"name":"hall9k-osx-arm64.tar.gz"},{"name":"checksums.txt"}]}""")]
+    [InlineData("""{"tagName":"v0.10.46","publishedAt":null,"assets":[{"name":"hall9k-osx-arm64.tar.gz"},{"name":"checksums.txt"}]}""")]
+    [InlineData("""{"tagName":"v0.10.46","publishedAt":"not a time","assets":[{"name":"hall9k-osx-arm64.tar.gz"},{"name":"checksums.txt"}]}""")]
+    public async Task A_missing_or_unreadable_time_never_refuses_the_release(string viewOutput)
+    {
+        FakeGh gh = new(FakeRelease.Cleared("v0.10.46")) { ViewOutput = viewOutput };
+
+        LatestReleaseResult result = await Lookup(gh, ReleaseChannel.Cleared).ResolveAsync("o/r", Rid, ".", CancellationToken.None);
+
+        result.Outcome.Should().Be(LatestReleaseOutcome.Found);
+        result.PublishedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task A_machine_release_yml_builds_nothing_for_is_an_unsupported_platform_result_and_never_calls_gh()
+    {
+        FakeGh gh = new(FakeRelease.Cleared("v0.10.46"));
+
+        LatestReleaseResult result = await Lookup(gh, ReleaseChannel.Cleared)
+            .ResolveForPlatformAsync("o/r", rid: null, ".", CancellationToken.None);
+
+        result.Outcome.Should().Be(LatestReleaseOutcome.UnsupportedPlatform);
+        result.Tag.Should().BeNull();
+        result.Detail.Should().Contain("osx-arm64");
+        gh.Calls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_supported_platform_resolves_exactly_as_resolve_does()
+    {
+        FakeGh gh = new(FakeRelease.Cleared("v0.10.46"));
+
+        LatestReleaseResult result = await Lookup(gh, ReleaseChannel.Cleared)
+            .ResolveForPlatformAsync("o/r", Rid, ".", CancellationToken.None);
+
+        result.Tag.Should().Be("v0.10.46");
+    }
+
     private static LatestReleaseLookup Lookup(FakeGh gh, ReleaseChannel channel) =>
         new(gh.Runner, _ => Task.FromResult(new ReleaseChannelResolution(channel, null)));
 
