@@ -27,11 +27,12 @@ public static class LegacyKnowledgeSource
     /// <summary>
     /// PLAN.md §16 verbatim, as of commit cba329cb, with two omissions the file's own header
     /// comment records: the mechanical placement note commit 06471890 appended to entry #265 when
-    /// it assigned that number, and the rule closing the section.
+    /// it assigned that number, and the rule closing the section. Another project's names were
+    /// redacted from the text after the snapshot was taken, as the file's header also records.
     /// </summary>
     public const string DecisionsLogResource = "Hall9k.Domain.Legacy.v0-decisions-log.md";
 
-    /// <summary>AGENTS.md's Git rules and Working agreements sections verbatim, as of commit cba329cb (the same commit the log snapshot was taken at, and the one that file's own header comment names), less the one bullet that header records.</summary>
+    /// <summary>AGENTS.md's Git rules and Working agreements sections verbatim, as of commit cba329cb (the same commit the log snapshot was taken at, and the one that file's own header comment names), less the one bullet that header records, and with another project's names redacted after the snapshot was taken.</summary>
     public const string StandingRulesResource = "Hall9k.Domain.Legacy.agents-standing-rules.md";
 
     public static string DecisionsLog() => Read(DecisionsLogResource);

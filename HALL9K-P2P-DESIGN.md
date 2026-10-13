@@ -157,9 +157,9 @@ Trust and reachability, again, are different problems.
 ### 5.3 Joining someone else's project
 
 Casey does not need to know Brian's owner public key beforehand, and does not need to know it is
-Brian at all. She trusts whoever holds the token.
+Brian at all. Casey trusts whoever holds the token.
 
-1. Casey mints a project invite token and sends it however she likes — the channel needs
+1. Casey mints a project invite token and sends it however they like — the channel needs
    **integrity, not secrecy**.
 2. Brian runs `h9k project join` on **any** of his nodes.
 3. That node finds Casey's node (token addresses first, discovery as the safety net), handshakes,
@@ -176,7 +176,7 @@ person I meant to invite.*
 | Field | Why |
 |---|---|
 | Project identifier | which project is being joined |
-| **Casey's owner public key** | **the critical one** — without it you cannot verify her node certificate during the handshake and would be trusting whoever answered |
+| **Casey's owner public key** | **the critical one** — without it you cannot verify their node certificate during the handshake and would be trusting whoever answered |
 | Seed/node addresses | where to aim the first packet |
 | Expiry | so an intercepted token is not usable a year later |
 | Signature by Casey's owner key over the above | so the token cannot be forged |
@@ -457,12 +457,12 @@ If nobody answers, that is a real answer: nobody reachable has it right now. Ret
 
 ### 7.6 Shoulder-tapping
 
-**Casey does not know you want her.** She holds a warm connection to the seed with heartbeats keeping
-her mapping open, so the seed can **tap her on the shoulder**. The seed's real service is being
+**Casey does not know you want to reach them.** Casey holds a warm connection to the seed with heartbeats keeping
+their mapping open, so the seed can **tap them on the shoulder**. The seed's real service is being
 reachable at a known address.
 
 **When the seed has no live connection to Casey**, it asks the peers it does have. A peer still
-holding a path to Casey becomes the shoulder-tapper — it nudges Casey itself rather than handing her
+holding a path to Casey becomes the shoulder-tapper — it nudges Casey itself rather than handing Casey's
 address back to the seed, and tells the asker where to aim. **The seed is a directory of first
 resort, not a switchboard.**
 
@@ -625,8 +625,8 @@ Both nodes have been announcing to the seed, so it knows the external address an
 
 > Brian's node asks the seed for Casey's; the seed simultaneously nudges Casey's node with Brian's.
 > Both fire UDP at each other at roughly the same moment. Brian's packet leaves first, punches the
-> mapping in his router, reaches Casey's router, and is dropped — she hasn't sent yet. Expected.
-> Milliseconds later hers leaves, opens her mapping, and arrives at Brian's router, which recognises
+> mapping in his router, reaches Casey's router, and is dropped — Casey hasn't sent yet. Expected.
+> Milliseconds later Casey's packet leaves, opens their mapping, and arrives at Brian's router, which recognises
 > the address he just sent to and lets it through. The path is now open both directions.
 
 Then QUIC over that path, keys verified per §8.4, and data flows. **The seed never touches the
@@ -642,8 +642,8 @@ useless for anyone else. Common on mobile networks and some corporate setups. **
 (mobile tethering) has the same effect. **Blocked outbound UDP** is a different and harsher problem —
 see §10.
 
-The failure is **asymmetric and worth internalising**: if Casey's firewall blocks outbound UDP, her
-packet never leaves, so no mapping forms on her side — and Brian's packet, which left correctly and
+The failure is **asymmetric and worth internalising**: if Casey's firewall blocks outbound UDP, their
+packet never leaves, so no mapping forms on their side — and Brian's packet, which left correctly and
 reached their border firewall, has nothing to slip through. *Brian's side did everything right and it
 still failed.*
 
@@ -945,7 +945,7 @@ be discovered while building rather than specified in the abstract.
 agreed in advance. Same messages, different scope — and this is why the project query's list is
 sometimes "all of them" and sometimes exactly one.
 
-**Gossip is project-shaped.** Casey's event push travels to *her* project peers, who can read and
+**Gossip is project-shaped.** Casey's event push travels to *their* project peers, who can read and
 verify it, and onward to theirs — two or three hops and it is everywhere. So you need no connection to
 Casey, only a connection to someone who eventually has one.
 
@@ -968,7 +968,7 @@ recipient dial the origin would defeat the point of gossip.
 - **The two-owner case is special.** With only you and Casey there is no redundancy, so both sides
   reconnect on startup and retry with backoff. **The seed matters far more here**: in a large mesh you
   can bootstrap from anyone, but with two nodes the seed may be the only possible introduction. And if
-  she is simply offline, you just work — events queue and sync when she appears, which is the entire
+  Casey is simply offline, you just work — events queue and sync when they appear, which is the entire
   point of local-first.
 
 ### 12.5 Certificates on the wire vs. in the store

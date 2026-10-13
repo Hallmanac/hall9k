@@ -17,6 +17,11 @@ repository cites an AGENTS.md rule by position. The §16 decision it restated, #
 thirteen times and cannot be dropped the same way: it is imported keeping its citation and
 superseded in the same act, which `v0-decisions-log.md`'s own header records.
 
+One further change was made after the snapshot was taken: the names of another project, its
+people and its pull-request numbers were replaced with neutral stand-ins throughout, so this
+text is no longer byte-identical to that commit. Nothing was added or removed; only those
+names changed, and the entry and bullet structure the importer keys on is untouched.
+
 AGENTS.md's remaining sections stay authored in AGENTS.md: what the project is, how to
 build and test it, the coding standards, the CLI command standards, and the repo skills
 list. Those are conventions and navigation rather than rulings, and a convention that

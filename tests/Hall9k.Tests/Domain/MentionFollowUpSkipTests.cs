@@ -108,7 +108,7 @@ public sealed class MentionFollowUpSkipTests
     }
 
     [Fact]
-    public void Replaying_2166_from_the_owners_side_skips_the_pending_follow_up_and_hands_the_task_back()
+    public void Replaying_a_teammates_mention_from_the_owners_side_skips_the_pending_follow_up_and_hands_the_task_back()
     {
         TaskAggregate task = WaitingPrReviewTask();
         Guid reviewRunId = task.CurrentRunId!.Value;

@@ -562,7 +562,7 @@ public sealed class AttentionSurfaceTests
         reviewLandedChecksPending.Attention.Cause.Should().Contain("a check has been pending 9h");
         reviewLandedChecksPending.Attention.Cause.Should().NotContain(
             "checks may still be reporting",
-            "the pendingness alone was the reason nothing happened for nine hours on PR #2042");
+            "the pendingness alone was the reason nothing happened for nine hours");
         reviewLandedChecksPending.Attention.Cause.Should().NotContain(
             "not yet confirmed resolved", "the sweep does read the threads now, pending checks or not");
         reviewLandedChecksPending.Attention.Cause.Should().NotContain(

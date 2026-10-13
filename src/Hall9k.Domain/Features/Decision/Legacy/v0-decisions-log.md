@@ -28,6 +28,11 @@ rendered `decisions.md` agents read as the rulebook and leaves it one `h9k decid
 for anybody following a citation to it. `LegacyKnowledgeImportDecider.RetiredOnImport`
 carries the reason it records.
 
+One further change was made after the snapshot was taken: the names of another project, its
+people and its pull-request numbers were replaced with neutral stand-ins throughout, so this
+text is no longer byte-identical to that commit. Nothing was added or removed; only those
+names changed, and the entry and bullet structure the importer keys on is untouched.
+
 Editing this file changes what a node that has not yet imported will record and changes
 nothing for one that already has. A new decision is recorded with `h9k decide`, never
 here.
