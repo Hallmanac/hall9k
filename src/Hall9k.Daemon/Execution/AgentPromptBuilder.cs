@@ -2561,6 +2561,15 @@ public static class AgentPromptBuilder
     /// across a session that can run for hours, and so risks it going stale mid-flight (a
     /// review pass's own dispatch out of <c>ReviewEngine</c>), passes a value here instead.
     /// </param>
+    /// <param name="readSecurityAreas">
+    /// Whether the adversarial lens also reads the diff for the six security areas the Security
+    /// persona hunts, and tags what it finds there <c>kind=security</c>: the project's
+    /// security-review setting, resolved by the engine as each pass is dispatched. False (the
+    /// default) renders the adversarial prompt exactly as it was before the areas existed. Never
+    /// read by the conformance lens, and never honoured for a pr-review task's own lens
+    /// (<see cref="ReviewMechanicsOverride.DiffIsForeignPullRequest"/>), which has the Security
+    /// persona for the same reading.
+    /// </param>
     public static string BuildReview(
         TaskDetails task, ProjectDetails project, string branch, int cycle, ReviewLens lens,
         ReviewMode? mode = null,
@@ -2573,14 +2582,16 @@ public static class AgentPromptBuilder
         bool? interactiveModeEnabledOverride = null,
         IReadOnlyList<HumanFixRecord>? priorHumanFixes = null,
         TimeSpan? commandTimeout = null,
-        InjectedLessons? lessons = null)
+        InjectedLessons? lessons = null,
+        bool readSecurityAreas = false)
     {
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
         return lens == ReviewLens.Adversarial
             ? BuildAdversarialReview(
                 task.Id, project, branch, cycle, mode ?? ReviewMode.Discovery, priorRulings,
                 priorHumanDirectedInteractions, mechanicsOverride, sinceSha, priorBoundaryApprovals,
-                interactiveModeEnabled, interactiveSessionAddress, priorHumanFixes, commandTimeout, lessons)
+                interactiveModeEnabled, interactiveSessionAddress, priorHumanFixes, commandTimeout, lessons,
+                readSecurityAreas)
             : BuildConformanceReview(
                 task, project, branch, cycle, mode ?? ReviewMode.Discovery, priorRulings,
                 priorHumanDirectedInteractions, mechanicsOverride, sinceSha, priorBoundaryApprovals,
@@ -3116,7 +3127,8 @@ public static class AgentPromptBuilder
         string? interactiveSessionAddress = null,
         IReadOnlyList<HumanFixRecord>? priorHumanFixes = null,
         TimeSpan? commandTimeout = null,
-        InjectedLessons? lessons = null)
+        InjectedLessons? lessons = null,
+        bool readSecurityAreas = false)
     {
         const string file = $"{TemplateDirectory}/adversarial-review.md";
         StringBuilder prompt = new();
@@ -3143,6 +3155,11 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         AppendFragment(prompt, file, "defect-classes-tail");
         prompt.AppendLine();
+        if (readSecurityAreas && mechanicsOverride is not { DiffIsForeignPullRequest: true })
+        {
+            AppendSecurityAreas(prompt, file);
+        }
+
         AppendSettledRulings(
             prompt, priorRulings, priorHumanDirectedInteractions, mechanicsOverride, priorBoundaryApprovals,
             priorHumanFixes);
@@ -3189,6 +3206,37 @@ public static class AgentPromptBuilder
 
         AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
         return PromptLineEndings.Finish(prompt);
+    }
+
+    /// <summary>
+    /// The six security areas, framed for a defect hunt rather than for the Security persona (idea
+    /// b2a6f46c): the heading, the framing and the tag instruction are this lens's own, in
+    /// <c>adversarial-review.md</c>, while each area's text is the persona's, read from the same
+    /// <c>lenses.md</c> by <see cref="SecurityReviewPromptBuilder.AppendAreas"/> so an edit to an
+    /// area reaches both prompts. The tag key and the kind's value arrive as parameters like the
+    /// run-skill drift fragment's do, so the prompt can never spell either differently from the
+    /// parser that reads it.
+    /// </summary>
+    private static void AppendSecurityAreas(StringBuilder prompt, string file)
+    {
+        prompt.AppendLine(Fragment(file, "security-areas-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "security-areas-intro");
+        prompt.AppendLine();
+        SecurityReviewPromptBuilder.AppendAreas(prompt);
+        prompt.AppendLine();
+        AppendFragment(
+            prompt, file, "security-areas-tag",
+            ("KindTagKey", ReviewResultParser.KindTagKey),
+            ("SecurityKind", ReviewFindingKind.Security.Value),
+            ("FindingMarker", ReviewResultParser.FindingMarker),
+            ("ExampleLocationPlaceholder", ReviewResultParser.ExampleLocationPlaceholder),
+            ("SeverityTagKey", ReviewResultParser.SeverityTagKey),
+            ("ScopeTagKey", ReviewResultParser.ScopeTagKey),
+            ("AtTagKey", ReviewResultParser.AtTagKey),
+            ("DefectLabel", "Defect:"),
+            ("ScenarioLabel", "Scenario:"));
+        prompt.AppendLine();
     }
 
     /// <summary>How many prior rulings ride into a review prompt — the newest, since they are the ones most likely still relevant.</summary>

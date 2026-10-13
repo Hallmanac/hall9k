@@ -10,7 +10,8 @@ namespace Hall9k.Domain.Features.Run;
 /// on exactly the terms every other finding of the same grade and scope is.
 /// <para>
 /// The vocabulary is deliberately tiny. A kind earns its place only when something downstream has
-/// to treat the finding differently in kind rather than in degree, and today exactly one does.
+/// to treat the finding differently in kind rather than in degree, and today two do: a run-skill
+/// drift finding and a security finding, each named so a person or a count can tell it apart.
 /// </para>
 /// </summary>
 [JsonConverter(typeof(ReviewFindingKindJsonConverter))]
@@ -23,6 +24,15 @@ public sealed record ReviewFindingKind
     /// instructions alongside the code.
     /// </summary>
     public static readonly ReviewFindingKind RunSkillDrift = new("run-skill-drift");
+
+    /// <summary>
+    /// The finding falls in one of the six security areas the Security persona hunts (injection;
+    /// secrets handling; authentication and authorization; unsafe process, file, or network use;
+    /// dependency changes; CI or release workflow changes), made by a pre-PR Adversarial pass that
+    /// read the diff for them under the project's security-review setting. Recorded so security
+    /// findings can be counted, never to change how one is graded or routed.
+    /// </summary>
+    public static readonly ReviewFindingKind Security = new("security");
 
     /// <summary>
     /// An ordinary finding — the overwhelming majority, and what every finding recorded before
@@ -39,6 +49,7 @@ public sealed record ReviewFindingKind
         value?.Trim().ToLowerInvariant().Replace("_", "-").Replace(" ", "-") switch
         {
             "run-skill-drift" or "run-skill" or "runskilldrift" => RunSkillDrift,
+            "security" => Security,
             _ => Unknown,
         };
 
