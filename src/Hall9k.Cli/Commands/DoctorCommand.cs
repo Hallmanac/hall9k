@@ -50,7 +50,8 @@ public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
             "Repair, but never record a connection string: with nothing configured, diagnose and stop "
             + "rather than writing Hall9k's default into the platform config file. What --yes does for "
             + "an address that IS configured — starting a stopped hall9k-postgres, creating or updating "
-            + "the schema — is unaffected. h9k update --restart and h9k install --restart pass this to "
+            + "the schema — is unaffected. It also skips the release check, a live GitHub lookup that would only "
+            + "lengthen the window the daemon is down. h9k update --restart and h9k install --restart pass this to "
             + "the doctor step they run between the stop and the start, because a daemon whose database "
             + "is named by HALL9K_CONNECTION_STRING in another shell, or by a .hall9k-connection file "
             + "elsewhere on disk, would otherwise come back up against a guessed default that outranks "
@@ -65,8 +66,14 @@ public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
         await ToolDoctor.RunAsync(cancellationToken);
 
         // Needs no database and no daemon, so it runs ahead of the database section and survives its
-        // early return, like the tool check above it.
-        await ReleaseDoctor.RunAsync(cancellationToken);
+        // early return, like the tool check above it. Skipped under --no-configure, which only the
+        // restart hand-off passes: that step runs while the daemon is stopped, so a live GitHub
+        // lookup there would lengthen the outage for a check that has nothing to do with it, and its
+        // "which command installs it" wording would be wrong for a daemon about to start.
+        if (!settings.NoConfigure)
+        {
+            await ReleaseDoctor.RunAsync(cancellationToken);
+        }
 
         await DatabaseDoctor.CheckContainerPortBindingAsync(settings.Yes, cancellationToken);
 

@@ -346,6 +346,13 @@ database, or a broken platform config file), it degrades to the git-only check a
 own requirement as unconfirmed rather than guessing, so this still runs, and still says something
 useful, even when the database questions below cannot get past the first one.
 
+Next comes a release section, which needs no database and no daemon either. It runs the same live
+lookup the daemon runs and reports one of three things: this node is current, a newer release is
+available (naming `h9k update --restart` when a daemon is running and plain `h9k update` when none is),
+or the check could not be made, with the reason. Because it is a network call, it is skipped under
+`--no-configure`, which is the form `h9k update --restart` and `h9k install --restart` run between the
+daemon's stop and its start; a lookup there would only lengthen the time the daemon is down.
+
 Then, four questions, answered in order, stopping at the first one that fails (Decisions Log #73,
 #74):
 

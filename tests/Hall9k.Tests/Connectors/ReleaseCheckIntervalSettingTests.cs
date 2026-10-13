@@ -47,7 +47,7 @@ public sealed class ReleaseCheckIntervalSettingTests : IDisposable
     }
 
     [Fact]
-    public async Task A_configured_interval_is_read_back_and_a_hand_edited_value_below_the_floor_counts_as_the_floor()
+    public async Task A_rewritten_interval_is_seen_by_the_next_read_and_a_hand_edited_value_below_the_floor_counts_as_the_floor()
     {
         WriteConfig("""{"hall9k":{"releaseCheckIntervalHours":3}}""");
         (await ReleaseCheckIntervalSetting.ReadAsync(CancellationToken.None)).Should().Be(TimeSpan.FromHours(3));
@@ -74,17 +74,6 @@ public sealed class ReleaseCheckIntervalSettingTests : IDisposable
         WriteConfig("""{"hall9k":{"releaseCheckIntervalHours":2,"modelByRole":"not-an-object"}}""");
 
         (await ReleaseCheckIntervalSetting.ReadAsync(CancellationToken.None)).Should().Be(TimeSpan.FromHours(2));
-    }
-
-    [Fact]
-    public async Task A_change_to_the_file_is_seen_by_the_next_read_with_no_restart()
-    {
-        WriteConfig("""{"hall9k":{"releaseCheckIntervalHours":6}}""");
-        (await ReleaseCheckIntervalSetting.ReadAsync(CancellationToken.None)).Should().Be(TimeSpan.FromHours(6));
-
-        WriteConfig("""{"hall9k":{"releaseCheckIntervalHours":1}}""");
-
-        (await ReleaseCheckIntervalSetting.ReadAsync(CancellationToken.None)).Should().Be(TimeSpan.FromHours(1));
     }
 
     [Fact]

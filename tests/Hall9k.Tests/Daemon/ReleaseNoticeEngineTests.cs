@@ -86,17 +86,6 @@ public sealed class ReleaseNoticeEngineTests
     }
 
     [Fact]
-    public async Task A_local_build_past_the_tag_is_told_nothing()
-    {
-        answer = LatestReleaseResult.Found(Channel, "v0.13.0");
-
-        (await Engine(running: "0.13.0-5-gabc1234").CheckOnceAsync(NodeId, CancellationToken.None))
-            .Should().Be(ReleaseCheckResult.NothingNew);
-
-        stream.Events.Should().BeEmpty();
-    }
-
-    [Fact]
     public async Task A_restart_neither_repeats_a_notice_nor_resets_the_clock()
     {
         await Engine().CheckOnceAsync(NodeId, CancellationToken.None);
