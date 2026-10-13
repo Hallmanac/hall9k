@@ -526,7 +526,7 @@ Reviewing the stack's cumulative diff, the shape the top branch's tip naturally 
 clean while an intermediate commit on the base itself leaves the tree broken; even building the
 base pull request's own final tip is not enough on its own, because a later commit on the base can
 silently repair what an earlier one broke, leaving no trace at the tip for either side to catch.
-Origin incident (ARX-4836, 2026-08-31): a leaked file move broke the base pull request's own build,
+Origin incident (a teammate's project, 2026-08-31): a leaked file move broke the base pull request's own build,
 and nothing caught it because the author verified only the stack's tip and the reviewer built
 nothing at all: the base's intermediate state was never independently exercised by either side.
 This is a working agreement today, for whoever reviews a base-of-stack pull request by hand, not a

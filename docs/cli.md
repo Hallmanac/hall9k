@@ -1518,7 +1518,7 @@ A team's branch convention is a project setting rather than a fork of the platfo
 names a task's branch out of three tokens: `{shortid}` (the task's short id), `{slug}` (its
 objective, lowercased and hyphenated, capped at 30 characters) and `{key}` (the linked Jira key or
 GitHub issue number). Everything else is literal, so `--branch-template "{key}-{slug}"` cuts
-`ARX-14-add-rate-limiting` on a task adopted from ARX-14. The default is `task/{shortid}-{slug}`,
+`PROJ-14-add-rate-limiting` on a task adopted from PROJ-14. The default is `task/{shortid}-{slug}`,
 which is exactly the name the platform cut before the setting existed, so a project that sets
 nothing sees no change at all; `none` restores it.
 
@@ -1537,7 +1537,7 @@ That fallback is not a narrow edge case: under either tracking backlog policy (`
 `--backlog github-issues`) it is the ordinary outcome for a task the platform itself publishes and
 dispatches. A `jira` card is minted minutes later by a separately dispatched session, well after
 dispatch has already rendered and recorded the branch name, so a task published and queued in
-one breath essentially always cuts `no-key-<slug>` rather than `ARX-14-<slug>`. A `github-issues`
+one breath essentially always cuts `no-key-<slug>` rather than `PROJ-14-<slug>`. A `github-issues`
 project fares better but is not exempt — `TaskPublishCommand` creates the issue inline, but the
 `gh issue create` round trip can still lose the race against the dispatch loop's five-second poll.
 A `{key}` template earns a resolved key reliably only on a task that already carries its reference

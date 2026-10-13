@@ -37,7 +37,7 @@ same shape as one the platform would open today.
 **A repository's own PR-description rule wins for the prose.** When the target repository ships
 one, take the voice, the section shape, and the title convention from there, and use this skill
 only for what that rule does not say. Two places count: a command file at
-`.claude/commands/git/pr-description.md` (arx-platform's is the known case), and a PR-description
+`.claude/commands/git/pr-description.md` (a teammate's project ships one, and is the known case), and a PR-description
 or `pr-summary` skill under the repository's own `.claude/skills/`. Only when the repository ships
 none is this skill's own "How it should read" the whole answer. When you also find an owner voice
 below, that rule keeps the structure, the shape and the title convention and the voice takes the
@@ -72,7 +72,7 @@ twice.
 
 Nothing else is added. The acceptance criteria, the review residuals, the token accounting, and the
 run pointer all stay in the run record where they already live, and the criteria stay on the card
-(Brian's ruling, 2026-09-19, after bioage-calculator pull request #4 opened with a 3,837-byte body
+(Brian's ruling, 2026-09-19, after a pull request in a teammate's project opened with a 3,837-byte body
 for a 56-line file).
 
 ## Process
@@ -255,7 +255,7 @@ Acme.Migrations, Web/Admin. VSTest 47/47 passed.
 the thing a reviewer has to know:
 
 ```
-While reviewing #1834 after it merged I found a handful of things worth
+While reviewing #134 after it merged I found a handful of things worth
 cleaning up, and this PR is those changes.
 
 Most of it is bringing the four endpoints in line with
@@ -279,7 +279,7 @@ missing sender account or an unwritable audit row is a 503.
 
 ## Before merging
 
-This won't build until #1841 is rebased onto main, since it calls
+This won't build until #141 is rebased onto main, since it calls
 `ProblemDetails.UnprocessableContent`, which is on main but not yet on this PR's
 base branch.
 ```
@@ -323,7 +323,7 @@ did to the code: `Send mass messages from the configured specialist address` ove
 
 Include the external key when the commits or the branch name carry one, written in the same form
 this repository's own commit subjects use. Read `git log` on the base branch and copy what you see:
-`ARX-1234: <title>` where the subjects use a colon, and `ARX-1234 <title>` where they do not. Write
+`PROJ-1234: <title>` where the subjects use a colon, and `PROJ-1234 <title>` where they do not. Write
 it in yourself rather than leaving it to the platform. For a Jira-referenced task the daemon puts
 the key there when it is missing, idempotently, but a title you wrote the key into is a title in
 your own wording throughout; one it had to repair is not.

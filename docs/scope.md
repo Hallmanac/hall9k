@@ -71,7 +71,7 @@ recovered rebase already gets. Only a repair round that cannot make the gate pas
 
 Holding a task and queueing it are two acts with two verbs, each named for the board column the task lands
 in (Decisions Log #34). `h9k task assign` records who holds a task at any stage before it runs (the
-assignee) and never dispatches it; a Published task stays Ready, and the board says `Assigned to Ryan ·
+assignee) and never dispatches it; a Published task stays Ready, and the board says `Assigned to Jordan ·
 not queued`. `h9k task queue` is the go signal: it queues a Published task for its assignee, or for you
 when nobody holds it, and `h9k task dequeue` returns a queued task to Published while keeping its
 assignee. `h9k task unassign` lets go of the hold. A node that predates these verbs still treats `assign`

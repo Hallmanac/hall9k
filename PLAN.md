@@ -217,7 +217,7 @@ Future: many nodes, each shaped like this, coordinating P2P (§14).
 
 ### 6.2 Node identity, ownership & leases (the P2P down-payment)
 
-**The accountability principle: every node belongs to a human.** Not to an agent, not to a service - a person. Whatever autonomy agents gain, a human is ultimately responsible for every run their nodes perform. The P2P future is multi-*user*: a team project splits work across developers, each developer runs their own node(s) - Brian's nodes, Sarah's nodes - like each brings their own IDE. Cross-user node communication is a later capability the groundwork must not foreclose.
+**The accountability principle: every node belongs to a human.** Not to an agent, not to a service - a person. Whatever autonomy agents gain, a human is ultimately responsible for every run their nodes perform. The P2P future is multi-*user*: a team project splits work across developers, each developer runs their own node(s) - Brian's nodes, Casey's nodes - like each brings their own IDE. Cross-user node communication is a later capability the groundwork must not foreclose.
 
 Groundwork rules (paid in v0; all cheap):
 
@@ -227,7 +227,7 @@ Groundwork rules (paid in v0; all cheap):
 - **No single-owner assumptions baked into streams or queries**: event streams and projections are written as if multiple owners' data could share a store, because someday it might (shared Postgres between teammates is the likely first multi-user topology).
 - Task claiming is **lease-based**: claim (by node, therefore by owner) + heartbeat + timeout requeue. Works identically for 1 node or 20, one owner or a team.
 
-That is the *entire* multi-node/multi-user tax paid now. Explicitly deferred: node discovery, gossip/replication, partition handling, and the cross-user trust/auth question (how does Brian's node verify Sarah's node?). When multi-machine arrives, evaluate "several daemons against shared/replicated Postgres" before anything exotic.
+That is the *entire* multi-node/multi-user tax paid now. Explicitly deferred: node discovery, gossip/replication, partition handling, and the cross-user trust/auth question (how does Brian's node verify Casey's node?). When multi-machine arrives, evaluate "several daemons against shared/replicated Postgres" before anything exotic.
 
 ### 6.3 Executor abstraction
 

@@ -243,7 +243,7 @@ h9k task draft        ->  Draft       refused from Queued/Blocked onward (dequeu
 Each verb names the board column the task lands in (Decisions Log #34, and the assign/queue split):
 `assign` moves no column at all, because it records who holds a task and a Draft, a Published task and an
 idea can all be held; `publish` lands it in Ready; `queue` lands it in Queued and is the go signal; and
-only the daemon moves it on to Working and Delivered. A held but unqueued task is "Assigned to Ryan · not
+only the daemon moves it on to Working and Delivered. A held but unqueued task is "Assigned to Jordan · not
 queued" on the board, and nothing dispatches without a queue.
 
 The edit-after-the-fact path is therefore `dequeue → draft → revise → publish → queue`, each
@@ -1155,7 +1155,7 @@ since nothing out there will answer it and the hand command only reaches the cur
 sibling this node is already bootstrapping off waits its turn: the two are never in flight with the
 same peer at once, and the reconcile is asked in full once that bootstrap closes.
 The origin is concrete: on 2026-09-21 the Mac held
-almost none of arx-platform's history while the Windows node held all of it, and a bootstrap that
+almost none of a shared project's history while the Windows node held all of it, and a bootstrap that
 ranks one answerer had no way to notice.
 
 **An established node pulls, or nothing happens.** A node that is none of the four above (not
