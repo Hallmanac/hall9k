@@ -453,6 +453,16 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "but cleared or all in a hand-edited file counts as cleared, with a warning.")]
         public string? ReleaseChannel { get; init; }
 
+        [CommandOption("--release-check-interval-hours <HOURS>")]
+        [Description(
+            "How many whole hours this node's daemon waits between checks for a newer hall9k release "
+            + "(OperatingSettings.DefaultReleaseCheckIntervalHours, default 6, minimum 1, maximum 8760; idea 93c1d24d). "
+            + "The daemon only tells you, through the orchestrator feed, h9k status and h9k doctor, at most "
+            + "once a day per release; it never updates anything itself. Read fresh from the file after every "
+            + "check, with no daemon restart and no environment variable involved: a new value governs the "
+            + "wait that follows the check already in progress.")]
+        public int? ReleaseCheckIntervalHours { get; init; }
+
         [CommandOption("--lesson-prompt-max-lessons <COUNT>")]
         [Description(
             "How many recorded lessons a dispatched session's prompt carries, newest first "
@@ -520,12 +530,15 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         // through a live DaemonOptions instance a running daemon would need restarting to pick up
         // (InteractiveClaimStaleAfterDays: h9k status reads the file fresh every render;
         // InviteExpiryHours: h9k node invite/h9k project invite read the file fresh at mint time;
+        // ReleaseChannel and ReleaseCheckIntervalHours: the release lookup and the daemon's release
+        // loop read the file fresh at each check;
         // the two lesson-prompt caps: LessonPromptFeed reads the file fresh at every prompt
         // composition), so a call touching only these, in any combination, gets the "already in
         // force" note below rather than the daemon-restart one every other setting here needs.
         bool onlyImmediateEffectSettingsChanged =
             (settings.InteractiveClaimStaleAfterDays is not null || settings.InviteExpiryHours is not null
-                || settings.ReleaseChannel is not null || settings.LessonPromptMaxLessons is not null || settings.LessonPromptMaxCharacters is not null)
+                || settings.ReleaseChannel is not null || settings.ReleaseCheckIntervalHours is not null
+                || settings.LessonPromptMaxLessons is not null || settings.LessonPromptMaxCharacters is not null)
             && settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
             && settings.Effort is null && settings.RoleEfforts.All(option => option.Input is null)
@@ -551,7 +564,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         else
         {
             AnsiConsole.MarkupLineInterpolated(
-                $"[dim]Written to {Hall9kDatabase.ConfigFile} — a running daemon picks this up on its next start (h9k daemon stop, then h9k daemon start); h9k config show prints the effective settings. (--interactive-claim-stale-after-days, --invite-expiry-hours and --release-channel, if you set any of them, are already in force: each is read fresh from the file, with no daemon restart involved.)[/]");
+                $"[dim]Written to {Hall9kDatabase.ConfigFile} — a running daemon picks this up on its next start (h9k daemon stop, then h9k daemon start); h9k config show prints the effective settings. (--interactive-claim-stale-after-days, --invite-expiry-hours, --release-channel and --release-check-interval-hours, if you set any of them, are already in force: each is read fresh from the file, with no daemon restart involved.)[/]");
         }
 
         return ExitCodes.Ok;
@@ -583,6 +596,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.MessagePollIdleMin is null && settings.MessagePollIdleMax is null
             && settings.AutoPrReviewMintHold is null && settings.SessionContainment is null
             && settings.InviteExpiryHours is null && settings.ReleaseChannel is null
+            && settings.ReleaseCheckIntervalHours is null
             && settings.LessonPromptMaxLessons is null && settings.LessonPromptMaxCharacters is null)
         {
             throw new DomainValidationException(
@@ -751,6 +765,17 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
                 + "could never be claimed.");
         }
 
+        if (settings.ReleaseCheckIntervalHours is { } releaseCheckIntervalHours
+            && (releaseCheckIntervalHours < OperatingSettings.MinimumReleaseCheckIntervalHours
+                || releaseCheckIntervalHours > OperatingSettings.MaximumReleaseCheckIntervalHours))
+        {
+            throw new DomainValidationException(
+                $"--release-check-interval-hours must be between {OperatingSettings.MinimumReleaseCheckIntervalHours} "
+                + $"and {OperatingSettings.MaximumReleaseCheckIntervalHours} (whole hours, a year at most) — a "
+                + "shorter wait would ask GitHub for the latest release more often than a release can plausibly "
+                + "change, and a longer one is never.");
+        }
+
         // Refused here rather than silently accepted, even though LessonInjectionCaps.Resolve
         // clamps whatever it reads: that clamp exists for a hand-edited config file, which skips
         // this gate entirely and must never be able to stop a dispatch. A value typed at this
@@ -911,6 +936,12 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         {
             operating.ReleaseChannel = ReleaseChannel.FromInput(releaseChannel).Value;
             changed.Add($"release-channel = {operating.ReleaseChannel}");
+        }
+
+        if (settings.ReleaseCheckIntervalHours is { } releaseCheckIntervalHoursValue)
+        {
+            operating.ReleaseCheckIntervalHours = releaseCheckIntervalHoursValue;
+            changed.Add($"release-check-interval-hours = {releaseCheckIntervalHoursValue}");
         }
 
         if (settings.LessonPromptMaxLessons is { } lessonPromptMaxLessons)
