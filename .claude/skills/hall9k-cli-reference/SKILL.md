@@ -969,7 +969,7 @@ already spoken for elsewhere is refused whether it is being adopted as this task
 secondary. A card that genuinely needs several tasks working
 toward it (PROJ-5510: one Jira card, eight pull requests) runs straight into that refusal if every
 task tries to adopt it, and the refusal is the guard working as designed, not a bug to route
-around; the pattern below is what a teammate's team found by trial and error against it. The epic
+around; the pattern below is what one team found by trial and error against it. The epic
 carries the card (`h9k epic link-jira <epic> <key-or-url>`, whose own `--help` still calls the
 argument "the Jira epic's key": it stores whatever key or URL it is given verbatim and unverified,
 epic or card alike, so this pattern's use of it for a card is not a misuse), exactly one member

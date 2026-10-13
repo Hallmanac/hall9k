@@ -668,8 +668,8 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
     /// <summary>
     /// Brian and Jordan were both requested on one pull request, so each has a pr-review task and
     /// Jordan's has replicated onto Brian's node. Brian is then removed: the removal the sweep reads
-    /// from GitHub is Brian's, so it recalls Brian's task and nothing else. Jordan's task is his
-    /// alone (decision 8a5822cc), whether it is told apart by the login it watches (reviewer-a) or by
+    /// from GitHub is Brian's, so it recalls Brian's task and nothing else. Jordan's task is
+    /// theirs alone (decision 8a5822cc), whether it is told apart by the login it watches (reviewer-a) or by
     /// its owner (a second task that carries Brian's login but is held by a teammate's root).
     /// </summary>
     [Fact]
