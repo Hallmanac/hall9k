@@ -17,8 +17,8 @@ public static class DaemonLifecycle
 {
     // Wide enough to absorb the ~15s assembly-resolution-and-JIT boot for the top-level
     // entry point — before the daemon ever reaches its own single-instance guard, so
-    // Wolverine's later handler-discovery scan is not the cause — observed on the Arx
-    // Windows node (2026-09-03), so the ordinary slow-boot case still resolves to a
+    // Wolverine's later handler-discovery scan is not the cause — observed on a
+    // teammate's Windows node (2026-09-03), so the ordinary slow-boot case still resolves to a
     // confirmed pid rather than falling through to the "still starting" guess below.
     private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan CatchUpTimeout = TimeSpan.FromSeconds(30);

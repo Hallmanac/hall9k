@@ -13,7 +13,7 @@ namespace Hall9k.Domain.Features.Project;
 /// pass — set by <c>h9k project set --verify-gate-filter</c>.
 /// <see cref="PathSet"/> is null for a gate that runs on every verification pass; non-null scopes
 /// the gate to the paths a run changed (task: a verify gate can be scoped to a path set, so a diff
-/// that touches none of them records the gate as skipped, TaylorDenny, arx-platform #2218) — set
+/// that touches none of them records the gate as skipped, a teammate's project) — set
 /// by <c>h9k project set --verify-gate-paths</c>, decided by <see cref="GatePathScope"/>.
 /// </summary>
 public sealed record VerifyCommand(

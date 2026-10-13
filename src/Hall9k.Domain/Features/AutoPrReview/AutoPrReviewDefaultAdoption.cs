@@ -11,8 +11,8 @@ namespace Hall9k.Domain.Features.AutoPrReview;
 /// timestamp far older than the day this behaviour arrived, so registration alone would let
 /// every review request that had been sitting open for weeks mint a task at once — which is
 /// precisely what happened on the Windows node at 16:03 EDT on 2026-09-08, when opting
-/// arx-platform in minted four tasks in one sweep, two of them for August requests (#1568,
-/// #1556). <see cref="AdoptedAt"/> is the honest floor for those projects: this install had no
+/// a teammate's project in minted four tasks in one sweep, two of them for August requests.
+/// <see cref="AdoptedAt"/> is the honest floor for those projects: this install had no
 /// on-by-default behaviour before it, so nothing before it was ever a signal this install
 /// declined to act on.
 /// </para>

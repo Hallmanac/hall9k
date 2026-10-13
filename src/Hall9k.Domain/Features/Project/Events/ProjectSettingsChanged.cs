@@ -26,7 +26,7 @@ namespace Hall9k.Domain.Features.Project.Events;
 /// </para>
 /// <para>
 /// BranchNameTemplate is the name a task's branch is cut under, so a team whose convention keys on
-/// its tracker (ARX-14-short-slug) states that convention here instead of forking the platform;
+/// its tracker (PROJ-14-short-slug) states that convention here instead of forking the platform;
 /// <see cref="Project.BranchNameTemplate.Default"/> is both the untouched default and what 'none'
 /// restores, and it renders exactly the name the platform cut before this setting existed.
 /// </para>

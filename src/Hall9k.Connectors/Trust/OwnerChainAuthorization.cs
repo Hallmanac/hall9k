@@ -23,7 +23,7 @@ public static class OwnerChainAuthorization
     /// via <see cref="IsAuthorizedByAnyOwnerRoleMemberAsync"/>) even though a node revocation, a
     /// members-ref write, or a role change narrowed to <see cref="IsAuthorizedByOwnerRootKeyAsync"/>
     /// alone (idea 6be68ee2, trust-ledger finding 2): a prompt addendum pushed from a vouched node
-    /// (an ARX Windows machine, say) must keep materializing.</summary>
+    /// (a teammate's Windows machine, say) must keep materializing.</summary>
     public static async Task<bool> IsAuthorizedByOwnerAsync(
         TrustedOwner owner, Func<string, CancellationToken, Task<bool>> isSignedByKeyAsync,
         CancellationToken cancellationToken)

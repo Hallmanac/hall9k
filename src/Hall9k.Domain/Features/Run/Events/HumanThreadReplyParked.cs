@@ -8,9 +8,9 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// the owner's login is the defect this park exists to remove.
 /// <para>
 /// Origin incidents, both with accurate replies that still had to be deleted or disowned:
-/// arx-platform PR #2021 on 2026-09-09, where a follow-up posted roughly 400 words under Brian's
-/// login ten minutes after John Mark approved and asked a question, and PR #2042 on 2026-09-15,
-/// where a five-paragraph answer to jsmotherman went out the same way. The words were right; the
+/// a pull request in a teammate's project on 2026-09-09, where a follow-up posted roughly 400 words under Brian's
+/// login ten minutes after a teammate approved and asked a question, and another there on 2026-09-15,
+/// where a five-paragraph answer to a teammate went out the same way. The words were right; the
 /// authorship was not, and there was no operator lever between the dispatch and the post.
 /// </para>
 /// <para>

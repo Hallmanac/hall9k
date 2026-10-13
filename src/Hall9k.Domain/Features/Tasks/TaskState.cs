@@ -36,7 +36,7 @@ public sealed record TaskState
     /// to attach to instead of minting a second one). <c>h9k task abandon</c> remains the one
     /// early exit.
     /// <para>
-    /// Origin incident (2026-09-08, arx-platform PR #2023, task 2402246b): the pr-review task
+    /// Origin incident (2026-09-08, a teammate's project, task 2402246b): the pr-review task
     /// went Done the moment the review was posted, so when the author answered all five threads
     /// and pushed revisions the next day, nothing on the board watched the pull request and the
     /// reviewer heard it from GitHub first. There was no state between Done and a fresh

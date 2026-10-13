@@ -298,7 +298,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "short id), {slug} (its objective, lowercased and hyphenated, capped at 30 "
             + "characters) and {key} (the linked Jira key or GitHub issue number, or 'no-key' when "
             + "the task carries no linked item — a branch never claims a card that was never "
-            + "filed); everything else is literal, so \"{key}-{slug}\" cuts ARX-14-add-rate-limiting. "
+            + "filed); everything else is literal, so \"{key}-{slug}\" cuts PROJ-14-add-rate-limiting. "
             + "Every token is fixed at dispatch and the rendered name is recorded on the run, "
             + "because the pull request is pushed from that recorded name much later — renaming a "
             + "live run's branch is what breaks the push. The template is rendered and checked as a "

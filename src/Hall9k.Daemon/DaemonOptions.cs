@@ -565,7 +565,7 @@ public sealed class DaemonOptions
     /// network error, <c>GitNetworkFailure</c>) before the task is failed instead of waiting again.
     /// The first failures requeue the task behind <see cref="LaunchNetworkRetryBackoff"/>; the
     /// failure that reaches this count fails it with the attempts and git's last error in the reason.
-    /// Origin incident (2026-10-03, task 51939c4c in arx-platform): one fetch hit a flaky link and
+    /// Origin incident (2026-10-03, task 51939c4c in a teammate's project): one fetch hit a flaky link and
     /// failed the whole task, which needed a manual retry. Not an <c>h9k config</c> key.
     /// </summary>
     public int LaunchNetworkRetryMaxAttempts { get; set; } = 3;

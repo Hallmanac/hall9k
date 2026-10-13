@@ -15,7 +15,7 @@ namespace Hall9k.Cli.Commands;
 /// them any other way. <c>gh pr view</c> and <c>gh pr diff</c> do not return inline review
 /// comments, and the lap's push guard denies <c>gh api</c> wholesale, which is right as a write
 /// gate; this command is the read, run as h9k's own child process under the project's own GitHub
-/// account the way <c>h9k pr review</c>'s reads are (arx-platform#2201, hall9k #336).
+/// account the way <c>h9k pr review</c>'s reads are (a teammate's project, hall9k #336).
 /// <para>
 /// It writes nothing to GitHub and appends nothing to the task store: it takes an
 /// <see cref="IQuerySession"/>, so there is no session here that could append, and it does not

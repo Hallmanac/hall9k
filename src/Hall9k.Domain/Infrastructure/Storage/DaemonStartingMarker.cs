@@ -12,7 +12,7 @@ public static class DaemonStartingMarker
 {
     /// <summary>
     /// How long a marker is trusted as evidence of an in-flight boot before it reads the
-    /// same as no marker at all. Generous past the field-observed ~15s worst case (the Arx
+    /// same as no marker at all. Generous past the field-observed ~15s worst case (a teammate's
     /// Windows node, 2026-09-03) so a spawn that genuinely wedged or died before ever
     /// writing a pid file eventually reads as "not running" again, rather than "starting"
     /// forever.

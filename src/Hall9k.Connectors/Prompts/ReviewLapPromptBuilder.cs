@@ -552,7 +552,7 @@ public static class ReviewLapPromptBuilder
         {
             // Before anything that could read as a list, and never "none were observed": an empty
             // list here is a range nobody computed, which is the opposite of a range that held
-            // nothing, and the origin gap (arx#2201) was a reviewer trusting the first for the second.
+            // nothing, and the origin gap (a teammate's project) was a reviewer trusting the first for the second.
             prompt.AppendLine(Fragment(file, "commits-not-computed", ("Reason", OneLine(scoped.CommitRangeNotComputed))));
         }
         else if (scoped.NewCommits.Count == 0)

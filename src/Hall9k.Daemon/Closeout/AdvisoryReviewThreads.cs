@@ -7,8 +7,8 @@ namespace Hall9k.Daemon.Closeout;
 /// (task: a review-feedback follow-up never answers a human reviewer in the owner's name on its
 /// own). The FYI beside an approval: "nice, my own pull request needs this too".
 /// <para>
-/// Origin incident, arx-platform PR #2021 on 2026-09-09: John Mark approved at 10:11 and opened
-/// one thread saying his own pull request needed the same pattern; closeout read one unresolved
+/// Origin incident, a teammate's project, 2026-09-09: a teammate approved at 10:11 and opened
+/// one thread saying their own pull request needed the same pattern; closeout read one unresolved
 /// human thread at 10:14 and reopened the task; the follow-up correctly declined it and then
 /// posted about 400 words under Brian's login at 10:16, which he deleted at 10:21. The lap
 /// should never have been bought. What makes it safe not to buy is narrow and stated twice

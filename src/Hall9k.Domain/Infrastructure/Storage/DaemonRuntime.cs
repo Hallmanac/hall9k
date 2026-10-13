@@ -37,7 +37,7 @@ public static class DaemonRuntime
     /// (and the pid file it writes) is the first statement in <c>Program.cs</c>, well
     /// before <c>UseWolverine</c> ever runs — so it is not Wolverine's own handler-discovery
     /// scan of every DLL in <see cref="BinDirectory"/> that stretches this window past 10s
-    /// on at least one real machine (the Arx Windows node, 2026-09-03, ~15s), but the
+    /// on at least one real machine (a teammate's Windows node, 2026-09-03, ~15s), but the
     /// assembly resolution and JIT that even reaching that first statement waits on. Without
     /// this marker, <c>h9k daemon status</c> asked during that window sees no pid file and
     /// reports "not running" — indistinguishable from actually down, and an invitation to
