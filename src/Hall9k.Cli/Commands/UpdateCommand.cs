@@ -271,6 +271,8 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
         LatestReleaseOutcome.GhFailed => DescribeGhFailure(latest, repository),
         LatestReleaseOutcome.Unparseable =>
             [$"{latest.Command} returned output h9k update could not parse for {repository}: {latest.Detail}"],
+        LatestReleaseOutcome.UnsupportedPlatform =>
+            [$"h9k update has no release for this platform: {latest.Detail}. Build from source instead: h9k install --repo <path>."],
         LatestReleaseOutcome.NoRelease =>
             [$"h9k update found no release to install: {latest.Detail}. Check h9k config show for this node's release-channel."],
         LatestReleaseOutcome.NotYetComplete =>
