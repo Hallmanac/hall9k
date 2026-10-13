@@ -87,9 +87,9 @@ public sealed class OrchestratorFeedCommand : Hall9kAsyncCommand<OrchestratorFee
         {
             OrchestratorFeedRead read = settings.Since is { } since
                 ? await reader.ReadSinceAsync(
-                    session, project.Id, level,
+                    session, project.Id, level, CliVersion.Current,
                     OrchestratorFeedSince.Parse(since, now), now, cancellationToken)
-                : await reader.ReadUndrainedAsync(session, project.Id, level, now, cancellationToken);
+                : await reader.ReadUndrainedAsync(session, project.Id, level, CliVersion.Current, now, cancellationToken);
 
             await PrintAsync(session, project, level, read, settings, cancellationToken);
 

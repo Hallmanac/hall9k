@@ -22,4 +22,16 @@ public sealed record OrchestratorFeedScope(
     Guid ProjectId,
     Guid? TaskId,
     TaskOwnerFacts? OwnerFacts = null,
-    string? PendingTakeRequesterRoot = null);
+    string? PendingTakeRequesterRoot = null)
+{
+    /// <summary>
+    /// The scope of an event that lives on the node's own stream and so belongs to no project
+    /// (a <see cref="Node.ReleaseNoticeIssued"/>): every project the node reads is told, so the
+    /// answer is the reading project itself, with no task. Null for any other event. Pure and
+    /// session-free, so the reader asks it before it loads anything and a unit test can call it.
+    /// </summary>
+    public static OrchestratorFeedScope? OfNodeNotice(object eventData, Guid readingProjectId) =>
+        eventData is Node.ReleaseNoticeIssued
+            ? new OrchestratorFeedScope(readingProjectId, null)
+            : null;
+}

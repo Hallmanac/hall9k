@@ -226,7 +226,7 @@ public sealed class CourierEngine(
         // courier already running, or a manual drain in progress now never pays it.
         OrchestratorFeedReader reader = new(new ReplicationProjectResolver());
         OrchestratorFeedRead read = await reader.ReadUndrainedAsync(
-            session, project.Id, project.OrchestratorFeed, now, cancellationToken);
+            session, project.Id, project.OrchestratorFeed, DaemonVersion.Current, now, cancellationToken);
 
         if (read.Items.Count == 0 && read.ScanWasCapped)
         {

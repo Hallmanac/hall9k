@@ -1,10 +1,12 @@
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Trust;
+using Hall9k.Domain.Infrastructure;
 
 namespace Hall9k.Domain.Features.Orchestrator;
 
@@ -126,6 +128,12 @@ public static class OrchestratorFeedInterest
         // machine traffic (see Admits).
         [typeof(MessageReceived)] = OrchestratorFeedLevel.Actionable,
 
+        // The daemon told its person a newer hall9k release exists (idea 93c1d24d, card 2). Every
+        // project on the node reads it, and a reader shows it only while its own running version is
+        // still older than the tag (see AdmitsForViewer). Informational, so it is deliberately not
+        // on OrchestratorFeedUrgency: a release waits for the courier's batch like any other item.
+        [typeof(ReleaseNoticeIssued)] = OrchestratorFeedLevel.Actionable,
+
         // A root-key rotation landed on, or was voided from, a project's own ledger (idea 6be68ee2,
         // PR B of the succession chain): an owner's own identity root moved, or moved back — the
         // one trust fact loud enough to page an orchestrator window over, unlike an ordinary vouch
@@ -244,6 +252,20 @@ public static class OrchestratorFeedInterest
     /// candidate rather than guessing.</summary>
     public static bool Admits(Type eventType, object eventData, OrchestratorFeedLevel level, bool isReplicated) =>
         BandOf(eventType) is { } band && level.Admits(band) && Admits(eventData, isReplicated);
+
+    /// <summary>
+    /// The one admission test that depends on who is reading rather than on the event: a
+    /// <see cref="ReleaseNoticeIssued"/> is shown only while its tag is still newer than the
+    /// reader's own <see cref="OrchestratorFeedViewer.RunningVersion"/>, never the version the event
+    /// recorded, so a window that drains after the update, or a first drain over old history, is
+    /// never told to install what it already runs. A reader that did not say what it runs is shown
+    /// no notice, since nothing says the notice is true for it. Every other event passes.
+    /// </summary>
+    public static bool AdmitsForViewer(object eventData, OrchestratorFeedViewer? viewer) => eventData switch
+    {
+        ReleaseNoticeIssued notice => viewer?.RunningVersion is { } running && ReleaseTagVersion.IsNewerThan(notice.Tag, running),
+        _ => true,
+    };
 
     /// <summary>
     /// The payload gate for the entries whose admission is not decided by type alone, read as

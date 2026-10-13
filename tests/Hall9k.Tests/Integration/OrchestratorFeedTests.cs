@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Connectors.Orchestrator;
 using Hall9k.Connectors.Replication;
 using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Replication;
@@ -29,6 +30,9 @@ namespace Hall9k.Tests.Integration;
 public sealed class OrchestratorFeedTests : IClassFixture<PostgresFixture>, IAsyncLifetime
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 19, 12, 0, 0, TimeSpan.Zero);
+
+    /// <summary>The reader's own build version; no test but the release-notice ones depends on its value.</summary>
+    private const string RunningVersion = "0.13.0";
 
     /// <summary>
     /// The clock a read is handed here: a minute ahead of the real one, so the events these tests
@@ -60,7 +64,7 @@ public sealed class OrchestratorFeedTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             OrchestratorFeedRead first = await reader.ReadUndrainedAsync(
-                session, projectId, OrchestratorFeedLevel.Transitions, PastTheSettlingWindow, cts.Token);
+                session, projectId, OrchestratorFeedLevel.Transitions, RunningVersion, PastTheSettlingWindow, cts.Token);
 
             first.Items.Should().NotBeEmpty();
             first.Items.Should().OnlyContain(item => item.TaskId == taskId);
@@ -68,7 +72,7 @@ public sealed class OrchestratorFeedTests : IClassFixture<PostgresFixture>, IAsy
 
             // A second read with no drain in between is the same read.
             OrchestratorFeedRead again = await reader.ReadUndrainedAsync(
-                session, projectId, OrchestratorFeedLevel.Transitions, PastTheSettlingWindow, cts.Token);
+                session, projectId, OrchestratorFeedLevel.Transitions, RunningVersion, PastTheSettlingWindow, cts.Token);
             again.Items.Should().BeEquivalentTo(first.Items, options => options.WithStrictOrdering());
 
             await OrchestratorFeedReader.DrainAsync(
@@ -79,7 +83,7 @@ public sealed class OrchestratorFeedTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             OrchestratorFeedRead afterDrain = await reader.ReadUndrainedAsync(
-                session, projectId, OrchestratorFeedLevel.Transitions, PastTheSettlingWindow, cts.Token);
+                session, projectId, OrchestratorFeedLevel.Transitions, RunningVersion, PastTheSettlingWindow, cts.Token);
 
             afterDrain.Items.Should().BeEmpty();
         }
@@ -101,7 +105,7 @@ public sealed class OrchestratorFeedTests : IClassFixture<PostgresFixture>, IAsy
         await using IDocumentSession session = _postgres.Store.LightweightSession();
 
         OrchestratorFeedRead read = await reader.ReadUndrainedAsync(
-            session, projectId, OrchestratorFeedLevel.Transitions, Now, cts.Token);
+            session, projectId, OrchestratorFeedLevel.Transitions, RunningVersion, Now, cts.Token);
 
         read.Items.Should().NotBeEmpty("an item too new to drain past is still news worth printing");
         read.DrainableThroughSequence.Should().Be(
@@ -122,9 +126,9 @@ public sealed class OrchestratorFeedTests : IClassFixture<PostgresFixture>, IAsy
         await using IDocumentSession session = _postgres.Store.LightweightSession();
 
         OrchestratorFeedRead actionable = await reader.ReadUndrainedAsync(
-            session, projectId, OrchestratorFeedLevel.Actionable, PastTheSettlingWindow, cts.Token);
+            session, projectId, OrchestratorFeedLevel.Actionable, RunningVersion, PastTheSettlingWindow, cts.Token);
         OrchestratorFeedRead everything = await reader.ReadUndrainedAsync(
-            session, projectId, OrchestratorFeedLevel.Everything, PastTheSettlingWindow, cts.Token);
+            session, projectId, OrchestratorFeedLevel.Everything, RunningVersion, PastTheSettlingWindow, cts.Token);
 
         actionable.Items.Select(item => item.Description).Should()
             .ContainSingle().Which.Should().StartWith("the review loop parked for a human:");
@@ -146,7 +150,7 @@ public sealed class OrchestratorFeedTests : IClassFixture<PostgresFixture>, IAsy
         await using IDocumentSession session = _postgres.Store.LightweightSession();
 
         OrchestratorFeedRead history = await reader.ReadSinceAsync(
-            session, projectId, OrchestratorFeedLevel.Transitions,
+            session, projectId, OrchestratorFeedLevel.Transitions, RunningVersion,
             DateTimeOffset.UtcNow.AddDays(-1), PastTheSettlingWindow, cts.Token);
         history.Items.Should().NotBeEmpty();
 
@@ -174,7 +178,7 @@ public sealed class OrchestratorFeedTests : IClassFixture<PostgresFixture>, IAsy
         await using IDocumentSession session = _postgres.Store.LightweightSession();
 
         OrchestratorFeedRead history = await reader.ReadSinceAsync(
-            session, projectId, OrchestratorFeedLevel.Transitions,
+            session, projectId, OrchestratorFeedLevel.Transitions, RunningVersion,
             fiveHoursBehindUtc, PastTheSettlingWindow, cts.Token);
 
         history.Items.Should().NotBeEmpty();
@@ -194,7 +198,7 @@ public sealed class OrchestratorFeedTests : IClassFixture<PostgresFixture>, IAsy
         await using IDocumentSession session = _postgres.Store.LightweightSession();
 
         OrchestratorFeedRead read = await reader.ReadUndrainedAsync(
-            session, mine, OrchestratorFeedLevel.Transitions, PastTheSettlingWindow, cts.Token);
+            session, mine, OrchestratorFeedLevel.Transitions, RunningVersion, PastTheSettlingWindow, cts.Token);
 
         read.Items.Should().NotBeEmpty();
         read.Items.Should().OnlyContain(item => item.TaskId == myTask);
@@ -222,7 +226,7 @@ public sealed class OrchestratorFeedTests : IClassFixture<PostgresFixture>, IAsy
         await using IDocumentSession read = _postgres.Store.LightweightSession();
 
         OrchestratorFeedRead feed = await reader.ReadUndrainedAsync(
-            read, projectId, OrchestratorFeedLevel.Actionable, PastTheSettlingWindow, cts.Token);
+            read, projectId, OrchestratorFeedLevel.Actionable, RunningVersion, PastTheSettlingWindow, cts.Token);
 
         // The line opens with the note's own id, which is what h9k message show takes to print the
         // rest of a body the feed only quotes the first 160 characters of.
@@ -258,7 +262,7 @@ public sealed class OrchestratorFeedTests : IClassFixture<PostgresFixture>, IAsy
         await using IDocumentSession session = _postgres.Store.LightweightSession();
 
         OrchestratorFeedRead read = await reader.ReadUndrainedAsync(
-            session, projectId, OrchestratorFeedLevel.Transitions, PastTheSettlingWindow, cts.Token);
+            session, projectId, OrchestratorFeedLevel.Transitions, RunningVersion, PastTheSettlingWindow, cts.Token);
 
         read.Items.Select(item => item.Description).Should().Contain("the task failed: own failure")
             .And.NotContain("the task failed: their failure");
@@ -286,12 +290,61 @@ public sealed class OrchestratorFeedTests : IClassFixture<PostgresFixture>, IAsy
         await using IDocumentSession session = _postgres.Store.LightweightSession();
 
         OrchestratorFeedRead read = await reader.ReadUndrainedAsync(
-            session, projectId, OrchestratorFeedLevel.Actionable, PastTheSettlingWindow, cts.Token);
+            session, projectId, OrchestratorFeedLevel.Actionable, RunningVersion, PastTheSettlingWindow, cts.Token);
 
         OrchestratorFeedItem item = read.Items.Should().ContainSingle().Subject;
         item.TaskId.Should().Be(endedByTeammate);
         item.IsUrgent.Should().BeTrue();
         item.Description.Should().Be($"{TeammateRoot[..12]} abandoned this task: superseded");
+    }
+
+    /// <summary>
+    /// A release notice lives on the node's own stream, which resolves to no project, so it reaches a
+    /// feed only through the reader's node-notice scope arm: this reads it through the real store, for
+    /// two projects at once, and checks the reader-version gate on both reads (the drain read and
+    /// the history read) with the version each caller passes.
+    /// </summary>
+    [Fact]
+    public async Task A_release_notice_reaches_every_project_and_is_gated_by_the_readers_own_version_on_both_reads()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid ownerId = await SeedOwnerAsync(ThisRoot, cts.Token);
+        Guid firstProject = await SeedProjectAsync(ownerId, cts.Token);
+        Guid secondProject = await SeedProjectAsync(ownerId, cts.Token);
+        Guid nodeId = DomainId.New();
+        await using (IDocumentSession seed = _postgres.Store.LightweightSession())
+        {
+            seed.Events.StartStream<NodeAggregate>(
+                nodeId, new NodeRegistered(nodeId, ownerId, Environment.MachineName, "test", Now));
+            seed.Events.Append(nodeId, new ReleaseNoticeIssued(nodeId, "v0.13.1", Now, Now, "0.13.0", IsReminder: false));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        OrchestratorFeedReader reader = new(new ReplicationProjectResolver());
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        const string line = "hall9k 0.13.1 is available (this node runs 0.13.0); h9k update --restart installs it";
+
+        foreach (Guid project in new[] { firstProject, secondProject })
+        {
+            OrchestratorFeedRead behind = await reader.ReadUndrainedAsync(
+                session, project, OrchestratorFeedLevel.Actionable, "0.13.0", PastTheSettlingWindow, cts.Token);
+            behind.Items.Select(item => item.Description).Should().Contain(line);
+            behind.Items.Single(item => item.Description == line).IsUrgent.Should().BeFalse();
+
+            OrchestratorFeedRead alreadyThere = await reader.ReadUndrainedAsync(
+                session, project, OrchestratorFeedLevel.Actionable, "0.13.1", PastTheSettlingWindow, cts.Token);
+            alreadyThere.Items.Select(item => item.Description).Should().NotContain(line);
+
+            OrchestratorFeedRead historyBehind = await reader.ReadSinceAsync(
+                session, project, OrchestratorFeedLevel.Actionable, "0.13.0",
+                DateTimeOffset.UtcNow.AddDays(-1), PastTheSettlingWindow, cts.Token);
+            historyBehind.Items.Select(item => item.Description).Should().Contain(line);
+
+            OrchestratorFeedRead historyAlreadyThere = await reader.ReadSinceAsync(
+                session, project, OrchestratorFeedLevel.Actionable, "0.14.0",
+                DateTimeOffset.UtcNow.AddDays(-1), PastTheSettlingWindow, cts.Token);
+            historyAlreadyThere.Items.Select(item => item.Description).Should().NotContain(line);
+        }
     }
 
     private async Task<Guid> SeedOwnerAsync(string rootFingerprint, CancellationToken cancellationToken)
