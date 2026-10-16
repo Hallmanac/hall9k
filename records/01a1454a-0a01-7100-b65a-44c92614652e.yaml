@@ -1,0 +1,48 @@
+hall9k-task-record: 1
+task-id: 01a1454a-0a01-7100-b65a-44c92614652e
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#751
+objective: An owner-role or member-role invite minted on a successor node completes, from any node in the owner's fleet, instead of expiring with nothing anywhere to approve
+criteria:
+  - |-
+    A member-role invite minted on a node of the owner's fleet that does not hold a live root key completes with no approval: the teammate's h9k project join finishes and the teammate appears in h9k project members, as long as the root node's daemon, on a build with this fix, runs at any point before the invite expires, however long after the match that is
+  - An owner-role invite minted on such a node is held on the root node until the invite itself expires, not for a fixed ten minutes, and h9k project member approve on the root at any point in that time completes the join
+  - While the minting node waits, its h9k status line names the node the request was sent to and the time the wait ends. On the root, the held line states the same time
+  - h9k project member approve on a node that holds no write for the invite names the node that does hold it
+  - h9k project members marks the node holding the owner's original root key "(root)" and never "(successor)"; all other labels are unchanged
+  - Tests over fakes (no multi-node, git, or GitHub integration tests) cover, for each role, a request that reaches the root more than ten minutes after it was sent but before the invite expires, and an owner-role hold approved more than ten minutes after it was held. Each case ends with the member write landed and the invite spent on the minting node
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/2614652e-an-owner-role-or-member-role-i
+published: 2026-10-16 15:31:56Z
+context: |-
+  Reported 2026-10-16 from a teammate's project window, on Brian's request; project and people kept unnamed.
+
+  Setup: one owner with three nodes. `h9k project members` lists all three as "(successor)" under the root fingerprint. The minting node runs h9k 0.13.0; the other nodes' versions are unconfirmed.
+
+  Steps:
+  1. On a successor node, `h9k project invite <project> --role owner`. It mints without complaint.
+  2. On a brand-new teammate node, `h9k project join <project> --invite <secret>`.
+  3. The minting node's sweep matches the proof. `h9k status` there shows "Waiting on invite <id>'s own member write, requested <time>... the root node may need h9k update".
+  4. Within minutes the line becomes "Expired invite <id>'s own member write, re-mint the invite."
+  5. `h9k project member approve <project> <invite-id>` fails with "No owner-role write held for invite..." on the minting node and on the operator's other node (presumed root). There is never anything to approve anywhere.
+
+  Effect: the teammate's node keeps sending, and every sweep logs "outbox could not be vouched for by that node's own node file". The join never finishes. Seen twice, with two separate invites, on the same day.
+
+  Related confusion: the members list marks every node as a successor, so the operator cannot tell which node is the root.
+
+  Workaround being tried: mint the owner invite on the root node itself.
+
+  Scope widened 2026-10-16 by Brian: member-role invites minted on a successor are in scope too, not only owner-role. The observed failure above was an owner invite; whether a member invite takes the same root-routed write path is not verified, so establish it from the code first and fix whichever role paths fail the same way.
+
+  Ruled 2026-10-16 by Brian: an invite made on any node in the fleet must work. Refusing invites on successor nodes is not an acceptable fix.
+
+  Challenge verdict 2026-10-16 (single Opus 5.5 high session, full text with file:line evidence in this task's journal.md): both roles already route through the root via an OwnerActRequest (src/Hall9k.Daemon/Invites/InviteSweepEngine.cs, src/Hall9k.Daemon/Messaging/OwnerActRequestWatchLoop.cs). The root gives each request and hold a fixed 10 minutes (OwnerActRequestWatchLoop.cs around line 57) while the invite lives 72 hours, so a late-arriving request is answered Expired, and the sweep never asks again for that invite. The fix ties the root's request and hold lifetime to the invite's own ledger expiry; the root already validates spend and expiry against the ledger, which is the real bound. The existing test pinning ten minutes (tests/Hall9k.Tests/Connectors/Messaging/OwnerActMessageFlowTests.cs) changes with it. "(successor)" on every node comes from ProjectMembersCommand.cs never labelling the root positively.
+
+  Out of scope (parked): approving from a node other than the root (1bb803e1 keeps the members write root-only); asking again after a Refused answer once succession moves the root; skipping the root's own node in NodeSuccessorBackfillReconciler.
+
+  Note: the fix runs on the root's side, so the root node must run a build with it before a successor-minted invite benefits.
