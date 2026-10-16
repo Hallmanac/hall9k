@@ -13,6 +13,7 @@ public sealed class OwnerActHoldAggregate
     public ProjectMemberRole Role { get; private set; } = ProjectMemberRole.Unknown;
     public DateTimeOffset IssuedAt { get; private set; }
     public DateTimeOffset HeldAt { get; private set; }
+    public DateTimeOffset? InviteExpiresAt { get; private set; }
     public bool Approved { get; private set; }
     public bool Expired { get; private set; }
 
@@ -27,6 +28,7 @@ public sealed class OwnerActHoldAggregate
         Role = @event.Role;
         IssuedAt = @event.IssuedAt;
         HeldAt = @event.HeldAt;
+        InviteExpiresAt = @event.InviteExpiresAt;
     }
 
     public void Apply(OwnerActApproved @event) => Approved = true;

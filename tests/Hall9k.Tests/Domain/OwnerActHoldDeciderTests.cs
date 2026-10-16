@@ -48,6 +48,21 @@ public sealed class OwnerActHoldDeciderTests
     }
 
     [Fact]
+    public void Hold_carries_the_invite_expiry_through_to_the_aggregate()
+    {
+        DateTimeOffset inviteExpiresAt = Now.AddHours(72);
+
+        OwnerActHeld held = OwnerActHoldDecider.Hold(
+            DomainId.New(), DomainId.New(), "/repo", DomainId.New(), DomainId.New(), CandidateOwnerFingerprint,
+            ProjectMemberRole.Owner, Now, Now, inviteExpiresAt);
+        OwnerActHoldAggregate aggregate = new();
+        aggregate.Apply(held);
+
+        held.InviteExpiresAt.Should().Be(inviteExpiresAt);
+        aggregate.InviteExpiresAt.Should().Be(inviteExpiresAt);
+    }
+
+    [Fact]
     public void Hold_refuses_a_member_role_write_since_only_an_owner_role_write_is_ever_held()
     {
         Action act = () => OwnerActHoldDecider.Hold(
