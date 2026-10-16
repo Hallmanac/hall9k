@@ -29,8 +29,16 @@ namespace Hall9k.Daemon.Messaging;
 /// and the requesting node completing the invite it minted once a <see cref="MessageKind.OwnerActOutcome"/>
 /// reply comes back naming the write done (<see cref="ReactToOutcomeAsync"/>). A third, background job
 /// runs on every tick regardless of what is currently pending: re-checking every owner-role write this
-/// node itself is holding for its own human's approval, and answering <c>expired</c> once the same
-/// ten-minute wait a fresh request gets has passed with nobody approving it (<see cref="ExpireStaleHoldsAsync"/>).
+/// node itself is holding for its own human's approval, and answering <c>expired</c> once the invite
+/// itself has expired with nobody approving it (<see cref="ExpireStaleHoldsAsync"/>).
+/// </para>
+/// <para>
+/// A request and a hold both live exactly as long as the invite they are for, as the invite's own
+/// ledger record states it, and no longer than that. The root may be asleep or on an older build for
+/// hours after a request is sent, so a fixed wait counted from the request's send time answered
+/// <c>expired</c> to a request the invite still had days to run for, and nothing ever asked again.
+/// The ledger's expiry is also what the root already validates a spend against, so it adds no new
+/// bound of its own.
 /// </para>
 /// </summary>
 public sealed class OwnerActRequestWatchLoop(
@@ -43,19 +51,6 @@ public sealed class OwnerActRequestWatchLoop(
     IOptions<DaemonOptions> options,
     ILogger<OwnerActRequestWatchLoop> logger) : BackgroundService
 {
-    /// <summary>
-    /// How long an owner-act request may sit unanswered before the root gives up on it - generous
-    /// against the five-second poll (idea 6be68ee2). Checked both against a fresh request's own
-    /// <see cref="MessageDetails.QueuedAt"/> (the requester's own send time, carried through on the
-    /// received copy) and against a still-open <see cref="OwnerActHeld"/> hold's own
-    /// <see cref="OwnerActHoldDetails.HeldAt"/> - the identical wait, whichever side of it produced
-    /// the delay. Also what settles a late answer after a promotion: a live root key stays live under
-    /// idea 6be68ee2's own ranked set even once a successor has rotated in, so a late reply from it is
-    /// cryptographically valid, not a forgery - this is what stops it from acting once the operator
-    /// waiting on the other end has already moved on.
-    /// </summary>
-    internal static readonly TimeSpan RequestWait = TimeSpan.FromMinutes(10);
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         try
@@ -192,7 +187,14 @@ public sealed class OwnerActRequestWatchLoop(
         // never request a write against this owner's own membership merely by addressing this node.
         bool requesterVerified = ClaimRequestWatchLoop.IsRequesterOwnerVerified(
             chain, senderFingerprint, identity.OwnerRootFingerprint, message.FromNodeId);
-        bool expired = now - message.QueuedAt > RequestWait;
+
+        // Read once, ahead of the verdict: the invite's own expiry is what decides whether a request
+        // is too late, and the two ledger-backed verdicts below validate against the same record. An
+        // unverified requester is refused before anything is read on its behalf.
+        InviteLedgerRecord? inviteRecord = requesterVerified
+            ? await ReadInviteLedgerRecordAsync(project.RepositoryPath, identity.OwnerRootFingerprint, request.InviteId, cancellationToken)
+            : null;
+        bool expired = IsInviteExpired(inviteRecord, now);
         string myFingerprint = NodeKeyStore.Fingerprint(identity.PublicKeyLine);
         bool isLiveRootKey = chain.IsLiveRootKeyOfOwner(myFingerprint, identity.OwnerRootFingerprint);
 
@@ -208,8 +210,6 @@ public sealed class OwnerActRequestWatchLoop(
         // invite's behalf — a refusal already decided above needs no invite of its own to refuse.
         if (verdict is OwnerActRequestVerdict.PerformMemberWrite or OwnerActRequestVerdict.Hold)
         {
-            InviteLedgerRecord? inviteRecord = await ReadInviteLedgerRecordAsync(
-                project.RepositoryPath, identity.OwnerRootFingerprint, request.InviteId, cancellationToken);
             string? existingMemberRole = await ReadMemberRoleAsync(
                 project.RepositoryPath, request.CandidateOwnerFingerprint, cancellationToken);
             string? invalidReason = ValidateInviteAgainstLedger(inviteRecord, request.Role, existingMemberRole, now);
@@ -329,7 +329,7 @@ public sealed class OwnerActRequestWatchLoop(
                 holdId,
                 OwnerActHoldDecider.Hold(
                     holdId, project.Id, project.RepositoryPath, request.InviteId, message.FromNodeId,
-                    request.CandidateOwnerFingerprint, request.Role, request.IssuedAt, now));
+                    request.CandidateOwnerFingerprint, request.Role, request.IssuedAt, now, inviteRecord?.ExpiresAt));
             await session.SaveChangesAsync(cancellationToken);
             await ReplyAsync(
                 session, project, message.FromNodeId, request.InviteId, identity.OwnerRootFingerprint,
@@ -442,7 +442,7 @@ public sealed class OwnerActRequestWatchLoop(
 
         foreach (OwnerActHoldDetails hold in outstanding)
         {
-            if (now - hold.HeldAt <= RequestWait)
+            if (!IsHoldStale(hold, now))
             {
                 continue;
             }
@@ -485,6 +485,15 @@ public sealed class OwnerActRequestWatchLoop(
             session, project, hold.RequesterNodeId, hold.InviteId, identity.OwnerRootFingerprint,
             OwnerActEnvelopeCodec.OwnerActVerdict.Expired, commitId: null, reason: null, now, cancellationToken);
     }
+
+    /// <summary>Whether a request for this invite has come too late to act on: the invite's own
+    /// ledger record says it has expired. A missing record is not expired here; the ledger-backed
+    /// validation refuses it with its own reason.</summary>
+    internal static bool IsInviteExpired(InviteLedgerRecord? inviteRecord, DateTimeOffset now) =>
+        inviteRecord is not null && inviteRecord.ExpiresAt <= now;
+
+    /// <summary>Whether an open hold has outlived its wait (<see cref="OwnerActHoldDetails.WaitEndsAt"/>).</summary>
+    internal static bool IsHoldStale(OwnerActHoldDetails hold, DateTimeOffset now) => hold.WaitEndsAt <= now;
 
     private const string MembersRefName = "refs/hall9k/ledger/members";
 
@@ -620,8 +629,8 @@ public sealed class OwnerActRequestWatchLoop(
     /// answered <see cref="OwnerActRequestVerdict.Expired"/> next, before the live-root-key check —
     /// idea 6be68ee2's own ranked root-key set never revokes a key merely because a successor rotated
     /// in, so a late request is still cryptographically answerable by whichever live key it reached,
-    /// and the wait is what stops that answer from acting once the operator on the other end has
-    /// already moved on, regardless of whether this node could still technically act on it; only then
+    /// and the invite's own expiry is what stops that answer from acting once the invite is dead,
+    /// regardless of whether this node could still technically act on it; only then
     /// does whether this node itself still holds a live root key decide anything.
     /// </summary>
     internal static OwnerActRequestVerdict Decide(bool requesterVerified, bool expired, bool isLiveRootKey, ProjectMemberRole role)

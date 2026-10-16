@@ -7,8 +7,11 @@ namespace Hall9k.Domain.Features.Invite;
 /// companion 1bb803e1: "an owner-role write waits for approval on the root") - <see cref="Id"/> is
 /// the <c>owner-act-request</c> message's own stream id, so one hold ties back to exactly the
 /// request that produced it, and a resend of that same request (byte-identical, same message id)
-/// never starts a second hold for it.
+/// never starts a second hold for it. <see cref="InviteExpiresAt"/> is the invite's own ledger expiry,
+/// the real bound on how long the hold may wait for approval; it is null on a hold recorded before
+/// that field existed, which keeps its original ten-minute wait (<see cref="OwnerActHoldDetails.LegacyWait"/>).
 /// </summary>
 public sealed record OwnerActHeld(
     Guid Id, Guid ProjectId, string ProjectRepositoryPath, Guid InviteId, Guid RequesterNodeId,
-    string CandidateOwnerFingerprint, ProjectMemberRole Role, DateTimeOffset IssuedAt, DateTimeOffset HeldAt);
+    string CandidateOwnerFingerprint, ProjectMemberRole Role, DateTimeOffset IssuedAt, DateTimeOffset HeldAt,
+    DateTimeOffset? InviteExpiresAt = null);

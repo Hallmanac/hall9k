@@ -7,7 +7,8 @@ public static class OwnerActHoldDecider
 {
     public static OwnerActHeld Hold(
         Guid id, Guid projectId, string projectRepositoryPath, Guid inviteId, Guid requesterNodeId,
-        string candidateOwnerFingerprint, ProjectMemberRole role, DateTimeOffset issuedAt, DateTimeOffset heldAt)
+        string candidateOwnerFingerprint, ProjectMemberRole role, DateTimeOffset issuedAt, DateTimeOffset heldAt,
+        DateTimeOffset? inviteExpiresAt = null)
     {
         if (projectId == Guid.Empty || projectRepositoryPath.IsBlank())
         {
@@ -26,7 +27,7 @@ public static class OwnerActHoldDecider
 
         return new OwnerActHeld(
             id, projectId, projectRepositoryPath, inviteId, requesterNodeId, candidateOwnerFingerprint, role,
-            issuedAt, heldAt);
+            issuedAt, heldAt, inviteExpiresAt);
     }
 
     public static OwnerActApproved Approve(OwnerActHoldAggregate hold, string? commitId, DateTimeOffset approvedAt)

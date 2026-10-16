@@ -4,6 +4,7 @@ using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
 using Hall9k.Daemon.Messaging;
+using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
@@ -200,24 +201,164 @@ public sealed class OwnerActMessageFlowTests
     }
 
     [Fact]
-    public async Task AnExpiredRequestIsAnsweredExpired()
+    public async Task ARequestForAnInviteThatHasExpiredIsAnsweredExpired()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
         FakeLedger ledger = new();
         TrustChain chain = BuildChainWithRequesterVouched();
-        DateTimeOffset queuedAt = DateTimeOffset.UtcNow - OwnerActRequestWatchLoop.RequestWait - TimeSpan.FromMinutes(1);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DateTimeOffset queuedAt = now - InviteLifetime - TimeSpan.FromMinutes(1);
 
         (OwnerActEnvelopeCodec.OwnerActRequestRecord request, string? senderFingerprint) =
             await SendAndReadRequestAsync(ledger, chain, ProjectMemberRole.Member, queuedAt, cts.Token);
 
+        InviteLedgerRecord inviteRecord = InviteRecordFor(queuedAt, request.Role);
         bool verified = ClaimRequestWatchLoop.IsRequesterOwnerVerified(chain, senderFingerprint, RootFingerprint, RequesterNodeId);
         bool isLiveRootKey = chain.IsLiveRootKeyOfOwner(RootFingerprint, RootFingerprint);
-        bool expired = DateTimeOffset.UtcNow - queuedAt > OwnerActRequestWatchLoop.RequestWait;
+        bool expired = OwnerActRequestWatchLoop.IsInviteExpired(inviteRecord, now);
         OwnerActRequestVerdict verdict = OwnerActRequestWatchLoop.Decide(verified, expired, isLiveRootKey, request.Role);
 
         expired.Should().BeTrue();
         verdict.Should().Be(OwnerActRequestVerdict.Expired);
         ledger.Writes.Should().NotContain(
             write => write.Path.StartsWith("members/", StringComparison.Ordinal), "an expired request is answered expired, never acted on");
+    }
+
+    /// <summary>
+    /// The reported failure: the root answered a request Expired once it was more than ten minutes
+    /// old, though the invite had days left, and nothing ever asked again. A request the root reads
+    /// hours after it was sent now runs the whole path: verdict, member write, and the minting
+    /// node's own spend.
+    /// </summary>
+    [Fact]
+    public async Task AMemberRoleRequestReachingTheRootHoursLateStillEndsWithTheWriteLandedAndTheInviteSpent()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        FakeLedger ledger = new();
+        TrustChain chain = BuildChainWithRequesterVouched();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DateTimeOffset queuedAt = now - TimeSpan.FromHours(11);
+
+        (OwnerActEnvelopeCodec.OwnerActRequestRecord request, string? senderFingerprint) =
+            await SendAndReadRequestAsync(ledger, chain, ProjectMemberRole.Member, queuedAt, cts.Token);
+
+        InviteLedgerRecord inviteRecord = InviteRecordFor(queuedAt, request.Role);
+        bool verified = ClaimRequestWatchLoop.IsRequesterOwnerVerified(chain, senderFingerprint, RootFingerprint, RequesterNodeId);
+        bool isLiveRootKey = chain.IsLiveRootKeyOfOwner(RootFingerprint, RootFingerprint);
+        bool expired = OwnerActRequestWatchLoop.IsInviteExpired(inviteRecord, now);
+        OwnerActRequestVerdict verdict = OwnerActRequestWatchLoop.Decide(verified, expired, isLiveRootKey, request.Role);
+
+        verdict.Should().Be(OwnerActRequestVerdict.PerformMemberWrite);
+        OwnerActRequestWatchLoop.ValidateInviteAgainstLedger(inviteRecord, request.Role, existingMemberRole: null, now)
+            .Should().BeNull("the invite is real, unspent and unexpired");
+
+        await WriteMemberAsync(ledger, request, cts.Token);
+        InviteAggregate invite = await SpendOnMintingNodeAsync(ledger, request, queuedAt, now, cts.Token);
+
+        invite.Spent.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task AnOwnerRoleRequestReachingTheRootHoursLateIsHeldAndApprovedHoursLaterThenSpent()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        FakeLedger ledger = new();
+        TrustChain chain = BuildChainWithRequesterVouched();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DateTimeOffset queuedAt = now - TimeSpan.FromHours(11);
+
+        (OwnerActEnvelopeCodec.OwnerActRequestRecord request, string? senderFingerprint) =
+            await SendAndReadRequestAsync(ledger, chain, ProjectMemberRole.Owner, queuedAt, cts.Token);
+
+        InviteLedgerRecord inviteRecord = InviteRecordFor(queuedAt, request.Role);
+        bool verified = ClaimRequestWatchLoop.IsRequesterOwnerVerified(chain, senderFingerprint, RootFingerprint, RequesterNodeId);
+        bool isLiveRootKey = chain.IsLiveRootKeyOfOwner(RootFingerprint, RootFingerprint);
+        bool expired = OwnerActRequestWatchLoop.IsInviteExpired(inviteRecord, now);
+        OwnerActRequestVerdict verdict = OwnerActRequestWatchLoop.Decide(verified, expired, isLiveRootKey, request.Role);
+
+        verdict.Should().Be(OwnerActRequestVerdict.Hold);
+
+        // The hold is placed now and approved eleven hours after that, well past the old ten-minute wait.
+        OwnerActHeld held = OwnerActHoldDecider.Hold(
+            Guid.NewGuid(), Guid.NewGuid(), RepositoryPath, request.InviteId, request.RequesterNodeId,
+            request.CandidateOwnerFingerprint, request.Role, request.IssuedAt, now, inviteRecord.ExpiresAt);
+        OwnerActHoldAggregate hold = new();
+        hold.Apply(held);
+        DateTimeOffset approvedAt = now + TimeSpan.FromHours(11);
+        OwnerActHoldDetails details = new() { HeldAt = held.HeldAt, InviteExpiresAt = held.InviteExpiresAt };
+        OwnerActRequestWatchLoop.IsHoldStale(details, approvedAt).Should().BeFalse("the invite is still live eleven hours on");
+
+        hold.Apply(OwnerActHoldDecider.Approve(hold, commitId: null, approvedAt));
+        hold.Approved.Should().BeTrue();
+
+        await WriteMemberAsync(ledger, request, cts.Token);
+        InviteAggregate invite = await SpendOnMintingNodeAsync(ledger, request, queuedAt, approvedAt, cts.Token);
+
+        invite.Spent.Should().BeTrue();
+    }
+
+    [Fact]
+    public void AnOwnerRoleHoldExpiresWithTheInviteAndNotBefore()
+    {
+        DateTimeOffset heldAt = DateTimeOffset.UtcNow;
+        OwnerActHoldDetails hold = new() { HeldAt = heldAt, InviteExpiresAt = heldAt + TimeSpan.FromHours(72) };
+
+        OwnerActRequestWatchLoop.IsHoldStale(hold, heldAt + TimeSpan.FromHours(71)).Should().BeFalse();
+        OwnerActRequestWatchLoop.IsHoldStale(hold, heldAt + TimeSpan.FromHours(72)).Should().BeTrue();
+        hold.WaitEndsAt.Should().Be(heldAt + TimeSpan.FromHours(72));
+    }
+
+    [Fact]
+    public void AHoldRecordedBeforeTheInviteExpiryWasCarriedKeepsItsTenMinuteWait()
+    {
+        DateTimeOffset heldAt = DateTimeOffset.UtcNow;
+        OwnerActHoldDetails hold = new() { HeldAt = heldAt };
+
+        hold.WaitEndsAt.Should().Be(heldAt + TimeSpan.FromMinutes(10));
+        OwnerActRequestWatchLoop.IsHoldStale(hold, heldAt + TimeSpan.FromMinutes(9)).Should().BeFalse();
+        OwnerActRequestWatchLoop.IsHoldStale(hold, heldAt + TimeSpan.FromMinutes(11)).Should().BeTrue();
+    }
+
+    private static readonly TimeSpan InviteLifetime = TimeSpan.FromHours(72);
+
+    private static InviteLedgerRecord InviteRecordFor(DateTimeOffset mintedAt, ProjectMemberRole role) =>
+        new("secret-hash", InviteClaimKind.MemberOfProject, role, mintedAt + InviteLifetime, Spent: false);
+
+    /// <summary>The root's member write, exactly as both the automatic and the approved path make it.</summary>
+    private static async Task WriteMemberAsync(
+        FakeLedger ledger, OwnerActEnvelopeCodec.OwnerActRequestRecord request, CancellationToken cancellationToken)
+    {
+        string? commitId = await MemberVouchLedgerWriter.WriteAsync(
+            ledger, RepositoryPath, request.CandidateOwnerFingerprint, request.Role, request.IssuedAt,
+            new LedgerCommitter("root", "root@hall9k.local"), new LedgerSigningKey("/dev/null/root"), cancellationToken);
+
+        commitId.Should().NotBeNull();
+        LedgerFile written = await ledger.ReadAsync(
+            RepositoryPath, "refs/hall9k/ledger/members", $"members/{request.CandidateOwnerFingerprint}.yaml", cancellationToken);
+        written.Content.Should().Contain($"role: \"{request.Role.Value}\"");
+    }
+
+    /// <summary>What the minting node does once the root's outcome names the write done: the spend in
+    /// the ledger, then the invite's own spend.</summary>
+    private static async Task<InviteAggregate> SpendOnMintingNodeAsync(
+        FakeLedger ledger, OwnerActEnvelopeCodec.OwnerActRequestRecord request, DateTimeOffset mintedAt, DateTimeOffset spentAt,
+        CancellationToken cancellationToken)
+    {
+        InviteAggregate invite = new();
+        invite.Apply(InviteDecider.Mint(
+            request.InviteId, RequesterNodeId, RootFingerprint, InviteClaimKind.MemberOfProject, request.Role,
+            Guid.NewGuid(), RepositoryPath, "secret", "secret-hash", mintedAt, mintedAt + InviteLifetime));
+
+        await InviteSpendLedgerWriter.WriteAsync(
+            ledger, RepositoryPath, RootFingerprint, invite.Id, invite.SecretHash, invite.Claim, invite.Role, invite.ExpiresAt,
+            new LedgerCommitter("requester", "requester@hall9k.local"), new LedgerSigningKey("/dev/null/requester"),
+            cancellationToken);
+        LedgerFile spentRecord = await ledger.ReadAsync(
+            RepositoryPath, InviteLedgerRecord.RefName(RootFingerprint), InviteLedgerRecord.PathFor(RootFingerprint, invite.Id),
+            cancellationToken);
+        InviteLedgerRecord.Parse(spentRecord.Content).Should().Match<InviteLedgerRecord>(record => record.Spent);
+
+        invite.Apply(InviteDecider.Spend(invite, Guid.NewGuid(), request.CandidateOwnerFingerprint, spentAt));
+        return invite;
     }
 }
