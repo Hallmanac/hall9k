@@ -46,7 +46,3 @@ context: |-
   Out of scope (parked): approving from a node other than the root (1bb803e1 keeps the members write root-only); asking again after a Refused answer once succession moves the root; skipping the root's own node in NodeSuccessorBackfillReconciler.
 
   Note: the fix runs on the root's side, so the root node must run a build with it before a successor-minted invite benefits.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-10-16 15:32:07Z
