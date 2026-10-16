@@ -5,6 +5,7 @@ using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
+using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
@@ -12,6 +13,7 @@ using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using JasperFx.Events;
 using Marten;
@@ -949,6 +951,74 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         MessageInboxSweepResult afterSweep = await inbox.ReadFromAsync(
             finalSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, squashNow.AddSeconds(1), cancellationToken: cts.Token);
         afterSweep.EnvelopesConsidered.Should().Be(0, "the cursor already covers both original envelopes, squashed or not");
+    }
+
+    [Fact]
+    public async Task A_squash_keeps_an_owner_act_request_whose_invite_is_still_live_until_the_invite_is_spent()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        Guid inviteId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox outbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        await using (IDocumentSession mintSession = _postgres.Store.LightweightSession())
+        {
+            mintSession.Events.StartStream(inviteId, new InviteMinted(
+                inviteId, nodeA, "owner-a-fingerprint", InviteClaimKind.MemberOfProject, ProjectMemberRole.Member, ProjectId,
+                RepositoryPath, "secret", "secret-hash", Now, Now.AddHours(72)));
+            await mintSession.SaveChangesAsync(cts.Token);
+        }
+
+        // Seq 1 is the owner-act request, seq 2 an ordinary note, both sent long before the squash;
+        // seq 3 is young. Ordinary retention would keep only seq 3.
+        await using (IDocumentSession sendSession = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                sendSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), inviteId.ToString(),
+                MessageKind.OwnerActRequest, "request", Now, cts.Token);
+            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now, cts.Token);
+            await MessageOutbox.QueueAsync(
+                sendSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "old note",
+                Now.AddHours(1), cts.Token);
+            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now.AddHours(1), cts.Token);
+            await MessageOutbox.QueueAsync(
+                sendSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "young note",
+                Now.AddHours(49), cts.Token);
+            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now.AddHours(49), cts.Token);
+        }
+
+        DateTimeOffset squashNow = Now.AddHours(50);
+        MessageSquashResult whileLive;
+        await using (IDocumentSession squashSession = _postgres.Store.LightweightSession())
+        {
+            whileLive = await outbox.SquashAsync(
+                squashSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", TimeSpan.FromHours(48), committerA, signingKeyA,
+                squashNow, cts.Token);
+        }
+
+        whileLive.EnvelopesKept.Should().Be(3, "the request's invite has a day left, and the run from it onward stays contiguous");
+
+        await using (IDocumentSession spendSession = _postgres.Store.LightweightSession())
+        {
+            spendSession.Events.Append(inviteId, new InviteSpent(inviteId, nodeB, "owner-b-fingerprint", squashNow));
+            await spendSession.SaveChangesAsync(cts.Token);
+        }
+
+        MessageSquashResult afterSpend;
+        await using (IDocumentSession squashSession = _postgres.Store.LightweightSession())
+        {
+            afterSpend = await outbox.SquashAsync(
+                squashSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", TimeSpan.FromHours(48), committerA, signingKeyA,
+                squashNow.AddMinutes(1), cts.Token);
+        }
+
+        afterSpend.EnvelopesKept.Should().Be(1, "a spent invite no longer pins its request, so ordinary retention applies");
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using Hall9k.Connectors.Ledger;
+using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Marten;
 
@@ -228,6 +229,15 @@ public sealed class MessageOutbox(IMessageTransport transport)
     /// drop the key a reader still expects on it (independent pre-PR review, cycle 1, adversarial
     /// lens, medium).
     /// </para>
+    /// <para>
+    /// An <see cref="MessageKind.OwnerActRequest"/> this node sent for an invite that is still live
+    /// (unspent and unexpired) is not aged out: its root may not run until well after
+    /// <paramref name="retention"/> has passed, and the invite outlives that window, so dropping the
+    /// request would leave nothing for the root to answer however soon it came back. Everything sent
+    /// from the oldest such request onward is kept with it, so the survivors stay one contiguous
+    /// run and the reader's gap-stop rule sees no hole. Once the invite is spent or expires the pin
+    /// lifts and the ordinary retention applies again.
+    /// </para>
     /// </summary>
     public async Task<MessageSquashResult> SquashAsync(
         IDocumentSession session,
@@ -247,12 +257,15 @@ public sealed class MessageOutbox(IMessageTransport transport)
             .OrderBy(message => message.Seq)
             .ToListAsync(cancellationToken);
 
-        if (!sent.Any(message => message.SentAt < cutoff))
+        long pinnedFloorSeq = await OldestLiveOwnerActRequestSeqAsync(session, fromNodeId, projectId, now, cancellationToken);
+        bool Survives(MessageDetails message) => message.SentAt >= cutoff || message.Seq >= pinnedFloorSeq;
+
+        if (sent.All(Survives))
         {
             return new MessageSquashResult(sent.Count);
         }
 
-        List<MessageDetails> survivors = [.. sent.Where(message => message.SentAt >= cutoff)];
+        List<MessageDetails> survivors = [.. sent.Where(Survives)];
         HashSet<long> survivorSeqs = [.. survivors.Select(message => message.Seq)];
         (string RepositoryPath, Guid FromNodeId, Guid ProjectId) key = (repositoryPath, fromNodeId, projectId);
         if (_lastSquashedSurvivorSeqs.TryGetValue(key, out IReadOnlySet<long>? previousSurvivorSeqs)
@@ -274,6 +287,35 @@ public sealed class MessageOutbox(IMessageTransport transport)
         await transport.SquashAsync(repositoryPath, fromNodeId, batch, lowWaterMark, committer, signingKey, cancellationToken);
         _lastSquashedSurvivorSeqs[key] = survivorSeqs;
         return new MessageSquashResult(survivors.Count);
+    }
+
+    /// <summary>The lowest seq among this node's own sent owner-act requests whose invite is still
+    /// live, or <see cref="long.MaxValue"/> when none is, so that nothing is pinned.</summary>
+    private static async Task<long> OldestLiveOwnerActRequestSeqAsync(
+        IQuerySession session, Guid fromNodeId, Guid projectId, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        string requestKind = MessageKind.OwnerActRequest.Value;
+        IReadOnlyList<MessageDetails> requests = await session.Query<MessageDetails>()
+            .Where(message => message.FromNodeId == fromNodeId && message.ProjectId == projectId
+                && message.Kind == requestKind && message.SentAt != null && message.About != null)
+            .OrderBy(message => message.Seq)
+            .ToListAsync(cancellationToken);
+
+        foreach (MessageDetails request in requests)
+        {
+            if (!Guid.TryParse(request.About, out Guid inviteId))
+            {
+                continue;
+            }
+
+            InviteDetails? invite = await session.LoadAsync<InviteDetails>(inviteId, cancellationToken);
+            if (invite is { Spent: false } && invite.ExpiresAt > now)
+            {
+                return request.Seq;
+            }
+        }
+
+        return long.MaxValue;
     }
 
     /// <summary>
