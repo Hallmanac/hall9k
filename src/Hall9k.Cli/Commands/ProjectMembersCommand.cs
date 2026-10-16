@@ -108,11 +108,12 @@ public sealed class ProjectMembersCommand : Hall9kAsyncCommand<ProjectMembersCom
     /// <summary>
     /// The Nodes cell: one line per fleet node id, each carrying its own succession state (idea
     /// 6be68ee2) — <c>(root key)</c> for a node whose own vouched key a validated rotation promoted
-    /// into this root's live key set, <c>(successor)</c> for a node with a currently live successor
-    /// record awaiting one, and no suffix at all for the root's own original node or an ordinary
-    /// fleet node with neither. A one-node fleet with no successor listed at all says so plainly
-    /// (idea 6be68ee2, journal finding 10: "an owner with only one node has no heir"), since a quiet
-    /// cell here would otherwise look identical to a fleet that simply has not been asked about yet.
+    /// into this root's live key set, <c>(root)</c> for the node holding the owner's original root
+    /// key, <c>(successor)</c> for any other node with a currently live successor record awaiting
+    /// one, and no suffix at all for an ordinary fleet node with neither. A one-node fleet with no
+    /// successor listed at all says so plainly (idea 6be68ee2, journal finding 10: "an owner with
+    /// only one node has no heir"), since a quiet cell here would otherwise look identical to a
+    /// fleet that simply has not been asked about yet.
     /// </summary>
     internal static string DescribeFleet(IReadOnlyList<Guid> nodes, TrustedOwner? owner)
     {
@@ -142,6 +143,11 @@ public sealed class ProjectMembersCommand : Hall9kAsyncCommand<ProjectMembersCom
         if (owner.RootKeys.Any(key => key.IntroducedByNodeId == nodeIdText))
         {
             return $"{label} [dim](root key)[/]";
+        }
+
+        if (owner.RootNodeId == nodeIdText)
+        {
+            return $"{label} [dim](root)[/]";
         }
 
         if (owner.SuccessorNodeIds.Contains(nodeIdText))
