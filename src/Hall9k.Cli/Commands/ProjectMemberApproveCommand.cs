@@ -61,14 +61,15 @@ public sealed class ProjectMemberApproveCommand : Hall9kAsyncCommand<ProjectMemb
             new NodeKeyStore(), cancellationToken);
 
     /// <summary>
-    /// Why this node has nothing to approve for the invite, and which node does: the node this
-    /// node's own request for the invite went to when this is the minting node, otherwise the
-    /// owner's root node as the chain names it. Only the root holds an owner-role write, so a
-    /// refusal that stopped at "none held" sent the operator looking node by node.
+    /// Why this node has nothing to approve for the invite, and which node does: on the minting node,
+    /// where its own request for the invite stands and the node it went to; on any other node, the
+    /// node owner-act requests are routed to (<see cref="RootNodeDescription.ActingNodeIdOf"/>, not the
+    /// newest rotation's holder). Only that node holds an owner-role write, so a refusal that stopped at
+    /// "none held" sent the operator looking node by node.
     /// </summary>
     private static async Task<string> DescribeMissingHoldAsync(
         IDocumentSession session, ProjectDetails project, Guid inviteId, BootstrapContext context,
-        ILedgerChainReader chainReader, CancellationToken cancellationToken)
+        ILedgerChainReader chainReader, DateTimeOffset now, CancellationToken cancellationToken)
     {
         string requestKind = MessageKind.OwnerActRequest.Value;
         string about = inviteId.ToString();
@@ -77,8 +78,16 @@ public sealed class ProjectMemberApproveCommand : Hall9kAsyncCommand<ProjectMemb
             .FirstOrDefaultAsync(cancellationToken);
         Guid? sentTo = sent?.To is { } audience ? MessageAudience.Parse(audience).NodeId : null;
 
+        OwnerActAskLookup.PendingOwnerAct? outstandingAsk = null;
+        Guid? rootNodeId = null;
         string rootNodeDescription = string.Empty;
-        if (sentTo is null)
+        if (sent is not null)
+        {
+            IReadOnlyList<OwnerActAskLookup.PendingOwnerAct> asks =
+                await OwnerActAskLookup.FindUnansweredAsync(session, context.NodeId, now, cancellationToken);
+            outstandingAsk = asks.FirstOrDefault(ask => ask.InviteId == inviteId);
+        }
+        else
         {
             OwnerAggregate? owner = await session.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: cancellationToken);
             if (owner?.RootFingerprint is { } myRoot)
@@ -86,7 +95,8 @@ public sealed class ProjectMemberApproveCommand : Hall9kAsyncCommand<ProjectMemb
                 try
                 {
                     TrustChain chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
-                    rootNodeDescription = RootNodeDescription.Of(chain, myRoot);
+                    rootNodeId = RootNodeDescription.ActingNodeIdOf(chain, myRoot);
+                    rootNodeDescription = RootNodeDescription.OfActingNode(chain, myRoot);
                 }
                 catch (InvalidOperationException)
                 {
@@ -95,16 +105,39 @@ public sealed class ProjectMemberApproveCommand : Hall9kAsyncCommand<ProjectMemb
             }
         }
 
-        return MissingHoldMessage(project.Name, inviteId, sentTo, rootNodeDescription);
+        return MissingHoldMessage(
+            project.Name, inviteId, sentTo, requestSent: sent is not null, outstandingAsk, rootNodeId, rootNodeDescription,
+            context.NodeId);
     }
 
-    internal static string MissingHoldMessage(string projectName, Guid inviteId, Guid? requestSentTo, string rootNodeDescription)
+    internal static string MissingHoldMessage(
+        string projectName, Guid inviteId, Guid? requestSentTo, bool requestSent,
+        OwnerActAskLookup.PendingOwnerAct? outstandingAsk, Guid? rootNodeId, string rootNodeDescription, Guid thisNodeId)
     {
         string approveCommand = $"h9k project member approve {projectName} {inviteId}";
-        string where = requestSentTo is { } nodeId
-            ? $"It is held on node {nodeId}, the node this node's own request for the invite went to; run {approveCommand} there."
-            : $"Only the owner's root node holds it{rootNodeDescription}; run {approveCommand} there. "
-                + $"h9k project members {projectName} marks that node (root).";
+        string target = requestSentTo is { } nodeId ? $"node {nodeId}" : "the node it was addressed to";
+        string where = (requestSent, outstandingAsk) switch
+        {
+            (true, null) =>
+                $"This node's own request for the invite went to {target}, but it is no longer outstanding "
+                + "(answered, spent, or expired), so no node holds a write for it.",
+            (true, { Verdict: OwnerActEnvelopeCodec.OwnerActVerdict.Held }) =>
+                $"It is held on {target}, the node this node's own request for the invite went to; run {approveCommand} there.",
+            (true, { Verdict: OwnerActEnvelopeCodec.OwnerActVerdict.Refused, Reason: var reason }) =>
+                $"{target} refused this node's own request for the invite "
+                + $"({ExternalText.OneLine(reason ?? string.Empty)}), so nothing is held.",
+            (true, { Verdict: OwnerActEnvelopeCodec.OwnerActVerdict.Expired }) =>
+                $"{target} answered this node's own request for the invite expired, so nothing is held; the invite needs re-minting.",
+            (true, _) =>
+                $"This node's own request for the invite went to {target}, which has not answered yet. Once its daemon "
+                + $"has read the request and holds the write, run {approveCommand} there.",
+            _ when rootNodeId == thisNodeId =>
+                "This node is the owner's root node, but it holds no write for the invite. Its daemon holds one when it "
+                + "reads a request for the invite; h9k status lists a write once it is held.",
+            _ =>
+                $"Only the owner's root node holds it{rootNodeDescription}; run {approveCommand} there. "
+                + $"h9k project members {projectName} marks that node (root).",
+        };
         return $"No owner-role write held on this node for invite {inviteId} in '{projectName}'. {where}";
     }
 
@@ -124,7 +157,7 @@ public sealed class ProjectMemberApproveCommand : Hall9kAsyncCommand<ProjectMemb
         if (hold is null)
         {
             throw new DomainNotFoundException(
-                await DescribeMissingHoldAsync(session, project, inviteId, context, chainReader, cancellationToken));
+                await DescribeMissingHoldAsync(session, project, inviteId, context, chainReader, now, cancellationToken));
         }
 
         if (hold.Approved)

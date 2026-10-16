@@ -30,6 +30,25 @@ internal static class RootNodeDescription
 
         string? nodeId = owner.RootKeys.Count > 0 ? owner.RootKeys[^1].IntroducedByNodeId : null;
         nodeId ??= owner.RootNodeId;
+        return Describe(chain, root, nodeId);
+    }
+
+    /// <summary>
+    /// The node an owner-act request is actually routed to and held on:
+    /// <see cref="TrustedOwner.ResolveRootActingNodeId"/>, K0's node first, which
+    /// <c>h9k project members</c> marks <c>(root)</c>. After a succession rotation this differs from
+    /// <see cref="Of"/>, which names the newest key's holder (marked <c>(root key)</c>), so a refusal
+    /// about a held write must use this one or it sends the operator to a node with no hold.
+    /// </summary>
+    public static Guid? ActingNodeIdOf(TrustChain chain, string root) =>
+        chain.OwnerChains.TryGetValue(root, out TrustedOwner? owner) ? owner.ResolveRootActingNodeId() : null;
+
+    /// <summary>The <see cref="Of"/> wording for <see cref="ActingNodeIdOf"/>'s node; empty when none resolves.</summary>
+    public static string OfActingNode(TrustChain chain, string root) =>
+        Describe(chain, root, ActingNodeIdOf(chain, root)?.ToString());
+
+    private static string Describe(TrustChain chain, string root, string? nodeId)
+    {
         if (nodeId is null)
         {
             return string.Empty;

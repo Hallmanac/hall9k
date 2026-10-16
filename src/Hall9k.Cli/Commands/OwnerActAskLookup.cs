@@ -1,5 +1,6 @@
 using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Project.Projections;
 using Marten;
 
 namespace Hall9k.Cli.Commands;
@@ -61,6 +62,15 @@ internal static class OwnerActAskLookup
             }
 
             MessageDetails latest = group.OrderByDescending(message => message.QueuedAt).First();
+            if (await CandidateAlreadyJoinedAsync(session, latest, cancellationToken))
+            {
+                // The invitee has since joined through another invite (a re-mint after an earlier
+                // answer of expired, say), so a "re-mint the invite" line for this one would send the
+                // operator after a member who is already in. The invite stays unspent and unexpired
+                // locally for days, which is why the checks above alone do not drop it.
+                continue;
+            }
+
             OwnerActEnvelopeCodec.OwnerActOutcomeRecord? outcome =
                 latestReplyByAbout.TryGetValue(group.Key, out MessageDetails? reply)
                     && reply.ReceivedAt >= latest.QueuedAt && reply.Body is not null
@@ -81,5 +91,21 @@ internal static class OwnerActAskLookup
         }
 
         return results;
+    }
+
+    /// <summary>True when the request names a candidate this node's own project mirror already lists
+    /// as a member, whatever role. An undecodable body or an unknown project counts as not joined, so
+    /// the ask stays visible rather than vanishing on a read this view could not make.</summary>
+    private static async Task<bool> CandidateAlreadyJoinedAsync(
+        IQuerySession session, MessageDetails request, CancellationToken cancellationToken)
+    {
+        if (request.Body is null
+            || OwnerActEnvelopeCodec.TryDecodeRequest(request.Body) is not { } record)
+        {
+            return false;
+        }
+
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(request.ProjectId, cancellationToken);
+        return project is not null && project.Members.ContainsKey(record.CandidateOwnerFingerprint);
     }
 }
