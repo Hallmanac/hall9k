@@ -13,7 +13,12 @@ namespace Hall9k.Cli.Commands;
 /// </summary>
 internal static class OwnerActAskLookup
 {
-    public sealed record PendingOwnerAct(Guid InviteId, DateTimeOffset RequestedAt, string? Verdict, string? Reason);
+    /// <param name="TargetNodeId">The node the request was addressed to, when its audience names one.</param>
+    /// <param name="WaitEndsAt">When the wait ends: the invite's own expiry, the same time the root
+    /// states on its held line.</param>
+    public sealed record PendingOwnerAct(
+        Guid InviteId, DateTimeOffset RequestedAt, string? Verdict, string? Reason, Guid? TargetNodeId,
+        DateTimeOffset WaitEndsAt);
 
     public static async Task<IReadOnlyList<PendingOwnerAct>> FindUnansweredAsync(
         IQuerySession session, Guid myNodeId, DateTimeOffset now, CancellationToken cancellationToken)
@@ -70,7 +75,9 @@ internal static class OwnerActAskLookup
                 continue;
             }
 
-            results.Add(new PendingOwnerAct(inviteId, latest.QueuedAt, outcome?.Verdict, outcome?.Reason));
+            Guid? targetNodeId = latest.To is { } to ? MessageAudience.Parse(to).NodeId : null;
+            results.Add(
+                new PendingOwnerAct(inviteId, latest.QueuedAt, outcome?.Verdict, outcome?.Reason, targetNodeId, invite.ExpiresAt));
         }
 
         return results;

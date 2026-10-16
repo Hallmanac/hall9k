@@ -1532,7 +1532,7 @@ it trusts neither once the rank is gone, and a later re-promotion of the same no
 the same as an ordinary re-vouch. Because the ledger only ever moves forward on a push that cannot be
 forced, the first rotation to actually land wins, and a second one naming a key that rotation already
 superseded is simply stale. `h9k project members` and `h9k status` name each node's own succession
-state, and say "no successor" outright for an owner with a single node, the plainest way to see that
+state (`(root)` marks the node holding the owner's original root key), and say "no successor" outright for an owner with a single node, the plainest way to see that
 there is nothing here to recover with yet. What this does not fix: a compromised K0 cannot be
 recovered by succession, since it outranks everything under it by design; an owner with one node has
 no heir until a second one is vouched and listed; and an owner whose only surviving heir is itself

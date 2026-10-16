@@ -1380,7 +1380,8 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             string projectLabel = (project?.Name ?? hold.ProjectId.ToString()).EscapeMarkup();
             AnsiConsole.MarkupLine(
                 $"[red bold]Needs you[/] an owner-role member write is held for invite [dim]{hold.InviteId}[/] in "
-                + $"'{projectLabel}' — h9k project member approve {projectLabel} {hold.InviteId}");
+                + $"'{projectLabel}' — h9k project member approve {projectLabel} {hold.InviteId} "
+                + $"(held until {hold.WaitEndsAt:u})");
         }
 
         // This node's own side: every owner-act request this node itself sent that has not yet
@@ -1389,16 +1390,19 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             await OwnerActAskLookup.FindUnansweredAsync(session, myNode.Id, now, cancellationToken);
         foreach (OwnerActAskLookup.PendingOwnerAct ask in ownAsks)
         {
+            string sentTo = ask.TargetNodeId is { } target ? $"node {target}" : "the root node";
             AnsiConsole.MarkupLine(ask.Verdict switch
             {
                 OwnerActEnvelopeCodec.OwnerActVerdict.Held =>
-                    $"[yellow]Waiting[/] invite {ask.InviteId}'s own member write is held for approval on the root node.",
+                    $"[yellow]Waiting[/] invite {ask.InviteId}'s own member write is held for approval on {sentTo}, "
+                    + $"until {ask.WaitEndsAt:u}.",
                 OwnerActEnvelopeCodec.OwnerActVerdict.Refused =>
                     $"[red]Refused[/] invite {ask.InviteId}'s own member write: {(ask.Reason ?? string.Empty).EscapeMarkup()}",
                 OwnerActEnvelopeCodec.OwnerActVerdict.Expired =>
                     $"[red]Expired[/] invite {ask.InviteId}'s own member write — re-mint the invite.",
                 _ =>
-                    $"[dim]Waiting[/] on invite {ask.InviteId}'s own member write, requested {ask.RequestedAt:u} — "
+                    $"[dim]Waiting[/] on invite {ask.InviteId}'s own member write, requested {ask.RequestedAt:u} "
+                    + $"from {sentTo}, waiting until {ask.WaitEndsAt:u} — "
                     + "if this sits for a while with no answer, the root node may need h9k update (an older "
                     + "build stores the unknown kind unanswered).",
             });

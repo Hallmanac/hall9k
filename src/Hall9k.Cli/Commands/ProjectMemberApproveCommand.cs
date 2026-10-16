@@ -60,6 +60,54 @@ public sealed class ProjectMemberApproveCommand : Hall9kAsyncCommand<ProjectMemb
             session, project, inviteId, new GitLedger(new ConsoleWorktreeLogger<GitLedger>()), new GitLedgerChainReader(),
             new NodeKeyStore(), cancellationToken);
 
+    /// <summary>
+    /// Why this node has nothing to approve for the invite, and which node does: the node this
+    /// node's own request for the invite went to when this is the minting node, otherwise the
+    /// owner's root node as the chain names it. Only the root holds an owner-role write, so a
+    /// refusal that stopped at "none held" sent the operator looking node by node.
+    /// </summary>
+    private static async Task<string> DescribeMissingHoldAsync(
+        IDocumentSession session, ProjectDetails project, Guid inviteId, BootstrapContext context,
+        ILedgerChainReader chainReader, CancellationToken cancellationToken)
+    {
+        string requestKind = MessageKind.OwnerActRequest.Value;
+        string about = inviteId.ToString();
+        MessageDetails? sent = await session.Query<MessageDetails>()
+            .Where(message => message.FromNodeId == context.NodeId && message.Kind == requestKind && message.About == about)
+            .FirstOrDefaultAsync(cancellationToken);
+        Guid? sentTo = sent?.To is { } audience ? MessageAudience.Parse(audience).NodeId : null;
+
+        string rootNodeDescription = string.Empty;
+        if (sentTo is null)
+        {
+            OwnerAggregate? owner = await session.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: cancellationToken);
+            if (owner?.RootFingerprint is { } myRoot)
+            {
+                try
+                {
+                    TrustChain chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+                    rootNodeDescription = RootNodeDescription.Of(chain, myRoot);
+                }
+                catch (InvalidOperationException)
+                {
+                    // The hint is best effort: an unreadable ledger must not hide the refusal itself.
+                }
+            }
+        }
+
+        return MissingHoldMessage(project.Name, inviteId, sentTo, rootNodeDescription);
+    }
+
+    internal static string MissingHoldMessage(string projectName, Guid inviteId, Guid? requestSentTo, string rootNodeDescription)
+    {
+        string approveCommand = $"h9k project member approve {projectName} {inviteId}";
+        string where = requestSentTo is { } nodeId
+            ? $"It is held on node {nodeId}, the node this node's own request for the invite went to; run {approveCommand} there."
+            : $"Only the owner's root node holds it{rootNodeDescription}; run {approveCommand} there. "
+                + $"h9k project members {projectName} marks that node (root).";
+        return $"No owner-role write held on this node for invite {inviteId} in '{projectName}'. {where}";
+    }
+
     /// <summary>The whole approve flow, seamed on <see cref="ILedger"/>, <see cref="ILedgerChainReader"/>,
     /// and <see cref="NodeKeyStore"/> so a test drives it against fakes (Brian's 2026-09-13 testing rule).</summary>
     internal static async Task<int> RunAsync(
@@ -76,8 +124,7 @@ public sealed class ProjectMemberApproveCommand : Hall9kAsyncCommand<ProjectMemb
         if (hold is null)
         {
             throw new DomainNotFoundException(
-                $"No owner-role write held for invite {inviteId} in '{project.Name}' — h9k status prints the exact "
-                + "invite id to pass here.");
+                await DescribeMissingHoldAsync(session, project, inviteId, context, chainReader, cancellationToken));
         }
 
         if (hold.Approved)
@@ -153,7 +200,7 @@ public sealed class ProjectMemberApproveCommand : Hall9kAsyncCommand<ProjectMemb
         if (aggregate.Expired)
         {
             AnsiConsole.MarkupLine(
-                "[yellow]Warning[/] the ten-minute wait closed this hold while this approval's own ledger write "
+                "[yellow]Warning[/] the invite's wait closed this hold while this approval's own ledger write "
                 + "was still landing — the write itself already succeeded, so the requesting node is told done "
                 + "anyway.");
         }

@@ -52,5 +52,11 @@ public sealed record MessageAudience
         _ => false,
     };
 
+    /// <summary>The node this audience names when it is a single-node one, otherwise null.</summary>
+    public Guid? NodeId =>
+        Value.StartsWith(NodePrefix, StringComparison.Ordinal) && Guid.TryParse(Value[NodePrefix.Length..], out Guid nodeId)
+            ? nodeId
+            : null;
+
     public override string ToString() => Value;
 }
