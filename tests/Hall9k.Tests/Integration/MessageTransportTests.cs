@@ -1022,6 +1022,63 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     [Fact]
+    public async Task A_squash_keeps_an_owner_act_outcome_while_the_hold_it_answers_still_waits_on_its_invite()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid rootNode = DomainId.New();
+        Guid requesterNode = DomainId.New();
+        Guid inviteId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, rootNode, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox outbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("root-node");
+
+        await using (IDocumentSession holdSession = _postgres.Store.LightweightSession())
+        {
+            Guid holdId = DomainId.New();
+            holdSession.Events.StartStream<OwnerActHoldAggregate>(holdId, OwnerActHoldDecider.Hold(
+                holdId, ProjectId, RepositoryPath, inviteId, requesterNode, "candidate-fingerprint", ProjectMemberRole.Owner, Now, Now,
+                Now.AddHours(72)));
+            await holdSession.SaveChangesAsync(cts.Token);
+        }
+
+        // Seq 1 is the root's approval reply, sent long before the squash; seq 2 is young.
+        await using (IDocumentSession sendSession = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                sendSession, rootNode, ProjectId, "owner-a-fingerprint", MessageAudience.Node(requesterNode), inviteId.ToString(),
+                MessageKind.OwnerActOutcome, "done", Now, cts.Token);
+            await outbox.FlushAsync(sendSession, RepositoryPath, rootNode, ProjectId, "shared-project-key", adoptUnassigned: false, committer, signingKey, Now, cts.Token);
+            await MessageOutbox.QueueAsync(
+                sendSession, rootNode, ProjectId, "owner-a-fingerprint", MessageAudience.Node(requesterNode), null, MessageKind.Note,
+                "young note", Now.AddHours(49), cts.Token);
+            await outbox.FlushAsync(sendSession, RepositoryPath, rootNode, ProjectId, "shared-project-key", adoptUnassigned: false, committer, signingKey, Now.AddHours(49), cts.Token);
+        }
+
+        MessageSquashResult whileWaiting;
+        await using (IDocumentSession squashSession = _postgres.Store.LightweightSession())
+        {
+            whileWaiting = await outbox.SquashAsync(
+                squashSession, RepositoryPath, rootNode, ProjectId, "shared-project-key", TimeSpan.FromHours(48), committer, signingKey,
+                Now.AddHours(50), cts.Token);
+        }
+
+        whileWaiting.EnvelopesKept.Should().Be(2, "the invite has a day left, so the reply the requester has not read yet stays");
+
+        MessageSquashResult afterExpiry;
+        await using (IDocumentSession squashSession = _postgres.Store.LightweightSession())
+        {
+            afterExpiry = await outbox.SquashAsync(
+                squashSession, RepositoryPath, rootNode, ProjectId, "shared-project-key", TimeSpan.FromHours(48), committer, signingKey,
+                Now.AddHours(73), cts.Token);
+        }
+
+        afterExpiry.EnvelopesKept.Should().Be(1, "once the invite has expired the reply ages out like any other");
+    }
+
+    [Fact]
     public async Task A_genuine_gap_above_the_low_water_mark_still_stalls_a_cold_reader()
     {
         // Distinguishes the two kinds of hole ReadSinceAsync can meet below vs. above a squash's own

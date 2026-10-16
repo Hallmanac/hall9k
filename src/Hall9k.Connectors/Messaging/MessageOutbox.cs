@@ -233,8 +233,11 @@ public sealed class MessageOutbox(IMessageTransport transport)
     /// An <see cref="MessageKind.OwnerActRequest"/> this node sent for an invite that is still live
     /// (unspent and unexpired) is not aged out: its root may not run until well after
     /// <paramref name="retention"/> has passed, and the invite outlives that window, so dropping the
-    /// request would leave nothing for the root to answer however soon it came back. Everything sent
-    /// from the oldest such request onward is kept with it, so the survivors stay one contiguous
+    /// request would leave nothing for the root to answer however soon it came back. The root's own
+    /// <see cref="MessageKind.OwnerActOutcome"/> replies are held the same way while the hold they
+    /// answer still waits on its invite, because an approval can come hours in and the requester may
+    /// be offline longer than <paramref name="retention"/> before it reads the answer. Everything sent
+    /// from the oldest such message onward is kept with it, so the survivors stay one contiguous
     /// run and the reader's gap-stop rule sees no hole. Once the invite is spent or expires the pin
     /// lifts and the ordinary retention applies again.
     /// </para>
@@ -257,7 +260,7 @@ public sealed class MessageOutbox(IMessageTransport transport)
             .OrderBy(message => message.Seq)
             .ToListAsync(cancellationToken);
 
-        long pinnedFloorSeq = await OldestLiveOwnerActRequestSeqAsync(session, fromNodeId, projectId, now, cancellationToken);
+        long pinnedFloorSeq = await OldestPinnedOwnerActSeqAsync(session, fromNodeId, projectId, now, cancellationToken);
         bool Survives(MessageDetails message) => message.SentAt >= cutoff || message.Seq >= pinnedFloorSeq;
 
         if (sent.All(Survives))
@@ -289,29 +292,47 @@ public sealed class MessageOutbox(IMessageTransport transport)
         return new MessageSquashResult(survivors.Count);
     }
 
-    /// <summary>The lowest seq among this node's own sent owner-act requests whose invite is still
-    /// live, or <see cref="long.MaxValue"/> when none is, so that nothing is pinned.</summary>
-    private static async Task<long> OldestLiveOwnerActRequestSeqAsync(
+    /// <summary>The lowest seq among this node's own sent owner-act messages that must outlive the
+    /// ordinary retention, or <see cref="long.MaxValue"/> when none must: a request whose invite is
+    /// still live, or an outcome reply whose hold still waits on that invite (the root's side, where
+    /// the invite itself is not a record it holds). Both can be answered or read up to the invite's
+    /// expiry, which is far past <c>retention</c>.</summary>
+    private static async Task<long> OldestPinnedOwnerActSeqAsync(
         IQuerySession session, Guid fromNodeId, Guid projectId, DateTimeOffset now, CancellationToken cancellationToken)
     {
         string requestKind = MessageKind.OwnerActRequest.Value;
-        IReadOnlyList<MessageDetails> requests = await session.Query<MessageDetails>()
+        string outcomeKind = MessageKind.OwnerActOutcome.Value;
+        IReadOnlyList<MessageDetails> candidates = await session.Query<MessageDetails>()
             .Where(message => message.FromNodeId == fromNodeId && message.ProjectId == projectId
-                && message.Kind == requestKind && message.SentAt != null && message.About != null)
+                && (message.Kind == requestKind || message.Kind == outcomeKind)
+                && message.SentAt != null && message.About != null)
             .OrderBy(message => message.Seq)
             .ToListAsync(cancellationToken);
 
-        foreach (MessageDetails request in requests)
+        foreach (MessageDetails candidate in candidates)
         {
-            if (!Guid.TryParse(request.About, out Guid inviteId))
+            if (!Guid.TryParse(candidate.About, out Guid inviteId))
             {
                 continue;
             }
 
-            InviteDetails? invite = await session.LoadAsync<InviteDetails>(inviteId, cancellationToken);
-            if (invite is { Spent: false } && invite.ExpiresAt > now)
+            bool pinned;
+            if (candidate.Kind == requestKind)
             {
-                return request.Seq;
+                InviteDetails? invite = await session.LoadAsync<InviteDetails>(inviteId, cancellationToken);
+                pinned = invite is { Spent: false } && invite.ExpiresAt > now;
+            }
+            else
+            {
+                OwnerActHoldDetails? hold = await session.Query<OwnerActHoldDetails>()
+                    .Where(details => details.InviteId == inviteId && details.ProjectId == projectId)
+                    .FirstOrDefaultAsync(cancellationToken);
+                pinned = hold is not null && hold.WaitEndsAt > now;
+            }
+
+            if (pinned)
+            {
+                return candidate.Seq;
             }
         }
 
