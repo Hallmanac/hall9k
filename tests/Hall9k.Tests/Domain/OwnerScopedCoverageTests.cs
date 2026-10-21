@@ -1,11 +1,11 @@
 using FluentAssertions;
-using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Ids;
 using Xunit;
 
-namespace Hall9k.Tests.Daemon;
+namespace Hall9k.Tests.Domain;
 
 /// <summary>
 /// The covering-task decision both auto-pr-review triggers share, with no database, no branch and no

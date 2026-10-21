@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Ids;
 using Xunit;
 

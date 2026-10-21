@@ -1,17 +1,15 @@
 using Hall9k.Domain.Features.Owner;
-using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
-using Hall9k.Domain.Features.Tasks.Queries;
 using Marten;
 
-namespace Hall9k.Daemon.AutoPrReview;
+namespace Hall9k.Domain.Features.Tasks.Queries;
 
 /// <summary>A task covering a pull request, with the ownership facts <see cref="TaskOwnerRule"/> judges it by.</summary>
-internal sealed record CoveringTaskCandidate(TaskListItem Task, TaskOwnerFacts Facts);
+public sealed record CoveringTaskCandidate(TaskListItem Task, TaskOwnerFacts Facts);
 
 /// <summary>An unpersisted, in-process answer, so an enum rather than a closed vocabulary.</summary>
-internal enum ReviewCoverageKind
+public enum ReviewCoverageKind
 {
     /// <summary>No live task covers the pull request: the trigger decides a mint, or a hold.</summary>
     Uncovered,
@@ -38,7 +36,7 @@ internal enum ReviewCoverageKind
 /// this node cannot attribute for <see cref="ReviewCoverageKind.Unattributable"/>, another owner's
 /// newest for <see cref="ReviewCoverageKind.Teammate"/>, and null when uncovered.
 /// </summary>
-internal sealed record ReviewCoverage(ReviewCoverageKind Kind, TaskListItem? Task)
+public sealed record ReviewCoverage(ReviewCoverageKind Kind, TaskListItem? Task)
 {
     public static readonly ReviewCoverage Uncovered = new(ReviewCoverageKind.Uncovered, null);
 }
@@ -62,7 +60,7 @@ internal sealed record ReviewCoverage(ReviewCoverageKind Kind, TaskListItem? Tas
 /// task, whatever role this install's owner holds.
 /// </para>
 /// </summary>
-internal static class OwnerScopedCoverage
+public static class OwnerScopedCoverage
 {
     /// <summary>What a row carries when nothing was read for it, because a node with no root of its own owns every task regardless.</summary>
     private static readonly TaskOwnerFacts UnreadFacts =
@@ -75,6 +73,11 @@ internal static class OwnerScopedCoverage
     private static bool IsUnattributable(string? thisOwnerRoot, TaskOwnerFacts facts) =>
         !string.IsNullOrEmpty(thisOwnerRoot)
         && TaskOwnerRule.Decide(thisOwnerRoot, facts).Outcome == TaskOwnerOutcome.Unknown;
+
+    /// <summary>Whether the rule named another owner for the task, which is the one answer that makes a task someone else's to hold.</summary>
+    public static bool IsAnotherOwners(string? thisOwnerRoot, TaskOwnerFacts facts) =>
+        !string.IsNullOrEmpty(thisOwnerRoot)
+        && TaskOwnerRule.Decide(thisOwnerRoot, facts).Outcome == TaskOwnerOutcome.NotOwner;
 
     /// <summary>
     /// This owner's newest task among <paramref name="candidates"/>, which a caller may order any
@@ -119,9 +122,19 @@ internal static class OwnerScopedCoverage
         IQuerySession session, Guid thisOwnerId, IReadOnlyList<TaskListItem> rows, CancellationToken cancellationToken)
     {
         string? thisOwnerRoot = await OwnerRootFingerprintResolver.ResolveAsync(session, thisOwnerId, cancellationToken);
+        return (thisOwnerRoot, await ReadAsync(session, thisOwnerRoot, rows, cancellationToken));
+    }
+
+    /// <summary>
+    /// The same read for a caller that already resolved this install's own root, so it is not
+    /// resolved a second time.
+    /// </summary>
+    public static async Task<IReadOnlyList<CoveringTaskCandidate>> ReadAsync(
+        IQuerySession session, string? thisOwnerRoot, IReadOnlyList<TaskListItem> rows, CancellationToken cancellationToken)
+    {
         if (rows.Count == 0 || string.IsNullOrEmpty(thisOwnerRoot))
         {
-            return (thisOwnerRoot, [.. rows.Select(row => new CoveringTaskCandidate(row, UnreadFacts))]);
+            return [.. rows.Select(row => new CoveringTaskCandidate(row, UnreadFacts))];
         }
 
         Dictionary<Guid, string?> rootsByOwnerId = (await session.Query<OwnerDetails>().ToListAsync(cancellationToken))
@@ -130,12 +143,10 @@ internal static class OwnerScopedCoverage
         IReadOnlyDictionary<Guid, OwnerRootFact> creators = await TaskOwnerFactsReader.ReadCreatorsAsync(
             session, creatorTaskIds, ownerId => rootsByOwnerId.GetValueOrDefault(ownerId), cancellationToken);
 
-        return (
-            thisOwnerRoot,
-            [.. rows.Select(row => new CoveringTaskCandidate(
-                row,
-                TaskListItemOwnerFacts.From(
-                    row, ownerId => rootsByOwnerId.GetValueOrDefault(ownerId), creators.GetValueOrDefault(row.Id))))]);
+        return [.. rows.Select(row => new CoveringTaskCandidate(
+            row,
+            TaskListItemOwnerFacts.From(
+                row, ownerId => rootsByOwnerId.GetValueOrDefault(ownerId), creators.GetValueOrDefault(row.Id))))];
     }
 
     private static TaskListItem? Newest(IEnumerable<CoveringTaskCandidate> candidates) =>
