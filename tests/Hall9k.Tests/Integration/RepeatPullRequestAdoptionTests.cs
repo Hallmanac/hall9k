@@ -8,6 +8,7 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -32,7 +33,23 @@ namespace Hall9k.Tests.Integration;
 [Trait("Category", "RequiresDocker")]
 public sealed class RepeatPullRequestAdoptionTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {
+    private const string Mine = "1111111111111111111111111111111111111111111111111111111111111111";
+    private const string Theirs = "2222222222222222222222222222222222222222222222222222222222222222";
+
     private static readonly DateTimeOffset Now = new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+
+    /// <summary>Whose a seeded task is, as <c>TaskOwnerRule</c> reads it off the facts the task carries.</summary>
+    private enum Whose
+    {
+        /// <summary>Assigned to and held by this node's owner root.</summary>
+        Mine,
+
+        /// <summary>Assigned to and held by another owner root: a teammate's task, replicated here.</summary>
+        Theirs,
+
+        /// <summary>Assigned to an owner id this node has no root for, so no owner can be named.</summary>
+        Unattributable,
+    }
 
     /// <summary>
     /// A pull request of this test's own. The one-live-task-per-item rule is keyed on the
@@ -47,7 +64,7 @@ public sealed class RepeatPullRequestAdoptionTests(PostgresFixture postgres) : I
     /// <paramref name="through"/> — which is the whole variable this class is about.
     /// </summary>
     private async Task<Guid> SeedPrReviewTaskAsync(
-        ExternalReference reference, string through, CancellationToken cancellationToken)
+        ExternalReference reference, string through, CancellationToken cancellationToken, Whose whose = Whose.Mine)
     {
         DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
@@ -73,9 +90,16 @@ public sealed class RepeatPullRequestAdoptionTests(PostgresFixture postgres) : I
             TaskPublished published = TaskDecider.Publish(
                 task, TaskDependencyGraph.Empty, Now.AddDays(-1), node.OwnerId, BacklogPolicy.None);
             task.Apply(published);
-            TaskAssigned assigned = TaskDecider.Assign(task, node.OwnerId, [], Now.AddDays(-1), node.OwnerId);
+            (Guid ownerId, string? root) = whose switch
+            {
+                Whose.Mine => (node.OwnerId, Mine),
+                Whose.Theirs => (DomainId.New(), Theirs),
+                _ => (DomainId.New(), null),
+            };
+            TaskAssigned assigned = TaskDecider.Assign(task, ownerId, [], Now.AddDays(-1), ownerId, root);
             task.Apply(assigned);
-            TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now.AddDays(-1));
+            TaskClaimed claimed = TaskDecider.Claim(
+                task, node.NodeId, ownerId, runId, Now.AddDays(-1), root);
             task.Apply(claimed);
             events.AddRange([published, assigned, claimed]);
         }
@@ -135,11 +159,12 @@ public sealed class RepeatPullRequestAdoptionTests(PostgresFixture postgres) : I
         Guid taskId = await SeedPrReviewTaskAsync(reference, state, cts.Token);
 
         await using IQuerySession session = postgres.Store.QuerySession();
-        TaskListItem? holder = await TaskAddCommand.FindPrReviewHolderAsync(session, reference, cts.Token);
+        ReviewCoverage? holder = await TaskAddCommand.FindPrReviewHolderAsync(session, reference, Mine, cts.Token);
 
         holder.Should().NotBeNull();
-        holder!.Id.Should().Be(taskId);
-        TaskAddCommand.NextStepFor(holder, reference, "abcd1234").Should().NotBeEmpty(
+        holder!.Kind.Should().Be(ReviewCoverageKind.Own);
+        holder.Task!.Id.Should().Be(taskId);
+        TaskAddCommand.NextStepFor(holder.Task, reference, "abcd1234").Should().NotBeEmpty(
             "each state's own next step is what the output says instead of minting a task");
     }
 
@@ -151,7 +176,7 @@ public sealed class RepeatPullRequestAdoptionTests(PostgresFixture postgres) : I
         await SeedPrReviewTaskAsync(reference, "NeedsHuman", cts.Token);
 
         await using IQuerySession session = postgres.Store.QuerySession();
-        TaskListItem holder = (await TaskAddCommand.FindPrReviewHolderAsync(session, reference, cts.Token))!;
+        TaskListItem holder = (await TaskAddCommand.FindPrReviewHolderAsync(session, reference, Mine, cts.Token))!.Task!;
 
         TaskAddCommand.NextStepFor(holder, reference, "abcd1234").Should().Contain("--since-my-review");
     }
@@ -164,7 +189,7 @@ public sealed class RepeatPullRequestAdoptionTests(PostgresFixture postgres) : I
         await SeedPrReviewTaskAsync(reference, "AwaitingAuthor", cts.Token);
 
         await using IQuerySession session = postgres.Store.QuerySession();
-        TaskListItem holder = (await TaskAddCommand.FindPrReviewHolderAsync(session, reference, cts.Token))!;
+        TaskListItem holder = (await TaskAddCommand.FindPrReviewHolderAsync(session, reference, Mine, cts.Token))!.Task!;
 
         TaskAddCommand.NextStepFor(holder, reference, "abcd1234").Should()
             .Contain("closeout watcher is polling")
@@ -179,7 +204,7 @@ public sealed class RepeatPullRequestAdoptionTests(PostgresFixture postgres) : I
         await SeedPrReviewTaskAsync(reference, "Done", cts.Token);
 
         await using IQuerySession session = postgres.Store.QuerySession();
-        TaskListItem holder = (await TaskAddCommand.FindPrReviewHolderAsync(session, reference, cts.Token))!;
+        TaskListItem holder = (await TaskAddCommand.FindPrReviewHolderAsync(session, reference, Mine, cts.Token))!.Task!;
 
         TaskAddCommand.NextStepFor(holder, reference, "abcd1234").Should().Contain("--again");
     }
@@ -192,10 +217,10 @@ public sealed class RepeatPullRequestAdoptionTests(PostgresFixture postgres) : I
         await SeedPrReviewTaskAsync(reference, "Claimed", cts.Token);
 
         await using IQuerySession session = postgres.Store.QuerySession();
-        (await TaskAddCommand.FindPrReviewHolderAsync(session, reference, cts.Token)).Should().BeNull(
+        (await TaskAddCommand.FindPrReviewHolderAsync(session, reference, Mine, cts.Token)).Should().BeNull(
             "a review that is still running is in-flight work, and duplicating it is the contradiction the "
             + "second-adoption guard exists for");
-        Func<Task> act = () => TaskAddCommand.RefuseSecondAdoptionAsync(session, reference, cts.Token);
+        Func<Task> act = () => TaskAddCommand.RefuseSecondAdoptionAsync(session, reference, Mine, cts.Token);
         await act.Should().ThrowAsync<DomainConflictException>();
     }
 
@@ -216,7 +241,7 @@ public sealed class RepeatPullRequestAdoptionTests(PostgresFixture postgres) : I
         await SeedPrReviewTaskAsync(reference, state, cts.Token);
 
         await using IQuerySession session = postgres.Store.QuerySession();
-        Func<Task> act = () => TaskAddCommand.RefuseSecondAdoptionAsync(session, reference, cts.Token);
+        Func<Task> act = () => TaskAddCommand.RefuseSecondAdoptionAsync(session, reference, Mine, cts.Token);
 
         await act.Should().NotThrowAsync(
             "h9k task add --from-pr --again is the deliberate second review of a pull request one of "
@@ -238,9 +263,9 @@ public sealed class RepeatPullRequestAdoptionTests(PostgresFixture postgres) : I
         await SeedPrReviewTaskAsync(reference, "NeedsHumanQuestion", cts.Token);
 
         await using IQuerySession session = postgres.Store.QuerySession();
-        (await TaskAddCommand.FindPrReviewHolderAsync(session, reference, cts.Token)).Should().BeNull(
+        (await TaskAddCommand.FindPrReviewHolderAsync(session, reference, Mine, cts.Token)).Should().BeNull(
             "a park nobody has walked is not a review being followed through");
-        Func<Task> act = () => TaskAddCommand.RefuseSecondAdoptionAsync(session, reference, cts.Token);
+        Func<Task> act = () => TaskAddCommand.RefuseSecondAdoptionAsync(session, reference, Mine, cts.Token);
 
         await act.Should().ThrowAsync<DomainConflictException>();
     }
@@ -252,7 +277,126 @@ public sealed class RepeatPullRequestAdoptionTests(PostgresFixture postgres) : I
         ExternalReference issue = new(WorkItemProvider.GitHub, $"acme/web-{Guid.NewGuid():N}#42");
 
         await using IQuerySession session = postgres.Store.QuerySession();
-        (await TaskAddCommand.FindPrReviewHolderAsync(session, issue, cts.Token)).Should().BeNull(
+        (await TaskAddCommand.FindPrReviewHolderAsync(session, issue, Mine, cts.Token)).Should().BeNull(
             "only a pull request has a review to be following through on");
+    }
+
+    /// <summary>
+    /// Origin report: a teammate's pr-review task replicated here, and <c>--from-pr</c> on that pull
+    /// request named it as this node's own. Their review is a different owner's work, so it neither
+    /// stands in for this owner's nor holds the pull request against a mint of their own.
+    /// </summary>
+    [Theory]
+    [InlineData("AwaitingAuthor")]
+    [InlineData("NeedsHuman")]
+    [InlineData("Done")]
+    public async Task A_teammates_review_in_a_named_state_is_not_named_and_does_not_refuse_the_mint(string state)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        ExternalReference reference = NewReference();
+        await SeedPrReviewTaskAsync(reference, state, cts.Token, Whose.Theirs);
+
+        await using IQuerySession session = postgres.Store.QuerySession();
+        (await TaskAddCommand.FindPrReviewHolderAsync(session, reference, Mine, cts.Token)).Should().BeNull(
+            "a teammate's replicated review is not this node's to name");
+        Func<Task> mint = () => TaskAddCommand.RefuseSecondAdoptionAsync(session, reference, Mine, cts.Token);
+
+        await mint.Should().NotThrowAsync("the guard is also what --again reaches, and it owes a teammate's review nothing either");
+    }
+
+    [Fact]
+    public async Task A_teammates_live_review_does_not_refuse_the_mint()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        ExternalReference reference = NewReference();
+        await SeedPrReviewTaskAsync(reference, "Claimed", cts.Token, Whose.Theirs);
+
+        await using IQuerySession session = postgres.Store.QuerySession();
+        Func<Task> act = () => TaskAddCommand.RefuseSecondAdoptionAsync(session, reference, Mine, cts.Token);
+
+        await act.Should().NotThrowAsync(
+            "the daemon mints alongside a teammate's live review of the same pull request, and so does the CLI");
+    }
+
+    [Fact]
+    public async Task This_owners_own_review_is_still_refused_when_a_teammates_sits_beside_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        ExternalReference reference = NewReference();
+        await SeedPrReviewTaskAsync(reference, "Claimed", cts.Token, Whose.Theirs);
+        await SeedPrReviewTaskAsync(reference, "Claimed", cts.Token);
+
+        await using IQuerySession session = postgres.Store.QuerySession();
+        Func<Task> act = () => TaskAddCommand.RefuseSecondAdoptionAsync(session, reference, Mine, cts.Token);
+
+        await act.Should().ThrowAsync<DomainConflictException>();
+    }
+
+    [Theory]
+    [InlineData("AwaitingAuthor")]
+    [InlineData("NeedsHuman")]
+    [InlineData("Done")]
+    public async Task A_review_no_owner_can_be_named_for_is_named_as_unattributable(string state)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        ExternalReference reference = NewReference();
+        Guid taskId = await SeedPrReviewTaskAsync(reference, state, cts.Token, Whose.Unattributable);
+
+        await using IQuerySession session = postgres.Store.QuerySession();
+        ReviewCoverage? holder = await TaskAddCommand.FindPrReviewHolderAsync(session, reference, Mine, cts.Token);
+
+        holder.Should().NotBeNull(
+            "it may be this owner's own review whose creator's root has not arrived, so it is never minted over");
+        holder!.Kind.Should().Be(ReviewCoverageKind.Unattributable);
+        holder.Task!.Id.Should().Be(taskId);
+        string message = TaskAddCommand.DescribeUnattributableHolder(holder.Task, reference, "abcd1234");
+        message.Should().Contain("abcd1234").And.Contain("cannot yet tell whose task it is")
+            .And.NotContain("this node's", "the task is not known to be this node's");
+    }
+
+    [Fact]
+    public async Task A_live_review_no_owner_can_be_named_for_is_refused_like_an_own_one()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        ExternalReference reference = NewReference();
+        await SeedPrReviewTaskAsync(reference, "Claimed", cts.Token, Whose.Unattributable);
+
+        await using IQuerySession session = postgres.Store.QuerySession();
+        (await TaskAddCommand.FindPrReviewHolderAsync(session, reference, Mine, cts.Token)).Should().BeNull();
+        Func<Task> act = () => TaskAddCommand.RefuseSecondAdoptionAsync(session, reference, Mine, cts.Token);
+
+        await act.Should().ThrowAsync<DomainConflictException>();
+    }
+
+    /// <summary>
+    /// A node whose owner has no root fingerprint has no team a task could belong to instead, so it
+    /// reads every task as its own, exactly as it did before ownership scoped these checks.
+    /// </summary>
+    [Fact]
+    public async Task A_node_with_no_owner_root_still_names_a_task_another_owner_created()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        ExternalReference reference = NewReference();
+        Guid taskId = await SeedPrReviewTaskAsync(reference, "AwaitingAuthor", cts.Token, Whose.Theirs);
+
+        await using IQuerySession session = postgres.Store.QuerySession();
+        ReviewCoverage? holder = await TaskAddCommand.FindPrReviewHolderAsync(session, reference, null, cts.Token);
+
+        holder.Should().NotBeNull();
+        holder!.Kind.Should().Be(ReviewCoverageKind.Own);
+        holder.Task!.Id.Should().Be(taskId);
+    }
+
+    [Fact]
+    public async Task A_node_with_no_owner_root_is_still_refused_by_a_live_task_another_owner_created()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        ExternalReference reference = NewReference();
+        await SeedPrReviewTaskAsync(reference, "Claimed", cts.Token, Whose.Theirs);
+
+        await using IQuerySession session = postgres.Store.QuerySession();
+        Func<Task> act = () => TaskAddCommand.RefuseSecondAdoptionAsync(session, reference, null, cts.Token);
+
+        await act.Should().ThrowAsync<DomainConflictException>();
     }
 }
