@@ -1,4 +1,5 @@
 using Hall9k.Connectors.Text;
+using Hall9k.Domain.Features.Tasks.Queries;
 
 namespace Hall9k.Daemon.AutoPrReview;
 
