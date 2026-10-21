@@ -1,0 +1,22 @@
+hall9k-task-record: 1
+task-id: 01a1602c-1270-749f-bf82-64b8a4d8096a
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#753
+objective: h9k task add --from-pr counts only the caller's own pr-review tasks on a pull request, so a teammate's replicated review never blocks or is named as this node's
+criteria:
+  - For a pull-request reference, h9k task add --from-pr considers only pr-review tasks that this node's owner root may act on by TaskOwnerRule with no Owner-role override, the way OwnerScopedCoverage judges them, in both the existing-holder lookup (FindPrReviewHolderAsync) and the one-live-task refusal (RefuseSecondAdoptionAsync), with or without --again. A teammate's pr-review task on the same pull request, in any state, neither refuses the mint nor is printed as the holder.
+  - A pr-review task this node cannot attribute to any owner is never minted over, exactly as this owner's own task is not. In a state the command names (AwaitingAuthor, Done, or NeedsHuman with follow-through open), the message names the task and says this node cannot yet tell whose task it is, rather than calling it this node's, and no task is created. In any other live state, the command refuses it as it does today.
+  - The CLI and the auto-pr-review engine judge pull-request coverage through one shared helper (OwnerScopedCoverage, moved where both can reach it, with its tests), not a second copy of the rule, and the engine's behavior is unchanged.
+  - A node whose owner has no root fingerprint keeps today's behavior unchanged. --from-issue and --from-jira adoption is unchanged.
+  - |-
+    Tests cover each of these cases: a teammate's AwaitingAuthor pr-review task is not named and the mint goes through; a teammate's Claimed pr-review task does not refuse the mint; this owner's own AwaitingAuthor task is named exactly as today; an unattributable AwaitingAuthor task is named with the new wording and nothing is created; an unattributable Claimed task is refused; and on a node with no owner root, a task created by another owner is still named as today. Tests may use the Postgres fixture; no test creates branches or touches GitHub.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/a4d8096a-h9k-task-add-from-pr-counts-on
+published: 2026-10-21 20:46:16Z
+context: |-
+  Reported by a teammate on a shared project: the owner's pr-review task replicated to the teammate's node, and h9k task add --from-pr on that pull request refused, printing it as 'already this node's pr-review task'. Cause on origin/main 8fd49cdb0: FindPrReviewHolderAsync (src/Hall9k.Cli/Commands/TaskAddCommand.cs:1026-1048) and RefuseSecondAdoptionAsync (:1150-1191) filter on reference, type, and state with no owner scope; the misattributing words are at :1061, reached through :565-569; --again skips the lookup and goes to the guard (:909-913); the guard is shared with --from-issue and --from-jira (:545, :555, :915); the owner root is already resolved at :542. The daemon owner-scopes the same check via src/Hall9k.Daemon/AutoPrReview/OwnerScopedCoverage.cs (commits eb3690792, e2b1642d8), which is internal to the daemon; Hall9k.Cli references only Domain and Connectors, and everything the helper uses is already public in Domain, so move it and tests/Hall9k.Tests/Daemon/OwnerScopedCoverageTests.cs into Domain as public (Brian's ruling: one rule, DRY). The daemon request path mints alongside a teammate's live review (AutoPrReviewEngine.cs:1232-1236), so this matches existing platform behavior. The guard takes the first match with FirstOrDefaultAsync (:1180); ownership is not SQL-filterable, so read the candidates and filter them, oldest first as today. NextStepFor (:1072) is unchanged; the guard's own refusal text (:1187) stays. Model the new tests on tests/Hall9k.Tests/Integration/RepeatPullRequestAdoptionTests.cs. Out of scope: h9k pr review's refusal when only a teammate's live task covers a pull request (deliberate, PullRequestReviewCommand.cs:330-341; parked as a parity question); why the teammate's daemon did not auto-mint.
