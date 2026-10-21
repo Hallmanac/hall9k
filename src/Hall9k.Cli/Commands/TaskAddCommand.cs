@@ -12,6 +12,7 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -887,7 +888,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     /// it, which the caller names instead of minting a second one (task: a pr-review task stays
     /// open while the pull request's review threads are unresolved).
     /// </summary>
-    private sealed record Adoption(ImportedWorkItem Imported, TaskListItem? ExistingPrReviewTask);
+    private sealed record Adoption(ImportedWorkItem Imported, ReviewCoverage? ExistingPrReviewTask);
 
     private static async Task<Adoption> AdoptAsync(
         IDocumentStore store, IDocumentSession session, ProjectDetails project, AdoptionSource source, bool again,
@@ -906,12 +907,12 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         // adversarial lens). Every OTHER live holder — a review still running, a findings park
         // nobody has walked, a Failed one — is still refused there, which is the flag's own stated
         // limit.
-        TaskListItem? holder = again
+        ReviewCoverage? holder = again
             ? null
-            : await FindPrReviewHolderAsync(session, imported.Reference, cancellationToken);
+            : await FindPrReviewHolderAsync(session, imported.Reference, ownerRootFingerprint, cancellationToken);
         if (holder is null)
         {
-            await RefuseSecondAdoptionAsync(session, imported.Reference, cancellationToken);
+            await RefuseSecondAdoptionAsync(session, imported.Reference, ownerRootFingerprint, cancellationToken);
             if (source.Provider != WorkItemProvider.GitHubPullRequest)
             {
                 // The cheap check above only ever finds a task already replicated here. A record
@@ -1017,14 +1018,21 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     /// was a fresh adoption that knew nothing about the review it was repeating.
     /// </para>
     /// <para>
+    /// Only this owner's: a pr-review task <see cref="OwnerScopedCoverage"/> reads as a teammate's
+    /// (it replicated here, but <c>TaskOwnerRule</c> names another owner) is never named as this
+    /// node's, and a task the rule cannot attribute to anyone is named as exactly that. A node with
+    /// no owner root yet has no team a task could belong to instead, so it names every one.
+    /// </para>
+    /// <para>
     /// Only these three states, and only for a pr-review task. Every OTHER live holder — a running
     /// review, a findings park nobody has walked, a Failed one — still goes to
     /// <see cref="RefuseSecondAdoptionAsync"/> and is refused there, because those genuinely are
     /// in-flight work whose duplication is the contradiction that guard exists for.
     /// </para>
     /// </summary>
-    internal static async Task<TaskListItem?> FindPrReviewHolderAsync(
-        IQuerySession session, ExternalReference reference, CancellationToken cancellationToken)
+    internal static async Task<ReviewCoverage?> FindPrReviewHolderAsync(
+        IQuerySession session, ExternalReference reference, string? ownerRootFingerprint,
+        CancellationToken cancellationToken)
     {
         if (reference.Provider != WorkItemProvider.GitHubPullRequest)
         {
@@ -1034,17 +1042,25 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         string canonical = reference.ToString();
         // The states are matched as SQL for the reason every state filter in this repo is: TaskState
         // and TaskType are value objects and Marten refuses to translate a comparison against one.
-        // Newest first, unlike RefuseSecondAdoptionAsync's oldest-first: that guard wants the oldest
-        // live holder because ANY live holder blocks, while this one wants the most recent review of
-        // this pull request, which is the one a reviewer coming back means.
-        return await session.Query<TaskListItem>()
+        // Ownership is not SQL-filterable (it is read off facts a row does not carry), so every
+        // candidate is read and OwnerScopedCoverage picks among them: this owner's newest, else the
+        // newest this node cannot attribute, and a teammate's replicated review is never either.
+        IReadOnlyList<TaskListItem> candidates = await session.Query<TaskListItem>()
             .Where(task => task.ExternalReference == canonical)
             .Where(task => task.MatchesSql("d.data ->> 'type' = ?", TaskType.PrReview.Value))
             .Where(task => task.MatchesSql(
                 "(d.data ->> 'state' in (?, ?) or (d.data ->> 'state' = ? and (d.data ->> 'prReviewFollowThroughOpen')::boolean))",
                 TaskState.AwaitingAuthor.Value, TaskState.Done.Value, TaskState.NeedsHuman.Value))
-            .OrderByDescending(task => task.AddedAt)
-            .FirstOrDefaultAsync(cancellationToken);
+            .ToListAsync(cancellationToken);
+        IReadOnlyList<CoveringTaskCandidate> read = await OwnerScopedCoverage.ReadAsync(
+            session, ownerRootFingerprint, candidates, cancellationToken);
+        // Newest first, unlike RefuseSecondAdoptionAsync's oldest-first: that guard wants the oldest
+        // live holder because ANY live holder blocks, while this one wants the most recent review of
+        // this pull request, which is the one a reviewer coming back means.
+        return OwnerScopedCoverage.Decide(ownerRootFingerprint, read) is
+            { Kind: ReviewCoverageKind.Own or ReviewCoverageKind.Unattributable } coverage
+            ? coverage
+            : null;
     }
 
     /// <summary>
@@ -1054,13 +1070,39 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     /// needs nothing yet, one that has been answered wants the scoped lap, and a completed one
     /// wants a fresh lap or a deliberate second task.
     /// </summary>
-    private static void PrintExistingPrReviewTask(TaskListItem holder, ExternalReference reference)
+    private static void PrintExistingPrReviewTask(ReviewCoverage holder, ExternalReference reference)
     {
-        string shortId = TaskListCommand.ShortId(holder.Id);
+        if (holder.Task is not { } task)
+        {
+            return;
+        }
+
+        string shortId = TaskListCommand.ShortId(task.Id);
+        if (holder.Kind == ReviewCoverageKind.Unattributable)
+        {
+            // Not "this node's": the rule could not name an owner for it, so it may be this owner's
+            // own review whose creator's root has not reached this node, or a teammate's. Naming it
+            // is the safe middle, because minting over it would duplicate the first and calling it
+            // this node's would misattribute the second.
+            AnsiConsole.MarkupLineInterpolated($"[dim]{DescribeUnattributableHolder(task, reference, shortId)}[/]");
+            return;
+        }
+
         AnsiConsole.MarkupLineInterpolated(
-            $"[yellow]{reference}[/] [dim]is already this node's pr-review task[/] [bold]{shortId}[/] [dim]({ExternalText.OneLine(holder.Objective)}), which is {holder.State.Value}. No second task was created.[/]");
-        AnsiConsole.MarkupLineInterpolated($"[dim]{NextStepFor(holder, reference, shortId)}.[/]");
+            $"[yellow]{reference}[/] [dim]is already this node's pr-review task[/] [bold]{shortId}[/] [dim]({ExternalText.OneLine(task.Objective)}), which is {task.State.Value}. No second task was created.[/]");
+        AnsiConsole.MarkupLineInterpolated($"[dim]{NextStepFor(task, reference, shortId)}.[/]");
     }
+
+    /// <summary>
+    /// What a repeat adoption says of a pr-review task the rule cannot attribute to any owner: that
+    /// it exists, what state it is in, and that this node cannot yet tell whose it is. A pure
+    /// function so the wording is checkable without driving the whole command.
+    /// </summary>
+    internal static string DescribeUnattributableHolder(TaskListItem task, ExternalReference reference, string shortId) =>
+        $"{reference} already has a pr-review task {shortId} ({ExternalText.OneLine(task.Objective)}), which is "
+        + $"{task.State.Value}, and this node cannot yet tell whose task it is. No second task was created. "
+        + $"h9k task show {shortId} for what is known about it; once its creator's root reaches this node it is "
+        + "named as theirs or as yours.";
 
     /// <summary>
     /// What to do next, per state — a pure function so the wording is checkable without driving
@@ -1147,8 +1189,21 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     /// blocks — regardless of how many exempt pr-reviews sort ahead of it.
     /// </para>
     /// </summary>
+    internal static Task RefuseSecondAdoptionAsync(
+        IQuerySession session, ExternalReference reference, CancellationToken cancellationToken) =>
+        RefuseSecondAdoptionAsync(session, reference, ownerRootFingerprint: null, cancellationToken);
+
+    /// <summary>
+    /// <see cref="RefuseSecondAdoptionAsync(IQuerySession, ExternalReference, CancellationToken)"/>
+    /// for a caller that knows this node's owner root. For a pull request, a pr-review task the rule
+    /// names as another owner's (<see cref="OwnerScopedCoverage"/>) is a teammate's replicated work
+    /// and neither blocks the mint nor is named, the way the daemon already treats it; one this node
+    /// cannot attribute still blocks, because it may be this owner's own. Any other type of task on
+    /// the same reference blocks whoever owns it, and a node with no root keeps the unscoped answer.
+    /// </summary>
     internal static async Task RefuseSecondAdoptionAsync(
-        IQuerySession session, ExternalReference reference, CancellationToken cancellationToken)
+        IQuerySession session, ExternalReference reference, string? ownerRootFingerprint,
+        CancellationToken cancellationToken)
     {
         string canonical = reference.ToString();
         // The state and type are matched as SQL rather than compared in LINQ, which is how every
@@ -1163,7 +1218,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         // as spoken for as one carried as its primary, and this is the one check that catches that
         // collision on THIS node without waiting on the ledger's own, slower cross-node scan
         // (RefuseIfRecordedElsewhereAsync) to find it.
-        TaskListItem? existing = await session.Query<TaskListItem>()
+        IReadOnlyList<TaskListItem> blocking = await session.Query<TaskListItem>()
             .Where(task => task.ExternalReference == canonical || task.SecondaryExternalReference == canonical)
             .Where(task => task.MatchesSql("d.data ->> 'state' <> ?", TaskState.Abandoned.Value))
             .Where(task => task.MatchesSql(
@@ -1177,7 +1232,9 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 TaskType.PrReview.Value, TaskState.Done.Value, TaskState.AwaitingAuthor.Value,
                 TaskState.NeedsHuman.Value))
             .OrderBy(task => task.AddedAt)
-            .FirstOrDefaultAsync(cancellationToken);
+            .ToListAsync(cancellationToken);
+        TaskListItem? existing = await FirstNotAnotherOwnersReviewAsync(
+            session, reference, ownerRootFingerprint, blocking, cancellationToken);
         if (existing is null)
         {
             return;
@@ -1188,6 +1245,34 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             $"{canonical} is already adopted by task {shortId} ({ExternalText.OneLine(existing.Objective)}), "
             + $"which is {existing.State.Value}. Adoption is selective, never mirroring (PLAN.md §3.1a), so one "
             + $"issue is one live task: see it with h9k task show {shortId}, then {Remedy(existing.State, shortId)}");
+    }
+
+    /// <summary>
+    /// The first of <paramref name="blocking"/>, oldest first, once a teammate's pr-review task on a
+    /// pull request is dropped from it. Ownership is not SQL-filterable, so the guard's query reads
+    /// every candidate and this applies the rule to them.
+    /// </summary>
+    private static async Task<TaskListItem?> FirstNotAnotherOwnersReviewAsync(
+        IQuerySession session, ExternalReference reference, string? ownerRootFingerprint,
+        IReadOnlyList<TaskListItem> blocking, CancellationToken cancellationToken)
+    {
+        TaskListItem[] reviews = reference.Provider == WorkItemProvider.GitHubPullRequest
+            ? [.. blocking.Where(task => task.Type == TaskType.PrReview)]
+            : [];
+        if (reviews.Length == 0)
+        {
+            return blocking.FirstOrDefault();
+        }
+
+        IReadOnlyList<CoveringTaskCandidate> read = await OwnerScopedCoverage.ReadAsync(
+            session, ownerRootFingerprint, reviews, cancellationToken);
+        HashSet<Guid> anotherOwners =
+        [
+            .. read
+                .Where(candidate => OwnerScopedCoverage.IsAnotherOwners(ownerRootFingerprint, candidate.Facts))
+                .Select(candidate => candidate.Task.Id),
+        ];
+        return blocking.FirstOrDefault(task => !anotherOwners.Contains(task.Id));
     }
 
     /// <summary>

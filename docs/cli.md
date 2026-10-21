@@ -446,6 +446,10 @@ second one**, and says which and what to do next. That existing task carries the
 verdict, and the whole record of the review; a second one starts from nothing. `--again` mints one
 deliberately when that is genuinely what you want. Any other live holder (a review still running, a
 findings park nobody has walked, a failed one) is refused as it always was.
+Only your own review counts here: a teammate's `pr-review` task that replicated to this node is
+neither named as yours nor a reason to refuse, and a `pr-review` task this node cannot yet attribute
+to anyone (its creator's root has not arrived) is named as exactly that, with no second task minted
+over it. A node whose owner has no root yet treats every task as its own.
 
 **Your own review lap, on top of that task** (PLAN.md §16 #149): `h9k pr review <number-or-url>`
 attaches to the `pr-review` task this node already holds for the pull request — auto-adopted from a
