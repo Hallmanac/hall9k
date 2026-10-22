@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -99,12 +100,16 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// </summary>
     public static readonly TimeSpan CreateWindowSkew = TimeSpan.FromMinutes(5);
 
+    /// <summary>How many cards the duplicate search asks Jira for in one page.</summary>
+    public const int SearchPageSize = 100;
+
     /// <summary>
-    /// How many of the login's own cards on the board the duplicate search reads in the window
-    /// before it refuses. The search asks for one more than this, so a window holding exactly this
-    /// many is read whole and anything past it is seen to be past it.
+    /// How many of the login's own cards on the board the duplicate search reads in the window,
+    /// across as many pages as it takes, before it refuses. The window is anchored on a task's
+    /// first create request and only grows, so a busy login on a long-lived task would otherwise
+    /// be refused for good by the first page alone.
     /// </summary>
-    public const int MaxWindowCards = 100;
+    public const int MaxWindowCards = 1000;
 
     private readonly JiraRequester requester = requester ?? JiraHttp.Requester;
     private readonly TimeProvider clock = clock ?? TimeProvider.System;
@@ -125,12 +130,15 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// relative (<c>created &gt;= -Nm</c>) because a JQL date literal is read in the searching
     /// profile's timezone, so a formatted timestamp would land hours off for anyone whose profile is
     /// not UTC. Summary is read from the answer rather than searched on: JQL's <c>~</c> is a Lucene
-    /// text match, not an equality check, and the whole window is small enough to read.
+    /// text match, not an equality check, so a query on it could miss a card the exact comparison
+    /// here would find. The window is read page by page (<see cref="SearchPageSize"/> at a time,
+    /// following Jira's <c>nextPageToken</c>) so how long a task has sat does not by itself make
+    /// the window unreadable.
     /// </para>
     /// <para>
-    /// An answer or a candidate entry that cannot be read, and a window holding more than
-    /// <see cref="MaxWindowCards"/> cards, refuse rather than return nothing: an unconfirmable
-    /// check is not a negative one.
+    /// An answer or a candidate entry that cannot be read, a page that promises another without a
+    /// way to fetch it, and a window holding more than <see cref="MaxWindowCards"/> cards, refuse
+    /// rather than return nothing: an unconfirmable check is not a negative one.
     /// </para>
     /// </summary>
     public async Task<IReadOnlyList<string>> FindCreatedCardsAsync(
@@ -141,67 +149,86 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
 
         string authorization = await AuthorizeAsync(
             $"search {board} for a card already created for this task at {account.Site}", cancellationToken);
-        JsonObject body = new()
-        {
-            ["jql"] = $"project = \"{board.Value}\" AND creator = currentUser() AND created >= -{minutes}m ORDER BY created ASC",
-            ["maxResults"] = MaxWindowCards + 1,
-            ["fields"] = new JsonArray("summary"),
-        };
-        JiraResponse response = await SendAsync(
-            new JiraRequest(HttpMethod.Post, account.Endpoint("/rest/api/3/search/jql"), authorization, body.ToJsonString()),
-            $"search {board} for a card already created for this task",
-            cancellationToken);
+        string jql = $"project = \"{board.Value}\" AND creator = currentUser() AND created >= -{minutes}m ORDER BY created ASC";
 
-        WindowRead window = ReadWindow(response.Body);
-        if (window.Cards is null)
+        List<WindowCard> window = [];
+        string? pageToken = null;
+        do
         {
-            throw RefuseUnconfirmed(
-                board, summary, lookFrom,
-                "Jira's answer to the search came back as something other than the expected "
-                + "{\"issues\": [{\"key\": ..., \"fields\": {\"summary\": ...}}]} shape (not JSON, not an "
-                + "object, or an entry missing its key or summary).");
-        }
+            JsonObject body = new()
+            {
+                ["jql"] = jql,
+                ["maxResults"] = SearchPageSize,
+                ["fields"] = new JsonArray("summary"),
+            };
+            if (pageToken is not null)
+            {
+                body["nextPageToken"] = pageToken;
+            }
 
-        if (window.HasMore || window.Cards.Count > MaxWindowCards)
-        {
-            throw RefuseUnconfirmed(
-                board, summary, lookFrom,
-                $"The window holds more than {MaxWindowCards} of this login's cards on the board, more than one "
-                + "search reads, so a card for this task could be sitting past the cut. If you find one, "
-                + "link it; if you do not, create the card in Jira directly and link that, since a create "
-                + "from here stays refused while the window is this full.");
+            JiraResponse response = await SendAsync(
+                new JiraRequest(HttpMethod.Post, account.Endpoint("/rest/api/3/search/jql"), authorization, body.ToJsonString()),
+                $"search {board} for a card already created for this task",
+                cancellationToken);
+
+            WindowRead page = ReadWindow(response.Body);
+            if (page.Cards is null || (page.HasMore && page.NextPageToken is null))
+            {
+                throw RefuseUnconfirmed(
+                    board, summary, lookFrom,
+                    "Jira's answer to the search came back as something other than the expected "
+                    + "{\"issues\": [{\"key\": ..., \"fields\": {\"summary\": ...}}]} shape (not JSON, not an "
+                    + "object, an entry missing its key or summary, or another page promised with no way to "
+                    + "fetch it).",
+                    "if it is not, run the write again");
+            }
+
+            window.AddRange(page.Cards);
+            if (window.Count > MaxWindowCards || (page.HasMore && window.Count == MaxWindowCards))
+            {
+                throw RefuseUnconfirmed(
+                    board, summary, lookFrom,
+                    $"The window holds more than {MaxWindowCards} of this login's cards on the board, more than "
+                    + "this search reads, so a card for this task could be sitting past the cut.",
+                    "if it is not, create the card in Jira directly and link that, since a create from here "
+                    + "stays refused while the window is this full");
+            }
+
+            pageToken = page.NextPageToken;
         }
+        while (pageToken is not null);
 
         return
         [
-            .. window.Cards
+            .. window
                 .Where(card => string.Equals(card.Summary, summary, StringComparison.Ordinal))
                 .Select(card => card.Key),
         ];
     }
 
     private static JiraWriteExecutionException RefuseUnconfirmed(
-        JiraProjectKey board, string summary, DateTimeOffset lookFrom, string why) =>
+        JiraProjectKey board, string summary, DateTimeOffset lookFrom, string why, string ifNotThere) =>
         new(
             JiraWriteFailureKind.Other,
             $"{why} Refusing to create on an unconfirmed duplicate check. Look on {board} for a card this "
-            + $"connection's login created since {lookFrom.UtcDateTime:yyyy-MM-dd HH:mm} UTC titled "
+            + $"connection's login created since {lookFrom.UtcDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)} UTC titled "
             + $"\"{Bounded(summary)}\"; if it is there, link it to this task with h9k task link-jira, and "
-            + "if it is not, run the write again.");
+            + $"{ifNotThere}.");
 
     /// <summary>
-    /// What <see cref="FindCreatedCardsAsync"/> reads out of a search answer: <c>Cards</c> is null
+    /// What <see cref="FindCreatedCardsAsync"/> reads out of one search answer: <c>Cards</c> is null
     /// when the answer cannot be confirmed as the expected shape (never merely when it holds no
-    /// cards, which <c>{"issues": []}</c> genuinely proves), and <c>HasMore</c> is true when Jira
-    /// says there is another page, whatever the page in hand held.
+    /// cards, which <c>{"issues": []}</c> genuinely proves), <c>HasMore</c> is true when Jira
+    /// says there is another page, whatever the page in hand held, and <c>NextPageToken</c> is the
+    /// token that fetches it, when Jira gave one.
     /// </summary>
-    private sealed record WindowRead(IReadOnlyList<WindowCard>? Cards, bool HasMore);
+    private sealed record WindowRead(IReadOnlyList<WindowCard>? Cards, bool HasMore, string? NextPageToken);
 
     private sealed record WindowCard(string Key, string Summary);
 
     private static WindowRead ReadWindow(string body)
     {
-        WindowRead unreadable = new(null, false);
+        WindowRead unreadable = new(null, false, null);
         try
         {
             using JsonDocument document = JsonDocument.Parse(body);
@@ -233,11 +260,13 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
                 cards.Add(new WindowCard(parsedKey.Value, summaryText));
             }
 
-            bool hasMore =
-                (root.TryGetProperty("nextPageToken", out JsonElement token)
-                    && token.ValueKind == JsonValueKind.String && token.GetString().IsNotBlank())
+            string? nextPageToken = root.TryGetProperty("nextPageToken", out JsonElement token)
+                && token.ValueKind == JsonValueKind.String && token.GetString().IsNotBlank()
+                    ? token.GetString()
+                    : null;
+            bool hasMore = nextPageToken is not null
                 || (root.TryGetProperty("isLast", out JsonElement isLast) && isLast.ValueKind == JsonValueKind.False);
-            return new WindowRead(cards, hasMore);
+            return new WindowRead(cards, hasMore, nextPageToken);
         }
         catch (JsonException)
         {

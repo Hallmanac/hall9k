@@ -1210,9 +1210,9 @@ it outright: nothing is written to the card to make it findable, so before creat
 task, whose summary equals the composed summary exactly, and adopts the earliest such card that no
 other task carries. The window is anchored on the task's first create request, not the attempt in
 hand, so a create resubmitted after an earlier attempt failed still finds the card that attempt made.
-A window that cannot be read, or that holds more than 100 of the login's cards on the board, refuses
-with the board, the summary and the time to look from, so an operator can find the card by hand and
-`link-jira` it. Jira's search index updates asynchronously, so a retry inside that index-lag window
+The window is read a page of 100 at a time. A window that cannot be read, or that holds more than
+1000 of the login's cards on the board, refuses with the board, the summary and the time to look
+from, so an operator can find the card by hand and `link-jira` it. Jira's search index updates asynchronously, so a retry inside that index-lag window
 can still find nothing even though the card genuinely exists. The search, its relative time bound
 and the summary in its answer have not been verified against a live tenant. **Agent-facing
 commands are observation gates**: `write-jira` and `link-jira` both read the key back through Jira

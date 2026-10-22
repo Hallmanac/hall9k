@@ -362,8 +362,9 @@ public static class JiraWriteCoordinator
                 {
                     return new JiraWriteResult(
                         existingKey,
-                        $"A card this login created for this task already exists ({existingKey}); an earlier "
-                        + "attempt created it, so nothing new was created.");
+                        $"A card this login created while this task's create was outstanding already exists "
+                        + $"({existingKey}) with the same summary; it was adopted as this task's card, so nothing "
+                        + "new was created.");
                 }
             }
         }

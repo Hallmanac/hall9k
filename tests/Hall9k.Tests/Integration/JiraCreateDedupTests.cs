@@ -125,23 +125,6 @@ public sealed class JiraCreateDedupTests(PostgresFixture postgres) : IClassFixtu
     }
 
     [Fact]
-    public async Task A_create_adopts_a_matching_card_instead_of_creating()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid taskId = await SeedTaskAsync(postgres.Store, linked: null, cts.Token);
-        FakeJira jira = new(() => DateTimeOffset.UtcNow);
-        jira.Cards.Add(("PROJ-7", Summary, DateTimeOffset.UtcNow));
-
-        JiraWriteAttemptResult result = await SubmitCreateAsync(postgres.Store, taskId, ExecutorFor(jira, DateTimeOffset.UtcNow), cts.Token);
-
-        result.Outcome.Should().Be(JiraWriteOutcome.Succeeded);
-        result.IssueKey.Should().Be("PROJ-7");
-        jira.Creates.Should().BeEmpty("the card was already there");
-        (await LoadAsync(postgres.Store, taskId, cts.Token)).ExternalReference
-            .Should().Be(new ExternalReference(WorkItemProvider.Jira, "PROJ-7"));
-    }
-
-    [Fact]
     public async Task A_second_create_request_on_the_same_task_adopts_the_card_the_first_attempt_made()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
@@ -204,6 +187,8 @@ public sealed class JiraCreateDedupTests(PostgresFixture postgres) : IClassFixtu
 
         result.IssueKey.Should().Be("PROJ-21");
         jira.Creates.Should().BeEmpty();
+        (await LoadAsync(postgres.Store, taskId, cts.Token)).ExternalReference
+            .Should().Be(new ExternalReference(WorkItemProvider.Jira, "PROJ-21"));
     }
 
     [Fact]

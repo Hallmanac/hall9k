@@ -291,15 +291,18 @@ public sealed class JiraWriteExecutorTests
         return document.RootElement.GetProperty("fields").GetProperty("description").GetString() ?? string.Empty;
     }
 
-    private static string SearchAnswer(params (string Key, string Summary)[] cards) =>
-        new JsonObject
+    private static JsonObject SearchPage(params (string Key, string Summary)[] cards) =>
+        new()
         {
             ["issues"] = new JsonArray([.. cards.Select(card => (JsonNode)new JsonObject
             {
                 ["key"] = card.Key,
                 ["fields"] = new JsonObject { ["summary"] = card.Summary },
             })]),
-        }.ToJsonString();
+        };
+
+    private static string SearchAnswer(params (string Key, string Summary)[] cards) =>
+        SearchPage(cards).ToJsonString();
 
     /// <summary>The first create request on the task was made twenty minutes before the search runs.</summary>
     private static readonly DateTimeOffset FirstRequestedAt = Now - TimeSpan.FromMinutes(20);
@@ -322,7 +325,7 @@ public sealed class JiraWriteExecutorTests
         jql.Should().Contain("project = \"PROJ\"")
             .And.Contain("creator = currentUser()", "creator is always the login that made the card; reporter can be set through fields")
             .And.NotContain("reporter");
-        body.RootElement.GetProperty("maxResults").GetInt32().Should().BeGreaterThan(JiraWriteExecutor.MaxWindowCards);
+        body.RootElement.GetProperty("maxResults").GetInt32().Should().Be(JiraWriteExecutor.SearchPageSize);
         body.RootElement.GetProperty("fields").EnumerateArray().Select(field => field.GetString())
             .Should().Contain("summary", "the summary is read from the answer so no further call per candidate is needed");
     }
@@ -385,29 +388,33 @@ public sealed class JiraWriteExecutorTests
     }
 
     [Fact]
-    public async Task FindCreatedCardsAsync_reads_a_busy_window_whole_rather_than_refusing_at_ten_cards()
+    public async Task FindCreatedCardsAsync_reads_a_window_of_exactly_the_cap_whole_across_pages()
     {
-        (string, string)[] others = [.. Enumerable.Range(1, 40).Select(i => ($"PROJ-{i}", $"Another card {i}"))];
-        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(
-            200, SearchAnswer([.. others, ("PROJ-41", "Fix the thing")]));
+        // Pages of SearchPageSize, each with a token to the next, the last without one; the match is
+        // on the last card of the last page.
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+        {
+            using JsonDocument body = JsonDocument.Parse(request.JsonBody ?? "{}");
+            int page = body.RootElement.TryGetProperty("nextPageToken", out JsonElement token)
+                ? int.Parse(token.GetString() ?? "0", CultureInfo.InvariantCulture)
+                : 0;
+            int pages = JiraWriteExecutor.MaxWindowCards / JiraWriteExecutor.SearchPageSize;
+            JsonObject answer = SearchPage([.. Enumerable
+                .Range(page * JiraWriteExecutor.SearchPageSize + 1, JiraWriteExecutor.SearchPageSize)
+                .Select(i => i == JiraWriteExecutor.MaxWindowCards ? ($"PROJ-{i}", "Fix the thing") : ($"PROJ-{i}", $"Card {i}"))]);
+            if (page + 1 < pages)
+            {
+                answer["nextPageToken"] = (page + 1).ToString(CultureInfo.InvariantCulture);
+            }
+
+            return Ok(answer.ToJsonString());
+        });
 
         IReadOnlyList<string> found = await Executor(requester, new FixedClock(Now))
             .FindCreatedCardsAsync(Proj, "Fix the thing", FirstRequestedAt, CancellationToken.None);
 
-        found.Should().Equal(["PROJ-41"]);
-    }
-
-    [Fact]
-    public async Task FindCreatedCardsAsync_reads_a_window_of_exactly_the_cap_whole()
-    {
-        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(
-            200,
-            SearchAnswer([.. Enumerable.Range(1, JiraWriteExecutor.MaxWindowCards).Select(i => ($"PROJ-{i}", $"Card {i}"))]));
-
-        IReadOnlyList<string> found = await Executor(requester, new FixedClock(Now))
-            .FindCreatedCardsAsync(Proj, "Fix the thing", FirstRequestedAt, CancellationToken.None);
-
-        found.Should().BeEmpty();
+        found.Should().Equal([$"PROJ-{JiraWriteExecutor.MaxWindowCards}"]);
+        requester.Requests.Should().HaveCount(JiraWriteExecutor.MaxWindowCards / JiraWriteExecutor.SearchPageSize);
     }
 
     [Fact]
@@ -424,19 +431,38 @@ public sealed class JiraWriteExecutorTests
         thrown.Kind.Should().Be(JiraWriteFailureKind.Other);
         thrown.Message.Should().Contain("PROJ", "it names the board")
             .And.Contain("Fix the thing", "it names the summary")
-            .And.Contain("2026-10-21 11:35 UTC", "it names the earliest time to look from");
+            .And.Contain("2026-10-21 11:35 UTC", "it names the earliest time to look from")
+            .And.Contain("create the card in Jira directly")
+            .And.NotContain("run the write again", "the window only grows, so retrying cannot help");
     }
 
     [Fact]
-    public async Task FindCreatedCardsAsync_refuses_when_Jira_says_there_is_another_page()
+    public async Task FindCreatedCardsAsync_refuses_when_pages_run_past_the_cap()
     {
-        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(
-            200, """{"issues":[],"isLast":false,"nextPageToken":"abc"}""");
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(_ =>
+        {
+            JsonObject answer = SearchPage([.. Enumerable
+                .Range(1, JiraWriteExecutor.SearchPageSize).Select(i => ($"PROJ-{i}", $"Card {i}"))]);
+            answer["nextPageToken"] = "more";
+            return Ok(answer.ToJsonString());
+        });
 
         Func<Task> act = () => Executor(requester, new FixedClock(Now))
             .FindCreatedCardsAsync(Proj, "Fix the thing", FirstRequestedAt, CancellationToken.None);
 
-        (await act.Should().ThrowAsync<JiraWriteExecutionException>()).WithMessage("*more than one search reads*");
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>()).WithMessage("*more than 1000*");
+        requester.Requests.Should().HaveCount(JiraWriteExecutor.MaxWindowCards / JiraWriteExecutor.SearchPageSize);
+    }
+
+    [Fact]
+    public async Task FindCreatedCardsAsync_refuses_a_promised_page_it_has_no_token_for()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(200, """{"issues":[],"isLast":false}""");
+
+        Func<Task> act = () => Executor(requester, new FixedClock(Now))
+            .FindCreatedCardsAsync(Proj, "Fix the thing", FirstRequestedAt, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>()).WithMessage("*no way to fetch it*");
     }
 
     [Theory]
