@@ -146,7 +146,7 @@ from a second machine of your own reaches the prompt, but a teammate's lesson th
 machines relayed does not. When the fleet cannot be read the replicated lesson is held.
 
 `h9k learn distill [--project <name>|--owner]` authors the task that merges a scope's lessons into
-fewer, better ones. It creates an ordinary research spike **draft** and stops there: the daemon
+fewer, better ones. It creates a research spike **draft** and stops there: the daemon
 never distils on its own judgment, because merging two claims into one is a judgment about meaning
 and a wrong merge replaces two things somebody observed with one thing nobody did. The task's
 instructions are merge-and-cite only, and the citation half is enforced rather than requested:

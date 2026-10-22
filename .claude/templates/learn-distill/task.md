@@ -16,7 +16,10 @@ Every lesson merged away is retired citing its survivor, and the findings docume
 What kind of task this is. This is a research spike, not a build task: it ends with a findings
 document and no build or test gate, and the platform opens no pull request for it. Recording and
 retiring lessons with `h9k learn` is this spike's work and is not the code a research spike is told
-not to write, so do both freely. Put the account of the inventory inside the findings document's
+not to write, so do both freely. Name this task on every lesson you record by adding
+`--task {{TaskId}}` to the `h9k learn` command: it is what credits the lesson to this run, and
+without it the lesson lands marked as recorded with no run named, which reads to the next session
+as though a person might have typed it. Put the account of the inventory inside the findings document's
 "What was observed" section: every lesson in the inventory below appears there as merged into a
 named new lesson, retired with its reason, left alone, or not reached, or the section says no merge
 was warranted.

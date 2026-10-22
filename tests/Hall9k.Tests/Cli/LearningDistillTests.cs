@@ -102,14 +102,21 @@ public sealed class LearningDistillTests
 
         // The shipped context is hard-wrapped prose, so compare with line breaks folded to spaces.
         string prompt = Regex.Replace(AgentPromptBuilder.BuildSpike(task), @"\s+", " ");
+        string fixPrompt = Regex.Replace(AgentPromptBuilder.BuildSpikeFix(task, "A source was not retired"), @"\s+", " ");
 
         prompt.Should().Contain("--distilled-from", "only merges that cite their sources are recorded");
+        prompt.Should().Contain($"--task {added.Id}", "a recorded lesson is credited to this run, not left looking human-typed");
         prompt.Should().Contain("record nothing this project has not already learned");
         prompt.Should().Contain("h9k learn retire", "each merged source is retired citing its survivor");
         prompt.Should().Contain("Absorbed into");
         prompt.Should().Contain("A lesson that says one thing nothing else says is left exactly as it is");
         prompt.Should().Contain("\"What was observed\"", "the account of the inventory lives in the findings document");
         prompt.Should().Contain("is this spike's work and is not the code a research spike is told not to write");
+
+        // The fix lap records and retires against the live store with no review after it, so it needs the same rules.
+        fixPrompt.Should().Contain("--distilled-from");
+        fixPrompt.Should().Contain($"--task {added.Id}");
+        fixPrompt.Should().Contain("Absorbed into");
     }
 
     [Fact]
@@ -127,6 +134,7 @@ public sealed class LearningDistillTests
         LearningDetails lesson = Lesson("A claim earlier runs established");
 
         string context = LearningDistillCommand.Context(
+            DomainId.New(),
             ProjectScope, [lesson], ownerScoped: false, "hall9k", Now);
 
         context.Should().Contain("h9k learn list --project hall9k", "the live set is a command, not this snapshot");
@@ -138,6 +146,7 @@ public sealed class LearningDistillTests
     public void An_owner_scoped_distillation_points_at_the_owner_list_rather_than_a_projects()
     {
         string context = LearningDistillCommand.Context(
+            DomainId.New(),
             new ResolvedKnowledgeScope(KnowledgeScope.Owner, Owner, "you, across every project"),
             [Lesson("A habit of mine")], ownerScoped: true, "hall9k", Now);
 
@@ -152,6 +161,7 @@ public sealed class LearningDistillTests
             .Select(index => Lesson($"Lesson {index}"))];
 
         string context = LearningDistillCommand.Context(
+            DomainId.New(),
             ProjectScope, inventory, ownerScoped: false, "hall9k", Now);
 
         context.Should().Contain($"{inventory.Length} active");
@@ -163,6 +173,7 @@ public sealed class LearningDistillTests
     public void The_context_says_a_held_out_lesson_is_read_only_for_this_task()
     {
         string context = LearningDistillCommand.Context(
+            DomainId.New(),
             ProjectScope, [Lesson("One claim")], ownerScoped: false, "hall9k", Now);
 
         context.Should().Contain("another node");
