@@ -19,7 +19,3 @@ origin-branch: task/c3e7e66c-the-pr-summary-skill-asks-for
 published: 2026-10-22 11:47:58Z
 context: |-
   Brian, 2026-10-22: PR descriptions should be very human-readable and give an example scenario, maybe before and after. Today the skill covers human-readability and bug reproductions only. Example for c9f06a01: Before, h9k learn distill gave you a task that ran gates for 14 minutes and failed at opening a PR. After, it gives you a research spike that records its findings and ends cleanly. The owner's voice skill (my-voice) was set the same morning and already favors scenarios; this rule makes it independent of a voice skill.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-10-22 11:48:06Z
