@@ -1,0 +1,24 @@
+hall9k-task-record: 1
+task-id: 01a1612a-6b0b-746f-bb8e-e824d4b97f1a
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#755
+objective: A Jira create writes the composed description unchanged, and crash-window dedup finds an already-created card without a hall9k marker on it
+criteria:
+  - A Jira create sends the composed description exactly as composed, with nothing appended; a blank composed description is sent blank (removes the hall9k-task:<uuid> marker, src/Hall9k.Connectors/WorkItems/JiraWriteExecutor.cs:103, :242, :757).
+  - Before every create, hall9k looks on the target board for a card that the connection's own login created (Jira's creator field) no earlier than five minutes before the first create request ever recorded on this task, whose summary equals the composed summary exactly, and adopts the earliest such card instead of creating; a create resubmitted after an earlier attempt failed therefore finds the card that attempt made (replaces FindByMarkerAsync, JiraWriteExecutor.cs:138, called from JiraWriteCoordinator.cs:342).
+  - A matching card already linked to another hall9k task is never adopted.
+  - |-
+    The search's time bound does not depend on the timezone set on the Jira profile, and the search reads the whole window: ten or more of the login's other cards on the board inside it do not by themselves make a create refuse.
+  - An unreadable search answer or candidate entry, or a window holding more cards than one search reads (at least 100), refuses rather than creates, with a message naming the board, the summary, and the earliest time to look from. Every operator-facing message that today says the marker search will find the card (JiraWriteCoordinator.cs:277, :346; JiraWriteExecutor.cs:438, :813, :825; src/Hall9k.Daemon/JiraWrites/JiraWriteRetryEngine.cs:353) describes the new search instead.
+  - |-
+    Unit tests over fake Jira responses cover: no match creates; a match adopts; a second create request on the same task adopts the card the first attempt made; a same-summary card created before the anchor minus five minutes is not adopted; a match linked to another task is not adopted; a window over the cap refuses; the create request's description equals the composed one. The hall9k-cli-reference skill's marker paragraph (SKILL.md:1205-1209) is rewritten to match.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/d4b97f1a-a-jira-create-writes-the-compo
+published: 2026-10-22 01:16:20Z
+context: |-
+  Brian 2026-10-21: hall9k must not advertise itself on Jira cards (the description marker is visible at the foot of every created card). Discovery: ideas/c868c526-*/workspace/summary.md, task B. Challenge verdict in this task's journal.md. SubmitAsync mints a new RequestedAt on every submit (JiraWriteCoordinator.cs:119-121), so the window anchors on the first create request recorded on the task, a field derived on replay (the aggregate keeps no create history today, TaskAggregate.cs:61-82, cleared at :2745). Use a relative JQL time bound (created >= -Nm) because date literals read in the profile's timezone; match on creator, not reporter (reporter is settable through fields, JiraWritePayload.cs:125-126); read summary from the search answer and page to at least 100 (the cap is 10 today, JiraWriteExecutor.cs:116). The new search, its relative time bound, and summary-in-search-results are all unverified against a live tenant; carry the same first-live-run caution the executor's current search/jql call carries (JiraWriteExecutor.cs:78-88). Parallel with sibling task A (1ce26244): both may touch the cli-reference SKILL.md and JiraWriteRetryEngine.cs in different hunks. Out of scope: removing markers already on cards (Brian declined); recording the key from a create whose read-back failed (parked: it contradicts JiraWriteSucceeded's read-back contract and is not needed once the window is anchored on the first request).
