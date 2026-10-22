@@ -1,6 +1,7 @@
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
+using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -139,18 +140,19 @@ public static class JiraWriteCoordinator
         // cases apart); every other caller gets the failure exactly as it happened, so it still
         // reaches the CLI's own exception-to-exit-code mapping (independent pre-PR review, cycle 6,
         // narrowed cycle 7).
+        DateTimeOffset firstCreateRequestedAt = task.FirstJiraCreateRequestedAt ?? requested.RequestedAt;
         if (!distinguishPostAppendFailures)
         {
             return await AttemptAsync(
                 session, taskId, writeId, operation, requested.IssueKey, payload, defaultBoard, executor,
-                cancellationToken);
+                firstCreateRequestedAt, cancellationToken);
         }
 
         try
         {
             return await AttemptAsync(
                 session, taskId, writeId, operation, requested.IssueKey, payload, defaultBoard, executor,
-                cancellationToken);
+                firstCreateRequestedAt, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -183,8 +185,9 @@ public static class JiraWriteCoordinator
         // having seen no card yet because the login that stuck this create had not been noticed.
         // TaskDecider.RequestJiraWrite's one-card-per-task guard only ever runs once, at submit,
         // so a retry has to re-check ExternalReference itself or it would file a second card for
-        // the same work; the marker search alone cannot catch this, because a card linked by
-        // another route carries no hall9k-task: marker (independent pre-PR review, cycle 5).
+        // the same work; the duplicate-card search alone cannot catch this, because it only finds a
+        // card by who made it, when, and what it says, and a card an operator linked by another
+        // route may have been made by someone else (independent pre-PR review, cycle 5).
         if (task.PendingJiraWriteOperation == JiraWriteOperation.Create
             && task.ExternalReference is { } existing && existing.Provider == WorkItemProvider.Jira)
         {
@@ -192,9 +195,11 @@ public static class JiraWriteCoordinator
         }
 
         JiraWritePayload payload = JiraWritePayload.FromJson(task.PendingJiraWritePayloadJson ?? "{}");
+        // A pending create always follows its own JiraWriteRequested, so the aggregate holds the
+        // first create's time; the fallback only keeps the type honest.
         return await AttemptAsync(
             session, taskId, writeId, task.PendingJiraWriteOperation, task.PendingJiraWriteIssueKey, payload,
-            defaultBoard, executor, cancellationToken);
+            defaultBoard, executor, task.FirstJiraCreateRequestedAt ?? DateTimeOffset.UtcNow, cancellationToken);
     }
 
     /// <summary>
@@ -239,13 +244,15 @@ public static class JiraWriteCoordinator
         JiraWritePayload payload,
         JiraProjectKey defaultBoard,
         JiraWriteExecutor executor,
+        DateTimeOffset firstCreateRequestedAt,
         CancellationToken cancellationToken)
     {
         JiraWriteResult result;
         try
         {
             result = operation == JiraWriteOperation.Create
-                ? await CreateWithDedupAsync(executor, defaultBoard, payload, taskId, cancellationToken)
+                ? await CreateWithDedupAsync(
+                    session, executor, defaultBoard, payload, taskId, firstCreateRequestedAt, cancellationToken)
                 : operation == JiraWriteOperation.Comment
                     ? await executor.CommentAsync(
                         RequireKey(issueKey, taskId), payload.Comment ?? string.Empty, payload.EffectiveFormat,
@@ -274,9 +281,10 @@ public static class JiraWriteCoordinator
                 session, taskId, writeId,
                 "The write was interrupted (Ctrl-C, or the daemon stopping) before Jira's own answer was "
                 + "read back, so whether it went through could not be observed here. For a create, "
-                + "resubmit with h9k task write-jira — the marker search this executor runs first will "
-                + "find the card if it exists rather than filing a second one; for an update or a "
-                + "comment, check the board before resubmitting.",
+                + "resubmit with h9k task write-jira — before creating, it searches the board for a card "
+                + "this login created for the task, with the same summary, and adopts it if it exists "
+                + "rather than filing a second one; for an update or a comment, check the board before "
+                + "resubmitting.",
                 isAuthFailure: false,
                 grace.Token);
         }
@@ -298,7 +306,7 @@ public static class JiraWriteCoordinator
         // that genuinely exists on the board — the moment recording the outcome itself hit a
         // transient failure (independent pre-PR review, cycle 3, conformance lens). A failure other
         // than cancellation is still left to propagate: the task simply stays pending, a create's
-        // own marker search finds the existing card on the next attempt rather than duplicating it,
+        // own duplicate-card search finds the existing card on the next attempt rather than duplicating it,
         // and JiraWriteRetryEngine's stale-pending ceiling sweep is the eventual backstop for a
         // write that never gets a fresh attempt at all.
         try
@@ -323,32 +331,56 @@ public static class JiraWriteCoordinator
     }
 
     /// <summary>
-    /// Search for a card already carrying this task's marker before creating a second one — the
+    /// Search for a card an earlier attempt already made before creating a second one — the
     /// physical dedup gate, run on every attempt (first and every later one alike), because the
     /// failure it guards against is exactly a repeat: Jira creating the card, then hall9k failing
     /// to record that it did for any reason, before a fresh attempt (with its own new write id)
-    /// tries again. Keyed to the task rather than to <paramref name="writeId"/> would-be-marker,
-    /// because a fresh attempt always mints a fresh write id — a marker scoped to it could never
-    /// be found by the very retry it exists to protect (independent pre-PR review, cycle 1, both
-    /// lenses).
+    /// tries again. The search window starts at the task's first create request
+    /// (<paramref name="firstCreateRequestedAt"/>), not at this attempt's, because a fresh attempt
+    /// mints a fresh request time and the card the earlier one made predates it. A card another
+    /// task is already linked to is passed over, never adopted.
     /// </summary>
     private static async Task<JiraWriteResult> CreateWithDedupAsync(
+        IQuerySession session,
         JiraWriteExecutor executor,
         JiraProjectKey defaultBoard,
         JiraWritePayload payload,
         Guid taskId,
+        DateTimeOffset firstCreateRequestedAt,
         CancellationToken cancellationToken)
     {
-        if (await executor.FindByMarkerAsync(taskId, cancellationToken) is { } existingKey)
+        JiraProjectKey board = payload.ProjectKey.IsNotBlank() ? JiraProjectKey.Parse(payload.ProjectKey) : defaultBoard;
+
+        // With no board or no summary there is nothing to look for, and the create below refuses
+        // (or Jira does) on its own terms.
+        if (board.HasValue && JiraWriteExecutor.ComposedSummary(payload) is { } summary && summary.IsNotBlank())
         {
-            return new JiraWriteResult(
-                existingKey,
-                $"A card carrying this task's marker already exists ({existingKey}); an earlier attempt "
-                + "created it, so nothing new was created.");
+            foreach (string existingKey in await executor.FindCreatedCardsAsync(
+                board, summary, firstCreateRequestedAt, cancellationToken))
+            {
+                if (!await IsLinkedToAnotherTaskAsync(session, taskId, existingKey, cancellationToken))
+                {
+                    return new JiraWriteResult(
+                        existingKey,
+                        $"A card this login created for this task already exists ({existingKey}); an earlier "
+                        + "attempt created it, so nothing new was created.");
+                }
+            }
         }
 
-        JiraProjectKey board = payload.ProjectKey.IsNotBlank() ? JiraProjectKey.Parse(payload.ProjectKey) : defaultBoard;
-        return await executor.CreateAsync(board, payload, taskId, cancellationToken);
+        return await executor.CreateAsync(board, payload, cancellationToken);
+    }
+
+    /// <summary>Whether a task other than <paramref name="taskId"/> carries this Jira card, as its primary or its secondary reference.</summary>
+    private static async Task<bool> IsLinkedToAnotherTaskAsync(
+        IQuerySession session, Guid taskId, string issueKey, CancellationToken cancellationToken)
+    {
+        string canonical = new ExternalReference(WorkItemProvider.Jira, issueKey).ToString();
+        return await session.Query<TaskListItem>()
+            .AnyAsync(
+                task => task.Id != taskId
+                    && (task.ExternalReference == canonical || task.SecondaryExternalReference == canonical),
+                cancellationToken);
     }
 
     private static string RequireKey(string? issueKey, Guid taskId) =>

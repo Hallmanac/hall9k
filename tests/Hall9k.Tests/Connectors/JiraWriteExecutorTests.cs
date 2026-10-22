@@ -1,3 +1,7 @@
+using System.Globalization;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Connection;
@@ -21,10 +25,10 @@ namespace Hall9k.Tests.Connectors;
 public sealed class JiraWriteExecutorTests
 {
     private static readonly Uri Site = new("https://hall9k.atlassian.net");
-    private static readonly Guid TaskId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    private static readonly DateTimeOffset Now = new(2026, 10, 21, 12, 0, 0, TimeSpan.Zero);
 
-    private static JiraWriteExecutor Executor(RecordingJiraRequester requester) =>
-        new(JiraAccount.WithTokenInHand(Site, "brian@example.com", "a-token"), requester.Requester);
+    private static JiraWriteExecutor Executor(RecordingJiraRequester requester, TimeProvider? clock = null) =>
+        new(JiraAccount.WithTokenInHand(Site, "brian@example.com", "a-token"), requester.Requester, clock);
 
     /// <summary>An account whose credential reference names an environment variable this process never sets, so resolving it always fails.</summary>
     private static JiraWriteExecutor ExecutorWithUnresolvableCredential(RecordingJiraRequester requester) =>
@@ -39,7 +43,7 @@ public sealed class JiraWriteExecutorTests
     // ---- Create ----------------------------------------------------------------------------
 
     [Fact]
-    public async Task Create_embeds_the_marker_sends_the_project_and_type_and_verifies_the_key()
+    public async Task Create_sends_the_composed_description_unchanged_with_the_project_and_type_and_verifies_the_key()
     {
         RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
             request.Method == HttpMethod.Post
@@ -52,7 +56,7 @@ public sealed class JiraWriteExecutorTests
             Comment: null);
 
         JiraWriteResult result = await Executor(requester).CreateAsync(
-            JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+            JiraProjectKey.Parse("PROJ"), payload, CancellationToken.None);
 
         result.IssueKey.Should().Be("PROJ-1");
 
@@ -60,8 +64,9 @@ public sealed class JiraWriteExecutorTests
         create.Url.Should().Be(new Uri("https://hall9k.atlassian.net/rest/api/2/issue"));
         create.JsonBody.Should().Contain("\"key\":\"PROJ\"")
             .And.Contain("\"name\":\"Dev Task\"")
-            .And.Contain("Fix the thing")
-            .And.Contain($"hall9k-task:{TaskId:D}");
+            .And.Contain("Fix the thing");
+        DescriptionSent(create).Should().Be("Some context.", "nothing is appended to the composed description");
+        create.JsonBody.Should().NotContain("hall9k", "the card must not advertise the tool that made it");
 
         requester.Requests.Should().Contain(
             r => r.Method == HttpMethod.Get, "the created card is read back and verified before being trusted");
@@ -75,7 +80,7 @@ public sealed class JiraWriteExecutorTests
 
         JiraWritePayload payload = new("Dev Task", new Dictionary<string, string> { ["summary"] = "x" }, null);
 
-        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.None, payload, TaskId, CancellationToken.None);
+        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.None, payload, CancellationToken.None);
 
         (await act.Should().ThrowAsync<JiraWriteExecutionException>())
             .Which.Kind.Should().Be(JiraWriteFailureKind.Other);
@@ -93,7 +98,7 @@ public sealed class JiraWriteExecutorTests
             new Dictionary<string, string> { ["Summary"] = "Cased summary", ["Description"] = "Cased body" },
             null);
 
-        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, CancellationToken.None);
 
         JiraRequest create = requester.Requests.First(r => r.Method == HttpMethod.Post);
         create.JsonBody.Should().Contain("Cased summary").And.Contain("Cased body");
@@ -113,7 +118,7 @@ public sealed class JiraWriteExecutorTests
         JiraWritePayload payload = JiraWritePayload.FromJson(
             """{"workItemType":"Dev Task","fields":{"summary":"S","customfield_10050":"10501"}}""");
 
-        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, CancellationToken.None);
 
         requester.Requests.First(r => r.Method == HttpMethod.Post).JsonBody
             .Should().Contain("\"customfield_10050\":\"10501\"");
@@ -128,12 +133,12 @@ public sealed class JiraWriteExecutorTests
         JiraWritePayload payload = JiraWritePayload.FromJson(
             """{"workItemType":"Dev Task","fields":{"summary":"S","description":null}}""");
 
-        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, CancellationToken.None);
 
         string? body = requester.Requests.First(r => r.Method == HttpMethod.Post).JsonBody;
         body.Should().NotContain("null");
-        body.Should().Contain($"hall9k-task:{TaskId:D}", "a blank description still carries the dedup marker");
-        body.Should().NotContain($"[hall9k-task:{TaskId:D}]", "brackets are Jira's own link notation and would turn the marker into an unresolvable link");
+        body.Should().NotContain("hall9k", "a blank description is sent blank, not filled with anything of ours");
+        DescriptionSent(requester.Requests.First(r => r.Method == HttpMethod.Post)).Should().BeEmpty();
     }
 
     [Fact]
@@ -142,7 +147,7 @@ public sealed class JiraWriteExecutorTests
         RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(201, "{}");
         JiraWritePayload payload = new("Dev Task", new Dictionary<string, string> { ["summary"] = "S" }, null);
 
-        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, CancellationToken.None);
 
         (await act.Should().ThrowAsync<JiraWriteExecutionException>())
             .WithMessage("*carried no key*");
@@ -158,7 +163,7 @@ public sealed class JiraWriteExecutorTests
 
         JiraWritePayload payload = new("Dev Task", new Dictionary<string, string> { ["summary"] = "S" }, null);
 
-        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, CancellationToken.None);
 
         (await act.Should().ThrowAsync<JiraWriteExecutionException>())
             .Which.Kind.Should().Be(JiraWriteFailureKind.AuthFailure, "a create's own retry sweep must keep retrying");
@@ -174,7 +179,7 @@ public sealed class JiraWriteExecutorTests
 
         JiraWritePayload payload = new("Dev Task", new Dictionary<string, string> { ["summary"] = "S" }, null);
 
-        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, CancellationToken.None);
 
         (await act.Should().ThrowAsync<JiraWriteExecutionException>())
             .WithMessage("*do not record this as a refusal of the write*");
@@ -186,7 +191,7 @@ public sealed class JiraWriteExecutorTests
         RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(_ => throw new TaskCanceledException());
         JiraWritePayload payload = new("Dev Task", new Dictionary<string, string> { ["summary"] = "S" }, null);
 
-        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, CancellationToken.None);
 
         (await act.Should().ThrowAsync<JiraWriteExecutionException>())
             .WithMessage("*may have been carried out*");
@@ -203,7 +208,7 @@ public sealed class JiraWriteExecutorTests
             _ => throw new HttpRequestException("connection reset"));
         JiraWritePayload payload = new("Dev Task", new Dictionary<string, string> { ["summary"] = "S" }, null);
 
-        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, CancellationToken.None);
 
         (await act.Should().ThrowAsync<JiraWriteExecutionException>())
             .WithMessage("*genuinely ambiguous*");
@@ -276,104 +281,185 @@ public sealed class JiraWriteExecutorTests
         thrown.Message.Should().Contain("already landed");
     }
 
-    // ---- Marker search (the dedup gate) -------------------------------------------------------
+    // ---- Duplicate-card search (the create dedup gate) -------------------------------------------
+
+    private static readonly JiraProjectKey Proj = JiraProjectKey.Parse("PROJ");
+
+    private static string DescriptionSent(JiraRequest create)
+    {
+        using JsonDocument document = JsonDocument.Parse(create.JsonBody ?? "{}");
+        return document.RootElement.GetProperty("fields").GetProperty("description").GetString() ?? string.Empty;
+    }
+
+    private static string SearchAnswer(params (string Key, string Summary)[] cards) =>
+        new JsonObject
+        {
+            ["issues"] = new JsonArray([.. cards.Select(card => (JsonNode)new JsonObject
+            {
+                ["key"] = card.Key,
+                ["fields"] = new JsonObject { ["summary"] = card.Summary },
+            })]),
+        }.ToJsonString();
+
+    /// <summary>The first create request on the task was made twenty minutes before the search runs.</summary>
+    private static readonly DateTimeOffset FirstRequestedAt = Now - TimeSpan.FromMinutes(20);
 
     [Fact]
-    public async Task FindByMarkerAsync_returns_null_when_the_search_comes_back_empty()
+    public async Task FindCreatedCardsAsync_finds_nothing_when_the_window_holds_no_card_with_the_summary()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(
+            200, SearchAnswer(("PROJ-1", "Something else entirely")));
+
+        IReadOnlyList<string> found = await Executor(requester, new FixedClock(Now))
+            .FindCreatedCardsAsync(Proj, "Fix the thing", FirstRequestedAt, CancellationToken.None);
+
+        found.Should().BeEmpty();
+        JiraRequest search = requester.Requests.Should().ContainSingle().Subject;
+        search.Method.Should().Be(HttpMethod.Post);
+        search.Url.Should().Be(new Uri("https://hall9k.atlassian.net/rest/api/3/search/jql"));
+        using JsonDocument body = JsonDocument.Parse(search.JsonBody ?? "{}");
+        string jql = body.RootElement.GetProperty("jql").GetString() ?? string.Empty;
+        jql.Should().Contain("project = \"PROJ\"")
+            .And.Contain("creator = currentUser()", "creator is always the login that made the card; reporter can be set through fields")
+            .And.NotContain("reporter");
+        body.RootElement.GetProperty("maxResults").GetInt32().Should().BeGreaterThan(JiraWriteExecutor.MaxWindowCards);
+        body.RootElement.GetProperty("fields").EnumerateArray().Select(field => field.GetString())
+            .Should().Contain("summary", "the summary is read from the answer so no further call per candidate is needed");
+    }
+
+    [Fact]
+    public async Task FindCreatedCardsAsync_bounds_the_window_five_minutes_before_the_first_request_in_relative_minutes()
     {
         RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(200, """{"issues":[]}""");
 
-        string? found = await Executor(requester).FindByMarkerAsync(TaskId, CancellationToken.None);
+        await Executor(requester, new FixedClock(Now))
+            .FindCreatedCardsAsync(Proj, "Fix the thing", FirstRequestedAt, CancellationToken.None);
 
-        found.Should().BeNull();
-        JiraRequest search = requester.Requests.Should().ContainSingle().Subject;
-        search.Url.Should().Be(new Uri("https://hall9k.atlassian.net/rest/api/3/search/jql"));
-        search.JsonBody.Should().Contain($"hall9k-task:{TaskId:D}");
+        string jql = JsonDocument.Parse(requester.Requests.Single().JsonBody ?? "{}")
+            .RootElement.GetProperty("jql").GetString() ?? string.Empty;
+        jql.Should().Contain("created >= -25m", "twenty minutes since the first request plus the five-minute skew");
+        jql.Should().NotMatchRegex(@"\d{4}-\d{2}-\d{2}", "a date literal is read in the Jira profile's timezone, a relative bound is not");
     }
 
     [Fact]
-    public async Task FindByMarkerAsync_confirms_the_marker_from_the_candidates_own_description_field()
+    public async Task FindCreatedCardsAsync_returns_the_matching_cards_earliest_first()
     {
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(
+            200,
+            SearchAnswer(
+                ("PROJ-4", "Fix the thing"),
+                ("PROJ-5", "Fix the thing, differently"),
+                ("PROJ-6", "Fix the thing"),
+                ("PROJ-7", "fix the thing")));
+
+        IReadOnlyList<string> found = await Executor(requester, new FixedClock(Now))
+            .FindCreatedCardsAsync(Proj, "Fix the thing", FirstRequestedAt, CancellationToken.None);
+
+        found.Should().Equal(["PROJ-4", "PROJ-6"], "only an exact summary matches, in the order Jira listed them (oldest first)");
+    }
+
+    /// <summary>
+    /// A stand-in for Jira that applies the relative bound itself, so the test can say which card
+    /// the window includes rather than only what the query text looked like.
+    /// </summary>
+    [Fact]
+    public async Task FindCreatedCardsAsync_does_not_reach_a_same_summary_card_made_before_the_anchor_minus_five_minutes()
+    {
+        (string Key, string Summary, int MinutesAgo)[] board =
+        [
+            ("PROJ-1", "Fix the thing", 31),
+            ("PROJ-2", "Fix the thing", 24),
+        ];
         RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
-            request.Method == HttpMethod.Post
-                ? Ok("""{"issues":[{"key":"PROJ-11"},{"key":"PROJ-12"}]}""")
-                : request.Url.ToString().Contains("PROJ-11")
-                    // A token-overlapping false positive: this candidate's description mentions
-                    // "task" and a similar-looking id, but not the exact marker text.
-                    ? Ok("""{"fields":{"description":"unrelated task:99999999-9999-9999-9999-999999999999"}}""")
-                    : Ok($"{{\"fields\":{{\"description\":\"[hall9k-task:{TaskId:D}]\"}}}}"));
+        {
+            using JsonDocument body = JsonDocument.Parse(request.JsonBody ?? "{}");
+            string jql = body.RootElement.GetProperty("jql").GetString() ?? string.Empty;
+            int window = int.Parse(Regex.Match(jql, @"created >= -(\d+)m").Groups[1].Value, CultureInfo.InvariantCulture);
+            return Ok(SearchAnswer([.. board.Where(card => card.MinutesAgo <= window).Select(card => (card.Key, card.Summary))]));
+        });
 
-        string? found = await Executor(requester).FindByMarkerAsync(TaskId, CancellationToken.None);
+        IReadOnlyList<string> found = await Executor(requester, new FixedClock(Now))
+            .FindCreatedCardsAsync(Proj, "Fix the thing", FirstRequestedAt, CancellationToken.None);
 
-        found.Should().Be("PROJ-12", "the first candidate's tokens merely overlapped; only the second actually carries the marker");
+        found.Should().Equal(["PROJ-2"], "PROJ-1 predates the first request by more than the five-minute skew");
     }
 
     [Fact]
-    public async Task FindByMarkerAsync_refuses_a_full_page_with_none_confirmed()
+    public async Task FindCreatedCardsAsync_reads_a_busy_window_whole_rather_than_refusing_at_ten_cards()
     {
-        string issues = string.Join(",", Enumerable.Range(1, 10).Select(i => $$"""{"key":"PROJ-{{i}}"}"""));
-        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
-            request.Method == HttpMethod.Post
-                ? Ok($$"""{"issues":[{{issues}}]}""")
-                : Ok("""{"fields":{"description":"nothing to see here"}}"""));
+        (string, string)[] others = [.. Enumerable.Range(1, 40).Select(i => ($"PROJ-{i}", $"Another card {i}"))];
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(
+            200, SearchAnswer([.. others, ("PROJ-41", "Fix the thing")]));
 
-        Func<Task> act = () => Executor(requester).FindByMarkerAsync(TaskId, CancellationToken.None);
+        IReadOnlyList<string> found = await Executor(requester, new FixedClock(Now))
+            .FindCreatedCardsAsync(Proj, "Fix the thing", FirstRequestedAt, CancellationToken.None);
 
-        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
-            .WithMessage("*full page*");
+        found.Should().Equal(["PROJ-41"]);
     }
 
     [Fact]
-    public async Task FindByMarkerAsync_refuses_rather_than_creating_when_the_search_answer_is_unreadable()
+    public async Task FindCreatedCardsAsync_reads_a_window_of_exactly_the_cap_whole()
     {
-        // A 2xx answer that is not the expected {"issues": [...]} shape (an HTML interstitial from
-        // a corporate proxy, a blank body, a differently-shaped response) must not be read the same
-        // way as a genuine {"issues": []} — collapsing the two would let a task that already has a
-        // card get a second one filed on an unconfirmed dedup check (independent pre-PR review,
-        // both lenses, cycle 1).
-        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
-            request.Method == HttpMethod.Post
-                ? Ok("<html>not what this endpoint should answer with</html>")
-                : throw new InvalidOperationException("must not confirm any candidate when the search itself could not be read"));
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(
+            200,
+            SearchAnswer([.. Enumerable.Range(1, JiraWriteExecutor.MaxWindowCards).Select(i => ($"PROJ-{i}", $"Card {i}"))]));
 
-        Func<Task> act = () => Executor(requester).FindByMarkerAsync(TaskId, CancellationToken.None);
+        IReadOnlyList<string> found = await Executor(requester, new FixedClock(Now))
+            .FindCreatedCardsAsync(Proj, "Fix the thing", FirstRequestedAt, CancellationToken.None);
 
-        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
-            .WithMessage("*could not be confirmed readable*");
+        found.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task FindByMarkerAsync_refuses_rather_than_creating_when_a_candidates_own_readback_is_unreadable()
+    public async Task FindCreatedCardsAsync_refuses_a_window_holding_more_cards_than_the_cap()
     {
-        // The search itself answered readably and named a real candidate, but that candidate's own
-        // description read-back came back unreadable — this must not be read as "this candidate
-        // does not carry the marker" (which would let the search move past it, and possibly file a
-        // duplicate), the same doctrine the search's own full-page and unreadable cases already get.
-        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
-            request.Method == HttpMethod.Post
-                ? Ok("""{"issues":[{"key":"PROJ-13"}]}""")
-                : Ok("not json at all"));
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(
+            200,
+            SearchAnswer([.. Enumerable.Range(1, JiraWriteExecutor.MaxWindowCards + 1).Select(i => ($"PROJ-{i}", $"Card {i}"))]));
 
-        Func<Task> act = () => Executor(requester).FindByMarkerAsync(TaskId, CancellationToken.None);
+        Func<Task> act = () => Executor(requester, new FixedClock(Now))
+            .FindCreatedCardsAsync(Proj, "Fix the thing", FirstRequestedAt, CancellationToken.None);
 
-        (await act.Should().ThrowAsync<JiraWriteExecutionException>())
-            .WithMessage("*could not be read back to confirm*");
+        JiraWriteExecutionException thrown = (await act.Should().ThrowAsync<JiraWriteExecutionException>()).Which;
+        thrown.Kind.Should().Be(JiraWriteFailureKind.Other);
+        thrown.Message.Should().Contain("PROJ", "it names the board")
+            .And.Contain("Fix the thing", "it names the summary")
+            .And.Contain("2026-10-21 11:35 UTC", "it names the earliest time to look from");
     }
 
     [Fact]
-    public async Task FindByMarkerAsync_treats_a_candidate_with_no_description_field_as_readable_and_not_carrying_the_marker()
+    public async Task FindCreatedCardsAsync_refuses_when_Jira_says_there_is_another_page()
     {
-        // A card genuinely having no description (the field absent, or JSON null) is a real,
-        // observed fact, not an unconfirmable read — it must not be refused the same way a
-        // malformed body is.
-        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
-            request.Method == HttpMethod.Post
-                ? Ok("""{"issues":[{"key":"PROJ-14"}]}""")
-                : Ok("""{"fields":{"description":null}}"""));
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(
+            200, """{"issues":[],"isLast":false,"nextPageToken":"abc"}""");
 
-        string? found = await Executor(requester).FindByMarkerAsync(TaskId, CancellationToken.None);
+        Func<Task> act = () => Executor(requester, new FixedClock(Now))
+            .FindCreatedCardsAsync(Proj, "Fix the thing", FirstRequestedAt, CancellationToken.None);
 
-        found.Should().BeNull();
+        (await act.Should().ThrowAsync<JiraWriteExecutionException>()).WithMessage("*more than one search reads*");
+    }
+
+    [Theory]
+    [InlineData("<html>not what this endpoint should answer with</html>")]
+    [InlineData("""{"errorMessages":["nope"]}""")]
+    [InlineData("""{"issues":[{"fields":{"summary":"Fix the thing"}}]}""")]
+    [InlineData("""{"issues":[{"key":"PROJ-1"}]}""")]
+    [InlineData("""{"issues":[{"key":"PROJ-1","fields":{"summary":null}}]}""")]
+    [InlineData("""{"issues":[{"key":"not-a-key","fields":{"summary":"Fix the thing"}}]}""")]
+    [InlineData("""{"issues":["PROJ-1"]}""")]
+    public async Task FindCreatedCardsAsync_refuses_rather_than_creating_when_the_answer_or_an_entry_is_unreadable(string answer)
+    {
+        // A 2xx answer that is not the expected shape (an HTML interstitial from a corporate proxy,
+        // a differently-shaped response, one entry that cannot be read) must not be read the same
+        // way as a genuine {"issues": []}: collapsing the two would let a task that already has a
+        // card get a second one filed on an unconfirmed check.
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(200, answer);
+
+        Func<Task> act = () => Executor(requester, new FixedClock(Now))
+            .FindCreatedCardsAsync(Proj, "Fix the thing", FirstRequestedAt, CancellationToken.None);
+
+        JiraWriteExecutionException thrown = (await act.Should().ThrowAsync<JiraWriteExecutionException>()).Which;
+        thrown.Message.Should().Contain("PROJ").And.Contain("Fix the thing").And.Contain("2026-10-21 11:35 UTC");
     }
 
     // ---- Auth probe ----------------------------------------------------------------------------
@@ -464,7 +550,7 @@ public sealed class JiraWriteExecutorTests
             400, """{"errorMessages":["The issue type is invalid."]}""");
 
         JiraWritePayload payload = new("Bogus", new Dictionary<string, string> { ["summary"] = "S" }, null);
-        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+        Func<Task> act = () => Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, CancellationToken.None);
 
         JiraWriteExecutionException thrown = (await act.Should().ThrowAsync<JiraWriteExecutionException>()).Which;
         thrown.Kind.Should().Be(JiraWriteFailureKind.Other);
@@ -476,7 +562,7 @@ public sealed class JiraWriteExecutorTests
     {
         RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(_ => throw new TaskCanceledException());
 
-        Func<Task> act = () => Executor(requester).FindByMarkerAsync(TaskId, CancellationToken.None);
+        Func<Task> act = () => Executor(requester).FindCreatedCardsAsync(Proj, "Fix the thing", FirstRequestedAt, CancellationToken.None);
 
         JiraWriteExecutionException thrown = (await act.Should().ThrowAsync<JiraWriteExecutionException>()).Which;
         thrown.Kind.Should().Be(JiraWriteFailureKind.Other);
@@ -492,7 +578,7 @@ public sealed class JiraWriteExecutorTests
         JiraWritePayload payload = new("Dev Task", new Dictionary<string, string> { ["summary"] = "S" }, null);
 
         Func<Task> act = () => ExecutorWithUnresolvableCredential(requester)
-            .CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+            .CreateAsync(JiraProjectKey.Parse("PROJ"), payload, CancellationToken.None);
 
         (await act.Should().ThrowAsync<JiraWriteExecutionException>())
             .Which.Kind.Should().Be(
@@ -543,7 +629,7 @@ public sealed class JiraWriteExecutorTests
         JiraWritePayload payload = JiraWritePayload.FromJson(
             """{"workItemType":"Dev Task","fields":{"summary":"S","project":{"key":"OTHER"},"issuetype":{"name":"Bug"}}}""");
 
-        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, CancellationToken.None);
 
         string? body = requester.Requests.First(r => r.Method == HttpMethod.Post).JsonBody;
         body.Should().Contain("\"project\":{\"key\":\"PROJ\"}");
@@ -564,7 +650,7 @@ public sealed class JiraWriteExecutorTests
         JiraWritePayload payload = JiraWritePayload.FromJson(
             """{"workItemType":"Dev Task","fields":{"summary":"S","Project":{"key":"OTHER"},"issueType":{"name":"Bug"}}}""");
 
-        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, CancellationToken.None);
 
         string? body = requester.Requests.First(r => r.Method == HttpMethod.Post).JsonBody;
         body.Should().Contain("\"project\":{\"key\":\"PROJ\"}");
@@ -625,7 +711,7 @@ public sealed class JiraWriteExecutorTests
             new Dictionary<string, string> { ["summary"] = "S", ["description"] = "## Heading\n- one\n- two" },
             Comment: null);
 
-        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, TaskId, CancellationToken.None);
+        await Executor(requester).CreateAsync(JiraProjectKey.Parse("PROJ"), payload, CancellationToken.None);
 
         string? body = requester.Requests.First(r => r.Method == HttpMethod.Post).JsonBody;
         body.Should().Contain("h2. Heading").And.Contain("* one").And.Contain("* two");
