@@ -10,7 +10,17 @@ Each lesson you merged away is retired explicitly, citing the survivor: h9k lear
 A lesson that says one thing nothing else says is left exactly as it is. The goal is fewer lessons that are each worth a prompt's line, not the smallest possible number: two claims forced into one sentence teach less than the two did.
 ===criterion-account===
 Your final summary accounts for every lesson in the inventory below under one of three headings: merged into <new id>, retired as wrong or obsolete with its reason, or left alone. A lesson you did not reach is named as one rather than left unmentioned.
+===exit-criterion===
+Every lesson merged away is retired citing its survivor, and the findings document accounts for every lesson in the inventory as merged into a named new lesson, retired with a reason, left alone, or not reached; or it says no merge was warranted.
 ===context===
+What kind of task this is. This is a research spike, not a build task: it ends with a findings
+document and no build or test gate, and the platform opens no pull request for it. Recording and
+retiring lessons with `h9k learn` is this spike's work and is not the code a research spike is told
+not to write, so do both freely. Put the account of the inventory inside the findings document's
+"What was observed" section: every lesson in the inventory below appears there as merged into a
+named new lesson, retired with its reason, left alone, or not reached, or the section says no merge
+was warranted.
+
 Why this task exists: every dispatched session on this project carries a bounded section of its
 active lessons, and the section has two caps (a lesson count and a character budget). Past those
 caps the oldest lessons stop reaching prompts at all. Retirement is the cheap control and it is

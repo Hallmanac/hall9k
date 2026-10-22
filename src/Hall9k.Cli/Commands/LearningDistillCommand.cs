@@ -20,7 +20,7 @@ namespace Hall9k.Cli.Commands;
 
 /// <summary>
 /// Author the task that merges a scope's lessons into fewer, better ones (idea d805fd8b, piece 5;
-/// backlog 55). What this command produces is an ordinary Research task draft: the same
+/// backlog 55). What this command produces is an ordinary research spike draft: the same
 /// <see cref="TaskDecider.Add"/> every <c>h9k task add</c> goes through, the same draft state, the
 /// same publish-and-assign a human performs before anything dispatches. There is no distillation
 /// engine, no sweep, and nothing in the daemon that decides on its own that a project's lessons
@@ -113,17 +113,8 @@ public sealed class LearningDistillCommand : Hall9kAsyncCommand<LearningDistillC
         }
 
         Guid taskId = DomainId.New();
-        TaskAdded added = TaskDecider.Add(
-            taskId,
-            tracking.ScopeId,
-            Objective(scope, active.Count),
-            Criteria(),
-            TaskType.Research,
-            Context(scope, active, settings.Owner, tracking.Label, DateTimeOffset.UtcNow),
-            constraints: null,
-            externalReference: null,
-            DateTimeOffset.UtcNow,
-            context.OwnerId);
+        TaskAdded added = Author(
+            taskId, tracking, scope, active, settings.Owner, DateTimeOffset.UtcNow, context.OwnerId);
         session.Events.StartStream<TaskAggregate>(taskId, added);
         await session.SaveChangesAsync(cancellationToken);
 
@@ -132,8 +123,9 @@ public sealed class LearningDistillCommand : Hall9kAsyncCommand<LearningDistillC
             $"[blue]Distillation draft created[/] in '{tracking.Label.EscapeMarkup()}': "
             + $"{added.Objective.EscapeMarkup()} [dim]({shortId})[/]");
         AnsiConsole.MarkupLine(
-            "[dim]It is a draft and nothing dispatches it: the daemon never distils on its own "
-            + "judgment. Read what it asks for, then publish and queue it yourself:[/] "
+            "[dim]It is a research spike draft and nothing dispatches it: the daemon never distils "
+            + "on its own judgment. It ends with a findings document, with no gates and no pull request. "
+            + "Read what it asks for, then publish and queue it yourself:[/] "
             + $"h9k task show {shortId} [dim]then[/] h9k task publish {shortId}");
         return ExitCodes.Ok;
     }
@@ -157,6 +149,36 @@ public sealed class LearningDistillCommand : Hall9kAsyncCommand<LearningDistillC
             .OrderByDescending(lesson => lesson.RecordedAt)
             .ToListAsync(cancellationToken);
     }
+
+    /// <summary>
+    /// The draft's creation event. A research spike rather than a Research task: the work records
+    /// and retires lessons and ends in a findings document, with no commits for a pull request to
+    /// carry, and only a spike skips the gates and the pull request.
+    /// </summary>
+    internal static TaskAdded Author(
+        Guid taskId,
+        ResolvedKnowledgeScope tracking,
+        ResolvedKnowledgeScope scope,
+        IReadOnlyList<LearningDetails> active,
+        bool ownerScoped,
+        DateTimeOffset now,
+        Guid ownerId) =>
+        TaskDecider.Add(
+            taskId,
+            tracking.ScopeId,
+            Objective(scope, active.Count),
+            Criteria(),
+            TaskType.Spike,
+            Context(scope, active, ownerScoped, tracking.Label, now),
+            constraints: null,
+            externalReference: null,
+            now,
+            ownerId,
+            spikeKind: SpikeKind.Research,
+            exitCriterion: ExitCriterion());
+
+    /// <summary>The one checkable sentence the spike's review judges its findings against.</summary>
+    internal static string ExitCriterion() => PromptTemplates.Load(TemplateFile, "exit-criterion");
 
     internal static string Objective(ResolvedKnowledgeScope scope, int lessonCount) =>
         PromptTemplates.Load(TemplateFile, "objective", new Dictionary<string, string>

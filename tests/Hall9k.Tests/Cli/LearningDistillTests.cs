@@ -1,6 +1,11 @@
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using Hall9k.Cli.Commands;
+using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Learning;
+using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
@@ -45,6 +50,66 @@ public sealed class LearningDistillTests
         all.Should().Contain("refuses a distilled lesson that cites nothing");
         all.Should().Contain("h9k learn retire", "a merged source left live rides in a prompt twice");
         all.Should().Contain("record nothing this project has not already learned");
+    }
+
+    private const string ExpectedExitCriterion =
+        "Every lesson merged away is retired citing its survivor, and the findings document accounts for every "
+        + "lesson in the inventory as merged into a named new lesson, retired with a reason, left alone, or not "
+        + "reached; or it says no merge was warranted.";
+
+    /// <summary>
+    /// A distillation ends with findings and no commits, so it is a research spike (no gates, no
+    /// pull request) rather than a Research task, whose pull request opening failed on the empty branch.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void The_task_a_distillation_authors_is_a_research_spike_with_the_stated_exit_criterion(bool ownerScoped)
+    {
+        ResolvedKnowledgeScope scope = ownerScoped
+            ? new ResolvedKnowledgeScope(KnowledgeScope.Owner, Owner, "you, across every project")
+            : ProjectScope;
+        LearningDetails[] active = [Lesson("One claim"), Lesson("Another claim")];
+
+        TaskAdded added = LearningDistillCommand.Author(
+            DomainId.New(), ProjectScope, scope, active, ownerScoped, Now, Owner);
+
+        added.Type.Should().Be(TaskType.Spike);
+        added.SpikeKind.Should().Be(SpikeKind.Research);
+        added.ExitCriterion.Should().Be(ExpectedExitCriterion);
+        added.ProjectId.Should().Be(Project, "the task is tracked in the project even when the lessons are the owner's");
+        added.Objective.Should().Be(LearningDistillCommand.Objective(scope, active.Length));
+        added.AcceptanceCriteria.Should().Equal(LearningDistillCommand.Criteria());
+        added.StartsAsDraft.Should().BeTrue();
+    }
+
+    [Fact]
+    public void The_spike_prompt_for_a_distillation_carries_every_merge_and_cite_rule()
+    {
+        LearningDetails[] active = [Lesson("One claim"), Lesson("Another claim")];
+        TaskAdded added = LearningDistillCommand.Author(
+            DomainId.New(), ProjectScope, ProjectScope, active, ownerScoped: false, Now, Owner);
+        TaskDetails task = new()
+        {
+            Id = added.Id,
+            Type = added.Type,
+            Objective = added.Objective,
+            AcceptanceCriteria = [.. added.AcceptanceCriteria],
+            AgentContext = added.AgentContext,
+            SpikeKind = added.SpikeKind ?? SpikeKind.Unknown,
+            ExitCriterion = added.ExitCriterion,
+        };
+
+        // The shipped context is hard-wrapped prose, so compare with line breaks folded to spaces.
+        string prompt = Regex.Replace(AgentPromptBuilder.BuildSpike(task), @"\s+", " ");
+
+        prompt.Should().Contain("--distilled-from", "only merges that cite their sources are recorded");
+        prompt.Should().Contain("record nothing this project has not already learned");
+        prompt.Should().Contain("h9k learn retire", "each merged source is retired citing its survivor");
+        prompt.Should().Contain("Absorbed into");
+        prompt.Should().Contain("A lesson that says one thing nothing else says is left exactly as it is");
+        prompt.Should().Contain("\"What was observed\"", "the account of the inventory lives in the findings document");
+        prompt.Should().Contain("is this spike's work and is not the code a research spike is told not to write");
     }
 
     [Fact]

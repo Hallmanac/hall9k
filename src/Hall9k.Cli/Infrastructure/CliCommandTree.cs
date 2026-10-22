@@ -1139,8 +1139,9 @@ public static class CliCommandTree
             learn.AddCommand<LearningDistillCommand>("distill")
                 .WithDescription(
                     "Author the task that merges this scope's lessons into fewer, better ones. Creates "
-                    + "an ordinary Research task DRAFT and stops there: nothing dispatches until you "
-                    + "publish and queue it, because the daemon never distils on its own judgment. "
+                    + "a research spike DRAFT and stops there: nothing dispatches until you "
+                    + "publish and queue it, and the spike ends with a findings document, no gates and "
+                    + "no pull request. The daemon never distils on its own judgment. "
                     + "Merging two claims into one is a judgment about meaning, and a wrong merge is "
                     + "worse than two lessons that overlap: the overlap costs a prompt line, a bad "
                     + "merge replaces two things somebody observed with one thing nobody did. The "

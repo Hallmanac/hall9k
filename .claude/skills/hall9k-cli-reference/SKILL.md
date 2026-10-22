@@ -808,11 +808,11 @@ section's own recording verb spells the `--task` out for exactly this reason.
 h9k config set --lesson-prompt-max-lessons 15         # how many lessons any one prompt carries
 h9k config set --lesson-prompt-max-characters 4000    # and how many characters of lesson text
 h9k learn "<merged claim>" --distilled-from <id> --distilled-from <id>   # record a merge, citing its sources
-h9k learn distill [--project <name>|--owner]          # author the Research task DRAFT that merges a scope's lessons
+h9k learn distill [--project <name>|--owner]          # author the research spike DRAFT that merges a scope's lessons
 ```
 
 Distillation is a task a human authors, never something the daemon decides to do. `h9k learn
-distill` creates an ordinary Research task draft and stops there; a person publishes and queues
+distill` creates an ordinary research spike draft and stops there; a person publishes and queues
 it like any other. Its instructions are merge-and-cite only, and the citation half is enforced:
 `--distilled-from` is refused outright when its citations resolve to nothing, repeat, or name the
 lesson itself, because a merge nobody can check against what it merged is a new claim wearing a
