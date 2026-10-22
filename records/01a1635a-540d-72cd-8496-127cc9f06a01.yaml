@@ -1,0 +1,22 @@
+hall9k-task-record: 1
+task-id: 01a1635a-540d-72cd-8496-127cc9f06a01
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#760
+objective: h9k learn distill cuts a research spike instead of a Research task, so a distillation ends with findings and no gates or pull request instead of failing at gh pr create
+criteria:
+  - |-
+    h9k learn distill, in both project and --owner scopes, creates a Draft of type spike and kind research, tracked in the same project as today, with this exit criterion: "Every lesson merged away is retired citing its survivor, and the findings document accounts for every lesson in the inventory as merged into a named new lesson, retired with a reason, left alone, or not reached; or it says no merge was warranted." Its objective and its acceptance criteria are unchanged.
+  - |-
+    A distillation spike's build-session prompt (what AgentPromptBuilder.BuildSpike renders for the draft) carries every merge-and-cite rule the distillation's criteria state: record only merges that cite their sources with --distilled-from, record no new claim, retire each merged source citing its survivor, leave a lesson that says something unique alone, and account for every lesson inside the findings document's "What was observed" section. It also says that recording and retiring lessons with h9k learn is the spike's work, not code it is told not to write.
+  - The distill command's help text, its printed next steps, its class doc comment, and the CLI reference skill's distill lines name a research spike rather than a Research task; historical backlog files are left unchanged.
+  - Unit tests show the task the command builds has type spike, kind research, and the exit criterion above in both scopes, and that the rendered spike prompt for a distillation draft contains each rule criterion 2 lists.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/c9f06a01-h9k-learn-distill-cuts-a-resea
+published: 2026-10-22 11:34:52Z
+context: |-
+  Evidence: b369378a (h9k learn distill, Research type, 2026-10-22) recorded and retired lessons only, then spent 13m49s in gates and 1m56s in review and failed at PR opening with 'GraphQL: No commits between main and task/b369378a-...'; the window resolved it by hand. VerificationRunner exempts Research and Spike from the no-commit check, but only a spike skips the pull request (docs/concepts.md: a research spike runs no gates and never opens a PR). LearningDistillCommand.cs passes TaskType.Research today. Out of scope: what a plain Research task with no commits should do in general (parked).
