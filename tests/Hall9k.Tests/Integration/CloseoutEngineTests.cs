@@ -4701,12 +4701,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         commentCall.Method.Should().Be(HttpMethod.Post);
         commentCall.Url.ToString().Should().Contain("/rest/api/2/issue/PROJ-123/comment");
         string comment = commentCall.JsonBody!;
-        comment.Should().Contain(PullRequestUrl).And.Contain(taskId.ToString());
-        // JSON-encodes the apostrophe in "item's", so the assertion splits either side of it
-        // rather than matching the contraction as one literal string.
-        comment.Should().Contain("does not change this item")
-            .And.Contain("status or close it",
-                "a card that silently gains a comment and never moves reads like an integration that half worked");
+        comment.Should().Contain($"The pull request for this work has merged: {PullRequestUrl}")
+            .And.NotContain(taskId.ToString(), "the note is posted under the owner's login and cites no task id")
+            .And.NotContain("closed alongside", "a Jira card is only ever commented, never closed");
 
         jira.Requests.Should().Contain(
             request => request.Method == HttpMethod.Get, "the write is read back and verified before it is recorded");
@@ -4753,7 +4750,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
                 "a GitHub reference is told through gh, not Jira's REST API").Subject;
         call.FileName.Should().Be("gh");
         call.Arguments.Should().ContainInOrder("issue", "comment", "42", "--repo", "o/r", "--body");
-        call.Arguments[^1].Should().Contain(PullRequestUrl).And.Contain(taskId.ToString());
+        call.Arguments[^1].Should().Be(
+            $"The pull request for this work has merged: {PullRequestUrl}",
+            "the note names the pull request and nothing else, in particular no task id");
 
         // The release-side tracker-assignee mirror (criterion 5, idea 202383dc, A3b) reads this
         // install's own gh login as part of releasing the ledger holder true completion gives
@@ -4876,8 +4875,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             github.Calls.Should().ContainSingle(call => call.Arguments.Contains("comment")).Subject;
         string body = commentCall.Arguments[^1];
         body.Should().NotContain("was closed alongside", "the close failed, so the note must not claim it happened");
-        body.Should().Contain(
-            "does not change this item's status",
+        body.Should().Be(
+            $"The pull request for this work has merged: {PullRequestUrl}",
             "a failed close falls back to the same wording an unclosed merge always gets");
     }
 

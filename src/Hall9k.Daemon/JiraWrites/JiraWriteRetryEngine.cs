@@ -431,7 +431,7 @@ public sealed class JiraWriteRetryEngine(
                 taskId,
                 JiraWriteOperation.Comment,
                 reference.Reference,
-                new JiraWritePayload(WorkItemType: null, Fields: null, Comment: CloseoutEngine.MergeComment(project, task), Format: "plain"),
+                new JiraWritePayload(WorkItemType: null, Fields: null, Comment: CloseoutEngine.MergeComment(task.PullRequestUrl), Format: "plain"),
                 project.JiraProjectKey,
                 node.OwnerId,
                 executor,

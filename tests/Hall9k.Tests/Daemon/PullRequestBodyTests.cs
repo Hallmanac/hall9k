@@ -85,7 +85,7 @@ public sealed class PullRequestBodyTests
             Run(), Task("github:Hallmanac/hall9k#42"), "What I did.", GitHubIssue);
 
         body.IndexOf("Work item:", StringComparison.Ordinal)
-            .Should().BeLessThan(body.IndexOf("## Agent summary", StringComparison.Ordinal));
+            .Should().BeLessThan(body.IndexOf("## Summary", StringComparison.Ordinal));
         body.Should().Contain("What I did.");
     }
 
@@ -428,7 +428,7 @@ public sealed class PullRequestBodyTests
         string body = PullRequestBody.Build(
             Run(), Task(externalReference: null), agentSummary: null, sourceUrl: null, Summary("A title", runaway));
 
-        body.Should().Contain("[Truncated at 30000 characters.");
+        body.Should().Contain("[Truncated at 30000 characters.]");
         Encoding.UTF8.GetString(Encoding.UTF8.GetBytes(body)).Should().Be(body);
     }
 
@@ -489,7 +489,7 @@ public sealed class PullRequestBodyTests
             Run(), Task("github:Hallmanac/hall9k#42"), "Full suite green (4739 passed).", GitHubIssue,
             Summary("A title", "What a reviewer needs to know."));
 
-        body.Should().NotContain("## Agent summary").And.NotContain("Full suite green");
+        body.Should().NotContain("## Summary").And.NotContain("Full suite green");
     }
 
     [Fact]
@@ -517,7 +517,7 @@ public sealed class PullRequestBodyTests
 
         body.Should().NotContain("wrong-one")
             .And.Contain("## Acceptance criteria")
-            .And.Contain("## Agent summary");
+            .And.Contain("## Summary");
     }
 
     /// <summary>
@@ -532,7 +532,7 @@ public sealed class PullRequestBodyTests
         PullRequestBody.Title(Task("jira:PROJ-4861"), summary)
             .Should().Be("PROJ-4861: Resolve Key Vault references");
         PullRequestBody.Build(Run(), Task("jira:PROJ-4861"), "What I did.", sourceUrl: null, summary)
-            .Should().Contain("## Acceptance criteria").And.Contain("## Agent summary");
+            .Should().Contain("## Acceptance criteria").And.Contain("## Summary");
     }
 
     /// <summary>
@@ -561,7 +561,7 @@ public sealed class PullRequestBodyTests
     }
 
     [Fact]
-    public void An_authored_body_over_the_bound_says_it_was_cut_and_where_the_whole_one_is()
+    public void An_authored_body_over_the_bound_ends_in_the_fixed_truncation_note_and_nothing_else()
     {
         RunDetails run = Run();
         run.RunDirectory = "/home/someone/.hall9k/projects/p/tasks/abc/runs/1";
@@ -570,10 +570,10 @@ public sealed class PullRequestBodyTests
         string body = PullRequestBody.Build(
             run, Task(externalReference: null), agentSummary: null, sourceUrl: null, Summary("A title", runaway));
 
-        body.Should().Contain("[Truncated at 30000 characters.").And.Contain("pr-summary.md")
-            .And.Contain($"h9k task show {run.TaskId}");
-        body.Should().NotContain(run.RunDirectory,
-            "the note names the file, never a daemon-machine-local absolute path carrying the operator's username");
+        body.TrimEnd().Should().EndWith("\n\n[Truncated at 30000 characters.]");
+        body.Should().NotContain("pr-summary.md").And.NotContain("h9k").And.NotContain(run.TaskId.ToString())
+            .And.NotContain(run.RunDirectory,
+                "the note names no file, command, or task, and never a daemon-machine-local path");
     }
 
     /// <summary>
@@ -618,7 +618,7 @@ public sealed class PullRequestBodyTests
             string.Empty,
             "Work item: [#42](https://github.com/Hallmanac/hall9k/issues/42)",
             string.Empty,
-            "## Agent summary",
+            "## Summary",
             "What I did.",
             string.Empty));
     }

@@ -123,7 +123,7 @@ public sealed class PrSummaryArtifactTests : IDisposable
         PullRequestBody.Build(Run(), Task(), "run narration", sourceUrl: null, summary)
             .Should().Contain("Every host uses the shared provider now.")
             .And.NotContain("run narration")
-            .And.NotContain("## Agent summary");
+            .And.NotContain("## Summary");
     }
 
     /// <summary>
@@ -140,7 +140,7 @@ public sealed class PrSummaryArtifactTests : IDisposable
         PullRequestBody.Title(Task(), summary)
             .Should().Be("PROJ-4861: Turn an external work item into a task with one command");
         PullRequestBody.Build(Run(), Task(), "run narration", sourceUrl: null, summary)
-            .Should().Contain("## Agent summary").And.Contain("run narration");
+            .Should().Contain("## Summary").And.Contain("run narration");
     }
 
     public void Dispose()
