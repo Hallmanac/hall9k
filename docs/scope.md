@@ -481,7 +481,7 @@ which side of that line a lesson falls on and why; `lessons.md` does not, becaus
 a byte-for-byte determinism contract across nodes and this answer depends on which node is
 asking.
 
-Distillation is a task a human authors. `h9k learn distill` creates an ordinary research spike
+Distillation is a task a human authors. `h9k learn distill` creates a research spike
 draft and stops: nothing dispatches until a person publishes and queues it, and no daemon code
 path authors one (a source sweep in the test suite holds that). Its instructions are
 merge-and-cite only, and the citation half is enforced rather than requested: `h9k learn

@@ -169,7 +169,7 @@ public sealed class LearningDistillCommand : Hall9kAsyncCommand<LearningDistillC
             Objective(scope, active.Count),
             Criteria(),
             TaskType.Spike,
-            Context(scope, active, ownerScoped, tracking.Label, now),
+            Context(taskId, scope, active, ownerScoped, tracking.Label, now),
             constraints: null,
             externalReference: null,
             now,
@@ -207,6 +207,7 @@ public sealed class LearningDistillCommand : Hall9kAsyncCommand<LearningDistillC
     /// session that mistook it for the live inventory would cite ids that have since retired.
     /// </summary>
     internal static string Context(
+        Guid taskId,
         ResolvedKnowledgeScope scope,
         IReadOnlyList<LearningDetails> active,
         bool ownerScoped,
@@ -218,6 +219,7 @@ public sealed class LearningDistillCommand : Hall9kAsyncCommand<LearningDistillC
         context.AppendLine(PromptTemplates.Load(TemplateFile, "context", new Dictionary<string, string>
         {
             ["ListArguments"] = listArguments,
+            ["TaskId"] = taskId.ToString(),
         }));
         context.AppendLine();
         context.AppendLine(

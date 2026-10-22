@@ -174,16 +174,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine($"Exit criterion — the one thing a later review session judges your findings and your "
             + $"branch against, and nothing else: {task.ExitCriterion}");
         prompt.AppendLine();
-        if (task.AcceptanceCriteria.Count > 0)
-        {
-            prompt.AppendLine("Acceptance criteria, the rules this spike's work is held to:");
-            foreach (string criterion in task.AcceptanceCriteria)
-            {
-                prompt.AppendLine($"- {criterion}");
-            }
-
-            prompt.AppendLine();
-        }
+        AppendSpikeAcceptanceCriteria(prompt, task);
 
         if (task.Constraints is { } budget && (budget.MaxTurns is not null || budget.MaxTokens is not null
             || budget.MaxWallClock is not null))
@@ -242,6 +233,30 @@ public static class AgentPromptBuilder
             + "review session judges the real verdict independently against this same document and your "
             + "branch, so write your honest assessment rather than the answer you think is wanted.");
         return PromptLineEndings.Finish(prompt);
+    }
+
+    /// <summary>
+    /// A spike's acceptance criteria as working rules for the build and fix sessions. They are not
+    /// what the review grades (the exit criterion alone is), so the heading says so: a session
+    /// holding both would otherwise have to guess which one governs. The fix lap renders them too,
+    /// because it acts on the same work with no review afterward that could undo it.
+    /// </summary>
+    private static void AppendSpikeAcceptanceCriteria(StringBuilder prompt, TaskDetails task)
+    {
+        if (task.AcceptanceCriteria.Count == 0)
+        {
+            return;
+        }
+
+        prompt.AppendLine(
+            "Working rules for this spike. The review does not grade these, only the exit criterion "
+            + "above, but follow them while you work:");
+        foreach (string criterion in task.AcceptanceCriteria)
+        {
+            prompt.AppendLine($"- {criterion}");
+        }
+
+        prompt.AppendLine();
     }
 
     /// <summary>The heading <see cref="BuildSpike"/>'s own findings-document instructions live under, so its own result-capture step (SpikeEngine) can find the same text a human reading the prompt would.</summary>
@@ -365,6 +380,13 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine($"Reviewer's reason: {reviewerReason}");
         prompt.AppendLine();
+        AppendSpikeAcceptanceCriteria(prompt, task);
+        if (task.AgentContext.IsNotBlank())
+        {
+            prompt.AppendLine(task.AgentContext);
+            prompt.AppendLine();
+        }
+
         prompt.AppendLine(
             "Never open a pull request, draft or otherwise, and never push this branch yourself.");
         prompt.AppendLine();
