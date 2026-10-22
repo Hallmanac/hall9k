@@ -1204,9 +1204,17 @@ the full payload before anything is sent, executes it against the Jira Cloud v2 
 same authenticated client the read side already uses — verifies the outcome by reading the item
 back rather than trusting Jira's own success response alone, and records the outcome including the
 returned key. A retried or replayed create narrows the window for a duplicate rather than closing
-it outright: `write-jira` searches for a marker an earlier attempt's card would carry before
-creating anything new, but Jira's search index updates asynchronously, so a retry inside that
-index-lag window can still find nothing even though the card genuinely exists. **Agent-facing
+it outright: nothing is written to the card to make it findable, so before creating anything new
+`write-jira` searches the target board for a card that the connection's own login created (Jira's
+`creator` field) no earlier than five minutes before the first create request ever recorded on the
+task, whose summary equals the composed summary exactly, and adopts the earliest such card that no
+other task carries. The window is anchored on the task's first create request, not the attempt in
+hand, so a create resubmitted after an earlier attempt failed still finds the card that attempt made.
+A window that cannot be read, or that holds more than 100 of the login's cards on the board, refuses
+with the board, the summary and the time to look from, so an operator can find the card by hand and
+`link-jira` it. Jira's search index updates asynchronously, so a retry inside that index-lag window
+can still find nothing even though the card genuinely exists. The search, its relative time bound
+and the summary in its answer have not been verified against a live tenant. **Agent-facing
 commands are observation gates**: `write-jira` and `link-jira` both read the key back through Jira
 before recording anything, so an agent's or an operator's claim is an argument that gets checked
 rather than a fact that gets accepted. Registered credentials are recorded as references (`env:`,
