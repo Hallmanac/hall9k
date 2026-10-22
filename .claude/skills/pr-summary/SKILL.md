@@ -123,6 +123,9 @@ budget, and a long body on a short change costs them more than it tells them.
 - **A change spread across several files or concerns**: the orientation sentence, then the grouped
   bullets and the paragraphs described below, as many as the change actually has and no more.
 
+A before-and-after scenario counts against the same budget. On a small change it stands in for the
+second orientation sentence rather than adding lines to the body.
+
 Every element in the next section is conditional on having something to put in it. There is no
 section you fill in because it is on a list, and a heading with one padded sentence under it is
 worse than no heading.
@@ -136,6 +139,16 @@ practice.
 **Lead with a sentence or two of orientation.** What this pull request is and where it came from: a
 review, a ticket, a bug someone hit, a field report. Then get into it. No `## Summary` heading
 restating the title.
+
+**When the change alters behavior a user or operator will notice, show it with a before-and-after
+scenario right after the orientation sentence.** Two to four lines, with no heading of its own. Write
+either a `Before:` line and an `After:` line, or a short acted-out sequence with a concrete actor
+(you, the operator, a reviewer) rather than an invented name. A scenario lets a reviewer see what
+the change is for before they read how it was done. The trigger is the visible behavior change, not
+the size of the diff: a documentation-only change, a refactor, a test-only change, or a change whose
+effect no user or operator would notice skips the scenario. For a bug fix, the reproduction in the
+bug rule below serves as the Before, and one `After` sentence following the consequence completes
+it, so a bug fix never carries both a reproduction and a separate scenario.
 
 **Use bullets for lists of independent things, and prose for anything that needs an explanation.**
 A run of five unrelated changes is a list; forcing it into paragraphs buries it. A single decision
@@ -317,6 +330,19 @@ One thing I deliberately left alone: `nuget restore` reports NU1903 advisories
 for `Newtonsoft.Json`, `RestSharp`, and `System.Text.Json`. Those are
 pre-existing and need their own card, since bumping three packages on a docs
 branch is the wrong place for it.
+```
+
+## One example of a small behavior change
+
+A change a user will notice, so it carries a scenario. The scenario stands in for the second
+orientation sentence, and there is nothing else to say, so this is the whole body:
+
+```
+This makes the report export keep the filters you had applied on screen, after
+a field report that the downloaded file never matched the table.
+
+Before: you filter the orders table to one region, click Export, and get a CSV of every region.
+After: the same click gives you a CSV of only the rows you were looking at.
 ```
 
 ## Title
