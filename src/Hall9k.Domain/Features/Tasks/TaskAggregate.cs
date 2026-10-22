@@ -71,6 +71,15 @@ public sealed class TaskAggregate
 
     public Guid PendingJiraWriteRequestedByOwnerId { get; private set; }
 
+    /// <summary>
+    /// When the first create request ever recorded on this task was made, or null when none has
+    /// been. Kept for the life of the task, unlike the pending-write fields above: every submit
+    /// mints a fresh <see cref="JiraWriteRequested.RequestedAt"/>, so the window a create's
+    /// duplicate check has to cover (a card an earlier, failed attempt may have made) starts at
+    /// this moment, not at the attempt in hand.
+    /// </summary>
+    public DateTimeOffset? FirstJiraCreateRequestedAt { get; private set; }
+
     /// <summary>What the most recent failed attempt reported, kept only while the write is still pending.</summary>
     public string? PendingJiraWriteFailureReason { get; private set; }
 
@@ -2487,6 +2496,10 @@ public sealed class TaskAggregate
         PendingJiraWriteRequestedByOwnerId = @event.RequestedByOwnerId;
         PendingJiraWriteFailureReason = null;
         PendingJiraWriteIsAuthFailure = false;
+        if (@event.Operation == JiraWriteOperation.Create)
+        {
+            FirstJiraCreateRequestedAt ??= @event.RequestedAt;
+        }
     }
 
     public void Apply(JiraWriteSucceeded @event)
