@@ -20,7 +20,3 @@ origin-branch: task/c9f06a01-h9k-learn-distill-cuts-a-resea
 published: 2026-10-22 11:34:52Z
 context: |-
   Evidence: b369378a (h9k learn distill, Research type, 2026-10-22) recorded and retired lessons only, then spent 13m49s in gates and 1m56s in review and failed at PR opening with 'GraphQL: No commits between main and task/b369378a-...'; the window resolved it by hand. VerificationRunner exempts Research and Spike from the no-commit check, but only a spike skips the pull request (docs/concepts.md: a research spike runs no gates and never opens a PR). LearningDistillCommand.cs passes TaskType.Research today. Out of scope: what a plain Research task with no commits should do in general (parked).
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-10-22 11:34:59Z
