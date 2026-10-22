@@ -4749,7 +4749,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         AppendFragment(prompt, file, "worktree-note", ("WorkingDirectory", workingDirectory));
         AppendFragment(prompt, file, "compose-once");
-        AppendFragment(prompt, file, "card-audience");
+        AppendFragment(prompt, file, "card-audience", ("PlatformWritingRule", WritingConventions.PlatformRule));
         if (task.CurrentRunId is not null)
         {
             // Nothing about card publication gates on task state (TaskDecider.RequestWorkItemPublication

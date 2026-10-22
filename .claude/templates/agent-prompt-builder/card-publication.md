@@ -91,6 +91,7 @@ session before it returns, means nobody ever reads whether it succeeded.
 ===card-audience===
 - The card's audience is people, not agents. Write it the way this team writes cards;
   the operational detail above stays on the Hall9k task, which is what owns it.
+  {{PlatformWritingRule}}
 ===no-logging-invariant===
 - The outside-interaction logging invariant every other dispatched prompt carries does
   NOT apply here: `h9k task log-interaction` records against a task's active run, and

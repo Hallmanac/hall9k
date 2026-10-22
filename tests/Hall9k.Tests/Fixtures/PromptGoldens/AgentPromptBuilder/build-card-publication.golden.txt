@@ -91,6 +91,7 @@ session before it returns, means nobody ever reads whether it succeeded.
   submission is safe — you do not need to search Jira for a duplicate yourself.
 - The card's audience is people, not agents. Write it the way this team writes cards;
   the operational detail above stays on the Hall9k task, which is what owns it.
+  Text posted under the owner's login never presents the work as done by hall9k or an AI agent, never cites a hall9k task, run, idea, or decision id, and names hall9k or h9k only when the change itself is about them.
 - **Log every outside interaction, unconditionally.** Any interaction with a party
   outside this session — another agent session reached through the mesh, a human
   steering you that way, anything external this task's own prompt did not already

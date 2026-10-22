@@ -1074,6 +1074,10 @@ public static class WorkPromptBuilder
     /// summary comment and thread replies, and the note a review lap drafts for the reviewer's own
     /// <c>h9k pr approve</c>, are posted to GitHub exactly as a pull request body is.
     /// </para>
+    /// <para>
+    /// The fixed <see cref="WritingConventions.PlatformRule"/> follows the project's text on its own
+    /// line, so a project that sets its own conventions still gets it.
+    /// </para>
     /// </summary>
     /// <param name="lead">
     /// The bullet's own sentence, naming which prose these conventions govern here. Per caller,
@@ -1085,6 +1089,7 @@ public static class WorkPromptBuilder
     {
         prompt.AppendLine($"{indent}- {lead}");
         prompt.Append(conventions.ToPromptLines($"{indent}  > "));
+        prompt.AppendLine($"{indent}  {WritingConventions.PlatformRule}");
     }
 
     /// <summary>

@@ -45,6 +45,7 @@ Add rate limiting to auth endpoints
   do on this task, that is a new claim, not a continuation of this one.
 - **How anything you write for people reads.** This project's writing conventions govern every commit message, and every word you draft for the operator to post anywhere under their own login:
   > No em dashes (U+2014); use commas, semicolons, colons, periods, or parentheses instead. Full sentences over telegraphic fragments. No AI attribution anywhere in it: no "Generated with Claude", no Co-Authored-By trailer.
+  Text posted under the owner's login never presents the work as done by hall9k or an AI agent, never cites a hall9k task, run, idea, or decision id, and names hall9k or h9k only when the change itself is about them.
 - **Log every outside interaction, unconditionally.** Any interaction with a party
   outside this session — another agent session reached through the mesh, a human
   steering you that way, anything external this task's own prompt did not already

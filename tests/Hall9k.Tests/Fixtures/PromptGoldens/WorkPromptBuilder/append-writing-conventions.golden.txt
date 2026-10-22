@@ -1,2 +1,3 @@
 - **How it reads.** This is the lead sentence:
   > No em dashes (U+2014); use commas, semicolons, colons, periods, or parentheses instead. Full sentences over telegraphic fragments. No AI attribution anywhere in it: no "Generated with Claude", no Co-Authored-By trailer.
+  Text posted under the owner's login never presents the work as done by hall9k or an AI agent, never cites a hall9k task, run, idea, or decision id, and names hall9k or h9k only when the change itself is about them.
