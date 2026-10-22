@@ -216,6 +216,10 @@ is how a three-line change acquires a thirty-line body.
   significance ("this is important because…").
 - **Any reference to Claude, Claude Code, or AI assistance.** No `Co-Authored-By`, no "Generated
   with". This applies to the title and the body both.
+- **Hall9k or an AI agent as the author of the work.** The pull request is posted under the
+  owner's login: never present the work as done by hall9k or an AI agent, never cite a hall9k
+  task, run, idea, or decision id, and name hall9k or h9k only when the change itself is about
+  them.
 
 ## Two examples of a larger change
 

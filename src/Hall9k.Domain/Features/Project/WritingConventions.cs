@@ -43,6 +43,17 @@ public sealed record WritingConventions
         + "\"Generated with Claude\", no Co-Authored-By trailer.");
 
     /// <summary>
+    /// The one rule every prompt that asks for text posted under the owner's login carries, whatever
+    /// a project set as its own conventions. It is the platform's rule, not a house style: the text
+    /// reads as the owner's, so it must not advertise the platform or present the work as an
+    /// agent's.
+    /// </summary>
+    public const string PlatformRule =
+        "Text posted under the owner's login never presents the work as done by hall9k or an AI "
+        + "agent, never cites a hall9k task, run, idea, or decision id, and names hall9k or h9k "
+        + "only when the change itself is about them.";
+
+    /// <summary>
     /// How long a project's own conventions text may be. Generous for any house style anyone has
     /// asked for, and bounded because this text is pasted verbatim into every composition prompt
     /// the platform writes: an unbounded value would spend a dispatched session's context on one
