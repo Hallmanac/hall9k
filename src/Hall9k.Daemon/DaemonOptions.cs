@@ -859,8 +859,8 @@ public sealed class DaemonOptions
     /// anything to adopt later, unlike <see cref="ForeignPublicationCeiling"/>'s own pid-tracked
     /// counterpart: every HTTP call <c>JiraWriteExecutor</c> makes is bounded well inside this
     /// window (<c>JiraHttp.Deadline</c>), and a create's own dedup search is bounded too — it is
-    /// one search call, capped at <c>JiraWriteExecutor.MaxWindowCards</c> results, rather than a
-    /// call per hit — so a write still pending this long was not merely slow. Generous next
+    /// a handful of paged search calls, capped at <c>JiraWriteExecutor.MaxWindowCards</c> results
+    /// in all, rather than a call per hit — so a write still pending this long was not merely slow. Generous next
     /// to how long any single write can actually take, for the same reason
     /// <see cref="ForeignPublicationCeiling"/> is generous next to
     /// <see cref="CardPublicationTimeout"/>: only a write nothing is working on any more should
