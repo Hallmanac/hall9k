@@ -187,16 +187,12 @@ internal static class PullRequestBody
     /// the note below reads as its own paragraph instead of as the tail of a half sentence.
     /// </para>
     /// <para>
-    /// The note names no path: a run directory is a daemon-machine-local absolute path that stops
-    /// resolving the moment the render sweep archives the task, and publishing it would put the
-    /// operator's home directory, and so their username, on a public repository.
-    /// <c>h9k task show</c> is the durable pointer, and the file's own name is enough to find it
-    /// beside the run's other artifacts. This is the one pointer the 2026-09-19 ruling leaves in
-    /// place, because it is not an addition around the prose: it is the honest statement that the
-    /// prose above it is incomplete, which a body that silently dropped the rest would not make.
+    /// The note is a fixed sentence that names no command, file, run, or task id: it is posted
+    /// under the owner's login, and a pointer into the platform's own run record is the kind of
+    /// self-advertisement that must not reach a public pull request.
     /// </para>
     /// </summary>
-    private static string BoundedBlock(string authored, Guid taskId)
+    private static string BoundedBlock(string authored)
     {
         if (authored.Length <= MaxRelayedBodyLength)
         {
@@ -210,8 +206,7 @@ internal static class PullRequestBody
         int lineBreak = authored.LastIndexOf('\n', MaxRelayedBodyLength - 1);
         int cut = lineBreak > 0 ? lineBreak : RelayedText.CutLength(authored, MaxRelayedBodyLength);
         string kept = authored[..cut].TrimEnd();
-        return $"{Block(kept)}\n\n[Truncated at {MaxRelayedBodyLength} characters. The whole summary is "
-            + $"in this run's `pr-summary.md`; see `h9k task show {taskId}`.]";
+        return $"{Block(kept)}\n\n[Truncated at {MaxRelayedBodyLength} characters.]";
     }
 
     /// <summary>
@@ -289,7 +284,7 @@ internal static class PullRequestBody
                 body.AppendLine();
             }
 
-            body.AppendLine(BoundedBlock(authored, run.TaskId));
+            body.AppendLine(BoundedBlock(authored));
             return body.ToString();
         }
 
@@ -310,7 +305,7 @@ internal static class PullRequestBody
         if (agentSummary.IsNotBlank())
         {
             body.AppendLine();
-            body.AppendLine("## Agent summary");
+            body.AppendLine("## Summary");
             body.AppendLine(Block(agentSummary));
         }
 

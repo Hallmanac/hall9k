@@ -2457,9 +2457,8 @@ public sealed class CloseoutEngine(
     /// observed.
     /// <para>
     /// The comment is unconditional and the same fixed template (<see cref="MergeComment"/>) for
-    /// both providers, naming only the pull request's URL, the task id, and the project name —
-    /// none of them free text a closing keyword could hide in — so it mentions the pull request
-    /// without ever asking GitHub to act on it via its own closing keywords (<c>Fixes #42</c>).
+    /// both providers, naming only the pull request's URL (not free text a closing
+    /// keyword could hide in), so it mentions the pull request without ever asking GitHub to act on it via its own closing keywords (<c>Fixes #42</c>).
     /// Whether the linked item is ALSO closed is a separate, opt-in decision from there: Jira's
     /// workflow transition is still a guess this repo refuses to make, so a Jira card is only ever
     /// commented; a GitHub issue can additionally be closed, under the configurable rule
@@ -2557,7 +2556,7 @@ public sealed class CloseoutEngine(
                 taskId,
                 JiraWriteOperation.Comment,
                 reference.Reference,
-                new JiraWritePayload(WorkItemType: null, Fields: null, Comment: MergeComment(project, task), Format: "plain"),
+                new JiraWritePayload(WorkItemType: null, Fields: null, Comment: MergeComment(task.PullRequestUrl), Format: "plain"),
                 project.JiraProjectKey,
                 node.OwnerId,
                 executor,
@@ -2696,7 +2695,7 @@ public sealed class CloseoutEngine(
         try
         {
             await provider.CommentAsync(
-                reference, MergeComment(project, task, closed), project.RepositoryPath, cancellationToken);
+                reference, MergeComment(task.PullRequestUrl, closed), project.RepositoryPath, cancellationToken);
             logger.LogInformation("Task {TaskId}: told {Reference} that {Url} merged", taskId, reference, task.PullRequestUrl);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -2898,26 +2897,17 @@ public sealed class CloseoutEngine(
     }
 
     /// <summary>
-    /// What the card is told. Short, factual, and explicit about whether anything else has
-    /// happened to it — a card that silently gains a comment and never moves reads like an
-    /// integration that half worked, and saying so costs one sentence; a card that was actually
-    /// closed alongside this note deserves the same explicitness rather than the platform's older,
-    /// now only sometimes true, promise never to touch its status at all. <paramref name="closed"/>
-    /// reports what actually happened (the caller only passes true once <c>CloseAsync</c> has
-    /// already succeeded), not merely what the close-linked-issue rule decided, since the two can
-    /// differ when the write itself fails — and the wording names no source (project setting vs.
-    /// task override), since either can be the one that decided it.
+    /// What the card is told: the merged pull request, and a second sentence only when the issue
+    /// was actually closed alongside it. The text names no product, task, or project, because it
+    /// is posted under the owner's login and reads as theirs. <paramref name="closed"/> reports
+    /// what actually happened (the caller only passes true once <c>CloseAsync</c> has already
+    /// succeeded), not merely what the close-linked-issue rule decided, since the two can differ
+    /// when the write itself fails.
     /// </summary>
-    internal static string MergeComment(ProjectDetails project, TaskAggregate task, bool closed = false) =>
-        $"""
-         The pull request for this work has merged: {task.PullRequestUrl}
-
-         Recorded by Hall9k as task {task.Id} in project {project.Name}. This is a one-off note at
-         merge{(closed
-             ? " — the issue was closed alongside it, per the close-linked-issue rule."
-             : ". Hall9k does not change this item's status or close it here, because which status a "
-               + "merge means is this project's workflow to decide.")}
-         """;
+    internal static string MergeComment(string? pullRequestUrl, bool closed = false) =>
+        closed
+            ? $"The pull request for this work has merged: {pullRequestUrl}\n\nThe issue was closed alongside it."
+            : $"The pull request for this work has merged: {pullRequestUrl}";
 
     /// <summary>
     /// The handoff the task hands down, composed from every run that carried this pull
