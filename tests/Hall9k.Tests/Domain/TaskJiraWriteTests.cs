@@ -390,6 +390,38 @@ public sealed class TaskJiraWriteTests
     }
 
     [Fact]
+    public void The_first_create_request_is_kept_for_the_life_of_the_task_across_later_requests_and_outcomes()
+    {
+        TaskAggregate task = Draft();
+        task.FirstJiraCreateRequestedAt.Should().BeNull("no create has been requested yet");
+
+        Guid first = DomainId.New();
+        task.Apply(TaskDecider.RequestJiraWrite(task, JiraWriteOperation.Create, null, "{}", first, Now, Owner));
+        task.Apply(TaskDecider.RecordJiraWriteFailure(task, first, "Jira refused", isAuthFailure: false, Now.AddMinutes(1)));
+
+        Guid second = DomainId.New();
+        task.Apply(TaskDecider.RequestJiraWrite(
+            task, JiraWriteOperation.Create, null, "{}", second, Now.AddMinutes(30), Owner));
+
+        task.PendingJiraWriteId.Should().Be(second);
+        task.FirstJiraCreateRequestedAt.Should().Be(Now, "every submit mints a new request time, but the window a duplicate check covers starts at the first");
+
+        task.Apply(TaskDecider.RecordJiraWriteFailure(task, second, "Jira refused again", isAuthFailure: false, Now.AddMinutes(31)));
+        task.FirstJiraCreateRequestedAt.Should().Be(Now, "an ended write does not clear it, unlike the pending-write fields");
+    }
+
+    [Fact]
+    public void A_comment_request_is_not_a_create_request()
+    {
+        TaskAggregate task = Draft(new ExternalReference(WorkItemProvider.Jira, "PROJ-123"));
+
+        task.Apply(TaskDecider.RequestJiraWrite(
+            task, JiraWriteOperation.Comment, null, "{}", DomainId.New(), Now, Owner));
+
+        task.FirstJiraCreateRequestedAt.Should().BeNull();
+    }
+
+    [Fact]
     public void Recording_an_outcome_for_a_write_that_is_not_pending_is_refused()
     {
         TaskAggregate task = Draft(new ExternalReference(WorkItemProvider.Jira, "PROJ-123"));
