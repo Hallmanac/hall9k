@@ -1,0 +1,23 @@
+hall9k-task-record: 1
+task-id: 01a1612a-687b-70c2-9834-1b181ce26244
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#756
+objective: Text the platform itself posts to a Jira card, GitHub issue, or pull request names no product, CLI, task id, project, or AI agent, and every agent composing such text is told the same
+criteria:
+  - |-
+    The closeout merge note on a Jira card or GitHub issue reads exactly 'The pull request for this work has merged: <url>'. It is followed by 'The issue was closed alongside it.' only when closeout closed the issue. It names no product, task id, or project, and a queued Jira replay posts the same text (MergeComment, src/Hall9k.Daemon/Closeout/CloseoutEngine.cs:2911; replay at src/Hall9k.Daemon/JiraWrites/JiraWriteRetryEngine.cs:429).
+  - When the PR body is cut, the note appended reads exactly '[Truncated at 30000 characters.]' and names no command, file, run, or task id (src/Hall9k.Daemon/Execution/PullRequestBody.cs:213).
+  - The PR body fallback heading reads '## Summary', not '## Agent summary' (src/Hall9k.Daemon/Execution/PullRequestBody.cs:313).
+  - |-
+    Every prompt that asks an agent to compose text posted under the owner's login carries one fixed platform rule: such text never presents the work as done by hall9k or an AI agent, never cites a hall9k task, run, idea, or decision id, and names hall9k or h9k only when the change itself is about them. It is carried by WorkPromptBuilder.AppendWritingConventions (src/Hall9k.Connectors/Prompts/WorkPromptBuilder.cs:1083), by the card-audience rule in .claude/templates/agent-prompt-builder/card-publication.md, and by the Keep out list in .claude/skills/pr-summary/SKILL.md:217. It is not part of the project-editable writing conventions, so a project that sets its own still gets it.
+  - A unit test renders the merge note (closed and not closed), the PR body fallback and truncated bodies, the held-reply push line, and the review-body prefix, all with inputs that contain neither word. It fails if any output contains 'hall9k' or 'h9k', case-insensitively.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/1ce26244-text-the-platform-itself-posts
+published: 2026-10-22 01:16:57Z
+context: |-
+  Brian 2026-10-21: hall9k must not advertise itself on Jira cards, GitHub issues, PRs, or anywhere it writes under the owner's login (same rule as no Claude attribution). Discovery: ideas/c868c526-*/workspace/summary.md, task A; challenge verdict in this task's journal.md. Nothing reads the merge note text back. The BoundedBlock taskId parameter becomes unused once the truncation note is pinned; remove it. The task-id ban applies to hall9k's own PRs too (window ruling on the challenge's recommendation). Stay out of sibling d4b97f1a's files: src/Hall9k.Connectors/WorkItems/JiraWriteExecutor.cs, JiraWriteCoordinator.cs, tests/Hall9k.Tests/Connectors/JiraWriteExecutorTests.cs, and .claude/skills/hall9k-cli-reference/SKILL.md (stale literals there and in JiraMarkupTextTests.cs:231 stay valid plain-text inputs). Prompt goldens will change wherever AppendWritingConventions renders; that churn is expected. Out of scope: the Jira description marker (sibling B), cleanup of text already posted (Brian declined), agent context in GitHub issue bodies and refs/hall9k/* ledger refs (parked), the task/{shortid}-{slug} branch template and a deterministic 'names hall9k' refusal in WritingConventionsCheck (parked).
