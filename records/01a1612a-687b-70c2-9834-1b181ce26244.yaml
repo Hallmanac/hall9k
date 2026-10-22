@@ -21,3 +21,7 @@ origin-branch: task/1ce26244-text-the-platform-itself-posts
 published: 2026-10-22 01:16:57Z
 context: |-
   Brian 2026-10-21: hall9k must not advertise itself on Jira cards, GitHub issues, PRs, or anywhere it writes under the owner's login (same rule as no Claude attribution). Discovery: ideas/c868c526-*/workspace/summary.md, task A; challenge verdict in this task's journal.md. Nothing reads the merge note text back. The BoundedBlock taskId parameter becomes unused once the truncation note is pinned; remove it. The task-id ban applies to hall9k's own PRs too (window ruling on the challenge's recommendation). Stay out of sibling d4b97f1a's files: src/Hall9k.Connectors/WorkItems/JiraWriteExecutor.cs, JiraWriteCoordinator.cs, tests/Hall9k.Tests/Connectors/JiraWriteExecutorTests.cs, and .claude/skills/hall9k-cli-reference/SKILL.md (stale literals there and in JiraMarkupTextTests.cs:231 stay valid plain-text inputs). Prompt goldens will change wherever AppendWritingConventions renders; that churn is expected. Out of scope: the Jira description marker (sibling B), cleanup of text already posted (Brian declined), agent context in GitHub issue bodies and refs/hall9k/* ledger refs (parked), the task/{shortid}-{slug} branch template and a deterministic 'names hall9k' refusal in WritingConventionsCheck (parked).
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-10-22 01:17:04Z
