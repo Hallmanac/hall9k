@@ -174,6 +174,17 @@ public static class AgentPromptBuilder
         prompt.AppendLine($"Exit criterion — the one thing a later review session judges your findings and your "
             + $"branch against, and nothing else: {task.ExitCriterion}");
         prompt.AppendLine();
+        if (task.AcceptanceCriteria.Count > 0)
+        {
+            prompt.AppendLine("Acceptance criteria, the rules this spike's work is held to:");
+            foreach (string criterion in task.AcceptanceCriteria)
+            {
+                prompt.AppendLine($"- {criterion}");
+            }
+
+            prompt.AppendLine();
+        }
+
         if (task.Constraints is { } budget && (budget.MaxTurns is not null || budget.MaxTokens is not null
             || budget.MaxWallClock is not null))
         {
