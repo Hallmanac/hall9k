@@ -350,8 +350,8 @@ public sealed class JiraWriteRetryEngine(
             + $"time it was given to record that outcome. Nothing has stood a chance to finish it in over "
             + $"{_options.PendingJiraWriteCeiling}, so it is ended here rather than left blocking every "
             + "later Jira write on this task. Resubmit with h9k task write-jira if the board still needs "
-            + "it; a create's own marker search will find the card first if it turns out Jira made one "
-            + "before this write was cut short.",
+            + "it; a create first searches the board for a card this login created for the task, with the "
+            + "same summary, and adopts it if it turns out Jira made one before this write was cut short.",
             isAuthFailure: false,
             DateTimeOffset.UtcNow);
         session.Events.Append(task.Id, failed);
@@ -478,7 +478,7 @@ public sealed class JiraWriteRetryEngine(
             // propagate rather than being swallowed into an ordinary JiraWriteFailed. But unlike an
             // operator's own write-jira, this notice retries itself automatically on the very next
             // sweep once JiraWriteRetryEngine's own stale-pending ceiling clears the pending marker
-            // — and a Comment write has no dedup gate the way a Create's own marker search does, so
+            // — and a Comment write has no dedup gate the way a Create's own duplicate-card search does, so
             // leaving the notice queued here would let a later sweep post the identical comment a
             // second time with nobody watching, exactly the "retry loop around an unwatched write"
             // this refuses to become (independent pre-PR review, cycle 4). Marked attempted here

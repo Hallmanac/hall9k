@@ -2195,7 +2195,7 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     /// rather than being swallowed into an ordinary JiraWriteFailed (a card that genuinely carries
     /// the comment must not be recorded as though the write never happened). But a queued merge
     /// notice retries itself automatically on the very next sweep once the pending marker clears,
-    /// and a Comment write has no dedup gate the way a Create's own marker search does — so the
+    /// and a Comment write has no dedup gate the way a Create's own duplicate-card search does — so the
     /// drain has to mark the notice attempted itself rather than leaving it to be picked up again,
     /// or the identical comment goes out a second time with nobody watching (independent pre-PR
     /// review, cycle 4). The race is stood in for here by a second write ending the same pending

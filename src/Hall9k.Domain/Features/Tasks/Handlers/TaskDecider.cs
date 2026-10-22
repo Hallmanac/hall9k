@@ -2910,9 +2910,9 @@ public static class TaskDecider
         {
             // The decider's cheap half of the dedup gate (backlog: mirroring the GitHub read-back
             // gate): a task already carrying an item refuses here before Jira is ever asked. The
-            // executor's own physical dedup — searching for a task marker before it creates a
-            // card — is what catches the harder case, a crash between Jira creating the card and
-            // this event ever landing.
+            // executor's own physical dedup — searching the board for a card this login created
+            // for the task before it creates one — is what catches the harder case, a crash
+            // between Jira creating the card and this event ever landing.
             if (task.ExternalReference is { } existing)
             {
                 throw new DomainConflictException(

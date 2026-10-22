@@ -75,148 +75,174 @@ public enum JiraAuthProbeResult
 /// browser-based twg login just for writes.
 /// </para>
 /// <para>
-/// One deliberate exception to "everything is v2": the dedup marker search
-/// (<see cref="FindByMarkerAsync"/>) calls the newer <c>/rest/api/3/search/jql</c> endpoint rather
+/// One deliberate exception to "everything is v2": the duplicate-card search
+/// (<see cref="FindCreatedCardsAsync"/>) calls the newer <c>/rest/api/3/search/jql</c> endpoint rather
 /// than the classic <c>/rest/api/2/search</c>/<c>/rest/api/3/search</c> GET/POST pair, which
 /// Atlassian has been retiring in favor of it — there is no v2 equivalent of the replacement.
-/// Nothing about that endpoint touches rich text (it returns only a candidate's key), so this does
-/// not reopen the v2-for-text rationale above; it is a plain JQL lookup that happens to live under
-/// a different version prefix. This could not be verified against a live Jira Cloud tenant from
-/// this build environment (no network access here), so the exact request/response shape is this
-/// class's own best reading of Atlassian's published migration guidance rather than an observed
-/// fact — flagged here per AGENTS.md's "never guess at unobserved facts" so whoever first runs this
-/// against a real tenant knows exactly which corner to watch.
+/// Nothing about that endpoint touches rich text (it returns only a candidate's key and its
+/// plain-text summary), so this does not reopen the v2-for-text rationale above; it is a plain JQL
+/// lookup that happens to live under a different version prefix. None of this could be verified
+/// against a live Jira Cloud tenant from this build environment (no network access here): the
+/// exact request/response shape, the <c>creator = currentUser()</c> and relative
+/// <c>created &gt;= -Nm</c> terms, and <c>summary</c> being returned in the search answer are this
+/// class's own best reading of Atlassian's published guidance rather than observed facts — flagged
+/// here per AGENTS.md's "never guess at unobserved facts" so whoever first runs this against a real
+/// tenant knows exactly which corners to watch.
 /// </para>
 /// </summary>
-public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? requester = null)
+public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? requester = null, TimeProvider? clock = null)
 {
     /// <summary>
-    /// A card carrying this exact text in its description is a card hall9k made for this task —
-    /// the physical dedup gate (mirroring the GitHub read-back gate): searched for before every
-    /// create, so a crash (or any failure) between Jira creating a card and hall9k recording it
-    /// narrows the window for a second card on a later attempt rather than closing it outright.
-    /// Scoped to the task rather than to one write attempt's own guid: a fresh <c>SubmitAsync</c>
-    /// mints a new write id every time, so a marker keyed to that guid could never be found by the
-    /// very next attempt it exists to guard — the task is the identity that must not get a second
-    /// card, so the task is what the marker names.
+    /// How far before a task's first create request the duplicate search starts looking: room for
+    /// this machine's clock and Jira's to disagree, and for a create that reached Jira a little
+    /// before hall9k recorded the request it belongs to.
     /// </summary>
-    public static string Marker(Guid taskId) => $"hall9k-task:{taskId:D}";
+    public static readonly TimeSpan CreateWindowSkew = TimeSpan.FromMinutes(5);
 
     /// <summary>
-    /// Caps how many of <see cref="FindByMarkerAsync"/>'s own search hits get their own confirming
-    /// read. A mature board can return a full page of loosely-matching candidates (JQL's <c>~</c>
-    /// is a Lucene text match, not an equality check), and each confirmation is a synchronous call
-    /// of its own — left unbounded, a create's dedup gate could cost enough sequential requests to
-    /// run past <c>DaemonOptions.PendingJiraWriteCeiling</c> in the worst case (that
-    /// option lives in the daemon project this connector cannot reference, so the number here is
-    /// duplicated rather than shared). Passed to the search itself as its own page-size limit too,
-    /// so the search does not even return more than this many candidates to begin with — the
-    /// client-side cap on top is defense in depth against a search that ignores or exceeds it.
+    /// How many of the login's own cards on the board the duplicate search reads in the window
+    /// before it refuses. The search asks for one more than this, so a window holding exactly this
+    /// many is read whole and anything past it is seen to be past it.
     /// </summary>
-    private const int MaxMarkerSearchCandidates = 10;
+    public const int MaxWindowCards = 100;
 
     private readonly JiraRequester requester = requester ?? JiraHttp.Requester;
+    private readonly TimeProvider clock = clock ?? TimeProvider.System;
 
     /// <summary>
-    /// The physical half of the dedup gate: does a card already carry this task's marker. Called
-    /// before every create, first attempt and every later one alike, so a create Jira completed but
-    /// hall9k never recorded is found rather than duplicated. <c>~</c> is a Lucene text-analysis
-    /// match with no ordering guarantee, so the search can return several candidates with the
-    /// actual marker-carrying card anywhere among them — every returned candidate, up to
-    /// <see cref="MaxMarkerSearchCandidates"/>, is confirmed against its own description field in
-    /// search order (<see cref="CandidateCarriesMarkerAsync"/>) until one carries the marker,
-    /// rather than trusting only whichever the search happened to rank first.
+    /// The physical half of the create dedup gate, called before every create (the first attempt and
+    /// every later one alike): the keys of the cards on <paramref name="board"/> that this
+    /// connection's own login created no earlier than <see cref="CreateWindowSkew"/> before
+    /// <paramref name="firstCreateRequestedAt"/> and whose summary equals
+    /// <paramref name="summary"/> exactly, earliest first. A create Jira completed but hall9k never
+    /// recorded is therefore found rather than duplicated, with nothing written to the card to make
+    /// it findable. The window starts at the task's first create request, not at the attempt in
+    /// hand, because every submit mints a fresh request time and the card an earlier attempt made
+    /// predates it.
     /// <para>
-    /// A page that comes back exactly full is not trusted as an exhaustive negative even once every
-    /// one of those candidates is confirmed clear: the search was capped at that many results, so
-    /// the marker-carrying card itself could be sitting just past the cut, unseen and unconfirmed.
-    /// This refuses rather than returning null in that case, the same "an unconfirmable check
-    /// refuses rather than guesses" doctrine <see cref="CandidateCarriesMarkerAsync"/> already
-    /// applies to a single unreadable candidate.
+    /// The match is on <c>creator</c>, which is always the login that made the card, rather than
+    /// <c>reporter</c>, which a composed payload can set and a person can change. The time bound is
+    /// relative (<c>created &gt;= -Nm</c>) because a JQL date literal is read in the searching
+    /// profile's timezone, so a formatted timestamp would land hours off for anyone whose profile is
+    /// not UTC. Summary is read from the answer rather than searched on: JQL's <c>~</c> is a Lucene
+    /// text match, not an equality check, and the whole window is small enough to read.
+    /// </para>
+    /// <para>
+    /// An answer or a candidate entry that cannot be read, and a window holding more than
+    /// <see cref="MaxWindowCards"/> cards, refuse rather than return nothing: an unconfirmable
+    /// check is not a negative one.
     /// </para>
     /// </summary>
-    public async Task<string?> FindByMarkerAsync(Guid taskId, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<string>> FindCreatedCardsAsync(
+        JiraProjectKey board, string summary, DateTimeOffset firstCreateRequestedAt, CancellationToken cancellationToken)
     {
+        DateTimeOffset lookFrom = firstCreateRequestedAt - CreateWindowSkew;
+        long minutes = Math.Max(1, (long)Math.Ceiling((clock.GetUtcNow() - lookFrom).TotalMinutes));
+
         string authorization = await AuthorizeAsync(
-            $"search for {Marker(taskId)} at {account.Site}", cancellationToken);
+            $"search {board} for a card already created for this task at {account.Site}", cancellationToken);
         JsonObject body = new()
         {
-            ["jql"] = $"text ~ \"{Marker(taskId)}\"",
-            ["maxResults"] = MaxMarkerSearchCandidates,
-            ["fields"] = new JsonArray("key"),
+            ["jql"] = $"project = \"{board.Value}\" AND creator = currentUser() AND created >= -{minutes}m ORDER BY created ASC",
+            ["maxResults"] = MaxWindowCards + 1,
+            ["fields"] = new JsonArray("summary"),
         };
         JiraResponse response = await SendAsync(
             new JiraRequest(HttpMethod.Post, account.Endpoint("/rest/api/3/search/jql"), authorization, body.ToJsonString()),
-            $"search for {Marker(taskId)}",
+            $"search {board} for a card already created for this task",
             cancellationToken);
 
-        IReadOnlyList<string> candidates = ExtractKeys(response.Body, out bool readable);
-        if (!readable)
+        WindowRead window = ReadWindow(response.Body);
+        if (window.Cards is null)
         {
-            throw new JiraWriteExecutionException(
-                JiraWriteFailureKind.Other,
-                $"The marker search for {Marker(taskId)} could not be confirmed readable — Jira's "
-                + "answer came back as something other than the expected {\"issues\": [...]} shape "
-                + "(not JSON, not an object, or missing the issues array). Refusing to create on an "
-                + $"unconfirmed dedup check; check the board by hand for {Marker(taskId)} and, if it is "
-                + "not there, run the write again.");
+            throw RefuseUnconfirmed(
+                board, summary, lookFrom,
+                "Jira's answer to the search came back as something other than the expected "
+                + "{\"issues\": [{\"key\": ..., \"fields\": {\"summary\": ...}}]} shape (not JSON, not an "
+                + "object, or an entry missing its key or summary).");
         }
 
-        foreach (string candidate in candidates.Take(MaxMarkerSearchCandidates))
+        if (window.HasMore || window.Cards.Count > MaxWindowCards)
         {
-            if (await CandidateCarriesMarkerAsync(candidate, taskId, cancellationToken))
-            {
-                return candidate;
-            }
+            throw RefuseUnconfirmed(
+                board, summary, lookFrom,
+                $"The window holds more than {MaxWindowCards} of this login's cards on the board, more than one "
+                + "search reads, so a card for this task could be sitting past the cut. If you find one, "
+                + "link it; if you do not, create the card in Jira directly and link that, since a create "
+                + "from here stays refused while the window is this full.");
         }
 
-        if (candidates.Count >= MaxMarkerSearchCandidates)
-        {
-            throw new JiraWriteExecutionException(
-                JiraWriteFailureKind.Other,
-                $"The marker search for {Marker(taskId)} came back with a full page of "
-                + $"{MaxMarkerSearchCandidates} candidates, none of which carried the marker — but the "
-                + "search itself was capped at that many results, so a marker-carrying card ranked "
-                + "beyond the page could exist and never got checked. Refusing to create on an "
-                + $"unconfirmed dedup check; check the board by hand for {Marker(taskId)} and, if it is "
-                + "not there, run the write again.");
-        }
-
-        return null;
+        return
+        [
+            .. window.Cards
+                .Where(card => string.Equals(card.Summary, summary, StringComparison.Ordinal))
+                .Select(card => card.Key),
+        ];
     }
 
+    private static JiraWriteExecutionException RefuseUnconfirmed(
+        JiraProjectKey board, string summary, DateTimeOffset lookFrom, string why) =>
+        new(
+            JiraWriteFailureKind.Other,
+            $"{why} Refusing to create on an unconfirmed duplicate check. Look on {board} for a card this "
+            + $"connection's login created since {lookFrom.UtcDateTime:yyyy-MM-dd HH:mm} UTC titled "
+            + $"\"{Bounded(summary)}\"; if it is there, link it to this task with h9k task link-jira, and "
+            + "if it is not, run the write again.");
+
     /// <summary>
-    /// <c>~</c> is Jira's CONTAINS operator, evaluated through Lucene text analysis rather than as
-    /// an equality check, and the marker's own reserved characters (<c>:</c>, <c>-</c>) are
-    /// tokenized apart rather than matched whole — so a search for this task's marker can return a
-    /// different card whose tokens merely overlap, and nothing about the search itself proves the
-    /// candidate actually carries this task's marker. This reads the candidate's own description
-    /// field directly, by key, and confirms the exact marker text is present in it before
-    /// <see cref="FindByMarkerAsync"/> is allowed to trust the match — parsed out of the response's
-    /// own <c>fields.description</c> JSON string, never a raw-text scan of the whole response.
+    /// What <see cref="FindCreatedCardsAsync"/> reads out of a search answer: <c>Cards</c> is null
+    /// when the answer cannot be confirmed as the expected shape (never merely when it holds no
+    /// cards, which <c>{"issues": []}</c> genuinely proves), and <c>HasMore</c> is true when Jira
+    /// says there is another page, whatever the page in hand held.
     /// </summary>
-    private async Task<bool> CandidateCarriesMarkerAsync(string candidateKey, Guid taskId, CancellationToken cancellationToken)
+    private sealed record WindowRead(IReadOnlyList<WindowCard>? Cards, bool HasMore);
+
+    private sealed record WindowCard(string Key, string Summary);
+
+    private static WindowRead ReadWindow(string body)
     {
-        string authorization = await AuthorizeAsync(
-            $"read {candidateKey} at {account.Site}", cancellationToken);
-        JiraResponse response = await SendAsync(
-            new JiraRequest(HttpMethod.Get, account.Endpoint($"/rest/api/2/issue/{candidateKey}?fields=description"), authorization),
-            $"read {candidateKey} back",
-            cancellationToken);
-
-        string? description = ExtractDescription(response.Body, out bool readable);
-        if (!readable)
+        WindowRead unreadable = new(null, false);
+        try
         {
-            throw new JiraWriteExecutionException(
-                JiraWriteFailureKind.Other,
-                $"Jira found a card ({candidateKey}) that may already carry this task's marker, but its "
-                + "description could not be read back to confirm it — the response body was not the "
-                + "expected shape (not JSON, not an object, or missing the fields object). Refusing to "
-                + $"create a second card on an unconfirmed dedup check; check the board by hand for "
-                + $"{Marker(taskId)} and, if it is not there, run the write again.");
-        }
+            using JsonDocument document = JsonDocument.Parse(body);
+            JsonElement root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("issues", out JsonElement issues)
+                || issues.ValueKind != JsonValueKind.Array)
+            {
+                return unreadable;
+            }
 
-        return (description ?? string.Empty).Contains(Marker(taskId), StringComparison.Ordinal);
+            List<WindowCard> cards = [];
+            foreach (JsonElement item in issues.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object
+                    || !item.TryGetProperty("key", out JsonElement key)
+                    || key.ValueKind != JsonValueKind.String
+                    || key.GetString() is not { } keyText
+                    || !JiraIssueKey.TryParseBareKey(keyText, out JiraIssueKey parsedKey)
+                    || !item.TryGetProperty("fields", out JsonElement fields)
+                    || fields.ValueKind != JsonValueKind.Object
+                    || !fields.TryGetProperty("summary", out JsonElement summary)
+                    || summary.ValueKind != JsonValueKind.String
+                    || summary.GetString() is not { } summaryText)
+                {
+                    return unreadable;
+                }
+
+                cards.Add(new WindowCard(parsedKey.Value, summaryText));
+            }
+
+            bool hasMore =
+                (root.TryGetProperty("nextPageToken", out JsonElement token)
+                    && token.ValueKind == JsonValueKind.String && token.GetString().IsNotBlank())
+                || (root.TryGetProperty("isLast", out JsonElement isLast) && isLast.ValueKind == JsonValueKind.False);
+            return new WindowRead(cards, hasMore);
+        }
+        catch (JsonException)
+        {
+            return unreadable;
+        }
     }
 
     /// <summary>
@@ -225,7 +251,7 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// <see cref="GitHubWorkItemProvider.CreateAsync"/> applies to <c>gh issue create</c>.
     /// </summary>
     public async Task<JiraWriteResult> CreateAsync(
-        JiraProjectKey project, JiraWritePayload payload, Guid taskId, CancellationToken cancellationToken)
+        JiraProjectKey project, JiraWritePayload payload, CancellationToken cancellationToken)
     {
         if (!project.HasValue)
         {
@@ -239,7 +265,7 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
             ? []
             : new Dictionary<string, string>(payload.Fields);
         string? summary = ExtractField(fields, "summary");
-        string description = AppendMarker(ApplyFormat(ExtractField(fields, "description"), payload.EffectiveFormat), Marker(taskId));
+        string description = ApplyFormat(ExtractField(fields, "description"), payload.EffectiveFormat) ?? string.Empty;
 
         // Discarded case-insensitively, the same way ExtractField above pulls "summary" and
         // "description" regardless of a composer's own casing choice: a card is always filed
@@ -387,8 +413,8 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
                 + "credential rather than any other failure. This is not reported as the ordinary "
                 + "pending-authentication state, because the comment already landed: retrying it once "
                 + "the connection is fixed would post the identical comment a second time, since a "
-                + "comment carries no marker a later attempt could use to tell it apart from a fresh "
-                + $"one. Check {issueKey} before resubmitting.");
+                + "comment gives a later attempt nothing to search for that would tell it apart from a "
+                + $"fresh one. Check {issueKey} before resubmitting.");
         }
     }
 
@@ -419,7 +445,7 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
         // CommentAsync's own catch already reclassifies that case for the one operation (a comment)
         // where retrying automatically would risk a duplicate; Create and Update stay accurately
         // AuthFailure so they keep retrying automatically, which is safe for both (a create's own
-        // marker search, an update's own idempotent re-apply) — and so an excluded AuthFailure
+        // duplicate-card search, an update's own idempotent re-apply) — and so an excluded AuthFailure
         // carries no JiraWriteExecutionException.WriteAlreadyRan marker either, which is correct
         // for the retrying callers and, for a caller that reads the marker instead, means only
         // that a credential this executor could not read the card back with is one nothing else
@@ -435,9 +461,10 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
                 + "itself already succeeded, so do not record this as a refusal of the write. "
                 + (confirmsExistenceOnly
                     ? "Check the board before writing again."
-                    : "The marker search this executor runs first will find the card if it exists rather "
-                        + "than filing a second one, but Jira's own search index updates asynchronously, so "
-                        + "a resubmission inside that lag window can still find nothing and file a second "
+                    : "Before creating, this executor searches the board for a card this login already "
+                        + "created for the task, with the same summary, and adopts it rather than filing a "
+                        + "second one, but Jira's own search index updates asynchronously, so a "
+                        + "resubmission inside that lag window can still find nothing and file a second "
                         + "card — check the board before resubmitting if you can."),
                 writeAlreadyRan: true);
         }
@@ -673,9 +700,18 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     }
 
     /// <summary>
+    /// The summary a create of <paramref name="payload"/> will send, read the way
+    /// <see cref="CreateAsync"/> reads it (case-insensitively, decoded from its raw JSON), so the
+    /// duplicate search compares against exactly what a create would have written.
+    /// </summary>
+    public static string? ComposedSummary(JiraWritePayload payload) =>
+        ExtractField(
+            payload.Fields is null ? [] : new Dictionary<string, string>(payload.Fields), "summary");
+
+    /// <summary>
     /// Pull a first-class field (<c>summary</c>, <c>description</c>) out of a composed payload's
     /// fields, case-insensitively — a composing agent's own casing choice ("Description" as well as
-    /// "description") should not survive into a second, marker-only entry alongside this executor's
+    /// "description") should not survive into a second entry alongside this executor's
     /// own dedicated <c>summary</c>/<c>description</c> nodes for the same thing. Removes whichever
     /// casing it found so <see cref="AppendFields"/> never sees it again.
     /// </summary>
@@ -743,21 +779,6 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     }
 
     /// <summary>
-    /// The marker appended to whatever description a composed payload already carries, rather than
-    /// replacing it: the description is what the card's audience reads, and the marker only has to
-    /// be findable by a search, not visible at the top. Appended bare, with no surrounding
-    /// brackets: <see cref="Marker"/>'s own text carries no character Jira wiki markup assigns
-    /// meaning to, and the brackets this used to wrap it in were themselves Jira's own link
-    /// notation (<c>[text]</c> with no following <c>|url]</c> still opens a link), which turned
-    /// every hall9k-created card's dedup marker into an unresolvable link instead of the inert
-    /// literal text it was meant to be (independent pre-PR review, adversarial lens, cycle 5). The
-    /// dedup search itself is unaffected either way — <see cref="CandidateCarriesMarkerAsync"/>
-    /// matches on <see cref="Marker"/>'s bare text, not the bracketed form.
-    /// </summary>
-    private static string AppendMarker(string? description, string marker) =>
-        description.IsNotBlank() ? $"{description}\n\n{marker}" : marker;
-
-    /// <summary>
     /// The low-level send for a read: a search or a read-back, where a timeout carries no ambiguity
     /// about whether Jira did anything, because nothing here asked it to. <see cref="SendWriteAsync"/>
     /// is the write-call twin, which treats a timeout very differently.
@@ -810,9 +831,10 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
                 $"{account.Site} did not answer within {JiraHttp.Deadline.TotalSeconds:0} seconds while "
                 + $"trying to {verb}, after the request was already sent. This is genuinely ambiguous — "
                 + "it may have been carried out before the connection dropped — so do not assume nothing "
-                + "happened: for a create, run the same write again — the marker search this executor "
-                + "runs first will find the card if it exists rather than filing a second one; for an "
-                + "update or a comment, check the board before retrying.");
+                + "happened: for a create, run the same write again — before creating, this executor "
+                + "searches the board for a card this login created for the task, with the same summary, "
+                + "and adopts it if it exists rather than filing a second one; for an update or a "
+                + "comment, check the board before retrying.");
         }
         catch (HttpRequestException exception)
         {
@@ -822,8 +844,9 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
                 + "is genuinely ambiguous, the same as the timeout above — the connection can drop after "
                 + "Jira already received and carried out the request, while the response was still being "
                 + "read back, so do not assume nothing happened: for a create, run the same write again — "
-                + "the marker search this executor runs first will find the card if it exists rather than "
-                + "filing a second one; for an update or a comment, check the board before retrying. Check "
+                + "before creating, this executor searches the board for a card this login created for the "
+                + "task, with the same summary, and adopts it if it exists rather than filing a second one; "
+                + "for an update or a comment, check the board before retrying. Check "
                 + "the site URL on the registered connection (h9k connection list) and that this machine "
                 + "can reach it.");
         }
@@ -925,88 +948,6 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
         }
         catch (JsonException)
         {
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Every candidate key a search's answer carries, in the order Jira returned them.
-    /// <paramref name="readable"/> is false for a body that could not be confirmed as the expected
-    /// <c>{"issues": [...]}</c> shape — not JSON, not an object, or missing the <c>issues</c> array
-    /// — which <see cref="FindByMarkerAsync"/> must not read the same way as a genuine
-    /// <c>{"issues": []}</c> answer: the two look identical as an empty list, but only the second
-    /// actually proves no card carries the marker (independent pre-PR review, both lenses, cycle 1).
-    /// </summary>
-    private static IReadOnlyList<string> ExtractKeys(string body, out bool readable)
-    {
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(body);
-            if (document.RootElement.ValueKind != JsonValueKind.Object
-                || !document.RootElement.TryGetProperty("issues", out JsonElement issues)
-                || issues.ValueKind != JsonValueKind.Array)
-            {
-                readable = false;
-                return [];
-            }
-
-            List<string> keys = [];
-            foreach (JsonElement item in issues.EnumerateArray())
-            {
-                if (item.ValueKind == JsonValueKind.Object
-                    && item.TryGetProperty("key", out JsonElement key) && key.ValueKind == JsonValueKind.String
-                    && key.GetString() is { } value)
-                {
-                    keys.Add(value);
-                }
-            }
-
-            readable = true;
-            return keys;
-        }
-        catch (JsonException)
-        {
-            readable = false;
-            return [];
-        }
-    }
-
-    /// <summary>
-    /// The <c>fields.description</c> string a v2 issue read answers with — the parsed field itself,
-    /// never the response body scanned as raw text, which is what
-    /// <see cref="CandidateCarriesMarkerAsync"/>'s own dedup check needs: a marker match has to come
-    /// from the card's actual content, not from wherever the marker's characters happen to appear
-    /// in the JSON envelope around it.
-    /// <para>
-    /// <paramref name="readable"/> is false only when the body itself could not be confirmed as the
-    /// expected shape — not JSON, not an object, or missing the <c>fields</c> object — never merely
-    /// because a card genuinely has no description: a missing or JSON-null <c>description</c> inside
-    /// an otherwise-readable <c>fields</c> object is a real, observed fact (the card has no
-    /// description) rather than an unconfirmable read, so it returns null and readable stays true.
-    /// </para>
-    /// </summary>
-    private static string? ExtractDescription(string body, out bool readable)
-    {
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(body);
-            if (document.RootElement.ValueKind != JsonValueKind.Object
-                || !document.RootElement.TryGetProperty("fields", out JsonElement fields)
-                || fields.ValueKind != JsonValueKind.Object)
-            {
-                readable = false;
-                return null;
-            }
-
-            readable = true;
-            return fields.TryGetProperty("description", out JsonElement description)
-                && description.ValueKind == JsonValueKind.String
-                ? description.GetString()
-                : null;
-        }
-        catch (JsonException)
-        {
-            readable = false;
             return null;
         }
     }
