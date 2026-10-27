@@ -1,0 +1,26 @@
+hall9k-task-record: 1
+task-id: 01a17d0f-1880-760f-ab6c-dacf99a8f9ce
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#764
+objective: The replication outbox never moves its bookmark past an event that was still being written when it swept, so every event a node writes reaches its peers.
+criteria:
+  - |-
+    An event that got its number before a sweep but committed after it is still sent, and nothing numbered after it is sent ahead of it. A test proves it: it holds one write open while a later-numbered write commits, shows a sweep then queues neither, commits the held write, and shows the next sweep queues both.
+  - A number that is taken but never written (as when a writing process dies) holds the outbox back for no longer than a bounded wait named in the code, after which later events are sent normally, and a gap already waited out is never waited on again, including on the rescans a held-back private event causes. A test takes a number without writing it and shows the later event is not queued before the wait passes and is queued after it; a second test holds a private event below a waited-out gap and shows a new event is queued on the next sweep without a second wait.
+  - |-
+    The outbox's existing behavior is otherwise unchanged: its existing tests (private hold-back, scope-widening resend, envelope caps) pass with their assertions untouched.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/99a8f9ce-the-replication-outbox-never-m
+published: 2026-10-27 23:31:51Z
+context: |-
+  - Cause: Postgres hands out mt_events seq_id at nextval inside the writer's transaction (Rich append, MartenConfiguration.cs:59 RestoreV8Defaults; no async daemon, so no Marten high-water mark), so a lower sequence can commit after a higher one. EventReplicationOutbox.cs:122-125 scans `Sequence > sinceSequence` and :184 stores the bookmark at the highest sequence seen, so a late commit below it is never scanned again. The sequence is shared by every project on the node, so any project's write can leave a gap in this project's scan.
+  - The fix stops the scan at the first missing number and queues nothing past it until the number fills or the bounded wait passes. Holding only the bookmark while still queuing later events is not enough: the fast skip at :312 and :340 passes over anything at or below highestQueuedSequence (advanced at :482), so the late event would be skipped anyway. GitLedgerMessageTransport.ReadSinceAsync's gap-stop is the model for the stop; its stop is unbounded, so the time bound is new.
+  - Measure the wait on QueuePendingAsync's `now` parameter, not a wall clock, and persist what it needs in EventReplicationOutboxPosition, so a restart neither skips the gap nor restarts the wait. The wait constant's comment names the residual: a write whose commit outlasts the wait is still lost, and the inbox guard (EventReplicationInbox.cs:1491-1500) refuses a late copy. Marten fills a rolled-back write's numbers with Tombstone events (unclassified, already skipped at :356-364), so a permanent gap needs a dead writer; a wait of a few minutes costs little.
+  - PendingPrivateSequences (EventReplicationOutboxPosition.cs:59) only tracks sequences a scan saw and held back as private; it is not a guard for this and must keep working as is. While it holds sinceSequence down, sweeps rescan the region above it, which is where a waited-out gap can be found again.
+  - Tests: the shared PostgresFixture as in EventReplicationTests; a second session is a second connection. Hold a write open with a session-scoped Marten IChangeListener whose BeforeCommitAsync awaits a signal (the seq_id is assigned by then). Make the never-written number with a raw nextval on the store's mt_events_sequence, never a Marten write that fails, because Marten tombstones that. No new container, no git.
+  - Out of scope: OrchestratorFeedReader.cs:80 has the same pattern (parked); repairing events already lost.
