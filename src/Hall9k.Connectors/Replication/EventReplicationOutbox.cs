@@ -56,6 +56,12 @@ public sealed record EventReplicationQueueResult(int EnvelopesQueued, int Events
 /// for every already-sent event it re-reads while anything nearby stays private (independent pre-PR
 /// review, cycle 5, both lenses).
 /// <para>
+/// A scan stops at the first missing global sequence number and queues nothing past it, because
+/// Postgres hands a number out inside the writer's transaction and a lower number can commit after
+/// a higher one. The stop lasts at most <see cref="MaxSequenceGapWait"/>, measured on the sweep's own
+/// <c>now</c>; a gap that has been waited out is recorded on the position and never waited on again.
+/// </para>
+/// <para>
 /// Idea 8c5993c5: an eligible event's own audience follows its resolved <see cref="ReplicationScope"/>
 /// — <see cref="ReplicationScope.Team"/> addresses <see cref="MessageAudience.Project"/> exactly as
 /// every event always has, and <see cref="ReplicationScope.Fleet"/> addresses
@@ -77,6 +83,17 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
 {
     public const int MaxEventsPerEnvelope = 200;
     public const int MaxBytesPerEnvelope = 250 * 1024;
+
+    /// <summary>
+    /// How long a sweep holds everything past a missing global sequence number back, hoping the
+    /// writer that took it commits. Postgres hands a number out inside the writer's transaction, so a
+    /// lower number can commit after a higher one; sending the higher event and moving on would lose
+    /// the lower one for good. A number whose writer died is never filled, so the hold is bounded and
+    /// a few minutes costs little. Residual: a write whose commit outlasts this wait is still lost,
+    /// because the receiving inbox refuses a copy that arrives below what it already holds from this
+    /// origin.
+    /// </summary>
+    public static readonly TimeSpan MaxSequenceGapWait = TimeSpan.FromMinutes(5);
 
     public async Task<EventReplicationQueueResult> QueuePendingAsync(
         IDocumentSession session,
@@ -119,15 +136,25 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
         long highestQueuedSequenceAtScanStart = highestQueuedSequence;
         HashSet<long> pendingPrivateAtScanStart = [.. pendingPrivate];
 
-        IReadOnlyList<IEvent> candidates = await session.Events.QueryAllRawEvents()
+        IReadOnlyList<IEvent> committed = await session.Events.QueryAllRawEvents()
             .Where(e => e.Sequence > sinceSequence)
             .OrderBy(e => e.Sequence)
             .ToListAsync(cancellationToken);
 
-        if (candidates.Count == 0 && pendingFullResend.Count == 0)
-        {
-            return new EventReplicationQueueResult(0, 0);
-        }
+        // Nothing past the first missing sequence number is scanned, so an event still being written
+        // under a lower number than one already committed is not skipped over for good.
+        long waitingForSequence = position?.WaitingForSequence ?? 0;
+        DateTimeOffset? waitingSince = position?.WaitingSince;
+        long gapsWaitedOutThroughSequence = position?.GapsWaitedOutThroughSequence ?? 0;
+        SequenceGapScan gapScan = StopAtFirstSequenceGap(
+            committed, sinceSequence, gapsWaitedOutThroughSequence, waitingForSequence, waitingSince, now);
+        IReadOnlyList<IEvent> candidates = gapScan.Candidates;
+        bool gapStateChanged = gapScan.WaitingForSequence != waitingForSequence
+            || gapScan.WaitingSince != waitingSince
+            || gapScan.GapsWaitedOutThroughSequence != gapsWaitedOutThroughSequence;
+        waitingForSequence = gapScan.WaitingForSequence;
+        waitingSince = gapScan.WaitingSince;
+        gapsWaitedOutThroughSequence = gapScan.GapsWaitedOutThroughSequence;
 
         int envelopesQueued = 0;
         int eventsQueued = 0;
@@ -185,6 +212,9 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
                 HighestQueuedSequence = safeHighestQueued,
                 PendingPrivateSequences = [.. pendingPrivate],
                 PendingFullResendStreamIds = [.. pendingFullResend],
+                WaitingForSequence = waitingForSequence,
+                WaitingSince = waitingSince,
+                GapsWaitedOutThroughSequence = gapsWaitedOutThroughSequence,
             });
         }
 
@@ -242,6 +272,19 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             state.FirstSequence = state.FirstSequence is { } existingFirst ? Math.Min(existingFirst, sequence) : sequence;
             state.Records.Add(record);
             state.Bytes += recordJson.Length;
+        }
+
+        if (candidates.Count == 0 && pendingFullResend.Count == 0)
+        {
+            // Nothing to send, but a gap first seen (or waited out) this sweep must outlive it, or the
+            // wait would restart on every sweep.
+            if (gapStateChanged)
+            {
+                StorePositionSnapshot();
+                await session.SaveChangesAsync(cancellationToken);
+            }
+
+            return new EventReplicationQueueResult(0, 0);
         }
 
         // Resolves once per stream per call, whether the mark came from a PRIOR, interrupted call
@@ -505,6 +548,44 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
 
         return new EventReplicationQueueResult(envelopesQueued, eventsQueued);
     }
+
+    /// <summary>
+    /// Cuts <paramref name="candidates"/> off at the first missing sequence number that has not
+    /// already been waited out, so nothing after it is scanned until the number fills or
+    /// <see cref="MaxSequenceGapWait"/> has passed since it was first seen (measured on
+    /// <paramref name="now"/>). A gap that has been waited out is accepted for good, up to the end of
+    /// the run of missing numbers it sat in. The same stop <c>GitLedgerMessageTransport.ReadSinceAsync</c>
+    /// makes on a numeric gap, with the wait that one lacks.
+    /// </summary>
+    private static SequenceGapScan StopAtFirstSequenceGap(
+        IReadOnlyList<IEvent> candidates, long sinceSequence, long gapsWaitedOutThroughSequence,
+        long waitingForSequence, DateTimeOffset? waitingSince, DateTimeOffset now)
+    {
+        long expected = sinceSequence + 1;
+        for (int index = 0; index < candidates.Count; index++)
+        {
+            long sequence = candidates[index].Sequence;
+            long firstUnwaitedMissing = Math.Max(expected, gapsWaitedOutThroughSequence + 1);
+            if (firstUnwaitedMissing < sequence)
+            {
+                DateTimeOffset since = waitingForSequence == firstUnwaitedMissing && waitingSince is { } seen ? seen : now;
+                if (now - since < MaxSequenceGapWait)
+                {
+                    return new SequenceGapScan([.. candidates.Take(index)], firstUnwaitedMissing, since, gapsWaitedOutThroughSequence);
+                }
+
+                gapsWaitedOutThroughSequence = sequence - 1;
+            }
+
+            expected = sequence + 1;
+        }
+
+        return new SequenceGapScan(candidates, 0, null, gapsWaitedOutThroughSequence);
+    }
+
+    private sealed record SequenceGapScan(
+        IReadOnlyList<IEvent> Candidates, long WaitingForSequence, DateTimeOffset? WaitingSince,
+        long GapsWaitedOutThroughSequence);
 
     /// <summary>Never lets a persisted position pass the earliest event still owed to a teammate,
     /// however far past it later, eligible events were actually queued and sent.</summary>

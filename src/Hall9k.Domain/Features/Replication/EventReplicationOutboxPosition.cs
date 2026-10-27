@@ -59,6 +59,28 @@ public sealed class EventReplicationOutboxPosition
     public List<long> PendingPrivateSequences { get; set; } = [];
 
     /// <summary>
+    /// The first global sequence number a sweep found missing between two events it could read (a
+    /// writer took the number but had not committed it yet), while that wait is still running; zero
+    /// when no gap is being waited on. The outbox queues nothing past this number until it fills or
+    /// the bounded wait (<c>EventReplicationOutbox.MaxSequenceGapWait</c>) measured from
+    /// <see cref="WaitingSince"/> has passed.
+    /// </summary>
+    public long WaitingForSequence { get; set; }
+
+    /// <summary>The sweep time (the <c>now</c> the outbox was handed, never a wall clock) at which
+    /// <see cref="WaitingForSequence"/> was first seen missing, so a restart neither skips the gap nor
+    /// restarts its wait. Meaningful only while <see cref="WaitingForSequence"/> is not zero.</summary>
+    public DateTimeOffset? WaitingSince { get; set; }
+
+    /// <summary>
+    /// Every missing sequence number at or below this one has already been waited out and is never
+    /// waited on again. A held-back private event keeps <see cref="LastFlushedGlobalSequence"/> low, so
+    /// sweeps keep rescanning the region above it, and without this mark that rescan would find the
+    /// same dead number again and start a fresh wait on every sweep.
+    /// </summary>
+    public long GapsWaitedOutThroughSequence { get; set; }
+
+    /// <summary>
     /// Every stream id a scope-widening event (<c>IdeaScopeSet</c>, <c>IdeaPrivacySet</c>,
     /// <c>TaskScopeSet</c>, <c>TaskPrivacySet</c>, or <c>TaskPublished</c>) has marked for a one-time
     /// full-history resend at its own new scope (idea 8c5993c5) — never cleared until that resend
