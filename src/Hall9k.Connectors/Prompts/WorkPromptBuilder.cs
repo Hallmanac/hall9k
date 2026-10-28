@@ -36,8 +36,8 @@ public static class WorkPromptBuilder
     // PromptContractTokens.All, so PromptTemplateContractTests fails outright if any of these
     // literal words is typed into a template file directly. A template that needs one in the
     // rendered prompt gets it as a substituted {{...}} parameter instead, computed here once.
-    private const string DeliverWord = "deliver";
-    private const string RegisterSessionWord = "register-session";
+    internal const string DeliverWord = "deliver";
+    internal const string RegisterSessionWord = "register-session";
     private const string MergeReadyWord = "merge-ready";
     private const string NeedsFixesWord = "needs-fixes";
 
@@ -1670,11 +1670,10 @@ public static class WorkPromptBuilder
     /// True only for <c>h9k task delegate</c>'s own contractor. Every other build dispatch this
     /// method's <paramref name="address"/> doc already enumerates starts a brand-new
     /// <c>RunAggregate</c> stream, so a null address there really does mean nobody has ever
-    /// registered against it — but a delegated contractor reuses the operator's own existing run,
-    /// which may have carried a real registration earlier in the same claim (independent pre-PR
-    /// review, cycle 1, both lenses). <c>TaskDelegateCommand</c> never resolves that registration
-    /// before calling this, so a null address here does not mean "never registered" the way it does
-    /// everywhere else — this flag keeps the null-address branch from asserting that anyway.
+    /// registered against it. A delegated contractor reuses the operator's own existing run, which
+    /// may have carried a registration earlier in the same claim; <c>TaskDelegateCommand</c> passes
+    /// that registration as the address, so a null one here still means none was ever recorded, but
+    /// the sentence saying so differs because the run is not necessarily new.
     /// </param>
     /// <param name="verdictBoundaryChoicesTaskId">
     /// The task's own id, supplied only by the review role (task: a human at the wheel takes the
