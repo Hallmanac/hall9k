@@ -1,9 +1,9 @@
 using FluentAssertions;
 using Hall9k.Connectors.Processes;
-using Hall9k.Daemon.Execution;
+using Hall9k.Connectors.Worktrees;
 using Xunit;
 
-namespace Hall9k.Tests.Daemon;
+namespace Hall9k.Tests.Connectors;
 
 /// <summary>
 /// The ancestor-or-reflog-or-recorded force-with-lease guard, exercised entirely over a fake git

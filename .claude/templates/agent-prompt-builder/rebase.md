@@ -136,12 +136,6 @@ and raise a new dispute if the conflict is still genuinely undecidable.
     tell which — see the dispute path below.
   - Check the replay afterwards: `git log --oneline` must show this branch's own
     commits and nothing of the parent's, and the same count you started with.
-===resumed-stacked-fold-reason===
-    That is a literal commit — this branch's own fork point off the branch it is
-    stacked on. Do NOT name `origin/{{EffectiveBaseBranch}}` here: it is another task's
-    branch, routinely force-pushed while this branch is in flight, and the fold's merge
-    base against it collapses below this branch's own commits the moment it is — which
-    would fold the parent's already-reviewed work into this branch's authored history.
 ===no-verification-gates===
   - This project configures no verification gates of its own; re-read the diff
     around every resolved conflict once more before finishing.

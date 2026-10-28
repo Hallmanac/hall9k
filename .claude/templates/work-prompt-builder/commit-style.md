@@ -31,3 +31,10 @@
   - Do NOT push (the platform pushes the rewritten branch with
     `git push --force-with-lease` after re-verifying), and do NOT open a new pull
     request — the existing PR updates in place.
+
+===resumed-stacked-fold-reason===
+    That is a literal commit — this branch's own fork point off the branch it is
+    stacked on. Do NOT name `origin/{{EffectiveBaseBranch}}` here: it is another task's
+    branch, routinely force-pushed while this branch is in flight, and the fold's merge
+    base against it collapses below this branch's own commits the moment it is — which
+    would fold the parent's already-reviewed work into this branch's authored history.

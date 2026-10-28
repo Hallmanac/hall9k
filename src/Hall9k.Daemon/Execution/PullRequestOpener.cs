@@ -4,6 +4,7 @@ using System.Text.Json;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Run;
