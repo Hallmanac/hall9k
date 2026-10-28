@@ -42,6 +42,10 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         [Description("What this run hands down to a dependent task or a resuming session (Decisions Log #36). Omit to be prompted on an interactive terminal, or to leave it unauthored on a non-interactive one.")]
         public string? Handoff { get; init; }
 
+        [CommandOption("--pr-summary <FILE>")]
+        [Description("A file holding the pull request's title and description, which the pull request is built from exactly as it is from a headless session's summary: a first line reading 'Title: <title>', a blank line, then the description. Compose it with the pr-summary skill. Omit it and the platform builds the body from the task alone.")]
+        public string? PrSummary { get; init; }
+
         [CommandOption("--force")]
         [Description("Deliver even though the claim's interactive session was recorded on another machine this one cannot check — attests you confirmed by hand that it has exited")]
         public bool Force { get; init; }
@@ -49,6 +53,12 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
+        // Read before anything is pushed, so a missing or empty file costs nothing: once the push
+        // lands the delivery proceeds whatever happens to the summary.
+        PrSummaryParser.PrSummary? prSummary = settings.PrSummary is { } prSummaryFile
+            ? await ReadPrSummaryAsync(prSummaryFile, cancellationToken)
+            : null;
+
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
 
@@ -302,6 +312,10 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         }
 
         await WriteHandoffAsync(run.RunDirectory, handoff, CancellationToken.None);
+        if (prSummary is not null)
+        {
+            await CapturePrSummaryAsync(run.RunDirectory, prSummary, CancellationToken.None);
+        }
 
         // Re-checked immediately before the append that hands this run to the daemon's
         // pipeline, not only once above: PromptForHandoff blocks on operator input with no
@@ -529,6 +543,52 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
     /// <summary>Mirrors <c>Hall9k.Daemon.Execution.AgentResult</c>'s own usage fields.</summary>
     internal sealed record HeadlessUsage(
         long InputTokens, long CacheReadInputTokens, long CacheCreationInputTokens, long OutputTokens, decimal? CostUsd);
+
+    /// <summary>
+    /// The summary a session composed into a file, parsed the way the platform parses one out of a headless
+    /// session's final message: a block under the summary marker when the file carries one, otherwise the
+    /// whole file as a block (<c>Title:</c> line, blank line, description). Refuses a file that is missing
+    /// or holds neither, because delivering with the wrong file silently would open the pull request under
+    /// the fallback body the summary exists to replace.
+    /// </summary>
+    internal static async Task<PrSummaryParser.PrSummary> ReadPrSummaryAsync(string file, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(file))
+        {
+            throw new DomainValidationException(
+                $"--pr-summary names {file}, which does not exist. Compose the pull request summary with the "
+                + "pr-summary skill into a file first, or omit the flag to let the platform build the body from the task.");
+        }
+
+        string text = await File.ReadAllTextAsync(file, cancellationToken);
+        return PrSummaryParser.Parse(text) ?? PrSummaryParser.ParseBlock(text)
+            ?? throw new DomainValidationException(
+                $"--pr-summary names {file}, which holds no summary. It should start with a line reading "
+                + $"'{PrSummaryParser.TitlePrefix} <the title>', then a blank line, then the description.");
+    }
+
+    /// <summary>
+    /// Captures the summary into the run's pull request summary artifact, the file the opener reads the
+    /// pull request from, in the form <c>PrSummaryParser.Render</c> keeps it so it round-trips exactly as a
+    /// headless session's block does. Best-effort like the handoff beside it: the branch is already pushed,
+    /// so losing the artifact costs the pull request its authored prose and never the delivery.
+    /// </summary>
+    internal static async Task CapturePrSummaryAsync(
+        string runDirectory, PrSummaryParser.PrSummary summary, CancellationToken cancellationToken)
+    {
+        try
+        {
+            string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);
+            Directory.CreateDirectory(resolvedRunDirectory);
+            await File.WriteAllTextAsync(
+                RunPaths.PrSummaryFile(resolvedRunDirectory), PrSummaryParser.Render(summary), cancellationToken);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]Could not write the pull request summary artifact ({exception.Message}); the pull request will be built from the task alone.[/]");
+        }
+    }
 
     private static async Task WriteHandoffAsync(string runDirectory, string handoff, CancellationToken cancellationToken)
     {
