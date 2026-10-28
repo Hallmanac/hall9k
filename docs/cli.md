@@ -349,6 +349,7 @@ Smaller flags on the same commands:
 | `h9k task release <id> --unassign` | Takes a claim straight to Published in one atomic act that keeps the task's assignee, so the dispatcher never sees the task claimable between a release and a `dequeue`. |
 | `h9k task release <id> --keep-interactive` | Preserves the interactive-mode flag across the release, so the next headless run still parks at each phase boundary for a recorded `h9k review proceed`. |
 | `h9k task deliver <id> --handoff "<text>"` | States what the run hands down to a dependent task or a resuming session, and is prompted for on an interactive terminal when omitted. |
+| `h9k task skip-to-pr <id> --reason "<text>"` | Opens the pull request at once on an interactive-mode task, skipping the gates, every review track, the final pass, and the settling gate, and records a manual override on the run naming who skipped what. `--no-reason` records none, and `--reason-by-agent` marks a reason the driving session wrote. |
 | `h9k task resolve <id> --pr <url>` | Records where the work landed, and when it names a real pull request on the project's repository it enrolls that pull request in closeout's orphan sweep. |
 | `h9k task list --limit <N>` | Shows that many rows, newest first, twenty by default, with a footer saying how many were held back. |
 | `h9k task list --everyone` | Also lists other owners' tasks, which the default view holds back as it does on `h9k status` and says so in its footer. `--state teammates` selects them, and no other attention group (`needs-you`, `stalled` and the rest) includes one. `h9k project list --everyone` adds a Teammates column the same way. |
@@ -855,6 +856,36 @@ the queue-first marker so the next free dispatch slot takes the task regardless 
 `--now` dispatches it immediately instead, ceiling-exempt, through the same mechanism
 `h9k task start` uses — refused together with `--first`.
 
+### Skipping straight to the pull request
+
+`h9k task skip-to-pr <id> [--reason "<text>" | --no-reason] [--reason-by-agent] [--pr-summary <file>]`
+
+`skip-to-pr` is for the day a task has earned its pull request without the rest of the pipeline.
+It opens the pull request at once on a task whose interactive flag is on, bypassing the gates, every
+review track, the final pass, and the settling gate, and it **records** the bypass as a manual-override
+event on the run that names who skipped it, when, why, and what was skipped. Nothing is skipped quietly.
+The skipped list is computed from where the run stood, so it names the gates only when the run had not
+passed them, and each review track by name from the lenses the run's recorded review stage composition
+still had active. It is refused on a task whose interactive flag is off, on a pr-review task, and on a
+spike, since neither of those opens a pull request of its own.
+
+It has two doors. From the build, under your claim, it delivers through the same code `deliver` uses (the
+same refusals, the uncommitted-file check, the push, the `--handoff` text or prompt, and token recording)
+and records the override in the same step. Otherwise it runs at any review park on the run, whether an
+interactive boundary or any other park. At the gates-to-pull-request park, where review has already
+settled, it refuses and names `h9k review proceed`, because there is nothing left to skip. While a gate or
+a review session is live it refuses and says the next park will offer it.
+
+A reason is optional but always asked for. `--reason "<text>"` records one, `--no-reason` records none, and
+with neither flag a terminal is prompted ("Reason (leave blank for none):"). With no terminal, such as an
+agent's shell, the command refuses and names both flags. `--reason-by-agent` marks a reason that the driving
+session wrote rather than you, and the record says so wherever it is shown. The override covers only the run
+it was recorded on, so a later run of the same task gets its full review. It adds nothing to the pull
+request: whether the description mentions the skip is your call, written in your own `--pr-summary`.
+`h9k task show` (the pre-PR review line and the passage section) and the orchestrator feed each name who
+skipped, what was skipped, and the reason or "no reason given". The daemon opens the pull request on its
+next sweep, with no gate run and no review or fix session dispatched.
+
 ### A deliberate human kick-off
 
 `h9k task start <id> [--acknowledge-unmet-dependencies]`
@@ -1016,7 +1047,7 @@ also appear elsewhere on this page stays where it is.
 ### Recovery
 
 `h9k run kill` · `h9k task retry | resolve | abandon | take` · `h9k pr resolve` · `h9k review resolve` ·
-`h9k review proceed` · `h9k review fixed`
+`h9k review proceed` · `h9k review fixed` · `h9k task skip-to-pr`
 
 `h9k run kill <task-or-run-id> [--reason "…"]` is the run-level stop, distinct from `h9k task
 abandon`'s task-level walk-away: it ends a run's live agent process tree on this machine and

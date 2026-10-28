@@ -1022,7 +1022,11 @@ files, and refuses an unmoved branch tip unless `--no-change` states why — and
 `--no-change` over a tip that did move, since the commits are that cycle's answer and it cannot
 also be a deliberate no-change dismissal. It spends no automatic
 fix budget and no cap a fix session consumes, and the review cycle it opens counts exactly as one
-a fix session opens does. `h9k task handback` and a default `h9k task release` are the two
+a fix session opens does. A fifth verb skips the rest of review altogether: `h9k task skip-to-pr
+<task> --reason "<why>"` opens the pull request at once, bypassing the gates, every review track, the
+final pass, and the settling gate, and **records the bypass** as a manual-override event on the run
+naming who skipped what (see the command list below). It is offered at every boundary except gates to
+pull request, where review has already settled and `h9k review proceed` opens the pull request. `h9k task handback` and a default `h9k task release` are the two
 ordinary exit doors that turn it back off; `h9k task revise <id> --clear-interactive-mode` is the
 one that still reaches it once neither of those has an active interactive claim left to act on (a
 headless follow-up dispatched under a real node claim while the flag is still on, or the task has
@@ -1082,7 +1086,9 @@ the session itself (Decisions Log #126). The anchor has the session register its
 `h9k task register-session <id>`, read `h9k task next` before every move, never advance a phase without
 the human's word, and map instructions to verbs: build here or `h9k task delegate`, `h9k task deliver
 --pr-summary <file>` then `h9k review proceed` at each park, `h9k review fixed` for a verdict fixed by
-hand. It carries the project's writing conventions, and names `recipes/task-drive.md` in the project home
+hand, and "skip straight to the PR" to `h9k task skip-to-pr`, which the session runs only on the human's
+explicit word, writing the reason itself from what it saw or was told (`--reason-by-agent`) or passing
+`--no-reason`. It carries the project's writing conventions, and names `recipes/task-drive.md` in the project home
 when that file exists. `register-session` records the session's process identity (read from `CLAUDE_PID`,
 Claude Code's own environment variable) and name, and is accepted at every stage before the pull request
 opens (Dispatched, Running, Verifying, UnderReview, ReviewParked, and a usage-limit or launch-hold park
@@ -1109,6 +1115,7 @@ h9k task drive <id> --acknowledge-unmet-dependencies   # claim a task anyway, de
 h9k task register-session <id>       # the pasted session's own first act: register its process identity against the claim
 h9k task verify <id>                 # run the project's gates on demand against the claim's worktree
 h9k task deliver <id>                # push and hand the claim into the standard delivery pipeline (--pr-summary <file> supplies the pull request's title and description)
+h9k task skip-to-pr <id> --reason "<why>"   # open the pull request at once, skipping the gates, every review track, the final pass, and the settling gate; RECORDED on the run as a manual override naming who skipped what. Interactive-mode tasks only (not pr-review, not a spike). From the build it delivers exactly as `deliver` does; otherwise it runs at any review park. Refused at the gates-to-pull-request park (use `h9k review proceed`) and while a gate or review session is live. --no-reason records none, --reason-by-agent marks a reason the driving session wrote, --pr-summary <file> works as on deliver. The override adds nothing to the pull request and covers this run only
 h9k task delegate <id> --note "<text>"   # dispatch a headless build contractor onto this same claim for one phase, staying in interactive mode
 h9k task handback <id>               # release the claim to a headless agent partway through, resuming the branch
 h9k task handback <id> --first   # same release, plus the queue-first marker: the next free slot takes it regardless of age (Decisions Log #127)
