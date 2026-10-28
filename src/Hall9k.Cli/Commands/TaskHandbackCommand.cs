@@ -187,6 +187,12 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
             return ExitCodes.Conflict;
         }
 
+        // Read before the handback is applied to the aggregate, which clears the claim it is read from. A claim
+        // taken at the PR stage already holds the reopen that put the pull request's branch under it, so the
+        // handback leaves the task queued as that follow-up lap: a headless run resumes the pull request's
+        // branch (RunLauncher checks out the follow-up branch the reopen recorded), pushes the claim's commits,
+        // and takes the full review, exactly as a lap closeout dispatched would.
+        bool pullRequestStage = TaskReleaseCommand.IsPullRequestStageClaim(task);
         TaskHandedBack handedBack = TaskDecider.HandBack(
             task, runId, run.Branch, settings.Reason, DateTimeOffset.UtcNow, context.OwnerId);
         task.Apply(handedBack);
@@ -244,9 +250,18 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         // would land the run on an ordinary node claim instead of the promised ceiling-exempt
         // one, with this command's own claim then refused as a conflict it did not cause
         // (independent pre-PR review, cycle 1, both lenses).
-        if (!settings.Now)
+        // A follow-up lap is never a deliberate start: h9k task start refuses a task whose reopen carries a
+        // pull request's branch, because the follow-up prompt it needs is built by the daemon alone. So --now
+        // at the PR stage hands back through the ordinary queue and rings the doorbell like any handback.
+        if (!settings.Now || pullRequestStage)
         {
             await Doorbell.RingAsync($"task-handed-back:{taskId}", cancellationToken);
+        }
+
+        if (settings.Now && pullRequestStage)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]--now cannot start a follow-up lap on its own: a deliberate start builds a fresh build prompt, and this branch belongs to an open pull request. Task {taskId} is queued as a follow-up lap and dispatches through the ordinary queue; --first takes the next free slot.[/]");
         }
 
         // --now dispatches the handed-back task immediately, ceiling-exempt, reusing exactly the
@@ -262,7 +277,7 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         // just released could only have reached Claimed over those exact blockers by already
         // carrying DependencyOverrideAcknowledged (review, cycle 1, both lenses: passing true here
         // recorded a fresh acknowledgment nobody gave, on a claim nobody was asked about).
-        if (settings.Now)
+        if (settings.Now && !pullRequestStage)
         {
             StreamState? nowFence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
                 ?? throw new DomainConflictException(
@@ -288,7 +303,12 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         // an open blocker lands Blocked, not Queued, and no headless run dispatches until that
         // blocker closes out (conformance review, cycle 4).
         int unmetDependencyCount = task.UnmetDependencies.Count;
-        if (unmetDependencyCount == 0)
+        if (unmetDependencyCount == 0 && pullRequestStage)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} handed back — a headless follow-up lap resumes branch {run.Branch} on {task.PullRequestUrl}, pushes your commits, and takes the full review.[/]");
+        }
+        else if (unmetDependencyCount == 0)
         {
             AnsiConsole.MarkupLineInterpolated(
                 $"[dim]Task {taskId} handed back — the next headless run resumes branch {run.Branch}.[/]");

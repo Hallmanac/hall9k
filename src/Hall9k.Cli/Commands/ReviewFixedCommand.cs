@@ -1,11 +1,13 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
 using JasperFx.Events;
@@ -172,14 +174,22 @@ public sealed class ReviewFixedCommand : Hall9kAsyncCommand<ReviewFixedCommand.S
         bool pushed = false;
         if (task.PullRequestUrl.IsNotBlank())
         {
-            (bool succeeded, string pushError) = await InteractiveWorktreeGit.PushAsync(
-                runDetails.WorktreePath, runDetails.Branch, cancellationToken);
-            if (!succeeded)
+            // Through the pull request opener's push guard, as h9k task deliver pushes, so a branch someone
+            // else moved on origin is refused with the tip it did not recognise rather than forced over.
+            TaskDeliveryPush.Outcome push = await TaskDeliveryPush.PushAsync(
+                ExternalProcess.RunnerWithDeadline(TimeSpan.FromMinutes(10)), runDetails.WorktreePath, runDetails.Branch, task.LastPushedBranch,
+                task.LastPushedBranchTip, cancellationToken);
+            if (!push.Pushed)
             {
                 throw new DomainConflictException(
                     $"Task {taskId}'s pull request is already open, so your fix has to reach origin before " +
-                    $"the review agents and its checks read it — and the push failed: {pushError} Nothing was " +
+                    $"the review agents and its checks read it — and the push failed: {push.Refusal} Nothing was " +
                     "recorded; the run is still parked, so fix the push and run this again.");
+            }
+
+            if (push.PushedTip is { } pushedTip)
+            {
+                session.Events.Append(taskId, new TaskBranchPushed(taskId, runDetails.Branch, pushedTip, DateTimeOffset.UtcNow));
             }
 
             pushed = true;

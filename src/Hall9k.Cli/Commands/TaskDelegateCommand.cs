@@ -80,6 +80,12 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         public bool Force { get; init; }
     }
 
+    /// <summary>The refusal for delegating a claim taken on an open pull request; it names the headless way to finish one.</summary>
+    internal static string PullRequestStageDelegateRefusal(Guid taskId) =>
+        $"Task {taskId}'s claim is on an open pull request, and a delegated contractor is handed the build prompt, "
+        + "which has it build the task from its objective. The headless way to finish this work is a follow-up lap: "
+        + $"h9k task handback {taskId} queues one on the pull request's branch.";
+
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
         Validate(settings);
@@ -286,6 +292,14 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
             throw new DomainConflictException(
                 $"Task {taskId} is {task.State.Value} — only a task with an active interactive claim "
                 + "(h9k task drive) can delegate this way.");
+        }
+
+        // A contractor is handed the build prompt, which tells it to build the task from its objective. A
+        // claim on an open pull request has no build left to hand over; the headless way to finish it is a
+        // follow-up lap, which is what handback queues.
+        if (TaskReleaseCommand.IsPullRequestStageClaim(task))
+        {
+            throw new DomainConflictException(PullRequestStageDelegateRefusal(taskId));
         }
 
         RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
