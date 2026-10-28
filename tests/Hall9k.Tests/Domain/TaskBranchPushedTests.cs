@@ -12,7 +12,7 @@ namespace Hall9k.Tests.Domain;
 /// <summary>
 /// <see cref="TaskAggregate.Apply(TaskBranchPushed)"/> and <see cref="TaskDetailsProjection"/>'s
 /// own twin overwrite <see cref="TaskAggregate.LastPushedBranch"/>/<see cref="TaskAggregate.LastPushedBranchTip"/>
-/// on every push, which is exactly what <see cref="Hall9k.Daemon.Execution.ForceWithLeasePusher"/>'s
+/// on every push, which is exactly what <see cref="Hall9k.Connectors.Worktrees.ForceWithLeasePusher"/>'s
 /// recorded-tip door reads before a later push (origin incident, 2026-09-15; see
 /// <see cref="Events.TaskBranchPushed"/>'s own doc). Neither Apply method had a test of its own
 /// before this (independent pre-PR review, cycle 1, conformance lens).
