@@ -148,6 +148,9 @@ public static class OrchestratorFeedDescription
             // The record holds a URL, not a push: only the opener's completion follows one, and a fresh
             // pull request already has its own PullRequestOpened line, so this names the URL and no more.
             TaskCompleted completed => $"the run finished; the pull request on record is {Field(completed.PullRequestUrl, 80)}",
+            PullRequestMerged { KeptWorktreePath: { Length: > 0 } kept } =>
+                $"done: the pull request merged; the worktree at {Field(kept, 120)} was left in place because a session is "
+                + "live there or it holds uncommitted work",
             PullRequestMerged => "done: the pull request merged",
             TaskResolved resolved => $"closed as done by hand: {Quote(resolved.Reason)}",
             TaskFailed failed => $"the task failed: {Quote(failed.Reason)}",

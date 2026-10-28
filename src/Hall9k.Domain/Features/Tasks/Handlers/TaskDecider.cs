@@ -2685,6 +2685,155 @@ public static class TaskDecider
     }
 
     /// <summary>
+    /// The reason a manual reopen records when <c>h9k task drive</c> takes a task whose pull request
+    /// is open back into an interactive claim: a fact about how it was invoked, never a human's own
+    /// instruction to the follow-up's session.
+    /// </summary>
+    public const string PullRequestStageDriveReason =
+        "The owner took the open pull request back by hand with h9k task drive.";
+
+    /// <summary>
+    /// <c>h9k task drive</c> on a task whose pull request is open: the interactive claim that lets the
+    /// owner iterate on the pull request's branch by hand, recorded in one decision. From Done (the pull
+    /// request's run is awaiting review, parked, or has merely not been looked at in a while) it is a
+    /// manual <see cref="TaskReopened"/> followed by the interactive <see cref="TaskClaimed"/>, so the
+    /// task is never observably Queued in between and the dispatcher can never win the follow-up lap;
+    /// from a reopened lap that has not started (Queued or Blocked, <see cref="TaskAggregate.FollowUpBranch"/>
+    /// set) the reopen already stands, so only the claim is recorded and the lap's kind, threads, and
+    /// read scope carry into the session as the reopen recorded them.
+    /// <para>
+    /// Refused from every other state, and from a Done task whose pull request has merged or closed
+    /// (<paramref name="pullRequestIsOpen"/> false), which nothing is left to iterate on. A headless
+    /// follow-up session that is live refuses it by name (<paramref name="liveHeadlessSession"/>), in
+    /// any state: the owner and a dispatched session must not edit one worktree at the same time. The
+    /// caller computes the facts only it can read (the pull request's run, its sessions, the carried
+    /// read scope) and passes them in, so this stays a pure decision.
+    /// </para>
+    /// </summary>
+    /// <param name="pullRequestRunId">The run closeout watches the pull request through (<see cref="TaskAggregate.PullRequestRunId"/>), carried on the reopen as the run it follows up.</param>
+    /// <param name="branch">The pull request's branch, from that run's record; a reopened lap already carries its own.</param>
+    /// <param name="pullRequestIsOpen">Whether the pull request's run says the pull request is still open, which only matters from Done.</param>
+    /// <param name="liveHeadlessSession">The name of a headless follow-up session still running on the task, or null.</param>
+    /// <param name="acknowledgeUnmetDependencies">The same recorded override <see cref="ClaimInteractively"/> takes, for a task whose reopen would land Blocked behind an open dependency.</param>
+    public static (TaskReopened? Reopened, TaskClaimed Claimed) ClaimPullRequestInteractively(
+        TaskAggregate task,
+        Guid pullRequestRunId,
+        string branch,
+        bool pullRequestIsOpen,
+        string? liveHeadlessSession,
+        Guid runId,
+        DateTimeOffset at,
+        Guid ownerId,
+        bool acknowledgeUnmetDependencies = false,
+        string? ownerRootFingerprint = null,
+        IReadOnlyList<ReviewThreadReference>? humanReviewThreads = null,
+        ReviewReadScope? reviewReadScope = null,
+        string? triageReportPath = null)
+    {
+        if (task.Type == TaskType.PrReview)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is a pull-request review, not work with a pull request of its own — there is no "
+                + "branch to iterate on. Its PullRequestUrl names the pull request it reviewed.");
+        }
+
+        if (liveHeadlessSession.IsNotBlank())
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} has a headless follow-up session still running ({liveHeadlessSession}) — the "
+                + "owner and a dispatched session must not edit one worktree at once. Let it finish, or stop it, "
+                + $"then h9k task drive {task.Id} again.");
+        }
+
+        if (task.PullRequestUrl.IsBlank())
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} has no pull request to iterate on. h9k task drive {task.Id} reaches a task "
+                + "before its pull request opens, through the build and the review loop.");
+        }
+
+        if (!IsGrantedToThisOwner(task.AssignedOwnerId, task.AssignedOwnerFingerprint, ownerId, ownerRootFingerprint))
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is assigned to {(task.AssignedOwnerId is { } assignee ? assignee.ToString() : "nobody")}, " +
+                $"not to this owner ({ownerId}) — an operator claims only their own owner's work.");
+        }
+
+        bool reopenedLap = (task.State == TaskState.Queued || task.State == TaskState.Blocked)
+            && task.FollowUpBranch.IsNotBlank();
+        if (task.State == TaskState.Done)
+        {
+            if (!pullRequestIsOpen)
+            {
+                throw new DomainConflictException(
+                    $"Task {task.Id}'s pull request ({task.PullRequestUrl}) has merged or been closed, so there is "
+                    + $"nothing left to iterate on. h9k task show {task.Id} to see where it stands.");
+            }
+        }
+        else if (!reopenedLap)
+        {
+            throw new DomainConflictException(
+                task.State == TaskState.Claimed
+                    ? $"Task {task.Id} is claimed by a node running a follow-up lap already — wait for it, or "
+                      + $"h9k task abandon it, before taking the pull request back by hand."
+                    : $"Task {task.Id} is {task.State.Value} — only a task whose pull request is open (Done), or a "
+                      + "reopened follow-up lap that has not started yet, can be driven at the PR stage.");
+        }
+
+        TaskReopened? reopened = reopenedLap
+            ? null
+            : Reopen(
+                task, pullRequestRunId, branch, PullRequestStageDriveReason, FollowUpKind.ReviewFeedback,
+                automatic: false, at, ownerId,
+                humanReviewThreads: humanReviewThreads, reviewReadScope: reviewReadScope,
+                triageReportPath: triageReportPath);
+
+        // The reopen lands the task on Blocked exactly when an unmet dependency is still on record
+        // (TaskAggregate.Apply(TaskReopened)), so the same warn-and-acknowledge bar a Blocked claim
+        // meets applies here, evaluated on what the aggregate will be rather than on what it is.
+        bool landsBlocked = task.UnmetDependencies.Count > 0;
+        bool carriedForward = landsBlocked && !acknowledgeUnmetDependencies && task.UnmetDependenciesAlreadyAcknowledged;
+        if (landsBlocked && !acknowledgeUnmetDependencies && !carriedForward)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is Blocked on {DescribeBlockedHold(task)} — h9k task drive {task.Id} " +
+                "--acknowledge-unmet-dependencies to claim it anyway, once you have confirmed that is what you want.");
+        }
+
+        TaskClaimed claimed = new(
+            task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, at,
+            landsBlocked, landsBlocked && carriedForward,
+            InteractiveMode: true, OwnerRootFingerprint: ownerRootFingerprint);
+        return (reopened, claimed);
+    }
+
+    /// <summary>
+    /// <c>h9k task release</c> on a claim taken at the PR stage: the task returns to Done with its pull
+    /// request, and the run that opened it is the task's current run again. Refused for any claim that
+    /// is not an interactive one on a task with a pull request and a run to return to. Whether the
+    /// branch holds work beyond the pull request's pushed tip, which release refuses over, is the
+    /// caller's check, since it takes a worktree to answer.
+    /// </summary>
+    public static InteractiveClaimReturnedToPullRequest ReleaseInteractiveClaimToPullRequest(
+        TaskAggregate task, DateTimeOffset releasedAt, bool keepInteractive = false)
+    {
+        if (task.State != TaskState.Claimed || !task.IsInteractiveClaim || task.CurrentRunId is not { } claimRunId)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value} — only a task with an active interactive claim releases this way.");
+        }
+
+        if (task.PullRequestUrl.IsBlank() || task.PullRequestRunId is not { } pullRequestRunId)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id}'s claim is not on an open pull request, so there is no pull request run to return to.");
+        }
+
+        return new InteractiveClaimReturnedToPullRequest(
+            task.Id, claimRunId, pullRequestRunId, !keepInteractive, releasedAt);
+    }
+
+    /// <summary>
     /// The honest default <c>h9k task retry</c> records when the operator gives no
     /// <c>--reason</c> of their own (PLAN.md §16 #25) — a fact about how the retry was invoked,
     /// never a human's own priority instruction. <see cref="Hall9k.Connectors.Prompts.WorkPromptBuilder.AppendOperatorGuidanceSection"/>

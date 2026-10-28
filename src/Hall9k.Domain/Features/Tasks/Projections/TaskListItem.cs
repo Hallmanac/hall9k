@@ -981,6 +981,20 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
         ForgetPrReviewFollowThrough(view);
     }
 
+    // Mirrors TaskAggregate.Apply(InteractiveClaimReturnedToPullRequest).
+    public void Apply(IEvent<InteractiveClaimReturnedToPullRequest> @event, TaskListItem view)
+    {
+        view.ClaimedByNodeId = null;
+        view.CurrentRunId = @event.Data.PullRequestRunId;
+        view.FollowUpKind = FollowUpKind.Unknown;
+        view.FollowUpChecksPendingSince = null;
+        view.FollowUpBranch = null;
+        view.RetryBranch = null;
+        view.RetryPending = false;
+        view.State = TaskState.Done;
+        view.QueuePriorityMarked = false;
+    }
+
     public void Apply(IEvent<TaskFailed> @event, TaskListItem view)
     {
         view.FailureReason = @event.Data.Reason;

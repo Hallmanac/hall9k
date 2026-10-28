@@ -1605,6 +1605,33 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.FinishedAt = null;
     }
 
+    // Mirrors TaskAggregate.Apply(InteractiveClaimReturnedToPullRequest): the claim and the reopen under
+    // it are cleared the way Apply(IEvent<TaskCompleted>) clears them, and the pull request's own run is
+    // current again.
+    public void Apply(IEvent<InteractiveClaimReturnedToPullRequest> @event, TaskDetails view)
+    {
+        view.ClaimedByNodeId = null;
+        view.CurrentRunId = @event.Data.PullRequestRunId;
+        view.FollowUpBranch = null;
+        view.FollowUpKind = FollowUpKind.Unknown;
+        view.FollowUpPullRequestHeadSha = null;
+        view.StackReplayUpstreamCommit = null;
+        view.StackReplayOntoCommit = null;
+        view.ChangesRequestedReviews = [];
+        view.HumanReviewThreads = [];
+        view.FollowUpReason = null;
+        view.RetryBranch = null;
+        view.RetryBranchResumesForeignNode = false;
+        view.RetryPending = false;
+        view.State = TaskState.Done;
+        view.FinishedAt = @event.Data.ReturnedAt;
+        EndAnyOpenReviewLap(view);
+        if (@event.Data.ClearInteractiveMode)
+        {
+            view.InteractiveModeEnabled = false;
+        }
+    }
+
     // FailureReason survives here too: resolve records how the story actually ended
     // (Done, with the failure still visible) — it never rewrites or hides the failure.
     public void Apply(IEvent<TaskResolved> @event, TaskDetails view)

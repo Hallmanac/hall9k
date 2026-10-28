@@ -104,6 +104,7 @@ public static class EventScopeRegistry
         [typeof(TaskHolderTakenOver)] = EventScope.ProjectScoped,
         [typeof(TaskTakeRequested)] = EventScope.ProjectScoped,
         [typeof(TaskTakeRefused)] = EventScope.ProjectScoped,
+        [typeof(InteractiveClaimReturnedToPullRequest)] = EventScope.ProjectScoped,
         [typeof(TaskInteractiveClaimUnassigned)] = EventScope.ProjectScoped,
         [typeof(TaskMechanicalResolutionAttempted)] = EventScope.ProjectScoped,
         [typeof(TaskPlacementChanged)] = EventScope.ProjectScoped,
