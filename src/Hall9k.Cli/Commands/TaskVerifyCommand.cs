@@ -47,22 +47,27 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         public bool Force { get; init; }
     }
 
-    protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// The claim and run-state guard, a pure decision over the task and its current run so the
+    /// refusals are pinned without a database (<c>TaskStartClaimTests</c> does the same for its own
+    /// decisions). Returns the run to verify against, or refuses: the task must hold a live sentinel
+    /// claim (Claimed, <see cref="TaskDetails.IsInteractiveClaim"/>, with a run on record), that run
+    /// must have a record, a pr-review task never verifies this way, and the run must still be in the
+    /// person's hands (Dispatched or Running). A run past that point was handed to the daemon by
+    /// deliver or handback, and its gates start only after deliver's <c>AgentSessionCompleted</c>, so
+    /// every <c>VerificationPassed</c>/<c>VerificationFailed</c> this command appends lands before it,
+    /// which is what lets <c>TaskPassageQuery</c> classify a hand-run gate with no field of its own.
+    /// </summary>
+    /// <param name="currentRun">The run <see cref="TaskDetails.CurrentRunId"/> names, or null when it has no record or the task names none.</param>
+    internal static RunDetails RequireVerifiableRun(Guid taskId, TaskDetails task, RunDetails? currentRun)
     {
-        using var store = CliStore.Open();
-        await using IDocumentSession session = store.LightweightSession();
-
-        Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Id, cancellationToken);
-        TaskDetails task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
-            ?? throw new DomainNotFoundException($"No task {taskId}.");
-
         if (task.State != TaskState.Claimed || !task.IsInteractiveClaim || task.CurrentRunId is not { } runId)
         {
             throw new DomainConflictException(
                 $"Task {taskId} is {task.State.Value} — only a task with an active interactive claim verifies this way.");
         }
 
-        RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
+        RunDetails run = currentRun
             ?? throw new DomainConflictException(
                 $"Task {taskId} is claimed interactively but run {runId} has no record — the process likely died "
                 + $"while preparing the worktree. h9k task release {taskId} to give the claim back to the "
@@ -92,19 +97,6 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             throw PrReviewSentinelClaim.Refuse(taskId, run.State, "verify");
         }
 
-        // An operator's own session, still attached in another terminal, is editing and possibly
-        // rebuilding this same worktree right now — running gates here would collide with it in
-        // shared obj/bin output exactly as the daemon's own gates and review sessions would
-        // (adversarial review, cycle 1). Skipped when this invocation is that very session asking
-        // for itself (a direct launch's own injected env var, or a self-registered session's own
-        // CLAUDE_PID matching its recorded process — InteractiveSessionLiveness.IsSelfInvocation's
-        // own doc has both signals): it is blocked waiting on this command to finish rather than
-        // racing it, so there is nothing to collide with (conformance review, cycle 2).
-        if (!InteractiveSessionLiveness.IsSelfInvocation(run))
-        {
-            InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "verify", settings.Force);
-        }
-
         // Unlike TaskDriveCommand.ReenterAsync, which now admits a driving session through the review
         // loop, this stays tight: once h9k task deliver or handback hands the run to the standard
         // pipeline, the task can still read Claimed+interactive for the whole review loop, but the
@@ -116,6 +108,37 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
                 $"Task {taskId}'s run {runId} is already {run.State.Value} — it was handed off with "
                 + $"h9k task deliver (or handback) and is now in the standard pipeline. h9k task show {taskId} "
                 + "to see where it stands.");
+        }
+
+        return run;
+    }
+
+    protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
+    {
+        using var store = CliStore.Open();
+        await using IDocumentSession session = store.LightweightSession();
+
+        Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Id, cancellationToken);
+        TaskDetails task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+
+        RunDetails? currentRun = task.CurrentRunId is { } currentRunId
+            ? await session.LoadAsync<RunDetails>(currentRunId, cancellationToken)
+            : null;
+        RunDetails run = RequireVerifiableRun(taskId, task, currentRun);
+        Guid runId = run.Id;
+
+        // An operator's own session, still attached in another terminal, is editing and possibly
+        // rebuilding this same worktree right now — running gates here would collide with it in
+        // shared obj/bin output exactly as the daemon's own gates and review sessions would
+        // (adversarial review, cycle 1). Skipped when this invocation is that very session asking
+        // for itself (a direct launch's own injected env var, or a self-registered session's own
+        // CLAUDE_PID matching its recorded process — InteractiveSessionLiveness.IsSelfInvocation's
+        // own doc has both signals): it is blocked waiting on this command to finish rather than
+        // racing it, so there is nothing to collide with (conformance review, cycle 2).
+        if (!InteractiveSessionLiveness.IsSelfInvocation(run))
+        {
+            InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "verify", settings.Force);
         }
 
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
