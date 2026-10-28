@@ -804,8 +804,7 @@ acknowledgment was given fresh or carried forward from an earlier one (design ru
 queue` and `h9k task publish --queue` are unchanged and remain the headless dispatch triggers —
 edges still gate automatic dispatch exactly as before; only this deliberate human claim gets the
 warn-and-proceed path. Either way, `drive` cuts the same branch and worktree headless dispatch
-would, assembles the prompt through the same code path (its working rules swapped for an attached
-operator) — and by default prints the worktree, the branch, and one line to paste into a terminal.
+would, and by default prints the worktree, the branch, and one line to paste into a terminal.
 That line `cd`s into the worktree and starts Claude Code with the run's settings file, a session name,
 `--dangerously-skip-permissions` only when the project allows it, this node's build model and effort
 named explicitly (the pair a headless build of the task would get; with no effort set anywhere it names
@@ -817,7 +816,9 @@ advancing any of them unasked: "do the build" is building in the worktree or `de
 `deliver` then `h9k review proceed`, and "fix it myself" is `h9k review fixed`. If the project home has
 `recipes/task-drive.md`, the anchor tells the session to read and follow it. `--print-prompt` prints
 the starting prompt for pasting into a session the operator starts themselves instead (that session
-also begins with `register-session`); `--direct-launch` keeps the old behavior (a regular interactive
+also begins with `register-session`); that prompt, and the one `--direct-launch` hands its process,
+come through the same code path headless dispatch uses, with its working rules swapped for an
+attached operator. `--direct-launch` keeps the old behavior (a regular interactive
 Claude Code session `drive` launches and waits on itself) for one release, and re-running `drive`
 under it resumes the most recently recorded session's own conversation (falling back to a fresh
 session, announced, only when the recorded one cannot be resumed). The claim is held by the human,
