@@ -158,7 +158,7 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
                 // closing, a killed process) leaves the task Claimed with a CurrentRunId that
                 // resolves to nothing. An interactive claim writes no TaskLease by design, so
                 // there is no expiry sweep to reclaim it the way a headless claim's would, and
-                // every other lever (work, handback, deliver, verify) refuses a run with no
+                // every other lever (drive, handback, deliver, verify) refuses a run with no
                 // record — each one's own no-record message names h9k task release by id as the
                 // way out (TaskDriveCommand.cs, TaskDeliverCommand.cs, TaskHandbackCommand.cs,
                 // TaskVerifyCommand.cs — adversarial review, cycle 2). Nothing has run yet at

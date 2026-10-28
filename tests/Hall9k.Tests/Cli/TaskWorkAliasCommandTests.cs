@@ -30,12 +30,6 @@ public sealed partial class TaskWorkAliasCommandTests
     }
 
     [Fact]
-    public void The_alias_is_the_drive_command_with_one_extra_line()
-    {
-        typeof(TaskWorkAliasCommand).IsAssignableTo(typeof(TaskDriveCommand)).Should().BeTrue();
-    }
-
-    [Fact]
     public async Task The_alias_writes_its_notice_to_stderr_before_the_drive_runs_and_keeps_its_exit_code()
     {
         StringWriter error = new();

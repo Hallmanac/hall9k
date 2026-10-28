@@ -13,7 +13,7 @@ public sealed class TaskWorkAliasCommand : TaskDriveCommand
     protected override Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken) =>
         RunAsync(Console.Error, () => base.ExecuteAsync(settings, cancellationToken), cancellationToken);
 
-    /// <summary>Says the verb was renamed before anything else happens, then returns the drive's own exit code.</summary>
+    /// <summary>Says the verb was renamed before the drive starts, then returns the drive's own exit code.</summary>
     internal static async Task<int> RunAsync(TextWriter error, Func<Task<int>> drive, CancellationToken cancellationToken)
     {
         await error.WriteLineAsync(RenamedNotice.AsMemory(), cancellationToken);
