@@ -42,13 +42,11 @@ human was told lives on the run stream, not only in a transcript. A send that fa
 (the session has ended, or SendMessage otherwise cannot reach it) is logged the same
 way, rather than dropped silently, and never blocks you — keep working either way.
 ===no-address-delegated===
-No registered human session is on record for this run right now. Unlike a fresh
-headless build dispatch, this run is not necessarily new — `h9k task delegate`
-reuses the operator's own existing interactive claim, so an earlier
-`h9k task {{RegisterSession}}` against it is possible. Either way there is nothing
-live to address: this contractor is only ever dispatched once any session recorded
-as attached to this run is no longer alive, so a prior registration, if any, is
-already stale. Skip sending these
+No registered human session is on record for this run. Unlike a fresh headless build
+dispatch, this run is not necessarily new (`h9k task delegate` reuses the operator's own
+existing interactive claim), but a session that had run `h9k task {{RegisterSession}}`
+against it would have been given to you as an address, and none has. There is nothing to
+address. Skip sending these
 ===no-address-ordinary===
 No registered human session is on record for this run right now — nobody has run
 `h9k task {{RegisterSession}}` against it. That is the ordinary case for a fresh

@@ -160,8 +160,7 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
                 + $"{taskId} to see where it stands.");
         }
 
-        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(
-            currentRun, taskId, "delegate", settings.Force, quiet: plan.CrossMachineNoticeShown);
+        EnsureNoOtherSessionAttached(currentRun, taskId, settings.Force, quiet: plan.CrossMachineNoticeShown);
 
         int processId;
         DateTimeOffset startedAt;
@@ -224,10 +223,20 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         AnsiConsole.MarkupLineInterpolated($"[dim]Branch: {plan.Branch}[/]");
         AnsiConsole.MarkupLineInterpolated($"[dim]Session: {plan.SessionName}[/]");
         AnsiConsole.MarkupLineInterpolated(
-            $"[dim]Task {taskId} is delegated for this phase, headless, as {plan.SessionName} (pid {processId}) — reachable on the session mesh (claude agents --json, or SendMessage). The task stays claimed interactively; nothing about the claim or the interactive-mode flag changed. h9k logs {taskId} to read the contractor's report once it lands, then h9k task drive {taskId} to re-enter this same worktree yourself and finish the build by hand, or h9k task delegate again for another phase.[/]");
+            $"[dim]Task {taskId} is delegated for this phase, headless, as {plan.SessionName} (pid {processId}) — reachable on the session mesh (claude agents --json, or SendMessage). The task stays claimed interactively; nothing about the claim or the interactive-mode flag changed. h9k logs {taskId} to read the contractor's report once it lands, then h9k task drive {taskId} to re-enter this same worktree yourself and finish the build by hand, or h9k task delegate again for another phase. If your own session dispatched it, run h9k task register-session {taskId} from that session once the contractor is done: the contractor's record replaced yours.[/]");
 
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// Refuses while a session other than the caller is attached to the claim's run; the claim's own
+    /// registered session, recognised the way <c>deliver</c> recognises a self-invocation, passes.
+    /// Returns whether the cross-machine <c>--force</c> notice was shown, which a caller re-checking
+    /// the same run passes back as <paramref name="quiet"/>.
+    /// </summary>
+    internal static bool EnsureNoOtherSessionAttached(RunDetails run, Guid taskId, bool force, bool quiet = false) =>
+        !InteractiveSessionLiveness.IsSelfInvocation(run)
+        && InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "delegate", force, quiet);
 
     /// <summary>
     /// Checked before the store ever opens (the <see cref="TaskWriteJiraCommand"/> convention: a
@@ -358,16 +367,16 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         // Checked before any of the work below, not only right before launch: a live attached
         // session — the operator's own, still editing — must never race a contractor dispatched
         // into the identical worktree (mirrors h9k task handback's own double-booking guard).
-        // Deliberately no InteractiveSessionLiveness.IsSelfInvocation exemption the way deliver,
-        // handback, and release each carry one: this command is the orchestrator window's own act
-        // (AGENTS.md, "the orchestrator window"), typed by the human, never something a build
-        // session dispatches against its own claim — there is no legitimate self-invoking caller
-        // for a command whose whole point is spawning a second, competing session into a worktree
-        // the caller is already running in. Its return value is threaded through to
-        // ExecuteAsync's own re-check of this identical guard right before launch, mirroring
-        // h9k task drive's own quiet/CrossMachineNoticeShown pairing, so the cross-machine
-        // --force notice never prints twice for the same delegation (adversarial review, cycle 1).
-        bool crossMachineNoticeShown = InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "delegate", force);
+        // The one session exempted is the claim's own registered driving session
+        // (InteractiveSessionLiveness.IsSelfInvocation, as deliver, handback, and release treat
+        // it): h9k task drive hands the owner a session that delegates the build on their word, and
+        // that session is waiting on this command rather than racing it, the reasoning verify's own
+        // exemption rests on. Any other live session, a second terminal included, still refuses. The
+        // return value is threaded through to ExecuteAsync's own re-check of this identical guard
+        // right before launch, mirroring h9k task drive's own quiet/CrossMachineNoticeShown pairing,
+        // so the cross-machine --force notice never prints twice for the same delegation
+        // (adversarial review, cycle 1).
+        bool crossMachineNoticeShown = EnsureNoOtherSessionAttached(run, taskId, force);
 
         TaskDetails taskDetails = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
@@ -480,6 +489,9 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
             taskDetails, project, run.Branch, run.WorktreePath, resumesPreviousWork, blockerContext,
             resumeReason: null, isInteractive: false, isHandback: false, isDeliberateHeadlessStart: true,
             requiresSelfRegistration: false, isDelegatedContractor: true, delegationNote: note,
+            // The driving session's own address, so the contractor's claimed and done milestones
+            // reach the session that dispatched it; null when nobody ever registered against the run.
+            interactiveMilestoneAddress: run.RegisteredInteractiveSessionName,
             delegationBaseCommit: delegationBaseCommit,
             baseBranch: run.BaseBranchOr(project.BaseBranch), baseCommit: run.BaseCommit,
             // The contractor closes with a pull request summary the platform posts under the
