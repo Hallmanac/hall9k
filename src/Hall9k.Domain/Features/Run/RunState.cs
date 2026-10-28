@@ -58,6 +58,20 @@ public sealed record RunState
 
     public bool IsLive => this == Dispatched || this == Running || this == Verifying || this == UnderReview;
 
+    /// <summary>
+    /// The stages the daemon's pipeline owns between <c>h9k task deliver</c> and the pull request:
+    /// the gates, an independent review or fix session, and the park a human answers. A session
+    /// registered against the run in one of them is the human's driving session, not the build, so
+    /// recording it must leave the state and the pipeline's own recorded sessions where they are.
+    /// </summary>
+    public bool IsPastBuild => this == Verifying || this == UnderReview || this == ReviewParked;
+
+    /// <summary>
+    /// Whether an interactive claim's own session can be entered or registered against a run in this
+    /// state: the build itself, or any pre-pull-request stage the driving session stays on for.
+    /// </summary>
+    public bool AdmitsInteractiveSession => this == Dispatched || this == Running || IsPastBuild;
+
     public static implicit operator string(RunState? value) => value?.Value ?? string.Empty;
 
     public static implicit operator RunState(string? value) => value.IsBlank() ? Unknown : new RunState(value);

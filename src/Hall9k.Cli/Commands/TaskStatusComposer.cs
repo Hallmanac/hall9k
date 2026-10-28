@@ -652,7 +652,7 @@ internal static class TaskStatusComposer
             return SessionLiveness.NotApplicable;
         }
 
-        List<SessionLiveness> observed = [.. run.ActiveSessions.Select(
+        List<SessionLiveness> observed = [.. run.ActiveSessions.Where(session => IsPipelineSession(run, session)).Select(
             session => observer.Observe(
                 session.ProcessId, session.StartedAt, SessionOnThisMachine(session, onThisMachine, machineName)))];
         if (run.ActiveGate is { } gate)
@@ -677,6 +677,14 @@ internal static class TaskStatusComposer
             ? SessionLiveness.Unobserved
             : SessionLiveness.Gone;
     }
+
+    /// <summary>
+    /// Whether <paramref name="session"/> is one of the pipeline's own past the build. The human's
+    /// driving session can be recorded beside them after deliver, and it is not what a running gate
+    /// or the stall clock is about.
+    /// </summary>
+    internal static bool IsPipelineSession(RunDetails run, ActiveSession session) =>
+        !run.State.IsPastBuild || session.Role != AgentRole.Interactive;
 
     /// <summary>
     /// A session's own machine identity when it carries one, ahead of the run-level lookup: an
@@ -868,7 +876,11 @@ internal static class TaskStatusComposer
             // parked run — and the lever it would print (h9k logs) is unusable here, since an
             // interactive session runs attached to the tty and never writes a stream file
             // (adversarial review, cycle 4).
-            return run.ActiveSessions.Any(activeSession => activeSession.Role == AgentRole.Interactive)
+            //
+            // Past the build the recorded interactive session is the owner's driving session, not
+            // the claim being waited on, so it explains nothing about a pipeline process that is
+            // gone (IsPipelineSession, the filter Observe applies on the same ground).
+            return run.ActiveSessions.Any(activeSession => activeSession.Role == AgentRole.Interactive && IsPipelineSession(run, activeSession))
                 ? (false, string.Empty)
                 : (true, "process gone");
         }
@@ -892,7 +904,7 @@ internal static class TaskStatusComposer
         // quiet, exactly the silence this clock exists to catch. A gate actually running never
         // has an agent session recorded alongside it (VerifyingPhase's own doc), so this narrows
         // nothing for the live case the fix above was written for.
-        if (run.ActiveGate is not null && run.ActiveSessions.Count == 0)
+        if (run.ActiveGate is not null && !run.ActiveSessions.Exists(activeSession => IsPipelineSession(run, activeSession)))
         {
             return (false, string.Empty);
         }

@@ -197,6 +197,12 @@ public static class ProjectHomePaths
     public static string OrchestratorRecipeFile(string home) => Path.Combine(RecipesDirectory(home), RecipeLibraryPaths.OrchestratorRecipeFileName);
 
     /// <summary>
+    /// This project's recipe for a session driving one task (<c>h9k task drive</c>): optional, written once by the
+    /// <c>orchestrator-recipe-generator</c> skill, and named in the task anchor only when it exists.
+    /// </summary>
+    public static string TaskDriveRecipeFile(string home) => Path.Combine(RecipesDirectory(home), RecipeLibraryPaths.TaskDriveRecipeFileName);
+
+    /// <summary>
     /// The generator-seeded open-loop journal, at the project home's own root rather than under
     /// <see cref="RecipesDirectory"/> — Brian's own ruling (task: an operator starts a lean node
     /// or project orchestrator window, 2026-09-07 16:10 EDT): one rule per folder, since

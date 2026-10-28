@@ -80,7 +80,13 @@ public sealed class RunKillCommand : Hall9kAsyncCommand<RunKillCommand.Settings>
         StreamState? runFence = await session.Events.FetchStreamStateAsync(runId, cancellationToken)
             ?? throw new DomainNotFoundException($"No run {runId}.");
 
-        if (run.ActiveSessions.Count == 0)
+        // Past the build the owner's own driving session can be recorded beside the pipeline's
+        // sessions, and it is not what this command kills: terminating its process tree would take
+        // the owner's session down with it, along with this very command when the session is the
+        // one that ran it, before RunKilled is ever appended. Before the build the interactive
+        // session is the claim itself, and stays killable as it always was.
+        List<ActiveSession> killTargets = [.. run.ActiveSessions.Where(activeSession => TaskStatusComposer.IsPipelineSession(run, activeSession))];
+        if (killTargets.Count == 0)
         {
             throw new DomainConflictException(
                 $"Run {runId} has no live agent session to kill — it is {run.State.Value}. "
@@ -91,7 +97,7 @@ public sealed class RunKillCommand : Hall9kAsyncCommand<RunKillCommand.Settings>
             ResolvePhysicalNodeId(run.NodeId, run.DispatchingNodeId), cancellationToken);
         bool runOnThisMachine = node?.MachineName == Environment.MachineName;
         (IReadOnlyList<ActiveSession> killable, IReadOnlyList<ActiveSession> unreachable) =
-            PartitionSessions(run.ActiveSessions, runOnThisMachine, Environment.MachineName);
+            PartitionSessions(killTargets, runOnThisMachine, Environment.MachineName);
 
         if (killable.Count == 0)
         {

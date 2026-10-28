@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Projections;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -14,6 +15,20 @@ namespace Hall9k.Tests.Cli;
 public sealed class RunKillCommandTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 13, 12, 0, 0, TimeSpan.Zero);
+
+    [Theory]
+    [InlineData("UnderReview", false)]
+    [InlineData("Running", true)]
+    public void The_interactive_session_is_a_pipeline_session_only_before_the_build_is_delivered(string state, bool isPipelineSession)
+    {
+        // Past the build the interactive session is the owner's driving session; killing its process
+        // tree would take the shell running h9k run kill down with it.
+        RunDetails run = new() { State = state };
+        ActiveSession interactive = new(AgentRole.Interactive, ReviewLens.Unknown, 4242, Now);
+
+        TaskStatusComposer.IsPipelineSession(run, interactive).Should().Be(isPipelineSession);
+        TaskStatusComposer.IsPipelineSession(run, new ActiveSession(AgentRole.Review, ReviewLens.Conformance, 4243, Now)).Should().BeTrue();
+    }
 
     [Fact]
     public void A_session_on_this_machine_with_a_recorded_start_time_is_killable()

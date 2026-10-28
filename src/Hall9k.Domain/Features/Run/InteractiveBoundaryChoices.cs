@@ -45,10 +45,10 @@ public static class InteractiveBoundaryChoices
             [
                 $"`h9k review proceed {id}` — dispatch a headless fix session over the findings the "
                 + "reviewers filed. This is the automatic path, just held for their go.",
-                $"`h9k review fixed {id}` — they fix the findings themselves in the worktree and commit; "
-                + "this hands the branch back and the review agents check that fix exactly as they would "
-                + "check a fix session's. No fix agent runs. Add `--no-change \"<why>\"` if they "
-                + "deliberately changed nothing, which is otherwise refused.",
+                $"`h9k review fixed {id}` — the findings get fixed by hand, by them or by their driving "
+                + "session on their word, and committed; this hands the branch back and the review agents "
+                + "check that fix exactly as they would check a fix session's. No fix agent runs. Add "
+                + "`--no-change \"<why>\"` if nothing was deliberately changed, which is otherwise refused.",
                 $"`h9k review resolve {id} --needs-fixes \"<what to do instead>\"` — dispatch a fix session "
                 + "carrying their redirect as its findings rather than the reviewer's own.",
                 $"`h9k review resolve {id} --merge-ready --reason \"<why it is sound>\"` — overrule the "
@@ -88,8 +88,8 @@ public static class InteractiveBoundaryChoices
         {
             InteractiveBoundaryLevers.ReviewVerdictToFix =>
                 $"Four choices: h9k review proceed {id} (dispatch a fix session), "
-                + $"h9k review fixed {id} (you fixed it yourself — commit first, then the review agents "
-                + $"check your fix), h9k review resolve {id} --needs-fixes \"<redirect>\" (a fix session "
+                + $"h9k review fixed {id} (the findings were fixed by hand, by you or by your session on "
+                + $"your word — commit first, then the review agents check that fix), h9k review resolve {id} --needs-fixes \"<redirect>\" (a fix session "
                 + $"carrying your redirect), or h9k review resolve {id} --merge-ready (overrule the finding).",
             InteractiveBoundaryLevers.GatesToPullRequest =>
                 $"h9k review proceed {id} to open it, or h9k review resolve {id} --needs-fixes \"<reason>\" "

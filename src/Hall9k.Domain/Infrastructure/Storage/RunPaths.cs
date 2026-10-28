@@ -265,6 +265,20 @@ public static class RunPaths
 
     public static string SettingsFile(string runDirectory) => Path.Combine(runDirectory, "settings.json");
 
+    /// <summary>
+    /// The anchor <c>h9k task drive</c> renders for a human's own session on this run and hands it with
+    /// <c>--append-system-prompt-file</c>: the standing rules of driving the task, rewritten on every
+    /// drive so it reflects the project's current conventions.
+    /// </summary>
+    public static string TaskAnchorFile(string runDirectory) => Path.Combine(runDirectory, "task-anchor.md");
+
+    /// <summary>
+    /// Where the driving session drafts the pull request summary it passes to <c>h9k task deliver
+    /// --pr-summary</c>. Deliver captures it into <see cref="PrSummaryFile"/>, so the draft and the
+    /// artifact the opener reads are two files.
+    /// </summary>
+    public static string PrSummaryDraftFile(string runDirectory) => Path.Combine(runDirectory, "pr-summary-draft.md");
+
     public static string StandardErrorFile(string runDirectory) => Path.Combine(runDirectory, "stderr.log");
 
     // Pre-PR review and fix sessions (log #24) share the run's directory; each session's

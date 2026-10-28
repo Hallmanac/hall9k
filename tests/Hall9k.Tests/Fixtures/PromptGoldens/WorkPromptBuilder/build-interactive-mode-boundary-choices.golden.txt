@@ -83,7 +83,7 @@ review agents to check exactly as they would check a fix session's work. No fix
 agent runs unless they ask for one:
 
 - `h9k review proceed 01a09162-ad44-723a-8963-ed48e339ec23` — dispatch a headless fix session over the findings the reviewers filed. This is the automatic path, just held for their go.
-- `h9k review fixed 01a09162-ad44-723a-8963-ed48e339ec23` — they fix the findings themselves in the worktree and commit; this hands the branch back and the review agents check that fix exactly as they would check a fix session's. No fix agent runs. Add `--no-change "<why>"` if they deliberately changed nothing, which is otherwise refused.
+- `h9k review fixed 01a09162-ad44-723a-8963-ed48e339ec23` — the findings get fixed by hand, by them or by their driving session on their word, and committed; this hands the branch back and the review agents check that fix exactly as they would check a fix session's. No fix agent runs. Add `--no-change "<why>"` if nothing was deliberately changed, which is otherwise refused.
 - `h9k review resolve 01a09162-ad44-723a-8963-ed48e339ec23 --needs-fixes "<what to do instead>"` — dispatch a fix session carrying their redirect as its findings rather than the reviewer's own.
 - `h9k review resolve 01a09162-ad44-723a-8963-ed48e339ec23 --merge-ready --reason "<why it is sound>"` — overrule the finding; the loop stops asking and moves on.
 

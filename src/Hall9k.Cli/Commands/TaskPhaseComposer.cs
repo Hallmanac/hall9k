@@ -329,7 +329,7 @@ internal static class TaskPhaseComposer
     /// permit is only ever acquired inside the per-gate loop this wait gates entry to.
     /// </summary>
     private static TaskPhase? GateSetAcceptanceWaitPhase(RunDetails run, DateTimeOffset now) =>
-        run.GateSetAcceptanceWaitStartedAt is { } waitStartedAt && run.ActiveSessions.Count == 0
+        run.GateSetAcceptanceWaitStartedAt is { } waitStartedAt && PipelineSessions(run).Count == 0
             ? new TaskPhase(
                 "waiting for this node to accept its verify gates", SessionLiveness.NotApplicable,
                 $"h9k project accept-gates; waited {DurationFormat.Short(now - waitStartedAt)} so far")
@@ -356,7 +356,7 @@ internal static class TaskPhaseComposer
     /// </para>
     /// </summary>
     private static TaskPhase? HostCoupledGateWaitPhase(RunDetails run, DateTimeOffset now) =>
-        run.HostCoupledGateWaitStartedAt is { } waitStartedAt && run.ActiveSessions.Count == 0
+        run.HostCoupledGateWaitStartedAt is { } waitStartedAt && PipelineSessions(run).Count == 0
             ? new TaskPhase(
                 "waiting for the host-coupled gate slot", SessionLiveness.NotApplicable,
                 $"another run on this node is using it; waited {DurationFormat.Short(now - waitStartedAt)} so far")
@@ -406,7 +406,7 @@ internal static class TaskPhaseComposer
         // a gate that has actually started is concrete proof the wait already ended, whichever way
         // the record reads it, so it must win over a HostCoupledGateWaitStartedAt a shutdown mid-wait
         // stranded — see that phase's own doc comment for the origin shape.
-        if (run.ActiveGate is { } gate && run.ActiveSessions.Count == 0)
+        if (run.ActiveGate is { } gate && PipelineSessions(run).Count == 0)
         {
             return GatePhase(gate, session, now);
         }
@@ -435,7 +435,7 @@ internal static class TaskPhaseComposer
         // record's own doc). Named sessions only: a stream written before session naming existed
         // reads as an ordinary fix, the honest default this line already gave before this
         // distinction existed.
-        if (ActiveRole(run) == AgentRole.Fix && run.ActiveSessions is [{ Name: { } name }, ..])
+        if (ActiveRole(run) == AgentRole.Fix && PipelineSessions(run) is [{ Name: { } name }, ..])
         {
             // Task: a pre-final-pass rebase that applies cleanly but breaks the mandatory gate
             // gets a repair lap inside the same run instead of failing it — its own prefix, named
@@ -470,7 +470,19 @@ internal static class TaskPhaseComposer
     /// flight is Unknown, which is the honest reading of "nothing is running".
     /// </summary>
     private static AgentRole ActiveRole(RunDetails run) =>
-        run.ActiveSessions.Count > 0 ? run.ActiveSessions[0].Role : AgentRole.Unknown;
+        PipelineSessions(run) is [{ } first, ..]
+            ? first.Role
+            : AgentRole.Unknown;
+
+    /// <summary>
+    /// The sessions the phase line reads. Past the build, the human's own driving session can be
+    /// recorded beside the gates and review sessions (<c>h9k task register-session</c> after
+    /// deliver), and it is not a stage of the pipeline, so it must neither name the leg the run is
+    /// on nor hide a gate or a wait that is the real activity.
+    /// </summary>
+    private static List<ActiveSession> PipelineSessions(RunDetails run) => run.State.IsPastBuild
+        ? [.. run.ActiveSessions.Where(session => session.Role != AgentRole.Interactive)]
+        : run.ActiveSessions;
 
     /// <summary>
     /// Which lenses still have a pass out (Decisions Log #59). "adversarial pending" is the
