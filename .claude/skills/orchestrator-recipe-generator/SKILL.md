@@ -814,7 +814,7 @@ their own. Both:
 `recipes/task-drive.md` is read by a session an owner starts with `h9k task drive <id>`: a Claude
 Code session in one task's worktree that carries out the owner's instructions one phase at a time,
 from the build through the review loop that runs before the pull request opens. The platform hands
-that session a task anchor of its own (registering first, reading `h9k task show` before every
+that session a task anchor of its own (registering first, reading `h9k task next` before every
 move, never advancing a phase unasked, the map from instruction to verb, when the worktree may be
 touched, the pull request summary step, and the project's writing conventions). This recipe is
 only what is specific to this project on top of that, so it never restates the anchor. It:
