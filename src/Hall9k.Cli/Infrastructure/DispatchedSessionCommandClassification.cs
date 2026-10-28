@@ -101,6 +101,7 @@ internal static class DispatchedSessionCommandClassification
             [typeof(TaskDraftCommand.Settings)] = (DispatchedSessionAccess.Refused, "task draft"),
             [typeof(TaskListCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "task list"),
             [typeof(TaskShowCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "task show"),
+            [typeof(TaskNextCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "task next"),
             [typeof(TaskPullCommand.Settings)] = (DispatchedSessionAccess.Refused, "task pull"),
             [typeof(TaskPushToJiraCommand.Settings)] = (DispatchedSessionAccess.Refused, "task push-to-jira"),
             [typeof(TaskLinkJiraCommand.Settings)] = (DispatchedSessionAccess.Refused, "task link-jira"),

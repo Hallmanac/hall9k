@@ -1611,6 +1611,18 @@ public static class CliCommandTree
                     + "names its owner, its state, objective, acceptance criteria and runs, and carries no "
                     + "cause, phase or next step, which are the owner's to read.")
                 .WithExample("task", "show", "28b19893");
+            task.AddCommand<TaskNextCommand>("next")
+                .WithDescription(
+                    "Where one task stands, who moves next (you, the platform, a running agent, or GitHub), "
+                    + "and the exact command or commands that move it. Read-only and computed from the "
+                    + "platform's own records with no agent call: it composes the same row h9k status shows "
+                    + "(the phase line and the needs-you lever, unchanged), the next step h9k task show "
+                    + "prints for a task that has not run yet and the three exits from Failed, and, for a "
+                    + "run, the review loop's next step, the choices at an interactive park, and what "
+                    + "closeout last recorded on an open pull request and when. A teammate's task names "
+                    + "its owner and no command. The first thing a driving session runs before every move. "
+                    + "Takes the full id or an unambiguous fragment.")
+                .WithExample("task", "next", "28b19893");
             task.AddCommand<TaskPullCommand>("pull")
                 .WithDescription(
                     "Ask this project's other members for one task's whole event stream, by id, when this "
