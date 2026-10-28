@@ -27,9 +27,10 @@ public static class ReviewSkipPlan
         ReviewPhase phase = run.State == RunState.ReviewParked ? run.ParkedFromReviewPhase : run.ReviewPhase;
         List<string> skipped = [];
 
-        // A reverify is the gate that follows a fix, so a run parked there still owes one even
-        // though an earlier pass of the gates is on its stream.
-        if (!run.GatesPassed || phase == ReviewPhase.Reverify)
+        // Owed when the gates never ran, or when a fix has landed commits since they last did. A run
+        // parked at the fix-to-re-review boundary sits in Reverify but on the far side of the fix's
+        // own gates, so the phase alone cannot say whether a skip bypasses them.
+        if (!run.GatesPassed || run.GatesOwedSinceFix)
         {
             skipped.Add(Gates);
         }
@@ -37,18 +38,45 @@ public static class ReviewSkipPlan
         IReadOnlyList<ReviewLens> active = run.ActiveReviewLenses;
         skipped.AddRange(ReviewLens.CycleLenses.Where(active.Contains).Select(Track));
 
-        bool settled = phase is ReviewPhase.Settling or ReviewPhase.MergeReady
-            or ReviewPhase.AwaitingSettlingGateRepair or ReviewPhase.SettlingGateRepairCapReached
-            or ReviewPhase.SettlingGateRepairNeeded;
         if (run.ReviewStageComposition.OpeningLenses().Count > 0
             && !run.ReviewStageComposition.WaivesFinalFullPassGuarantee
-            && !run.HumanEndedTheLoop
-            && !settled)
+            && !FinalPassAlreadySatisfied(run, phase))
         {
             skipped.Add(FinalPass);
         }
 
         skipped.Add(SettlingGate);
         return skipped;
+    }
+
+    /// <summary>
+    /// Whether the mandatory final full pass is no longer owed. The settling phases are not enough on
+    /// their own: the interactive boundary in front of the final pass parks in Settling before that
+    /// pass has run, as does a settling-gate repair that precedes it. Past MergeReady the review is
+    /// done; in a settling phase the pass is satisfied only when the loop could settle, which mirrors
+    /// the clauses of <c>ReviewEngine.MaySettleReason</c> that do not depend on the engine's caps.
+    /// </summary>
+    private static bool FinalPassAlreadySatisfied(RunAggregate run, ReviewPhase phase)
+    {
+        if (run.HumanEndedTheLoop || phase == ReviewPhase.MergeReady)
+        {
+            return true;
+        }
+
+        if (phase is not (ReviewPhase.Settling or ReviewPhase.AwaitingSettlingGateRepair
+            or ReviewPhase.SettlingGateRepairCapReached or ReviewPhase.SettlingGateRepairNeeded))
+        {
+            return false;
+        }
+
+        return true switch
+        {
+            _ when run.PreFinalPassRebaseAwaitingReview => false,
+            _ when run.CurrentCycleMode == ReviewMode.Discovery && run.CycleSinceSha is not null => false,
+            _ when run.CurrentCycleMode == ReviewMode.FinalFullPass
+                && run.LastReviewVerdict == ReviewVerdict.MergeReady
+                && run.CompletedReviewPasses.Any(pass => pass.Findings.Count > 0) => true,
+            _ => run.CurrentCycleMode != ReviewMode.Verify && !run.FixDispatchedThisCycle,
+        };
     }
 }

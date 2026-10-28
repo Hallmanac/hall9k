@@ -777,6 +777,15 @@ public sealed class RunAggregate
     public bool GatesPassed { get; private set; }
 
     /// <summary>
+    /// Whether a fix has landed commits since the gates last passed (or were legitimately skipped):
+    /// set when a fix session completes or a human hands back their own fix, cleared by the next
+    /// gate result. <see cref="GatesPassed"/> never goes back to false, so this is what tells
+    /// <see cref="ReviewSkipPlan"/> a run parked on the far side of a fix's gates from one parked
+    /// ahead of them.
+    /// </summary>
+    public bool GatesOwedSinceFix { get; private set; }
+
+    /// <summary>
     /// Whether the most recently recorded <see cref="Events.VerificationPassed"/> ran every
     /// `dotnet test`-shaped gate at full scope (task: a fix cycle's verification gate) — set from
     /// the event itself, never re-derived, since only <c>VerificationRunner.VerifyAsync</c>'s own
@@ -1090,6 +1099,7 @@ public sealed class RunAggregate
     {
         _failedGates.Clear();
         GatesPassed = true;
+        GatesOwedSinceFix = false;
         LastGateRanFullScope = @event.RanFullScope;
         LastGateHeadSha = @event.HeadSha;
         LastGateVerifyCommandsFingerprint = @event.VerifyCommandsFingerprint;
@@ -1142,6 +1152,7 @@ public sealed class RunAggregate
     {
         _failedGates.Clear();
         GatesPassed = true;
+        GatesOwedSinceFix = false;
         PreFinalPassRebaseAwaitingGate = false;
     }
 
@@ -1390,6 +1401,7 @@ public sealed class RunAggregate
         ClearActiveFixSession();
         PendingHumanFindings = null;
         PendingHumanFindingsFromInteractiveGate = false;
+        GatesOwedSinceFix = true;
         // Every fix session is followed by the gates, including the terminal one the severity
         // gate let through: what a settled ending ships unreviewed is the reviewers' reading of
         // those commits, never the build and the tests (log #63). The reverify step is what
@@ -1442,6 +1454,7 @@ public sealed class RunAggregate
         // answer.
         InteractiveGateCleared = false;
         _fixDispatchedThisCycle = true;
+        GatesOwedSinceFix = true;
         // Reverify, never Disputed: a human cannot dispute their own fix, and Reverify is the
         // existing fix-to-re-review entry point — the gates run over those commits, then a fresh
         // review pass reads them.

@@ -45,6 +45,18 @@ public static class ReviewSkipRules
 
         if (run.State == RunState.ReviewParked)
         {
+            // A lap that answered a human reviewer parked with a drafted reply nobody has decided on.
+            // Skipping would erase the draft and leave the reviewer unanswered without anyone choosing
+            // that, so the reply choice is made first, through the lever that records it.
+            if (run.ParkedOnReviewDisagreement)
+            {
+                throw new DomainConflictException(
+                    $"Task {taskId} is parked because a lap answered a human reviewer and posted nothing; the "
+                    + "drafted reply is yours to decide, and skipping would drop it without anyone choosing that. "
+                    + $"Say what the reviewer hears first: h9k review resolve {taskId} with --post-reply-as-written, "
+                    + "--post-reply \"<your text>\", or --post-nothing. h9k task show prints the draft whole.");
+            }
+
             // Review has already settled at this park: only opening the pull request is left, so a
             // skip would bypass nothing and h9k review proceed is the honest lever.
             return run.ParkedFromReviewPhase == ReviewPhase.MergeReady
