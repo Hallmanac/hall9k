@@ -102,7 +102,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         // AppendPassage below says nothing at all when nothing on the task has happened yet.
         TaskPassage passage = await TaskPassageQuery.ReadAsync(
             session, details.Id, details.Type, taskConcluded, now, cancellationToken);
-        WriteStanding(row, details, passage);
+        WriteStanding(row, details, passage, labels);
 
         Table header = new Table().Border(TableBorder.None).HideHeaders();
         header.AddColumns("k", "v");
@@ -710,7 +710,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             WriteReviewPersonas(newestRun);
             WritePermissionDenials(newestRun);
             WriteReviewScopeSeed(newestRun);
-            WriteReviewOutcome(newestRun);
+            WriteReviewOutcome(newestRun, labels);
             WriteReviewEndedByMerge(newestRun);
             WriteUnfixedFindings(newestRun);
             WriteRideAlongFindings(newestRun);
@@ -927,7 +927,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// lands: the block is a list of labelled rows for exactly that reason.
     /// </para>
     /// </summary>
-    private static void WriteStanding(TaskStatusRow? row, TaskDetails details, TaskPassage passage)
+    private static void WriteStanding(TaskStatusRow? row, TaskDetails details, TaskPassage passage, MemberLabelLookup labels)
     {
         Table standing = new Table().Border(TableBorder.None).HideHeaders();
         standing.AddColumns("k", "v");
@@ -963,7 +963,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 row.Attention.Markup);
         }
 
-        AppendPassage(standing, passage);
+        AppendPassage(standing, passage, labels);
 
         AnsiConsole.Write(standing);
     }
@@ -975,9 +975,9 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// to say yet — a Draft or Published task that has never been queued has no queued phase,
     /// no runs, and nothing else this section could honestly report.
     /// </summary>
-    private static void AppendPassage(Table standing, TaskPassage passage)
+    private static void AppendPassage(Table standing, TaskPassage passage, MemberLabelLookup labels)
     {
-        List<string> lines = ComposePassageLines(passage);
+        List<string> lines = ComposePassageLines(passage, labels);
         if (lines.Count == 0)
         {
             return;
@@ -997,14 +997,14 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// is <see cref="PassagePhase.NotApplicable"/>/zero/empty — nothing on the task has happened
     /// yet worth reporting a passage over.
     /// </summary>
-    internal static List<string> ComposePassageLines(TaskPassage passage)
+    internal static List<string> ComposePassageLines(TaskPassage passage, MemberLabelLookup? labels = null)
     {
         bool reviewHasAnything = passage.Review.Cycles > 0 || passage.Review.FixSessions > 0
             || passage.Review.StillOpen || passage.Review.FixStillOpen;
         bool hasAnything = passage.Queued.Applicable || passage.Building.Applicable || passage.Gates.Applicable
             || reviewHasAnything || passage.Delivery.Applicable
             || passage.MergeWait.Applicable || passage.HumanWaits.Count > 0 || passage.ClaimToMerge.Applicable
-            || passage.Laps.Count > 0 || passage.Sessions > 0;
+            || passage.Laps.Count > 0 || passage.Sessions > 0 || passage.ReviewSkips is { Count: > 0 };
         if (!hasAnything)
         {
             return [];
@@ -1057,10 +1057,29 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         }
 
         lines.AddRange(humanWaits);
+        lines.AddRange((passage.ReviewSkips ?? []).Select(skip => ComposeSkipPassageLine(skip, labels ?? MemberLabelLookup.Empty)));
         lines.Add(string.Join(" [dim]·[/] ", summary));
 
         return lines;
     }
+
+    /// <summary>
+    /// The passage line for a manual override: who skipped, what, and the reason (marked when the
+    /// driving session wrote it) or the plain statement that none was given. Everything the record
+    /// carries is escaped, since the reason is free text from a person or a session.
+    /// </summary>
+    internal static string ComposeSkipPassageLine(ReviewSkipRecord skip, MemberLabelLookup labels) =>
+        $"[yellow]skipped to PR[/] by {ExternalText.OneLineMarkup(skip.Who(labels))} at "
+        + $"{skip.SkippedAt.ToLocalTime().ToString("g").EscapeMarkup()}: skipped {ExternalText.OneLineMarkup(skip.SkippedText)}; "
+        + SkipReasonMarkup(skip);
+
+    /// <summary>The reason clause shared by every task show rendering of an override.</summary>
+    internal static string SkipReasonMarkup(ReviewSkipRecord skip) =>
+        !skip.HasReason
+            ? $"[dim]{ReviewSkipRecord.NoReasonGiven}[/]"
+            : skip.ReasonByAgent
+                ? $"reason ({ReviewSkipRecord.AgentWrittenMarker}): {ExternalText.OneLineMarkup(skip.Reason!)}"
+                : $"reason: {ExternalText.OneLineMarkup(skip.Reason!)}";
 
     private static void AddClause(List<string> clauses, string label, PassagePhase phase)
     {
@@ -1352,16 +1371,30 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// all is what that short-circuit leaves behind, regardless of what the last cycle concluded.
     /// </para>
     /// </summary>
-    private static void WriteReviewOutcome(RunDetails? run)
+    private static void WriteReviewOutcome(RunDetails? run, MemberLabelLookup labels)
+    {
+        if (ComposeReviewOutcome(run, labels) is { } outcome)
+        {
+            AnsiConsole.MarkupLine($"\n[bold]Pre-PR review[/]  {outcome}");
+        }
+    }
+
+    /// <summary>
+    /// The outcome markup <see cref="WriteReviewOutcome"/> prints, composed rather than printed so
+    /// what a reader sees is assertable without a terminal. Null where that line stays silent.
+    /// An override reads from the event: who skipped, what was skipped, and the reason (marked when
+    /// the driving session wrote it) or that none was given, never the unrecorded fallback.
+    /// </summary>
+    internal static string? ComposeReviewOutcome(RunDetails? run, MemberLabelLookup labels)
     {
         if (run is null || run.ReviewEndedByMergeAtCycle is not null || run.LastReviewVerdict != ReviewVerdict.MergeReady)
         {
-            return;
+            return null;
         }
 
         // A run whose review was already in flight before settlements existed recorded none, so
         // the line says merge-ready and stops rather than claiming a cleanliness nobody observed.
-        string outcome = run.ReviewSettlement switch
+        return run.ReviewSettlement switch
         {
             var settlement when settlement == ReviewSettlement.Clean =>
                 "[green]merge-ready (clean)[/] [dim]— a reviewer read the final diff and found nothing[/]",
@@ -1369,10 +1402,13 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 $"[yellow]merge-ready (settled[/] [yellow]— {run.ReviewResidualsFixed} residual(s) fixed, "
                 + $"{run.ReviewResidualsRouted} routed{RideAlongClause(run)}{UnfixedClause(run)}{UnroutedClause(run)})[/] "
                 + "[dim]— the loop ended without a clean re-read[/]",
+            var settlement when settlement == ReviewSettlement.Overridden && run.ReviewSkip is { } skip =>
+                $"[yellow]merge-ready (skipped to PR by {ExternalText.OneLineMarkup(skip.Who(labels))})[/] "
+                + $"[dim]— skipped {ExternalText.OneLineMarkup(skip.SkippedText)};[/] {SkipReasonMarkup(skip)}",
+            var settlement when settlement == ReviewSettlement.Overridden =>
+                "[yellow]merge-ready (skipped to PR)[/] [dim]— a manual override recorded on an earlier run of this task; this run resumed at the pull request open[/]",
             _ => "[green]merge-ready[/] [dim]— how it was reached was not recorded[/]",
         };
-
-        AnsiConsole.MarkupLine($"\n[bold]Pre-PR review[/]  {outcome}");
     }
 
     /// <summary>

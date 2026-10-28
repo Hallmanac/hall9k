@@ -623,6 +623,35 @@ public sealed class PullRequestBodyTests
             string.Empty));
     }
 
+    /// <summary>
+    /// A manual override adds nothing to the pull request (Brian, 2026-10-13): whether the PR
+    /// mentions the skip is the human's call, written in their own summary. The body is built from
+    /// the same inputs either way, so a run carrying the override reads byte-for-byte the same, with
+    /// the platform's fallback body and with an authored one.
+    /// </summary>
+    [Fact]
+    public void An_override_adds_nothing_to_the_pull_request_body()
+    {
+        RunDetails plain = Run();
+        RunDetails overridden = Run();
+        overridden.ReviewSettlement = ReviewSettlement.Overridden;
+        overridden.LastReviewVerdict = ReviewVerdict.MergeReady;
+        overridden.ReviewSkip = new ReviewSkipRecord(
+            DomainId.New(), "abc123def456", DateTimeOffset.UtcNow, "docs only", ReasonByAgent: true,
+            [ReviewSkipPlan.Gates, ReviewSkipPlan.SettlingGate]);
+        TaskDetails task = Task("github:Hallmanac/hall9k#42");
+
+        string fallbackPlain = PullRequestBody.Build(plain, task, "Did the work.", GitHubIssue);
+        string fallbackOverridden = PullRequestBody.Build(overridden, task, "Did the work.", GitHubIssue);
+        string authoredPlain = PullRequestBody.Build(plain, task, null, GitHubIssue, Summary("Add it", "What changed."));
+        string authoredOverridden = PullRequestBody.Build(overridden, task, null, GitHubIssue, Summary("Add it", "What changed."));
+
+        fallbackOverridden.Should().Be(fallbackPlain);
+        authoredOverridden.Should().Be(authoredPlain);
+        authoredOverridden.Should().NotContainAny("override", "skipped", "Overridden", "docs only");
+        fallbackOverridden.Should().NotContainAny("override", "skipped", "Overridden", "docs only");
+    }
+
     private static RunDetails Run() => new()
     {
         Id = DomainId.New(),

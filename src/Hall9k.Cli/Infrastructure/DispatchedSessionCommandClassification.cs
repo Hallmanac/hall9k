@@ -117,6 +117,9 @@ internal static class DispatchedSessionCommandClassification
             [typeof(TaskStartCommand.Settings)] = (DispatchedSessionAccess.Refused, "task start"),
             [typeof(TaskVerifyCommand.Settings)] = (DispatchedSessionAccess.Allowed, "task verify"),
             [typeof(TaskDeliverCommand.Settings)] = (DispatchedSessionAccess.Allowed, "task deliver"),
+            // Skipping the rest of review is an owner's call on their own task; a dispatched session
+            // must never be able to bypass the pipeline that is checking its work.
+            [typeof(TaskSkipToPullRequestCommand.Settings)] = (DispatchedSessionAccess.Refused, "task skip-to-pr"),
             [typeof(TaskReleaseCommand.Settings)] = (DispatchedSessionAccess.Allowed, "task release"),
             [typeof(TaskHandbackCommand.Settings)] = (DispatchedSessionAccess.Allowed, "task handback"),
             [typeof(TaskHandoffCommand.Settings)] = (DispatchedSessionAccess.Refused, "task handoff"),

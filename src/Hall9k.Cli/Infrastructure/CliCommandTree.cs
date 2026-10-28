@@ -1894,6 +1894,27 @@ public static class CliCommandTree
                     + "pushed tip; afterwards the task returns to Done and closeout resumes.")
                 .WithExample("task", "deliver", "28b19893")
                 .WithExample("task", "deliver", "28b19893", "--handoff", "\"Migration is in; rollback stub untested\"", "--pr-summary", "pr-summary-draft.md");
+            task.AddCommand<TaskSkipToPullRequestCommand>("skip-to-pr")
+                .WithDescription(
+                    "Open the pull request at once on a task in interactive mode, bypassing the gates, every "
+                    + "review track, the final pass, and the settling gate (progressive automation: you decide "
+                    + "how much of the pipeline a task earns). It is recorded on the run as a manual override "
+                    + "naming who skipped what, and shown on h9k task show, the orchestrator feed, and the "
+                    + "task's passage. Two doors: from the build, under your claim, it delivers exactly as h9k "
+                    + "task deliver does (same refusals, uncommitted-file check, push, handoff, and "
+                    + "--pr-summary) and records the override in the same step; otherwise it runs at any review "
+                    + "park on the run, an interactive boundary or any other. At the gates-to-pull-request park "
+                    + "review has already settled, so it refuses and names h9k review proceed; while a gate or "
+                    + "review session is live it refuses and says the next park will offer it. Refused on a "
+                    + "task that is not in interactive mode, on a pr-review task, and on a spike. A reason is "
+                    + "optional but always asked for: --reason \"<text>\" records one, --no-reason records "
+                    + "none, and with neither a terminal is prompted (a shell with no terminal is refused, "
+                    + "naming both flags). --reason-by-agent marks a reason your driving session wrote rather "
+                    + "than you. The override covers only this run; a later run gets its full review. It adds "
+                    + "nothing to the pull request, so say so in your own summary if you want it said.")
+                .WithExample("task", "skip-to-pr", "28b19893", "--reason", "\"Docs-only change, the gates add nothing\"")
+                .WithExample("task", "skip-to-pr", "28b19893", "--no-reason")
+                .WithExample("task", "skip-to-pr", "28b19893", "--reason", "\"You said the reviewers were blocking on a known flake\"", "--reason-by-agent", "--pr-summary", "pr-summary-draft.md");
             task.AddCommand<TaskReleaseCommand>("release")
                 .WithDescription(
                     "Give an interactive claim back to the dispatch queue, exactly as any other queued task — "
