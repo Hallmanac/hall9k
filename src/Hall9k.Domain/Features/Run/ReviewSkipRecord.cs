@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
 
@@ -34,5 +35,6 @@ public sealed record ReviewSkipRecord(
     /// <summary>What was skipped as one run of words, or the honest absence of a list.</summary>
     public string SkippedText => Skipped.Count == 0 ? "nothing named" : string.Join(", ", Skipped);
 
+    [MemberNotNullWhen(true, nameof(Reason))]
     public bool HasReason => Reason.IsNotBlank();
 }

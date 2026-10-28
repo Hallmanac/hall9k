@@ -1078,8 +1078,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         !skip.HasReason
             ? $"[dim]{ReviewSkipRecord.NoReasonGiven}[/]"
             : skip.ReasonByAgent
-                ? $"reason ({ReviewSkipRecord.AgentWrittenMarker}): {ExternalText.OneLineMarkup(skip.Reason!)}"
-                : $"reason: {ExternalText.OneLineMarkup(skip.Reason!)}";
+                ? $"reason ({ReviewSkipRecord.AgentWrittenMarker}): {ExternalText.OneLineMarkup(skip.Reason)}"
+                : $"reason: {ExternalText.OneLineMarkup(skip.Reason)}";
 
     private static void AddClause(List<string> clauses, string label, PassagePhase phase)
     {
