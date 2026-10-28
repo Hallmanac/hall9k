@@ -1092,8 +1092,8 @@ double-booking and liveness guards below key off that record, and a session that
 degrades honestly to a no-op rather than a false block, exactly as a claim nobody ever recorded a
 session against always has. Re-running `drive` at any of those stages prints a line that resumes the
 registered session (`--resume <id>`, keeping the anchor, settings, model and effort) with the fresh line
-beneath it as the fallback; a Done task is refused (iterating on an open pull request is not supported
-yet). `--print-prompt` prints the starting prompt to paste into a session of your own instead (assembled
+beneath it as the fallback. A task whose pull request is open is driven too (below, "Iterating on an open
+pull request"). `--print-prompt` prints the starting prompt to paste into a session of your own instead (assembled
 through `WorkPromptBuilder`). `--direct-launch` keeps the prior behavior for one release: `h9k task
 drive` itself launches a plain interactive Claude Code process and waits on it, resuming the most
 recently recorded session's own conversation rather than starting a fresh one (falling back to a fresh
@@ -1733,6 +1733,34 @@ walked and nothing needs posting (the `walk-pr-review-findings` path); `h9k pr a
 for a single reply on a task's own pull request, inside a review thread (`--thread`) or as the one
 top-level comment that answers a review's own body (`--review`), and the only route any dispatched
 session has to either.
+
+**Iterating on an open pull request.** `h9k task drive <id>` on a task whose pull request is open (Done,
+a run parked in closeout, or a reopened Queued or Blocked lap that has not started) records a manual
+`TaskReopened` and the interactive `TaskClaimed` in one append, keeping the follow-up branch and the pull
+request, and checks out the branch through `GitWorktreeManager.CheckoutExistingAsync` as a headless
+follow-up lap does (reuse or recreate; fast-forward a clean tree behind origin; keep a tree ahead of origin
+or holding uncommitted work; reset a clean tree only when origin holds a tip the branch never held), saying
+in one line when it left the tree behind origin or reset it. From a reopened lap only the claim is
+recorded, and the lap's kind, threads, and read scope carry in. It refuses while a headless follow-up
+session is live, naming it, and `--print-prompt`, `--direct-launch`, and `h9k task delegate` are refused at
+this stage (a contractor is handed the build prompt; `handback` is the headless way to finish). The anchor's
+follow-up variant names the pull request, its threads within the read scope, the last closeout
+observation, any triage report, and the commit style (offering `absorb-review-fixes` under narrative,
+run only on the owner's word). While the claim is held closeout makes one state read per sweep for the
+pull request's run and nothing else (no lap, no auto-merge, the earlier run not superseded); a merge
+completes the claim's run and the task in one transaction, retires the earlier run, and leaves the
+worktree and branch in place while a session is live or the tree is dirty (the feed line names the path);
+a close without a merge is recorded and the claim stays. `h9k task deliver` records the run as a
+follow-up, pushes through `ForceWithLeasePusher` with the task's recorded pushed tip (refusing with the
+reason when origin holds a tip the branch never held), records `TaskBranchPushed`, and refuses with
+`release` named when the branch holds nothing beyond the pushed tip. The push lands on the open pull
+request before the gates and the review loop; afterwards the opener adopts the pull request
+(`PullRequestUpdated`), the task returns to Done, and closeout resumes. `h9k task release` returns the
+task to Done with its pull request (the earlier run current again), clears the flag unless
+`--keep-interactive`, refuses `--unassign`, and refuses when the branch holds commits beyond the pushed
+tip, naming `deliver` and `handback`. `h9k task handback` queues a headless follow-up lap on the pull
+request's branch (flag cleared; `--first` applies; `--now` queues through the ordinary queue). `h9k task
+start` still refuses a follow-up branch, its hint naming `drive`.
 
 **Closeout while a human drives, and the go.** While a task's interactive flag is on (`h9k task drive`
 and every direct `h9k task start` set it), closeout is analysis-only: it dispatches no lap (review

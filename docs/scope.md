@@ -185,8 +185,10 @@ registers degrades honestly to the same no-op every guard already had for a task
 a session against. It carries out the operator's instructions one phase at a time, from the build
 through the review loop before the pull request opens, and advances nothing unasked. `--print-prompt`
 prints a starting prompt assembled through the same code path a headless spawn's is (its working
-rules swapped for an attached operator) to paste into a session of the operator's own. A Done task is
-refused: iterating on an open pull request with `drive` is designed but not built yet. `--direct-launch` instead launches a plain interactive Claude Code session
+rules swapped for an attached operator) to paste into a session of the operator's own. A task whose pull
+request is open is claimed too, on the pull request's branch; closeout stands down to merge and close
+detection while the claim is held, `deliver` returns it to closeout through the follow-up pipeline, and
+`release` and `handback` are the two ways out without delivering (see `docs/operations.md`). `--direct-launch` instead launches a plain interactive Claude Code session
 attached to the operator's own terminal itself, the way this command always did (kept for one
 release; refused on a machine where Claude Code resolves to a Windows script shim, since the prompt
 cannot survive that shim's argv). The claim is held by the human rather than a process — no lease,

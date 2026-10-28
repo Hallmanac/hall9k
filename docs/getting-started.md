@@ -417,7 +417,10 @@ h9k task drive <id>
   that conversation cannot be found.
 - **The paste flow.** `h9k task drive <id> --print-prompt` prints the starting prompt instead, for a user
   who pastes it into a session of their own.
-- **A task that is already Done.** It is refused: iterating on an open pull request is not supported yet.
+- **A task whose pull request is already open.** `drive` takes it back into an interactive claim on the pull
+  request's branch. Closeout only watches for a merge or a close while you hold it. `h9k task deliver` pushes
+  onto the open pull request and runs the gates and review again, `h9k task release` gives it back untouched,
+  and `h9k task handback` lets a headless follow-up lap finish the work.
 
 ## A normal day
 

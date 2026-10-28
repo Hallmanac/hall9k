@@ -826,8 +826,18 @@ session, announced, only when the recorded one cannot be resumed). The claim is 
 not a process either way, so closing the terminal is a normal way to leave and re-running `drive`
 re-enters the same worktree at any stage before the pull request opens: the line then resumes the
 registered session's conversation with `--resume`, keeping the anchor, settings, model and effort, and
-the fresh line is printed beneath it for when that conversation cannot be found. A Done task is refused,
-because iterating on an open pull request is not supported yet. `register-session` is accepted at the same
+the fresh line is printed beneath it for when that conversation cannot be found. A task whose pull request
+is open is driven too: `drive` records a manual reopen and the interactive claim in one append, checks out the
+pull request's branch the way a headless follow-up lap does (and says in one line when it left the tree behind
+origin or reset it), and writes a follow-up anchor naming the pull request, its readable threads, the last
+closeout observation, any triage report, and the project's commit style. Closeout then watches that pull request
+for a merge or a close and does nothing else while the claim is held; `deliver` pushes through the opener's push
+guard onto the open pull request before the gates and review run, and returns the task to Done afterwards;
+`release` gives the pull request back to closeout (refusing when the branch holds commits beyond its pushed
+tip, and refusing `--unassign`), and `handback` queues a headless follow-up lap on the pull request's branch.
+`h9k task start` still refuses a task with a follow-up branch. See
+[Iterating on an open pull request](operations.md#iterating-on-an-open-pull-request).
+`register-session` is accepted at the same
 stages, the gates and review included; after `deliver` it records the session and its name and nothing
 else, leaving the run's state and the review sessions it already has as they are. `deliver
 --pr-summary <file>` takes a file composed with the `pr-summary` skill (a `Title:` first line, a blank

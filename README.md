@@ -230,7 +230,9 @@ That line starts a Claude Code session that works only on your word. You choose 
 
 The session stays on through the review loop, so you can ask it where things stand or what your
 choices are at any pause. Run `h9k task drive` again at any point before the pull request opens to
-come back to the same worktree, with a line that resumes the same conversation. `h9k task drive
+come back to the same worktree, with a line that resumes the same conversation. Once the pull request is
+open, `h9k task drive` takes it back into a claim on its branch, and `deliver`, `release`, and `handback`
+are the ways out. `h9k task drive
 <id> --print-prompt` prints a starting prompt instead, for pasting into a session you start
 yourself.
 
