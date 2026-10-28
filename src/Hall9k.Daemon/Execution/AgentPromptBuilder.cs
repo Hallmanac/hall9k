@@ -824,6 +824,109 @@ public static class AgentPromptBuilder
 
     private static bool IsNumber(string value) => value.Length > 0 && value.All(char.IsAsciiDigit);
 
+    /// <summary>The longest triage report a lap's prompt carries; the rest is cut and the lap is pointed at the file.</summary>
+    internal const int MaxCarriedTriageReportLength = 20_000;
+
+    /// <summary>
+    /// The prompt of the read-only session closeout dispatches in place of a review-feedback lap while a
+    /// task's interactive flag is on (task: analysis-only closeout). It applies the triage step of the
+    /// <c>resolve-review-threads</c> skill, classifies each readable thread as fix, decline or route with
+    /// its reasoning, and writes one report file; it posts, resolves, pushes and files nothing. The thread
+    /// text it reads is declared data, and the scope section is the one a lap gets, so a non-member's
+    /// thread the gate withheld is withheld here too.
+    /// </summary>
+    public static string BuildCloseoutTriage(
+        string objective, IReadOnlyList<string> acceptanceCriteria, string pullRequestUrl,
+        IReadOnlyList<string> threadIds, ReviewReadScope? scope, string reportPath)
+    {
+        const string file = $"{TemplateDirectory}/closeout-triage.md";
+        StringBuilder prompt = new();
+        prompt.AppendLine(Fragment(file, "heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "intro");
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "task-heading"));
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "task-objective", ("Objective", OneLine(objective))));
+        prompt.AppendLine();
+        if (acceptanceCriteria.Count == 0)
+        {
+            prompt.AppendLine(Fragment(file, "task-criteria-none"));
+        }
+        else
+        {
+            prompt.AppendLine(Fragment(file, "task-criteria-heading"));
+            foreach (string criterion in acceptanceCriteria)
+            {
+                prompt.AppendLine($"- {OneLine(criterion)}");
+            }
+        }
+
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "pull-request", ("PullRequestUrl", OneLine(pullRequestUrl))));
+        prompt.AppendLine();
+        AppendReviewReadScope(prompt, scope);
+        prompt.AppendLine(Fragment(file, "threads-heading"));
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "threads-intro"));
+        prompt.AppendLine();
+        foreach (string threadId in threadIds)
+        {
+            prompt.AppendLine(Fragment(file, "thread-line", ("ThreadId", OneLine(threadId))));
+        }
+
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "thread-fence-note");
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "working-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "working");
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "job-heading"));
+        prompt.AppendLine();
+        AppendFragment(
+            prompt, file, "job",
+            ("ReportPath", OneLine(reportPath)),
+            ("ThreadDispositionMarker", ThreadDispositionMarker),
+            ("ThreadIdPlaceholder", ReviewResultParser.ThreadIdPlaceholder),
+            ("ThreadTagKey", ReviewResultParser.ThreadTagKey),
+            ("DispositionTagKey", ReviewResultParser.DispositionTagKey),
+            ("KindTagKey", ReviewResultParser.KindTagKey),
+            ("AuthorTagKey", ReviewResultParser.AuthorTagKey),
+            ("ThreadDispositionSummaryMarker", ThreadDispositionSummaryMarker));
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "rules-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "rules");
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "closing");
+        return PromptLineEndings.Finish(prompt);
+    }
+
+    /// <summary>
+    /// The section the first lap after a driven task is handed back to automation carries: the read-only
+    /// triage's report, quoted as data (task: analysis-only closeout), so the lap does not re-triage from
+    /// nothing. Bounded, with the file named for the rest.
+    /// </summary>
+    public static string BuildCarriedTriageReport(string reportText, string reportPath)
+    {
+        const string file = $"{TemplateDirectory}/closeout-triage.md";
+        string printable = RelayedText.Printable(reportText);
+        string body = printable.Length > MaxCarriedTriageReportLength
+            ? $"{printable[..RelayedText.CutLength(printable, MaxCarriedTriageReportLength)]}\n"
+                + Fragment(file, "carried-cut", ("ReportPath", OneLine(reportPath)))
+            : printable;
+        StringBuilder prompt = new();
+        prompt.AppendLine(Fragment(file, "carried-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "carried-intro");
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "carried-fence-note");
+        prompt.AppendLine();
+        prompt.AppendLine(RelayedText.Fenced(body));
+        return PromptLineEndings.Finish(prompt);
+    }
+
     /// <summary>
     /// Which unresolved review comments this lap's session may read, and which it must leave alone
     /// (task: a changes-requested review or an unresolved review thread from someone outside the
@@ -832,12 +935,19 @@ public static class AgentPromptBuilder
     /// nothing readable, never as everything: a reopen from before the gate, or a manual one on a task
     /// closeout never dispatched, must not be a way round it.
     /// </summary>
-    private static void AppendReviewReadScope(StringBuilder prompt, TaskDetails task, bool inReviewLap = false)
+    private static void AppendReviewReadScope(StringBuilder prompt, TaskDetails task, bool inReviewLap = false) =>
+        AppendReviewReadScope(prompt, task.ReviewReadScope, inReviewLap);
+
+    /// <summary>
+    /// <see cref="AppendReviewReadScope(StringBuilder, TaskDetails, bool)"/> over a scope in hand, for the
+    /// read-only closeout triage, which is handed the scope closeout just decided rather than one a
+    /// reopen recorded.
+    /// </summary>
+    private static void AppendReviewReadScope(StringBuilder prompt, ReviewReadScope? scope, bool inReviewLap = false)
     {
         const string file = $"{TemplateDirectory}/review-read-scope.md";
         prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
-        ReviewReadScope? scope = task.ReviewReadScope;
         if (scope is { Unrestricted: true })
         {
             AppendFragment(prompt, file, "unrestricted");
