@@ -1779,7 +1779,7 @@ public static class CliCommandTree
                     + "branch, and one line that starts a Claude Code session driving the task: it cd's into the "
                     + "worktree and runs claude with this node's build model and effort, the run's settings "
                     + "file, and a task anchor (written into the run directory) that has the session register "
-                    + "itself (h9k task register-session), read h9k task show before every move, and carry out "
+                    + "itself (h9k task register-session), read h9k task next before every move, and carry out "
                     + "your instructions one phase at a time: build here or h9k task delegate, h9k task deliver "
                     + "then h9k review proceed at each park, or h9k review fixed when you fix a verdict "
                     + "yourself. Nothing advances without your word. With --print-prompt it instead prints the "

@@ -118,6 +118,30 @@ public sealed class TaskNextTests
     }
 
     [Fact]
+    public void The_owners_own_registered_session_building_is_not_a_running_agent_to_stay_out_of()
+    {
+        Fixture building = Building(sessionProcessId: 4711, ownersSession: true);
+
+        string text = Text(building);
+
+        text.Should().Contain("Moves next: you. Your own session is the one building here");
+        text.Should().NotContain("leave its worktree alone");
+    }
+
+    [Theory]
+    [InlineData("Verifying")]
+    [InlineData("UnderReview")]
+    public void A_delivered_run_with_no_session_is_the_pipelines_even_under_the_owners_claim(string state)
+    {
+        Fixture handedOver = Building(sessionProcessId: null, state: state);
+
+        string text = Text(handedOver);
+
+        text.Should().Contain("Moves next: the platform.");
+        text.Should().NotContain("You hold the claim and no session is running on it");
+    }
+
+    [Fact]
     public void A_build_under_a_delegated_contractor_is_a_running_agent_too()
     {
         Fixture contractor = Building(sessionProcessId: 4711, delegated: true);
@@ -263,6 +287,18 @@ public sealed class TaskNextTests
     }
 
     [Fact]
+    public void Closeout_time_is_the_one_the_event_carries_not_when_this_node_stored_it()
+    {
+        DateTimeOffset arrivedHere = Recorded.AddDays(3);
+        IReadOnlyList<IEvent> stream = [Event(new PullRequestChecksFailed(Guid.Empty, ["lint"], Recorded), arrivedHere)];
+
+        CloseoutObservation? observed = CloseoutObservations.Last(stream, RunState.ChecksFailing);
+
+        observed.Should().NotBeNull();
+        observed!.RecordedAt.Should().Be(Recorded);
+    }
+
+    [Fact]
     public void Closeout_says_nothing_it_did_not_observe_when_no_event_set_the_state()
     {
         IReadOnlyList<IEvent> stream = [Event(new PullRequestOpened(Guid.Empty, PullRequest, 7, Recorded), Recorded)];
@@ -397,11 +433,14 @@ public sealed class TaskNextTests
             row, Details(task, state, criteria), openDependency, false, Now));
     }
 
-    private static Fixture Building(int? sessionProcessId, bool delegated = false)
+    private static Fixture Building(
+        int? sessionProcessId, bool delegated = false, RunState? state = null, bool ownersSession = false)
     {
         Guid runId = DomainId.New();
+        RunState runState = state ?? RunState.Running;
         TaskListItem task = StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty);
-        RunDetails run = StatusFixtures.Run(runId, RunState.Running, sessionProcessId);
+        RunDetails run = StatusFixtures.Run(
+            runId, runState, sessionProcessId, ownersSession ? AgentRole.Interactive : null);
         if (delegated)
         {
             run.PhaseDelegations.Add(new PhaseDelegation(
@@ -413,7 +452,7 @@ public sealed class TaskNextTests
             delegated ? "build under a contractor" : $"build under a claim ({sessionProcessId})",
             new TaskNextFacts(
                 row, Details(task, TaskState.Claimed), false, true, Now,
-                Run: new TaskNextRun(RunState.Running, ReviewPhase.None, 0, ReviewPhase.None, false)));
+                Run: new TaskNextRun(runState, ReviewPhase.None, 0, ReviewPhase.None, false, ownersSession)));
     }
 
     private static Fixture UnderReview(ReviewPhase phase)
