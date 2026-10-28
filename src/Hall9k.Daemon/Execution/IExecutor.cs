@@ -72,7 +72,8 @@ namespace Hall9k.Daemon.Execution;
 /// (Brian's ruling, 2026-09-27: no pr-review session ever runs with permissions skipped, member or
 /// not). <see cref="QaGateCommands"/> rides beside it only for a QA persona session, and
 /// <see cref="AssessmentFile"/> only for a non-member-feedback evaluator, the fourth spawn site
-/// (<c>FeedbackEvaluators</c>), which is what adds that one path to the permission file's writes.
+/// (<c>FeedbackEvaluators</c>), or a closeout triage, the fifth (<c>CloseoutTriageSessions</c>, whose
+/// report is the one file it may write), which is what adds that one path to the permission file's writes.
 /// </para>
 /// </summary>
 public sealed record AgentSpawnRequest(

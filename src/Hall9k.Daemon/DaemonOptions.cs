@@ -208,6 +208,25 @@ public sealed class DaemonOptions
     public TimeSpan NonMemberFeedbackEvaluatorTimeout { get; set; } = TimeSpan.FromMinutes(20);
 
     /// <summary>
+    /// The LIFETIME cap on how many read-only triage sessions closeout will ever dispatch for one task's
+    /// unresolved review threads while its interactive flag is on (task: analysis-only closeout), the
+    /// same shape as <see cref="NonMemberFeedbackEvaluatorCap"/>. A human-driven task whose reviewers keep
+    /// adding threads must not mean a billed session per new set. Decided over the task's own stream
+    /// (<c>TaskAggregate.CloseoutTriagesDispatched</c>), so a restart cannot reset it. Threads past the
+    /// cap are still reported, and the needs-you row says no triage ran.
+    /// </summary>
+    public int CloseoutTriageCap { get; set; } = 3;
+
+    /// <summary>The turn cap a closeout triage is spawned with, passed through as <c>claude -p --max-turns</c>: it reads the threads and parts of the diff and writes one file.</summary>
+    public int CloseoutTriageMaxTurns { get; set; } = 40;
+
+    /// <summary>
+    /// How long a closeout triage may run before the daemon terminates it and records the triage as
+    /// failed. Only the report is waiting on it: the owner's go never is.
+    /// </summary>
+    public TimeSpan CloseoutTriageTimeout { get; set; } = TimeSpan.FromMinutes(20);
+
+    /// <summary>
     /// The ceiling on how many pull requests in one repository auto-pr-review may mint a task for
     /// within a rolling hour (task 7ae690f5) — a flood-control backstop distinct from
     /// <see cref="AutoPrReviewMintHoldSeconds"/>'s own per-request fleet coordination. Decided as a

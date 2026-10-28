@@ -77,6 +77,32 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
     }
 
     [Fact]
+    public void BuildCloseoutTriage_matches_its_golden()
+    {
+        ReviewReadScope scope = new(
+            [
+                new ReadableReviewThread("PRRT_member", "teammate", FeedbackAdmission.Member, ["PRRC_member1"]),
+                new ReadableReviewThread(
+                    "PRRT_bot", "copilot-pull-request-reviewer", FeedbackAdmission.Bot, ["PRRC_bot1"]),
+            ],
+            ["PRRT_withheld"]);
+        string prompt = AgentPromptBuilder.BuildCloseoutTriage(
+            "Bound the limiter", ["the limiter resets per window", "the reset is covered by a test"],
+            "https://github.com/acme/web/pull/7", ["PRRT_member", "PRRT_bot"], scope,
+            "/run/closeout-triage-0123456789ab-0192f0a1b2c37d4e8f9a0b1c2d3e4f50.md");
+        AssertMatchesGolden("closeout-triage", prompt);
+    }
+
+    [Fact]
+    public void BuildCarriedTriageReport_matches_its_golden() =>
+        AssertMatchesGolden(
+            "closeout-triage-carried",
+            AgentPromptBuilder.BuildCarriedTriageReport(
+                "THREAD DISPOSITION: thread=PRRT_member; disposition=fix; kind=human; author=teammate\n"
+                + "The limiter never resets.\n\nSUMMARY:\nOne fix, nothing else.\n",
+                "/run/closeout-triage-0123456789ab-0192f0a1b2c37d4e8f9a0b1c2d3e4f50.md"));
+
+    [Fact]
     public void BuildFollowUp_splices_the_agent_addendum_after_the_rules_when_the_daemon_has_materialized_one()
     {
         string home = Path.Combine(Path.GetTempPath(), $"h9k-agent-prompt-addendum-{Guid.NewGuid():N}");
