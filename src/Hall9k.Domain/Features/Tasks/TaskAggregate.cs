@@ -273,9 +273,12 @@ public sealed class TaskAggregate
     /// and a <see cref="Apply(TaskRequeued)"/> given <c>--keep-interactive</c>, surviving exactly
     /// as long as the human who turned it on has not explicitly turned it off. Set true by
     /// <see cref="Apply(TaskClaimed)"/> whenever <see cref="TaskClaimed.InteractiveMode"/> says so
-    /// (h9k task drive's claim always does; h9k task start's does only when the human asked for it)
-    /// and never unset by any other claim — a plain node claim or an ordinary reclaim carries the
-    /// flag false and leaves this alone rather than clearing it. The clearing acts are
+    /// (h9k task drive's claim always does, and so does a direct h9k task start, which is the human's
+    /// own deliberate kick-off even though it launches headless; only the redispatch inside h9k task
+    /// handback --now claims with the flag false) and never unset by any other claim — a plain node
+    /// claim or an ordinary reclaim carries the flag false and leaves this alone rather than clearing
+    /// it. Closeout reads it: while it is on, a pull request is reported on and left alone, and a
+    /// pre-approved merge waits for the human (<see cref="Events.CloseoutReportRecorded"/>). The clearing acts are
     /// <see cref="Apply(TaskHandedBack)"/> (h9k task handback), a default
     /// <see cref="Apply(TaskRequeued)"/> (h9k task release, design ruling R6 amended 2026-09-05),
     /// and a default <see cref="Apply(TaskInteractiveClaimUnassigned)"/> (h9k task release
@@ -561,6 +564,67 @@ public sealed class TaskAggregate
     /// a restart cannot reset it.
     /// </summary>
     public int NonMemberEvaluatorsDispatched { get; private set; }
+
+    /// <summary>
+    /// How many read-only closeout triage sessions this task has ever dispatched, across every thread
+    /// set. Closeout compares it with the daemon's per-task allowance, and it is derived from the
+    /// stream, so a restart cannot reset it.
+    /// </summary>
+    public int CloseoutTriagesDispatched { get; private set; }
+
+    private readonly Dictionary<string, CloseoutTriage> _closeoutTriages = [];
+
+    /// <summary>Where the triage of each set of unresolved threads closeout has seen stands, by the set's key.</summary>
+    public IReadOnlyDictionary<string, CloseoutTriage> CloseoutTriages => _closeoutTriages;
+
+    /// <summary>
+    /// The newest assessed triage report no lap has been handed yet. The first reopen after it lands
+    /// carries it (<see cref="TaskReopened.TriageReportPath"/>) and clears it, so the lap an
+    /// <c>h9k pr resolve</c> dispatches reads what the analysis found, and a later lap does not
+    /// re-read a report about threads it was not dispatched for. A report that lands after the task
+    /// has been handed back (the interactive flag already off) is recorded on its thread set but is
+    /// never held here, for the same reason.
+    /// </summary>
+    public string? UnreadTriageReportPath { get; private set; }
+
+    public void Apply(CloseoutTriageDispatched @event)
+    {
+        CloseoutTriagesDispatched++;
+        _closeoutTriages[@event.ThreadSetKey] = new CloseoutTriage(
+            @event.ThreadSetKey, FeedbackEvaluationStatus.Running, @event.ThreadCount, @event.SessionId,
+            @event.ReportPath, 0, 0, 0, null, @event.DispatchedAt);
+    }
+
+    public void Apply(CloseoutTriageRecorded @event)
+    {
+        _closeoutTriages.TryGetValue(@event.ThreadSetKey, out CloseoutTriage? current);
+        bool lands = @event.Outcome == FeedbackEvaluationStatus.PastCap
+            ? current is null
+            : current is { Status.Value: "Running" } && current.SessionId == @event.SessionId;
+        if (!lands)
+        {
+            return;
+        }
+
+        _closeoutTriages[@event.ThreadSetKey] = (current ?? new CloseoutTriage(
+            @event.ThreadSetKey, FeedbackEvaluationStatus.Unknown, 0, null, null, 0, 0, 0, null, @event.RecordedAt)) with
+        {
+            Status = @event.Outcome,
+            Fix = @event.Fix,
+            Decline = @event.Decline,
+            Route = @event.Route,
+            Reason = @event.Reason,
+            ReportPath = @event.ReportPath ?? current?.ReportPath,
+            RecordedAt = @event.RecordedAt,
+        };
+        // Kept as the unread report only while a human still drives the task: a triage that finishes after
+        // the go (a reopen or a cleared flag) is about threads the lap that go dispatched has already been
+        // handed, and parking it here would seed a later, unrelated lap with it.
+        if (@event.Outcome == FeedbackEvaluationStatus.Assessed && InteractiveModeEnabled)
+        {
+            UnreadTriageReportPath = @event.ReportPath ?? current?.ReportPath;
+        }
+    }
 
     /// <summary>
     /// What the review-feedback lap may read of the pull request's unresolved threads — see
@@ -2206,6 +2270,7 @@ public sealed class TaskAggregate
         StackReplayOntoCommit = @event.StackReplayOntoCommit;
         ChangesRequestedReviews = @event.ChangesRequestedReviews ?? [];
         ReviewReadScope = @event.ReviewReadScope;
+        UnreadTriageReportPath = null;
         foreach (ChangesRequestedReview carried in @event.ChangesRequestedReviews ?? [])
         {
             // The owner's go dispatches ONE lap for a review: marking it carried is what stops a

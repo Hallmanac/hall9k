@@ -86,6 +86,12 @@ public static class TaskActClassificationRegistry
         [typeof(NonMemberFeedbackEvaluatorDispatched)] = TaskActClassification.Conditional,
         [typeof(NonMemberFeedbackWithdrawn)] = TaskActClassification.MemberSafe,
 
+        // Closeout's triage of a driven task's threads: the running node's record of its own session,
+        // and its outcome names a file on that node's disk, so a sender that holds nothing must not
+        // be able to forge either (the same reasoning the evaluator's two events carry).
+        [typeof(CloseoutTriageDispatched)] = TaskActClassification.Conditional,
+        [typeof(CloseoutTriageRecorded)] = TaskActClassification.Conditional,
+
         // The pull-request review pre-flight's own park (idea 6be68ee2, finding 1, phase one)
         // clears the current claim and assignment unconditionally, the identical shape
         // TaskInteractiveClaimUnassigned and TaskRequeued give a member's own give-back — a forged
@@ -241,6 +247,7 @@ public static class TaskActClassificationRegistry
         // --- Hall9k.Domain.Features.Run.Events ---
 
         [typeof(AdvisoryReviewThreadsObserved)] = TaskActClassification.MemberSafe,
+        [typeof(CloseoutReportRecorded)] = TaskActClassification.MemberSafe,
         [typeof(ChangesRequestedReviewerRerequested)] = TaskActClassification.MemberSafe,
 
         // A human's own automatic-budget grant (h9k pr resolve) — the run's own task must already

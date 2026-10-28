@@ -298,6 +298,14 @@ public static class RunPaths
         Path.Combine(runDirectory, $"feedback-assessment-{feedbackKeyHash}-{sessionId:N}.md");
 
     /// <summary>
+    /// The report a closeout triage session writes for one set of unresolved review threads (task:
+    /// analysis-only closeout), named by a short hash of the set's key and the session id, so each
+    /// triage has a file of its own and its permission file can name exactly that path.
+    /// </summary>
+    public static string CloseoutTriageReportFile(string runDirectory, string threadSetKeyHash, Guid sessionId) =>
+        Path.Combine(runDirectory, $"closeout-triage-{threadSetKeyHash}-{sessionId:N}.md");
+
+    /// <summary>
     /// One review cycle's merged findings: every lens's verified findings under its own
     /// heading (log #59), written by the daemon when the cycle's last pass lands. This is the
     /// document the fix session is handed and the one a park points a human at, so the name
