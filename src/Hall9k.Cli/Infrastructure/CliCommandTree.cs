@@ -552,7 +552,11 @@ public static class CliCommandTree
                 .WithDescription(
                     "Dispatch a follow-up run onto a done task's existing PR branch to resolve review feedback "
                     + "(fix failing CI with --checks, or rebase onto its base branch with --rebase). Also resets "
-                    + "the closeout monitor's automatic retry budget.")
+                    + "the closeout monitor's automatic retry budget. On a task you are driving by hand (its "
+                    + "interactive flag is on), closeout only reports what it finds and holds a pre-approved "
+                    + "merge; this is your go: in any form it clears the flag, as h9k task revise "
+                    + "--clear-interactive-mode does and in the same step, then dispatches the follow-up, which "
+                    + "starts from the triage report when one exists and runs fully automatically.")
                 .WithExample("pr", "resolve", "28b19893")
                 .WithExample("pr", "resolve", "28b19893", "--checks")
                 .WithExample("pr", "resolve", "28b19893", "--rebase");

@@ -470,6 +470,11 @@ internal static class AttentionComposer
 
         return run.State.Value switch
         {
+            // Closeout is leaving this pull request alone while the task's interactive flag is on and has
+            // said what it found (task: analysis-only closeout), so that report is the row: it outranks
+            // whatever the waiting arms below would say, because it names the go that moves the task.
+            "AwaitingReview" when run.CloseoutReport is { } report && !report.IsEmpty() =>
+                CloseoutReportAttention.Compose(report, id),
             "AwaitingReview" => AwaitingReviewAttention(task, run, now),
             // The closeout monitor dispatches a follow-up or parks; while it is neither parked
             // nor out of budget, this is being handled and the reader can leave it alone.

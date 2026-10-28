@@ -169,8 +169,12 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             + "release are the ordinary exit doors, but both need an active interactive claim to act on — "
             + "a headless follow-up CloseoutEngine dispatches under a real node claim while the flag is "
             + "still on, or a task that has already reached Done with its pull request open, leaves "
-            + "neither door reachable. The one other field this command still accepts once a task has "
-            + "left Draft (alongside --queue-first), as long as nothing else is revised in the same call")]
+            + "neither door reachable. It is also the go on a task you drive by hand when closeout's "
+            + "needs-you row reports a changes-requested review, a stacked parent that moved or merged, or "
+            + "a held pre-approved merge: no h9k pr resolve form dispatches those, and once the flag is "
+            + "clear the next poll acts on them as it always has. The one other field this command still "
+            + "accepts once a task has left Draft (alongside --queue-first), as long as nothing else is "
+            + "revised in the same call")]
         public bool ClearInteractiveMode { get; init; }
 
         [CommandOption("--kind <KIND>")]

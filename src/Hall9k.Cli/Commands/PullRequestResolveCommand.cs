@@ -6,9 +6,11 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
 using Spectre.Console;
@@ -56,83 +58,20 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         await using IDocumentSession session = store.LightweightSession();
 
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Task, cancellationToken);
-
-        // Fence before aggregating: the closeout monitor also writes TaskReopened, so
-        // the append below carries expectedVersion and loses loudly instead of stacking
-        // a second reopen (and a second budget reset) on a concurrently reopened task.
-        StreamState? fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
-            ?? throw new DomainNotFoundException($"No task {taskId}.");
-        TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(
-                taskId, version: fence.Version, token: cancellationToken)
-            ?? throw new DomainNotFoundException($"No task {taskId}.");
-
-        Guid previousRunId = task.CurrentRunId
-            ?? throw new DomainConflictException($"Task {taskId} has no recorded run to follow up on.");
-        RunDetails previousRun = await session.LoadAsync<RunDetails>(previousRunId, cancellationToken)
-            ?? throw new DomainNotFoundException(MissingRunRecordMessage(taskId, previousRunId, task.PullRequestUrl));
-
-        await RefuseIfArchivedAsync(session, task.ProjectId, cancellationToken);
-
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
-        DateTimeOffset resolvedAt = DateTimeOffset.UtcNow;
-        string reason = settings.Reason ?? (settings.Checks, settings.Rebase) switch
-        {
-            (true, false) => "CI checks failing on the pull request.",
-            (false, true) => "The pull request's branch conflicts with its base branch.",
-            _ => "Unresolved review comments on the pull request.",
-        };
-        FollowUpKind kind = (settings.Checks, settings.Rebase) switch
-        {
-            (true, false) => FollowUpKind.FailingChecks,
-            (false, true) => FollowUpKind.Rebase,
-            _ => FollowUpKind.ReviewFeedback,
-        };
-
-        // A human-initiated reopen (Automatic: false) also resets the closeout monitor's
-        // automatic follow-up budget — the human asking is a fresh grant (log #22). The
-        // grant is recorded twice: the reset itself lands here on the task stream, and
-        // CloseoutBudgetGranted below records the same grant on the run the human
-        // resolved, so the run's own history shows a human touched it (log #80, backlog 45).
-        session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.Reopen(
-            task, previousRunId, previousRun.Branch, reason, kind,
-            automatic: false,
-            resolvedAt, context.OwnerId,
-            // Carried forward rather than wiped, unlike the obstruction counters a manual grant
-            // deliberately resets (task: a review-feedback follow-up never answers a human
-            // reviewer in the owner's name on its own). This command makes no provider read, so
-            // it observes nothing of its own — and the reopen REPLACES whatever the last
-            // dispatch recorded, so passing nothing here would blind the posting path's
-            // whose-thread check for the lap this command is about to start, on the one route an
-            // operator reaches for by hand. A thread the reviewer has since resolved only ever
-            // makes that check refuse more, never less, and nothing here is fabricated: every
-            // entry is an observation closeout actually made.
-            humanReviewThreads: [.. task.KnownHumanReviewThreads],
-            // Carried forward for the same reason, and with the same limit: this command makes no
-            // provider read and holds no roster, so it can say only what the last closeout poll
-            // vetted as readable. A task closeout never dispatched has none, and then the one thing
-            // this command can still know is that the gate is off for the repository, by the last
-            // visibility the daemon observed and the project's own setting; anything else the
-            // follow-up's prompt reads as nothing readable, never as everything.
-            //
-            // An unrestricted scope is carried only while the gate is still off: one recorded while it
-            // was off must not outlive the gate turning on, or the new lap would read a stranger's
-            // thread under it. It is asked again here, and reads as nothing readable if the gate is on.
-            reviewReadScope: await CarriedReadScopeAsync(
-                task.ReviewReadScope, session, task.ProjectId, cancellationToken)));
-        session.Events.Append(previousRunId, new CloseoutBudgetGranted(previousRunId, reason, resolvedAt));
-        try
-        {
-            await session.SaveChangesAsync(cancellationToken);
-        }
-        catch (EventStreamUnexpectedMaxEventIdException)
-        {
-            throw new DomainConflictException(
-                $"Task {taskId} changed while reopening — the closeout monitor likely just dispatched " +
-                "a follow-up itself. Check h9k status; re-run this command only if the follow-up you " +
-                "wanted is not already in flight.");
-        }
+        Resolution resolved = await ResolveAsync(
+            session, taskId, settings.Checks, settings.Rebase, settings.Reason, context.OwnerId, cancellationToken);
+        TaskAggregate task = resolved.Task;
+        RunDetails previousRun = resolved.PreviousRun;
+        bool handsBack = resolved.HandedBack;
         await Doorbell.RingAsync($"pr-resolve:{taskId}", cancellationToken);
+
+        if (handsBack)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} was being driven by hand: its interactive flag is cleared, so this follow-up and closeout from here run fully automatically, a pre-approved merge included.[/]");
+        }
 
         // TaskAggregate.Apply(TaskReopened) never touches _unmetDependencies, only Assign does —
         // so a deliberately-claimed Blocked task (h9k task start --acknowledge-unmet-dependencies)
@@ -158,6 +97,129 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
 
         return ExitCodes.Ok;
     }
+
+    /// <summary>What <see cref="ResolveAsync"/> recorded: the task as it stood, the run it followed up, and whether it handed a driven task back.</summary>
+    internal sealed record Resolution(TaskAggregate Task, RunDetails PreviousRun, bool HandedBack);
+
+    /// <summary>
+    /// The whole of the reopen, over a session in hand so it is testable against a store: the append that
+    /// reopens the task (and, on a task being driven by hand, clears its interactive flag in the same
+    /// append, ahead of the reopen) and the budget grant on the run the human resolved. The caller owns
+    /// the doorbell and the words printed.
+    /// </summary>
+    internal static async Task<Resolution> ResolveAsync(
+        IDocumentSession session, Guid taskId, bool checks, bool rebase, string? reasonOverride, Guid ownerId,
+        CancellationToken cancellationToken)
+    {
+        // Fence before aggregating: the closeout monitor also writes TaskReopened, so
+        // the append below carries expectedVersion and loses loudly instead of stacking
+        // a second reopen (and a second budget reset) on a concurrently reopened task.
+        StreamState? fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+        TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, version: fence.Version, token: cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+
+        Guid previousRunId = task.CurrentRunId
+            ?? throw new DomainConflictException($"Task {taskId} has no recorded run to follow up on.");
+        RunDetails previousRun = await session.LoadAsync<RunDetails>(previousRunId, cancellationToken)
+            ?? throw new DomainNotFoundException(MissingRunRecordMessage(taskId, previousRunId, task.PullRequestUrl));
+
+        await RefuseIfArchivedAsync(session, task.ProjectId, cancellationToken);
+
+        DateTimeOffset resolvedAt = DateTimeOffset.UtcNow;
+        string reason = reasonOverride ?? (checks, rebase) switch
+        {
+            (true, false) => "CI checks failing on the pull request.",
+            (false, true) => "The pull request's branch conflicts with its base branch.",
+            _ => "Unresolved review comments on the pull request.",
+        };
+        FollowUpKind kind = (checks, rebase) switch
+        {
+            (true, false) => FollowUpKind.FailingChecks,
+            (false, true) => FollowUpKind.Rebase,
+            _ => FollowUpKind.ReviewFeedback,
+        };
+
+        // A human-initiated reopen (Automatic: false) also resets the closeout monitor's
+        // automatic follow-up budget — the human asking is a fresh grant (log #22). The
+        // grant is recorded twice: the reset itself lands here on the task stream, and
+        // CloseoutBudgetGranted below records the same grant on the run the human
+        // resolved, so the run's own history shows a human touched it (log #80, backlog 45).
+        List<object> appended = [];
+
+        // The go on a driven task (task: analysis-only closeout) hands it back to automation. The flag
+        // comes off in the same append as the reopen, recorded as h9k task revise --clear-interactive-mode
+        // records it, so the follow-up run and closeout behave fully automatically, a pre-approved merge
+        // included, and no poll can read the reopened task with the flag still on.
+        bool handsBack = task.InteractiveModeEnabled;
+        if (handsBack)
+        {
+            appended.Add(ClearInteractiveMode(task, resolvedAt, ownerId));
+        }
+
+        appended.Add(TaskDecider.Reopen(
+            task, previousRunId, previousRun.Branch, reason, kind,
+            automatic: false,
+            resolvedAt, ownerId,
+            // Carried forward rather than wiped, unlike the obstruction counters a manual grant
+            // deliberately resets (task: a review-feedback follow-up never answers a human
+            // reviewer in the owner's name on its own). This command makes no provider read, so
+            // it observes nothing of its own — and the reopen REPLACES whatever the last
+            // dispatch recorded, so passing nothing here would blind the posting path's
+            // whose-thread check for the lap this command is about to start, on the one route an
+            // operator reaches for by hand. A thread the reviewer has since resolved only ever
+            // makes that check refuse more, never less, and nothing here is fabricated: every
+            // entry is an observation closeout actually made.
+            humanReviewThreads: [.. task.KnownHumanReviewThreads],
+            // Carried forward for the same reason, and with the same limit: this command makes no
+            // provider read and holds no roster, so it can say only what the last closeout poll
+            // vetted as readable. A task closeout never dispatched has none, and then the one thing
+            // this command can still know is that the gate is off for the repository, by the last
+            // visibility the daemon observed and the project's own setting; anything else the
+            // follow-up's prompt reads as nothing readable, never as everything.
+            //
+            // An unrestricted scope is carried only while the gate is still off: one recorded while it
+            // was off must not outlive the gate turning on, or the new lap would read a stranger's
+            // thread under it. It is asked again here, and reads as nothing readable if the gate is on.
+            reviewReadScope: await CarriedReadScopeAsync(
+                task.ReviewReadScope, session, task.ProjectId, cancellationToken),
+            // The analysis closeout made while the owner drove, handed to the lap this reopen dispatches
+            // so its session starts from the triage instead of from nothing.
+            triageReportPath: task.UnreadTriageReportPath));
+        session.Events.Append(taskId, expectedVersion: fence.Version + appended.Count, [.. appended]);
+        session.Events.Append(previousRunId, new CloseoutBudgetGranted(previousRunId, reason, resolvedAt));
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} changed while reopening — the closeout monitor likely just dispatched " +
+                "a follow-up itself. Check h9k status; re-run this command only if the follow-up you " +
+                "wanted is not already in flight.");
+        }
+
+        return new Resolution(task, previousRun, handsBack);
+    }
+
+    /// <summary>
+    /// The revision <c>h9k task revise --clear-interactive-mode</c> records, built through the same decider
+    /// path so the two cannot drift: nothing but the flag changes.
+    /// </summary>
+    internal static TaskRevised ClearInteractiveMode(TaskAggregate task, DateTimeOffset at, Guid ownerId) =>
+        TaskDecider.Revise(
+            task,
+            Optional<string>.None,
+            Optional<IReadOnlyList<string>>.None,
+            Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None,
+            Optional<TaskType>.None,
+            Optional<AgentModel>.None,
+            at,
+            ownerId,
+            clearInteractiveMode: true);
 
     /// <summary>
     /// The scope this command's reopen records: what the last closeout poll recorded when it vetted
