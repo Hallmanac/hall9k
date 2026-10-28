@@ -141,8 +141,8 @@ opening with its own marker, carries as two lines, not one.
   generator mint a rule of its own, and this generator still never writes one.
 
 This carve-out, and the carry rule below, apply to every recipe file this skill writes: the project
-or node `recipes/orchestrator.md`, and `recipes/idea-discovery.md` and `recipes/task-refinement.md`
-alike.
+or node `recipes/orchestrator.md`, and `recipes/idea-discovery.md`, `recipes/task-refinement.md`, and
+`recipes/task-drive.md` alike.
 
 **One carry rule covers all four forms.** Regenerating an existing recipe carries every marked line
 forward into the `.new` file, verbatim, unedited, into the same-named section it appeared in,
@@ -183,10 +183,12 @@ adopt it.
 
 These blocks are defined exactly once, here. *Writing conventions* and *Talking to the operator*
 are universal: copy them verbatim, unedited, into every recipe you write (the orchestrator recipe,
-`idea-discovery.md`, `task-refinement.md`, and the node recipe). *Other owners' work* is the
-second kind: copy it verbatim into the project's `recipes/orchestrator.md` and into the node
-recipe, the two windows an operator talks to and that can reach a task's lifecycle, and never into
-the scoped recipes (they run headless against one idea or one draft and never act on a board row).
+`idea-discovery.md`, `task-refinement.md`, `task-drive.md`, and the node recipe). *Other owners'
+work* is the second kind: copy it verbatim into the project's `recipes/orchestrator.md` and into the
+node recipe, the two windows an operator talks to and that can reach a task's lifecycle, and never
+into the scoped recipes, `task-drive.md` included (the first two run headless against one idea or
+one draft and never act on a board row; the third belongs to a session driving the one task its
+owner has just claimed, which is theirs by construction).
 *Model and effort* is narrower:
 copy it verbatim into a project's `recipes/orchestrator.md` only, never into the node recipe (a
 node window spawns nothing of its own) and never into the scoped recipes (they spawn no further
@@ -393,6 +395,10 @@ Project mode:
   contract below, specific to this project and this machine.
 - `recipes/idea-discovery.md` and `recipes/task-refinement.md` (or `.new`): the scoped-session
   contracts below, same discovery applied.
+- `recipes/task-drive.md` (or `.new`): the contract for a session driving one task its owner has
+  claimed with `h9k task drive`, below, same discovery applied. Write it as the platform reads it:
+  `h9k task drive` checks only that the file exists, and when it does the task anchor tells the
+  session to read and follow it.
 - Seed `journal.md` and `sessions.md` at the project home's own root — beside `notes/`, never
   inside `recipes/` — **only when absent**: never regenerate these, never give them a `.new`
   sibling, because they are the operator's own live state the moment a real window has written to
@@ -722,7 +728,7 @@ Same shape as the project recipe above, with these differences:
   a running task" into every node recipe as though every node inherits it sight unseen — if the
   operator has actually ruled on either for this specific node, it already lives in this window's
   memory directory, exactly like any other standing rule, and needs no restating here.
-- No idea-discovery or task-refinement recipes; no spawn procedure of its own beyond reaching a
+- No idea-discovery, task-refinement, or task-drive recipes; no spawn procedure of its own beyond reaching a
   project orchestrator with `ListAgents`/`SendMessage`, and so no *Model and effort* section either:
   that block exists to pick a tier for a project window's own spawns, and a node window spawns none.
 - Journal and registry contracts are identical in shape (state document, token budget,
@@ -802,6 +808,39 @@ their own. Both:
   either of these recipes carries forward on regeneration exactly as *Never invent a standing rule*
   above states for the project and node recipes: into the same-named section of the `.new` file, or
   a closing "House rules" section when that section is gone.
+
+## The task-drive recipe's contract
+
+`recipes/task-drive.md` is read by a session an owner starts with `h9k task drive <id>`: a Claude
+Code session in one task's worktree that carries out the owner's instructions one phase at a time,
+from the build through the review loop that runs before the pull request opens. The platform hands
+that session a task anchor of its own (registering first, reading `h9k task show` before every
+move, never advancing a phase unasked, the map from instruction to verb, when the worktree may be
+touched, the pull request summary step, and the project's writing conventions). This recipe is
+only what is specific to this project on top of that, so it never restates the anchor. It:
+
+- States in one paragraph what the session is for and that the owner, not the recipe, decides every
+  move. State too that a criterion never instructs a session to drive another task's or idea's own
+  lifecycle (abandon, conclude, archive, and their like), the same carve-out the scoped recipes above
+  carry (decision 13f11af2).
+- Names the project-specific things discovery actually found that a driver needs and the anchor
+  cannot know: the quickest honest check to run before delivering (the build or test command a
+  contributor runs locally, from the repository's own contributing guide), the repository's own
+  pull request description rule or `pr-description` skill when it ships one (the anchor already says
+  to compose the summary with the `pr-summary` skill, and a repository rule wins over it), the
+  commit style the project uses, and any local gotcha that has cost a session time (a generated
+  file, a slow suite, a path never to touch). Each is a pointer to where it lives, not a copy.
+- Does not tell the session to deliver, hand back, release, or answer a review park on its own
+  judgment, and does not name any `h9k` verb the anchor does not already name. Anything it says
+  about a verb says what is true of this project when that verb runs, never when to run it.
+- Stays short, under about 1,000 tokens: it is read at the start of every driven task, so its cost
+  is paid every time.
+- Carries the *Writing conventions* and *Talking to the operator* canonical blocks, verbatim; the
+  *Other owners' work* and *Model and effort* blocks are not carried here (see *The canonical blocks*
+  above).
+- Carries a `Standing grant`, `Opt-out`, `Tier override`, or `House rule` line the operator has placed
+  in it forward on regeneration exactly as *Never invent a standing rule* above states: into the
+  same-named section of the `.new` file, or a closing "House rules" section when that section is gone.
 
 ## Launch text
 

@@ -69,7 +69,7 @@ The window can also put its own hands on a task's code instead of only drafting 
 stepping back — claiming a Published task (held by nobody, or already Queued or Blocked) and
 either building it directly in an interactive session (`h9k task drive`) or dispatching it headless
 on the spot while still standing as the boundary arbiter (`h9k task start`), plus the levers
-documented under both in `AGENTS.md`'s *Build / test / run* section. Doing that runs on its own doctrine, settled
+documented under both in the `hall9k-cli-reference` skill. Doing that runs on its own doctrine, settled
 in one long design conversation on 2026-09-02 (idea fcaded0b; Take the Wheel epic 9272e514, Slice
 6) and cited below by their R-numbers from that conversation's R1-R9 set.
 

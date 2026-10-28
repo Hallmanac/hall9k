@@ -1038,10 +1038,9 @@ logs each send individually — neither degradation holds up the boundary park a
 exactly the same either way. No registered session is the ordinary case for a fresh headless
 dispatch under interactive mode (`h9k task start`, an ordinary dispatch carrying the flag forward
 from an earlier `h9k task release --keep-interactive`, or a retry, reopen, or follow-up redispatch
-— each starts a new run, and no registration carries forward from an earlier one yet), so today the
-build role's own milestones always take this skip-and-log path; only the review and fix roles,
+— each starts a new run, and no registration carries forward from an earlier one yet), so the build role's own milestones take this skip-and-log path, except for a contractor `h9k task delegate` dispatches under a claim whose session has registered, which is given that session's address and sends its claimed and done milestones there. The review and fix roles,
 dispatched later on the same run once a human's own `h9k task drive` claim has registered against
-it, can actually reach a live address. A handback is never one of these no-registration cases
+it, can also reach a live address. A handback is never one of these no-registration cases
 either way: it clears the interactive-mode flag unconditionally, so a handback-dispatched run never
 reaches these rules at all.
 
@@ -1072,27 +1071,42 @@ the same worktree interactively so the operator can finish the build themselves 
 hands in both directions, always at a boundary.
 
 By default `h9k task drive` claims and cuts as above, then prints the worktree path, the branch,
-and a starting prompt (assembled through `WorkPromptBuilder`, the same code every path already
-uses) for the operator to paste into a Claude Code session started anywhere — it no longer
-launches or waits on the session itself (Decisions Log #126). The pasted session's own first act
-is the new agent-facing observation gate `h9k task register-session <id>`, which records its
-process identity (read from `CLAUDE_PID`, Claude Code's own environment variable) the way a direct
-launch's own launch-time recording always did; the double-booking and liveness guards below key
-off that record, and a session that never registers degrades honestly to a no-op rather than a
-false block, exactly as a claim nobody ever recorded a session against always has. `--direct-launch`
-keeps the prior behavior for one release — `h9k task drive` itself launches a plain interactive
-Claude Code process and waits on it, resuming the most recently recorded session's own
-conversation rather than starting a fresh one (falling back to a fresh session, announced, only
-when the recorded one cannot be resumed — Decisions Log #124) — and is the only path the Windows
-script-shim refusal still gates, since a pasted prompt travels through no argv:
+and one line that starts a Claude Code session driving the task: it `cd`s into the worktree and runs
+`claude` with the run's settings file, `--name` (the claim's interactive session name),
+`--dangerously-skip-permissions` only when the project allows it, `--model` and `--effort` named
+explicitly with the pair a headless build of the task would get on this node (no `--effort`, and a
+one-line notice, when none is set anywhere), and `--append-system-prompt-file` pointing at a task anchor
+rendered into the run directory from `.claude/templates/task-drive-anchor`. It does not launch or wait on
+the session itself (Decisions Log #126). The anchor has the session register itself first with
+`h9k task register-session <id>`, read `h9k task show` before every move, never advance a phase without
+the human's word, and map instructions to verbs: build here or `h9k task delegate`, `h9k task deliver
+--pr-summary <file>` then `h9k review proceed` at each park, `h9k review fixed` for a verdict fixed by
+hand. It carries the project's writing conventions, and names `recipes/task-drive.md` in the project home
+when that file exists. `register-session` records the session's process identity (read from `CLAUDE_PID`,
+Claude Code's own environment variable) and name, and is accepted at every stage before the pull request
+opens (Dispatched, Running, Verifying, UnderReview, ReviewParked); past the build it records the session
+and nothing else, so the run's state and the review sessions already recorded stay as they are. The
+double-booking and liveness guards below key off that record, and a session that never registers
+degrades honestly to a no-op rather than a false block, exactly as a claim nobody ever recorded a
+session against always has. Re-running `drive` at any of those stages prints a line that resumes the
+registered session (`--resume <id>`, keeping the anchor, settings, model and effort) with the fresh line
+beneath it as the fallback; a Done task is refused (iterating on an open pull request is not supported
+yet). `--print-prompt` prints the starting prompt to paste into a session of your own instead (assembled
+through `WorkPromptBuilder`). `--direct-launch` keeps the prior behavior for one release: `h9k task
+drive` itself launches a plain interactive Claude Code process and waits on it, resuming the most
+recently recorded session's own conversation rather than starting a fresh one (falling back to a fresh
+session, announced, only when the recorded one cannot be resumed, Decisions Log #124). It is the only
+path the Windows script-shim refusal still gates, since neither the printed line nor a pasted prompt
+travels through an argv:
 
 ```bash
-h9k task drive <id>                   # claim a Published, Queued, or already-Blocked task, cut the same branch/worktree headless dispatch would, print the worktree/branch/starting prompt
+h9k task drive <id>                   # claim a Published, Queued, or already-Blocked task, cut the same branch/worktree headless dispatch would, print the worktree/branch and the line that starts a session driving it
+h9k task drive <id> --print-prompt    # print the starting prompt instead, to paste into a session you start yourself
 h9k task drive <id> --direct-launch   # the prior behavior for one release: launch and wait on the session here instead of printing a prompt
 h9k task drive <id> --acknowledge-unmet-dependencies   # claim a task anyway, despite named open blockers
 h9k task register-session <id>       # the pasted session's own first act: register its process identity against the claim
 h9k task verify <id>                 # run the project's gates on demand against the claim's worktree
-h9k task deliver <id>                # push and hand the claim into the standard delivery pipeline
+h9k task deliver <id>                # push and hand the claim into the standard delivery pipeline (--pr-summary <file> supplies the pull request's title and description)
 h9k task delegate <id> --note "<text>"   # dispatch a headless build contractor onto this same claim for one phase, staying in interactive mode
 h9k task handback <id>               # release the claim to a headless agent partway through, resuming the branch
 h9k task handback <id> --first   # same release, plus the queue-first marker: the next free slot takes it regardless of age (Decisions Log #127)
