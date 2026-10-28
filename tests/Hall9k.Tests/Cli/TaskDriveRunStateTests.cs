@@ -78,14 +78,6 @@ public sealed class TaskDriveRunStateTests
     }
 
     [Fact]
-    public void A_done_task_is_refused_because_iterating_on_an_open_pull_request_is_not_supported_yet()
-    {
-        string advice = TaskDriveCommand.UnclaimableStateAdvice(TaskState.Done, TaskId);
-
-        advice.Should().Contain("Iterating on an open pull request with h9k task drive is not supported yet");
-    }
-
-    [Fact]
     public void The_other_unclaimable_states_keep_their_advice()
     {
         TaskDriveCommand.UnclaimableStateAdvice(TaskState.Draft, TaskId).Should().Contain($"h9k task publish {TaskId}");

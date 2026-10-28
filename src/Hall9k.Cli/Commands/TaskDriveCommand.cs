@@ -10,6 +10,7 @@ using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -114,7 +115,7 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
             + "default launch line. The pasted session self-registers (h9k task register-session), which is what "
             + "lets the double-booking and liveness guards recognise it. Choose this or the default, not both "
             + "with --direct-launch. Refused once the task has been delivered and the pipeline owns the "
-            + "worktree: the default launch line is the path for that stage.")]
+            + "worktree, and for a task whose pull request is open: the default launch line is the path for those stages.")]
         public bool PrintPrompt { get; init; }
 
         [CommandOption("--direct-launch")]
@@ -189,6 +190,15 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
                 $"Task {taskId} is a pr-review task — it has no diff of its own for an interactive session to "
                 + "build; it dispatches headlessly against the pull request instead. h9k task show "
                 + $"{taskId} to see where it stands.");
+        }
+
+        // The paste flow and --direct-launch hand a session the build prompt, which has it build the task
+        // from its objective. A task whose pull request is open is iterated on through the anchor the
+        // launch line names, so the build prompt is refused for it before anything is claimed.
+        if ((settings.PrintPrompt || settings.DirectLaunch)
+            && (task.State == TaskState.Done || task.FollowUpBranch.IsNotBlank()))
+        {
+            throw new DomainConflictException(PullRequestStagePromptRefusal(taskId));
         }
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
@@ -281,6 +291,13 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
             throw new DomainConflictException(pastBuild);
         }
 
+        // A re-entry into a PR-stage claim reaches here with the claim already held, so the check at the top
+        // could not see it: the run says it is a follow-up on an open pull request.
+        if ((settings.PrintPrompt || settings.DirectLaunch) && currentRun.IsFollowUp)
+        {
+            throw new DomainConflictException(PullRequestStagePromptRefusal(taskId));
+        }
+
         InteractiveSessionLiveness.EnsureNotAttachedElsewhere(currentRun, taskId, "drive", settings.Force, quiet: crossMachineNoticeShown);
 
         return settings.DirectLaunch
@@ -291,7 +308,11 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
                 ? PrintPromptHandoff(taskId, worktreePath, branch, prompt, settingsFile, isFreshInteractiveClaim)
                 : await PrintLaunchLineAsync(
                     taskDetails, project, currentRun, worktreePath, branch, resolvedRunDirectory, settingsFile, sessionName,
-                    isFreshInteractiveClaim, cancellationToken);
+                    isFreshInteractiveClaim,
+                    currentRun.IsFollowUp
+                        ? await BuildPullRequestStageAsync(session, task, taskDetails, project, currentRun, cancellationToken)
+                        : null,
+                    cancellationToken);
     }
 
     /// <summary>
@@ -338,6 +359,13 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
               : $" — it moved out of those stages {when}. ")
           + $"h9k task show {taskId} to see where it stands.";
 
+    /// <summary>The refusal for <c>--print-prompt</c> and <c>--direct-launch</c> on a task whose pull request is open.</summary>
+    internal static string PullRequestStagePromptRefusal(Guid taskId) =>
+        $"Task {taskId}'s pull request is open, so there is no build for a starting prompt to describe: the "
+        + "prompt --print-prompt and --direct-launch hand over tells a session to build the task from its "
+        + $"objective. Run h9k task drive {taskId} with neither flag; the launch line it prints starts a session "
+        + "whose anchor names the pull request, the review threads it may read, and how commits land on its branch.";
+
     /// <summary>
     /// The refusal for <c>--print-prompt</c> and <c>--direct-launch</c> on a run the pipeline owns, or
     /// null before then. Both hand over the build prompt, which has the session edit and commit in
@@ -352,16 +380,12 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
         : null;
 
     /// <summary>
-    /// What an unclaimable task state needs to hear, after the state itself is named. A Done task is
-    /// the one worth its own sentence: its pull request is open or merged, and driving one is not
-    /// built yet.
+    /// What an unclaimable task state needs to hear, after the state itself is named.
     /// </summary>
     internal static string UnclaimableStateAdvice(TaskState state, Guid taskId) => state switch
     {
         var pre when pre.IsPreDispatch => $"Publish it first: h9k task publish {taskId}.",
         var claimed when claimed == TaskState.Claimed => "It is claimed by a node running headless work already.",
-        var done when done == TaskState.Done =>
-            $"Iterating on an open pull request with h9k task drive is not supported yet. h9k task show {taskId} to see where it stands.",
         _ => "Its story has already moved past dispatch.",
     };
 
@@ -397,7 +421,7 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
     private static async Task<int> PrintLaunchLineAsync(
         TaskDetails task, ProjectDetails project, RunDetails run, string worktreePath, string branch,
         string runDirectory, string settingsFile, string sessionName, bool isFreshInteractiveClaim,
-        CancellationToken cancellationToken)
+        TaskDriveAnchorBuilder.PullRequestStage? pullRequestStage, CancellationToken cancellationToken)
     {
         string anchorFile = Path.GetFullPath(RunPaths.TaskAnchorFile(runDirectory));
         string? recipeFile = project.HomeDirectory.HasValue
@@ -408,7 +432,8 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
         await File.WriteAllTextAsync(
             anchorFile,
             TaskDriveAnchorBuilder.Build(
-                task.Id, worktreePath, branch, RunPaths.PrSummaryDraftFile(runDirectory), project.WritingConventions, recipeFile),
+                task.Id, worktreePath, branch, RunPaths.PrSummaryDraftFile(runDirectory), project.WritingConventions, recipeFile,
+                pullRequestStage),
             cancellationToken);
 
         // The pair a headless build of this task would get on this node, named on the line rather than
@@ -435,6 +460,14 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
         }
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Task anchor: {anchorFile}[/]");
+        if (pullRequestStage is not null)
+        {
+            // Said once, where the owner is looking, because each of these changes what they expect closeout
+            // and the pull request to do while they iterate.
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Pull request {pullRequestStage.PullRequestUrl}: closeout only watches it for a merge or a close while this claim is held, and opens no lap and merges nothing. h9k task deliver pushes this branch onto it before the gates and the review loop run; h9k task release gives it back to closeout, and h9k task handback lets a headless lap finish.[/]");
+        }
+
         if (text.EffortNotice is not null)
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]{text.EffortNotice}[/]");
@@ -815,11 +848,23 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
                 "an operator claims only their own owner's work.", cancellationToken);
             dependencies = await TaskDependencyQuery.LoadAsync(session, task.BlockedBy, cancellationToken);
         }
+        else if (task.State == TaskState.Done)
+        {
+            // A Done task is driven at the PR stage: its open pull request is reopened into this claim in
+            // one append (TaskDecider.ClaimPullRequestInteractively), which also holds the owner check and
+            // the refusal for a pull request that has merged or closed. Any dependency it still names is
+            // loaded for the same warn-and-acknowledge the Blocked entry below gives.
+            if (task.UnmetDependencies.Count > 0)
+            {
+                unmetAtEntry = await TaskDependencyQuery.LoadAsync(session, task.UnmetDependencies, cancellationToken);
+            }
+        }
         else if (task.State != TaskState.Queued && task.State != TaskState.Blocked)
         {
             throw new DomainConflictException(
-                $"Task {task.Id} is {task.State.Value} — only a Published, Queued, or Blocked task (or one you "
-                + "already hold interactively) can be worked this way. " + UnclaimableStateAdvice(task.State, task.Id));
+                $"Task {task.Id} is {task.State.Value} — only a Published, Queued, or Blocked task, a Done one with "
+                + "an open pull request (or one you already hold interactively) can be worked this way. "
+                + UnclaimableStateAdvice(task.State, task.Id));
         }
         else if (!TaskDecider.IsGrantedToThisOwner(
             task.AssignedOwnerId, task.AssignedOwnerFingerprint, context.OwnerId, ownerRootFingerprint))
@@ -873,19 +918,14 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
                 + $"{task.Id} to see where it stands.");
         }
 
-        // A reopened task carries its existing PR's branch and expects the follow-up prompt
-        // RunLauncher.LaunchAsync builds for it (BuildFixChecks/BuildRebase/BuildFollowUp) —
-        // that builder lives in Hall9k.Daemon, which the CLI cannot reference (Reference graph:
-        // Cli -> Domain + Connectors), so an interactive claim here would cut a fresh branch off
-        // the base and hand the operator a from-scratch prompt, stranding the reopen's review
-        // feedback unanswered (conformance review, cycle 2). Refusing is the complete fix.
-        if (taskDetails.FollowUpBranch.IsNotBlank())
-        {
-            throw new DomainConflictException(
-                $"Task {task.Id} was reopened onto its existing pull request ({taskDetails.PullRequestUrl}) — "
-                + "an interactive claim cannot build the follow-up prompt that branch needs. "
-                + $"h9k pr resolve {task.Id} to dispatch a headless follow-up instead.");
-        }
+        // A task whose pull request is open (Done), or whose reopened follow-up lap has not started yet
+        // (Queued or Blocked with the follow-up branch set), is claimed at the PR stage: the worktree is the
+        // pull request's branch, and the run is recorded as a follow-up so delivering it runs the ordinary
+        // follow-up pipeline. The prompt fragments a follow-up's session needs now live in Hall9k.Connectors,
+        // which is what lets this door build the anchor for it (TaskDriveAnchorBuilder).
+        PullRequestStageClaim? stage = task.State == TaskState.Done || taskDetails.FollowUpBranch.IsNotBlank()
+            ? await PreparePullRequestStageAsync(session, task, taskDetails, cancellationToken)
+            : null;
 
         // The claim gate (idea 64c75e43), read fresh here and refused with the identical sentence
         // h9k task queue warns with: this door starts the work now, so a card the tracker says
@@ -934,10 +974,26 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
         // holding. unmetAtEntry is non-null only for the already-Blocked entry: no assignment
         // travels there either, but the warn-and-acknowledge shape is identical (task 0ac72cb8-h9k).
         TaskAssigned? assigned = null;
+        TaskReopened? reopened = null;
         TaskClaimed claimed;
         IReadOnlyList<TaskDependency> unmet = [];
         bool carriedForward = false;
-        if (dependencies is not null)
+        if (stage is not null)
+        {
+            // Recorded the way h9k pr resolve records a reopen: the threads closeout last observed and the
+            // read scope it last vetted, carried rather than invented, so the session reads exactly what a
+            // headless lap would.
+            (reopened, claimed) = TaskDecider.ClaimPullRequestInteractively(
+                task, stage.PullRequestRun.Id, stage.Branch, stage.PullRequestIsOpen, stage.LiveHeadlessSession,
+                runId, claimedAt, context.OwnerId, acknowledgeUnmetDependencies, ownerRootFingerprint,
+                humanReviewThreads: [.. task.KnownHumanReviewThreads],
+                reviewReadScope: await PullRequestResolveCommand.CarriedReadScopeAsync(
+                    task.ReviewReadScope, session, task.ProjectId, cancellationToken),
+                triageReportPath: task.UnreadTriageReportPath);
+            unmet = unmetAtEntry ?? [];
+            carriedForward = claimed.DependencyOverrideCarriedForward;
+        }
+        else if (dependencies is not null)
         {
             (assigned, claimed, unmet) = PrepareInteractiveClaimFromPublished(
                 task, context.OwnerId, dependencies, runId, claimedAt, acknowledgeUnmetDependencies,
@@ -965,6 +1021,7 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
         [
             .. gateEvidence is null ? (object[])[] : [gateEvidence],
             .. assigned is null ? (object[])[] : [assigned],
+            .. reopened is null ? (object[])[] : [reopened],
             claimed,
         ];
         long claimedVersion = fence.Version + events.Length;
@@ -1013,8 +1070,26 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
         try
         {
             GitWorktreeManager worktrees = new(new ConsoleWorktreeLogger<GitWorktreeManager>());
-            (worktree, resumesPreviousWork, startedClean) = await CheckoutFreshOrRetryAsync(
-                worktrees, taskDetails, project, task.Id, runId, stackedBase.BaseBranch, cancellationToken);
+            if (stage is not null)
+            {
+                // Exactly as a headless follow-up lap checks out its branch, so the claim reuses the
+                // retained worktree or recreates it and never touches unpushed or uncommitted work.
+                PullRequestStageCheckout.Result checkout = await PullRequestStageCheckout.CheckoutAsync(
+                    worktrees, ExternalProcess.Runner, project.RepositoryPath, stage.Branch, task.Id, runId,
+                    cancellationToken);
+                worktree = checkout.Worktree;
+                resumesPreviousWork = true;
+                startedClean = null;
+                if (checkout.Notice is { } notice)
+                {
+                    AnsiConsole.MarkupLineInterpolated($"[yellow]{notice}[/]");
+                }
+            }
+            else
+            {
+                (worktree, resumesPreviousWork, startedClean) = await CheckoutFreshOrRetryAsync(
+                    worktrees, taskDetails, project, task.Id, runId, stackedBase.BaseBranch, cancellationToken);
+            }
 
             string? existingTaskDirectory = project.HomeDirectory.HasValue
                 ? HomeEntryLookup.FindExisting(ProjectHomePaths.TasksDirectory(project.HomeDirectory.Value), task.Id)
@@ -1073,7 +1148,10 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
                 runId, task.Id, Guid.Empty, context.OwnerId, claimed.LeaseGeneration, claudeSessionId,
                 worktree.Path, worktree.Branch, ExecutorMode.Subscription, DateTimeOffset.UtcNow,
-                IsFollowUp: false, Model: AgentModel.Fable, RunDirectory: runDirectory, SessionName: sessionName,
+                // True at the PR stage: the run is a follow-up on an open pull request, so delivering it runs
+                // the ordinary follow-up pipeline and the opener adopts the pull request instead of opening one.
+                IsFollowUp: stage is not null, Model: AgentModel.Fable, RunDirectory: runDirectory, SessionName: sessionName,
+                OpeningReviewSinceSha: stage is not null ? stage.OpeningReviewSinceSha(reopened, taskDetails) : null,
                 ReviewStageComposition: reviewStageComposition,
                 // Blank whenever the base IS the project's own, which is every ordinary task — the
                 // invariant RunDetails.StackedOnBranch reads, held identically here and in
@@ -1110,12 +1188,25 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
             // CancellationToken.None here mirrors AppendSessionEndedAsync's own reasoning: the
             // token that just fired is the one this cleanup exists for (adversarial review,
             // cycle 2).
-            await FailInteractiveClaimAsync(
-                store, task.Id, claimedVersion, runId, "cancelled while preparing the worktree", CancellationToken.None);
+            await (stage is not null
+                ? GiveBackPullRequestStageClaimAsync(store, task, stage, claimedVersion, CancellationToken.None)
+                : FailInteractiveClaimAsync(
+                    store, task.Id, claimedVersion, runId, "cancelled while preparing the worktree", CancellationToken.None));
             throw;
         }
         catch (Exception exception)
         {
+            if (stage is not null)
+            {
+                // A pull request's task is not failed for a worktree that would not check out: the claim
+                // is given back and the task is where it was, with its pull request still being watched.
+                await GiveBackPullRequestStageClaimAsync(store, task, stage, claimedVersion, cancellationToken);
+                throw new DomainConflictException(
+                    $"Task {task.Id}'s pull request branch could not be checked out for interactive work "
+                    + $"({exception.Message}). The claim was given back and the task is as it was; "
+                    + $"h9k task drive {task.Id} to try again.");
+            }
+
             await FailInteractiveClaimAsync(store, task.Id, claimedVersion, runId, exception.Message, cancellationToken);
             throw new DomainConflictException(
                 $"Task {task.Id} was claimed but could not be prepared for interactive work ({exception.Message}). "
@@ -1452,6 +1543,108 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
         return new DomainConflictException(
             $"Task {taskId} was claimed by someone else first — {winner}. "
             + "h9k status to see where it stands.");
+    }
+
+    /// <summary>
+    /// What the follow-up anchor says about the open pull request, read from the record after the claim
+    /// landed: the read scope the reopen recorded, the triage report it carried, the last thing closeout
+    /// saw on the pull request's run, and the commit style the project resolves to. The platform's own
+    /// default commit style lives in the daemon's options, which the CLI cannot read, so a project that
+    /// names none gets the documented default (narrative), the same answer the daemon gives with its
+    /// option unset.
+    /// </summary>
+    private static async Task<TaskDriveAnchorBuilder.PullRequestStage> BuildPullRequestStageAsync(
+        IDocumentSession session, TaskAggregate task, TaskDetails taskDetails, ProjectDetails project, RunDetails claimRun,
+        CancellationToken cancellationToken)
+    {
+        RunDetails? pullRequestRun = task.PullRequestRunId is { } runId
+            ? await session.LoadAsync<RunDetails>(runId, cancellationToken)
+            : null;
+        string baseBranch = claimRun.BaseBranchOr(project.BaseBranch);
+        VoiceSkillName? voiceSkill = (await session.LoadAsync<OwnerDetails>(claimRun.OwnerId, cancellationToken))?.VoiceSkill;
+        return new TaskDriveAnchorBuilder.PullRequestStage(
+            taskDetails.PullRequestUrl ?? task.PullRequestUrl ?? string.Empty,
+            taskDetails.ReviewReadScope,
+            pullRequestRun is null ? null : PullRequestStageFacts.DescribeLastObservation(pullRequestRun),
+            taskDetails.FollowUpTriageReportPath,
+            CommitStyle.Resolve(project.CommitStyle, platformDefault: null),
+            baseBranch,
+            FollowUpPromptFragments.ResumedStackedFold(project, baseBranch, claimRun.BaseCommit),
+            voiceSkill);
+    }
+
+    /// <summary>The facts a PR-stage claim is decided from, read before anything is appended.</summary>
+    internal sealed record PullRequestStageClaim(
+        RunDetails PullRequestRun, string Branch, bool PullRequestIsOpen, string? LiveHeadlessSession, bool WasReopenedLap,
+        bool FlagWasOn)
+    {
+        /// <summary>
+        /// The head the opening review cycle diffs from: what the reopen that is already on record carries for
+        /// a reopened lap, and nothing for the manual reopen this claim records itself, which makes no
+        /// provider read of its own, exactly as <c>h9k pr resolve</c> records none.
+        /// </summary>
+        public string? OpeningReviewSinceSha(TaskReopened? reopenedHere, TaskDetails taskDetails) =>
+            reopenedHere is null ? taskDetails.FollowUpPullRequestHeadSha : reopenedHere.PullRequestHeadSha;
+    }
+
+    /// <summary>
+    /// Reads the pull request's run, and from it the branch, whether the pull request is still open, and
+    /// whether a headless session is still running on it. A reopened lap that has not started already
+    /// carries its branch on the task, which wins, since it is the one the lap would have resumed.
+    /// </summary>
+    internal static async Task<PullRequestStageClaim> PreparePullRequestStageAsync(
+        IDocumentSession session, TaskAggregate task, TaskDetails taskDetails, CancellationToken cancellationToken)
+    {
+        Guid pullRequestRunId = task.PullRequestRunId
+            ?? throw new DomainConflictException(
+                $"Task {task.Id} has no recorded run for its pull request, so there is no branch to iterate on. "
+                + $"h9k task show {task.Id} to see where it stands.");
+        RunDetails pullRequestRun = await session.LoadAsync<RunDetails>(pullRequestRunId, cancellationToken)
+            ?? throw new DomainConflictException(
+                $"Task {task.Id}'s pull request run {pullRequestRunId} has no record, so there is no branch to "
+                + $"iterate on. h9k task show {task.Id} to see where it stands.");
+
+        bool wasReopenedLap = task.State != TaskState.Done;
+        string branch = wasReopenedLap && taskDetails.FollowUpBranch.IsNotBlank()
+            ? taskDetails.FollowUpBranch
+            : pullRequestRun.Branch;
+        return new PullRequestStageClaim(
+            pullRequestRun, branch, PullRequestStageFacts.IsOpen(pullRequestRun),
+            InteractiveSessionLiveness.FindLiveHeadlessSession(pullRequestRun), wasReopenedLap, task.InteractiveModeEnabled);
+    }
+
+    /// <summary>
+    /// The way back for a PR-stage claim whose worktree would not check out. A Done task's claim is
+    /// returned to its pull request, with the interactive flag as it stood before the claim; a reopened
+    /// lap's claim is requeued, so the lap that was waiting for the dispatcher still is. Fenced on the
+    /// version the claim landed at, so a release or handback that already moved it is left alone.
+    /// </summary>
+    private static async Task GiveBackPullRequestStageClaimAsync(
+        DocumentStore store, TaskAggregate taskBeforeClaim, PullRequestStageClaim stage, long claimedVersion,
+        CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        StreamState? fence = await session.Events.FetchStreamStateAsync(taskBeforeClaim.Id, cancellationToken);
+        if (fence is null || fence.Version != claimedVersion)
+        {
+            return;
+        }
+
+        TaskAggregate? current = await session.Events.AggregateStreamAsync<TaskAggregate>(
+            taskBeforeClaim.Id, version: fence.Version, token: cancellationToken);
+        if (current is null || current.State != TaskState.Claimed || !current.IsInteractiveClaim)
+        {
+            return;
+        }
+
+        DateTimeOffset at = DateTimeOffset.UtcNow;
+        session.Events.Append(
+            taskBeforeClaim.Id,
+            expectedVersion: fence.Version + 1,
+            stage.WasReopenedLap
+                ? TaskDecider.ReleaseInteractiveClaim(current, at, keepInteractive: stage.FlagWasOn)
+                : TaskDecider.ReleaseInteractiveClaimToPullRequest(current, at, keepInteractive: stage.FlagWasOn));
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     /// <summary>

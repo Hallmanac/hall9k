@@ -294,6 +294,17 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     }
 
     /// <summary>
+    /// The refusal for a task reopened onto its existing pull request. A deliberate kick-off builds the
+    /// fresh build prompt, which the follow-up branch cannot use, so it stays refused; the two doors that do
+    /// take a follow-up are named, the owner's own <c>h9k task drive</c> and the headless <c>h9k pr resolve</c>.
+    /// </summary>
+    internal static string FollowUpRefusal(Guid taskId, string? pullRequestUrl) =>
+        $"Task {taskId} was reopened onto its existing pull request ({pullRequestUrl}) — a "
+        + "deliberate kick-off cannot build the follow-up prompt that branch needs. "
+        + $"h9k task drive {taskId} to iterate on it by hand, or h9k pr resolve {taskId} to dispatch a "
+        + "headless follow-up instead.";
+
+    /// <summary>
     /// The claim itself, pure enough to test against the failure states without touching the
     /// filesystem: Published loads the dependency snapshot and warns-then-optionally-overrides
     /// through <see cref="PrepareDeliberateClaimFromPublished"/>; Blocked loads the still-open
@@ -404,10 +415,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // and this command cannot build — mirrors h9k task drive's own identical refusal.
         if (taskDetails.FollowUpBranch.IsNotBlank())
         {
-            throw new DomainConflictException(
-                $"Task {task.Id} was reopened onto its existing pull request ({taskDetails.PullRequestUrl}) — a "
-                + "deliberate kick-off cannot build the follow-up prompt that branch needs. "
-                + $"h9k pr resolve {task.Id} to dispatch a headless follow-up instead.");
+            throw new DomainConflictException(FollowUpRefusal(task.Id, taskDetails.PullRequestUrl));
         }
 
         // The claim gate (idea 64c75e43), read fresh and refused with the identical sentence
