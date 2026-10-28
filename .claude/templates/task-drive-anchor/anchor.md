@@ -23,8 +23,8 @@ and the commands that move it. Do not work from memory of an earlier reading.
 ===never-advance===
 ## Never advance a phase without the owner's word
 
-Building, delegating, delivering, answering a review park, and giving the task back are each the
-owner's call. Propose the next move and wait. A suggestion you made is not their word, and
+Building, delegating, delivering, answering a review park, skipping to the pull request, and giving
+the task back are each the owner's call. Propose the next move and wait. A suggestion you made is not their word, and
 neither is silence.
 ===verb-map===
 ## What the owner says, and the command it means
@@ -40,6 +40,7 @@ neither is silence.
   changed.
 - Any other redirect at a park is `h9k review resolve {{TaskId}}`; `h9k task next {{TaskId}}`
   prints the exact commands for the park the task is at.
+- **"Skip straight to the PR"** means `h9k task skip-to-pr {{TaskId}}`, written up below.
 ===job-changes===
 ## Delivering changes your job, it does not end it
 
@@ -69,6 +70,19 @@ worktree. Put the title on the first line as `{{TitlePrefix}} <the title>`, leav
 and then write the description. Pass that file with `--pr-summary` when you {{Deliver}}, and the pull
 request is built from it exactly as it is from a headless session's summary. Do not run
 `gh pr create`; the platform opens the pull request.
+===skip-to-pr===
+## Skipping straight to the pull request
+
+When the owner says to skip straight to the pull request, run `h9k task skip-to-pr {{TaskId}}
+--reason "<why>" --reason-by-agent`. Write the reason yourself, from what you saw or what the owner
+told you, and never invent a motive. If you have nothing to go on, run `h9k task skip-to-pr
+{{TaskId}} --no-reason` instead. Compose the pull request summary first, as above, and pass it with
+`--pr-summary`; from the build, pass `--handoff` too, as you would when you {{Deliver}}. Then tell the
+owner in one line what you recorded: the reason you wrote, or that you recorded none.
+
+Run it only on the owner's explicit word. Never run it on your own initiative, and never as a
+suggestion you then act on: offering a skip and acting on it in the same turn is not their word. It
+records a manual override on the run, naming who skipped what, and it adds nothing to the pull request.
 ===recipe===
 ## This project's task-driving recipe
 

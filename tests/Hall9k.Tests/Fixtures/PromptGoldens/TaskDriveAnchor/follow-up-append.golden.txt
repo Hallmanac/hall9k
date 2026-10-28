@@ -22,8 +22,8 @@ and the commands that move it. Do not work from memory of an earlier reading.
 
 ## Never advance a phase without the owner's word
 
-Building, delegating, delivering, answering a review park, and giving the task back are each the
-owner's call. Propose the next move and wait. A suggestion you made is not their word, and
+Building, delegating, delivering, answering a review park, skipping to the pull request, and giving
+the task back are each the owner's call. Propose the next move and wait. A suggestion you made is not their word, and
 neither is silence.
 
 ## The pull request you are iterating on
