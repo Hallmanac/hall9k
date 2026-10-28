@@ -116,6 +116,12 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// every other kind and on events recorded before the gate existed, which the prompt reads as a
 /// scope with nothing in it rather than as permission to read everything.
 /// </param>
+/// <param name="TriageReportPath">
+/// The newest assessed closeout triage report no lap has read yet (task: analysis-only closeout), set
+/// by the reopen that dispatches the first lap after a driven task is handed back to automation, so
+/// that lap's prompt carries the analysis, fenced as data, instead of re-triaging from nothing. Null
+/// on every other reopen and on events recorded before this field existed.
+/// </param>
 public sealed record TaskReopened(
     Guid Id,
     Guid PreviousRunId,
@@ -135,4 +141,5 @@ public sealed record TaskReopened(
     IReadOnlyList<ChangesRequestedReview>? ChangesRequestedReviews = null,
     DateTimeOffset? ChecksPendingSince = null,
     IReadOnlyList<ReviewThreadReference>? HumanReviewThreads = null,
-    ReviewReadScope? ReviewReadScope = null);
+    ReviewReadScope? ReviewReadScope = null,
+    string? TriageReportPath = null);

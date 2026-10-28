@@ -360,6 +360,13 @@ public sealed class TaskDetails
     public List<ReviewThreadReference> HumanReviewThreads { get; set; } = [];
     /// <summary>See <see cref="TaskReopened.ReviewReadScope"/>'s own doc — mirrors <see cref="TaskAggregate.ReviewReadScope"/>.</summary>
     public ReviewReadScope? ReviewReadScope { get; set; }
+
+    /// <summary>
+    /// The closeout triage report the latest reopen hands its lap (<see cref="TaskReopened.TriageReportPath"/>),
+    /// or null when that reopen carried none. Replaced by every reopen, so only the first lap after a driven
+    /// task is handed back to automation reads the analysis.
+    /// </summary>
+    public string? FollowUpTriageReportPath { get; set; }
     /// <summary>
     /// Every piece of non-member feedback held for the owner, in the status the owner and GitHub have
     /// left it — mirrors <see cref="TaskAggregate.NonMemberFeedback"/>. What <c>h9k status</c> lists and
@@ -1447,6 +1454,7 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.ChangesRequestedReviews = [.. @event.Data.ChangesRequestedReviews ?? []];
         view.HumanReviewThreads = [.. @event.Data.HumanReviewThreads ?? []];
         view.ReviewReadScope = @event.Data.ReviewReadScope;
+        view.FollowUpTriageReportPath = @event.Data.TriageReportPath;
         foreach (ChangesRequestedReview carried in @event.Data.ChangesRequestedReviews ?? [])
         {
             int at = view.NonMemberFeedback.FindIndex(item => item.Key == carried.ReviewUrl);

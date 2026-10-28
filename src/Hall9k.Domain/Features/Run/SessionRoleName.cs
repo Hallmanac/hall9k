@@ -112,6 +112,16 @@ public static class SessionRoleName
     public static string FeedbackEvaluatorFor(string feedbackKeyHash) => $"{FeedbackEvaluator}-{feedbackKeyHash}";
 
     /// <summary>
+    /// The read-only session that triages the unresolved review threads on a driven task's pull request
+    /// (task: analysis-only closeout) in place of the lap closeout would otherwise dispatch. Suffixed
+    /// with a short id of the thread set through <see cref="CloseoutTriageFor"/>.
+    /// </summary>
+    public const string CloseoutTriage = "closeout-triage";
+
+    /// <summary>One closeout triage's session artifact name, distinct per thread set so two never share a settings or stream file.</summary>
+    public static string CloseoutTriageFor(string threadSetKeyHash) => $"{CloseoutTriage}-{threadSetKeyHash}";
+
+    /// <summary>
     /// The read-only session that composes a project's run skill (idea b9b09779, piece 4). The
     /// one role here whose <see cref="For"/> prefix is a PROJECT's short id rather than a task's:
     /// this session belongs to no task and no run at all, which is exactly the fact a reader of a

@@ -54,6 +54,11 @@ public static class EventScopeRegistry
         [typeof(JiraWriteSucceeded)] = EventScope.ProjectScoped,
         // Non-member feedback held for the owner's go (task: feedback from outside the roster never
         // dispatches a lap): a team-visible fact about the task, so a fleet node shows the same item.
+        // The closeout triage of a driven task's unresolved threads (task: analysis-only closeout): the
+        // dispatch and the counts of its outcome are team-visible facts about the task, like the
+        // evaluator's; the report's prose stays in a file on the running node.
+        [typeof(CloseoutTriageDispatched)] = EventScope.ProjectScoped,
+        [typeof(CloseoutTriageRecorded)] = EventScope.ProjectScoped,
         [typeof(NonMemberFeedbackAdmitted)] = EventScope.ProjectScoped,
         [typeof(NonMemberFeedbackDeclined)] = EventScope.ProjectScoped,
         [typeof(NonMemberFeedbackEvaluationRecorded)] = EventScope.ProjectScoped,
@@ -133,6 +138,9 @@ public static class EventScopeRegistry
         // Hall9k.Domain.Features.Run.Events — facts about the work (project-scoped) vs machine
         // mechanics (node-scoped), per the 2026-09-13 ruling.
         [typeof(AdvisoryReviewThreadsObserved)] = EventScope.ProjectScoped,
+        // What analysis-only closeout reported on the pull request (task: while the interactive flag is on):
+        // a team-visible observation, check names and counts only.
+        [typeof(CloseoutReportRecorded)] = EventScope.ProjectScoped,
         [typeof(AgentSessionCompleted)] = EventScope.NodeScoped,
         [typeof(ChangesRequestedReviewerRerequested)] = EventScope.ProjectScoped,
         [typeof(CloseoutBudgetGranted)] = EventScope.ProjectScoped,

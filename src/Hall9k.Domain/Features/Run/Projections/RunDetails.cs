@@ -555,6 +555,13 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// sweep that reads it. Empty for every run whose pull request has none.
     /// </summary>
     public List<string> AdvisoryHumanReviewThreadIds { get; set; } = [];
+
+    /// <summary>
+    /// What closeout last reported on this run's pull request while the task's interactive flag was on
+    /// (<see cref="CloseoutReportRecorded"/>), or null when it reported nothing or the report was cleared.
+    /// The status row and <c>h9k task show</c> read it; it is the latest read's answer, not a history.
+    /// </summary>
+    public CloseoutReport? CloseoutReport { get; set; }
     /// <summary>
     /// Every thread a resolve-review-threads follow-up on this run has triaged, oldest first
     /// (task: every review thread on a pull request gets a triage disposition before any fix
@@ -1602,6 +1609,9 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         view.RefusedReviewBodyReplies.Add(new RefusedReviewBodyReplyRecord(
             @event.Data.ReviewUrl, @event.Data.Author, @event.Data.Disposition, @event.Data.Reason,
             @event.Data.RefusedAt));
+
+    public void Apply(IEvent<CloseoutReportRecorded> @event, RunDetails view) =>
+        view.CloseoutReport = @event.Data.Report.IsEmpty() ? null : @event.Data.Report;
 
     public void Apply(IEvent<AdvisoryReviewThreadsObserved> @event, RunDetails view) =>
         view.AdvisoryHumanReviewThreadIds = [.. @event.Data.ThreadIds];
