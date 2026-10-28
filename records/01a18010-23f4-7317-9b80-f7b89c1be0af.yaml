@@ -1,0 +1,34 @@
+hall9k-task-record: 1
+task-id: 01a18010-23f4-7317-9b80-f7b89c1be0af
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#769
+objective: |-
+  `h9k task skip-to-pr <id> --reason "…"` opens the pull request at once on a task in interactive mode, bypassing gates, every review track, the final pass, and the settling gate, and records a manual-override event naming who skipped what.
+criteria:
+  - |-
+    **When.** Allowed on a task whose interactive flag is on, except a pr-review or Spike task, which refuses because neither opens a pull request of its own. There are two entry points. From the build, under the caller's claim, it delivers through `h9k task deliver`'s own code: its refusals, the uncommitted-file check, the push, the `--handoff` text or prompt, token recording, and the pre-append re-checks. It then records the override in the same append. Otherwise it runs at any review park on the run while the flag is on, whether an interactive boundary or any other park. At the gates-to-pull-request boundary, where review has already settled, it refuses and names `h9k review proceed`, because nothing is left to skip. While a gate or review session is live it refuses and says the next park will offer it. A reason is optional but always asked for: `--reason "<text>"` records one and `--no-reason` records none. With neither flag, a terminal prompts "Reason (leave blank for none):". With no terminal (an agent shell, stdin closed), the verb refuses and names both flags. `--reason-by-agent` marks a reason the driving session wrote rather than the human, and the event records which.
+  - |-
+    **The event.** A new run event records the owner, the time, the reason, and the list of what was skipped, computed from where the run stood. That list names the gates when the run had not passed them, each review track this run would still have run (by name, read from `ReviewLens.CycleLenses` and the run's still-active tracks under its recorded review stage composition, never hard-coded), the final pass, and the settling gate. Applied to `RunAggregate` and `RunDetails`, the event leaves the run UnderReview at `ReviewPhase.MergeReady`, with the interactive gate cleared and a new `ReviewSettlement.Overridden` value. `EventScopeRegistry` classifies it as project-scoped. `TaskActClassificationRegistry` classifies it `OwnerOnly`, as it does `ReviewParkResolved`, so a project member's node can never replicate an override onto an owner's run. A stream without the event replays unchanged.
+  - |-
+    **The path.** The CLI cannot reference `Hall9k.Daemon`, so the verb records the event and rings the daemon, as deliver and `h9k review resolve` do. The daemon's stranded-pipeline sweep (`RunSupervisor.ResumeStrandedPipelinesAsync`) picks the run up and calls `PullRequestOpener.OpenAsync` for it. No gate runs, no review or fix session dispatches, and no further interactive park is raised for that run.
+  - |-
+    **The PR body.** An override adds nothing to the pull request. `PullRequestBody.Build` builds exactly as on any other run; whether the PR mentions the skip is the human's call, written in their own summary (Brian, 2026-10-13).
+  - |-
+    **Scope.** The override covers only the run it was recorded on. A later run starts with no override and gets its full review (Brian, 2026-10-13). Handing the task back to automation on `h9k pr resolve` is Card 4 criterion 4's job.
+  - |-
+    **Surfaces.** `h9k task show`'s review outcome, the orchestrator feed description, and the `TaskPassage` record each render the override from the event. Each names who skipped, the skipped list, and the reason (marked as agent-written when it was) or "no reason given". `InteractiveBoundaryChoices` lists `h9k task skip-to-pr <id>` at every interactive boundary except gates-to-pull-request, so the park text and every surface that renders those choices name it. `--pr-summary <file>` works here as on `deliver`.
+  - Card 1's task anchor maps "skip straight to the PR" to the verb and tells the session to write the reason itself from what it saw or was told, never an invented motive, passing `--reason-by-agent`; with nothing to go on it passes `--no-reason`. It then tells the user in one line what it recorded. The session runs the verb only on the user's explicit word, never on its own initiative or as a suggestion it then acts on.
+  - |-
+    `docs/cli.md`, `docs/operations.md`, and the `hall9k-cli-reference` skill document it and say it is recorded.
+  - |-
+    **Tests.** Unit tests cover the following. The verb's state rules and refusals: the flag off, a pr-review or Spike task, a live gate or review session, and the gates-to-pull-request boundary. The reason flags, the terminal prompt's blank answer, and the no-terminal refusal. The skipped-list computation at each entry point. The aggregate and projection settling as `ReviewSettlement.Overridden` at MergeReady with the interactive gate cleared. The event's `OwnerOnly` classification. The PR body identical with and without an override (golden). Feed and `task show` rendering, with `task show` naming who, the skipped list, and the reason rather than the unrecorded fallback. `InteractiveBoundaryChoices` naming the verb at each boundary except gates-to-pull-request. The anchor's skip-to-pr lines, guard included (golden). Old-stream replay. One test in `RunSupervisorTests`' existing setup (its Postgres fixture and fakes, with no git repository and no GitHub) proves that an overridden run, from the build and from a park, reaches the opener with no gate and no review session.
+dependencies: [01a18010-1cf3-7210-a7df-387dbd533657]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/9c1be0af-h9k-task-skip-to-pr-id-reason
+published: 2026-10-28 01:27:12Z
+context: |-
+  Cut from idea 6e6d0200 (progressive automation: a user drives a task by hand, from manual to full auto; the idea took no new verb, and its front door is h9k task drive), Card 3 of 7 (Cards 0 to 6). The idea workspace's draft-task.md holds the Shape section and the sibling cards; read the Shape section and the neighboring cards before building, so this card does not take on a sibling's criteria. The workspace journal.md records why each criterion reads as it does. Workspace: /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/6e6d0200-progressive-automation-h9k-task-iterate-lets-a-user-drive-a/workspace
