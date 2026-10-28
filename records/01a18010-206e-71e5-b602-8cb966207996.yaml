@@ -1,0 +1,31 @@
+hall9k-task-record: 1
+task-id: 01a18010-206e-71e5-b602-8cb966207996
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#768
+objective: |-
+  `h9k task next <id>` prints where a task stands, who moves next (you, the platform, a running agent, or GitHub), and the exact command or commands that move it, computed from the platform's own records with no agent call.
+criteria:
+  - |-
+    `h9k task next <id>` is a read-only command on the `PullRequestThreadsCommand` pattern: it takes an `IQuerySession` only and writes plain text to a `TextWriter`, never `AnsiConsole`. It is registered under `task` with a description and an example, and classified `ReadOnly` in `DispatchedSessionCommandClassification`.
+  - |-
+    It composes the row `TaskStatusComposer.ComposeOneAsync` returns (the `TaskPhaseComposer` phase and the `AttentionComposer` attention on it) and the pre-dispatch next step `task show` prints. That next step, the Failed state's three exits, and the open-dependency check that feeds them move out of `TaskShowCommand.ExecuteAsync` and `AnnounceNextStep` into one function that returns the text, called by both commands; `task show`'s output does not change. It adds no fourth table of next-step rules. Who moves next (you, the platform, a running agent, or GitHub) is read off that composed row: needs-you is you, a live session on the phase line (a delegated contractor included) is a running agent, a pull request waiting on reviews or checks is GitHub, and anything else is the platform. For a run in the review loop it folds the run stream for `ReviewPhase` (as `ReviewFixedCommand` does) and names the next review step.
+  - At an interactive park it lists the choices from `InteractiveBoundaryChoices.Lines`, picking the boundary from `RunAggregate.ParkedFromReviewPhase` through a mapping kept beside `InteractiveBoundaryChoices` (`FixNeeded` is the review-verdict-to-fix boundary, `MergeReady` the gates-to-pull-request boundary, and `None`, `Reverify`, and `Settling` proceed-or-redirect). Wherever `h9k status` shows a lever for the task, `task next` prints that same `TaskAttention.Lever` text unchanged, and a test proves the two agree for every fixture in criterion 8.
+  - For a Done task whose pull request is open, it states the run state closeout last recorded (with the threads, checks, or conflict that state carries) and when that state was recorded, taken from the run stream event that set it. It says that closeout records a change, not every poll. What closeout does next is the phase and attention text the composers already give that state; it does not restate `CloseoutEngine`'s rules.
+  - For a task that belongs to another owner, it says whose task it is and names no lever, as `h9k task show` does for a teammate's task.
+  - Card 1's task anchor tells the session to run `h9k task next` before every move, replacing `h9k task show` there.
+  - |-
+    `docs/cli.md` and the `hall9k-cli-reference` skill document it.
+  - |-
+    **Tests.** Unit tests over composed fixtures cover each state family: pre-dispatch, building under a claim, building under a delegated contractor, each review phase, each interactive park (with the boundary mapping), each closeout state (AwaitingReview, ChecksFailing, ReviewPending, Conflicting, CloseoutParked), a teammate's task, and terminal states including Failed's three exits. The existing `task show` tests pass unchanged after the next-step text moves.
+dependencies: [01a18010-1cf3-7210-a7df-387dbd533657]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/66207996-h9k-task-next-id-prints-where
+published: 2026-10-28 01:27:00Z
+context: |-
+  Cut from idea 6e6d0200 (progressive automation: a user drives a task by hand, from manual to full auto; the idea took no new verb, and its front door is h9k task drive), Card 2 of 7 (Cards 0 to 6). The idea workspace's draft-task.md holds the Shape section and the sibling cards; read the Shape section and the neighboring cards before building, so this card does not take on a sibling's criteria. The workspace journal.md records why each criterion reads as it does. Workspace: /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/6e6d0200-progressive-automation-h9k-task-iterate-lets-a-user-drive-a/workspace
+
+  Pointers for the build (origin/main at v0.13.5): `AnnounceNextStep` is private and writes markup to `AnsiConsole` (src/Hall9k.Cli/Commands/TaskShowCommand.cs:3115); the Failed exits are inline at TaskShowCommand.cs:794-800, the open-dependency check at TaskShowCommand.cs:497-505, and the teammate path at TaskShowCommand.cs:63-67. `ComposeOneAsync` already calls both composers (src/Hall9k.Cli/Commands/TaskStatusComposer.cs:418-426). The closeout states' own next-step wording is in `TaskPhaseComposer.Delivered` (src/Hall9k.Cli/Commands/TaskPhaseComposer.cs:501). The boundary kind is never recorded, only chosen at `ReviewEngine`'s five park sites; `ReviewFixedCommand.BoundaryLabel` (src/Hall9k.Cli/Commands/ReviewFixedCommand.cs:421) reads the same phases. Unit tests compose rows with `TaskStatusComposer.Compose`, as `TaskLifecycleSurfaceTests` does.
