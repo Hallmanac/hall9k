@@ -34,7 +34,7 @@ public sealed record RunEventSet(Guid RunId, DateTimeOffset DispatchedAt, DateTi
 /// second network round trip through <see cref="ReadAsync"/>.
 /// </para>
 /// </summary>
-public static class TaskPassageQuery
+public static partial class TaskPassageQuery
 {
     /// <summary>
     /// Every dispatch that spawns a Claude Code process, across a run's whole life (task: h9k
@@ -166,10 +166,11 @@ public static class TaskPassageQuery
 
         List<LapKindCount> laps = [.. FoldLaps(taskEvents)];
         int sessions = folds.Aggregate(0, (total, fold) => total + fold.SessionCount);
+        PhaseClassification? classification = ClassifyPhases(taskEvents, runs, taskType);
 
         return new TaskPassage(
             queued, building, gates, review, delivery, mergeWait, humanWaits, claimToMerge, laps, sessions, mergedAt,
-            queuedBeforeFirstClaim, [.. folds.SelectMany(fold => fold.ReviewSkips)]);
+            queuedBeforeFirstClaim, [.. folds.SelectMany(fold => fold.ReviewSkips)], classification);
     }
 
     /// <summary>

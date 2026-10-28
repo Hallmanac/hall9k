@@ -18,6 +18,14 @@ public static class ReviewSkipPlan
     public static string Track(ReviewLens lens) => $"the {lens.Value} review track";
 
     /// <summary>
+    /// Whether a recorded <see cref="Events.ReviewSkippedToPullRequest.Skipped"/> entry names a review
+    /// track. Read by shape rather than against <see cref="ReviewLens.CycleLenses"/>, so a track whose
+    /// lens a later build no longer runs still reads as one.
+    /// </summary>
+    public static bool IsTrack(string entry) =>
+        entry.StartsWith("the ", StringComparison.Ordinal) && entry.EndsWith(" review track", StringComparison.Ordinal);
+
+    /// <summary>
     /// The things this run would still have gone through before its pull request. Works for both
     /// entry points: a run still in the build (nothing has run yet) and a review-parked run, whose
     /// phase is the one the park interrupted.
