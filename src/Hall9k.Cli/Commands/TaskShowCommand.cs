@@ -1056,6 +1056,13 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             lines.Add(string.Join(" [dim]·[/] ", delivery));
         }
 
+        // Who ran each phase, in plain words (idea 6e6d0200, Card 6): one row, not one per phase. Absent for
+        // a pr-review task, which is never classified, and for a task with no phase to classify yet.
+        if (passage.Classification?.Describe() is { } classified)
+        {
+            lines.Add(classified.EscapeMarkup());
+        }
+
         lines.AddRange(humanWaits);
         lines.AddRange((passage.ReviewSkips ?? []).Select(skip => ComposeSkipPassageLine(skip, labels ?? MemberLabelLookup.Empty)));
         lines.Add(string.Join(" [dim]·[/] ", summary));
