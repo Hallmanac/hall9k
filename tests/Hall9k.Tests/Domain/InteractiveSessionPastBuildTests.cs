@@ -92,6 +92,9 @@ public sealed class InteractiveSessionPastBuildTests
         RunDetails view = projection.Create(new FakeEvent<RunDispatched>(Dispatched(id)));
         projection.Apply(new FakeEvent<InteractiveSessionStarted>(
             new InteractiveSessionStarted(id, DomainId.New(), Now, 9001, "operator-mac", "build")), view);
+        // The daemon appends AgentSessionCompleted whenever the build session exits, including on
+        // the usage limit or a launch failure, so a build park always follows it.
+        projection.Apply(new FakeEvent<AgentSessionCompleted>(new AgentSessionCompleted(id, Now)), view);
         if (park == "BudgetParked")
         {
             projection.Apply(new FakeEvent<RunBudgetExhausted>(new RunBudgetExhausted(id, "limit", Now)), view);
@@ -285,6 +288,7 @@ public sealed class InteractiveSessionPastBuildTests
         RunAggregate aggregate = new();
         aggregate.Apply(Dispatched(id));
         aggregate.Apply(new AgentSessionCompleted(id, Now));
+        aggregate.Apply(new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now, Lens: ReviewLens.Conformance));
         aggregate.Apply(new RunBudgetExhausted(id, "limit", Now));
         aggregate.Apply(new InteractiveSessionStarted(id, DomainId.New(), Now, ProcessId: 4242));
         aggregate.State.Should().Be(RunState.BudgetParked);
@@ -292,10 +296,36 @@ public sealed class InteractiveSessionPastBuildTests
         RunListItemProjection projection = new();
         RunListItem row = projection.Create(new FakeEvent<RunDispatched>(Dispatched(id)));
         projection.Apply(new FakeEvent<AgentSessionCompleted>(new AgentSessionCompleted(id, Now)), row);
+        projection.Apply(new FakeEvent<ReviewDispatched>(
+            new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now, Lens: ReviewLens.Conformance)), row);
         projection.Apply(new FakeEvent<RunLaunchHeld>(new RunLaunchHeld(id, "no launch", Now)), row);
         projection.Apply(new FakeEvent<InteractiveSessionStarted>(
             new InteractiveSessionStarted(id, DomainId.New(), Now, 9001, "operator-mac", "brians-terminal")), row);
         row.State.Should().Be(RunState.LaunchHeld);
+    }
+
+    [Fact]
+    public void A_build_that_parks_on_its_own_completion_is_not_delivered_in_the_aggregate_and_the_list_row()
+    {
+        // The daemon appends AgentSessionCompleted before RunBudgetExhausted or RunLaunchHeld when the
+        // build session itself exits on the limit, so the completion alone cannot mark the delivery.
+        Guid id = DomainId.New();
+        RunAggregate aggregate = new();
+        aggregate.Apply(Dispatched(id));
+        aggregate.Apply(new AgentSessionCompleted(id, Now));
+        aggregate.Apply(new RunBudgetExhausted(id, "limit", Now));
+        aggregate.Delivered.Should().BeFalse();
+        aggregate.Apply(new InteractiveSessionStarted(id, DomainId.New(), Now, ProcessId: 4242));
+        aggregate.State.Should().Be(RunState.Running);
+
+        RunListItemProjection projection = new();
+        RunListItem row = projection.Create(new FakeEvent<RunDispatched>(Dispatched(id)));
+        projection.Apply(new FakeEvent<AgentSessionCompleted>(new AgentSessionCompleted(id, Now)), row);
+        projection.Apply(new FakeEvent<RunLaunchHeld>(new RunLaunchHeld(id, "no launch", Now)), row);
+        row.Delivered.Should().BeFalse();
+        projection.Apply(new FakeEvent<InteractiveSessionStarted>(
+            new InteractiveSessionStarted(id, DomainId.New(), Now, 9001, "operator-mac", "brians-terminal")), row);
+        row.State.Should().Be(RunState.Running);
     }
 
     [Fact]

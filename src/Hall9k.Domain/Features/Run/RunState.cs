@@ -69,11 +69,25 @@ public sealed record RunState
     /// follow a delivery. <see cref="BudgetParked"/> and <see cref="LaunchHeld"/> are shared with
     /// the build itself (a build session that hits the usage limit parks the same way), so the
     /// state alone cannot say which side of the delivery they are on; <paramref name="delivered"/>,
-    /// whether <c>AgentSessionCompleted</c> was recorded, is what tells the two apart.
+    /// which a park records through <see cref="DeliveredAfterPark"/>, is what tells the two apart.
     /// </para>
     /// </summary>
     public bool IsPastBuild(bool delivered) =>
         this == Verifying || this == UnderReview || this == ReviewParked
+        || (delivered && (this == BudgetParked || this == LaunchHeld));
+
+    /// <summary>
+    /// What <c>Delivered</c> reads once a <c>RunBudgetExhausted</c> or <c>RunLaunchHeld</c> park is
+    /// recorded on a run that was in this state, with <paramref name="delivered"/> as it stood.
+    /// <c>AgentSessionCompleted</c> is not itself a hand-off: the daemon appends it whenever a build
+    /// session exits, including on the usage limit or a launch failure, and moves the run to
+    /// <see cref="Verifying"/> on the way to the park. So a park recorded from <see cref="Verifying"/>
+    /// (or from a build still <see cref="Running"/> through an error retry) is the build's own and
+    /// the run was never delivered, while a pipeline park follows a review, fix, or recovery
+    /// dispatch (<see cref="UnderReview"/>) or an earlier pipeline park, and stays delivered.
+    /// </summary>
+    public bool DeliveredAfterPark(bool delivered) =>
+        this == UnderReview || this == ReviewParked
         || (delivered && (this == BudgetParked || this == LaunchHeld));
 
     /// <summary>
