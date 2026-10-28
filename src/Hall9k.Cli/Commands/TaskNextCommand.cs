@@ -3,6 +3,7 @@ using System.Globalization;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
@@ -101,8 +102,10 @@ public sealed class TaskNextCommand : Hall9kAsyncCommand<TaskNextCommand.Setting
             return facts;
         }
 
+        RunDetails? recorded = await session.LoadAsync<RunDetails>(runId, cancellationToken);
         TaskNextRun folded = new(
-            run.State, run.ReviewPhase, run.ReviewCycle, run.ParkedFromReviewPhase, run.ParkedIsInteractiveGate);
+            run.State, run.ReviewPhase, run.ReviewCycle, run.ParkedFromReviewPhase, run.ParkedIsInteractiveGate,
+            recorded is not null && OwnersSessionIsActive(recorded));
         CloseoutObservation? closeout = null;
         if (row.State == LifecycleState.Delivered && CloseoutObservations.IsCloseoutState(run.State))
         {
@@ -112,6 +115,16 @@ public sealed class TaskNextCommand : Hall9kAsyncCommand<TaskNextCommand.Setting
 
         return facts with { Run = folded, Closeout = closeout };
     }
+
+    /// <summary>
+    /// Whether a session the run records as active is the owner's own registration: interactive in
+    /// role and named as the run's registered interactive session. A delegated contractor records
+    /// under the build session's name, which a registration never takes, so it does not match.
+    /// </summary>
+    internal static bool OwnersSessionIsActive(RunDetails run) =>
+        run.RegisteredInteractiveSessionName is { Length: > 0 } registered
+        && run.ActiveSessions.Exists(active =>
+            active.Role == AgentRole.Interactive && string.Equals(active.Name, registered, StringComparison.Ordinal));
 
     /// <summary>
     /// The printed answer, line by line, with no database in it. Phase and attention go through the
@@ -211,6 +224,18 @@ public sealed class TaskNextCommand : Hall9kAsyncCommand<TaskNextCommand.Setting
             return ("you", "The board has this row asking for you.");
         }
 
+        // The owner's claim while the build is still the run's work: past it, the pipeline owns the
+        // worktree (gates, review, closeout), and a session or a gap with no session there is not
+        // the owner's to act on. The composers draw the same line (TaskPhaseComposer.Working).
+        bool ownersBuild = facts.HoldsInteractiveClaim
+            && facts.Run is { } run
+            && (run.State == RunState.Dispatched || run.State == RunState.Running);
+
+        if (ownersBuild && facts.Run is { ActiveSessionIsOwners: true })
+        {
+            return ("you", "Your own session is the one building here; carry on in this worktree.");
+        }
+
         if (row.Phase is { HasPhase: true, Liveness: SessionLiveness.Alive })
         {
             return ("a running agent", "A session is alive on this task; leave its worktree alone until it reports.");
@@ -222,7 +247,7 @@ public sealed class TaskNextCommand : Hall9kAsyncCommand<TaskNextCommand.Setting
             return ("you", "Nothing runs until you take the step below.");
         }
 
-        if (facts.HoldsInteractiveClaim && row.State == LifecycleState.Working)
+        if (ownersBuild && row.State == LifecycleState.Working)
         {
             return ("you", "You hold the claim and no session is running on it.");
         }
@@ -336,12 +361,18 @@ internal sealed record TaskNextFacts(
     CloseoutObservation? Closeout = null);
 
 /// <summary>The parts of a folded run stream the answer reads.</summary>
+/// <param name="ActiveSessionIsOwners">
+/// Whether the session the run records as active is the owner's own registered one (an interactive
+/// session named as <c>RunDetails.RegisteredInteractiveSessionName</c>), as opposed to a delegated
+/// contractor, which records under the build session's name.
+/// </param>
 internal sealed record TaskNextRun(
     RunState State,
     ReviewPhase ReviewPhase,
     int ReviewCycle,
     ReviewPhase ParkedFromReviewPhase,
-    bool ParkedIsInteractiveGate);
+    bool ParkedIsInteractiveGate,
+    bool ActiveSessionIsOwners = false);
 
 /// <summary>The run state closeout last recorded, with what that state carries and when it was recorded.</summary>
 internal sealed record CloseoutObservation(RunState State, string Detail, DateTimeOffset RecordedAt);
@@ -362,17 +393,17 @@ internal static class CloseoutObservations
 
     /// <summary>
     /// The newest event in <paramref name="stream"/> that sets <paramref name="state"/>, or null when
-    /// the stream holds none (an older stream, or a state something other than closeout set).
+    /// the stream holds none (an older stream, or a state something other than closeout set). The
+    /// time is the one the event carries, never <see cref="IEvent.Timestamp"/>: that is when this
+    /// node stored the event, which for a replicated or pulled stream is when it arrived here.
     /// </summary>
     public static CloseoutObservation? Last(IReadOnlyList<IEvent> stream, RunState state)
     {
         for (int index = stream.Count - 1; index >= 0; index--)
         {
-            IEvent recorded = stream[index];
-            string? detail = Carried(recorded.Data, state);
-            if (detail is not null)
+            if (Carried(stream[index].Data, state) is var (detail, recordedAt))
             {
-                return new CloseoutObservation(state, detail, recorded.Timestamp);
+                return new CloseoutObservation(state, detail, recordedAt);
             }
         }
 
@@ -380,19 +411,22 @@ internal static class CloseoutObservations
     }
 
     /// <summary>
-    /// What the event carries, or null when it is not an event that sets <paramref name="state"/>.
-    /// An empty string means it is one and carries nothing to say.
+    /// What the event carries and when it says it happened, or null when it is not an event that
+    /// sets <paramref name="state"/>. An empty detail means it is one and carries nothing to say.
     /// </summary>
-    private static string? Carried(object data, RunState state) => data switch
+    private static (string Detail, DateTimeOffset RecordedAt)? Carried(object data, RunState state) => data switch
     {
-        PullRequestOpened or PullRequestUpdated when state == RunState.AwaitingReview => string.Empty,
+        PullRequestOpened opened when state == RunState.AwaitingReview => (string.Empty, opened.OpenedAt),
+        PullRequestUpdated updated when state == RunState.AwaitingReview => (string.Empty, updated.UpdatedAt),
         PullRequestChecksFailed failed when state == RunState.ChecksFailing =>
-            $"failing checks {string.Join(", ", failed.FailedChecks)}",
+            ($"failing checks {string.Join(", ", failed.FailedChecks)}", failed.ObservedAt),
         ReviewFeedbackReceived feedback when state == RunState.ReviewPending =>
-            $"{feedback.UnresolvedThreadCount.ToString(CultureInfo.InvariantCulture)} unresolved review threads",
-        ReviewErrored errored when state == RunState.ReviewPending => $"a review errored ({errored.ReviewUrl})",
-        PullRequestConflictObserved when state == RunState.Conflicting => "a conflict with the base branch",
-        CloseoutParked parked when state == RunState.CloseoutParked => parked.Reason,
+            ($"{feedback.UnresolvedThreadCount.ToString(CultureInfo.InvariantCulture)} unresolved review threads", feedback.ObservedAt),
+        ReviewErrored errored when state == RunState.ReviewPending =>
+            ($"a review errored ({errored.ReviewUrl})", errored.ObservedAt),
+        PullRequestConflictObserved conflict when state == RunState.Conflicting =>
+            ("a conflict with the base branch", conflict.ObservedAt),
+        CloseoutParked parked when state == RunState.CloseoutParked => (parked.Reason, parked.ParkedAt),
         _ => null,
     };
 }

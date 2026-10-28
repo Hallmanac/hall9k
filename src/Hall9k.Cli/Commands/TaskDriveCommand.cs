@@ -61,7 +61,7 @@ namespace Hall9k.Cli.Commands;
 /// and one line that starts a Claude Code session under that anchor
 /// (<see cref="LaunchTextDefaults.RenderTaskDrive"/>); it no longer launches or waits on a process
 /// itself. The anchor (<see cref="TaskDriveAnchorBuilder"/>) has the session self-register through
-/// <c>h9k task register-session</c> as its first act, read <c>h9k task show</c> before every move, and
+/// <c>h9k task register-session</c> as its first act, read <c>h9k task next</c> before every move, and
 /// carry out the human's instructions a phase at a time, which is what lets the double-booking and
 /// liveness guards (re-entry, verify, deliver, delegate, handback, release) recognise it. A session
 /// that never registers gets the honest degradation every guard already had for a task nobody ever
