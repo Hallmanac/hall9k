@@ -151,6 +151,32 @@ internal static class InteractiveSessionLiveness
               + $"terminal — exit it first (Ctrl+D or /exit) before you {action} from here.");
     }
 
+    /// <summary>
+    /// The name of a headless session this run still has running, or null: any recorded session that is
+    /// not the owner's own attached terminal (build, review, fix, synthesis, or a closeout lap's) whose
+    /// process this machine can confirm is alive. A headless session carries no machine name, because the
+    /// daemon that spawned it is on the node that holds the run, so liveness is read here the way an
+    /// interactive session's is. <c>h9k task drive</c> at the PR stage refuses by this name rather than
+    /// let the owner and a dispatched session edit one worktree at the same time.
+    /// </summary>
+    public static string? FindLiveHeadlessSession(RunDetails run)
+    {
+        foreach (ActiveSession session in run.ActiveSessions)
+        {
+            if (session.Role == AgentRole.Interactive || session.StartedAt is not { } startedAt
+                || !IsAlive(session.ProcessId, startedAt))
+            {
+                continue;
+            }
+
+            return session.Name.IsNotBlank()
+                ? session.Name
+                : $"a {session.Role.Value} session (pid {session.ProcessId})";
+        }
+
+        return null;
+    }
+
     private static bool IsAlive(int processId, DateTimeOffset startedAt)
     {
         try
