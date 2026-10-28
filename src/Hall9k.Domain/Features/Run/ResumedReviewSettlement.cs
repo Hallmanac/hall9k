@@ -1,7 +1,8 @@
 namespace Hall9k.Domain.Features.Run;
 
 /// <summary>
-/// The failed run's own settled review, frozen onto <see cref="Events.RunDispatched"/> for the run
+/// The failed run's own settled review (or its recorded manual override, when <c>h9k task skip-to-pr</c>
+/// bypassed the review and the run failed only at pull-request-open), frozen onto <see cref="Events.RunDispatched"/> for the run
 /// that resumes directly at pull-request-open (task: a run that failed only at pull-request
 /// opening resumes at that step on retry) instead of re-running the build and review pipeline.
 /// That resumed run never dispatches a reviewer of its own — nothing on its stream would

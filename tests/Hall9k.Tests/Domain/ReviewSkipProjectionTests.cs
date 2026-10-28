@@ -77,12 +77,12 @@ public sealed class ReviewSkipProjectionTests
     }
 
     [Fact]
-    public void The_event_is_owner_only_so_a_members_node_can_never_replicate_one_onto_an_owners_run()
+    public void The_event_is_conditional_so_a_members_own_skip_replicates_but_a_forged_one_onto_anothers_run_does_not()
     {
         TaskActClassificationRegistry.TryClassificationOf(typeof(ReviewSkippedToPullRequest))
-            .Should().Be(TaskActClassification.OwnerOnly);
-        TaskActClassificationRegistry.TryClassificationOf(typeof(ReviewParkResolved))
-            .Should().Be(TaskActClassification.OwnerOnly, "a skip is the same call a park resolution is");
+            .Should().Be(TaskActClassification.Conditional);
+        TaskActClassificationRegistry.TryClassificationOf(typeof(ReviewBoundaryApproved))
+            .Should().Be(TaskActClassification.Conditional, "a skip is judged the way the interactive-mode go-ahead is");
     }
 
     [Fact]
