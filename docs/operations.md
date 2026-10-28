@@ -1799,6 +1799,14 @@ own hands do the build: the claim that starts it and the `deliver`/`handback`/`r
 it are both Hall9k acts, so the platform performs every transition even when a human types the
 code in between.
 
+**The front door.** `h9k task drive <id>` is how a person takes the wheel. It claims the task and prints
+one line that starts a Claude Code session in the task's worktree, driving the task on the person's word
+from the build through the review loop that runs before the pull request opens. The session reads the
+platform's own record before each move, builds in the worktree or delegates the build, delivers on
+request, and then stays on to answer each review pause with the person's decision. How much of the work
+the person keeps is theirs to change at any pause, from doing all of it by hand to handing every phase to
+the machine.
+
 **Two modes.** Hands on the code: the human builds, in their own interactive session. Hands on the
 judgment: agents build, review, and fix, and the human is only the arbiter at the boundaries.
 Which mode owns the build is a free choice, revisable at any boundary in either direction, but the
@@ -1877,8 +1885,8 @@ than hide, park on a recorded human decision rather than trust a process to stil
 
 ## Working a task interactively
 
-`h9k task drive <id> [--direct-launch] [--acknowledge-unmet-dependencies] | register-session |
-verify | deliver | delegate | handback | release` (Decisions Log #103, #122, #124, #126, #127)
+`h9k task drive <id> [--print-prompt | --direct-launch] [--acknowledge-unmet-dependencies] |
+register-session | verify | deliver [--pr-summary <file>] | delegate | handback | release` (Decisions Log #103, #122, #124, #126, #127)
 
 An operator can work a Published, Queued, or already-Blocked task in their own terminal instead of dispatching it
 headless (Decisions Log #122). On a Published task assigned to nobody, `h9k task drive` queues it
@@ -1895,24 +1903,40 @@ triggers — edges still gate automatic dispatch exactly as before; only this de
 gets the warn-and-proceed path. Whichever state it entered from, the claim itself is held by the
 human, not a process: there is no lease and no heartbeat reclaim, so
 closing the terminal is a normal way to leave, and re-running `h9k task drive <id>` re-enters the
-same worktree and branch with a fresh prompt.
+same worktree and branch, at any stage before the pull request opens.
 
-By default, `h9k task drive` no longer launches anything itself (Decisions Log #126): it prints the
-worktree path, the branch, and a starting prompt for the operator to paste into a Claude Code
-session started anywhere. That pasted session's first act is `h9k task register-session <id>`,
-which records its own process identity (read from `CLAUDE_PID`, Claude Code's own environment
-variable) the way a direct launch's own launch-time recording always did — this is what lets the
-double-booking and liveness guards below recognise it. A session that never registers gets the
-same honest no-op every guard already had for a claim nobody ever recorded a session against:
-nothing blocks a second entry, but nothing is silently overwritten either. `--direct-launch` keeps
-the prior behavior for one release — a plain interactive Claude Code process launched and waited on
-by `h9k task drive` itself, recording its pid the moment it starts, and resuming the most recently
-recorded session's own conversation on re-entry — falling back to a fresh session, announced rather
-than silent, only when the recorded one cannot be resumed (Decisions Log #124) — refused on a
-machine where Claude Code resolves to a Windows script shim (`.cmd`/`.bat`/`.ps1`), since the
-shim's `cmd.exe` cannot carry the prompt's embedded newlines through its argv; the prompt-handoff
-default is unaffected by that refusal, since the pasted prompt never travels through an argv at
-all.
+By default, `h9k task drive` no longer launches anything itself: it prints the worktree path, the
+branch, and one line to paste into a terminal. The line `cd`s into the worktree and starts Claude Code
+with the run's settings file, a session name, `--dangerously-skip-permissions` only when the project
+allows it, this node's build model and effort named explicitly (the pair a headless build of the task
+would get; with no effort set anywhere it names none and says the model's own default applies), and a
+task anchor written into the run directory. The anchor tells the session to register itself first, read
+`h9k task show` before every move, advance nothing without the person's word, and carry out their
+instructions as the verbs: build here or `delegate`, `deliver` then `h9k review proceed`, or `h9k review
+fixed`. It also carries the project's writing conventions, because the session writes commits and the
+pull request summary under the owner's login, and names `recipes/task-drive.md` in the project home when
+that file exists. On re-entry the line resumes the registered session's conversation, keeping the
+anchor, settings, model and effort, with the fresh line printed beneath it for when the conversation
+cannot be found. The session's first act is `h9k task register-session <id>`, which records its process
+identity (read from `CLAUDE_PID`, Claude Code's own environment variable) the way a direct launch's own
+launch-time recording always did; this is what lets the double-booking and liveness guards below
+recognise it. A session that never registers gets the same honest no-op every guard already had for a
+claim nobody ever recorded a session against: nothing blocks a second entry, but nothing is silently
+overwritten either. `register-session` is accepted at every stage before the pull request opens, the
+gates and the review loop included: after `deliver` it records the session and its name and nothing
+else, so the run's state and the review sessions it already has are left as they are. A Done task is
+refused, because iterating on an open pull request is not supported yet.
+
+`h9k task drive <id> --print-prompt` prints the starting prompt instead (Decisions Log #126), for a
+person who pastes it into a session they start themselves; that prompt begins with the same
+`register-session` act. Both `--print-prompt` and `--direct-launch` are refused once the task has been delivered, because the prompt they hand over is the build prompt and the pipeline owns the worktree by then; the default launch line is the path for that stage. `--direct-launch` keeps the prior behavior for one release: a plain
+interactive Claude Code process launched and waited on by `h9k task drive` itself, recording its pid
+the moment it starts, and resuming the most recently recorded session's own conversation on re-entry,
+falling back to a fresh session, announced rather than silent, only when the recorded one cannot be
+resumed (Decisions Log #124). It is refused on a machine where Claude Code resolves to a Windows script
+shim (`.cmd`/`.bat`/`.ps1`), since the shim's `cmd.exe` cannot carry the prompt's embedded newlines
+through its argv; the printed line and the pasted prompt are unaffected by that refusal, since neither
+travels through an argv of its own.
 
 Nothing reclaims a quiet claim automatically, but a long-untouched one is easy to forget about:
 once it has sat past `interactiveClaimStaleAfterDays` (three days by default, [configurable
@@ -1922,11 +1946,11 @@ reclaim, only a question (Decisions Log #103).
 
 | Command | What it does |
 |---|---|
-| `h9k task drive <id>` | Claims a Published, Queued, or already-Blocked task (assigning a Published one to your own owner in the same atomic event append), cuts the same branch and worktree headless dispatch would, assembles the prompt through the same code path (working rules swapped for an attached operator), and — by default — prints the worktree, the branch, and that prompt to paste into a session started elsewhere; `--direct-launch` opens a regular interactive Claude Code session itself instead, kept for one release. On a task you already hold, re-enters that same worktree and branch — by default with a fresh prompt, or, under `--direct-launch`, resuming the most recently recorded session's own conversation, falling back to a fresh session, announced rather than silent, only when the recorded one cannot be resumed. |
-| `h9k task register-session <id>` | The pasted-in session's own first act: records its process identity (from `CLAUDE_PID`) against the claim, the way a direct launch's own launch-time recording always did. Refuses rather than guessing when `CLAUDE_PID` cannot be read. |
+| `h9k task drive <id>` | Claims a Published, Queued, or already-Blocked task (assigning a Published one to your own owner in the same atomic event append), cuts the same branch and worktree headless dispatch would, and by default prints the worktree, the branch, and one line that starts a Claude Code session driving the task under a task anchor. `--print-prompt` prints the starting prompt to paste into a session started elsewhere instead, and `--direct-launch` opens a regular interactive Claude Code session itself, kept for one release. On a task you already hold, re-enters that same worktree and branch at any stage before the pull request opens, with a line that resumes the registered session's conversation (the fresh line beneath it as the fallback), or, under `--direct-launch`, resuming the most recently recorded session's own conversation, falling back to a fresh session, announced rather than silent, only when the recorded one cannot be resumed. A Done task is refused. |
+| `h9k task register-session <id>` | The driving session's own first act: records its process identity (from `CLAUDE_PID`) and name against the claim, the way a direct launch's own launch-time recording always did, at any stage before the pull request opens. Past the build it records nothing else. Refuses rather than guessing when `CLAUDE_PID` cannot be read. |
 | `h9k task verify <id>` | Runs the project's verification gates on demand against the claim's worktree, recording the outcome on the run's own stream exactly as a headless gate pass would. |
-| `h9k task deliver <id>` | Pushes the branch and hands the claim into the standard delivery pipeline — from here the run is indistinguishable from a headless one: gates, the pre-PR review loop, and the pull request all follow. |
-| `h9k task delegate <id> --note "<text>"` | Dispatches a headless build contractor onto this same run, worktree, and branch for one phase — the claim, the assignment, and the interactive-mode flag are all untouched, so the task stays yours. Distinct from `handback`, which ends interactive mode; `h9k task drive <id>` re-enters the same worktree once the contractor reports back (design ruling R6). |
+| `h9k task deliver <id> [--pr-summary <file>]` | Pushes the branch and hands the claim into the standard delivery pipeline — from here the run is indistinguishable from a headless one: gates, the pre-PR review loop, and the pull request all follow. `--pr-summary` names a file (a `Title:` line, a blank line, the description) that becomes the run's pull request summary, so the pull request is built from it exactly as from a headless session's. |
+| `h9k task delegate <id> --note "<text>"` | Dispatches a headless build contractor onto this same run, worktree, and branch for one phase — the claim, the assignment, and the interactive-mode flag are all untouched, so the task stays yours. Distinct from `handback`, which ends interactive mode; `h9k task drive <id>` re-enters the same worktree once the contractor reports back (design ruling R6). The claim's own registered session may run it, and the contractor then sends that session its claimed and done milestones. The contractor's record replaces the session's own, so that session runs `register-session` again once the contractor is done. |
 | `h9k task handback <id>` | Releases the human claim and queues the task through normal dispatch, so a headless agent resumes the branch from wherever the operator left it. `--first` records the queue-first marker so the next free dispatch slot takes it regardless of assignment age; `--now` dispatches it immediately instead, ceiling-exempt, through the same mechanism `h9k task start` uses — refused together with `--first` (Decisions Log #127). |
 | `h9k task release <id>` | Gives an untouched claim back to the dispatch queue. Refused once the worktree holds uncommitted files, or once the branch holds commits beyond the base branch — `handback` (to a headless agent) or `deliver` (yourself) is the lever once there is committed work. Clears the task's interactive-mode flag by default, the same exit door `handback` is — `--keep-interactive` preserves it so a later headless run still parks at each boundary. `--unassign` takes the same untouched claim straight to Published instead of the dispatch queue, in one atomic event — nobody can claim it in between, closing the race a plain release followed by a separate `h9k task unassign` cannot avoid. |
 
@@ -1977,7 +2001,7 @@ anything else, uncommitted files, no commits at all, the wrong branch checked ou
 unreadable, the process vanishing without ever reporting a result, or the agent reporting a plain
 error — flags the task needs-you within seconds rather than leaving the row reading Working
 indefinitely. A flagged claim then reads like an interactive one: the platform's own attention
-pane leads with `h9k task drive` (to attach — printing a fresh prompt by default, which does not by
+pane leads with `h9k task drive` (to attach, printing the launch line by default, which does not by
 itself clear the flag; the pasted session's own first act, `h9k task register-session`, or the
 legacy `--direct-launch` path's own launch-time recording, is what actually clears it),
 `h9k task handback`, or `h9k task release`, and includes `h9k task deliver` too whenever it is not
@@ -2041,7 +2065,7 @@ actually failed*.
 
 | Lever | Use it when | What it does |
 |---|---|---|
-| `h9k run kill <task-or-run-id> [--reason "…"]` | A run's live agent session needs to stop right now (shedding load before a reinstall or reboot, a session gone wrong mid-turn), but the task itself is still worth pursuing. Refused when `h9kd` is not running: a stopped daemon supervises nothing, and the detached agent from before the stop keeps running unsupervised until the next `h9k daemon start` adopts it. | Ends the run's own live process tree on this machine and records the run **Killed**, never **Failed**: an honest, distinct terminal reason. The task lands exactly where any other run failure leaves it: **Failed**, with `retry`, `resolve`, and `abandon` all open below. Distinct from `h9k task abandon`, which is the task-level walk-away and never itself ends a live process; this is the run-level stop. |
+| `h9k run kill <task-or-run-id> [--reason "…"]` | A run's live agent session needs to stop right now (shedding load before a reinstall or reboot, a session gone wrong mid-turn), but the task itself is still worth pursuing. Refused when `h9kd` is not running: a stopped daemon supervises nothing, and the detached agent from before the stop keeps running unsupervised until the next `h9k daemon start` adopts it. | Ends the run's own live process tree on this machine (never the owner's driving session once the run is past the build) and records the run **Killed**, never **Failed**: an honest, distinct terminal reason. The task lands exactly where any other run failure leaves it: **Failed**, with `retry`, `resolve`, and `abandon` all open below. Distinct from `h9k task abandon`, which is the task-level walk-away and never itself ends a live process; this is the run-level stop. |
 | `h9k task retry <id>` | The task is **Failed** and the machinery is what failed (a daemon bug, a dead process, a rejected push, a deliberate `h9k run kill`). The work has to run again. | Requeues the task. The failure stays on the stream. The new run resumes the failed run's branch when it survived, or starts clean from the base branch when the artifacts are gone. A branch the failed run never pushed cannot be resumed from another machine: after `h9k task take --force` it exists neither locally nor on origin, so the retry starts clean and that work does not come with it. The command says what the stream records when both facts are on record, hedged on what it cannot check from there, and the run itself records the clean start for `h9k task show`. |
 | `h9k task resolve <id> --reason "…"` | The task is **Failed** but the objective was met anyway: the work merged, or you finished it by hand, and only the bookkeeping died. | Ends the task Done on your attestation. `--reason` is required, because an attestation without a why is a guess. `--pr` records where the work landed, and, when it names a real pull request on the project's own repository, enrolls it in closeout's orphan sweep, so its later merge completes this task's closeout the same as any watched run — except on a pr-review task, whose `--pr` names the pull request it reviewed rather than one of its own and is never enrolled. Refused on another owner's task unless an Owner-role member names the holder with `--holder`, exactly as `h9k task abandon` does. |
 | `h9k task abandon <id> --reason "…"` | You have stopped believing in the work. Reaches every non-terminal state, drafts and published tasks included. | Terminal. Releases any lease. Nothing is deleted: the reason is the record. Also halts the task's in-flight run: no further review pass, fix session, verification gate, or park is ever dispatched for it. An interactive claim's run is concluded on its own stream (superseded) immediately; a headless run stays live until its own next dispatch attempt — its completion, a park, or a fresh spawn — finds the task Abandoned and retires it there instead of driving engines on work you already walked away from. Another owner's task is theirs to end: the command refuses unless your node's owner is the task's holder or assignee (or, for a task with neither, its creator), the same rule the receive gate applies, because a plain abandon of a teammate's task would otherwise end it fleet-wide or fork it. An Owner-role member may still end it on the owner's behalf with `--holder <name> --reason "…"`, both required together: `--holder` is the owner's label (the refusal names it), or at least eight hex characters of their root fingerprint, or the word `unknown` when this node cannot resolve whose task it is. The override needs the same Owner role and enrolled node that `h9k task take --force` needs, and the event records the root acted on behalf of and the reason. `h9k task resolve` and `h9k task unassign` take the same override, and `retry`, `draft`, `scope`, `share`, `set-private`, `set-pre-approved`, `release` and `handback` refuse another owner's task with no override. |

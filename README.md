@@ -202,6 +202,38 @@ Task 2088f4fc queued for Brian Hall — the next dispatch cycle on one of
 their fleet's nodes claims it.
 ```
 
+### Drive a task yourself
+
+Queueing hands a task to the machine. When you would rather do it yourself, or do it together with
+the machine one step at a time, `h9k task drive` is the front door. It claims the task for you, cuts
+the same branch and worktree a headless run would get, and prints one line to paste into a terminal:
+
+```
+$ h9k task drive 2088f4fc
+
+Worktree: /home/brian/.hall9k/projects/web/repo/wt-2088f4fc-00c131e1
+Branch: task/2088f4fc-add-rate-limiting-to-the-auth-endpoints
+Task anchor: /home/brian/.hall9k/projects/web/tasks/2088f4fc-add-rate-limiting/runs/01a1.../task-anchor.md
+Paste this line into a terminal to start a session that drives the task:
+cd "/home/brian/.hall9k/projects/web/repo/wt-2088f4fc-00c131e1" && claude --name "2088f4fc-interactive-claim" ...
+```
+
+That line starts a Claude Code session that works only on your word. You choose how much it does:
+
+- **By hand.** Ask it to build, or build it yourself in the worktree, and commit. Nothing leaves the
+  machine until you say so.
+- **With help.** Tell it to delegate the build and it dispatches a headless contractor onto the same
+  worktree with `h9k task delegate`, then reports back when the contractor is done.
+- **Toward full auto.** Tell it to run review and it delivers the branch with `h9k task deliver`, which
+  hands the work to the same gates and independent review loop a queued task gets. At each pause
+  you answer with `h9k review proceed`, or fix a verdict yourself and say so with `h9k review fixed`.
+
+The session stays on through the review loop, so you can ask it where things stand or what your
+choices are at any pause. Run `h9k task drive` again at any point before the pull request opens to
+come back to the same worktree, with a line that resumes the same conversation. `h9k task drive
+<id> --print-prompt` prints a starting prompt instead, for pasting into a session you start
+yourself.
+
 ### Watch the pipeline
 
 `h9k status` is the attention pane. It answers what needs you, what has gone quiet, and what is

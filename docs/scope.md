@@ -166,7 +166,7 @@ resolving) renders "unknown" rather than a bare zero.
 
 ### Interactive claims
 
-`h9k task drive <id> [--direct-launch] [--acknowledge-unmet-dependencies]` lets an operator work a
+`h9k task drive <id> [--print-prompt | --direct-launch] [--acknowledge-unmet-dependencies]` lets an operator work a
 Published, Queued, or Blocked task themselves instead of dispatching it headless. On a Published
 task assigned to nobody, it queues the task for the operator's own owner and claims it
 interactively in one atomic event append, so the task is never observably Queued in between and the
@@ -177,21 +177,25 @@ handed-back/retried claim — warns rather than refuses: the platform names ever
 twice: an acknowledgment this task already carries from an earlier claim on the same still-open
 blockers is honored without asking again, and `h9k task show` names whether a claim's own
 acknowledgment was fresh or carried forward. Either way, it claims the task and cuts the same
-branch and worktree headless dispatch would, then — by default — prints the worktree path, the
-branch, and a starting prompt assembled through the same code path a headless spawn's is (its
-working rules swapped for an attached operator) for the operator to paste into a Claude Code
-session started anywhere. The pasted session self-registers (`h9k task register-session`), which is
-what lets the double-booking and liveness guards below recognise it; a session that never registers
-degrades honestly to the same no-op every guard already had for a task nobody ever recorded a
-session against. `--direct-launch` instead launches a plain interactive Claude Code session
+branch and worktree headless dispatch would, then, by default, prints the worktree path, the
+branch, and one line that starts a Claude Code session driving the task under a task anchor (this
+node's build model and effort named on it). The session self-registers (`h9k task register-session`),
+which is what lets the double-booking and liveness guards below recognise it; a session that never
+registers degrades honestly to the same no-op every guard already had for a task nobody ever recorded
+a session against. It carries out the operator's instructions one phase at a time, from the build
+through the review loop before the pull request opens, and advances nothing unasked. `--print-prompt`
+prints a starting prompt assembled through the same code path a headless spawn's is (its working
+rules swapped for an attached operator) to paste into a session of the operator's own. A Done task is
+refused: iterating on an open pull request with `drive` is designed but not built yet. `--direct-launch` instead launches a plain interactive Claude Code session
 attached to the operator's own terminal itself, the way this command always did (kept for one
 release; refused on a machine where Claude Code resolves to a Windows script shim, since the prompt
 cannot survive that shim's argv). The claim is held by the human rather than a process — no lease,
 no heartbeat reclaim — so closing the terminal is a normal way to leave, and running
-`h9k task drive` again re-enters the same worktree and branch — by default with a fresh prompt, or,
-under `--direct-launch`, resuming the most recently recorded session's own conversation, falling
-back to a fresh session, announced rather than silent, only when the recorded one cannot be
-resumed. It occupies zero concurrency slots (the run's `NodeId` is the sentinel `Guid.Empty`, which
+`h9k task drive` again re-enters the same worktree and branch at any stage before the pull request opens,
+by default with a line that resumes the registered session's conversation (and the fresh line beneath
+it for when that cannot be found), or, under `--direct-launch`, resuming the most recently recorded
+session's own conversation, falling back to a fresh session, announced rather than silent, only when
+the recorded one cannot be resumed. It occupies zero concurrency slots (the run's `NodeId` is the sentinel `Guid.Empty`, which
 the node's session-ceiling accounting never counts), so it starts even when the daemon's queue is
 full. `h9k task verify` runs the project's gates on demand against the claim's worktree; `h9k task
 deliver` pushes the branch and hands the run into the standard delivery pipeline — from there it is

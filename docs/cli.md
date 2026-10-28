@@ -788,7 +788,7 @@ guard working as intended, not a bug to route around. On a project tracked under
 
 ### Working a task interactively
 
-`h9k task drive <id> [--direct-launch] [--acknowledge-unmet-dependencies] | register-session | verify | deliver | delegate | handback | release`
+`h9k task drive <id> [--print-prompt | --direct-launch] [--acknowledge-unmet-dependencies] | register-session | verify | deliver [--pr-summary <file>] | delegate | handback | release`
 
 An operator can work a Published, Queued, or already-Blocked task in their own terminal instead of dispatching it
 headless (Decisions Log #122). On a Published task assigned to nobody, `drive` queues it for the
@@ -805,19 +805,37 @@ queue` and `h9k task publish --queue` are unchanged and remain the headless disp
 edges still gate automatic dispatch exactly as before; only this deliberate human claim gets the
 warn-and-proceed path. Either way, `drive` cuts the same branch and worktree headless dispatch
 would, assembles the prompt through the same code path (its working rules swapped for an attached
-operator) — and by default prints the worktree, the branch, and that prompt for the operator to
-paste into a Claude Code session started anywhere, rather than launching one itself. The pasted
-session's first act is `register-session`, which records its own process identity (from
-`CLAUDE_PID`) against the claim; `--direct-launch` keeps the old behavior (a regular interactive
+operator) — and by default prints the worktree, the branch, and one line to paste into a terminal.
+That line `cd`s into the worktree and starts Claude Code with the run's settings file, a session name,
+`--dangerously-skip-permissions` only when the project allows it, this node's build model and effort
+named explicitly (the pair a headless build of the task would get; with no effort set anywhere it names
+none and says the model's own default applies), and `--append-system-prompt-file` pointing at a task
+anchor written into the run directory. The anchor has the session register itself first
+(`register-session`, which records its own process identity from `CLAUDE_PID` against the claim), read
+`h9k task show` before every move, and carry out the human's instructions one phase at a time without
+advancing any of them unasked: "do the build" is building in the worktree or `delegate`, "run review" is
+`deliver` then `h9k review proceed`, and "fix it myself" is `h9k review fixed`. If the project home has
+`recipes/task-drive.md`, the anchor tells the session to read and follow it. `--print-prompt` prints
+the starting prompt for pasting into a session the operator starts themselves instead (that session
+also begins with `register-session`); `--direct-launch` keeps the old behavior (a regular interactive
 Claude Code session `drive` launches and waits on itself) for one release, and re-running `drive`
 under it resumes the most recently recorded session's own conversation (falling back to a fresh
 session, announced, only when the recorded one cannot be resumed). The claim is held by the human,
 not a process either way, so closing the terminal is a normal way to leave and re-running `drive`
-re-enters the same worktree — by default with a fresh prompt. From there, `verify` runs the
+re-enters the same worktree at any stage before the pull request opens: the line then resumes the
+registered session's conversation with `--resume`, keeping the anchor, settings, model and effort, and
+the fresh line is printed beneath it for when that conversation cannot be found. A Done task is refused,
+because iterating on an open pull request is not supported yet. `register-session` is accepted at the same
+stages, the gates and review included; after `deliver` it records the session and its name and nothing
+else, leaving the run's state and the review sessions it already has as they are. `deliver
+--pr-summary <file>` takes a file composed with the `pr-summary` skill (a `Title:` first line, a blank
+line, the description), which becomes the run's pull request summary, so the pull request is built from it
+exactly as from a headless session's. From there, `verify` runs the
 project's gates on demand, `deliver` pushes the branch and hands the claim into the standard
 delivery pipeline, `delegate <id> --note "<text>"` dispatches a headless build contractor onto this
 same run, worktree and branch for one phase while the task stays claimed interactively (design
-ruling R6) — distinct from `handback`, which ends interactive mode outright — `handback` releases
+ruling R6; the claim's own registered session may run it, and the contractor then sends that session its
+claimed and done milestones) — distinct from `handback`, which ends interactive mode outright — `handback` releases
 the claim to a headless agent partway through (resuming the
 branch), and `release` gives an untouched claim back to the queue. `handback`'s pickup speed is a
 three-way choice (Decisions Log #127): no flag is the normal rotation, unchanged; `--first` records

@@ -394,6 +394,31 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   h9k task abandon <id> --reason "…"
   ```
 
+## Driving a task yourself
+
+`h9k task queue` hands a task to the machine; `h9k task drive` is the way to take it yourself, by hand
+or one step at a time with the machine's help. Reach for it whenever the user wants to be in the loop.
+
+```bash
+h9k task drive <id>
+```
+
+- **What it prints.** The worktree, the branch, and one line that starts a Claude Code session in that
+  worktree. The line names this node's build model and effort, so the session runs as a headless
+  build of the task would, and it points at a task anchor the platform writes into the run
+  directory. Paste the line into a terminal to start the session. Nothing advances until the user says so.
+- **From manual to full auto.** By hand: the user builds in the worktree and commits. With help: they
+  tell the session to delegate the build, and it runs `h9k task delegate` and waits for the contractor.
+  Toward full auto: they tell it to run review, and it runs `h9k task deliver` (with the pull request
+  summary it composed) and then `h9k review proceed` at each pause the user moves. A verdict the user
+  fixes themselves is `h9k review fixed`.
+- **Coming back.** Run the same command again at any point before the pull request opens. It prints a
+  line that resumes the registered conversation, with the fresh line beneath it for the case where
+  that conversation cannot be found.
+- **The paste flow.** `h9k task drive <id> --print-prompt` prints the starting prompt instead, for a user
+  who pastes it into a session of their own.
+- **A task that is already Done.** It is refused: iterating on an open pull request is not supported yet.
+
 ## A normal day
 
 ```bash
