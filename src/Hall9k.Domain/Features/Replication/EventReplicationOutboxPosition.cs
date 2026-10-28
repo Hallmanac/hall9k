@@ -72,6 +72,18 @@ public sealed class EventReplicationOutboxPosition
     /// restarts its wait. Meaningful only while <see cref="WaitingForSequence"/> is not zero.</summary>
     public DateTimeOffset? WaitingSince { get; set; }
 
+    /// <summary>The highest committed global sequence the sweep that started the running wait could
+    /// see, so every missing number at or below it was already missing when the clock started and
+    /// is covered by the same wait; a missing number above it starts a wait of its own. Meaningful
+    /// only while <see cref="WaitingForSequence"/> is not zero.</summary>
+    public long WaitingThroughSequence { get; set; }
+
+    /// <summary>True once a sweep has seen the running wait's deadline pass with the gap still open.
+    /// The gap is only given up on the sweep after that, so time the machine spent asleep (the whole
+    /// wait elapsing between two sweeps) never expires a wait before an in-flight writer has had a
+    /// sweep to finish. Meaningful only while <see cref="WaitingForSequence"/> is not zero.</summary>
+    public bool WaitDeadlinePassed { get; set; }
+
     /// <summary>
     /// Every missing sequence number at or below this one has already been waited out and is never
     /// waited on again. A held-back private event keeps <see cref="LastFlushedGlobalSequence"/> low, so
