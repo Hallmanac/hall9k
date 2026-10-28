@@ -137,4 +137,10 @@ public sealed record TaskPassage(
     /// first. Empty or null for the ordinary task and for a stream that predates the event, so a
     /// passage that carries none renders exactly as it always has.
     /// </summary>
-    IReadOnlyList<ReviewSkipRecord>? ReviewSkips = null);
+    IReadOnlyList<ReviewSkipRecord>? ReviewSkips = null,
+    /// <summary>
+    /// Who ran each phase (human, delegated, automatic, or skipped by override), folded by
+    /// <see cref="TaskPassageQuery"/> beside the timings above. Null for a pr-review task, which is
+    /// never classified, and for a passage built without one.
+    /// </summary>
+    PhaseClassification? Classification = null);
