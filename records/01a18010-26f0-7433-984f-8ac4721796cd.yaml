@@ -32,7 +32,3 @@ context: |-
   Cut from idea 6e6d0200 (progressive automation: a user drives a task by hand, from manual to full auto; the idea took no new verb, and its front door is h9k task drive), Card 4 of 7 (Cards 0 to 6). The idea workspace's draft-task.md holds the Shape section and the sibling cards; read the Shape section and the neighboring cards before building, so this card does not take on a sibling's criteria. The workspace journal.md records why each criterion reads as it does. Workspace: /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/6e6d0200-progressive-automation-h9k-task-iterate-lets-a-user-drive-a/workspace
 
   The interactive flag (`TaskAggregate.InteractiveModeEnabled`) is set by every `h9k task work` claim and by every direct `h9k task start` (TaskStartCommand.cs:97-103), so a task a human kicked off headless with `task start` also gets analysis-only closeout and the merge hold. That follows the ruling that this behavior is keyed on the flag; correct the stale doc comment on `InteractiveModeEnabled` that says `task start` sets it only on request. Closeout reads no flag today. The triage session copies `FeedbackEvaluators` (its dispatch-before-spawn event, lifetime cap beside `DaemonOptions.NonMemberFeedbackEvaluatorCap`, pr-review permission file with one write path, and recommendation-only recording).
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-10-28 02:52:44Z
