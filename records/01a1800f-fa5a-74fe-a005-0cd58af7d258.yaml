@@ -1,0 +1,29 @@
+hall9k-task-record: 1
+task-id: 01a1800f-fa5a-74fe-a005-0cd58af7d258
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#766
+objective: |-
+  `h9k task work` becomes `h9k task drive` everywhere a person or an agent reads it, with no change in behavior, and `work` stays for one release as a hidden alias that says it was renamed.
+criteria:
+  - |-
+    **The verb.** `h9k task drive` is registered with every option, example, and behavior `task work` has today; `TaskWorkCommand` becomes `TaskDriveCommand`. This card changes the name only, nothing the verb does.
+  - |-
+    **The alias.** `h9k task work` still runs the same command and is refused inside a dispatched session exactly as `h9k task drive` is. It is hidden from `h9k --help`, `h9k task --help`, the `hall9k-cli-reference` skill, and `docs/cli.md`, and it first writes one line to stderr: "h9k task work is renamed h9k task drive; work will be removed in a later release." Stdout and the exit code are unchanged, so scripts keep working.
+  - |-
+    **The text sweep.** Every live mention of the verb names `drive`. That includes CLI help and examples; error messages, refusals, and hints anywhere that point at it, including the Domain's own (`TaskDecider`) and the verb name `TaskWorkCommand` passes to `InteractiveSessionLiveness.EnsureNotAttachedElsewhere` for its `--force` hint; code comments and XML docs; the work-prompt-builder templates; the `hall9k-cli-reference` skill; `docs/cli.md`, `docs/concepts.md`, `docs/operations.md`, `docs/scope.md`; and `ORCHESTRATOR-WINDOW.md`.
+  - |-
+    **Left alone.** Historical records keep their wording (`backlog/`, `docs/analysis/`, the v0 decisions log). Internal and stored names stay: `WorkPromptBuilder` and its template directory, `PromptBuilderKey` "work" (it keys stored prompt addenda, so renaming it would strand them), and every event name and field.
+  - |-
+    **Closeout check.** `git grep -l -P "task work\b"` on the branch finds only the alias, its test, and the historical files in criterion 4; the PR lists the result.
+  - |-
+    **Tests.** Existing tests and golden files follow the rename. New unit tests cover the alias running the same command, its stderr line, its absence from help, and its refusal inside a dispatched session, which `DispatchedSessionTreeTests` cannot see because it walks help output.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/8af7d258-h9k-task-work-becomes-h9k-task
+published: 2026-10-28 01:26:34Z
+context: |-
+  Cut from idea 6e6d0200 (progressive automation: a user drives a task by hand, from manual to full auto; the idea took no new verb, and its front door is h9k task drive), Card 0 of 7 (Cards 0 to 6). The idea workspace's draft-task.md holds the Shape section and the sibling cards; read the Shape section and the neighboring cards before building, so this card does not take on a sibling's criteria. The workspace journal.md records why each criterion reads as it does. Workspace: /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/6e6d0200-progressive-automation-h9k-task-iterate-lets-a-user-drive-a/workspace
