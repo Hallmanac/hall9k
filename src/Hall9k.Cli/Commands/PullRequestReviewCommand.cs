@@ -47,13 +47,13 @@ namespace Hall9k.Cli.Commands;
 /// somebody who is actually reviewing rather than merely acknowledging a report.
 /// </para>
 /// <para>
-/// <b>The connector is the prompt handoff</b>, the same shape <c>h9k task work</c> settled on
+/// <b>The connector is the prompt handoff</b>, the same shape <c>h9k task drive</c> settled on
 /// (PLAN.md §16 #126): this command prepares the lap and prints the briefing for the reviewer to
 /// paste into a Claude Code session they start wherever suits them. <c>--direct-launch</c> is not
 /// offered here at all — an opening briefing carries a findings report verbatim, so it is far
 /// longer and more newline-dense than a work prompt, and the cmd.exe embedded-newline problem
 /// that made <c>--direct-launch</c> refusable on Windows for a work prompt
-/// (<see cref="TaskWorkCommand"/>) applies with more force, not less. The push guard travels with
+/// (<see cref="TaskDriveCommand"/>) applies with more force, not less. The push guard travels with
 /// the checkout instead of with an argv (<see cref="ReviewLapGuardFile"/>), which is what lets
 /// the handoff path be guarded at all.
 /// </para>
@@ -872,7 +872,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
                 worktreePath, $"pr/{pullRequest.Number}", ExecutorMode.Subscription, DateTimeOffset.UtcNow,
                 IsFollowUp: false,
                 // Fable is the human-interactive tier (AgentModel's own doc, Decisions Log #33),
-                // the same fixed platform choice h9k task work makes for an attended session
+                // the same fixed platform choice h9k task drive makes for an attended session
                 // rather than the project/task role chain a headless review resolves through.
                 Model: AgentModel.Fable,
                 RunDirectory: runDirectory,
@@ -907,10 +907,10 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             // A Ctrl-C in exactly this window leaves the claim committed with no run record, and
             // h9k task release cannot undo that — it loads the very RunDetails this failed cut
             // never wrote. CancellationToken.None because the token that just fired is the one
-            // this cleanup exists for (TaskWorkCommand's own claim does both the same way).
+            // this cleanup exists for (TaskDriveCommand's own claim does both the same way).
             await ReleaseUnrecordedCheckoutAsync(
                 project, pullRequest.Number, worktreePath, worktrees, CancellationToken.None);
-            await TaskWorkCommand.FailInteractiveClaimAsync(
+            await TaskDriveCommand.FailInteractiveClaimAsync(
                 store, taskId, claimedVersion, runId, "cancelled while preparing the read-only checkout",
                 CancellationToken.None);
             throw;
@@ -919,7 +919,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         {
             await ReleaseUnrecordedCheckoutAsync(
                 project, pullRequest.Number, worktreePath, worktrees, cancellationToken);
-            await TaskWorkCommand.FailInteractiveClaimAsync(
+            await TaskDriveCommand.FailInteractiveClaimAsync(
                 store, taskId, claimedVersion, runId, exception.Message, cancellationToken);
             throw new DomainConflictException(
                 // "the lap could not be prepared" rather than naming the checkout: this arm also
@@ -1470,7 +1470,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         // values itself — so these are the RAW paths, deliberately. Escaping them first would
         // double-escape (a '[' in a user-set HALL9K_HOME would render as '[[[['), which is the
         // mistake this comment exists to stop somebody re-introducing by copying
-        // TaskWorkCommand's own handoff: that one escapes explicitly because its own call is a
+        // TaskDriveCommand's own handoff: that one escapes explicitly because its own call is a
         // plain MarkupLine, which escapes nothing (self-review, round one).
         FormattableString guardLine = guard switch
         {
@@ -1502,7 +1502,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         AnsiConsole.WriteLine();
         // WriteLine, not MarkupLine: the briefing is the reviewer's to paste verbatim, and
         // Spectre would try to parse any [..] in a findings report or a pull request body as
-        // markup. ExternalText.ForTerminal first, for the reason TaskWorkCommand's own handoff
+        // markup. ExternalText.ForTerminal first, for the reason TaskDriveCommand's own handoff
         // gives: this text quotes a title, a body and a findings report written by other people,
         // and a control or bidirectional-override character in any of them would be obeyed by
         // this terminal rather than shown.

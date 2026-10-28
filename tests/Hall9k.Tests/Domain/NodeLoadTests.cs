@@ -120,7 +120,7 @@ public sealed class NodeLoadTests
     [Fact]
     public void An_interactive_claim_holds_no_slot_until_delivery_stamps_its_node()
     {
-        // h9k task work claims a task with no lease at all (Decisions Log #103), and its run
+        // h9k task drive claims a task with no lease at all (Decisions Log #103), and its run
         // carries the Guid.Empty sentinel NodeId (TaskAggregate.IsInteractiveClaim's own
         // discriminator) until h9k task deliver appends AgentSessionCompleted with the
         // delivering node's own id. Before that moment the run must cost nothing against any

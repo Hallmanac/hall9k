@@ -156,7 +156,7 @@ public sealed class RunAggregateTests
 
         // Re-entry: a second attach/detach cycle on the same run. Exercised here with a distinct
         // session id purely to assert the aggregate's own bookkeeping (count, latest id, rolled-up
-        // usage) generically — h9k task work itself now resumes the previous id when it can
+        // usage) generically — h9k task drive itself now resumes the previous id when it can
         // (Decisions Log #124), only minting a fresh one like this on the announced fallback path.
         Guid secondSessionId = DomainId.New();
         run.Apply(new InteractiveSessionStarted(id, secondSessionId, Now, ProcessId: 4343));

@@ -9,7 +9,7 @@ namespace Hall9k.Domain.Features.Run;
 /// the park reason the review engine writes (<c>ReviewEngine.EnsureInteractiveProceedAsync</c>), the
 /// outbound end-of-phase report a dispatched agent sends the human's registered session
 /// (<c>WorkPromptBuilder.AppendOutboundMilestoneRules</c>), and the starting prompt
-/// <c>h9k task work</c> hands the operator's own session
+/// <c>h9k task drive</c> hands the operator's own session
 /// (<c>WorkPromptBuilder.AppendInteractiveBoundaryChoices</c>). Defined in Domain for the same
 /// reason <see cref="OutboundMilestone"/> is: both <c>Hall9k.Connectors</c> and
 /// <c>Hall9k.Daemon</c> render it, and Domain is the only project both of them reference.

@@ -20,7 +20,7 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// <param name="InteractiveMode">
 /// True when this claim is the human's own hands-on-the-wheel act (task: interactive mode
 /// becomes a recorded property of the task, design ruling R2) — set unconditionally by
-/// <see cref="Handlers.TaskDecider.ClaimInteractively"/> (h9k task work) and, only when the CLI
+/// <see cref="Handlers.TaskDecider.ClaimInteractively"/> (h9k task drive) and, only when the CLI
 /// caller says this is a human's own deliberate kick-off rather than an automated one, by
 /// <see cref="Handlers.TaskDecider.ClaimDeliberately"/> (h9k task start; false for
 /// <c>AutoPrReviewEngine</c>'s own automated "now"-speed claim on the identical decider method).
@@ -47,7 +47,7 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// <see cref="Handlers.TaskDecider.Claim"/>, <see cref="Handlers.TaskDecider.ClaimInteractively"/>
 /// and <see cref="Handlers.TaskDecider.ClaimDeliberately"/> all accept it, each resolved the same
 /// way through <see cref="Queries.ForeignResumeBranchResolver"/> — by <c>DispatchEngine.TryClaimAsync</c>
-/// for the first, and by the CLI's own <c>h9k task work</c> and <c>h9k task start</c> doors for the
+/// for the first, and by the CLI's own <c>h9k task drive</c> and <c>h9k task start</c> doors for the
 /// other two, so a foreign node's own branch resumes no matter which of the three doors reclaims
 /// the task (independent pre-PR review, cycle 1, conformance lens).
 /// <see cref="TaskAggregate.Apply(TaskClaimed)"/> applies this onto <see cref="TaskAggregate.RetryBranch"/>

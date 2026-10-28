@@ -2598,7 +2598,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     public void Retry_prompt_never_asserts_that_a_previous_attempt_failed()
     {
         // resumesPreviousWork is also true for h9k task handback (nothing failed) and for an
-        // operator re-entering their own still-open h9k task work claim (nothing failed either)
+        // operator re-entering their own still-open h9k task drive claim (nothing failed either)
         // — asserting a failure unconditionally would be exactly the unobserved-fact guess
         // AGENTS.md forbids (adversarial review, cycle 1).
         string prompt = AgentPromptBuilder.Build(
@@ -2633,7 +2633,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
             task, SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true);
 
         prompt.Should().Contain("A human began this work interactively");
-        prompt.Should().Contain("h9k task work");
+        prompt.Should().Contain("h9k task drive");
         prompt.Should().Contain("h9k task handback");
         prompt.Should().NotContain("A previous attempt worked here first");
     }
@@ -2821,7 +2821,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// <c>h9k task work</c> never passes <c>isHandback</c> (it always resumes through the causeless
+    /// <c>h9k task drive</c> never passes <c>isHandback</c> (it always resumes through the causeless
     /// branch), and a headless run claimed after a handback that itself requeues severs
     /// <see cref="TaskDetails.ResumesFromHandback"/> while <see cref="TaskDetails.RetryReasonIsHandback"/>
     /// survives — so both reachable paths dispatch with <c>isHandback: false</c> even though the
@@ -3661,7 +3661,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// The live-attended build (an operator's own `h9k task work`) is the human's own session —
+    /// The live-attended build (an operator's own `h9k task drive`) is the human's own session —
     /// there is nobody else for it to report to, so the outbound-milestone section is specific to
     /// a headless dispatch (<see cref="WorkPromptBuilder.Build"/>'s own <c>isInteractive</c> flag)
     /// even when the task's interactive-mode flag is on.

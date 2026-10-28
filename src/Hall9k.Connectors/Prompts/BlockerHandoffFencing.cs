@@ -8,7 +8,7 @@ namespace Hall9k.Connectors.Prompts;
 /// What a dependent's prompt is allowed to inherit from a blocker's handoff (security review idea
 /// 6be68ee2, prompt-builders findings 1 to 6). <see cref="BlockerContextDocument"/> lives in the
 /// Domain and cannot reach the fence, so each surface that renders it (the daemon's
-/// <c>BlockerContextAssembler</c>, <c>h9k task work</c>, and <c>h9k task show</c>'s starting
+/// <c>BlockerContextAssembler</c>, <c>h9k task drive</c>, and <c>h9k task show</c>'s starting
 /// context) runs the handoffs through here first, which keeps the prompt and the screen identical.
 /// <para>
 /// Two things change, and only two. A blocker's objective is one-lined unconditionally: it lands in a

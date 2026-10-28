@@ -182,7 +182,7 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
     {
         /// <summary>
         /// <see cref="TaskAggregate.CurrentRunId"/> is null, or names a run whose stream was
-        /// never started — an interactive claim's worktree cut failing before <c>h9k task work</c>
+        /// never started — an interactive claim's worktree cut failing before <c>h9k task drive</c>
         /// starts the run stream, the same shape <c>RunLauncher.RecordLaunchFailureAsync</c>
         /// guards against. Appending here regardless would implicitly create that stream — Marten
         /// starts a stream on its first append — which would materialize a stub

@@ -74,7 +74,7 @@ public sealed class TaskPhaseSurfaceTests
 
     /// <summary>
     /// An interactive claim's own Dispatched window is no longer necessarily brief (Decisions Log
-    /// #126): by default h9k task work returns as soon as it prints the prompt, before anyone has
+    /// #126): by default h9k task drive returns as soon as it prints the prompt, before anyone has
     /// pasted it anywhere, so a claim can sit Dispatched — with no session ever having registered —
     /// for as long as the operator takes to get to it. The generic "worktree and prompt being
     /// prepared" wording above describes a headless run's own brief pre-launch window, not this
@@ -113,7 +113,7 @@ public sealed class TaskPhaseSurfaceTests
 
         row.Phase.Text.Should().Be("awaiting launch");
         row.Phase.Detail.Should().NotContain("self-registers", "no prompt was ever printed for h9k task start");
-        row.Phase.Detail.Should().Contain("h9k task work");
+        row.Phase.Detail.Should().Contain("h9k task drive");
         row.Phase.Liveness.Should().Be(SessionLiveness.NotApplicable);
     }
 
@@ -319,7 +319,7 @@ public sealed class TaskPhaseSurfaceTests
     public void A_gone_interactive_session_is_not_reported_as_a_stalled_process()
     {
         // An interactive claim has no lease or heartbeat (Decisions Log #103): closing the
-        // terminal is a normal way to leave, and h9k task work re-enters the same claim. The
+        // terminal is a normal way to leave, and h9k task drive re-enters the same claim. The
         // dead pid it leaves behind must not misfile the row as a stalled machine failure —
         // the lever that finding would print (h9k logs) is unusable, since an interactive
         // session runs attached to the tty and never writes a stream file (adversarial
@@ -344,11 +344,11 @@ public sealed class TaskPhaseSurfaceTests
         // The phase line is what an operator actually reads, and it drew the identical
         // misfiling one field over: "building · the recorded process is gone" in red reports a
         // normal terminal close as a machine failure, for a state PLAN.md #103 defines as normal
-        // and re-enterable with h9k task work (adversarial review, cycle 1).
+        // and re-enterable with h9k task drive (adversarial review, cycle 1).
         row.Phase.Text.Should().Be("building");
         row.Phase.Liveness.Should().Be(SessionLiveness.NotApplicable);
         row.Phase.Markup.Should().NotContain("recorded process is gone");
-        row.Phase.Markup.Should().Contain("h9k task work re-enters this claim");
+        row.Phase.Markup.Should().Contain("h9k task drive re-enters this claim");
     }
 
     [Fact]
@@ -357,7 +357,7 @@ public sealed class TaskPhaseSurfaceTests
         // Unobserved (a session recorded live on another machine this one cannot check) must not
         // fall into the same branch as Gone/NotApplicable: telling this machine's reader "closing
         // the terminal is a normal way to leave" about a claim that, as far as anyone here can
-        // honestly say, is still attached would invite exactly the collision h9k task work
+        // honestly say, is still attached would invite exactly the collision h9k task drive
         // --force exists to gate behind a human attestation (adversarial review, cycle 1).
         Guid runId = DomainId.New();
         RunDetails interactive = StatusFixtures.Run(runId, RunState.Running);
@@ -369,7 +369,7 @@ public sealed class TaskPhaseSurfaceTests
 
         row.Phase.Liveness.Should().Be(SessionLiveness.Unobserved);
         row.Phase.Markup.Should().Contain("not observed here");
-        row.Phase.Markup.Should().NotContain("h9k task work re-enters this claim");
+        row.Phase.Markup.Should().NotContain("h9k task drive re-enters this claim");
     }
 
     [Fact]
@@ -392,7 +392,7 @@ public sealed class TaskPhaseSurfaceTests
         row.Phase.Text.Should().Be("building");
         row.Phase.Liveness.Should().Be(SessionLiveness.NotApplicable);
         row.Phase.Markup.Should().NotContain("no session recorded");
-        row.Phase.Markup.Should().Contain("h9k task work re-enters this claim");
+        row.Phase.Markup.Should().Contain("h9k task drive re-enters this claim");
     }
 
     [Fact]
@@ -413,7 +413,7 @@ public sealed class TaskPhaseSurfaceTests
         row.Attention.NeedsYou.Should().BeTrue();
         row.Group.Should().Be(AttentionBucket.NeedsYou);
         row.Attention.Cause.Should().Contain("last recorded activity").And.NotContain("untouched for");
-        row.Attention.Lever.Should().Contain("h9k task work").And.Contain("h9k task handback");
+        row.Attention.Lever.Should().Contain("h9k task drive").And.Contain("h9k task handback");
     }
 
     /// <summary>
@@ -421,7 +421,7 @@ public sealed class TaskPhaseSurfaceTests
     /// session this machine can see is genuinely alive right now still read run.State ==
     /// Running, so the nudge fired anyway (conformance review, cycle 2) and advertised two
     /// levers that both refuse — <c>InteractiveSessionLiveness.EnsureNotAttachedElsewhere</c>
-    /// refuses <c>h9k task work</c> re-entry and <c>h9k task handback</c> alike for a session it
+    /// refuses <c>h9k task drive</c> re-entry and <c>h9k task handback</c> alike for a session it
     /// observes alive, and does not honour <c>--force</c> for that case. Gating on
     /// <c>phase.Liveness</c> — which is what that guard itself would observe — closes it.
     /// </summary>
@@ -454,7 +454,7 @@ public sealed class TaskPhaseSurfaceTests
     /// "liveness not observed here" rather than claiming the claim is re-enterable
     /// (<c>TaskPhaseComposer</c>'s own interactive branch admits only Gone or NotApplicable), and
     /// <c>InteractiveSessionLiveness.EnsureNotAttachedElsewhere</c> refuses both
-    /// <c>h9k task work</c> and <c>h9k task handback</c> for exactly this observation without
+    /// <c>h9k task drive</c> and <c>h9k task handback</c> for exactly this observation without
     /// <c>--force</c> — advertising them free would be the same "never advise a lever the
     /// platform will refuse" defect the Alive guard above exists to prevent (conformance and
     /// adversarial review, cycle 4).
@@ -534,7 +534,7 @@ public sealed class TaskPhaseSurfaceTests
     /// <summary>
     /// Once <c>h9k task deliver</c> hands the run to the standard pipeline, the task can still
     /// read Claimed+interactive for the whole review loop — <c>TaskHandbackCommand</c> and
-    /// <c>TaskWorkCommand</c> both refuse once <c>run.State</c> is past Dispatched/Running
+    /// <c>TaskDriveCommand</c> both refuse once <c>run.State</c> is past Dispatched/Running
     /// (adversarial pre-PR review, cycle 1) — so the nudge must not fire there either: both levers
     /// it would advertise are ones the platform refuses.
     /// </summary>
@@ -588,11 +588,11 @@ public sealed class TaskPhaseSurfaceTests
 
     /// <summary>
     /// AutoPrReviewEngine's Now speed (independent pre-PR review, cycle 1, both lenses) launches a
-    /// headless pr-review run under the identical Guid.Empty sentinel an attended h9k task work
+    /// headless pr-review run under the identical Guid.Empty sentinel an attended h9k task drive
     /// claim uses, but its session name (SessionRoleName.ReviewAdversarial) carries neither the
     /// -build nor the -interactive-claim suffix the phase's own discrimination used to rely on, so
     /// it used to fall into the "closing the terminal is normal" branch built for an attended
-    /// claim — a branch TaskWorkCommand refuses outright for a pr-review task, so nobody could
+    /// claim — a branch TaskDriveCommand refuses outright for a pr-review task, so nobody could
     /// ever act on the lever it printed. Excluding the type lets it fall through to the ordinary
     /// state-based phase instead, which reports a genuinely gone headless process honestly.
     /// </summary>
@@ -611,9 +611,9 @@ public sealed class TaskPhaseSurfaceTests
         row.Phase.Text.Should().Be("building");
         row.Phase.Liveness.Should().Be(SessionLiveness.Gone);
         row.Phase.Markup.Should().Contain("recorded process is gone");
-        row.Phase.Markup.Should().NotContain("h9k task work re-enters this claim");
+        row.Phase.Markup.Should().NotContain("h9k task drive re-enters this claim");
         row.Stalled.Should().BeTrue("a headless run's own dead process is a genuine failure, unlike an interactive claim's expected-gone one");
-        row.Attention.Lever.Should().NotContain("h9k task work");
+        row.Attention.Lever.Should().NotContain("h9k task drive");
     }
 
     /// <summary>
@@ -632,16 +632,16 @@ public sealed class TaskPhaseSurfaceTests
             StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty, type: TaskType.PrReview), run);
 
         row.Phase.Text.Should().Be("starting up");
-        row.Phase.Markup.Should().NotContain("h9k task work");
+        row.Phase.Markup.Should().NotContain("h9k task drive");
     }
 
     /// <summary>
     /// The mirror of <see cref="An_interactive_claim_unobserved_with_a_blank_machine_name_still_nudges"/>:
     /// the identical shape (Unobserved, a positive InteractiveSessionCount) fires that nudge for a
-    /// real h9k task work claim, but a pr-review task can never carry one — TaskWorkCommand and
+    /// real h9k task drive claim, but a pr-review task can never carry one — TaskDriveCommand and
     /// TaskStartCommand both refuse a pr-review task outright, so every Guid.Empty-claimed
     /// pr-review task reached this state only through AutoPrReviewEngine's Now speed. Nudging
-    /// toward h9k task work here would advise a lever the platform refuses — the exact rule this
+    /// toward h9k task drive here would advise a lever the platform refuses — the exact rule this
     /// arm's own comment states.
     /// </summary>
     [Fact]
@@ -660,7 +660,7 @@ public sealed class TaskPhaseSurfaceTests
             interactiveClaimStaleAfterDays: 3);
 
         row.Attention.NeedsYou.Should().BeFalse();
-        row.Attention.Lever.Should().NotContain("h9k task work");
+        row.Attention.Lever.Should().NotContain("h9k task drive");
     }
 
     /// <summary>

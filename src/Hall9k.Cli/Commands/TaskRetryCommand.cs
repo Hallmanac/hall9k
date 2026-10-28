@@ -75,14 +75,14 @@ public sealed class TaskRetryCommand : Hall9kAsyncCommand<TaskRetryCommand.Setti
         // otherwise never read back once this run is left behind by the retry — a start-it-mine
         // claim's only other read of it is h9k task deliver's own, which a failed run never
         // reaches (conformance review, cycle 1, on h9k task start). Scoped to the Guid.Empty
-        // NodeId sentinel a start-it-mine (or h9k task work) claim's RunDispatched carries and
+        // NodeId sentinel a start-it-mine (or h9k task drive) claim's RunDispatched carries and
         // never loses unless h9k task deliver hands it a real node id: an ordinary daemon-dispatched
         // run already carries a real NodeId from the start and already had RunSupervisor.
         // CompleteRunAsync append its TokensRecorded from this exact stream.jsonl line when it
         // completed, so re-appending here for that run double-books its spend under today's date
         // and can hold the node's spend budget closed on tokens it never actually burned this
         // period (conformance and adversarial review, cycle 3). A pr-review task's own
-        // Claimed+sentinel state is never this start-it-mine shape — TaskWorkCommand and
+        // Claimed+sentinel state is never this start-it-mine shape — TaskDriveCommand and
         // TaskStartCommand both refuse to create one — it is auto-pr-review's now-speed deliberate
         // claim (AutoPrReviewEngine.CreateOneAsync), launched through RunLauncher and monitored by
         // RunSupervisor exactly like an ordinary headless dispatch, so CompleteRunAsync already

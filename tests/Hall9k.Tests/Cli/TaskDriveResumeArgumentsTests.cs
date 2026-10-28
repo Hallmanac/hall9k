@@ -11,14 +11,14 @@ namespace Hall9k.Tests.Cli;
 /// internal-for-policy-tests reasoning — the flag set IS the policy, worth checking without
 /// spawning a real <c>claude</c> process.
 /// </summary>
-public sealed class TaskWorkResumeArgumentsTests
+public sealed class TaskDriveResumeArgumentsTests
 {
     [Fact]
     public void A_resume_attempt_carries_resume_and_never_session_id_or_model()
     {
         Guid sessionId = Guid.NewGuid();
 
-        string[] arguments = [.. TaskWorkCommand.BuildInteractiveArguments(
+        string[] arguments = [.. TaskDriveCommand.BuildInteractiveArguments(
             sessionId, true, "864c7f30-interactive-claim", "/tmp/settings.json", false, "prompt text")];
 
         arguments.Should().ContainInOrder("--resume", sessionId.ToString());
@@ -37,7 +37,7 @@ public sealed class TaskWorkResumeArgumentsTests
     {
         Guid sessionId = Guid.NewGuid();
 
-        string[] arguments = [.. TaskWorkCommand.BuildInteractiveArguments(
+        string[] arguments = [.. TaskDriveCommand.BuildInteractiveArguments(
             sessionId, false, "864c7f30-interactive-claim", "/tmp/settings.json", false, "prompt text")];
 
         arguments.Should().ContainInOrder("--session-id", sessionId.ToString());
@@ -50,9 +50,9 @@ public sealed class TaskWorkResumeArgumentsTests
     {
         Guid sessionId = Guid.NewGuid();
 
-        string[] resumeArguments = [.. TaskWorkCommand.BuildInteractiveArguments(
+        string[] resumeArguments = [.. TaskDriveCommand.BuildInteractiveArguments(
             sessionId, true, "name", "/tmp/settings.json", true, "prompt")];
-        string[] freshArguments = [.. TaskWorkCommand.BuildInteractiveArguments(
+        string[] freshArguments = [.. TaskDriveCommand.BuildInteractiveArguments(
             sessionId, false, "name", "/tmp/settings.json", true, "prompt")];
 
         resumeArguments.Should().Contain("--dangerously-skip-permissions");
@@ -65,13 +65,13 @@ public sealed class TaskWorkResumeArgumentsTests
         Guid sessionId = Guid.NewGuid();
         string stderr = $"No conversation found with session ID: {sessionId}\n";
 
-        TaskWorkCommand.IsResumeNotFoundError(stderr).Should().BeTrue();
+        TaskDriveCommand.IsResumeNotFoundError(stderr).Should().BeTrue();
     }
 
     [Fact]
     public void Unrelated_stderr_output_is_not_mistaken_for_a_resume_failure()
     {
-        TaskWorkCommand.IsResumeNotFoundError("some other error entirely").Should().BeFalse();
-        TaskWorkCommand.IsResumeNotFoundError(string.Empty).Should().BeFalse();
+        TaskDriveCommand.IsResumeNotFoundError("some other error entirely").Should().BeFalse();
+        TaskDriveCommand.IsResumeNotFoundError(string.Empty).Should().BeFalse();
     }
 }

@@ -33,7 +33,7 @@ public sealed class TaskListItem
     /// so the board asks the receive gate's own question of a row without loading the stream.
     /// </summary>
     public string? HolderOwnerRootFingerprint { get; set; }
-    /// <summary>The h9k task work claim's own tell (<see cref="TaskAggregate.IsInteractiveClaim"/>'s mirror): the sentinel node id an operator's claim records rather than a real node's.</summary>
+    /// <summary>The h9k task drive claim's own tell (<see cref="TaskAggregate.IsInteractiveClaim"/>'s mirror): the sentinel node id an operator's claim records rather than a real node's.</summary>
     public bool IsInteractiveClaim => ClaimedByNodeId == Guid.Empty;
     private ReplicationScope? _scope;
     private bool _legacyIsPrivate;

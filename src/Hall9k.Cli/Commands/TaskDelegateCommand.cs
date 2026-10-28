@@ -30,7 +30,7 @@ namespace Hall9k.Cli.Commands;
 /// milestone reporting still apply to whatever it does next. The verb distinction is the point:
 /// blurring the two would put "who is in charge afterward" in doubt.
 /// <para>
-/// Only ever runs against the operator's own live interactive claim (<c>h9k task work</c>) —
+/// Only ever runs against the operator's own live interactive claim (<c>h9k task drive</c>) —
 /// Claimed, <see cref="TaskAggregate.IsInteractiveClaim"/>, assigned to this owner, its run still
 /// Dispatched or Running, with no other session presently attached. Everything else refuses:
 /// there is no fresh claim here the way <see cref="TaskStartCommand"/> makes one, because this
@@ -178,7 +178,7 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
             // recover beyond trying again.
             throw new DomainConflictException(
                 $"Task {taskId}'s worktree is ready, but the contractor session could not be launched "
-                + $"({exception.Message}). Your interactive claim is untouched — h9k task work {taskId} to "
+                + $"({exception.Message}). Your interactive claim is untouched — h9k task drive {taskId} to "
                 + $"attach and continue by hand, or h9k task delegate {taskId} again once the problem is fixed.");
         }
 
@@ -192,7 +192,7 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
             // expectedVersion: fence.Version + 2 fences both events in this one append against the
             // stream state read above — Marten's own expectedVersion is the stream's maximum
             // version *after* the append, so two events appended together need +2, the same
-            // convention h9k task work (TaskWorkCommand.cs) and h9k task handback
+            // convention h9k task drive (TaskDriveCommand.cs) and h9k task handback
             // (TaskHandbackCommand.cs) already follow for their own two-event appends; h9k task
             // register-session's fence.Version + 1 is not a mirror to follow here, since that
             // command appends only one event. It cannot stop a race that has already spawned two
@@ -224,7 +224,7 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         AnsiConsole.MarkupLineInterpolated($"[dim]Branch: {plan.Branch}[/]");
         AnsiConsole.MarkupLineInterpolated($"[dim]Session: {plan.SessionName}[/]");
         AnsiConsole.MarkupLineInterpolated(
-            $"[dim]Task {taskId} is delegated for this phase, headless, as {plan.SessionName} (pid {processId}) — reachable on the session mesh (claude agents --json, or SendMessage). The task stays claimed interactively; nothing about the claim or the interactive-mode flag changed. h9k logs {taskId} to read the contractor's report once it lands, then h9k task work {taskId} to re-enter this same worktree yourself and finish the build by hand, or h9k task delegate again for another phase.[/]");
+            $"[dim]Task {taskId} is delegated for this phase, headless, as {plan.SessionName} (pid {processId}) — reachable on the session mesh (claude agents --json, or SendMessage). The task stays claimed interactively; nothing about the claim or the interactive-mode flag changed. h9k logs {taskId} to read the contractor's report once it lands, then h9k task drive {taskId} to re-enter this same worktree yourself and finish the build by hand, or h9k task delegate again for another phase.[/]");
 
         return ExitCodes.Ok;
     }
@@ -269,7 +269,7 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         {
             throw new DomainConflictException(
                 $"Task {taskId} is {task.State.Value} — only a task with an active interactive claim "
-                + "(h9k task work) can delegate this way.");
+                + "(h9k task drive) can delegate this way.");
         }
 
         RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
@@ -281,7 +281,7 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         // Checked ahead of every other guard below, including the interactive-mode-off check right
         // after it — a Now-speed claim is never interactive to begin with, so that check would
         // otherwise fire first and misdiagnose this exact state as "the claim turned interactive
-        // mode off", naming h9k task handback --now and h9k task release/h9k task work as remedies
+        // mode off", naming h9k task handback --now and h9k task release/h9k task drive as remedies
         // that both refuse a pr-review task outright, the identical dead-end-hop defect the
         // interactive-mode-off check's own cycle 2 ruling exists to prevent (adversarial review,
         // cycle 1). Same ordering TaskHandbackCommand already settled on for its identical guard.
@@ -298,8 +298,8 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         // success message below promises one regardless (conformance review, cycle 1).
         if (!task.InteractiveModeEnabled)
         {
-            // h9k task work is never the fix here (orchestrator ruling, cycle 2): re-entering an
-            // already-live claim (TaskWorkCommand.ReenterAsync) appends no event at all, and
+            // h9k task drive is never the fix here (orchestrator ruling, cycle 2): re-entering an
+            // already-live claim (TaskDriveCommand.ReenterAsync) appends no event at all, and
             // TaskRevised.ClearInteractiveMode's own contract says the flag comes back on only
             // from a fresh TaskClaimed carrying InteractiveMode: true — never from re-entry. The
             // one way back to a fresh claim is giving this one back first, and h9k task release
@@ -309,10 +309,10 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
             throw new DomainConflictException(
                 $"Task {taskId}'s claim turned interactive mode off (h9k task handback --now, or "
                 + $"h9k task revise {taskId} --clear-interactive-mode) — only a task still in "
-                + $"interactive mode can delegate this way. h9k task work {taskId} re-enters the same "
+                + $"interactive mode can delegate this way. h9k task drive {taskId} re-enters the same "
                 + "claim without changing that flag, so it will not help here. If nothing has been "
                 + $"committed or edited in this claim yet, h9k task release {taskId} gives it back and "
-                + $"h9k task work {taskId} then claims it fresh, which does turn interactive mode back "
+                + $"h9k task drive {taskId} then claims it fresh, which does turn interactive mode back "
                 + $"on. Once the branch holds work, h9k task handback {taskId} is the only way off this "
                 + "claim, and it stays headless from there.");
         }
@@ -365,7 +365,7 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         // for a command whose whole point is spawning a second, competing session into a worktree
         // the caller is already running in. Its return value is threaded through to
         // ExecuteAsync's own re-check of this identical guard right before launch, mirroring
-        // h9k task work's own quiet/CrossMachineNoticeShown pairing, so the cross-machine
+        // h9k task drive's own quiet/CrossMachineNoticeShown pairing, so the cross-machine
         // --force notice never prints twice for the same delegation (adversarial review, cycle 1).
         bool crossMachineNoticeShown = InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "delegate", force);
 
@@ -450,7 +450,7 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
 
         // The build role (task: every dispatched agent session launches under a human-readable
         // id-and-role name): this session is a spawned, unattended contractor, the identical shape
-        // h9k task start's own session already answers to — not h9k task work's own
+        // h9k task start's own session already answers to — not h9k task drive's own
         // interactive-claim role, since the human is not attached to this process. Documented as
         // this run's mesh-visible name (AGENTS.md, "its slice-1 <task-shortid>-build name") and
         // deliberately identical across every delegation on this run — it is sessionFileKey below,
@@ -467,7 +467,7 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         string sessionFileKey = $"{sessionName}-{DomainId.Short(claudeSessionId)}";
 
         LocalFleetSource fleet = new(session, project, context.OwnerId);
-        string? blockerContext = await TaskWorkCommand.LoadBlockerContextAsync(session, taskDetails, fleet, cancellationToken);
+        string? blockerContext = await TaskDriveCommand.LoadBlockerContextAsync(session, taskDetails, fleet, cancellationToken);
         // This run's own recorded base, not the project's — the same reason the commit count above
         // reads it (independent pre-PR review, cycle 1, conformance lens): the contractor's
         // self-review hunt draws its ownership line from this branch's base, and drawing it from

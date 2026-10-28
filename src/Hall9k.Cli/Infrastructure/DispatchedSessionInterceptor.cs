@@ -12,7 +12,7 @@ namespace Hall9k.Cli.Infrastructure;
 /// and <c>Hall9k.Cli.Commands.HeadlessLaunch.SpawnDetached</c> are the only two places that ever stamp
 /// <see cref="DispatchedRunEnvironment.RunIdVariable"/> onto a child process's own environment, and
 /// every headless dispatch this platform makes goes through one of them — an operator's own attended
-/// claim (<c>h9k task work</c>, a pasted prompt, <c>--direct-launch</c>) never carries it, so this
+/// claim (<c>h9k task drive</c>, a pasted prompt, <c>--direct-launch</c>) never carries it, so this
 /// interceptor is a no-op for a human at a real terminal. The same two sites also stamp
 /// <see cref="DispatchedRunEnvironment.TaskIdVariable"/> whenever the session is task-bound, so the
 /// refusal below can name the task and not only the run (independent pre-PR review, cycle 1,

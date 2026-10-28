@@ -34,9 +34,9 @@ namespace Hall9k.Cli.Commands;
 /// mode): dispatches a Published, Queued, or already-Blocked task on the spot, headless, instead of waiting for the
 /// dispatcher's own ceiling and ordering to reach it. On a Published task nobody holds, this
 /// queues it for the operator's own owner and claims it in the same atomic event append
-/// <c>h9k task work</c>'s own Published entry already uses (task 688a1ccf-h9k) — the task is never
+/// <c>h9k task drive</c>'s own Published entry already uses (task 688a1ccf-h9k) — the task is never
 /// observably Queued in between. Unmet dependencies warn rather than refuse outright, the same
-/// shape <c>h9k task work</c>'s claim shares (task 0ac72cb8-h9k): the platform advises, naming
+/// shape <c>h9k task drive</c>'s claim shares (task 0ac72cb8-h9k): the platform advises, naming
 /// every open blocker, and <c>--acknowledge-unmet-dependencies</c> is the human's recorded
 /// override to start anyway (the idea's own ruling, fcaded0b: "the platform advises rather than
 /// refuses"). An already-Blocked
@@ -53,14 +53,14 @@ namespace Hall9k.Cli.Commands;
 /// node id an operator's own interactive claim already uses, so <c>NodeLoad</c>'s ceiling
 /// measurement never counts it (a deliberate human act is outside the automation's budget) — the
 /// same mechanism, not a new one, because the two claims are the same kind of fact: a human, not a
-/// machine, took responsibility. What differs is only how the session runs: <c>h9k task work</c>
+/// machine, took responsibility. What differs is only how the session runs: <c>h9k task drive</c>
 /// launches attached to this terminal and blocks until it exits; this command launches the agent
 /// headless and detached — under the slice-1 <c>&lt;task-shortid&gt;-build</c> name (task
 /// 68a953b1-h9k), addressable on the session mesh (<c>claude agents --json</c>,
 /// <c>ListAgents</c>/<c>SendMessage</c>) — and returns as soon as the process is confirmed alive,
 /// without waiting for it to finish. The worktree cut, the prompt (the ordinary headless build
 /// lens, not the attended one), and the claim/dependency machinery are shared with
-/// <see cref="TaskWorkCommand"/> wherever the shape is identical; only the launch itself differs.
+/// <see cref="TaskDriveCommand"/> wherever the shape is identical; only the launch itself differs.
 /// </para>
 /// </summary>
 public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Settings>
@@ -123,12 +123,12 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     {
         Guid taskId = task.Id;
 
-        // Minted once per invocation, exactly as h9k task work's own claim does: the first
+        // Minted once per invocation, exactly as h9k task drive's own claim does: the first
         // (only, for this command — there is no re-entry) session records it as
         // RunDispatched.SessionId.
         Guid claudeSessionId = DomainId.New();
 
-        // The build role, not h9k task work's interactive-claim role (task: every dispatched
+        // The build role, not h9k task drive's interactive-claim role (task: every dispatched
         // agent session launches under a human-readable id-and-role name): this session is a
         // spawned, unattended agent, exactly the shape SessionRoleName.Build already names — the
         // sentinel NodeId is what says "a human, not a machine" claimed it, not the session's own
@@ -147,7 +147,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             ?? throw new DomainNotFoundException($"Task {taskId}'s project no longer exists.");
 
         LocalFleetSource fleet = new(session, project, context.OwnerId);
-        string? blockerContext = await TaskWorkCommand.LoadBlockerContextAsync(session, taskDetails, fleet, cancellationToken);
+        string? blockerContext = await TaskDriveCommand.LoadBlockerContextAsync(session, taskDetails, fleet, cancellationToken);
         // isInteractive: false — the ordinary headless build prompt (checkpoint commits, the
         // self-review phase, the end-of-session recompose, the handoff rules): this session is
         // unattended exactly like a dispatcher-launched build, not an operator's own attended one.
@@ -194,7 +194,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // co-authored-by trailers, and command-tool timeout headroom. The CLI cannot reference
         // Hall9k.Daemon (Reference graph: Cli -> Domain + Connectors), so there is no live
         // VerifyGateTimeout to read here — DefaultCommandTimeout mirrors its default, held to it
-        // by ClaudeSettingsFileTests, exactly as h9k task work's own settings file already does.
+        // by ClaudeSettingsFileTests, exactly as h9k task drive's own settings file already does.
         string settingsFile = RunPaths.SettingsFile(resolvedRunDirectory);
         // The build session's effort rides in it too, resolved over the same chain a dispatcher-launched
         // build on this node would use (ResolveBuildEffortAsync), so this headless build runs at that
@@ -207,9 +207,9 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         AnsiConsole.MarkupLineInterpolated($"[dim]Branch: {branch}[/]");
         AnsiConsole.MarkupLineInterpolated($"[dim]Session: {sessionName}[/]");
 
-        // Re-checked immediately before launch, mirroring h9k task work's own identical guard
+        // Re-checked immediately before launch, mirroring h9k task drive's own identical guard
         // (adversarial review, cycle 1, on that command): the worktree cut, the prompt build, and
-        // the settings-file write above all take long enough for a concurrent h9k task work on
+        // the settings-file write above all take long enough for a concurrent h9k task drive on
         // this exact task to run ReenterAsync in between — this run reads Dispatched with no
         // session recorded yet, so its own liveness check would pass and it would launch an
         // attached session into the very worktree this command is about to spawn a headless one
@@ -238,18 +238,18 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         }
         catch (Exception exception) when (exception is Win32Exception or InvalidOperationException)
         {
-            // Mirrors h9k task work's own identical launch-failure handling: the claim and
+            // Mirrors h9k task drive's own identical launch-failure handling: the claim and
             // worktree are already committed by this point, so nothing here needs raw
             // event-stream surgery to recover — the ordinary levers just point at it honestly.
             throw new DomainConflictException(
                 $"Task {taskId} was claimed and its worktree prepared, but the headless session could not be "
-                + $"launched ({exception.Message}). The claim is preserved — h9k task work {taskId} to attach "
+                + $"launched ({exception.Message}). The claim is preserved — h9k task drive {taskId} to attach "
                 + $"and continue by hand, or h9k task release {taskId} to give it back to the dispatch queue.");
         }
 
         await using (IDocumentSession startSession = store.LightweightSession())
         {
-            // Mirrors h9k task work's own InteractiveSessionStarted append exactly (same event,
+            // Mirrors h9k task drive's own InteractiveSessionStarted append exactly (same event,
             // same fields): MachineName is what lets another machine sharing this database tell
             // "checkable from here" from "recorded somewhere else" (InteractiveSessionLiveness),
             // since this claim's RunDispatched carries the same Guid.Empty sentinel an operator's
@@ -259,7 +259,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             // cycle 1): by this point HeadlessLaunch.SpawnDetached has already spawned a real,
             // detached claude process — a Ctrl-C landing in the window before this append
             // completes must not turn into a lost append, the same reasoning
-            // TaskWorkCommand's own identical append already applies.
+            // TaskDriveCommand's own identical append already applies.
             startSession.Events.Append(runId, new InteractiveSessionStarted(
                 runId, claudeSessionId, startedAt, processId, Environment.MachineName, sessionName));
             await startSession.SaveChangesAsync(CancellationToken.None);
@@ -275,14 +275,14 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // accurate on main and stopped being once auto-delivery shipped, while docs/operations.md
         // and docs/scope.md were updated for exactly this).
         AnsiConsole.MarkupLineInterpolated(
-            $"[dim]Task {taskId} is dispatched, headless, as {sessionName} (pid {processId}) — reachable on the session mesh (claude agents --json, or SendMessage). h9k task show {taskId} to watch it: once it exits with a clean, committed tree the platform delivers it automatically through the ordinary review pipeline; anything else flags it needs-you, naming the lever that clears it. To step in sooner, h9k task work {taskId} (to attach), h9k task handback {taskId}, or h9k task release {taskId}.[/]");
+            $"[dim]Task {taskId} is dispatched, headless, as {sessionName} (pid {processId}) — reachable on the session mesh (claude agents --json, or SendMessage). h9k task show {taskId} to watch it: once it exits with a clean, committed tree the platform delivers it automatically through the ordinary review pipeline; anything else flags it needs-you, naming the lever that clears it. To step in sooner, h9k task drive {taskId} (to attach), h9k task handback {taskId}, or h9k task release {taskId}.[/]");
         // Announced rather than silent (independent pre-PR review, cycle 1, conformance lens),
         // but only when this claim actually turned the flag on: gated on interactiveMode itself
         // (independent pre-PR review, cycle 3, conformance + adversarial lenses) because
         // h9k task handback --now calls this same method with interactiveMode: false precisely to
         // avoid reinstating a flag its own handback just cleared (design ruling R9) — printing the
         // line unconditionally told that caller's operator the flag was on when it was in fact off,
-        // the identical isFreshInteractiveClaim gate h9k task work's own sibling announcement
+        // the identical isFreshInteractiveClaim gate h9k task drive's own sibling announcement
         // already applies.
         if (interactiveMode)
         {
@@ -299,10 +299,10 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     /// through <see cref="PrepareDeliberateClaimFromPublished"/>; Blocked loads the still-open
     /// blockers and shares that same warn-and-acknowledge shape through
     /// <see cref="PrepareDeliberateClaimFromBlocked"/> (task 0ac72cb8-h9k); Queued claims directly,
-    /// exactly as <see cref="TaskWorkCommand.ClaimAndCutAsync"/>'s own Queued branch does
+    /// exactly as <see cref="TaskDriveCommand.ClaimAndCutAsync"/>'s own Queued branch does
     /// (dependencies are empty by construction on an already-Queued task, so there is nothing to
     /// warn about). Everything else refuses — there is no re-entry branch here, unlike h9k task
-    /// work: a deliberate kick-off only ever starts a fresh claim, but a fresh claim on an
+    /// drive: a deliberate kick-off only ever starts a fresh claim, but a fresh claim on an
     /// already-Blocked task is exactly what Blocked's own branch below is.
     /// </summary>
     internal static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, AgentModel Model, string BaseBranch, string BaseCommit)> ClaimAndCutAsync(
@@ -348,7 +348,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             task.AssignedOwnerId, task.AssignedOwnerFingerprint, context.OwnerId, ownerRootFingerprint))
         {
             // Names the owner the way every other owner reference in Hall9k does, mirroring
-            // h9k task work's own identical refusal.
+            // h9k task drive's own identical refusal.
             OwnerDetails? assignedOwner = task.AssignedOwnerId is { } assignedOwnerId
                 ? await session.LoadAsync<OwnerDetails>(assignedOwnerId, cancellationToken)
                 : null;
@@ -363,7 +363,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             // about when the human is asked, not about which command can ask (task 0ac72cb8-h9k,
             // review finding fixing this task's own third acceptance criterion: "a later handback,
             // retry, or human-initiated dispatch of the same task with the same still-open
-            // blockers does not re-ask"). This mirrors h9k task work's own identical Blocked
+            // blockers does not re-ask"). This mirrors h9k task drive's own identical Blocked
             // branch: the still-open blockers are loaded here so the warn-and-acknowledge path
             // below can name them.
             unmetAtEntry = await TaskDependencyQuery.LoadAsync(session, task.UnmetDependencies, cancellationToken);
@@ -390,7 +390,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
 
         // A pr-review task dispatches through a completely different path (a detached checkout of
         // the pull request's own head, the pr-review prompt lens, no branch of its own) that this
-        // command cannot build — mirrors h9k task work's own identical refusal exactly.
+        // command cannot build — mirrors h9k task drive's own identical refusal exactly.
         if (task.Type == TaskType.PrReview)
         {
             throw new DomainConflictException(
@@ -401,7 +401,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
 
         // A reopened task carries its existing pull request's branch and expects the daemon's own
         // follow-up prompt (BuildFixChecks/BuildRebase/BuildFollowUp), which lives in Hall9k.Daemon
-        // and this command cannot build — mirrors h9k task work's own identical refusal.
+        // and this command cannot build — mirrors h9k task drive's own identical refusal.
         if (taskDetails.FollowUpBranch.IsNotBlank())
         {
             throw new DomainConflictException(
@@ -411,7 +411,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         }
 
         // The claim gate (idea 64c75e43), read fresh and refused with the identical sentence
-        // h9k task queue warns with — h9k task work's own door, applied here for the same
+        // h9k task queue warns with — h9k task drive's own door, applied here for the same
         // reason: this command starts the work now, so a card the tracker says somebody else
         // holds is a claim this install must not take. Exits 70 through
         // DomainBusinessRuleException: a standing project rule, not a bad command line.
@@ -467,7 +467,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         }
 
         // The gate's own evidence rides in the same Append call, ahead of the claim it justified,
-        // so the expected version covers every event this transaction writes — h9k task work's
+        // so the expected version covers every event this transaction writes — h9k task drive's
         // own claim composes its events the identical way.
         object[] events =
         [
@@ -490,7 +490,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // Printed only once the claim is actually committed: printing it earlier would leave a
         // lost optimistic-concurrency race (the catch above) showing a warning that implies the
         // start proceeded despite blockers when nothing was in fact committed (review, PR #192).
-        TaskWorkCommand.PrintUnmetDependencyWarning("Starting", task.Id, unmet, carriedForward, task.StackedOnTaskId);
+        TaskDriveCommand.PrintUnmetDependencyWarning("Starting", task.Id, unmet, carriedForward, task.StackedOnTaskId);
 
         // The branch a fresh cut starts from, resolved before the checkout — the same answer
         // RunLauncher resolves for a headless dispatch, through the same resolver, because an
@@ -511,7 +511,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         try
         {
             GitWorktreeManager worktrees = new(new ConsoleWorktreeLogger<GitWorktreeManager>());
-            (worktree, resumesPreviousWork, startedClean) = await TaskWorkCommand.CheckoutFreshOrRetryAsync(
+            (worktree, resumesPreviousWork, startedClean) = await TaskDriveCommand.CheckoutFreshOrRetryAsync(
                 worktrees, taskDetails, project, task.Id, runId, stackedBase.BaseBranch, cancellationToken);
 
             string? existingTaskDirectory = project.HomeDirectory.HasValue
@@ -524,13 +524,13 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
 
             // Frozen on RunDispatched for this run's whole lifetime (task: the review pipeline's
             // stage composition becomes configuration recorded per run), exactly as RunLauncher and
-            // TaskWorkCommand's own dispatch sites already do — this third dispatch site was the one
+            // TaskDriveCommand's own dispatch sites already do — this third dispatch site was the one
             // PLAN.md #129 overlooked (independent pre-PR review, cycle 1, conformance lens).
             // Re-resolved here (ResolveBuildModelAsync already resolved the node level once above,
             // for the model) through the same OperatingSettingsResolver that honors the
             // Hall9k__ReviewStageComposition environment variable ahead of the platform config file,
             // so this reads the node level identically to a headless dispatch on this machine and to
-            // TaskWorkCommand's own interactive claim, which resolves the node level through the
+            // TaskDriveCommand's own interactive claim, which resolves the node level through the
             // same resolver (PLAN.md #129).
             OperatingSettingsReport operatingSettings = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
             ReviewStageComposition reviewStageComposition = ReviewStageCompositionResolver.Resolve(
@@ -546,7 +546,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             // base here would be wrong for the mirror reason: the resolver reads the parent's
             // CURRENT state, not where this branch actually sits. The inherited fork point is
             // checked against the branch before this run re-asserts it —
-            // TaskWorkCommand.ResumedForkPointAsync's own doc — the same check RunLauncher applies
+            // TaskDriveCommand.ResumedForkPointAsync's own doc — the same check RunLauncher applies
             // on the daemon's door (conformance review, cycle 8).
             StackedBaseResolver.ResumedBase? resumedBase = resumesPreviousWork
                 ? await StackedBaseResolver.ResumedBaseAsync(
@@ -558,7 +558,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             }
 
             runBaseBranch = resumedBase?.BaseBranch ?? stackedBase.BaseBranch;
-            baseCommit = await TaskWorkCommand.ResumedForkPointAsync(
+            baseCommit = await TaskDriveCommand.ResumedForkPointAsync(
                 ExternalProcess.Runner, resumedBase, worktree, runBaseBranch, project, cancellationToken);
 
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
@@ -586,7 +586,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 // read — the cases RunDispatched.BaseCommit's own doc already admits.
                 BaseCommit: baseCommit,
                 // This is the one call site in the whole platform that ever sets this true
-                // (RunDispatched.IsDeliberateHeadlessStart's own doc) — h9k task work's own
+                // (RunDispatched.IsDeliberateHeadlessStart's own doc) — h9k task drive's own
                 // interactive claim, and every ordinary daemon dispatch, leave it at its default
                 // false.
                 IsDeliberateHeadlessStart: true,
@@ -683,7 +683,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     /// <summary>
     /// The atomic decision behind the Published entry: assigns <paramref name="task"/> to
     /// <paramref name="ownerId"/> and claims it deliberately as one unit, pure so it is
-    /// independently testable (mirrors <see cref="TaskWorkCommand.PrepareInteractiveClaimFromPublished"/>'s
+    /// independently testable (mirrors <see cref="TaskDriveCommand.PrepareInteractiveClaimFromPublished"/>'s
     /// own shape exactly). The one behavior that differs from that sibling: an unmet dependency
     /// does not refuse outright here — it refuses only when
     /// <paramref name="acknowledgeUnmetDependencies"/> is false, naming every open blocker in the
@@ -702,12 +702,12 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             [.. dependencies.Where(dependency => assigned.UnmetDependencies.Contains(dependency.Id))];
 
         // The remote stacked parent's own hold, asked ahead of the assignment for the reason
-        // TaskWorkCommand.PrepareInteractiveClaimFromPublished's twin gives (task: a stacked child
+        // TaskDriveCommand.PrepareInteractiveClaimFromPublished's twin gives (task: a stacked child
         // can stand on a pull request another install owns).
         if (task.AwaitsRemoteStackedParent && !acknowledgeUnmetDependencies)
         {
             throw new DomainBusinessRuleException(
-                TaskWorkCommand.RemoteStackedParentClaimRefusal(task, "h9k task start", alreadyAssigned: false));
+                TaskDriveCommand.RemoteStackedParentClaimRefusal(task, "h9k task start", alreadyAssigned: false));
         }
 
         if (unmet.Count > 0 && !acknowledgeUnmetDependencies)
@@ -728,7 +728,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 // out on its own — when one is dead it returns a full declarative sentence
                 // instead, and splicing that after a hardcoded "or" here left it dangling
                 // (adversarial review, cycle 1, on h9k task start).
-                + $"confirmed that is what you want. {TaskWorkCommand.DescribeUnmetDependencyAdvice(task.Id, unmet, stackedOnTaskId: task.StackedOnTaskId)} "
+                + $"confirmed that is what you want. {TaskDriveCommand.DescribeUnmetDependencyAdvice(task.Id, unmet, stackedOnTaskId: task.StackedOnTaskId)} "
                 + $"h9k task show {task.Id} for the full picture.");
         }
 
@@ -742,14 +742,14 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
 
     /// <summary>
     /// The claim behind an already-Blocked entry (task 0ac72cb8-h9k, closing the gap task
-    /// 8a56af78-h9k deliberately left open: "there is no re-entry branch the way h9k task work has
+    /// 8a56af78-h9k deliberately left open: "there is no re-entry branch the way h9k task drive has
     /// one" is true about re-entering an already-live claim, which this still never does, but it is
     /// not a reason to withhold a carried-forward acknowledgment from a fresh claim, which is all a
     /// Blocked entry here ever is). The task was already assigned — by an ordinary
     /// <c>h9k task queue</c>, or by an earlier deliberate claim that was handed back or retried —
     /// so no assignment travels here, unlike <see cref="PrepareDeliberateClaimFromPublished"/>'s
     /// just-assigned case; only <see cref="TaskDecider.ClaimDeliberately"/> is ever appended.
-    /// Mirrors <see cref="TaskWorkCommand.PrepareInteractiveClaimFromBlocked"/> exactly: refuses,
+    /// Mirrors <see cref="TaskDriveCommand.PrepareInteractiveClaimFromBlocked"/> exactly: refuses,
     /// naming every open blocker, unless <paramref name="acknowledgeUnmetDependencies"/> is true or
     /// this task already carries a covering acknowledgment from an earlier claim on these same
     /// still-open blockers (<see cref="TaskAggregate.UnmetDependenciesAlreadyAcknowledged"/>). The
@@ -764,13 +764,13 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     {
         bool carriedForward = !acknowledgeUnmetDependencies && task.UnmetDependenciesAlreadyAcknowledged;
         // The remote-parent-only hold, for the reason its twin in
-        // TaskWorkCommand.PrepareInteractiveClaimFromBlocked gives: the refusal below would
+        // TaskDriveCommand.PrepareInteractiveClaimFromBlocked gives: the refusal below would
         // otherwise report "0 task(s) that have not closed out".
         if (unmetDependencies.Count == 0 && task.AwaitsRemoteStackedParent
             && !acknowledgeUnmetDependencies && !carriedForward)
         {
             throw new DomainBusinessRuleException(
-                TaskWorkCommand.RemoteStackedParentClaimRefusal(task, "h9k task start", alreadyAssigned: true));
+                TaskDriveCommand.RemoteStackedParentClaimRefusal(task, "h9k task start", alreadyAssigned: true));
         }
 
         if (!acknowledgeUnmetDependencies && !carriedForward)
@@ -782,7 +782,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 + "The platform advises rather than refuses here: "
                 + $"h9k task start {task.Id} --acknowledge-unmet-dependencies to start it anyway, once you have "
                 + $"confirmed that is what you want. "
-                + $"{TaskWorkCommand.DescribeUnmetDependencyAdvice(task.Id, unmetDependencies, alreadyAssigned: true, stackedOnTaskId: task.StackedOnTaskId)} "
+                + $"{TaskDriveCommand.DescribeUnmetDependencyAdvice(task.Id, unmetDependencies, alreadyAssigned: true, stackedOnTaskId: task.StackedOnTaskId)} "
                 + $"h9k task show {task.Id} for the full picture.");
         }
 

@@ -1219,7 +1219,7 @@ public static class TaskDecider
     /// The go signal, and the only way a task becomes claimable (Decisions Log #34): the event
     /// <c>h9k task queue</c> appends, named <see cref="TaskAssigned"/> for the wire's sake (see its own
     /// naming-trap note). Always an explicit act: no monitor queues a task unasked, though the
-    /// callers that claim it in the same append, <c>h9k task start</c>, <c>h9k task work</c> and
+    /// callers that claim it in the same append, <c>h9k task start</c>, <c>h9k task drive</c> and
     /// <c>h9k pr review</c>, and both auto-pr-review mints, are go acts of their own. Dependencies
     /// decide where it lands: Queued when every one has reached true closeout, Blocked otherwise.
     /// The claim guard reads the queued-for owner, so a node runs only its own owner's work.
@@ -1424,7 +1424,7 @@ public static class TaskDecider
 
     /// <summary>
     /// Whether some other owner holds this task, by its assignee: the check <c>h9k task start</c>,
-    /// <c>h9k task work</c> and <c>h9k task publish --queue</c> make before they would queue a
+    /// <c>h9k task drive</c> and <c>h9k task publish --queue</c> make before they would queue a
     /// Published task for the operator, which a hold by someone else forbids. A task nobody holds is
     /// not held by another owner.
     /// </summary>
@@ -1895,7 +1895,7 @@ public static class TaskDecider
     }
 
     /// <summary>
-    /// h9k task work's claim: the operator's mirror of <see cref="Claim"/>, same
+    /// h9k task drive's claim: the operator's mirror of <see cref="Claim"/>, same
     /// <see cref="TaskClaimed"/> event and lease-generation fencing — but NodeId is the sentinel
     /// <see cref="Guid.Empty"/> rather than a real node's id, which is what
     /// <see cref="TaskAggregate.IsInteractiveClaim"/> reads back. No <c>TaskLease</c> document is
@@ -1916,7 +1916,7 @@ public static class TaskDecider
     /// </para>
     /// </summary>
     /// <param name="resumesBranch">See <see cref="TaskClaimed.ResumesBranch"/>'s own doc — the
-    /// caller (<c>TaskWorkCommand</c>) resolves this through <see cref="Queries.ForeignResumeBranchResolver"/>
+    /// caller (<c>TaskDriveCommand</c>) resolves this through <see cref="Queries.ForeignResumeBranchResolver"/>
     /// before calling in, the same way <c>DispatchEngine.TryClaimAsync</c> resolves it for
     /// <see cref="Claim"/>.</param>
     public static TaskClaimed ClaimInteractively(
@@ -1929,7 +1929,7 @@ public static class TaskDecider
             if (!dependencyOverrideAcknowledged)
             {
                 throw new DomainConflictException(
-                    $"Task {task.Id} is Blocked on {DescribeBlockedHold(task)} — h9k task work {task.Id} " +
+                    $"Task {task.Id} is Blocked on {DescribeBlockedHold(task)} — h9k task drive {task.Id} " +
                     "--acknowledge-unmet-dependencies to claim it anyway, once you have confirmed that is what you want.");
             }
         }
@@ -1974,7 +1974,7 @@ public static class TaskDecider
     /// claim (<paramref name="dependencyOverrideCarriedForward"/>;
     /// <see cref="TaskAggregate.UnmetDependenciesAlreadyAcknowledged"/>) — task 0ac72cb8-h9k closed
     /// the gap task 8a56af78-h9k deliberately left open ("there is no re-entry branch the way
-    /// h9k task work has one"): that reasoning is about re-entering an already-live claim, which
+    /// h9k task drive has one"): that reasoning is about re-entering an already-live claim, which
     /// this method still never does, not about honoring a recorded acknowledgment on a fresh claim,
     /// which is all a Blocked entry here ever is. A Blocked task with no acknowledgment still
     /// refuses — this is the defensive floor beneath the caller's own warn-and-ask flow, not a

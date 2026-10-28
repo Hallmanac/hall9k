@@ -3,7 +3,7 @@
 ===handback-heading===
 ## A human began this work interactively
 ===handback-body===
-An operator started this task with `h9k task work`, worked directly in this
+An operator started this task with `h9k task drive`, worked directly in this
 branch's worktree, and handed it back (`h9k task handback`) for you to finish
 headlessly. `h9k task handback` only refuses on tracked files it finds modified
 or staged — it never checks untracked files, and skips the check entirely if git

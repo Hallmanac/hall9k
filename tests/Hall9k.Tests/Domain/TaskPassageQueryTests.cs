@@ -1192,7 +1192,7 @@ public sealed class TaskPassageQueryTests
     [Fact]
     public void Interactive_session_started_for_the_run_dispatched_process_does_not_double_count()
     {
-        // h9k task work/start's own interactive claim appends InteractiveSessionStarted for the
+        // h9k task drive/start's own interactive claim appends InteractiveSessionStarted for the
         // identical process RunDispatched already named (the same ClaudeSessionId/SessionId) —
         // counting both doubles a single launch (independent pre-PR review, cycle 6, adversarial
         // finding).

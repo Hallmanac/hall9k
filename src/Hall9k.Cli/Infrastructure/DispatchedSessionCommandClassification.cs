@@ -111,7 +111,7 @@ internal static class DispatchedSessionCommandClassification
             [typeof(TaskAbandonCommand.Settings)] = (DispatchedSessionAccess.Refused, "task abandon"),
             [typeof(TaskRetryCommand.Settings)] = (DispatchedSessionAccess.Refused, "task retry"),
             [typeof(TaskResolveCommand.Settings)] = (DispatchedSessionAccess.Refused, "task resolve"),
-            [typeof(TaskWorkCommand.Settings)] = (DispatchedSessionAccess.Refused, "task work"),
+            [typeof(TaskDriveCommand.Settings)] = (DispatchedSessionAccess.Refused, "task drive"),
             [typeof(TaskRegisterSessionCommand.Settings)] = (DispatchedSessionAccess.Allowed, "task register-session"),
             [typeof(TaskStartCommand.Settings)] = (DispatchedSessionAccess.Refused, "task start"),
             [typeof(TaskVerifyCommand.Settings)] = (DispatchedSessionAccess.Allowed, "task verify"),

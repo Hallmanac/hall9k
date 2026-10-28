@@ -11,7 +11,7 @@ namespace Hall9k.Cli.Commands;
 /// Spawns <c>claude -p</c> detached from this process — no attached terminal, no waiting for the
 /// child to finish — for <see cref="TaskStartCommand"/> (task 8a56af78-h9k, "a deliberate human
 /// kick-off dispatches a task on the spot"). The one CLI launch that genuinely needs to survive
-/// this process's own exit: <c>h9k task work</c>'s own launch is foreground and waited on
+/// this process's own exit: <c>h9k task drive</c>'s own launch is foreground and waited on
 /// (<c>Process.WaitForExitAsync</c>), so it never had to solve this.
 /// <para>
 /// The redirection shape mirrors <c>Hall9k.Daemon.ProcessManagement</c>'s own Unix/Windows split
@@ -55,8 +55,8 @@ internal static class HeadlessLaunch
     /// guard (task: a dispatched session never speaks to a person at the top level of a pull
     /// request on its own). A detached session has no operator watching its shell, so the only
     /// route it has onto a pull request is <c>h9k pr reply</c>, exactly as a daemon dispatch.
-    /// The interactive <c>h9k task work</c> session, where the operator is present, writes its own
-    /// file without the hook (<see cref="TaskWorkCommand"/>).
+    /// The interactive <c>h9k task drive</c> session, where the operator is present, writes its own
+    /// file without the hook (<see cref="TaskDriveCommand"/>).
     /// </summary>
     internal static string SettingsContent(AgentEffort effort) =>
         ClaudeSettingsFile.Build(
@@ -77,7 +77,7 @@ internal static class HeadlessLaunch
     /// recorded session pid cannot: on Windows the recorded pid is cmd.exe's, never claude.exe's
     /// (<see cref="SpawnDetachedWindows"/>'s own doc), so a contractor's own pid never matches what
     /// was recorded for it. <c>RunDispatched</c>'s original session name cannot either: an
-    /// <c>h9k task start</c> claim re-entered with <c>h9k task work</c> keeps its build-role
+    /// <c>h9k task start</c> claim re-entered with <c>h9k task drive</c> keeps its build-role
     /// dispatch name forever, so reading that would refuse an operator genuinely sitting in it.
     /// </para>
     /// <para>

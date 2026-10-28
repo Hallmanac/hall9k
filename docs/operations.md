@@ -917,7 +917,7 @@ one of them, grouped by what it governs, with its default. Three things apply to
 | `Hall9k__PollInterval` | 5s | The dispatch loop's fallback sweep interval, since a database doorbell usually wakes it sooner. It is also the poll cadence of the launch-hold probe, the takeover watch, the spike budget watch, and the claim-request watch. |
 | `Hall9k__HeartbeatInterval` | 15s | How often the daemon refreshes the heartbeats of the leases this node holds; agents know nothing about leases. |
 | `Hall9k__LeaseTimeout` | 60s | How long a lease survives without a heartbeat before the sweep requeues it |
-| `Hall9k__VerifyGateTimeout` | 30m | Per gate, and the same value sizes every headless dispatched session's own foreground command timeout (`ClaudeSettingsFile`), so raising this also raises how long a session's own `dotnet test`-shaped command may run before Claude Code's Bash tool would otherwise kill it. Three surfaces do not move with it: an interactive `h9k task work` claim, `h9k task verify` run against one, and `h9k task start`; all three are CLI commands, and nothing on the CLI side reads this option today, so each always runs its own gates against the fixed 30-minute default regardless of what this is set to. |
+| `Hall9k__VerifyGateTimeout` | 30m | Per gate, and the same value sizes every headless dispatched session's own foreground command timeout (`ClaudeSettingsFile`), so raising this also raises how long a session's own `dotnet test`-shaped command may run before Claude Code's Bash tool would otherwise kill it. Three surfaces do not move with it: an interactive `h9k task drive` claim, `h9k task verify` run against one, and `h9k task start`; all three are CLI commands, and nothing on the CLI side reads this option today, so each always runs its own gates against the fixed 30-minute default regardless of what this is set to. |
 | `Hall9k__TokenBudgetRetryInterval` | 1h | How often the daemon retries runs parked on token-budget exhaustion. The subscription window resets on its own clock, so a patient poll is the whole mechanism. |
 | `Hall9k__SessionErrorRetryBackoff` | 90s | How long a session that reported an error result waits before its leg is redispatched fresh, sized to outlast a provider-side overload burst. It is also where the launch-hold probe's backoff starts. |
 | `Hall9k__LaunchNetworkRetryBackoff` | 2m | How long a task waits before any node may claim it again after its launch's checkout could not reach origin because of a passing network error (could not resolve host, connection timed out or refused or reset, network unreachable). Doubles with each consecutive failure, so a brief outage makes the task slow rather than failed. `h9k task show` names the wait and git's error while it lasts. |
@@ -1087,9 +1087,9 @@ shell changes how Hall9k treats that shell, and in one case (the last row) can m
 
 | Variable | Set by | What reads it and why |
 |---|---|---|
-| `HALL9K_DISPATCHED_RUN_ID` | The daemon on every headless session it spawns, and `h9k task start` and `h9k task delegate` on the sessions they launch | It marks a dispatched, detached session and is inherited by everything that session runs. The CLI reads it and refuses the verbs that drive a task's, an idea's, or a project's own lifecycle (for example `h9k task abandon`, `h9k task retry`, `h9k review resolve`, `h9k project set`), saying so and pointing the agent at its closing summary instead. A person's own claim (`h9k task work`, a pasted prompt, `--direct-launch`) never carries it. |
+| `HALL9K_DISPATCHED_RUN_ID` | The daemon on every headless session it spawns, and `h9k task start` and `h9k task delegate` on the sessions they launch | It marks a dispatched, detached session and is inherited by everything that session runs. The CLI reads it and refuses the verbs that drive a task's, an idea's, or a project's own lifecycle (for example `h9k task abandon`, `h9k task retry`, `h9k review resolve`, `h9k project set`), saying so and pointing the agent at its closing summary instead. A person's own claim (`h9k task drive`, a pasted prompt, `--direct-launch`) never carries it. |
 | `HALL9K_DISPATCHED_TASK_ID` | The same places, alongside the run id, whenever the session belongs to a task | It only lets that refusal name the task. A session with no task of its own (card publication, the courier, run-skill discovery) does not carry it. |
-| `HALL9K_INTERACTIVE_RUN_ID` | `h9k task work --direct-launch`, on the Claude Code session it launches | It carries the claiming run's id, so `h9k task deliver` and `h9k task handback` run from inside that session recognise themselves instead of refusing as a second terminal, and so commands that record a statement can name the run it came from. It is distinct from the dispatched-run variable: it names a person's attached claim, never a headless one. |
+| `HALL9K_INTERACTIVE_RUN_ID` | `h9k task drive --direct-launch`, on the Claude Code session it launches | It carries the claiming run's id, so `h9k task deliver` and `h9k task handback` run from inside that session recognise themselves instead of refusing as a second terminal, and so commands that record a statement can name the run it came from. It is distinct from the dispatched-run variable: it names a person's attached claim, never a headless one. |
 | `HALL9K_DETACHED_SESSION` | `h9k task start` and `h9k task delegate`, on the wrapper shell of the headless session they launch | It carries that session's name, so a command that records something can tell the caller is an unattended headless session and not a person attached to the task's claim. |
 | `HALL9K_VERIFY_GATE_WAIT_DIR` | The daemon's verification runner, and `h9k task verify`, on each gate's process tree | It names a directory where the test suite's cross-process container gate (Decisions Log #132) writes a one-line diagnostic while it queues for a Postgres permit. The daemon reads it when a gate hits its timeout, to tell a gate that starved for a permit (infrastructure) from a test that hung. |
 | `CLAUDE_PID` | Claude Code itself, inherited by every Bash-tool child | `h9k task register-session` reads it as the process identity of a pasted session, and the interactive-claim guards read it to recognise a self-registered session asking about itself. The command refuses to record anything when it is absent. |
@@ -1608,7 +1608,7 @@ whose cap exceeds its share simply fills whatever the node ceiling and the other
 activity leave free. Over the cap, the dispatcher defers a claim exactly as it defers one over the
 node ceiling: the task stays `Queued` — no error, no park — and both the daemon log and `h9k
 status` name which limit held it (`project cap 1 of 1` versus `node 2 of 2`), so a queue state
-never has to be reconstructed. Interactive claims (`h9k task work`, `h9k task start`) count
+never has to be reconstructed. Interactive claims (`h9k task drive`, `h9k task start`) count
 against no project cap, the same zero-run rule they already have at the node level.
 
 `0` is **pause**: deliberate and sticky, for a project that is broken, budget-frozen, or shelved.
@@ -1723,7 +1723,7 @@ it:
 | the pull request is open and the task is not queued | A follow-up reopened the task and it was then unassigned or dequeued, so nothing will claim it | `h9k task queue` |
 | no run record is watching it for a merge | The pull request is open and no run is left to observe the merge | the pull request itself |
 | the run ended without a merge being observed | The run that owned an open pull request failed, or that pull request was closed unmerged | `h9k pr resolve`, or the pull request when it was closed unmerged |
-| an interactive claim (`h9k task work`) last recorded activity — or was claimed and has not recorded a touch since — long enough ago | An [interactive claim](#working-a-task-interactively) — including a [start-it-mine claim](#a-deliberate-human-kick-off) made with `h9k task start`, which raises the identical row — has sat past `interactiveClaimStaleAfterDays` with no attached session observed on this machine; nothing reclaims it, this is only a nudge | `h9k task work <id>` if it is still yours, or `h9k task handback <id>` to finish it headlessly |
+| an interactive claim (`h9k task drive`) last recorded activity — or was claimed and has not recorded a touch since — long enough ago | An [interactive claim](#working-a-task-interactively) — including a [start-it-mine claim](#a-deliberate-human-kick-off) made with `h9k task start`, which raises the identical row — has sat past `interactiveClaimStaleAfterDays` with no attached session observed on this machine; nothing reclaims it, this is only a nudge | `h9k task drive <id>` if it is still yours, or `h9k task handback <id>` to finish it headlessly |
 
 That is what the composer can say today, not a closed set: every cause is read off a record, so a
 new record adds a line here. Read the cause, then `h9k task show <id>`, then `h9k logs <id>` if
@@ -1793,7 +1793,7 @@ epic 9272e514) and worth knowing before the mechanics.
 both — a human opening a plain Claude Code session in a worktree by hand, building, opening the
 pull request, and merging it, telling Hall9k only afterward — is explicitly unsupported today:
 that path is "at least not yet" rather than closed forever, so a future diligent-user mode is a
-door left open, not one bricked shut. `h9k task work` is not that bypass, even though a human's
+door left open, not one bricked shut. `h9k task drive` is not that bypass, even though a human's
 own hands do the build: the claim that starts it and the `deliver`/`handback`/`release` that ends
 it are both Hall9k acts, so the platform performs every transition even when a human types the
 code in between.
@@ -1803,7 +1803,7 @@ judgment: agents build, review, and fix, and the human is only the arbiter at th
 Which mode owns the build is a free choice, revisable at any boundary in either direction, but the
 choice only ever covers the build — review, fix, and closeout always run as headless agents,
 whichever mode built the code. Interactive mode itself is a property of the *task*, not of one
-claim, and it is `h9k task work` and a deliberate `h9k task start` (below) that turn it on, the
+claim, and it is `h9k task drive` and a deliberate `h9k task start` (below) that turn it on, the
 moment either one claims the task — `start`'s own build is headless either way, but from that
 claim on the run still parks at every boundary below for a human's go. Once it turns on it stays
 on, across every later run, follow-up, retry, or reopen, until one of the two ordinary exit doors
@@ -1817,10 +1817,10 @@ is the fallback that clears the flag directly in either case, with no active cla
 
 | Verb | Command | Who's in charge afterward |
 |---|---|---|
-| **work** | `h9k task work <id>` | The human, on the build, and turns on the task's interactive-mode flag — see [Working a task interactively](#working-a-task-interactively) below. |
-| **dispatch-the-phase** | `h9k task delegate <id> --note "<text>"` | Still the human: this delegates one phase (today, the build) to a headless contractor without touching the claim, the assignment, or interactive mode — `h9k task work` resumes it once the contractor reports back (design ruling R6). |
+| **work** | `h9k task drive <id>` | The human, on the build, and turns on the task's interactive-mode flag — see [Working a task interactively](#working-a-task-interactively) below. |
+| **dispatch-the-phase** | `h9k task delegate <id> --note "<text>"` | Still the human: this delegates one phase (today, the build) to a headless contractor without touching the claim, the assignment, or interactive mode — `h9k task drive` resumes it once the contractor reports back (design ruling R6). |
 | **handback** | `h9k task handback <id> [--first \| --now]` | The machine: this always ends interactive mode. Three pickup speeds — the default (normal rotation by assignment age), `--first` (next free slot regardless of age), or `--now` (immediate, ceiling-exempt). |
-| **release** | `h9k task release <id> [--keep-interactive] [--unassign]` | The machine, same as `handback`, unless `--keep-interactive` is given — the one way to hand a task back headless while it still parks at every boundary. `--unassign` takes it straight to Published instead, atomically, keeping its assignee, so the task stays not queued and dispatcher-ineligible until a later explicit go (`h9k task queue`, `h9k task work`, or `h9k task start`). |
+| **release** | `h9k task release <id> [--keep-interactive] [--unassign]` | The machine, same as `handback`, unless `--keep-interactive` is given — the one way to hand a task back headless while it still parks at every boundary. `--unassign` takes it straight to Published instead, atomically, keeping its assignee, so the task stays not queued and dispatcher-ineligible until a later explicit go (`h9k task queue`, `h9k task drive`, or `h9k task start`). |
 
 **No resident agents.** An agent sends its report and ends normally rather than staying alive to
 wait on a human's answer; the human's reply resumes it on the session mesh's own mechanic (a
@@ -1854,11 +1854,11 @@ than hide, park on a recorded human decision rather than trust a process to stil
 
 ## Working a task interactively
 
-`h9k task work <id> [--direct-launch] [--acknowledge-unmet-dependencies] | register-session |
+`h9k task drive <id> [--direct-launch] [--acknowledge-unmet-dependencies] | register-session |
 verify | deliver | delegate | handback | release` (Decisions Log #103, #122, #124, #126, #127)
 
 An operator can work a Published, Queued, or already-Blocked task in their own terminal instead of dispatching it
-headless (Decisions Log #122). On a Published task assigned to nobody, `h9k task work` queues it
+headless (Decisions Log #122). On a Published task assigned to nobody, `h9k task drive` queues it
 for the operator's own owner and claims it interactively in one atomic event append, so the task is
 never observably Queued for the dispatcher to claim in between. An unmet dependency — whether just
 discovered here on a Published task, or already sitting Blocked from an ordinary `h9k task queue`
@@ -1871,10 +1871,10 @@ whether a claim's own acknowledgment was given fresh or carried forward from an 
 triggers — edges still gate automatic dispatch exactly as before; only this deliberate human claim
 gets the warn-and-proceed path. Whichever state it entered from, the claim itself is held by the
 human, not a process: there is no lease and no heartbeat reclaim, so
-closing the terminal is a normal way to leave, and re-running `h9k task work <id>` re-enters the
+closing the terminal is a normal way to leave, and re-running `h9k task drive <id>` re-enters the
 same worktree and branch with a fresh prompt.
 
-By default, `h9k task work` no longer launches anything itself (Decisions Log #126): it prints the
+By default, `h9k task drive` no longer launches anything itself (Decisions Log #126): it prints the
 worktree path, the branch, and a starting prompt for the operator to paste into a Claude Code
 session started anywhere. That pasted session's first act is `h9k task register-session <id>`,
 which records its own process identity (read from `CLAUDE_PID`, Claude Code's own environment
@@ -1883,7 +1883,7 @@ double-booking and liveness guards below recognise it. A session that never regi
 same honest no-op every guard already had for a claim nobody ever recorded a session against:
 nothing blocks a second entry, but nothing is silently overwritten either. `--direct-launch` keeps
 the prior behavior for one release — a plain interactive Claude Code process launched and waited on
-by `h9k task work` itself, recording its pid the moment it starts, and resuming the most recently
+by `h9k task drive` itself, recording its pid the moment it starts, and resuming the most recently
 recorded session's own conversation on re-entry — falling back to a fresh session, announced rather
 than silent, only when the recorded one cannot be resumed (Decisions Log #124) — refused on a
 machine where Claude Code resolves to a Windows script shim (`.cmd`/`.bat`/`.ps1`), since the
@@ -1899,24 +1899,24 @@ reclaim, only a question (Decisions Log #103).
 
 | Command | What it does |
 |---|---|
-| `h9k task work <id>` | Claims a Published, Queued, or already-Blocked task (assigning a Published one to your own owner in the same atomic event append), cuts the same branch and worktree headless dispatch would, assembles the prompt through the same code path (working rules swapped for an attached operator), and — by default — prints the worktree, the branch, and that prompt to paste into a session started elsewhere; `--direct-launch` opens a regular interactive Claude Code session itself instead, kept for one release. On a task you already hold, re-enters that same worktree and branch — by default with a fresh prompt, or, under `--direct-launch`, resuming the most recently recorded session's own conversation, falling back to a fresh session, announced rather than silent, only when the recorded one cannot be resumed. |
+| `h9k task drive <id>` | Claims a Published, Queued, or already-Blocked task (assigning a Published one to your own owner in the same atomic event append), cuts the same branch and worktree headless dispatch would, assembles the prompt through the same code path (working rules swapped for an attached operator), and — by default — prints the worktree, the branch, and that prompt to paste into a session started elsewhere; `--direct-launch` opens a regular interactive Claude Code session itself instead, kept for one release. On a task you already hold, re-enters that same worktree and branch — by default with a fresh prompt, or, under `--direct-launch`, resuming the most recently recorded session's own conversation, falling back to a fresh session, announced rather than silent, only when the recorded one cannot be resumed. |
 | `h9k task register-session <id>` | The pasted-in session's own first act: records its process identity (from `CLAUDE_PID`) against the claim, the way a direct launch's own launch-time recording always did. Refuses rather than guessing when `CLAUDE_PID` cannot be read. |
 | `h9k task verify <id>` | Runs the project's verification gates on demand against the claim's worktree, recording the outcome on the run's own stream exactly as a headless gate pass would. |
 | `h9k task deliver <id>` | Pushes the branch and hands the claim into the standard delivery pipeline — from here the run is indistinguishable from a headless one: gates, the pre-PR review loop, and the pull request all follow. |
-| `h9k task delegate <id> --note "<text>"` | Dispatches a headless build contractor onto this same run, worktree, and branch for one phase — the claim, the assignment, and the interactive-mode flag are all untouched, so the task stays yours. Distinct from `handback`, which ends interactive mode; `h9k task work <id>` re-enters the same worktree once the contractor reports back (design ruling R6). |
+| `h9k task delegate <id> --note "<text>"` | Dispatches a headless build contractor onto this same run, worktree, and branch for one phase — the claim, the assignment, and the interactive-mode flag are all untouched, so the task stays yours. Distinct from `handback`, which ends interactive mode; `h9k task drive <id>` re-enters the same worktree once the contractor reports back (design ruling R6). |
 | `h9k task handback <id>` | Releases the human claim and queues the task through normal dispatch, so a headless agent resumes the branch from wherever the operator left it. `--first` records the queue-first marker so the next free dispatch slot takes it regardless of assignment age; `--now` dispatches it immediately instead, ceiling-exempt, through the same mechanism `h9k task start` uses — refused together with `--first` (Decisions Log #127). |
 | `h9k task release <id>` | Gives an untouched claim back to the dispatch queue. Refused once the worktree holds uncommitted files, or once the branch holds commits beyond the base branch — `handback` (to a headless agent) or `deliver` (yourself) is the lever once there is committed work. Clears the task's interactive-mode flag by default, the same exit door `handback` is — `--keep-interactive` preserves it so a later headless run still parks at each boundary. `--unassign` takes the same untouched claim straight to Published instead of the dispatch queue, in one atomic event — nobody can claim it in between, closing the race a plain release followed by a separate `h9k task unassign` cannot avoid. |
 
-`work` (on re-entry), `verify`, `deliver`, `handback`, and `release` are all refused while the
+`drive` (on re-entry), `verify`, `deliver`, `handback`, and `release` are all refused while the
 claim's own interactive session is still attached in another terminal — exit it first (Ctrl+D or
 `/exit`). One exception: `verify`, `deliver`, `handback`, or `release` run from inside that very
 session (the one it is blocked waiting on, not racing — recognised either by a direct launch's own
 injected marker, or by a self-registered session's `CLAUDE_PID` matching its own recorded process)
-is allowed to act on its own worktree. `work` itself is never exempted, even from inside its own
+is allowed to act on its own worktree. `drive` itself is never exempted, even from inside its own
 session: re-entering spawns a second, concurrent session rather than blocking on the first, which
 is exactly the collision this guard exists to prevent.
 
-`work` (on re-entry), `verify`, `deliver`, `handback`, and `release` are also refused when the
+`drive` (on re-entry), `verify`, `deliver`, `handback`, and `release` are also refused when the
 claim's session was recorded on a machine other than the one running the command — this machine
 cannot check whether it is still attached there. Confirm by hand on that machine that the session
 has exited (or that the machine is simply gone for good), then re-run with `--force` to proceed
@@ -1927,24 +1927,24 @@ anyway.
 `h9k task start <id> [--acknowledge-unmet-dependencies]` (Decisions Log #125)
 
 A deliberate human kick-off dispatches a Published, Queued, or already-Blocked task on the spot, headless, instead
-of dispatching it interactively (`h9k task work`, above) or waiting on the dispatch queue. `start`
-reuses `work`'s own claim shape exactly — the same ceiling-exempt sentinel `NodeId`, so `verify`,
-`deliver`, `handback`, `release`, the stale-claim nudge, and re-entering with `work` itself all
+of dispatching it interactively (`h9k task drive`, above) or waiting on the dispatch queue. `start`
+reuses `drive`'s own claim shape exactly — the same ceiling-exempt sentinel `NodeId`, so `verify`,
+`deliver`, `handback`, `release`, the stale-claim nudge, and re-entering with `drive` itself all
 accept a start-it-mine claim on the identical terms an interactive one already gets — but launches
 the agent headless and detached (`claude -p`, Claude Code's own completion mode) under the
 `<task-shortid>-build` name, addressable on the session mesh (`claude agents --json`,
 `SendMessage`) the moment it starts, rather than attached to the caller's own terminal, and
 returns as soon as the process is confirmed alive without waiting for it to finish.
 
-Shares `h9k task work`'s own warn-then-acknowledge shape for an unmet dependency, on a Published
+Shares `h9k task drive`'s own warn-then-acknowledge shape for an unmet dependency, on a Published
 task and on an already-Blocked one alike (Decisions Log #128): the platform names every open
 blocker and advises, and `--acknowledge-unmet-dependencies` is the human's recorded override to
 start anyway — recorded on the resulting claim and surfaced on `h9k task show` beside the blockers
 it overrode. Not needed twice: an acknowledgment this task already carries from an earlier claim on
 the same still-open blockers is honored without asking again, whichever of `start` or
-`h9k task work` gave it. `start` refuses Draft (publish it first), a pr-review task, a reopened
+`h9k task drive` gave it. `start` refuses Draft (publish it first), a pr-review task, a reopened
 task's follow-up branch, and any task that already carries a live claim — there is no re-entry path
-the way `h9k task work` has one; a fresh claim is all `start` ever makes, and a fresh claim on an
+the way `h9k task drive` has one; a fresh claim is all `start` ever makes, and a fresh claim on an
 already-Blocked task is exactly what its own Blocked entry is, not a re-entry.
 
 The daemon does watch a start-it-mine run, unlike an ordinary interactive claim: the moment its
@@ -1954,7 +1954,7 @@ anything else, uncommitted files, no commits at all, the wrong branch checked ou
 unreadable, the process vanishing without ever reporting a result, or the agent reporting a plain
 error — flags the task needs-you within seconds rather than leaving the row reading Working
 indefinitely. A flagged claim then reads like an interactive one: the platform's own attention
-pane leads with `h9k task work` (to attach — printing a fresh prompt by default, which does not by
+pane leads with `h9k task drive` (to attach — printing a fresh prompt by default, which does not by
 itself clear the flag; the pasted session's own first act, `h9k task register-session`, or the
 legacy `--direct-launch` path's own launch-time recording, is what actually clears it),
 `h9k task handback`, or `h9k task release`, and includes `h9k task deliver` too whenever it is not
@@ -1965,10 +1965,10 @@ time — but on the variants where it would not refuse outright (an unreadable b
 git status, a vanished process, or a plain error result — none of which ever confirmed the tree
 was bad), it may well succeed, so the platform advises it rather than withholding a lever that
 could just work. `h9k task verify` stays available once attached (it reports uncommitted files
-rather than refusing on them), but it is a diagnostic a human can run from inside `h9k task work`,
+rather than refusing on them), but it is a diagnostic a human can run from inside `h9k task drive`,
 not one of the levers that clears the flag itself. The same stale-claim nudge described above
 fires once it has sat unattended past `interactiveClaimStaleAfterDays`. Whichever of
-`h9k task work`, `h9k task deliver`, `h9k task handback`, or `h9k task release` the human ends up
+`h9k task drive`, `h9k task deliver`, `h9k task handback`, or `h9k task release` the human ends up
 using is the only point anything on this node reads the session's own `stream.jsonl` back for a
 flagged claim: it recovers the agent's authored handoff for a dependent task and records the
 session's token usage against the node's periodic spend budget — the automatic-delivery path
@@ -1980,7 +1980,7 @@ open blocker: only `h9k task queue` clears that snapshot, and claiming past a bl
 (`--acknowledge-unmet-dependencies`) never does, so the task lands Blocked instead until the
 blocker actually closes out. Each command's own confirmation says which happened. The
 acknowledgment itself stays on record for whichever command reclaims the task next — `h9k task
-work` or `h9k task start` on the resulting Blocked task both honor it without asking again
+drive` or `h9k task start` on the resulting Blocked task both honor it without asking again
 (Decisions Log #128).
 
 ## Holding a task and queueing it
@@ -2096,7 +2096,7 @@ does, and sending the draft posts one top-level comment naming the review. The `
 pull request, `gh pr comment` and `gh issue comment` included, are refused by a PreToolUse guard
 that every headless session launches with (fresh builds and follow-ups alike, `h9k task start` and
 `h9k task delegate` too), attached to both shell tools a session may have; the interactive
-`h9k task work` session, where you are present, does not carry it, and the daemon's own writes
+`h9k task drive` session, where you are present, does not carry it, and the daemon's own writes
 (the pull-request opener, re-requests, the merge note) never run in a session's shell. It is a
 refusal of the ordinary routes rather than a sandbox. The park is enforced the same way: a lap that
 declined or routed a person's thread and closed as though it were done still parks, because the

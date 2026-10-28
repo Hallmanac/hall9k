@@ -226,7 +226,7 @@ public sealed class ProjectRunCeilingDispatchTests(PostgresFixture postgres) : I
     }
 
     /// <summary>
-    /// An interactive claim (<c>h9k task work</c>, <c>h9k task start</c>) costs no project cap,
+    /// An interactive claim (<c>h9k task drive</c>, <c>h9k task start</c>) costs no project cap,
     /// consistent with its zero-run rule at the node level (Decisions Log #111) — structurally,
     /// through the same ceiling-exempt <see cref="Guid.Empty"/> node-id sentinel.
     /// </summary>
@@ -546,7 +546,7 @@ public sealed class ProjectRunCeilingDispatchTests(PostgresFixture postgres) : I
 
     /// <summary>
     /// A task an operator claimed interactively: the same <see cref="Guid.Empty"/> node-id
-    /// sentinel <c>h9k task work</c> and <c>h9k task start</c> record, which is what makes it
+    /// sentinel <c>h9k task drive</c> and <c>h9k task start</c> record, which is what makes it
     /// cost no slot anywhere.
     /// </summary>
     private static async Task SeedInteractiveClaimAsync(

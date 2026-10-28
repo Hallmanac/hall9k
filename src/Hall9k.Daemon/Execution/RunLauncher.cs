@@ -908,7 +908,7 @@ public sealed class RunLauncher(
                 // the other build-role callers in the identical position, so a build session's own
                 // outbound milestones (OutboundMilestone.Build) log a skip on every production path
                 // today; only the review and fix roles dispatched later on this same run, once a
-                // human's own h9k task work claim has registered against it, can actually address one
+                // human's own h9k task drive claim has registered against it, can actually address one
                 // (independent pre-PR review, cycle 1, adversarial lens; AGENTS.md and
                 // docs/scope.md say so plainly).
                 // baseCommit is this cut's own observed start point — the identical value recorded on
@@ -1696,7 +1696,7 @@ public sealed class RunLauncher(
         // itself — its force-with-lease guard only refuses a tip that ISN'T the recorded one
         // in the allow-list, it never confirms the local ref hasn't moved past it. Between this
         // run's own failure and this retry, the same worktree can pick up commits no gate or
-        // review ever saw — an interactive claim (h9k task work) landing on the retained
+        // review ever saw — an interactive claim (h9k task drive) landing on the retained
         // worktree, or a full-build follow-up whose lease expired before it finished and got
         // requeued without clearing FailedRunId/RetryBranch. Reading the local ref here, rather
         // than trusting the failed run's own recorded tip, is what actually closes that gap

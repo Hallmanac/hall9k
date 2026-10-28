@@ -250,7 +250,7 @@ public sealed class TaskAggregate
     private Guid? _lastReleasedHolderNodeId;
 
     /// <summary>
-    /// Whether the current claim is an operator working the task interactively (h9k task work)
+    /// Whether the current claim is an operator working the task interactively (h9k task drive)
     /// rather than a node's headless dispatch. An interactive claim carries no <c>TaskLease</c>
     /// document — no liveness lease, no heartbeat reclaim (AGENTS.md) — and is represented on the
     /// SAME <see cref="TaskState.Claimed"/> state and <see cref="TaskClaimed"/> event a node's
@@ -273,7 +273,7 @@ public sealed class TaskAggregate
     /// and a <see cref="Apply(TaskRequeued)"/> given <c>--keep-interactive</c>, surviving exactly
     /// as long as the human who turned it on has not explicitly turned it off. Set true by
     /// <see cref="Apply(TaskClaimed)"/> whenever <see cref="TaskClaimed.InteractiveMode"/> says so
-    /// (h9k task work's claim always does; h9k task start's does only when the human asked for it)
+    /// (h9k task drive's claim always does; h9k task start's does only when the human asked for it)
     /// and never unset by any other claim — a plain node claim or an ordinary reclaim carries the
     /// flag false and leaves this alone rather than clearing it. The clearing acts are
     /// <see cref="Apply(TaskHandedBack)"/> (h9k task handback), a default
@@ -669,7 +669,7 @@ public sealed class TaskAggregate
     /// the same two doors that clear <see cref="AssignedOwnerFingerprint"/>. Never itself the
     /// security decision: <see cref="AssignedOwnerFingerprint"/> (or, absent one,
     /// <see cref="AssignedOwnerId"/>) already decided whose work this is — this only narrows which
-    /// of that owner's own nodes claims it, so an interactive claim (<c>h9k task work</c>,
+    /// of that owner's own nodes claims it, so an interactive claim (<c>h9k task drive</c>,
     /// <c>h9k task start</c>) and a forced takeover are never gated on it, only the daemon's own
     /// headless dispatch claim is (<see cref="Handlers.TaskDecider.Claim"/>).
     /// </summary>
@@ -1186,11 +1186,11 @@ public sealed class TaskAggregate
     /// Blocker ids a human has already acknowledged as open and chosen to claim across anyway
     /// (<see cref="Handlers.TaskDecider.ClaimDeliberately"/>'s or
     /// <see cref="Handlers.TaskDecider.ClaimInteractively"/>'s own Blocked-entry branch,
-    /// <c>h9k task start</c>/<c>h9k task work --acknowledge-unmet-dependencies</c>) — what lets a
+    /// <c>h9k task start</c>/<c>h9k task drive --acknowledge-unmet-dependencies</c>) — what lets a
     /// later deliberate claim on the SAME still-open blockers proceed without asking again (idea
     /// fcaded0b's R7 ruling: "an acknowledgment already given at claim time carries forward
     /// without re-asking"; <c>h9k task handback --now</c> is one consumer, a reclaim through
-    /// <c>h9k task work</c> is another). Reset by a fresh assignment
+    /// <c>h9k task drive</c> is another). Reset by a fresh assignment
     /// (<see cref="Apply(TaskAssigned)"/>, <see cref="Apply(TaskUnassigned)"/>): a new assignment
     /// cycle's blockers are a new set of facts to warn about, even when some ids happen to repeat.
     /// </summary>
@@ -1803,7 +1803,7 @@ public sealed class TaskAggregate
         }
 
         // The ledger record's own holder mirrors only a real node's claim (idea 202383dc, A3b):
-        // an interactive or deliberate claim (h9k task work, h9k task start) carries the
+        // an interactive or deliberate claim (h9k task drive, h9k task start) carries the
         // Guid.Empty sentinel (IsInteractiveClaim's own discriminator) and never writes the
         // ledger at all — DispatchEngine.TryClaimAsync's own TryClaimLedgerHolderAsync is the
         // only writer. Applying that sentinel here would sever this aggregate from a ledger

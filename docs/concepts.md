@@ -1746,7 +1746,7 @@ request nobody answers within the project's take timeout (30 minutes, `h9k proje
 the project, and prints the evidence it has (who holds the task, since when, and how far this node
 has read that node's outbox and as of when) before it acts, because Hall9k cannot tell "offline"
 from "slow" and does not pretend to. It only works on a task that carries a ledger holder: an
-interactive claim (`h9k task work`) never writes one. Like the ledger write it makes, it is
+interactive claim (`h9k task drive`) never writes one. Like the ledger write it makes, it is
 conditional, so if two people force the same task at once the loser is told who got there first. If
 the previous holder still has a live run, it is stopped the next time the takeover reaches that node
 and recorded as superseded by takeover, never as a failure, with its transcript kept and no pull

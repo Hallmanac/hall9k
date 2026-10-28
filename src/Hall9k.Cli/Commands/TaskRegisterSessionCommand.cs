@@ -20,14 +20,14 @@ namespace Hall9k.Cli.Commands;
 /// <summary>
 /// The self-registration observation gate the starting prompt tells a pasted-in Claude Code
 /// session to call as its first act (R4, idea fcaded0b's design rulings, Take the Wheel epic
-/// 9272e514's slice 7): h9k task work no longer launches an operator's interactive session
+/// 9272e514's slice 7): h9k task drive no longer launches an operator's interactive session
 /// itself — it prints a prompt to paste into a session the operator starts on their own — so
-/// there is no <c>Process.Start()</c> for <c>TaskWorkCommand</c>'s own <c>onStarted</c> callback
+/// there is no <c>Process.Start()</c> for <c>TaskDriveCommand</c>'s own <c>onStarted</c> callback
 /// to read a pid off of. The session has to tell the platform who it is instead, through the
 /// same trust model an agent-facing command already extends elsewhere
 /// (<see cref="TaskLogInteractionCommand"/>'s own doc has the precedent: structured fields land
 /// on the stream rather than transcript prose). This appends the exact same
-/// <see cref="InteractiveSessionStarted"/> event <c>TaskWorkCommand</c>'s launch-time recording
+/// <see cref="InteractiveSessionStarted"/> event <c>TaskDriveCommand</c>'s launch-time recording
 /// did, so every downstream reader — <see cref="InteractiveSessionLiveness"/>'s double-booking
 /// guard, <c>h9k task show</c>'s Sessions block, the interactive-claim staleness nudge — sees an
 /// identical shape regardless of which path produced it.
@@ -115,7 +115,7 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
         {
             throw new DomainConflictException(
                 $"Task {task.Id} is {task.State.Value} — only a task with an active interactive claim "
-                + "(h9k task work) registers a session against it.");
+                + "(h9k task drive) registers a session against it.");
         }
 
         // Fetched here, before the RunDetails load the double-booking check below reads, and
@@ -171,7 +171,7 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
                 + "to see where it stands.");
         }
 
-        // The second, unguarded door into the exact overwrite TaskWorkCommand.ReenterAsync's own
+        // The second, unguarded door into the exact overwrite TaskDriveCommand.ReenterAsync's own
         // check exists to prevent (adversarial + conformance review, cycle 1): without this, a
         // prompt pasted twice — into a second terminal, deliberately or by re-pasting stale
         // scrollback — registers a second session here with no check at all, and
@@ -225,7 +225,7 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
                 + "is not set in this environment. h9k task register-session has to run from inside a Claude "
                 + "Code CLI session's own Bash tool, where Claude Code sets it; if this is one and it is still "
                 + "missing, the Claude Code version may predate it. "
-                + $"h9k task work {taskId} --direct-launch remains available for one release if this environment "
+                + $"h9k task drive {taskId} --direct-launch remains available for one release if this environment "
                 + "cannot support the prompt-handoff model.");
         }
 

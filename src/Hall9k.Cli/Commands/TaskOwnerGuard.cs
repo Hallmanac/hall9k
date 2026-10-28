@@ -85,7 +85,7 @@ internal static class TaskOwnerGuard
 
     /// <summary>
     /// Refuses a command that would queue a Published task for this node's owner when another owner
-    /// holds it, by its assignee: <c>h9k task start</c>, <c>h9k task work</c> and
+    /// holds it, by its assignee: <c>h9k task start</c>, <c>h9k task drive</c> and
     /// <c>h9k task publish --queue</c> each take an unassigned Published task for the operator in the
     /// same append, which is exactly what laying hold of a draft must stop. Appends nothing. A task
     /// nobody holds, or this owner holds, passes.

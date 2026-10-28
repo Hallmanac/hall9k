@@ -11,7 +11,7 @@ namespace Hall9k.Cli.Commands;
 /// <summary>
 /// The claim gate as the CLI doors use it (idea 64c75e43): <c>h9k task queue</c> and
 /// <c>h9k task publish --queue</c>, which warn and queue anyway, and
-/// <c>h9k task work</c>/<c>h9k task start</c>, which refuse with the identical sentence. One
+/// <c>h9k task drive</c>/<c>h9k task start</c>, which refuse with the identical sentence. One
 /// place, so the two behaviours cannot drift into two different readings of the same tracker
 /// answer, and so the refusal an agent has to self-correct from is worded once.
 /// <para>
@@ -48,7 +48,7 @@ internal static class TrackerClaimCheck
             cancellationToken);
 
     /// <summary>
-    /// The gate applied at a door that starts work now — <c>h9k task work</c> and
+    /// The gate applied at a door that starts work now — <c>h9k task drive</c> and
     /// <c>h9k task start</c>. A refusal is a <see cref="DomainBusinessRuleException"/>, so it
     /// exits 70: the command line was fine and the task is fine, and what refused is a standing
     /// project rule about who may claim this item, which is exactly what that code means

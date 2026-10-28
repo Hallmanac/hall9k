@@ -9,7 +9,7 @@ using Marten;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// The local owner's fleet for the CLI callers that compose a work prompt (<c>h9k task work</c>,
+/// The local owner's fleet for the CLI callers that compose a work prompt (<c>h9k task drive</c>,
 /// <c>start</c>, <c>delegate</c>, and <c>task show</c>'s starting context), read the way
 /// <see cref="TaskAssignCommand.ResolveNodeIdAsync"/> reads it: the project's own ledger chain
 /// through <see cref="ILedgerChainReader.ComputeAsync"/>, then the owner's fleet within it. Unlike

@@ -14,7 +14,7 @@ namespace Hall9k.Domain.Features.Tasks.Queries;
 /// branch resolves at dispatch and freezes on <c>RunDispatched.BaseBranch</c> (task: a stacked
 /// pull-request edge exists as an explicit opt-in dependency). Lives in the domain rather than
 /// beside the daemon's dispatcher because there are three such paths, not one: the daemon's own
-/// <c>RunLauncher</c>, and the CLI's two interactive claims (<c>h9k task work</c> and
+/// <c>RunLauncher</c>, and the CLI's two interactive claims (<c>h9k task drive</c> and
 /// <c>h9k task start</c>), which must not disagree about which branch a stacked task builds on.
 /// </summary>
 /// <param name="BaseBranch">
@@ -204,7 +204,7 @@ public static class StackedBaseResolver
     /// before this one — which can itself have replicated from another fleet node — so each is
     /// checked here, at the point it is handed forward, rather than trusted because an earlier run
     /// already recorded it: a hostile <c>BaseCommit</c> would otherwise reach
-    /// <c>RunLauncher</c>'s and <c>TaskWorkCommand</c>'s own <c>git merge-base --is-ancestor</c>
+    /// <c>RunLauncher</c>'s and <c>TaskDriveCommand</c>'s own <c>git merge-base --is-ancestor</c>
     /// positionally, and a hostile <c>BaseBranch</c> would become this run's own base with nothing
     /// downstream ever checking it — <c>GitWorktreeManager.CheckoutExistingAsync</c> validates only
     /// the task's own branch, never the base it resumes onto (independent pre-PR review, cycle 1,

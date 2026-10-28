@@ -191,7 +191,7 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
 
     /// <summary>
     /// The same archived-project refusal <c>TaskAssignCommand.AppendAsync</c> gives h9k task queue
-    /// and h9k task publish --queue, and TaskStartCommand/TaskWorkCommand give their own claim
+    /// and h9k task publish --queue, and TaskStartCommand/TaskDriveCommand give their own claim
     /// paths (task: a project can be archived, listed as archived, reactivated, and renamed) —
     /// this command reopens a Done task straight to Queued, which DispatchEngine.ReadQueueAsync
     /// then filters out for an archived project, stranding it invisibly rather than dispatching

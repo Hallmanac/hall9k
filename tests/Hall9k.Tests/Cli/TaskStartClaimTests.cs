@@ -15,15 +15,15 @@ namespace Hall9k.Tests.Cli;
 /// <see cref="TaskStartCommand.PrepareDeliberateClaimFromPublished"/> composes
 /// <see cref="TaskDecider.Assign"/> and <see cref="TaskDecider.ClaimDeliberately"/> into one unit,
 /// with no session and no append, so the composition itself is pinned here without a database —
-/// mirrors <c>TaskWorkClaimTests</c>'s own shape exactly: warning and proceeding on acknowledgment
+/// mirrors <c>TaskDriveClaimTests</c>'s own shape exactly: warning and proceeding on acknowledgment
 /// instead of refusing outright was h9k task start's own behavior first (task 8a56af78-h9k), and
-/// this task (0ac72cb8-h9k) converted h9k task work's identical Published entry to the same shape,
+/// this task (0ac72cb8-h9k) converted h9k task drive's identical Published entry to the same shape,
 /// so the two commands now behave identically at this edge rather than one differing from the
 /// other. <see cref="TaskStartCommand.PrepareDeliberateClaimFromBlocked"/>'s own sibling composition, for
 /// the already-Blocked entry (task 0ac72cb8-h9k, closing the gap task 8a56af78-h9k deliberately
-/// left open), is pinned in the second half of this file — it mirrors <c>TaskWorkClaimTests</c>'s
+/// left open), is pinned in the second half of this file — it mirrors <c>TaskDriveClaimTests</c>'s
 /// identical Blocked-entry tests, carry-forward case included: that reasoning ("no re-entry branch
-/// the way h9k task work has one") was about re-entering a live claim, which this command still
+/// the way h9k task drive has one") was about re-entering a live claim, which this command still
 /// never does, not about withholding a carried-forward acknowledgment from a fresh one.
 /// </summary>
 public sealed class TaskStartClaimTests
@@ -75,7 +75,7 @@ public sealed class TaskStartClaimTests
     /// <summary>
     /// h9k task start's own atomic entry (task 8a56af78-h9k) refuses an open dependency without
     /// the acknowledgment flag, naming the blockers rather than merely a count, and pointing at the
-    /// override rather than only at h9k task assign — h9k task work's own identical atomic entry
+    /// override rather than only at h9k task assign — h9k task drive's own identical atomic entry
     /// converted to this same shape only later (task 688a1ccf-h9k), so this is no longer a behavior
     /// unique to h9k task start, just the one it had first.
     /// </summary>
@@ -95,7 +95,7 @@ public sealed class TaskStartClaimTests
                 "the refusal names the open blocker and the exact override flag to re-run with");
 
         // Nothing about the task was decided — the same "refuse up front" guarantee h9k task
-        // work's own atomic entry gives, so a caller that retries once the blocker clears (or
+        // drive's own atomic entry gives, so a caller that retries once the blocker clears (or
         // with the flag) reads a task still Published.
         task.State.Should().Be(TaskState.Published);
         task.AssignedOwnerId.Should().BeNull();
@@ -123,7 +123,7 @@ public sealed class TaskStartClaimTests
         claimed.DependencyOverrideAcknowledged.Should().BeTrue("the human overrode the open dependency deliberately");
         claimed.RunId.Should().Be(runId);
 
-        // Applied in place (mirrors TaskWorkCommand's own PrepareInteractiveClaimFromPublished):
+        // Applied in place (mirrors TaskDriveCommand's own PrepareInteractiveClaimFromPublished):
         // the caller's own aggregate reflects the assignment the atomic append is about to
         // commit — still Blocked, since this helper hands the claim back rather than applying it
         // itself, exactly as the sibling test above leaves the no-override case at Queued.
@@ -136,8 +136,8 @@ public sealed class TaskStartClaimTests
     /// must not promise it "queues itself the moment the last one's pull request merges" the way
     /// <c>h9k task assign ... to hold it Blocked until they clear</c> would;
     /// <see cref="TaskDependency.DescribeDeath"/>'s honest remedy belongs here instead, reused
-    /// from <see cref="TaskWorkCommand.DescribeUnmetDependencyAdvice"/> rather than re-derived —
-    /// mirrors <c>TaskWorkClaimTests</c>'s identical case (independent pre-PR review, cycle 1,
+    /// from <see cref="TaskDriveCommand.DescribeUnmetDependencyAdvice"/> rather than re-derived —
+    /// mirrors <c>TaskDriveClaimTests</c>'s identical case (independent pre-PR review, cycle 1,
     /// adversarial finding at TaskStartCommand.cs:427: this refusal named the blocker but still
     /// made the false promise a dead blocker can never keep).
     /// </summary>
@@ -196,7 +196,7 @@ public sealed class TaskStartClaimTests
 
     /// <summary>
     /// The carry-forward this task (0ac72cb8-h9k) adds to h9k task start's own Blocked entry,
-    /// exactly as h9k task work's identical entry already has it (design ruling R7): once an
+    /// exactly as h9k task drive's identical entry already has it (design ruling R7): once an
     /// earlier deliberate claim on this same task acknowledged this exact blocker (recorded on
     /// <see cref="TaskAggregate.AcknowledgedUnmetDependencyIds"/>, which a handback or a retry does
     /// not clear), a later start of the identical still-open blocker does not need the flag again

@@ -677,7 +677,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // for each builder's package by name (independent pre-PR review, cycle 1; WorkPromptBuilder's
         // own package added alongside it once that builder moved onto the same mechanism —
         // independent pre-PR review, cycle 1, conformance lens — since every build dispatch and every
-        // h9k task work claim now needs it too, the same way ReviewLapPromptBuilder's needs h9k pr
+        // h9k task drive claim now needs it too, the same way ReviewLapPromptBuilder's needs h9k pr
         // review). AgentPromptBuilder's own package joins the same list for the identical reason —
         // every review, fix, rebase, and recovery prompt now needs it — but as a literal name rather
         // than AgentPromptBuilder.TemplateDirectory: AgentPromptBuilder lives in Hall9k.Daemon, which

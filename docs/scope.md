@@ -166,7 +166,7 @@ resolving) renders "unknown" rather than a bare zero.
 
 ### Interactive claims
 
-`h9k task work <id> [--direct-launch] [--acknowledge-unmet-dependencies]` lets an operator work a
+`h9k task drive <id> [--direct-launch] [--acknowledge-unmet-dependencies]` lets an operator work a
 Published, Queued, or Blocked task themselves instead of dispatching it headless. On a Published
 task assigned to nobody, it queues the task for the operator's own owner and claims it
 interactively in one atomic event append, so the task is never observably Queued in between and the
@@ -188,7 +188,7 @@ attached to the operator's own terminal itself, the way this command always did 
 release; refused on a machine where Claude Code resolves to a Windows script shim, since the prompt
 cannot survive that shim's argv). The claim is held by the human rather than a process — no lease,
 no heartbeat reclaim — so closing the terminal is a normal way to leave, and running
-`h9k task work` again re-enters the same worktree and branch — by default with a fresh prompt, or,
+`h9k task drive` again re-enters the same worktree and branch — by default with a fresh prompt, or,
 under `--direct-launch`, resuming the most recently recorded session's own conversation, falling
 back to a fresh session, announced rather than silent, only when the recorded one cannot be
 resumed. It occupies zero concurrency slots (the run's `NodeId` is the sentinel `Guid.Empty`, which
@@ -199,7 +199,7 @@ indistinguishable from a headless run; `h9k task delegate <id> --note "<text>"` 
 headless build contractor onto this same run, worktree, and branch for one phase, leaving the
 claim, the assignment, and interactive mode untouched, so the task stays the operator's — distinct
 from `handback`, which ends interactive mode outright, and reversed by re-entering with
-`h9k task work` once the contractor reports back (design ruling R6); `h9k task handback` releases
+`h9k task drive` once the contractor reports back (design ruling R6); `h9k task handback` releases
 the claim to a headless agent
 partway through, resuming the same branch (`--first` marks it queue-first for the next free
 dispatch slot, `--now` dispatches it immediately instead, ceiling-exempt, through
@@ -210,7 +210,7 @@ its assignee — nobody can claim it in between, unlike a plain release followed
 
 ### Interactive mode's own review boundaries
 
-An interactive claim (`h9k task work` or a deliberate `h9k task start`) sets a recorded
+An interactive claim (`h9k task drive` or a deliberate `h9k task start`) sets a recorded
 task-level flag — `InteractiveModeEnabled` — independent of who currently holds the claim: once
 on, it stays on across every later run and follow-up until `h9k task handback`, a default
 `h9k task release`, or a default `h9k task release --unassign`, clears it — all three are the
@@ -253,7 +253,7 @@ would anyway. That is the ordinary case for a fresh headless dispatch under inte
 --keep-interactive`, or a retry, reopen, or follow-up redispatch, each a new run with no
 registration carried forward from an earlier one) — so today the build role's own milestones always
 take this path; only the review and fix roles, dispatched later on the same run once a human's own
-`h9k task work` claim has registered against it, can actually reach a live address. A handback is
+`h9k task drive` claim has registered against it, can actually reach a live address. A handback is
 never one of these no-registration cases either way: it clears the interactive-mode flag
 unconditionally, so a handback-dispatched run never reaches these rules at all. With a registered
 session SendMessage cannot reach (the session has since ended), the agent still attempts every send
@@ -265,28 +265,28 @@ A review pass's own end-of-phase report also names the choices the boundary its 
 run at actually has, with the exact command for each — all four at the review-verdict-to-fix
 boundary, and at the gates-to-pull-request boundary the hands-off exit as well (`h9k task revise
 <id> --clear-interactive-mode`, then one `h9k review proceed`, after which the daemon shepherds
-the pull request unattended; an option, never the default). The starting prompt `h9k task work`
+the pull request unattended; an option, never the default). The starting prompt `h9k task drive`
 prints teaches the operator's own session the same three sets, from the same source, so a session
 the operator is sitting at can offer the choices in words rather than sending them to these docs.
 
 ### A deliberate human kick-off
 
 `h9k task start <id>` dispatches a Published, Queued, or already-Blocked task on the spot, headless, instead of
-waiting on the dispatch queue or working it interactively. It reuses `h9k task work`'s own claim
+waiting on the dispatch queue or working it interactively. It reuses `h9k task drive`'s own claim
 shape exactly — the same ceiling-exempt sentinel `NodeId`, so every lever built on it (`deliver`,
-`verify`, `handback`, `release`, the stale-claim nudge, and re-entering with `h9k task work`
+`verify`, `handback`, `release`, the stale-claim nudge, and re-entering with `h9k task drive`
 itself) accepts a start-it-mine claim on the identical terms an interactive one already gets — but
 launches the agent headless and detached (`claude -p`) under the
 `<task-shortid>-build` name rather than attached to the caller's terminal, and returns as soon as
-the process is confirmed alive. Shares `h9k task work`'s own warn-then-acknowledge shape for an
+the process is confirmed alive. Shares `h9k task drive`'s own warn-then-acknowledge shape for an
 unmet dependency, on a Published task and on an already-Blocked one alike (a task already sitting
 Blocked from an ordinary `h9k task queue`, or from a handed-back/retried deliberate claim): the
 platform names every open blocker, and `--acknowledge-unmet-dependencies` is the human's recorded
 override to start it anyway. Not needed twice: an acknowledgment this task already carries from an
 earlier claim on the same still-open blockers is honored without asking again, whichever of
-`start` or `work` gave it. Refused otherwise on Draft, a pr-review task, a reopened task's
+`start` or `drive` gave it. Refused otherwise on Draft, a pr-review task, a reopened task's
 follow-up branch, and any task that already has a live claim; there is no re-entry path the way
-`h9k task work` has one — a fresh claim on an already-Blocked task is exactly what the Blocked
+`h9k task drive` has one — a fresh claim on an already-Blocked task is exactly what the Blocked
 entry is, not a re-entry. Unlike an ordinary interactive claim, the daemon does watch this run: the
 moment its headless session exits, the platform reads the worktree itself and delivers a clean,
 committed tree automatically, or flags anything else needs-you within seconds rather than leaving
@@ -848,7 +848,7 @@ check reads the assignee field and nothing else, leaving the one-time content sn
 alone, and records what it saw on the task's own stream.
 
 Every claim door re-checks: the dispatcher leaves a refused task Queued and logs once per
-episode, and `h9k task work`/`h9k task start` refuse with the same wording and exit 70.
+episode, and `h9k task drive`/`h9k task start` refuse with the same wording and exit 70.
 `h9k task queue` warns and queues anyway, because the tracker is the go signal and the queue is
 where the task is meant to wait. A queued task's own line on `h9k status`, `h9k task show` and
 `h9k project show` names the item and its current holder. The gate itself is read-only with no

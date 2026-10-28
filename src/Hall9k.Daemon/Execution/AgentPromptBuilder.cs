@@ -21,7 +21,7 @@ namespace Hall9k.Daemon.Execution;
 /// <summary>
 /// Assembles the agent's follow-up and pre-PR review prompts. The primary build/work prompt
 /// (<see cref="Build"/>, a thin forward to <c>Hall9k.Connectors.Prompts.WorkPromptBuilder</c>)
-/// and its exclusive helpers live there instead of here so <c>h9k task work</c> — which runs in
+/// and its exclusive helpers live there instead of here so <c>h9k task drive</c> — which runs in
 /// the CLI process and cannot reference <c>Hall9k.Daemon</c> — assembles the identical prompt a
 /// headless dispatch would, through the same code rather than a parallel copy. Everything below
 /// that stayed here (follow-up, fix-checks, rebase, and the pre-PR review prompts) still calls the

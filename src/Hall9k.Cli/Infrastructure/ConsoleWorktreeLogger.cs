@@ -6,7 +6,7 @@ namespace Hall9k.Cli.Infrastructure;
 /// <summary>
 /// Writes <see cref="GitWorktreeManager"/>'s own log lines to the operator's terminal instead of
 /// discarding them. The daemon's <c>GitWorktreeManager</c> logs to its structured daemon log,
-/// where a human isn't watching; <c>h9k task work</c> is the one caller where a human is, and the
+/// where a human isn't watching; <c>h9k task drive</c> is the one caller where a human is, and the
 /// cross-process lock's periodic "waiting on another h9k process" line exists specifically for
 /// that case (GitWorktreeManager.cs's own doc comment) — a <c>NullLogger</c> there discards the
 /// exact line it was added to show (conformance + adversarial review, cycle 1).

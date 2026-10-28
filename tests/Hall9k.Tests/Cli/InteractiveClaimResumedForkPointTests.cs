@@ -85,7 +85,7 @@ public sealed class InteractiveClaimResumedForkPointTests
     public async Task A_fresh_cut_records_its_own_start_point_without_asking_git_anything()
     {
         List<IReadOnlyList<string>> calls = [];
-        string forkPoint = await TaskWorkCommand.ResumedForkPointAsync(
+        string forkPoint = await TaskDriveCommand.ResumedForkPointAsync(
             Recording(ContainmentRunner(exitCode: 1), calls),
             resumedBase: null,
             new Worktree("/tmp/child-wt", ChildBranch, ParentBranch, FreshStartPoint),
@@ -106,7 +106,7 @@ public sealed class InteractiveClaimResumedForkPointTests
     public async Task An_unstacked_resume_asks_git_nothing()
     {
         List<IReadOnlyList<string>> calls = [];
-        string forkPoint = await TaskWorkCommand.ResumedForkPointAsync(
+        string forkPoint = await TaskDriveCommand.ResumedForkPointAsync(
             Recording(ContainmentRunner(exitCode: 1), calls),
             new StackedBaseResolver.ResumedBase("main", RecordedForkPoint),
             new Worktree("/tmp/child-wt", ChildBranch, "main"),
@@ -121,7 +121,7 @@ public sealed class InteractiveClaimResumedForkPointTests
     private static async Task<(string ForkPoint, List<IReadOnlyList<string>> Calls)> ResumeAsync(ProcessRunner git)
     {
         List<IReadOnlyList<string>> calls = [];
-        string forkPoint = await TaskWorkCommand.ResumedForkPointAsync(
+        string forkPoint = await TaskDriveCommand.ResumedForkPointAsync(
             Recording(git, calls),
             new StackedBaseResolver.ResumedBase(ParentBranch, RecordedForkPoint),
             // A resumed checkout performs no fresh cut, so it reports no start point of its own —

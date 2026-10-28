@@ -15,7 +15,7 @@ app.Configure(CliCommandTree.Configure);
 string[] commandArguments = BarePositionalRecording.Normalise(args);
 
 // Without this, Ctrl-C takes SIGINT's default action and the process terminates immediately —
-// no command's own cancellation handling (e.g. TaskWorkCommand's started/ended pairing, PLAN.md
+// no command's own cancellation handling (e.g. TaskDriveCommand's started/ended pairing, PLAN.md
 // #103) ever runs, because RunAsync(args) alone is handed CancellationToken.None and nothing else
 // requests a stop (independent pre-PR review, cycle 2). Cancelling here instead of letting the
 // default handler fire is what lets a command's own try/catch(OperationCanceledException) close
@@ -25,7 +25,7 @@ int cancelKeyPresses = 0;
 DateTimeOffset lastCancelKeyPressAt = DateTimeOffset.MinValue;
 // A repeat press only escalates within this window of the previous one — the "the first press
 // didn't work, so kill it" case the escalation exists for. Ctrl-C is also the ordinary Claude
-// Code keystroke for "stop generating" (h9k task work's own attached session, PLAN.md #103), and
+// Code keystroke for "stop generating" (h9k task drive's own attached session, PLAN.md #103), and
 // a lifetime counter that never resets treated a second, unrelated press an hour later as the
 // same escalation: it killed h9k while the still-attached child survived the very keystroke that
 // killed its parent, silently leaving InteractiveSessionStarted unpaired (independent pre-PR
@@ -41,7 +41,7 @@ Console.CancelKeyPress += (_, e) =>
 {
     if (InteractiveChildGuard.Attached)
     {
-        // h9k task work's own attached Claude Code child shares this terminal's foreground
+        // h9k task drive's own attached Claude Code child shares this terminal's foreground
         // process group, so the OS already delivers this same SIGINT to it directly and
         // independently of this handler — including the double-tap that is Claude Code's own
         // exit gesture. Repeated Ctrl-C here is legitimate input to that child, not an

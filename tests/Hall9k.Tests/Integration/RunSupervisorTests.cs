@@ -583,7 +583,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             "this branch never looks at the tree at all, so h9k task deliver is not confirmed to refuse — the "
             + "tree left behind by an error result may well be perfectly clean and committed");
         run.State.Should().BeOneOf(RunState.Dispatched, RunState.Running,
-            "the run must stay where h9k task work/handback/release already expect it — no widened guard needed");
+            "the run must stay where h9k task drive/handback/release already expect it — no widened guard needed");
         run.InputTokens.Should().Be(
             0, "a flagged run's tokens are recorded by whichever lever the human ends up using, never here too");
 
@@ -598,7 +598,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
     /// <summary>
     /// The re-entry guard (independent pre-PR review, cycle 1, both lenses): once a human attaches
-    /// with <c>h9k task work</c>, <see cref="RunDetails.RegisteredInteractiveSessionName"/> stops
+    /// with <c>h9k task drive</c>, <see cref="RunDetails.RegisteredInteractiveSessionName"/> stops
     /// reading null, and this sweep must never again treat that operator's own eventual "closed the
     /// terminal" as this run kind's unattended exit — the claim is attended now, exactly like an
     /// ordinary interactive one.
@@ -614,7 +614,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Exit(0));
         await RecordInteractiveSessionStartedAsync(store, runId, taskId, processId, cts.Token);
 
-        // The human re-enters with h9k task work before this sweep ever adopts the original
+        // The human re-enters with h9k task drive before this sweep ever adopts the original
         // headless agent — the same event, under the operator's own interactive-claim session
         // name rather than the machine-composed build one.
         await using (IDocumentSession session = store.LightweightSession())
@@ -643,7 +643,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     /// <see cref="RunDetails.PhaseDelegations"/> filter, this sweep would adopt the contractor and
     /// treat its own exit as this run kind's unattended one — auto-delivering (or re-flagging) a
     /// claim <c>h9k task delegate</c> explicitly promises stays the operator's own to finish by
-    /// hand with <c>h9k task work</c>.
+    /// hand with <c>h9k task drive</c>.
     /// </summary>
     [Fact]
     public async Task AdoptDeliberateHeadlessStartsAsync_leaves_a_delegated_claim_alone()
@@ -688,7 +688,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     /// <summary>
     /// The scoping guard (task: a do-now session launched by h9k task start is caught within
     /// seconds): an ordinary sentinel-claimed run that is NOT a deliberate headless start — an
-    /// operator's own attended <c>h9k task work</c> claim shares the identical <see cref="Guid.Empty"/>
+    /// operator's own attended <c>h9k task drive</c> claim shares the identical <see cref="Guid.Empty"/>
     /// NodeId sentinel — must never be swept up here. Nothing should attend, deliver, or flag a
     /// claim a human is sitting in front of.
     /// </summary>

@@ -236,7 +236,7 @@ Closeout, review re-request, merge, and follow-up dispatch (`CloseoutEngine.Insp
 all act on a produced run only while this node still names itself as `TaskAggregate.HolderNodeId`
 — a run whose task has since been held elsewhere is skipped before any network call, its record
 left open for whichever node does hold it; the interactive/deliberate self-claim sentinel
-(`Guid.Empty`, `h9k task work`/`h9k task start`) is never treated as held elsewhere, since it is
+(`Guid.Empty`, `h9k task drive`/`h9k task start`) is never treated as held elsewhere, since it is
 inherently single-node and the ledger never carries a holder write for one at all.
 
 **A claim resumes work another node started** (idea 202383dc, piece C's residual): once a
@@ -245,7 +245,7 @@ touched it, `ForeignResumeBranchResolver.ResolveAsync` reads that task's latest 
 here exactly as readily as one this node dispatched itself — and, when it was dispatched by a real
 node other than this one, hands its branch to the claim as `ResumesBranch`. Shared by all three
 doors a claim can arrive through: `DispatchEngine.TryClaimAsync` (the daemon's own headless claim),
-and `h9k task work`/`h9k task start` (an interactive or deliberate claim, each calling the resolver
+and `h9k task drive`/`h9k task start` (an interactive or deliberate claim, each calling the resolver
 with the `Guid.Empty` sentinel in place of a real node id, since every real node's own latest run is
 foreign to a human's own claim). Applied onto
 `TaskAggregate.RetryBranch` exactly as a human-requested `h9k task retry` or `h9k task handback`
@@ -989,7 +989,7 @@ slug and by `ResolveBranchNameAsync`'s own collision retry when two slugs coinci
 that is broken, but it is worth knowing before dispatch rather than discovering it there.
 
 An operator can work a Published, Queued, or already-Blocked task interactively instead of dispatching it headless
-(Decisions Log #122). On a Published task assigned to nobody, `h9k task work` queues it for the
+(Decisions Log #122). On a Published task assigned to nobody, `h9k task drive` queues it for the
 operator's own owner and claims it interactively in one atomic event append: the task is never
 observably Queued in between, so the dispatcher, woken within moments by the doorbell notification
 a plain `h9k task queue` would have sent, can never win the race to it. An unmet dependency —
@@ -1005,7 +1005,7 @@ triggers; there is no `--interactive` flag on `queue` — edges still gate autom
 exactly as before, and only this deliberate human claim gets the warn-and-proceed path. Whichever
 state it entered from, the claim itself is held by the human, not a process, so there is no lease
 and no heartbeat reclaim; closing the terminal is a normal way to leave, and running
-`h9k task work` again re-enters the same worktree (Decisions Log #103). This claim always turns on
+`h9k task drive` again re-enters the same worktree (Decisions Log #103). This claim always turns on
 the task's own interactive-mode flag (task: interactive mode becomes a recorded property of the
 task, design ruling R2): from here on, this task's run — and any later follow-up, retry, or reopen
 of it — parks at each of the review engine's own four routine phase boundaries (build done to
@@ -1040,7 +1040,7 @@ dispatch under interactive mode (`h9k task start`, an ordinary dispatch carrying
 from an earlier `h9k task release --keep-interactive`, or a retry, reopen, or follow-up redispatch
 — each starts a new run, and no registration carries forward from an earlier one yet), so today the
 build role's own milestones always take this skip-and-log path; only the review and fix roles,
-dispatched later on the same run once a human's own `h9k task work` claim has registered against
+dispatched later on the same run once a human's own `h9k task drive` claim has registered against
 it, can actually reach a live address. A handback is never one of these no-registration cases
 either way: it clears the interactive-mode flag unconditionally, so a handback-dispatched run never
 reaches these rules at all.
@@ -1067,11 +1067,11 @@ everything but that live claim — a headless claim, a different owner's claim, 
 interactive-mode flag is off (`h9k task handback --now` turns it off deliberately; there is no
 boundary park left for a contractor's report to arrive at), a pr-review sentinel claim, a run
 already handed to the standard pipeline, or a worktree another session is still attached to all
-refuse by name. The reverse move: once the contractor reports back, `h9k task work <id>` re-enters
+refuse by name. The reverse move: once the contractor reports back, `h9k task drive <id>` re-enters
 the same worktree interactively so the operator can finish the build themselves — the wheel changes
 hands in both directions, always at a boundary.
 
-By default `h9k task work` claims and cuts as above, then prints the worktree path, the branch,
+By default `h9k task drive` claims and cuts as above, then prints the worktree path, the branch,
 and a starting prompt (assembled through `WorkPromptBuilder`, the same code every path already
 uses) for the operator to paste into a Claude Code session started anywhere — it no longer
 launches or waits on the session itself (Decisions Log #126). The pasted session's own first act
@@ -1080,16 +1080,16 @@ process identity (read from `CLAUDE_PID`, Claude Code's own environment variable
 launch's own launch-time recording always did; the double-booking and liveness guards below key
 off that record, and a session that never registers degrades honestly to a no-op rather than a
 false block, exactly as a claim nobody ever recorded a session against always has. `--direct-launch`
-keeps the prior behavior for one release — `h9k task work` itself launches a plain interactive
+keeps the prior behavior for one release — `h9k task drive` itself launches a plain interactive
 Claude Code process and waits on it, resuming the most recently recorded session's own
 conversation rather than starting a fresh one (falling back to a fresh session, announced, only
 when the recorded one cannot be resumed — Decisions Log #124) — and is the only path the Windows
 script-shim refusal still gates, since a pasted prompt travels through no argv:
 
 ```bash
-h9k task work <id>                   # claim a Published, Queued, or already-Blocked task, cut the same branch/worktree headless dispatch would, print the worktree/branch/starting prompt
-h9k task work <id> --direct-launch   # the prior behavior for one release: launch and wait on the session here instead of printing a prompt
-h9k task work <id> --acknowledge-unmet-dependencies   # claim a task anyway, despite named open blockers
+h9k task drive <id>                   # claim a Published, Queued, or already-Blocked task, cut the same branch/worktree headless dispatch would, print the worktree/branch/starting prompt
+h9k task drive <id> --direct-launch   # the prior behavior for one release: launch and wait on the session here instead of printing a prompt
+h9k task drive <id> --acknowledge-unmet-dependencies   # claim a task anyway, despite named open blockers
 h9k task register-session <id>       # the pasted session's own first act: register its process identity against the claim
 h9k task verify <id>                 # run the project's gates on demand against the claim's worktree
 h9k task deliver <id>                # push and hand the claim into the standard delivery pipeline
@@ -1110,14 +1110,14 @@ h9k task refuse <id> --reason "<why>"   # answers a parked cooperative take requ
 
 A deliberate human kick-off dispatches a Published, Queued, or already-Blocked task on the spot, headless, instead
 of dispatching it interactively or waiting on the queue (Decisions Log #125, "Take the Wheel"
-epic 9272e514's start-it-mine mode): `h9k task start <id>` reuses `h9k task work`'s own claim
+epic 9272e514's start-it-mine mode): `h9k task start <id>` reuses `h9k task drive`'s own claim
 shape exactly (the same ceiling-exempt sentinel, so every existing lever above — deliver, verify,
-handback, release, the stale-claim nudge, and re-entering via `h9k task work` itself — accepts a
+handback, release, the stale-claim nudge, and re-entering via `h9k task drive` itself — accepts a
 start-it-mine claim on the identical terms an interactive one already gets) and the same atomic
 Published entry, but launches the
 agent headless (`claude -p`, Claude Code's own completion mode) and detached rather than attached
 to this terminal, under the slice-1 `<task-shortid>-build` name, addressable on the session mesh
-the moment it starts. Shares `h9k task work`'s own warn-then-acknowledge shape for an unmet
+the moment it starts. Shares `h9k task drive`'s own warn-then-acknowledge shape for an unmet
 dependency, on a Published task and on an already-Blocked one alike (Decisions Log #128, closing
 the gap #125 deliberately left open — that gap was about re-entering a live claim, which
 `h9k task start` still never does, not about withholding a carried-forward acknowledgment from a
@@ -1127,9 +1127,9 @@ ruling: "the platform advises, the human overrides, and the acknowledgment is re
 recorded on the resulting `TaskClaimed` and surfaced on `h9k task show` beside the blockers it
 overrode. Not needed twice: an acknowledgment this task already carries from an earlier claim on
 the same still-open blockers is honored without asking again, whichever of `h9k task start` or
-`h9k task work` gave it. `h9k task start` refuses Draft (publish it first), a pr-review task, a
+`h9k task drive` gave it. `h9k task start` refuses Draft (publish it first), a pr-review task, a
 reopened task's follow-up branch, and any task that already carries a live claim — there is no
-re-entry branch the way `h9k task work` has one; a fresh claim is all this command ever makes, and
+re-entry branch the way `h9k task drive` has one; a fresh claim is all this command ever makes, and
 a fresh claim on an already-Blocked task is exactly what its own Blocked entry is, not a re-entry.
 Giving such a claim back before it finishes — `h9k task handback`, `h9k task release`,
 `h9k task retry`, or `h9k pr resolve`'s own reopen — lands the task on Blocked rather than Queued
@@ -1142,7 +1142,7 @@ file back, since a run dispatched under the sentinel node id above is never adop
 other way. A direct `h9k task start` invocation — unlike `h9k task handback --now`'s own call into
 this same mechanism, which passes false — always turns on the task's own interactive-mode flag too
 (task: interactive mode becomes a recorded property of the task, design ruling R2), the identical
-fact `h9k task work`'s claim above always sets: the build here is headless either way, but from
+fact `h9k task drive`'s claim above always sets: the build here is headless either way, but from
 this claim on, the run still parks at each of the review engine's own four routine phase boundaries
 for a recorded `h9k review proceed` or `h9k review resolve`, so a task started this way is no
 longer the fire-and-forget dispatch it was before this flag existed. The same two ordinary exit
@@ -1329,7 +1329,7 @@ live and recorded on first use for a connection registered earlier), or the logi
 authenticated as, read live on every check and never stored. Each check reads the assignee field
 alone, so a task's one-time content snapshot is untouched, and records `TrackerAssignmentObserved`
 when it passes. Every claim door re-checks: the dispatcher leaves a refused task Queued and logs
-once per episode, `h9k task work` and `h9k task start` refuse with the same wording and exit 70,
+once per episode, `h9k task drive` and `h9k task start` refuse with the same wording and exit 70,
 and `h9k task queue` warns on stderr naming the holder and the link but queues anyway — the
 tracker is the go signal and the queue is where the task waits. A queued task's line on
 `h9k status`, `h9k task show` and `h9k project show` names the item and its holder. Untouched: a
@@ -1622,7 +1622,7 @@ process is already gone, recording which of the four it was.
 
 **A reviewer runs their own review lap on top of that same pr-review task** (Decisions Log #149,
 idea 21ddf2b3, walked 2026-09-06). `h9k pr review` is the reviewer's counterpart to
-`h9k task work`: it prepares the lap and hands over a briefing, and it deliberately builds on the
+`h9k task drive`: it prepares the lap and hands over a briefing, and it deliberately builds on the
 pr-review task rather than beside it.
 
 ```bash
@@ -1798,7 +1798,7 @@ the `DISAGREEMENT:` block is what gets your drafted words in front of them inste
 the settings file of every headless session, so no dispatched session can put text on a pull request
 except through `h9k pr reply`. That is the daemon's fresh build sessions and every follow-up kind
 alike, plus the CLI's own headless launches (`h9k task start`, `h9k task delegate`). The interactive
-`h9k task work` session, where the operator is present, is unchanged, and the daemon's own provider
+`h9k task drive` session, where the operator is present, is unchanged, and the daemon's own provider
 writes (the pull-request opener, re-requests, the merge note, closeout comments) never run in a
 session's shell, so they are unaffected. It is registered in the tree rather than hidden so the
 same check can be run by hand (pipe Claude Code's hook payload in on stdin) when a session

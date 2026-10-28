@@ -117,7 +117,7 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
         {
             throw new DomainConflictException(
                 $"Task {taskId} carries no ledger holder to take over — an interactive claim "
-                + "(h9k task work) never writes one, and a task with no live claim at all has "
+                + "(h9k task drive) never writes one, and a task with no live claim at all has "
                 + "nothing here for --force to override.");
         }
 
@@ -695,7 +695,7 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
                 else
                 {
                     // Claimed, NeedsHuman, AwaitingAuthor and Failed all reach here with no ledger holder:
-                    // an interactive claim (h9k task work/start) records TaskClaimed with the Guid.Empty
+                    // an interactive claim (h9k task drive/start) records TaskClaimed with the Guid.Empty
                     // sentinel, which TaskAggregate.Apply(TaskClaimed) skips the holder write for
                     // — so the task can be under active human work, or waiting on that human's own next
                     // decision, without ever naming a ledger holder to ask (independent pre-PR review, cycle

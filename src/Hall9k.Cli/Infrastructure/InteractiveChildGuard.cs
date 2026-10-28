@@ -1,7 +1,7 @@
 namespace Hall9k.Cli.Infrastructure;
 
 /// <summary>
-/// Whether h9k currently has an attached interactive child process (<c>h9k task work</c>'s own
+/// Whether h9k currently has an attached interactive child process (<c>h9k task drive</c>'s own
 /// spawned Claude Code session) sharing this terminal's foreground process group. Program.cs's
 /// global Ctrl-C handler reads this to suppress its own escalate-to-terminate window while that
 /// child is alive: the terminal already delivers SIGINT to the child directly and independently

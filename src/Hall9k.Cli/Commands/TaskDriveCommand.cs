@@ -93,7 +93,7 @@ namespace Hall9k.Cli.Commands;
 /// (<see cref="TaskClaimed.DependencyOverrideCarriedForward"/>).
 /// </para>
 /// </summary>
-public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Settings>
+public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
 {
     public sealed class Settings : CommandSettings
     {
@@ -136,7 +136,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         if (settings.DirectLaunch && DetectWindowsScriptShim(ClaudeBinary()) is { } shimPath)
         {
             throw new DomainConflictException(
-                $"Claude Code resolves to a script ({shimPath}) on this machine, which h9k task work --direct-launch "
+                $"Claude Code resolves to a script ({shimPath}) on this machine, which h9k task drive --direct-launch "
                 + "cannot launch: an interactive claim's opening prompt travels as a multi-line command-line "
                 + "argument, and cmd.exe — which every .cmd/.bat/.ps1 shim runs through — cannot carry embedded "
                 + "newlines in one. Drop --direct-launch to get the prompt-handoff default instead (paste the "
@@ -240,7 +240,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // Re-checked immediately before launch, not only once inside ReenterAsync: everything
         // above (the worktree cut, the blocker-context load, the skill discovery
         // WorkPromptBuilder.Build runs, and the settings-file write) takes long enough for a
-        // second `h9k task work` on the same task to pass ReenterAsync's own check — reading the
+        // second `h9k task drive` on the same task to pass ReenterAsync's own check — reading the
         // same RunDetails with ActiveSessions still empty — before this session is ever recorded,
         // launching two Claude processes into the same worktree (adversarial review, cycle 1).
         // Reloading RunDetails here (a lightweight session, so this hits the database rather than
@@ -267,7 +267,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 + $"launch. h9k task show {taskId} to see where it stands.");
         }
 
-        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(currentRun, taskId, "work", settings.Force, quiet: crossMachineNoticeShown);
+        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(currentRun, taskId, "drive", settings.Force, quiet: crossMachineNoticeShown);
 
         return settings.DirectLaunch
             ? await LaunchDirectlyAsync(
@@ -376,7 +376,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // fallback below still passes `prompt` itself — it genuinely is a new conversation with
         // nothing of its own to pick back up from.
         const string reentryPrompt =
-            "You're back — an operator re-entered this task's interactive claim (`h9k task work`) "
+            "You're back — an operator re-entered this task's interactive claim (`h9k task drive`) "
             + "after leaving the terminal. This is the same conversation, not a new task: pick up "
             + "exactly where you left off.";
 
@@ -416,7 +416,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                     // attempt's own Started event (adversarial review, cycle 1: appending them
                     // separately left a window where ActiveSessions read empty — the failed
                     // resume's Ended already landed, this attempt's Started had not yet — and a
-                    // second h9k task work from another terminal could pass
+                    // second h9k task drive from another terminal could pass
                     // EnsureNotAttachedElsewhere and launch a second claude into this worktree).
                     (processId, startedAt) => AppendSessionStartedAsync(
                         store, runId, sessionIdToLaunch, processId, startedAt, sessionName, pendingEndedSession, CancellationToken.None),
@@ -433,7 +433,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 // for the earlier, now-dead resume attempt does not block a later re-entry.
                 throw new DomainConflictException(
                     $"Could not launch the interactive Claude Code session for task {taskId}: {exception.Message} "
-                    + $"The claim is preserved — h9k task work {taskId} to try again, or h9k task release {taskId} to give it back.");
+                    + $"The claim is preserved — h9k task drive {taskId} to try again, or h9k task release {taskId} to give it back.");
             }
 
             // Only when InteractiveSessionStarted actually landed (conformance review, cycle 4):
@@ -523,7 +523,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             AnsiConsole.MarkupLineInterpolated($"[dim]Task {taskId} is still claimed —[/]");
             AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task deliver {taskId}    push and hand into the standard delivery pipeline[/]");
             AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task verify {taskId}     run the project's gates on demand[/]");
-            AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task work {taskId}       re-enter (prints a fresh prompt; add --direct-launch to resume this conversation)[/]");
+            AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task drive {taskId}       re-enter (prints a fresh prompt; add --direct-launch to resume this conversation)[/]");
             AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task handback {taskId}   let a headless agent finish from here[/]");
             AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task release {taskId}    give it back to the dispatch queue[/]");
         }
@@ -597,13 +597,13 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 + $"h9k task release {task.Id} to put it back in the queue, or investigate by hand.");
         }
 
-        // A second h9k task work on the same task is the same collision every other command in
+        // A second h9k task drive on the same task is the same collision every other command in
         // this claim's surface already guards against: without this, a second terminal launches
         // a second claude into the same worktree, and RunDetailsProjection.StartSession's
         // single-slot ActiveSessions record overwrites the first session's liveness record with
         // the second's — so the first session becomes invisible to verify/deliver/handback too
         // (adversarial review, cycle 2).
-        bool crossMachineNoticeShown = InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, task.Id, "work", force);
+        bool crossMachineNoticeShown = InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, task.Id, "drive", force);
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Re-entering task {task.Id}'s interactive claim.[/]");
         // Whatever the earlier session left — committed or not — is already sitting in this
@@ -1018,7 +1018,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         if (task.AwaitsRemoteStackedParent && !acknowledgeUnmetDependencies)
         {
             throw new DomainBusinessRuleException(
-                RemoteStackedParentClaimRefusal(task, "h9k task work", alreadyAssigned: false));
+                RemoteStackedParentClaimRefusal(task, "h9k task drive", alreadyAssigned: false));
         }
 
         if (unmet.Count > 0 && !acknowledgeUnmetDependencies)
@@ -1033,7 +1033,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 + "dispatch itself holds an assignment to: "
                 + string.Join("; ", unmet.Select(dependency => ExternalText.OneLine(dependency.Describe()))) + ". "
                 + "The platform advises rather than refuses here: "
-                + $"h9k task work {task.Id} --acknowledge-unmet-dependencies to claim it anyway, once you have "
+                + $"h9k task drive {task.Id} --acknowledge-unmet-dependencies to claim it anyway, once you have "
                 + $"confirmed that is what you want. {DescribeUnmetDependencyAdvice(task.Id, unmet, stackedOnTaskId: task.StackedOnTaskId)} "
                 + $"h9k task show {task.Id} for the full picture.");
         }
@@ -1049,7 +1049,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// The refusal a claim across an unreleased remote stacked parent gets — the shape
     /// <see cref="DescribeUnmetDependencyAdvice"/> gives a local blocker, for the hold that has no
     /// local blocker at all (task: a stacked child can stand on a pull request another install
-    /// owns). Written once and shared by <c>h9k task work</c> and <c>h9k task start</c> so the two
+    /// owns). Written once and shared by <c>h9k task drive</c> and <c>h9k task start</c> so the two
     /// doors say the same thing, exactly as they already share the unmet-dependency wording.
     /// <para>
     /// It names the flag rather than telling the human to wait, for the same reason the
@@ -1123,7 +1123,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             && !acknowledgeUnmetDependencies && !carriedForward)
         {
             throw new DomainBusinessRuleException(
-                RemoteStackedParentClaimRefusal(task, "h9k task work", alreadyAssigned: true));
+                RemoteStackedParentClaimRefusal(task, "h9k task drive", alreadyAssigned: true));
         }
 
         if (!acknowledgeUnmetDependencies && !carriedForward)
@@ -1133,7 +1133,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 + "closed out, the same bar dispatch itself holds an assignment to: "
                 + string.Join("; ", unmetDependencies.Select(dependency => ExternalText.OneLine(dependency.Describe()))) + ". "
                 + "The platform advises rather than refuses here: "
-                + $"h9k task work {task.Id} --acknowledge-unmet-dependencies to claim it anyway, once you have "
+                + $"h9k task drive {task.Id} --acknowledge-unmet-dependencies to claim it anyway, once you have "
                 + $"confirmed that is what you want. "
                 + $"{DescribeUnmetDependencyAdvice(task.Id, unmetDependencies, alreadyAssigned: true, stackedOnTaskId: task.StackedOnTaskId)} "
                 + $"h9k task show {task.Id} for the full picture.");
@@ -1212,7 +1212,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
     /// <summary>
     /// The warning printed once a claim proceeds despite unmet dependencies — shared by
-    /// <c>h9k task work</c> and <c>h9k task start</c> (adopted by <see cref="TaskStartCommand"/>
+    /// <c>h9k task drive</c> and <c>h9k task start</c> (adopted by <see cref="TaskStartCommand"/>
     /// for its own Published and Blocked entries) so the two never drift. Always names every
     /// unmet blocker, then follows with <see cref="TaskDependency.DescribeDeath"/> for any that
     /// are dead: the refusal path already says that a dead blocker will never close out
@@ -1285,7 +1285,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             // happened (AGENTS.md: never guess at unobserved facts).
             return new DomainConflictException(
                 $"Task {taskId} changed while claiming it — it now reads {current.State.Value}, not Claimed. "
-                + $"Most likely a benign concurrent append; h9k task work {taskId} to try again, or h9k status "
+                + $"Most likely a benign concurrent append; h9k task drive {taskId} to try again, or h9k status "
                 + "to see where it stands.");
         }
 
@@ -1381,7 +1381,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             // the reason this method's own summary states: an interactive claim shares this
             // branch's fate with the daemon's own claim, and the flag survives on a Queued task
             // even after a headless claim that set it requeues without ever launching, so a human
-            // reaching this same task through h9k task work or h9k task start meets the identical
+            // reaching this same task through h9k task drive or h9k task start meets the identical
             // rule rather than a second one.
             catch (WorktreeException exception)
                 when (exception is BranchGoneException || !taskDetails.RetryBranchResumesForeignNode)

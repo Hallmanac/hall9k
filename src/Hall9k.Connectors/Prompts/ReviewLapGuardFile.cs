@@ -35,7 +35,7 @@ public enum ReviewLapGuardOutcome
 /// <see cref="ClaudeSettingsFile.ReviewLapDeniedTools"/>.
 /// <para>
 /// It exists because the lap's default connector hands the reviewer a prompt to paste into a
-/// Claude Code session they start themselves (the same prompt-handoff shape <c>h9k task work</c>
+/// Claude Code session they start themselves (the same prompt-handoff shape <c>h9k task drive</c>
 /// settled on, PLAN.md §16 #126) — and a session started that way passes no <c>--settings</c>
 /// flag unless the reviewer remembers to. Claude Code reads project settings out of the directory
 /// it runs in with no flag at all, so a guard living in the checkout covers the session however

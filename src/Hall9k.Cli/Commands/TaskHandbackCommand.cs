@@ -18,7 +18,7 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// Hand an interactive claim (h9k task work) to a headless agent partway through: the operator
+/// Hand an interactive claim (h9k task drive) to a headless agent partway through: the operator
 /// is present to commit, so an uncommitted file refuses this the same way h9k task deliver
 /// refuses on one, naming it. Releases the human claim and queues the task through normal
 /// dispatch — mechanically the existing follow-up resume-existing-branch flow
@@ -99,7 +99,7 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
 
         // A pr-review task's own Claimed+sentinel state is never a human's own interactive claim
-        // (TaskWorkCommand and TaskStartCommand both refuse to create one) — it is auto-pr-review's
+        // (TaskDriveCommand and TaskStartCommand both refuse to create one) — it is auto-pr-review's
         // Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync), which reads identically
         // to one on IsInteractiveClaim's own Guid.Empty discriminator. Checked ahead of the
         // run-null branch below, not only the terminal/non-terminal split that branch used to
@@ -153,7 +153,7 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
             InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "hand back", settings.Force);
         }
 
-        // Mirrors TaskWorkCommand.ReenterAsync's own guard: once h9k task deliver hands the run
+        // Mirrors TaskDriveCommand.ReenterAsync's own guard: once h9k task deliver hands the run
         // to the standard pipeline, the task can still read Claimed+interactive for the whole
         // review loop, so the state check above alone would let this requeue and re-dispatch a
         // headless agent into the very worktree the delivered run's gates and review sessions

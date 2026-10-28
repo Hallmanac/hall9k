@@ -778,7 +778,7 @@ public sealed class DecisionAndLearningCommandsTests : IClassFixture<PostgresFix
         NodeContext node, ProjectDetails project, CancellationToken cancellationToken) =>
         SeedClaimedRunAsync(node, project, node.NodeId, SessionRoleName.Build, cancellationToken);
 
-    /// <summary>An operator's own h9k task work claim: the interactive sentinel, and the claim's own role name.</summary>
+    /// <summary>An operator's own h9k task drive claim: the interactive sentinel, and the claim's own role name.</summary>
     private Task<(Guid TaskId, Guid RunId)> SeedAttendedClaimAsync(
         NodeContext node, ProjectDetails project, CancellationToken cancellationToken) =>
         SeedClaimedRunAsync(node, project, Guid.Empty, SessionRoleName.InteractiveClaim, cancellationToken);

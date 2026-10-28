@@ -41,13 +41,13 @@ namespace Hall9k.Tests.Integration;
 /// too, and heartbeat telemetry upserts without ever touching a stream.
 /// </para>
 /// <para>
-/// Racing claims from Published — <c>h9k task work</c>'s atomic entry (task 688a1ccf-h9k): the
+/// Racing claims from Published — <c>h9k task drive</c>'s atomic entry (task 688a1ccf-h9k): the
 /// assignment and the interactive claim land as one event append, so the database's own optimistic
 /// concurrency is what arbitrates a genuine collision — two operators, or an operator racing
 /// another owner's plain <c>h9k task assign</c> — to exactly one winner.
-/// <see cref="TaskWorkCommand.PrepareInteractiveClaimFromPublished"/> is what each racing side
+/// <see cref="TaskDriveCommand.PrepareInteractiveClaimFromPublished"/> is what each racing side
 /// calls to build its own (Assigned, Claimed) pair; the loser's own honest-race-loss message
-/// (<see cref="TaskWorkCommand.DescribeAssignAndClaimRaceLossAsync"/>) names who actually won.
+/// (<see cref="TaskDriveCommand.DescribeAssignAndClaimRaceLossAsync"/>) names who actually won.
 /// </para>
 /// <para>
 /// Lease liveness — the sleep-masquerading-as-death defenses (origin incident, 2026-08-18: a
@@ -429,9 +429,9 @@ public sealed class ClaimAndLeaseArbitrationTests(PostgresFixture postgres) : IC
 
         Guid runId1 = DomainId.New();
         Guid runId2 = DomainId.New();
-        (TaskAssigned assigned1, TaskClaimed claimed1, _) = TaskWorkCommand.PrepareInteractiveClaimFromPublished(
+        (TaskAssigned assigned1, TaskClaimed claimed1, _) = TaskDriveCommand.PrepareInteractiveClaimFromPublished(
             view1, ownerId, [], runId1, InteractiveClaimNow, acknowledgeUnmetDependencies: false);
-        (TaskAssigned assigned2, TaskClaimed claimed2, _) = TaskWorkCommand.PrepareInteractiveClaimFromPublished(
+        (TaskAssigned assigned2, TaskClaimed claimed2, _) = TaskDriveCommand.PrepareInteractiveClaimFromPublished(
             view2, ownerId, [], runId2, InteractiveClaimNow, acknowledgeUnmetDependencies: false);
 
         long expectedVersion = fence.Version + 2;
@@ -453,7 +453,7 @@ public sealed class ClaimAndLeaseArbitrationTests(PostgresFixture postgres) : IC
 
         // The loser is told honestly who won, not just that something changed — read back from
         // what actually committed rather than guessed at.
-        DomainConflictException raceLoss = await TaskWorkCommand.DescribeAssignAndClaimRaceLossAsync(
+        DomainConflictException raceLoss = await TaskDriveCommand.DescribeAssignAndClaimRaceLossAsync(
             store, taskId, cts.Token);
         raceLoss.Message.Should().Contain("Operator One");
         raceLoss.Message.Should().Contain("claimed it interactively first");
@@ -462,7 +462,7 @@ public sealed class ClaimAndLeaseArbitrationTests(PostgresFixture postgres) : IC
     /// <summary>
     /// The other shape a collision can take: a plain <c>h9k task assign</c> (no claim) commits
     /// first, so the loser's atomic append fails against a task that only ever reached Queued.
-    /// <see cref="TaskWorkCommand.DescribeAssignAndClaimRaceLossAsync"/> has nothing to name a
+    /// <see cref="TaskDriveCommand.DescribeAssignAndClaimRaceLossAsync"/> has nothing to name a
     /// winner by — a bare assignment claims nothing — so it says exactly that rather than
     /// inventing a claimant.
     /// </summary>
@@ -485,7 +485,7 @@ public sealed class ClaimAndLeaseArbitrationTests(PostgresFixture postgres) : IC
         TaskAggregate assignView = (await assigning.Events.AggregateStreamAsync<TaskAggregate>(
             taskId, version: fence.Version, token: cts.Token))!;
 
-        (TaskAssigned assigned, TaskClaimed claimed, _) = TaskWorkCommand.PrepareInteractiveClaimFromPublished(
+        (TaskAssigned assigned, TaskClaimed claimed, _) = TaskDriveCommand.PrepareInteractiveClaimFromPublished(
             claimView, ownerId, [], DomainId.New(), InteractiveClaimNow, acknowledgeUnmetDependencies: false);
 
         // The plain h9k task assign path: TaskDecider.Assign alone, no claim.
@@ -502,7 +502,7 @@ public sealed class ClaimAndLeaseArbitrationTests(PostgresFixture postgres) : IC
         TaskAggregate final = (await verify.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
         final.State.Should().Be(TaskState.Queued, "only the plain assign landed — nothing claimed it");
 
-        DomainConflictException raceLoss = await TaskWorkCommand.DescribeAssignAndClaimRaceLossAsync(
+        DomainConflictException raceLoss = await TaskDriveCommand.DescribeAssignAndClaimRaceLossAsync(
             store, taskId, cts.Token);
         raceLoss.Message.Should().Contain("Queued", "nothing claimed it, so there is no winner to name");
         raceLoss.Message.Should().NotContain("claimed by", "the plain assign never claimed the task, so nothing claims that it did");

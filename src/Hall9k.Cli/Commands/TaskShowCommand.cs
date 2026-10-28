@@ -528,7 +528,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             }
 
             // Recorded on the current claim's own TaskClaimed (task 8a56af78-h9k, extended by
-            // task 0ac72cb8-h9k to h9k task work's own claim too): a human warned about the
+            // task 0ac72cb8-h9k to h9k task drive's own claim too): a human warned about the
             // still-open blocker(s) above chose to claim this task anyway, either with
             // --acknowledge-unmet-dependencies or, per design ruling R7, relying on an
             // acknowledgment an earlier claim on this task already recorded (DependencyOverrideCarriedForward)
@@ -543,7 +543,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                     ? "  [yellow]Claimed deliberately despite the open blocker(s) above, relying on an "
                       + "acknowledgment an earlier claim on this task already recorded — nothing was asked "
                       + "again[/]"
-                    : "  [yellow]Claimed deliberately despite the open blocker(s) above (h9k task work or "
+                    : "  [yellow]Claimed deliberately despite the open blocker(s) above (h9k task drive or "
                       + "h9k task start --acknowledge-unmet-dependencies)[/]");
             }
         }
@@ -2269,7 +2269,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// </para>
     /// <para>
     /// The one shape this cannot attribute is a run whose <see cref="RunDetails.NodeId"/> is the
-    /// <see cref="Guid.Empty"/> sentinel an interactive <c>h9k task work</c> claim carries: nothing
+    /// <see cref="Guid.Empty"/> sentinel an interactive <c>h9k task drive</c> claim carries: nothing
     /// on that record names a node or a machine at all. Those keep printing their path, which is
     /// right on the machine that ran the claim and wrong on any other node the record replicates
     /// to — a known gap, named here rather than papered over with a guess.
@@ -3115,17 +3115,17 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     private static void AnnounceNextStep(TaskDetails details, bool hasOpenDependency)
     {
         string shortId = TaskListCommand.ShortId(details.Id);
-        // h9k task work is refused outright for a pr-review task (TaskWorkCommand.ClaimAndCutAsync:
+        // h9k task drive is refused outright for a pr-review task (TaskDriveCommand.ClaimAndCutAsync:
         // "it has no diff of its own for an interactive session to build"), so the hint is named
         // only where the claim would actually be accepted (DescribeDoneRemedy's own rule,
         // independent pre-PR review, cycle 3). An open dependency no longer suppresses the hint
-        // (task 0ac72cb8-h9k): h9k task work now warns and asks instead of refusing outright, so
+        // (task 0ac72cb8-h9k): h9k task drive now warns and asks instead of refusing outright, so
         // the hint just names the flag that answers it (adversarial lens, cycle 1).
         string interactiveClaimHint = details.Type == TaskType.PrReview
             ? string.Empty
             : hasOpenDependency
-                ? $" (or h9k task work {shortId} --acknowledge-unmet-dependencies to claim across the open dependency yourself)"
-                : $" (or h9k task work {shortId} to claim and work it yourself)";
+                ? $" (or h9k task drive {shortId} --acknowledge-unmet-dependencies to claim across the open dependency yourself)"
+                : $" (or h9k task drive {shortId} to claim and work it yourself)";
         string? next = details.State.Value switch
         {
             "Draft" => details.AcceptanceCriteria.Count == 0
@@ -3135,7 +3135,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 + $"{interactiveClaimHint}[/]",
             "Blocked" => $"[dim]It queues itself when its dependencies close out. To stop waiting:[/] "
                 + $"h9k task dequeue {shortId} [dim]→[/] h9k task draft {shortId} [dim]→[/] h9k task revise {shortId} --clear-dependencies"
-                + $" [dim]— or claim across the open dependency yourself:[/] h9k task work {shortId} --acknowledge-unmet-dependencies",
+                + $" [dim]— or claim across the open dependency yourself:[/] h9k task drive {shortId} --acknowledge-unmet-dependencies",
             "Queued" => $"[dim]Waiting for a dispatch cycle on one of the assignee's nodes. To take it back:[/] h9k task dequeue {shortId}",
             // A posted review waiting on its author (task: a pr-review task stays open while the
             // pull request's review threads are unresolved). Nothing is being asked of the

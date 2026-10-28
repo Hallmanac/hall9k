@@ -119,7 +119,7 @@ public sealed class TaskAbandonCommand : Hall9kAsyncCommand<TaskAbandonCommand.S
         // run here would double-book the former and race the latter against the daemon's own
         // supervisor (independent pre-PR review, cycle 1, both lenses).
         // IsInteractiveClaim is the sentinel NodeId (Guid.Empty) alone — it does not, and
-        // cannot, tell a genuinely interactive h9k task work claim (no agent process at all)
+        // cannot, tell a genuinely interactive h9k task drive claim (no agent process at all)
         // apart from h9k task start's own deliberate headless dispatch (TaskDecider.ClaimDeliberately
         // records the identical sentinel for both), so this branch's immediate stamp still lands
         // on a live headless agent process a `h9k task start` claimed, not only on an interactive

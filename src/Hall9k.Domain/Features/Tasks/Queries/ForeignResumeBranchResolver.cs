@@ -11,11 +11,11 @@ namespace Hall9k.Domain.Features.Tasks.Queries;
 /// run — by <see cref="RunDetails.DispatchedAt"/> — when it was dispatched by a real node OTHER
 /// than <paramref name="claimingNodeId"/> and still names a branch. Null for every other shape: no
 /// run yet, the latest run carries the interactive/deliberate <see cref="Guid.Empty"/> sentinel (a
-/// human's own <c>h9k task work</c> or <c>h9k task start</c> — never a foreign NODE's work,
+/// human's own <c>h9k task drive</c> or <c>h9k task start</c> — never a foreign NODE's work,
 /// whichever machine it ran on), or the latest run is the claiming node's own.
 /// <para>
 /// Lives in the domain, shared by <c>DispatchEngine.TryClaimAsync</c> and the CLI's own two
-/// interactive claims (<c>h9k task work</c>, <c>h9k task start</c>), the same three-caller shape
+/// interactive claims (<c>h9k task drive</c>, <c>h9k task start</c>), the same three-caller shape
 /// <see cref="StackedBaseResolver"/> already has, because a foreign node's own branch must resume
 /// no matter which of the three doors reclaims the task — an interactive claim shares this
 /// branch's fate with the daemon's own claim (independent pre-PR review, cycle 1, conformance

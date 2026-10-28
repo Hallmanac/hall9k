@@ -13,7 +13,7 @@ namespace Hall9k.Tests.Domain;
 /// <para>
 /// Origin: this branch's own blast-radius sweep. The daemon's dispatch arm was fixed first and five
 /// sibling sites were still reading <c>project.BaseBranch</c> — the CLI's two interactive
-/// branch-creating claims (<c>h9k task work</c>, <c>h9k task start</c>, the two-arm shape AGENTS.md
+/// branch-creating claims (<c>h9k task drive</c>, <c>h9k task start</c>, the two-arm shape AGENTS.md
 /// warns about by name) plus three commit-counting guards (<c>VerificationRunner</c>'s no-commit
 /// check, <c>h9k task deliver</c>, <c>h9k task release</c>, <c>h9k task delegate</c>). Each would
 /// have counted the parent's commits as the child's own, reading a genuinely empty branch as

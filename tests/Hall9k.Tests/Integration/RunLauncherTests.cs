@@ -1704,7 +1704,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
             // Nobody touches origin — instead, the retained worktree itself picks up a commit
             // nothing has reviewed, exactly as an interactive claim landing on it after the
-            // failure would (h9k task work reuses this same worktree, since the branch already
+            // failure would (h9k task drive reuses this same worktree, since the branch already
             // has one). Origin's tip still reads pushedTip; only the local ref has moved.
             await File.WriteAllTextAsync(Path.Combine(worktree.Path, "UNREVIEWED.md"), "nobody saw this\n", cts.Token);
             await TestGit.RunAsync(worktree.Path, ["add", "-A"], cts.Token);

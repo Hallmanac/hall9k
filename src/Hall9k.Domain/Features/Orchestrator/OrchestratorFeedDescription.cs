@@ -128,7 +128,7 @@ public static class OrchestratorFeedDescription
 
             // ─── Task state changes ────────────────────────────────────────────────────────────────
             TaskPublished => "published and ready to assign",
-            // A claim a person made by hand (h9k task work, h9k task start) carries Guid.Empty as its
+            // A claim a person made by hand (h9k task drive, h9k task start) carries Guid.Empty as its
             // node id — the sentinel TaskAggregate.IsInteractiveClaim reads, deliberately naming no
             // node at all — so these two arms come first: shortening that sentinel would print
             // "node 00000000" as though a node had been observed (AGENTS.md, never guess at unobserved

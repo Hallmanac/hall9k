@@ -21,7 +21,7 @@ public delegate Task<IReadOnlySet<Guid>?> LocalFleetReader(CancellationToken can
 /// <para>
 /// One entry point rather than four, and in the Domain rather than beside any one builder,
 /// because the callers sit on opposite sides of the reference graph and must not be able to
-/// disagree: <c>RunLauncher</c> and <c>ReviewEngine</c> in the daemon, and <c>h9k task work</c>
+/// disagree: <c>RunLauncher</c> and <c>ReviewEngine</c> in the daemon, and <c>h9k task drive</c>
 /// in the CLI process, which cannot reference the daemon at all. A second copy of the scope
 /// predicate or the provenance filter is exactly the shape that drifts with no build failure to
 /// catch it, the same argument <c>KnowledgeDocumentText</c> already makes for the two renderers.

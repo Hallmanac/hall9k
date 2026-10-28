@@ -20,7 +20,7 @@ namespace Hall9k.Connectors.Prompts;
 /// The build/work prompt (PLAN.md §4): objective, acceptance criteria, agent context, the
 /// project's context links, and — when the worktree ships repo skills — a one-line pointer per
 /// skill. Extracted out of <c>Hall9k.Daemon.Execution.AgentPromptBuilder</c> so headless dispatch
-/// (<c>RunLauncher</c>) and an operator's interactive claim (<c>h9k task work</c>) assemble the
+/// (<c>RunLauncher</c>) and an operator's interactive claim (<c>h9k task drive</c>) assemble the
 /// prompt through the identical code — the CLI cannot reference <c>Hall9k.Daemon</c> (the CLI
 /// never hosts Wolverine), so this is the shared home both sides call. The daemon's own
 /// AgentPromptBuilder pulls this in with a <c>using static</c> so its follow-up/review prompt
@@ -105,7 +105,7 @@ public static class WorkPromptBuilder
         string? stackedForkPointCommit = StackedForkPoint(project, effectiveBaseBranch, baseCommit);
         // The live ceiling this session's own settings file actually enforces when a caller with
         // one in reach (ClaudeExecutor, via RunLauncher) passes it through; the CLI's own
-        // h9k task work claim structurally cannot reach DaemonOptions (Reference graph: Cli ->
+        // h9k task drive claim structurally cannot reach DaemonOptions (Reference graph: Cli ->
         // Domain + Connectors), so it falls back to the same constant ClaudeSettingsFile.Build
         // itself falls back to for that caller (independent pre-PR review, cycle 1, both lenses).
         TimeSpan effectiveCommandTimeout = commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout;
@@ -124,7 +124,7 @@ public static class WorkPromptBuilder
         {
             // Unlike the causeless branch below, this one is not a guess: TaskDetails.ResumesFromHandback
             // is set only from TaskHandedBack, so this run is dispatching because a human's own
-            // h9k task work claim was handed back (h9k task handback) — an observed fact, not the
+            // h9k task drive claim was handed back (h9k task handback) — an observed fact, not the
             // ambiguity the causeless wording exists to avoid asserting past.
             AppendFragment(prompt, file, "handback-heading");
             prompt.AppendLine();
@@ -157,7 +157,7 @@ public static class WorkPromptBuilder
             // from scratch instead of finding the finished work already in the worktree).
             // Worded without a cause on purpose: this same flag is true for a genuine failure
             // retry (h9k task retry) and an operator simply re-entering their own still-open
-            // interactive claim (h9k task work) — asserting "a previous attempt failed" here
+            // interactive claim (h9k task drive) — asserting "a previous attempt failed" here
             // would be exactly the unobserved-fact guess AGENTS.md forbids on the feature's
             // own headline path (adversarial review, cycle 1). A handback (h9k task handback)
             // is known rather than guessed, so it gets the more specific branch above instead.
@@ -186,7 +186,7 @@ public static class WorkPromptBuilder
             if (task.RetryReasonIsHandback && task.RetryReason.IsNotBlank() && task.RetryPending)
             {
                 // This dispatch did not take the explicit handback branch above — isHandback is
-                // false, whether because this caller never passes it (h9k task work) or because
+                // false, whether because this caller never passes it (h9k task drive) or because
                 // TaskRequeued severed ResumesFromHandback after an earlier headless attempt on
                 // this same handback died — but the standing reason is still a handback's own
                 // words, not a retry instruction, so it keeps the same causeless wording that
@@ -306,7 +306,7 @@ public static class WorkPromptBuilder
         {
             // Unlike a direct launch or a headless dispatch, neither of which reaches this
             // prompt without their process's own WorkingDirectory already set to worktreePath,
-            // the prompt-handoff default (h9k task work's own doc: "paste into a session started
+            // the prompt-handoff default (h9k task drive's own doc: "paste into a session started
             // anywhere") gives no guarantee this session's cwd is the worktree at all — asserting
             // "you are in" it here would be a false claim about a location this session was never
             // actually placed in (independent pre-PR review, cycle 1, both lenses).
@@ -369,7 +369,7 @@ public static class WorkPromptBuilder
             // this session's to trigger by hand.
             // InteractiveSessionLiveness.EnsureNotAttachedElsewhere refuses both h9k task deliver
             // and h9k task verify unconditionally from inside this very session (unlike an attached
-            // h9k task work claim, verify's self-invocation exemption keys on
+            // h9k task drive claim, verify's self-invocation exemption keys on
             // HALL9K_INTERACTIVE_RUN_ID, which HeadlessLaunch.SpawnDetached never sets), so an
             // instruction telling this session to run either itself describes a command that always
             // fails (conformance and adversarial review, cycle 4).
@@ -521,7 +521,7 @@ public static class WorkPromptBuilder
     /// Take the Wheel epic 9272e514's slice 10): distinct from both branches above on purpose.
     /// Unlike a handback, this is not a permanent hand-off — the operator stays the arbiter and
     /// reads the contractor's report before deciding anything, including re-entering this very
-    /// worktree with <c>h9k task work</c> to finish by hand. Unlike the causeless "a previous
+    /// worktree with <c>h9k task drive</c> to finish by hand. Unlike the causeless "a previous
     /// attempt worked here first" branch, this always has a real, current author to name: the
     /// operator holding this task interactively right now. <paramref name="delegationNote"/> is
     /// their own handoff in the blocker-handoff mold (what was attempted, what is deliberate
@@ -1494,7 +1494,7 @@ public static class WorkPromptBuilder
 
     /// <summary>
     /// The prompt-handoff model's own connector rule (R4, idea fcaded0b's design rulings, Take the
-    /// Wheel epic 9272e514's slice 7): <c>h9k task work</c> no longer launches this session and
+    /// Wheel epic 9272e514's slice 7): <c>h9k task drive</c> no longer launches this session and
     /// records its pid itself the way a direct launch's own <c>onStarted</c> callback did — it
     /// printed this prompt for the operator to paste into a Claude Code session they started on
     /// their own, so hall9k has not observed this session exists yet. Naming the observation gate
@@ -1532,7 +1532,7 @@ public static class WorkPromptBuilder
     /// <c>Hall9k.Connectors.Prompts.ClaudeSettingsFile.Build</c> normally guarantees through
     /// <c>--settings</c> — a direct launch always passes that flag itself, but a session started
     /// this way was pasted into wherever the operator happened to start it, and
-    /// <c>h9k task work</c> only ever recommends the flag on the printed handoff rather than
+    /// <c>h9k task drive</c> only ever recommends the flag on the printed handoff rather than
     /// enforcing it, so a session launched without it would otherwise never learn either rule from
     /// anywhere (independent pre-PR review, adversarial lens, cycle 1). Read this rule as a
     /// fallback for the case <c>--settings</c> was skipped, not as a replacement for recommending
@@ -1624,7 +1624,7 @@ public static class WorkPromptBuilder
     /// existing run — but <c>TaskDelegateCommand</c> still never resolves that run's own
     /// registration before calling this, so its address is null here too, for a different reason
     /// (see <paramref name="isDelegatedContractor"/>). The review and fix roles, dispatched later on
-    /// that same run once a human's own <c>h9k task work</c> claim registered against it, are the
+    /// that same run once a human's own <c>h9k task drive</c> claim registered against it, are the
     /// roles this can actually reach a real address for.
     /// </para>
     /// </summary>
@@ -1815,7 +1815,7 @@ public static class WorkPromptBuilder
     /// <summary>
     /// The same four-choice vocabulary, taught to the operator's OWN attached session at claim
     /// time (task: a human at the wheel takes the fix role herself, fourth criterion): the
-    /// starting prompt <c>h9k task work</c> prints for the operator to paste into their own Claude
+    /// starting prompt <c>h9k task drive</c> prints for the operator to paste into their own Claude
     /// Code session. They are the arbiter at every boundary this run reaches, and that session is
     /// what they will ask "what are my options here" — so it is told the same thing the review
     /// agents' own outbound reports will tell them, from the same source, rather than being left

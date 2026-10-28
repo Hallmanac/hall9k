@@ -16,7 +16,7 @@ namespace Hall9k.Domain.Features.Project;
 public sealed record PromptBuilderKey
 {
     /// <summary>The work prompt, composed by <c>WorkPromptBuilder</c> — reached both by an
-    /// interactive <c>h9k task work</c> and by the daemon's own fresh-dispatch build run (a task
+    /// interactive <c>h9k task drive</c> and by the daemon's own fresh-dispatch build run (a task
     /// with no retry branch to resume composes through this same builder, not <see cref="Agent"/>),
     /// so this addendum reaches every headless build the daemon starts on its own, not only an
     /// interactively-claimed one.</summary>

@@ -10,7 +10,7 @@ namespace Hall9k.Domain.Features.Run;
 /// Takes the three raw strings rather than the aggregate/projection/options types themselves so
 /// both dispatch sites can call it: <c>Hall9k.Daemon.Execution.RunLauncher</c> (headless dispatch,
 /// reading <c>DaemonOptions.ReviewStageComposition</c> for the node level) and
-/// <c>Hall9k.Cli.Commands.TaskWorkCommand</c> (an interactive claim's own dispatch, which has no
+/// <c>Hall9k.Cli.Commands.TaskDriveCommand</c> (an interactive claim's own dispatch, which has no
 /// live <c>DaemonOptions</c> to read and instead reads the same platform config file value
 /// directly — <c>Hall9k.Domain → Hall9k.Cli</c> is a legal reference, <c>Hall9k.Daemon → Hall9k.Cli</c>
 /// is not, so this resolver lives in Domain rather than beside the caps' own daemon-only one).

@@ -12,9 +12,9 @@ namespace Hall9k.Tests.Connectors;
 /// <summary>
 /// The delivery-arrangement sentences <see cref="WorkPromptBuilder.Build"/> can hand a session,
 /// one per launch shape: a dispatcher-launched headless build (watched by RunSupervisor), an
-/// operator's attached <c>h9k task work</c> claim — with or without the prompt-handoff model's
+/// operator's attached <c>h9k task drive</c> claim — with or without the prompt-handoff model's
 /// own self-registration content (R4, idea fcaded0b's design rulings, Take the Wheel epic
-/// 9272e514's slice 7): the default <c>h9k task work</c> path sets <c>requiresSelfRegistration</c>,
+/// 9272e514's slice 7): the default <c>h9k task drive</c> path sets <c>requiresSelfRegistration</c>,
 /// and the kept-for-one-release <c>--direct-launch</c> path does not, since that path still
 /// records the session itself the way it always did — and a deliberate <c>h9k task start</c>
 /// kick-off: headless like the first, and — since <c>RunSupervisor.AdoptDeliberateHeadlessStartsAsync</c>
@@ -414,7 +414,7 @@ public sealed class WorkPromptBuilderTests
         prompt.Should().Contain("A human delegated this phase to you");
         prompt.Should().Contain("h9k task delegate");
         prompt.Should().Contain("still in interactive mode");
-        prompt.Should().Contain("h9k task work` to continue by hand");
+        prompt.Should().Contain("h9k task drive` to continue by hand");
         prompt.Should().NotContain("A previous attempt worked here first");
         prompt.Should().NotContain("A human began this work interactively");
     }
@@ -524,7 +524,7 @@ public sealed class WorkPromptBuilderTests
 
     /// <summary>
     /// Task: a human at the wheel takes the fix role herself, fourth criterion — the starting
-    /// prompt <c>h9k task work</c> hands the operator's own session teaches it the same four
+    /// prompt <c>h9k task drive</c> hands the operator's own session teaches it the same four
     /// choices the review agents' outbound reports will, so a human agent can offer them in words
     /// without her reading the docs. Every command is asserted with its own id, because a choice
     /// named without its exact command is the one she still has to go and look up.
