@@ -71,6 +71,7 @@ public static class InteractiveBoundaryChoices
                 + "carrying their redirect as its findings rather than the reviewer's own.",
                 $"`h9k review resolve {id} --merge-ready --reason \"<why it is sound>\"` — overrule the "
                 + "finding; the loop stops asking and moves on.",
+                SkipLine(id),
             ],
             InteractiveBoundaryLevers.GatesToPullRequest =>
             [
@@ -89,6 +90,7 @@ public static class InteractiveBoundaryChoices
                 $"`h9k review proceed {id}` — continue exactly where the loop parked.",
                 $"`h9k review resolve {id} --merge-ready` or `--needs-fixes \"<reason>\"` — redirect the "
                 + "boundary instead of merely approving it.",
+                SkipLine(id),
             ],
         };
     }
@@ -105,16 +107,32 @@ public static class InteractiveBoundaryChoices
         return levers switch
         {
             InteractiveBoundaryLevers.ReviewVerdictToFix =>
-                $"Four choices: h9k review proceed {id} (dispatch a fix session), "
+                $"Five choices: h9k review proceed {id} (dispatch a fix session), "
                 + $"h9k review fixed {id} (the findings were fixed by hand, by you or by your session on "
                 + $"your word — commit first, then the review agents check that fix), h9k review resolve {id} --needs-fixes \"<redirect>\" (a fix session "
-                + $"carrying your redirect), or h9k review resolve {id} --merge-ready (overrule the finding).",
+                + $"carrying your redirect), h9k review resolve {id} --merge-ready (overrule the finding), or "
+                + $"{SkipParkClause(id)}.",
             InteractiveBoundaryLevers.GatesToPullRequest =>
                 $"h9k review proceed {id} to open it, or h9k review resolve {id} --needs-fixes \"<reason>\" "
                 + $"to send it back instead. To hand the pull request off entirely: h9k task revise {id} "
                 + $"--clear-interactive-mode, then h9k review proceed {id} once — the daemon shepherds it "
                 + "from there without you. Interactive mode is the default; that hand-off is an option.",
-            _ => $"h9k review proceed {id} to continue, or h9k review resolve to redirect it.",
+            _ => $"h9k review proceed {id} to continue, h9k review resolve to redirect it, or {SkipParkClause(id)}.",
         };
     }
+
+    /// <summary>
+    /// The skip-to-pr entry, shared by the two boundaries that offer it. The gates-to-pull-request
+    /// boundary never does: review has already settled there, so nothing is left to skip, and
+    /// <c>h9k review proceed</c> is the lever that opens the pull request.
+    /// </summary>
+    private static string SkipLine(string id) =>
+        $"`h9k task skip-to-pr {id} --reason \"<why>\"` — open the pull request now and skip whatever review "
+        + "is left: the gates, every review track, the final pass, and the settling gate. Recorded on the "
+        + "run as a manual override naming who skipped what. Only on their explicit word; `--no-reason` "
+        + "records none.";
+
+    private static string SkipParkClause(string id) =>
+        $"h9k task skip-to-pr {id} (open the pull request now, skipping the rest of review; recorded as a "
+        + "manual override)";
 }
