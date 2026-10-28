@@ -63,6 +63,21 @@ public sealed class ReviewSkipTests
     }
 
     [Fact]
+    public void A_park_waiting_on_a_reply_to_a_human_reviewer_is_refused_and_names_the_reply_choices()
+    {
+        (RunAggregate run, Guid id) = Dispatched();
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new HumanThreadReplyParked(id, [], Now));
+        run.Apply(new ReviewParked(id, "A drafted reply is waiting on a decision.", Now));
+
+        Action admit = () => ReviewSkipRules.Admit(Task(), run);
+
+        admit.Should().Throw<DomainConflictException>()
+            .WithMessage("*--post-reply-as-written*--post-reply*--post-nothing*");
+    }
+
+    [Fact]
     public void A_task_with_interactive_mode_off_is_refused()
     {
         (RunAggregate run, _) = Dispatched();
@@ -218,6 +233,73 @@ public sealed class ReviewSkipTests
         run.Apply(new ReviewParked(id, "park", Now));
 
         ReviewSkipPlan.Compute(run).Should().Equal(ReviewSkipPlan.SettlingGate);
+    }
+
+    [Fact]
+    public void A_park_at_the_fix_to_re_review_boundary_leaves_out_the_gates_the_fix_already_passed()
+    {
+        (RunAggregate run, Guid id) = AfterAFixLanded();
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new ReviewParked(id, "Interactive mode is on for this task.", Now, IsInteractiveGate: true));
+
+        run.ParkedFromReviewPhase.Should().Be(ReviewPhase.Reverify);
+        ReviewSkipPlan.Compute(run).Should().NotContain(ReviewSkipPlan.Gates);
+    }
+
+    [Fact]
+    public void A_park_after_a_fix_but_before_its_gates_ran_still_names_the_gates()
+    {
+        (RunAggregate run, _) = AfterAFixLanded();
+        run.Apply(new ReviewParked(run.Id, "Parked before the fix's gates ran.", Now));
+
+        ReviewSkipPlan.Compute(run).Should().Contain(ReviewSkipPlan.Gates);
+    }
+
+    [Fact]
+    public void A_park_in_front_of_the_final_pass_still_names_it_because_it_has_not_run()
+    {
+        (RunAggregate run, Guid id) = AfterAFixLanded();
+        run.Apply(new VerificationPassed(id, Now));
+        ReadCleanByEveryTrack(run, id, 2, ReviewMode.Verify);
+        run.Apply(new ReviewParked(id, "gates passed and the mandatory final review pass is ready", Now, IsInteractiveGate: true));
+
+        run.ParkedFromReviewPhase.Should().Be(ReviewPhase.Settling);
+        ReviewSkipPlan.Compute(run).Should().Contain(ReviewSkipPlan.FinalPass);
+    }
+
+    [Fact]
+    public void A_settling_park_after_a_clean_full_read_with_nothing_owed_leaves_the_final_pass_out()
+    {
+        (RunAggregate run, Guid id) = Dispatched();
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        ReadCleanByEveryTrack(run, id, 1, ReviewMode.Discovery);
+        run.Apply(new ReviewParked(id, "Lifetime budget spent.", Now));
+
+        run.ParkedFromReviewPhase.Should().Be(ReviewPhase.Settling);
+        ReviewSkipPlan.Compute(run).Should().Equal(ReviewSkipPlan.SettlingGate);
+    }
+
+    private static void ReadCleanByEveryTrack(RunAggregate run, Guid id, int cycle, ReviewMode mode)
+    {
+        foreach (ReviewLens lens in ReviewLens.CycleLenses)
+        {
+            run.Apply(new ReviewDispatched(id, DomainId.New(), cycle, 5001, Now, Now, null, lens, mode));
+            run.Apply(new ReviewPassCompleted(id, cycle, lens, ReviewVerdict.MergeReady, Now, [], mode));
+            run.Apply(new ReviewTrackConcluded(id, lens, cycle, ReviewSettlement.Clean, [], Now));
+        }
+    }
+
+    /// <summary>A run whose first review cycle ordered a fix and whose fix session has just completed.</summary>
+    private static (RunAggregate Run, Guid Id) AfterAFixLanded()
+    {
+        (RunAggregate run, Guid id) = Dispatched();
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        ReadCleanByEveryTrack(run, id, 1, ReviewMode.Discovery);
+        run.Apply(new ReviewFixDispatched(id, DomainId.New(), 1, 5003, Now, Now));
+        run.Apply(new ReviewFixCompleted(id, 1, ReviewFixOutcome.Fixed, Now));
+        return (run, id);
     }
 
     // ---- what the event does to the run ----
