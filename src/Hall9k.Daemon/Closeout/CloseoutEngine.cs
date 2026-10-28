@@ -609,7 +609,8 @@ public sealed class CloseoutEngine(
         CancellationToken cancellationToken,
         bool completeClaimedTaskHere = false,
         IReadOnlyList<object>? precedingRunEvents = null,
-        bool preserveWorkspaceOnCaptureFailure = false)
+        bool preserveWorkspaceOnCaptureFailure = false,
+        string? keptWorktreePath = null)
     {
         RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
         long? expectedRunVersion = null;
@@ -666,7 +667,7 @@ public sealed class CloseoutEngine(
         {
             await CompleteCloseoutAsync(
                 session, run, project, task, mergedAt, now, expectedRunVersion, cancellationToken,
-                completeClaimedTaskHere, precedingRunEvents, preserveWorkspaceOnCaptureFailure);
+                completeClaimedTaskHere, precedingRunEvents, preserveWorkspaceOnCaptureFailure, keptWorktreePath);
             return true;
         }
         catch (ExistingStreamIdCollisionException)
@@ -817,6 +818,120 @@ public sealed class CloseoutEngine(
         return InspectionOutcome.Inspected;
     }
 
+    /// <summary>
+    /// Whether <paramref name="run"/> is the run the pull request was opened through and the task is
+    /// currently held by the owner's interactive claim on that pull request's branch (<c>h9k task drive</c>
+    /// at the PR stage). Pure, so the rule is pinned without a store.
+    /// </summary>
+    internal static bool IsHeldByPullRequestStageClaim(TaskAggregate task, RunDetails run) =>
+        task.State == TaskState.Claimed && task.IsInteractiveClaim && task.CurrentRunId is not null
+        && task.PullRequestRunId == run.Id && task.PullRequestUrl.IsNotBlank() && run.PullRequestNumber is > 0;
+
+    /// <summary>
+    /// What closeout does for a pull request the owner is iterating on by hand: one state read per sweep
+    /// (<see cref="IPullRequestInspector.InspectStateAsync"/>, as the orphan sweep reads) and nothing else.
+    /// No lap is dispatched, nothing is rebased or merged, and the pull request's own run is not
+    /// superseded. A merge on GitHub is recorded on the claim's own run, which completes together with the
+    /// task in one transaction (as <c>ReviewEngine</c>'s mid-review merge short-circuit does), ending the
+    /// claim, and the pull request's earlier run is retired in the same sweep. A close without a merge is
+    /// recorded on the pull request's run, which keeps its worktree, and the claim stays.
+    /// </summary>
+    private async Task<InspectionOutcome> WatchHeldPullRequestAsync(
+        IDocumentSession session, StreamState fence, TaskAggregate task, RunDetails run, ProjectDetails project,
+        CancellationToken cancellationToken)
+    {
+        PullRequestStateSnapshot snapshot = await inspector.InspectStateAsync(
+            project.RepositoryPath, task.PullRequestUrl!, run.PullRequestNumber!.Value, cancellationToken);
+
+        // A slow network call: revalidate before acting, exactly as the sweeps above do.
+        StreamState? current = await session.Events.FetchStreamStateAsync(run.TaskId, cancellationToken);
+        if (current is null || current.Version != fence.Version)
+        {
+            logger.LogDebug(
+                "Task {TaskId} advanced while inspecting the held pull request {Url}; deferring to the next sweep",
+                run.TaskId, run.PullRequestUrl);
+            return InspectionOutcome.Inspected;
+        }
+
+        if (await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken) is not { IsArchived: false })
+        {
+            return InspectionOutcome.Inspected;
+        }
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        if (snapshot.IsMerged)
+        {
+            Guid claimRunId = task.CurrentRunId!.Value;
+            RunDetails? claimRun = await session.LoadAsync<RunDetails>(claimRunId, cancellationToken);
+            string? kept = claimRun is null ? null : await WorktreeInUseAsync(claimRun, cancellationToken);
+            bool committed = await ReconstructAndCompleteAsync(
+                session, task, project, claimRunId, node.NodeId, node.OwnerId, snapshot.MergedAt, now,
+                cancellationToken, completeClaimedTaskHere: true, keptWorktreePath: kept);
+            if (!committed)
+            {
+                return InspectionOutcome.Inspected;
+            }
+
+            session.Events.Append(run.Id, new RunSuperseded(run.Id, task.LeaseGeneration, now));
+            await session.SaveChangesAsync(cancellationToken);
+            return InspectionOutcome.MergeObserved;
+        }
+
+        if (snapshot.IsClosed)
+        {
+            // Recorded where the pull request's watch lives, and the worktree is not touched: the owner is
+            // standing in it. The claim stays, so deliver and release still work on the branch.
+            session.Events.Append(run.Id, new PullRequestClosed(run.Id, snapshot.ClosedAt, now));
+            await session.SaveChangesAsync(cancellationToken);
+            logger.LogWarning(
+                "Run {RunId}: pull request {Url} was closed without merge while the owner holds an interactive claim "
+                + "on it — recorded, worktree and claim left in place",
+                run.Id, run.PullRequestUrl);
+            return InspectionOutcome.Inspected;
+        }
+
+        return InspectionOutcome.Inspected;
+    }
+
+    /// <summary>
+    /// The claim's worktree path when it must not be removed after a merge: a session is still alive in it,
+    /// or the tree holds uncommitted work (or git could not say it does not). Null when it is safe to clean up.
+    /// </summary>
+    private async Task<string?> WorktreeInUseAsync(RunDetails claimRun, CancellationToken cancellationToken)
+    {
+        if (claimRun.WorktreePath.IsBlank() || !Directory.Exists(claimRun.WorktreePath))
+        {
+            return null;
+        }
+
+        foreach (ActiveSession active in claimRun.ActiveSessions)
+        {
+            if (active.StartedAt is { } startedAt && IsProcessAlive(active.ProcessId, startedAt))
+            {
+                return claimRun.WorktreePath;
+            }
+        }
+
+        ProcessResult status = await processRunner(
+            "git", ["status", "--porcelain"], claimRun.WorktreePath, cancellationToken);
+        return status.ExitCode != 0 || status.StandardOutput.Trim().Length > 0 ? claimRun.WorktreePath : null;
+    }
+
+    private static bool IsProcessAlive(int processId, DateTimeOffset startedAt)
+    {
+        try
+        {
+            using System.Diagnostics.Process process = System.Diagnostics.Process.GetProcessById(processId);
+            DateTimeOffset actual = new(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+            return (actual - startedAt).Duration() <= TimeSpan.FromSeconds(2);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException
+            or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    }
+
     private async Task<InspectionOutcome> InspectAndActAsync(RunDetails run, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
@@ -882,6 +997,14 @@ public sealed class CloseoutEngine(
         // run's watch is over; retire it so the watch set stays bounded.
         if (task.CurrentRunId != run.Id)
         {
+            // The one exception: the owner holds an interactive claim on this pull request's branch
+            // (h9k task drive at the PR stage). The newer run is theirs, not a follow-up that supersedes
+            // this one, so this run keeps the watch and the sweep stands down to merge and close detection.
+            if (IsHeldByPullRequestStageClaim(task, run))
+            {
+                return await WatchHeldPullRequestAsync(session, fence, task, run, project, cancellationToken);
+            }
+
             if (task.CurrentRunId is not null)
             {
                 session.Events.Append(run.Id, new RunSuperseded(run.Id, task.LeaseGeneration, DateTimeOffset.UtcNow));
@@ -2426,10 +2549,11 @@ public sealed class CloseoutEngine(
         CancellationToken cancellationToken,
         bool completeClaimedTaskHere = false,
         IReadOnlyList<object>? precedingRunEvents = null,
-        bool preserveWorkspaceOnCaptureFailure = false)
+        bool preserveWorkspaceOnCaptureFailure = false,
+        string? keptWorktreePath = null)
     {
         RunHandoffRecorded handoff = await ComposeHandoffAsync(session, run, now, cancellationToken);
-        PullRequestMerged merged = new(run.Id, mergedAt, now);
+        PullRequestMerged merged = new(run.Id, mergedAt, now, keptWorktreePath);
         RunCompleted completed = new(run.Id, now);
         object[] runEvents = precedingRunEvents is { Count: > 0 }
             ? [.. precedingRunEvents, merged, handoff, completed]
@@ -2586,6 +2710,19 @@ public sealed class CloseoutEngine(
 
         await UnblockDependentsAsync(run.TaskId, now, cancellationToken);
         await TellTheCardAsync(run.TaskId, project, task, cancellationToken);
+
+        // The owner was iterating on this pull request by hand and a session is still live in the
+        // worktree, or the tree holds uncommitted work: removing either would pull the floor out from
+        // under them, so both are left and the merge event names the path.
+        if (keptWorktreePath is not null)
+        {
+            logger.LogInformation(
+                "Run {RunId}: pull request {Url} merged while the owner was iterating on it; leaving worktree "
+                + "{WorktreePath} and branch {Branch} in place because a session is live there or it holds "
+                + "uncommitted work",
+                run.Id, run.PullRequestUrl, keptWorktreePath, run.Branch);
+            return;
+        }
 
         // A stranded-delta read that failed outright (rather than confirming nothing was
         // stranded), or one that read a confirmed delta but could not save it to disk, both

@@ -31,7 +31,8 @@ public sealed class CloseoutReportAttentionTests
         TaskAttention row = CloseoutReportAttention.Compose(report, Id);
 
         row.NeedsYou.Should().BeTrue();
-        row.Lever.Should().Be($"h9k task revise {Id} --clear-interactive-mode");
+        row.Lever.Should().StartWith($"h9k task revise {Id} --clear-interactive-mode")
+            .And.Contain($"h9k task drive {Id}");
         row.Cause.Should().Contain(ReviewUrl).And.Contain("triaged: 2 fix, 1 decline, 0 route").And.Contain("build");
     }
 
@@ -67,7 +68,7 @@ public sealed class CloseoutReportAttentionTests
         TaskAttention row = CloseoutReportAttention.Compose(report, Id);
 
         row.Cause.Should().Contain(expected).And.Contain("3 unresolved review threads");
-        row.Lever.Should().Be($"h9k pr resolve {Id}");
+        row.Lever.Should().StartWith($"h9k pr resolve {Id}").And.Contain($"h9k task drive {Id}");
     }
 
     [Fact]
