@@ -16,8 +16,8 @@ public enum InteractiveBoundaryLevers
     ProceedOrRedirect,
 
     /// <summary>
-    /// The review-verdict-to-fix boundary, where four choices apply: send the agent, do the fix by
-    /// hand, send the agent with a redirect, or overrule the finding.
+    /// The review-verdict-to-fix boundary, where five choices apply: send the agent, do the fix by
+    /// hand, send the agent with a redirect, overrule the finding, or skip straight to the pull request.
     /// </summary>
     ReviewVerdictToFix,
 

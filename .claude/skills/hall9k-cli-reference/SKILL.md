@@ -1023,7 +1023,7 @@ files, and refuses an unmoved branch tip unless `--no-change` states why — and
 also be a deliberate no-change dismissal. It spends no automatic
 fix budget and no cap a fix session consumes, and the review cycle it opens counts exactly as one
 a fix session opens does. A fifth verb skips the rest of review altogether: `h9k task skip-to-pr
-<task> --reason "<why>"` opens the pull request at once, bypassing the gates, every review track, the
+<task> --reason "<why>"` opens the pull request at once, bypassing any gates still owed, every review track, the
 final pass, and the settling gate, and **records the bypass** as a manual-override event on the run
 naming who skipped what (see the command list below). It is offered at every boundary except gates to
 pull request, where review has already settled and `h9k review proceed` opens the pull request. `h9k task handback` and a default `h9k task release` are the two
@@ -1115,7 +1115,7 @@ h9k task drive <id> --acknowledge-unmet-dependencies   # claim a task anyway, de
 h9k task register-session <id>       # the pasted session's own first act: register its process identity against the claim
 h9k task verify <id>                 # run the project's gates on demand against the claim's worktree
 h9k task deliver <id>                # push and hand the claim into the standard delivery pipeline (--pr-summary <file> supplies the pull request's title and description)
-h9k task skip-to-pr <id> --reason "<why>"   # open the pull request at once, skipping the gates, every review track, the final pass, and the settling gate; RECORDED on the run as a manual override naming who skipped what. Interactive-mode tasks only (not pr-review, not a spike). From the build it delivers exactly as `deliver` does; otherwise it runs at any review park. Refused at the gates-to-pull-request park (use `h9k review proceed`), at a park waiting on a reply to a human reviewer (use `h9k review resolve` with a reply flag first), and while a gate or review session is live. --no-reason records none, --reason-by-agent marks a reason the driving session wrote, --pr-summary <file> works as on deliver. The override adds nothing to the pull request and covers this run only
+h9k task skip-to-pr <id> --reason "<why>"   # open the pull request at once, skipping any gates still owed, every review track, the final pass, and the settling gate; RECORDED on the run as a manual override naming who skipped what. Interactive-mode tasks only (not pr-review, not a spike). From the build it delivers exactly as `deliver` does; otherwise it runs at any review park. Refused at the gates-to-pull-request park (use `h9k review proceed`), at a park waiting on a reply to a human reviewer (use `h9k review resolve` with a reply flag first), and while a gate or review session is live. --no-reason records none, --reason-by-agent marks a reason the driving session wrote, --pr-summary <file> works as on deliver. The override adds nothing to the pull request and covers this run only
 h9k task delegate <id> --note "<text>"   # dispatch a headless build contractor onto this same claim for one phase, staying in interactive mode
 h9k task handback <id>               # release the claim to a headless agent partway through, resuming the branch
 h9k task handback <id> --first   # same release, plus the queue-first marker: the next free slot takes it regardless of age (Decisions Log #127)

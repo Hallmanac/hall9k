@@ -128,7 +128,7 @@ public static class InteractiveBoundaryChoices
     /// </summary>
     private static string SkipLine(string id) =>
         $"`h9k task skip-to-pr {id} --reason \"<why>\"` — open the pull request now and skip whatever review "
-        + "is left: the gates, every review track, the final pass, and the settling gate. Recorded on the "
+        + "is left: any gates still owed, every review track, the final pass, and the settling gate. Recorded on the "
         + "run as a manual override naming who skipped what. Only on their explicit word; `--no-reason` "
         + "records none.";
 

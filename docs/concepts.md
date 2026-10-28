@@ -810,7 +810,7 @@ is never recorded over commits the next pass is reading.
 
 **A human at the wheel can skip the rest of review, and the skip is recorded.** On an
 interactive-mode task, `h9k task skip-to-pr` opens the pull request at once, from the build or from any
-review park. It bypasses the gates, every review track, the final pass, and the settling gate, and
+review park. It bypasses any gates still owed, every review track, the final pass, and the settling gate, and
 appends a manual-override event to the run that names who skipped, when, why, and exactly what was
 skipped. The run settles as `Overridden` rather than `Clean` or `Settled`, so no surface can mistake
 an unreviewed tip for a reviewed one. The override covers that run only, and it adds nothing to the
