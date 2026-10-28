@@ -948,6 +948,7 @@ one of them, grouped by what it governs, with its default. Three things apply to
 | `Hall9k__MaxCloseoutLapsPerObstruction` | 2 | The progress cap: consecutive automatic laps closeout may spend on the SAME obstruction (the same failing check, the same unresolved threads) before parking; a lap that clears its obstruction resets this one, and a human re-engaging with the pull request grants one more lap past it |
 | `Hall9k__MaxMechanicalResolutionAttempts` | 3 | For a pre-approved task, how many times a merge that GitHub refuses for a mechanical reason is retried without an agent before the run parks with an itemized reason. A manual `h9k pr resolve` refills it. |
 | `Hall9k__MaxStackReplayRuns` | 12 | For a stacked child, how many mechanical replays onto a moved parent head (or onto the base branch once the parent merged) it gets before it parks. It is its own budget, higher than the closeout ceiling, because a parent under review legitimately moves once per lap; a manual `h9k pr resolve` resets it. |
+| `Hall9k__CloseoutTriageCap` | 3 | Lifetime cap on the read-only triage sessions closeout dispatches for one task whose interactive flag is on, one per distinct set of unresolved review threads. Past it the needs-you row says no triage ran. Its siblings are `Hall9k__CloseoutTriageMaxTurns` (40) and `Hall9k__CloseoutTriageTimeout` (20m). |
 | `Hall9k__CopilotReviewSettleWindow` | 24h | How long a pre-approved task's pull request waits for a requested Copilot review to arrive before the run parks instead of waiting forever. |
 | `Hall9k__ChecksRegistrationSettleWindow` | 15m | How long a pre-approved task's merge gate waits, after the head was last pushed, for GitHub to report a first check run before deciding what an empty list means. Past the window, an empty rollup parks the task naming `h9k project set --ci none` unless the project already declared it (`h9k project set --ci none\|required`, default `required`); an empty rollup is never trusted as "no CI" on its own. |
 | `Hall9k__MaxReviewRerequestsAfterFixes` | 2 | How many countersign re-requests one task's pull request may draw before it settles on the internal review, the thread replies, and CI (Decisions Log #62). |
@@ -1812,6 +1813,27 @@ active interactive claim to act on, though, and a task can outlive one —
 a headless follow-up dispatched under a real node claim while the flag is still on, or the task
 already reached Done with its pull request open. `h9k task revise <id> --clear-interactive-mode`
 is the fallback that clears the flag directly in either case, with no active claim required.
+
+**Closeout while you drive.** The flag is also what closeout reads once the pull request is open.
+With it on, closeout is analysis-only: it dispatches no lap and writes nothing to the branch or the
+pull request (no mechanical rebase, no stacked retarget), and it reports instead. `h9k status` and
+`h9k task show` show a needs-you row that names what it found and the go that matches it:
+
+| The row reports | The go |
+|---|---|
+| Unresolved review threads, with a read-only triage's counts (fix, decline, route) and the path of its report; or that no triage ran, when the task is past its triage allowance (`Hall9k__CloseoutTriageCap`, 3 per task) | `h9k pr resolve <id>` |
+| Failing checks, by name | `h9k pr resolve <id> --checks` |
+| A conflict with the base branch | `h9k pr resolve <id> --rebase` |
+| A changes-requested review, or a stacked parent that moved or merged | `h9k task revise <id> --clear-interactive-mode` |
+| A pre-approved task whose merge is waiting for you | `h9k task revise <id> --clear-interactive-mode`, or merge it yourself on GitHub |
+
+Each go hands the task back to automation: `pr resolve` clears the interactive flag in the same
+append as its reopen and then dispatches its lap as it always did, so the follow-up and the
+closeout after it run fully automatically, a pre-approved merge included. The first lap carries
+the triage report in its prompt, fenced as data. Merge and close detection, the review observation,
+the membership gate, and the re-request of an errored Copilot review keep running while you drive.
+A task that was already Done with the flag on when this shipped switches to this behavior at
+upgrade; its row names the lever back to today's closeout.
 
 **The verb map:**
 
