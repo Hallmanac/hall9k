@@ -123,7 +123,11 @@ public sealed partial class RunListItemProjection : SingleStreamProjection<RunLi
 
     public void Apply(IEvent<RunProcessStarted> @event, RunListItem view) => view.State = RunState.Running;
 
-    public void Apply(IEvent<RunResumed> @event, RunListItem view) => view.State = RunState.Running;
+    public void Apply(IEvent<RunResumed> @event, RunListItem view)
+    {
+        view.State = RunState.Running;
+        view.Delivered = false;
+    }
 
     // Mirrors RunDetailsProjection: without this, an interactive claim's run list row stays
     // at Dispatched (RunDispatched's own state) for the whole time an operator holds it, while
@@ -196,14 +200,22 @@ public sealed partial class RunListItemProjection : SingleStreamProjection<RunLi
     // off BudgetParked between a review cycle's ReviewDispatched entries.
     public void Apply(IEvent<ReviewFixDispatched> @event, RunListItem view) => view.State = RunState.UnderReview;
 
-    public void Apply(IEvent<RunBudgetExhausted> @event, RunListItem view) => view.State = RunState.BudgetParked;
+    public void Apply(IEvent<RunBudgetExhausted> @event, RunListItem view)
+    {
+        view.Delivered = view.State.DeliveredAfterPark(view.Delivered);
+        view.State = RunState.BudgetParked;
+    }
 
     // Mirrors RunDetails/RunAggregate (task: a session that exits at once with no work done is
     // treated as the node failing to launch sessions): without this, this lean row stays stuck at
     // whatever live state preceded the hold, and NodeLoad.LiveSlots keeps counting a held run as
     // occupying a slot it is not actually using — the identical gap RunBudgetExhausted's own
     // transition just above exists to close.
-    public void Apply(IEvent<RunLaunchHeld> @event, RunListItem view) => view.State = RunState.LaunchHeld;
+    public void Apply(IEvent<RunLaunchHeld> @event, RunListItem view)
+    {
+        view.Delivered = view.State.DeliveredAfterPark(view.Delivered);
+        view.State = RunState.LaunchHeld;
+    }
 
     // Mirrors RunDetails/RunAggregate: a pre-final-pass rebase-recovery session is a live agent
     // process the same way ReviewFixDispatched's is, so this lean row needs the identical

@@ -109,9 +109,12 @@ public sealed class RunDetails : IJsonOnDeserialized
     public ReviewStageComposition ReviewStageComposition { get; set; } = ReviewStageComposition.FullPipeline;
     public RunState State { get; set; } = RunState.Unknown;
     /// <summary>
-    /// Whether <c>AgentSessionCompleted</c> was recorded: the build handed the run to the daemon's
-    /// pipeline. <see cref="RunState.BudgetParked"/> and <see cref="RunState.LaunchHeld"/> are shared
-    /// by the build and the pipeline, so this is what says which side of the delivery a park is on.
+    /// Whether the park this run is in (<see cref="RunState.BudgetParked"/> or
+    /// <see cref="RunState.LaunchHeld"/>, both shared by the build and the pipeline) was recorded by
+    /// the daemon's pipeline rather than by the build. Each park decides it as it lands, through
+    /// <see cref="RunState.DeliveredAfterPark"/>: <c>AgentSessionCompleted</c> sets it, but the
+    /// daemon also appends that event when a build session exits on the usage limit, so it cannot be
+    /// trusted on its own. <see cref="RunResumed"/> (a build session relaunched) clears it.
     /// </summary>
     public bool Delivered { get; set; }
 
@@ -1262,6 +1265,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         // ReviewParkResolved, a human's own act.
         view.ParkedReason = null;
         view.State = RunState.Running;
+        view.Delivered = false;
     }
 
     public void Apply(IEvent<AgentSessionCompleted> @event, RunDetails view)
@@ -2187,6 +2191,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
     {
         view.ParkedReason =
             "token budget exhausted - resumes when the subscription window resets";
+        view.Delivered = view.State.DeliveredAfterPark(view.Delivered);
         view.State = RunState.BudgetParked;
     }
 
@@ -2201,6 +2206,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         // the process that failed to launch, so it stays (EndPipelineSessions).
         EndPipelineSessions(view);
         view.ParkedReason = $"waiting on the node to relaunch sessions - {@event.Data.ObservedMessage}";
+        view.Delivered = view.State.DeliveredAfterPark(view.Delivered);
         view.State = RunState.LaunchHeld;
         view.LaunchHeldAt = @event.Data.HeldAt;
     }

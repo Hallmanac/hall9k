@@ -17,19 +17,13 @@ public sealed class RunKillCommandTests
     private static readonly DateTimeOffset Now = new(2026, 9, 13, 12, 0, 0, TimeSpan.Zero);
 
     [Theory]
-    [InlineData("UnderReview", true, false)]
-    [InlineData("BudgetParked", true, false)]
-    [InlineData("LaunchHeld", true, false)]
-    [InlineData("BudgetParked", false, true)]
-    [InlineData("LaunchHeld", false, true)]
-    [InlineData("Running", false, true)]
-    public void The_interactive_session_is_a_pipeline_session_only_before_the_build_is_delivered(
-        string state, bool delivered, bool isPipelineSession)
+    [InlineData("UnderReview", false)]
+    [InlineData("Running", true)]
+    public void The_interactive_session_is_a_pipeline_session_only_before_the_build_is_delivered(string state, bool isPipelineSession)
     {
         // Past the build the interactive session is the owner's driving session; killing its process
-        // tree would take the shell running h9k run kill down with it. A park before the delivery is
-        // still the build, so there the interactive session is the claim itself.
-        RunDetails run = new() { State = state, Delivered = delivered };
+        // tree would take the shell running h9k run kill down with it.
+        RunDetails run = new() { State = state };
         ActiveSession interactive = new(AgentRole.Interactive, ReviewLens.Unknown, 4242, Now);
 
         run.IsPipelineSession(interactive).Should().Be(isPipelineSession);

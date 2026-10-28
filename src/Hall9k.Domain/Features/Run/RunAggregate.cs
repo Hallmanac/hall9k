@@ -1048,6 +1048,7 @@ public sealed class RunAggregate
         ProcessId = @event.ProcessId;
         ProcessStartedAt = @event.ProcessStartedAt;
         State = RunState.Running;
+        Delivered = false;
     }
 
     public void Apply(AgentSessionCompleted @event)
@@ -2359,6 +2360,7 @@ public sealed class RunAggregate
     /// </summary>
     public void Apply(RunBudgetExhausted @event)
     {
+        Delivered = State.DeliveredAfterPark(Delivered);
         State = RunState.BudgetParked;
         switch (ReviewPhase)
         {
@@ -2420,6 +2422,7 @@ public sealed class RunAggregate
     /// </summary>
     public void Apply(RunLaunchHeld @event)
     {
+        Delivered = State.DeliveredAfterPark(Delivered);
         State = RunState.LaunchHeld;
         switch (ReviewPhase)
         {
