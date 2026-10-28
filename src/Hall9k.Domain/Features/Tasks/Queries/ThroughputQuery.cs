@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Marten;
@@ -27,12 +28,32 @@ public sealed record ThroughputSummary(
     double? FirstPassMergeShare,
     double? LapsPerMergedTask,
     double? QueuedShare,
-    double? HumanWaitShare)
+    double? HumanWaitShare,
+    PhaseClassShares? PhaseShares = null,
+    IReadOnlyList<OwnerPhaseShares>? OwnerShares = null)
 {
     /// <summary>Below this, a median or a share is two or three data points dressed as a statistic.</summary>
     public const int MinimumMergedForSummary = 5;
 
     public bool HasEnoughData => MergedCount >= MinimumMergedForSummary;
+}
+
+/// <summary>
+/// The share of a period's phases that each class ran (idea 6e6d0200, Card 6): the period's own total
+/// phase count is the denominator, never an average of each task's own percentage, so one long task
+/// weighs what its phases weigh. The four shares sum to 1.
+/// </summary>
+public sealed record PhaseClassShares(double Human, double Delegated, double Automatic, double Skipped);
+
+/// <summary>
+/// One owner's slice of the period's phases, keyed by the owner who held the claim each phase ran
+/// under (<see cref="PhaseOwnerKey"/>). <see cref="MergedCount"/> counts the merged tasks with at least
+/// one phase keyed to the owner, and <see cref="Shares"/> is null under the same five-task floor the
+/// period as a whole answers to, so a slice of two tasks is never printed as a statistic.
+/// </summary>
+public sealed record OwnerPhaseShares(string OwnerKey, int MergedCount, PhaseClassShares? Shares)
+{
+    public bool HasEnoughData => MergedCount >= ThroughputSummary.MinimumMergedForSummary;
 }
 
 /// <summary>
@@ -106,7 +127,35 @@ public static class ThroughputQuery
             }
         }
 
-        return Compute(merged);
+        return Compute(merged, await ResolveOwnerFingerprintsAsync(session, merged, cancellationToken));
+    }
+
+    /// <summary>
+    /// The root fingerprint of every owner a phase ran under whose claim carried none (every claim
+    /// written before that field), resolved from the owner's own Guid so one person's several nodes
+    /// still count as one owner. An owner who has claimed no root yet resolves to nothing and keys on
+    /// the Guid instead.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<Guid, string>> ResolveOwnerFingerprintsAsync(
+        IQuerySession session, IReadOnlyList<TaskPassage> merged, CancellationToken cancellationToken)
+    {
+        Dictionary<Guid, string> resolved = [];
+        IEnumerable<Guid> unresolved = merged
+            .SelectMany(passage => passage.Classification?.Phases ?? [])
+            .Select(phase => phase.Owner)
+            .OfType<ClaimOwner>()
+            .Where(owner => string.IsNullOrWhiteSpace(owner.RootFingerprint))
+            .Select(owner => owner.OwnerId)
+            .Distinct();
+        foreach (Guid ownerId in unresolved)
+        {
+            if (await OwnerRootFingerprintResolver.ResolveAsync(session, ownerId, cancellationToken) is { Length: > 0 } fingerprint)
+            {
+                resolved[ownerId] = fingerprint;
+            }
+        }
+
+        return resolved;
     }
 
     /// <summary>
@@ -114,7 +163,8 @@ public static class ThroughputQuery
     /// unit-testable straight off a list of <see cref="TaskPassage"/> records — the same split
     /// <see cref="TaskPassageQuery.Compute"/> already draws for the identical reason.
     /// </summary>
-    public static ThroughputSummary Compute(IReadOnlyList<TaskPassage> merged)
+    public static ThroughputSummary Compute(
+        IReadOnlyList<TaskPassage> merged, IReadOnlyDictionary<Guid, string>? resolvedFingerprints = null)
     {
         int count = merged.Count;
         if (count < ThroughputSummary.MinimumMergedForSummary)
@@ -147,7 +197,77 @@ public static class ThroughputQuery
                 : passage.HumanWaits.Aggregate(
                     TimeSpan.Zero, (sum, wait) => sum + (wait.Elapsed.Elapsed ?? TimeSpan.Zero)));
 
-        return new ThroughputSummary(count, median, p90, firstPassShare, lapsPerMergedTask, queuedShare, humanWaitShare);
+        (PhaseClassShares? phaseShares, IReadOnlyList<OwnerPhaseShares> ownerShares) =
+            FoldPhaseShares(merged, resolvedFingerprints ?? new Dictionary<Guid, string>());
+
+        return new ThroughputSummary(
+            count, median, p90, firstPassShare, lapsPerMergedTask, queuedShare, humanWaitShare, phaseShares, ownerShares);
+    }
+
+    /// <summary>
+    /// The share of phases in each class over every merged task's classification (period totals, not
+    /// an average of per-task percentages), and the same split per owner. An owner is the one whose
+    /// claim a phase ran under, by root fingerprint (<see cref="ClaimOwner.RootFingerprint"/>, else the
+    /// one <paramref name="resolvedFingerprints"/> resolves from the owner's Guid). A task counts for an
+    /// owner when at least one of its phases is keyed to them, and a slice under the five-task floor
+    /// keeps its count but carries no shares.
+    /// </summary>
+    private static (PhaseClassShares? Overall, IReadOnlyList<OwnerPhaseShares> Owners) FoldPhaseShares(
+        IReadOnlyList<TaskPassage> merged, IReadOnlyDictionary<Guid, string> resolvedFingerprints)
+    {
+        int[] overall = new int[4];
+        Dictionary<string, int[]> byOwner = [];
+        Dictionary<string, HashSet<int>> tasksByOwner = [];
+        for (int taskIndex = 0; taskIndex < merged.Count; taskIndex++)
+        {
+            foreach (ClassifiedPhase phase in merged[taskIndex].Classification?.Phases ?? [])
+            {
+                int slot = (int)phase.Actor;
+                overall[slot]++;
+                if (phase.Owner is not { } owner)
+                {
+                    continue;
+                }
+
+                string key = PhaseOwnerKey.Of(
+                    string.IsNullOrWhiteSpace(owner.RootFingerprint)
+                        ? resolvedFingerprints.GetValueOrDefault(owner.OwnerId)
+                        : owner.RootFingerprint,
+                    owner.OwnerId);
+                if (!byOwner.TryGetValue(key, out int[]? counts))
+                {
+                    counts = new int[4];
+                    byOwner[key] = counts;
+                    tasksByOwner[key] = [];
+                }
+
+                counts[slot]++;
+                tasksByOwner[key].Add(taskIndex);
+            }
+        }
+
+        List<OwnerPhaseShares> owners = [.. byOwner
+            .Select(entry => new OwnerPhaseShares(
+                entry.Key,
+                tasksByOwner[entry.Key].Count,
+                tasksByOwner[entry.Key].Count >= ThroughputSummary.MinimumMergedForSummary ? SharesOf(entry.Value) : null))
+            .OrderByDescending(owner => owner.MergedCount)
+            .ThenBy(owner => owner.OwnerKey, StringComparer.Ordinal)];
+
+        return (SharesOf(overall), owners);
+    }
+
+    /// <summary>Counts indexed by <see cref="PhaseActor"/> as shares of their own total; null when there are no phases to share.</summary>
+    private static PhaseClassShares? SharesOf(int[] counts)
+    {
+        int total = counts.Sum();
+        return total == 0
+            ? null
+            : new PhaseClassShares(
+                (double)counts[(int)PhaseActor.Human] / total,
+                (double)counts[(int)PhaseActor.Delegated] / total,
+                (double)counts[(int)PhaseActor.Automatic] / total,
+                (double)counts[(int)PhaseActor.Skipped] / total);
     }
 
     /// <summary>

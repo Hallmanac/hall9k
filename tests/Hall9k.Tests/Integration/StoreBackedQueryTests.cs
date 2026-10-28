@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -859,6 +860,55 @@ public sealed class StoreBackedQueryTests(PostgresFixture postgres) : IClassFixt
         ThroughputSummary wholeNode = await ThroughputQuery.ReadAsync(
             query, periodStart, periodEnd, periodEnd, projectId: null, cts.Token);
         wholeNode.MergedCount.Should().Be(2, "the sibling project's own merge joins once no project scopes the read");
+    }
+
+    /// <summary>
+    /// The per-owner split against a real store (idea 6e6d0200, Card 6): two local owner Guids that
+    /// claim the same root fingerprint, on claims that carry no fingerprint of their own, resolve
+    /// through <see cref="OwnerRootFingerprintResolver"/> to one owner whose slice holds all five tasks.
+    /// </summary>
+    [Fact]
+    public async Task Throughput_resolves_a_claim_with_no_fingerprint_so_one_owners_nodes_count_as_one_owner()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+
+        Guid firstNodeOwner = DomainId.New();
+        Guid secondNodeOwner = DomainId.New();
+        Guid projectId = DomainId.New();
+        DateTimeOffset periodStart = HandoffNow;
+        DateTimeOffset periodEnd = HandoffNow.AddDays(7);
+        DateTimeOffset insidePeriod = HandoffNow.AddDays(1);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            foreach (Guid ownerId in new[] { firstNodeOwner, secondNodeOwner })
+            {
+                session.Events.StartStream<OwnerAggregate>(
+                    ownerId,
+                    new OwnerRegistered(ownerId, "alice", null, HandoffNow),
+                    new OwnerRootClaimed(ownerId, "SHA256:alice", true, HandoffNow));
+            }
+
+            for (int index = 0; index < 5; index++)
+            {
+                SeedMergedTask(
+                    session, DomainId.New(), projectId, index < 3 ? firstNodeOwner : secondNodeOwner, TaskType.Chore, insidePeriod);
+            }
+
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+
+        ThroughputSummary summary = await ThroughputQuery.ReadAsync(
+            query, periodStart, periodEnd, periodEnd, projectId, cts.Token);
+
+        OwnerPhaseShares slice = summary.OwnerShares!.Should().ContainSingle().Subject;
+        slice.OwnerKey.Should().Be("SHA256:alice");
+        slice.MergedCount.Should().Be(5);
+        slice.Shares!.Automatic.Should().Be(1, "no run in the seed was held by a person");
+        summary.PhaseShares!.Automatic.Should().Be(1);
     }
 
     /// <summary>

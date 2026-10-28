@@ -96,8 +96,9 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             ThroughputSummary previous = await ThroughputQuery.ReadAsync(
                 session, previousPeriodStart, periodStart, now, project.Id, cancellationToken);
 
+            string? viewerOwnerKey = await ThroughputViewer.ReadOwnerKeyAsync(session, cancellationToken);
             AnsiConsole.MarkupLine("\n[bold]Throughput[/]");
-            foreach (string line in ThroughputPane.ComposeLines(current, previous, period.Value))
+            foreach (string line in ThroughputPane.ComposeLines(current, previous, period.Value, viewerOwnerKey))
             {
                 AnsiConsole.MarkupLineInterpolated($"[dim]{line}[/]");
             }
