@@ -101,7 +101,8 @@ public sealed class CloseoutEngine(
     ILogger<CloseoutEngine> logger,
     ILedger? ledger = null,
     EnrolledNodeSnapshots? enrolledNodes = null,
-    FeedbackEvaluators? feedbackEvaluators = null)
+    FeedbackEvaluators? feedbackEvaluators = null,
+    CloseoutTriageSessions? triageSessions = null)
 {
     private readonly DaemonOptions _options = options.Value;
 
@@ -962,6 +963,21 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Inspected;
         }
 
+        // While the task's interactive flag is on, a human is driving it, and closeout only reports (task:
+        // analysis-only closeout): no lap, no write to the branch or the pull request, and no merge,
+        // until the human says go. Read off the aggregate this sweep fenced against, so a flag cleared by
+        // h9k pr resolve or h9k task revise --clear-interactive-mode moves the stream and defers the
+        // decision to the next sweep rather than acting on a stale reading.
+        bool analysisOnly = task.InteractiveModeEnabled;
+
+        // A report recorded while the flag was on is stale the moment it comes off: the next lines of
+        // this sweep act as they always have, and the row must not keep naming a go lever for a task
+        // that has already been handed back. Recorded once, since the cleared report is empty.
+        if (!analysisOnly && run.CloseoutReport is not null)
+        {
+            await RecordCloseoutReportAsync(session, run, CloseoutReport.Nothing, now, cancellationToken);
+        }
+
         // The membership gate on review feedback (task: a changes-requested review or an unresolved
         // review thread from someone outside the project's trust-chain roster never dispatches a
         // build lap). Ahead of every decision below on purpose: from here on the snapshot is the
@@ -1010,7 +1026,7 @@ public sealed class CloseoutEngine(
         // costs an unstacked pull request a single git or provider call.
         if (StackedParentWatch.IsStackedChild(run, project)
             && await TryReplayStackedChildAsync(
-                session, task, run, project, fenceVersion, snapshot, now, cancellationToken))
+                session, task, run, project, fenceVersion, snapshot, analysisOnly, now, cancellationToken))
         {
             return InspectionOutcome.Inspected;
         }
@@ -1022,6 +1038,16 @@ public sealed class CloseoutEngine(
         // mergeable read, never inferred from how long the branch has sat open.
         if (snapshot.IsConflicting)
         {
+            // Reported, never acted on: neither the mechanical rebase (a force-push to the branch) nor the
+            // rebase lap is taken while a human drives. A conflict makes the readings below moot here as it
+            // does when closeout acts, so it is the whole of the report.
+            if (analysisOnly)
+            {
+                await RecordCloseoutReportAsync(
+                    session, run, CloseoutReport.Nothing with { Conflicting = true }, now, cancellationToken);
+                return InspectionOutcome.Inspected;
+            }
+
             // Recommendation 3 (idea fc85f609, amended by Brian 2026-09-04): a mechanical
             // fetch+rebase+push, no model session and no local gates, is tried first — GitHub's
             // own CI on the push is the authoritative gate here, so a local build/test run would
@@ -1137,6 +1163,23 @@ public sealed class CloseoutEngine(
             // sees the full result, and the merge stays held meanwhile either way — this return
             // sits ahead of TryAutoMergeAsync exactly as it always has.
             return InspectionOutcome.Inspected;
+        }
+
+        // The held half of everything below: what the sweeps that dispatch laps would go on to do, stated
+        // as a report instead (task: analysis-only closeout). The changes-requested review, the threads
+        // (triaged by a read-only session, once per distinct set), and the failing checks are each named,
+        // none of them is answered, and the poll ends where the dispatching sweep would have.
+        if (analysisOnly)
+        {
+            (bool reported, long reportedFenceVersion) = await ReportFindingsInsteadOfLapsAsync(
+                session, task, project, run, fenceVersion, snapshot, outstandingThreadIds, threadsNeedALap,
+                now, cancellationToken);
+            if (reported)
+            {
+                return InspectionOutcome.Inspected;
+            }
+
+            fenceVersion = reportedFenceVersion;
         }
 
         // Failing checks observed on the SAME sweep as review feedback ride in that one lap rather
@@ -1268,6 +1311,11 @@ public sealed class CloseoutEngine(
         }
         else if (snapshot.ErroredReview is { } erroredReview)
         {
+            if (analysisOnly)
+            {
+                await RecordCloseoutReportAsync(session, run, CloseoutReport.Nothing, now, cancellationToken);
+            }
+
             await RerequestReviewOrParkAsync(
                 session, task, run, project.RepositoryPath, task.PullRequestUrl,
                 run.PullRequestNumber.Value, snapshot, erroredReview, now, cancellationToken);
@@ -1276,10 +1324,13 @@ public sealed class CloseoutEngine(
 
         // Nothing needs answering: the checks pass, every thread is resolved, and the
         // review that produced them was real. That is the moment a countersign is worth
-        // asking for, and the only moment it is.
-        bool reRequestedThisSweep = await RerequestReviewAfterFixesAsync(
-            session, run, project, fenceVersion, task.PullRequestUrl, run.PullRequestNumber.Value,
-            snapshot, now, cancellationToken);
+        // asking for, and the only moment it is. Never while the interactive flag is on: re-requesting
+        // reviewers is a write to the pull request, and a human who pushed their own fixes is the one
+        // who decides when the reviewers look again.
+        bool reRequestedThisSweep = !analysisOnly
+            && await RerequestReviewAfterFixesAsync(
+                session, run, project, fenceVersion, task.PullRequestUrl, run.PullRequestNumber.Value,
+                snapshot, now, cancellationToken);
 
         // The owner's standing pre-approval (task: a task can be published pre-approved) only
         // ever reads as a green light here — after every obstruction above (conflicting, pending
@@ -1300,16 +1351,136 @@ public sealed class CloseoutEngine(
                 "Task {TaskId}: pre-approved, but feedback from outside the project's roster still holds "
                 + "the merge (undecided, unresolved, or the roster is not computed yet) — see h9k status",
                 task.Id);
+            if (analysisOnly)
+            {
+                await RecordCloseoutReportAsync(session, run, CloseoutReport.Nothing, now, cancellationToken);
+            }
+
             return InspectionOutcome.Inspected;
         }
 
         if (task.PreApproval.MergesAutomatically && !reRequestedThisSweep)
         {
+            // Pre-approval belongs to the automated workflow (task: the merge waits while a human
+            // drives). Reaching this line means nothing else needs a human or an agent, so the only
+            // thing standing between this pull request and a merge is the flag: shown as a row that
+            // names both ways out, and the poll ends without a merge.
+            if (analysisOnly)
+            {
+                logger.LogInformation(
+                    "Task {TaskId}: pre-approved, but its interactive flag is on, so the merge waits for the "
+                    + "human (h9k task revise {TaskId} --clear-interactive-mode hands it back to automation)",
+                    task.Id, task.Id);
+                await RecordCloseoutReportAsync(
+                    session, run, CloseoutReport.Nothing with { MergeHeld = true }, now, cancellationToken);
+                return InspectionOutcome.Inspected;
+            }
+
             return await TryAutoMergeAsync(
                 session, task, run, project, fenceVersion, snapshot, now, cancellationToken);
         }
 
+        if (analysisOnly)
+        {
+            await RecordCloseoutReportAsync(session, run, CloseoutReport.Nothing, now, cancellationToken);
+        }
+
         return InspectionOutcome.Inspected;
+    }
+
+    /// <summary>
+    /// Records <paramref name="report"/> on the run unless it is what the run already records (task:
+    /// analysis-only closeout). Closeout re-reads the same pull request every sweep, so an unchanged
+    /// finding must write nothing: a check newly failing or cleared, a conflict or a changes-requested
+    /// review appearing or cleared, a parent moving, and a triage landing are the changes that do.
+    /// An empty report is the one that clears the row, recorded only when something was there to clear.
+    /// </summary>
+    private static async Task RecordCloseoutReportAsync(
+        IDocumentSession session, RunDetails run, CloseoutReport report, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        if (report.Key() == (run.CloseoutReport ?? CloseoutReport.Nothing).Key())
+        {
+            return;
+        }
+
+        session.Events.Append(run.Id, new CloseoutReportRecorded(run.Id, report, now));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// What closeout reports in place of the review-feedback, changes-requested and failing-checks laps
+    /// it would dispatch for a task whose interactive flag is on. Returns whether the poll ends here (a
+    /// finding was reported, or the only unresolved threads are ones already answered and waiting on a
+    /// person, which is where the dispatching sweep ends too) with the task-stream version later appends
+    /// must be fenced against, which a triage dispatch moves.
+    /// </summary>
+    private async Task<(bool Reported, long FenceVersion)> ReportFindingsInsteadOfLapsAsync(
+        IDocumentSession session,
+        TaskAggregate task,
+        ProjectDetails project,
+        RunDetails run,
+        long fenceVersion,
+        PullRequestSnapshot snapshot,
+        IReadOnlyList<string> outstandingThreadIds,
+        bool threadsNeedALap,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        CloseoutThreadReport? threads = null;
+        if (threadsNeedALap)
+        {
+            int threadCount = outstandingThreadIds.Count > 0
+                ? outstandingThreadIds.Count
+                : snapshot.UnresolvedReviewThreadCount;
+            CloseoutTriage? triage = null;
+            if (triageSessions is not null)
+            {
+                CloseoutTriageConsideration? considered = await triageSessions.ConsiderAsync(
+                    session, task, project, run, outstandingThreadIds, threadCount, snapshot.FeedbackReadScope,
+                    fenceVersion, now, cancellationToken);
+                if (considered is null)
+                {
+                    // A write to the task stream won the race (the human's go above all). Nothing was
+                    // recorded or started, and the next sweep reads the stream as it then stands.
+                    return (true, fenceVersion);
+                }
+
+                fenceVersion = considered.FenceVersion;
+                triage = considered.Triage;
+            }
+
+            threads = triage is null
+                ? new CloseoutThreadReport(
+                    FeedbackEvaluationStatus.Unknown, threadCount, 0, 0, 0, null, "no triage session is available")
+                : new CloseoutThreadReport(
+                    triage.Status, threadCount, triage.Fix, triage.Decline, triage.Route,
+                    triage.Status == FeedbackEvaluationStatus.Assessed ? triage.ReportPath : null,
+                    triage.Reason);
+        }
+
+        CloseoutReport report = new(
+            snapshot.FailingChecks,
+            Conflicting: false,
+            [.. snapshot.ChangesRequested.Select(review => review.ReviewUrl)],
+            StackedParent: null,
+            MergeHeld: false,
+            threads);
+        if (!report.IsEmpty())
+        {
+            await RecordCloseoutReportAsync(session, run, report, now, cancellationToken);
+            return (true, fenceVersion);
+        }
+
+        if (snapshot.UnresolvedReviewThreadCount > 0)
+        {
+            // Nothing left that a lap could act on: every unresolved thread is one this run already
+            // triaged and answered, waiting only on the person it was left open for.
+            await RecordCloseoutReportAsync(session, run, CloseoutReport.Nothing, now, cancellationToken);
+            return (true, fenceVersion);
+        }
+
+        return (false, fenceVersion);
     }
 
     /// <summary>
@@ -3507,7 +3678,12 @@ public sealed class CloseoutEngine(
             // Carried on every kind, not only the two whose prompts render it: a manual
             // h9k pr resolve hands the last one forward, and a CI-fix lap's would otherwise leave it
             // with nothing.
-            reviewReadScope: snapshot.FeedbackReadScope));
+            reviewReadScope: snapshot.FeedbackReadScope,
+            // The analysis made while a human drove the task, if any is still unread: when the way back
+            // to automation was h9k task revise --clear-interactive-mode (a changes-requested review or
+            // a stacked parent has no pr resolve form), this is the first lap after the flag cleared, and
+            // it starts from the triage like the one pr resolve dispatches does.
+            triageReportPath: task.UnreadTriageReportPath));
 
         // The reopen hands the pull request to a successor, so this run's watch ends
         // with it — retire it in the same transaction (TASK-MODEL.md §2.2). A lost race
@@ -3757,6 +3933,7 @@ public sealed class CloseoutEngine(
         ProjectDetails project,
         long fenceVersion,
         PullRequestSnapshot snapshot,
+        bool analysisOnly,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
@@ -3827,6 +4004,18 @@ public sealed class CloseoutEngine(
                 + "onto the branch its parent merged into, or onto the project's base once that branch's own "
                 + "pull request has merged — then hand it back with h9k pr resolve.",
                 now, cancellationToken);
+            return true;
+        }
+
+        // Everything from here down would retarget the pull request on GitHub or dispatch a replay lap,
+        // and neither is done while the task's interactive flag is on (task: analysis-only closeout). The
+        // parent having moved or merged is the whole report; the two parks above stay, because they
+        // write only to the run's own record and say what the human has to do whatever the flag.
+        if (analysisOnly)
+        {
+            await RecordCloseoutReportAsync(
+                session, run, CloseoutReport.Nothing with { StackedParent = observation.Detail }, now,
+                cancellationToken);
             return true;
         }
 
