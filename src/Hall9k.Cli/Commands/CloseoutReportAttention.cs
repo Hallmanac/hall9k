@@ -1,5 +1,4 @@
 using Hall9k.Domain.Features.Run;
-using Hall9k.Domain.Features.Tasks;
 
 namespace Hall9k.Cli.Commands;
 

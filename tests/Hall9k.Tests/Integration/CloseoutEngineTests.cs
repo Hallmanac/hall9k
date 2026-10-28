@@ -6991,7 +6991,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     [Fact]
-    public async Task A_driven_follow_up_does_not_rerequest_reviewers_and_a_pre_approved_one_still_shows_the_merge_hold()
+    public async Task A_driven_follow_up_still_rerequests_reviewers_and_a_pre_approved_one_shows_the_merge_hold()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DrivenSeed driven = await SeedDrivenAsync(cts.Token, preApproval: PreApprovalMode.On, asFollowUp: true);
@@ -7006,11 +7006,30 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         };
         await NewDrivenEngine(driven, inspector).PollOnceAsync(cts.Token);
 
-        inspector.ReviewRerequests.Should().BeEmpty("a countersign writes to the pull request, which a human drives while the flag is on");
+        inspector.ReviewRerequests.Should().Equal(["teammate"], "the countersign after fixes keeps running while the flag is on");
         inspector.MergeAttempts.Should().Be(0);
         (await ComposeRowAsync(driven.TaskId, cts.Token)).Attention.Lever.Should().Be(
             $"h9k task revise {Short(driven.TaskId)} --clear-interactive-mode");
         await ClearOwnerReviewRerequestAsync(postgres.Store, driven.Node.OwnerId, cts.Token);
+        await CleanUpDrivenAsync(driven, cts.Token);
+    }
+
+    [Fact]
+    public async Task A_driven_tasks_stale_report_is_refreshed_while_checks_are_pending()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
+        FakeInspector inspector = new() { Snapshot = DrivenSnapshot("failing-checks") };
+        await NewDrivenEngine(driven, inspector).PollOnceAsync(cts.Token);
+        (await LoadRunAsync(driven.RunId, cts.Token)).CloseoutReport!.FailingChecks.Should().Equal("build", "lint");
+
+        // The human pushes a fix: every check on the new head reads pending, and none has failed yet.
+        inspector.Snapshot = FakeInspector.Quiet() with { HeadCommit = "cafe2", HasPendingChecks = true };
+        await NewDrivenEngine(driven, inspector).PollOnceAsync(cts.Token);
+
+        (await LoadRunAsync(driven.RunId, cts.Token)).CloseoutReport.Should().Match<CloseoutReport?>(
+            report => report == null || report.IsEmpty(),
+            "a row naming failing checks must not outlive the head it was read from while the new checks run");
         await CleanUpDrivenAsync(driven, cts.Token);
     }
 
@@ -7068,25 +7087,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         TaskDetails lap = await LoadDetailsAsync(driven.TaskId, cts.Token);
         lap.FollowUpKind.Should().Be(FollowUpKind.ReviewRequestedChanges);
         lap.FollowUpTriageReportPath.Should().Be(reportPath, "the first lap after the flag clears starts from the analysis");
+        (await LoadRunAsync(driven.RunId, cts.Token)).CloseoutReport.Should().Match<CloseoutReport?>(
+            report => report == null || report.IsEmpty(), "the poll that acts clears the report the row was built from");
         await CleanUpDrivenAsync(driven, cts.Token);
-    }
-
-    [Fact]
-    public async Task Handing_a_driven_task_back_clears_its_report_and_the_next_poll_dispatches_the_lap_as_today()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
-        FakeInspector inspector = new() { Snapshot = DrivenSnapshot("changes-requested") };
-        await NewDrivenEngine(driven, inspector).PollOnceAsync(cts.Token);
-        (await CountStreamEventsAsync<TaskEvents.TaskReopened>(driven.TaskId, cts.Token)).Should().Be(0);
-
-        await ClearTheFlagAsync(driven, cts.Token);
-        await NewDrivenEngine(driven, inspector).PollOnceAsync(cts.Token);
-
-        (await LoadDetailsAsync(driven.TaskId, cts.Token)).FollowUpKind.Should().Be(
-            FollowUpKind.ReviewRequestedChanges, "the lever the row named is exactly what lets the changes-requested lap run");
-        (await CountStreamEventsAsync<CloseoutReportRecorded>(driven.RunId, cts.Token)).Should().Be(2,
-            "the report, then its clearing on the first poll that acts");
     }
 
     // ─── The read-only triage of the threads closeout leaves alone ───────────────────────────────

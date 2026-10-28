@@ -1162,6 +1162,18 @@ public sealed class CloseoutEngine(
             // the checks now would hand a follow-up run a partial failure list. The next sweep
             // sees the full result, and the merge stays held meanwhile either way — this return
             // sits ahead of TryAutoMergeAsync exactly as it always has.
+            //
+            // Under the interactive flag the report is still refreshed before the wait: a recorded
+            // conflict or failing-check row would otherwise keep naming its go lever until CI settles
+            // (a stuck-pending check can be hours), after the human has already pushed the fix. With no
+            // feedback waiting, what is left to say is the checks that have failed so far, if any.
+            if (analysisOnly)
+            {
+                await RecordCloseoutReportAsync(
+                    session, run, CloseoutReport.Nothing with { FailingChecks = snapshot.FailingChecks },
+                    now, cancellationToken);
+            }
+
             return InspectionOutcome.Inspected;
         }
 
@@ -1324,13 +1336,12 @@ public sealed class CloseoutEngine(
 
         // Nothing needs answering: the checks pass, every thread is resolved, and the
         // review that produced them was real. That is the moment a countersign is worth
-        // asking for, and the only moment it is. Never while the interactive flag is on: re-requesting
-        // reviewers is a write to the pull request, and a human who pushed their own fixes is the one
-        // who decides when the reviewers look again.
-        bool reRequestedThisSweep = !analysisOnly
-            && await RerequestReviewAfterFixesAsync(
-                session, run, project, fenceVersion, task.PullRequestUrl, run.PullRequestNumber.Value,
-                snapshot, now, cancellationToken);
+        // asking for, and the only moment it is. It runs under the interactive flag too (task: analysis-only
+        // closeout keeps the countersign): asking a reviewer to look again changes neither the branch nor
+        // a thread, and it is the same kind of request as the errored-Copilot re-request above.
+        bool reRequestedThisSweep = await RerequestReviewAfterFixesAsync(
+            session, run, project, fenceVersion, task.PullRequestUrl, run.PullRequestNumber.Value,
+            snapshot, now, cancellationToken);
 
         // The owner's standing pre-approval (task: a task can be published pre-approved) only
         // ever reads as a green light here — after every obstruction above (conflicting, pending
@@ -1359,7 +1370,7 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Inspected;
         }
 
-        if (task.PreApproval.MergesAutomatically && !reRequestedThisSweep)
+        if (task.PreApproval.MergesAutomatically && (analysisOnly || !reRequestedThisSweep))
         {
             // Pre-approval belongs to the automated workflow (task: the merge waits while a human
             // drives). Reaching this line means nothing else needs a human or an agent, so the only

@@ -196,9 +196,9 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         catch (EventStreamUnexpectedMaxEventIdException)
         {
             throw new DomainConflictException(
-                $"Task {taskId} changed while reopening — the closeout monitor likely just dispatched " +
-                "a follow-up itself. Check h9k status; re-run this command only if the follow-up you " +
-                "wanted is not already in flight.");
+                $"Task {taskId} changed while reopening: the closeout monitor likely just dispatched a " +
+                "follow-up itself, or, on a task whose interactive flag is on, recorded a closeout triage. " +
+                "Check h9k status; re-run this command if the follow-up you wanted is not already in flight.");
         }
 
         return new Resolution(task, previousRun, handsBack);
