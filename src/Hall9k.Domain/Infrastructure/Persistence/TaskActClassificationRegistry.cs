@@ -312,13 +312,10 @@ public static class TaskActClassificationRegistry
         [typeof(ReviewRerequestedAfterFixes)] = TaskActClassification.MemberSafe,
         [typeof(ReviewSettled)] = TaskActClassification.MemberSafe,
 
-        // h9k task skip-to-pr — a human bypassing the rest of the pre-PR pipeline on a task they are
-        // driving by hand, so the run's own task must already be this sender's, the same rule
-        // ReviewBoundaryApproved and ReviewHumanFixApplied carry. Conditional rather than OwnerOnly
-        // because a member's own skip travels in the same batch as the delivery and the pull request
-        // events, which replicate; refusing only the override would leave the owner's copy of the run
-        // showing a delivery that reached a pull request with no record of why.
-        [typeof(ReviewSkippedToPullRequest)] = TaskActClassification.Conditional,
+        // h9k task skip-to-pr — an owner bypassing the rest of the pre-PR pipeline on their own run,
+        // the same call ReviewParkResolved is. A project member's node must never replicate one onto
+        // an owner's run.
+        [typeof(ReviewSkippedToPullRequest)] = TaskActClassification.OwnerOnly,
         [typeof(ReviewBodyReplyPosted)] = TaskActClassification.MemberSafe,
         [typeof(ReviewBodyReplyRefused)] = TaskActClassification.MemberSafe,
         [typeof(ReviewThreadReplyPosted)] = TaskActClassification.MemberSafe,
