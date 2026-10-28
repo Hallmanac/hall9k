@@ -4,7 +4,10 @@ using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
+using Hall9k.Cli.Commands;
+using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Closeout;
+using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
@@ -27,6 +30,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
+using JasperFx.Events;
+using TaskEvents = Hall9k.Domain.Features.Tasks.Events;
 
 namespace Hall9k.Tests.Integration;
 
@@ -6324,4 +6329,1086 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
                 ]),
         ],
     };
+
+    // ─── Analysis-only closeout: a task whose interactive flag is on ─────────────────────────────
+    //
+    // None of these creates a git repository or a branch. The task, its run and its project are
+    // seeded straight onto the streams, the worktree path names nothing on disk, GitHub is the
+    // scripted inspector, and the one git read a stacked child makes goes through a scripted runner.
+
+    private const string DrivenBranch = "task/limiter";
+    private const string ParentSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    private const string BaseTipSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    private const string ProseThatMustStayInTheFile = "This is the triage prose that must never reach a status row or the stream.";
+
+    private sealed record DrivenSeed(Guid TaskId, Guid RunId, NodeContext Node, Guid ProjectId);
+
+    private static string DrivenRunDirectory(Guid runId) =>
+        Path.Combine(Path.GetTempPath(), $"hall9k-closeout-driven-run-{runId:N}");
+
+    /// <summary>
+    /// A Done task with its pull request open and its run awaiting review, on a node of its own so the
+    /// shared database's other tests never sweep it. <paramref name="interactive"/> is the claim's own
+    /// flag; <paramref name="stackedOnPullRequest"/> declares a remote parent and records the run as
+    /// opened against <paramref name="runBaseBranch"/>.
+    /// </summary>
+    private async Task<DrivenSeed> SeedDrivenAsync(
+        CancellationToken cancellationToken,
+        bool interactive = true,
+        PreApprovalMode? preApproval = null,
+        string? runBaseBranch = null,
+        int? stackedOnPullRequest = null,
+        RemoteParentState? parentState = null,
+        bool asFollowUp = false)
+    {
+        // A node of its own, so a sibling test's leftover run is never swept into this test's tally.
+        NodeContext node = await NodeBootstrapSeed.NewIsolatedNodeAsync(postgres.Store, cancellationToken);
+        Guid taskId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using IDocumentSession session = postgres.Store.LightweightSession();
+
+        TaskEvents.TaskAdded added = TaskDecider.Add(
+            taskId, projectId, "Bound the limiter", ["the limiter resets per window"], TaskType.Feature,
+            null, null, null, Now, node.OwnerId, stackedOnPullRequestNumber: stackedOnPullRequest);
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(added, node.OwnerId, Now);
+        List<object> taskEvents = [.. lifecycle];
+        if (stackedOnPullRequest is { } parentNumber)
+        {
+            // A child stacked on a pull request waits Blocked until the parent has been observed once.
+            TaskEvents.RemoteStackedParentObserved opened = new(
+                taskId, parentNumber, RemoteParentState.Open, "parent-branch", ParentSha, "main",
+                "https://github.com/x/y/pull/5", null, "observed open", Now);
+            task.Apply(opened);
+            taskEvents.Add(opened);
+        }
+
+        if (preApproval is not null)
+        {
+            TaskEvents.TaskPreApprovedSet set = TaskDecider.SetPreApproved(task, preApproval, Now, node.OwnerId, taskClosedOut: false);
+            task.Apply(set);
+            taskEvents.Add(set);
+        }
+
+        TaskEvents.TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, DomainId.New(), Now) with
+        {
+            InteractiveMode = interactive,
+        };
+        task.Apply(claimed);
+        taskEvents.Add(claimed);
+        TaskEvents.TaskCompleted completed = TaskDecider.Complete(task, claimed.RunId, PullRequestUrl, Now);
+        task.Apply(completed);
+        taskEvents.Add(completed);
+        if (stackedOnPullRequest is { } observedNumber && parentState is not null)
+        {
+            taskEvents.Add(new TaskEvents.RemoteStackedParentObserved(
+                taskId, observedNumber, parentState, "parent-branch", ParentSha, "main",
+                "https://github.com/x/y/pull/5", null, "observed", Now));
+        }
+
+        session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+
+        session.Events.StartStream<RunAggregate>(claimed.RunId,
+            new RunDispatched(
+                claimed.RunId, taskId, node.NodeId, node.OwnerId, claimed.LeaseGeneration, DomainId.New(),
+                Path.Combine(Path.GetTempPath(), $"hall9k-closeout-driven-{claimed.RunId:N}"), DrivenBranch,
+                ExecutorMode.Subscription, Now, RunDirectory: DrivenRunDirectory(claimed.RunId),
+                BaseBranch: runBaseBranch ?? string.Empty, BaseCommit: runBaseBranch is null ? string.Empty : BaseTipSha,
+                IsFollowUp: asFollowUp),
+            new AgentSessionCompleted(claimed.RunId, Now),
+            new VerificationPassed(claimed.RunId, Now),
+            new PullRequestOpened(claimed.RunId, PullRequestUrl, 7, Now));
+
+        ProjectRegistered registered = ProjectDecider.Register(
+            projectId, node.OwnerId, DomainId.New(), $"driven-{taskId:N}", "/tmp/closeout-driven-repo", null, "main", Now);
+        session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+        await session.SaveChangesAsync(cancellationToken);
+        return new DrivenSeed(taskId, claimed.RunId, node, projectId);
+    }
+
+    /// <summary>A closeout engine over no repository at all: every worktree and git door is a stub.</summary>
+    private CloseoutEngine NewDrivenEngine(
+        DrivenSeed seed,
+        FakeInspector inspector,
+        CloseoutTriageSessions? triage = null,
+        RecordingProcessRunner? git = null,
+        int maxAutomaticCloseoutRuns = 4)
+    {
+        NoRepositoryWorktrees worktrees = new();
+        return new CloseoutEngine(
+            postgres.Store, seed.Node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
+            new StackedParentWatch(
+                worktrees, new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance, git?.Runner),
+            RecordingProcessRunner.Succeeding(string.Empty).Runner,
+            RecordingJiraRequester.Succeeding(200, "{}").Requester,
+            Options.Create(new DaemonOptions
+            {
+                MaxAutomaticCloseoutRuns = maxAutomaticCloseoutRuns,
+                MaxCloseoutLapsPerObstruction = 2,
+                CopilotReviewSettleWindow = TimeSpan.FromHours(24),
+                ChecksRegistrationSettleWindow = TimeSpan.FromMinutes(15),
+            }),
+            NullLogger<CloseoutEngine>.Instance,
+            triageSessions: triage);
+    }
+
+    private CloseoutTriageSessions NewTriage(
+        TriageExecutor executor, FakeProcessManager processes, Action<DaemonOptions>? configure = null)
+    {
+        DaemonOptions daemon = new() { CloseoutTriageTimeout = TimeSpan.FromSeconds(30) };
+        configure?.Invoke(daemon);
+        return new CloseoutTriageSessions(
+            postgres.Store, executor, processes, Options.Create(daemon), NullLogger<CloseoutTriageSessions>.Instance);
+    }
+
+    private async Task<int> CountStreamEventsAsync<T>(Guid streamId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = postgres.Store.QuerySession();
+        return (await query.Events.FetchStreamAsync(streamId, token: cancellationToken)).Count(e => e.Data is T);
+    }
+
+    private async Task<RunDetails> LoadRunAsync(Guid runId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = postgres.Store.QuerySession();
+        return (await query.LoadAsync<RunDetails>(runId, cancellationToken))!;
+    }
+
+    private async Task<TaskAggregate> LoadTaskAggregateAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = postgres.Store.QuerySession();
+        return (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!;
+    }
+
+    /// <summary>The needs-you row <c>h9k status</c> and <c>h9k task show</c> both compose for this task.</summary>
+    private async Task<TaskStatusRow> ComposeRowAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = postgres.Store.QuerySession();
+        TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cancellationToken))!;
+        return (await TaskStatusComposer.ComposeOneAsync(query, details, Now.AddMinutes(30), cancellationToken))!;
+    }
+
+    private async Task ClearTheFlagAsync(DrivenSeed seed, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = postgres.Store.LightweightSession();
+        TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(seed.TaskId, token: cancellationToken))!;
+        session.Events.Append(seed.TaskId, PullRequestResolveCommand.ClearInteractiveMode(task, Now, seed.Node.OwnerId));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    private static string Short(Guid id) => DomainId.Short(id);
+
+    /// <summary>Leaves the watch set as the test found it, and removes the run directory a triage wrote into.</summary>
+    private async Task CleanUpDrivenAsync(DrivenSeed seed, CancellationToken cancellationToken)
+    {
+        await RetireWatchAsync(postgres.Store, seed.RunId, cancellationToken);
+        string directory = DrivenRunDirectory(seed.RunId);
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>A scripted GitHub snapshot per kind of finding, the same shapes the dispatching sweeps read.</summary>
+    private static PullRequestSnapshot DrivenSnapshot(string finding) => finding switch
+    {
+        "review-feedback" => FakeInspector.Quiet() with
+        {
+            HeadCommit = "cafe1",
+            UnresolvedReviewThreadCount = 2,
+            UnresolvedHumanThreadCount = 1,
+            UnresolvedReviewThreadIds = ["PRRT_a", "PRRT_b"],
+            UnresolvedHumanThreadIds = ["PRRT_a"],
+        },
+        "changes-requested" => ChangesRequested(),
+        "failing-checks" => FakeInspector.Quiet() with { HeadCommit = "cafe1", FailingChecks = ["build", "lint"] },
+        "conflict" => FakeInspector.Quiet() with { HeadCommit = "cafe1", IsConflicting = true },
+        _ => throw new ArgumentOutOfRangeException(nameof(finding), finding, "not a scripted finding"),
+    };
+
+    private static FollowUpKind DrivenKind(string finding) => finding switch
+    {
+        "review-feedback" => FollowUpKind.ReviewFeedback,
+        "changes-requested" => FollowUpKind.ReviewRequestedChanges,
+        "failing-checks" => FollowUpKind.FailingChecks,
+        _ => FollowUpKind.Rebase,
+    };
+
+    /// <summary>
+    /// A scripted triage session: it records every spawn (and what the task stream already held at that
+    /// moment), writes the report file the request names, and can be held open to stand for a session
+    /// still running when the daemon restarts.
+    /// </summary>
+    private sealed class TriageExecutor(FakeProcessManager processes) : IExecutor
+    {
+        private readonly object _gate = new();
+        private readonly List<(AgentSpawnRequest Request, int ProcessId)> _held = [];
+        private readonly List<AgentSpawnRequest> _requests = [];
+        private int _nextProcessId = 51_000;
+
+        public IReadOnlyList<AgentSpawnRequest> Requests
+        {
+            get { lock (_gate) { return [.. _requests]; } }
+        }
+
+        /// <summary>The report the session writes, or null for a session that writes none.</summary>
+        public string? Report { get; set; } =
+            "THREAD DISPOSITION: thread=PRRT_a; disposition=fix; kind=human; author=teammate\n"
+            + $"{ProseThatMustStayInTheFile}\n"
+            + "THREAD DISPOSITION: thread=PRRT_b; disposition=decline; kind=bot; author=copilot\n"
+            + "It already handles that.\n\nSUMMARY:\nOne fix and one decline.\n";
+
+        public bool HoldOpen { get; set; }
+
+        /// <summary>Runs inside the spawn, before the session starts: what a test uses to look at the stream at that instant.</summary>
+        public Func<AgentSpawnRequest, Task>? OnSpawn { get; set; }
+
+        public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            if (OnSpawn is { } hook)
+            {
+                await hook(request);
+            }
+
+            int processId;
+            lock (_gate)
+            {
+                _requests.Add(request);
+                processId = _nextProcessId++;
+                if (HoldOpen)
+                {
+                    processes.MarkAlive(processId);
+                    _held.Add((request, processId));
+                }
+            }
+
+            if (!HoldOpen)
+            {
+                await FinishAsync(request, cancellationToken);
+            }
+
+            return new SpawnedAgent(processId, DateTimeOffset.UtcNow);
+        }
+
+        public async Task ReleaseAsync()
+        {
+            (AgentSpawnRequest Request, int ProcessId)[] held;
+            lock (_gate)
+            {
+                held = [.. _held];
+                _held.Clear();
+            }
+
+            foreach ((AgentSpawnRequest request, int processId) in held)
+            {
+                await FinishAsync(request, CancellationToken.None);
+                processes.MarkDead(processId);
+            }
+        }
+
+        private async Task FinishAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            Directory.CreateDirectory(request.RunDirectory);
+            if (Report is not null)
+            {
+                await File.WriteAllTextAsync(request.AssessmentFile!, Report, cancellationToken);
+            }
+
+            string line = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["type"] = "result",
+                ["subtype"] = "success",
+                ["is_error"] = false,
+                ["usage"] = new Dictionary<string, long> { ["input_tokens"] = 100, ["output_tokens"] = 20 },
+                ["total_cost_usd"] = 0.01,
+                ["num_turns"] = 4,
+                ["result"] = "Triage written.",
+            });
+            await File.WriteAllTextAsync(
+                RunPaths.SessionStreamFile(request.RunDirectory, request.SessionArtifactName!), line + "\n", cancellationToken);
+        }
+    }
+
+    /// <summary>A worktree manager for an engine with no repository behind it: nothing here is ever reached.</summary>
+    private sealed class NoRepositoryWorktrees : IWorktreeManager
+    {
+        private sealed class Released : IAsyncDisposable
+        {
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+
+        public Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Not reached by these tests.");
+
+        public Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Not reached by these tests.");
+
+        public Task<Worktree> CreatePrReviewCheckoutAsync(PrReviewWorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Not reached by these tests.");
+
+        public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task DeletePrReviewTrackingRefAsync(string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task DeleteBranchEverywhereAsync(
+            string repositoryPath, string branch, RemoteBranchDeletionOwner remoteDeletion,
+            CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task PruneAsync(string repositoryPath, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task<CheckoutRefresh> RefreshReadingCheckoutAsync(
+            string checkoutPath, string branch, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Not reached by these tests.");
+
+        public Task<IAsyncDisposable> AcquireRepositoryLockAsync(string repositoryPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(new Released());
+
+        public Task<IAsyncDisposable> AcquireCheckoutLockAsync(string checkoutPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(new Released());
+    }
+
+    // ─── The laps held under the flag, and taken without it ──────────────────────────────────────
+
+    [Theory]
+    [InlineData("review-feedback")]
+    [InlineData("changes-requested")]
+    [InlineData("failing-checks")]
+    [InlineData("conflict")]
+    public async Task A_driven_task_dispatches_no_lap_for_a_finding_that_a_task_without_the_flag_dispatches(string finding)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+
+        // Without the flag, today's closeout: the lap is dispatched and the task is reopened for it.
+        DrivenSeed automatic = await SeedDrivenAsync(cts.Token, interactive: false);
+        FakeInspector automaticInspector = new() { Snapshot = DrivenSnapshot(finding) };
+        await NewDrivenEngine(automatic, automaticInspector).PollOnceAsync(cts.Token);
+        TaskDetails reopened = await LoadDetailsAsync(automatic.TaskId, cts.Token);
+        reopened.FollowUpKind.Should().Be(DrivenKind(finding), "a task without the flag is closed out exactly as before");
+        (await CountStreamEventsAsync<TaskEvents.TaskReopened>(automatic.TaskId, cts.Token)).Should().Be(1);
+        (await LoadRunAsync(automatic.RunId, cts.Token)).CloseoutReport.Should().BeNull();
+        (await CountStreamEventsAsync<CloseoutReportRecorded>(automatic.RunId, cts.Token)).Should().Be(0);
+
+        // With it, nothing is dispatched, nothing is written to the branch or the pull request, and the
+        // finding is recorded on the run instead.
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
+        FakeInspector drivenInspector = new() { Snapshot = DrivenSnapshot(finding) };
+        await NewDrivenEngine(driven, drivenInspector).PollOnceAsync(cts.Token);
+
+        (await CountStreamEventsAsync<TaskEvents.TaskReopened>(driven.TaskId, cts.Token)).Should().Be(0);
+        RunDetails run = await LoadRunAsync(driven.RunId, cts.Token);
+        run.State.Should().Be(RunState.AwaitingReview, "the run stays watched, and is not superseded by a lap");
+        (await CountStreamEventsAsync<PullRequestMechanicalRebaseAttempted>(driven.RunId, cts.Token)).Should().Be(0,
+            "not even the mechanical rebase, which force-pushes the branch, is attempted");
+        (await CountStreamEventsAsync<PullRequestChecksFailed>(driven.RunId, cts.Token)).Should().Be(0);
+        (await CountStreamEventsAsync<PullRequestChangesRequested>(driven.RunId, cts.Token)).Should().Be(0);
+        (await CountStreamEventsAsync<ReviewFeedbackReceived>(driven.RunId, cts.Token)).Should().Be(0);
+        (await CountStreamEventsAsync<PullRequestConflictObserved>(driven.RunId, cts.Token)).Should().Be(0);
+        drivenInspector.MergeAttempts.Should().Be(0);
+        run.CloseoutReport.Should().NotBeNull();
+        switch (finding)
+        {
+            case "failing-checks":
+                run.CloseoutReport!.FailingChecks.Should().Equal("build", "lint");
+                break;
+            case "conflict":
+                run.CloseoutReport!.Conflicting.Should().BeTrue();
+                break;
+            case "changes-requested":
+                run.CloseoutReport!.ChangesRequestedReviews.Should().Equal(ChangesRequestedReviewUrl);
+                break;
+            default:
+                run.CloseoutReport!.Threads.Should().NotBeNull();
+                run.CloseoutReport.Threads!.ThreadCount.Should().Be(2);
+                break;
+        }
+
+        await CleanUpDrivenAsync(driven, cts.Token);
+        await CleanUpDrivenAsync(automatic, cts.Token);
+    }
+
+    private async Task<TaskDetails> LoadDetailsAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = postgres.Store.QuerySession();
+        return (await query.LoadAsync<TaskDetails>(taskId, cancellationToken))!;
+    }
+
+    /// <summary>
+    /// The git answers a stacked child's observation reads, scripted: the parent branch resolves to
+    /// <see cref="ParentSha"/>, the base to <see cref="BaseTipSha"/>, the child holds the parent's head
+    /// and not the base tip, and the parent's head is not on the base (a squash merge).
+    /// </summary>
+    private static RecordingProcessRunner StackedGit() => new(arguments => arguments switch
+    {
+        ["rev-parse", ..] => new ProcessResult(
+            0, arguments.Any(argument => argument.Contains("origin/main", StringComparison.Ordinal)) ? BaseTipSha : ParentSha, string.Empty),
+        ["merge-base", "--is-ancestor", var ancestor, var descendant] =>
+            new ProcessResult(
+                ancestor == ParentSha && descendant.StartsWith("refs/heads/", StringComparison.Ordinal) ? 0 : 1,
+                string.Empty, string.Empty),
+        ["merge-base", ..] => new ProcessResult(0, BaseTipSha, string.Empty),
+        _ => new ProcessResult(0, string.Empty, string.Empty),
+    });
+
+    [Fact]
+    public async Task A_driven_stacked_child_whose_parent_merged_is_not_retargeted_or_replayed_and_a_task_without_the_flag_is()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+
+        DrivenSeed automatic = await SeedDrivenAsync(
+            cts.Token, interactive: false, runBaseBranch: "parent-branch", stackedOnPullRequest: 5,
+            parentState: RemoteParentState.Merged);
+        FakeInspector automaticInspector = new() { Snapshot = FakeInspector.Quiet() with { BaseRefName = "parent-branch" } };
+        await NewDrivenEngine(automatic, automaticInspector, git: StackedGit()).PollOnceAsync(cts.Token);
+        automaticInspector.Retargets.Should().Equal(["main"], "without the flag the child moves onto the base");
+        (await LoadDetailsAsync(automatic.TaskId, cts.Token)).FollowUpKind.Should().Be(FollowUpKind.StackReplay);
+
+        DrivenSeed driven = await SeedDrivenAsync(
+            cts.Token, runBaseBranch: "parent-branch", stackedOnPullRequest: 5, parentState: RemoteParentState.Merged);
+        FakeInspector drivenInspector = new() { Snapshot = FakeInspector.Quiet() with { BaseRefName = "parent-branch" } };
+        await NewDrivenEngine(driven, drivenInspector, git: StackedGit()).PollOnceAsync(cts.Token);
+
+        drivenInspector.Retargets.Should().BeEmpty("a retarget is a write to the pull request, and none is made while a human drives");
+        (await CountStreamEventsAsync<TaskEvents.TaskReopened>(driven.TaskId, cts.Token)).Should().Be(0, "no replay lap is dispatched");
+        (await CountStreamEventsAsync<StackedPullRequestRetargeted>(driven.RunId, cts.Token)).Should().Be(0);
+        RunDetails run = await LoadRunAsync(driven.RunId, cts.Token);
+        run.State.Should().Be(RunState.AwaitingReview);
+        run.CloseoutReport!.StackedParent.Should().Contain("merged");
+        TaskStatusRow row = await ComposeRowAsync(driven.TaskId, cts.Token);
+        row.Attention.NeedsYou.Should().BeTrue();
+        row.Attention.Lever.Should().Be($"h9k task revise {Short(driven.TaskId)} --clear-interactive-mode",
+            "no pr resolve form dispatches a replay lap, so the way back is to hand the task to automation");
+
+        await CleanUpDrivenAsync(driven, cts.Token);
+        await CleanUpDrivenAsync(automatic, cts.Token);
+    }
+
+    [Fact]
+    public async Task A_driven_stacked_child_whose_parent_moved_is_reported_and_not_replayed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(
+            cts.Token, runBaseBranch: "parent-branch", stackedOnPullRequest: 5, parentState: RemoteParentState.Open);
+        RecordingProcessRunner moved = new(arguments => arguments switch
+        {
+            ["rev-parse", ..] => new ProcessResult(0, ParentSha, string.Empty),
+            // The child does not contain the parent's current head, but does contain its own fork point.
+            ["merge-base", "--is-ancestor", var ancestor, _] => new ProcessResult(ancestor == ParentSha ? 1 : 0, string.Empty, string.Empty),
+            _ => new ProcessResult(0, string.Empty, string.Empty),
+        });
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { BaseRefName = "parent-branch" } };
+        await NewDrivenEngine(driven, inspector, git: moved).PollOnceAsync(cts.Token);
+
+        (await CountStreamEventsAsync<TaskEvents.TaskReopened>(driven.TaskId, cts.Token)).Should().Be(0);
+        RunDetails run = await LoadRunAsync(driven.RunId, cts.Token);
+        run.CloseoutReport!.StackedParent.Should().Contain("moved");
+
+        // The same parent move without the flag is today's replay lap.
+        DrivenSeed automatic = await SeedDrivenAsync(
+            cts.Token, interactive: false, runBaseBranch: "parent-branch", stackedOnPullRequest: 5,
+            parentState: RemoteParentState.Open);
+        await NewDrivenEngine(automatic, new FakeInspector { Snapshot = FakeInspector.Quiet() with { BaseRefName = "parent-branch" } }, git: moved)
+            .PollOnceAsync(cts.Token);
+        (await LoadDetailsAsync(automatic.TaskId, cts.Token)).FollowUpKind.Should().Be(FollowUpKind.StackReplay);
+
+        await CleanUpDrivenAsync(driven, cts.Token);
+        await CleanUpDrivenAsync(automatic, cts.Token);
+    }
+
+    [Fact]
+    public async Task A_driven_task_still_parks_for_a_stacked_parent_that_closed_unmerged()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(
+            cts.Token, runBaseBranch: "parent-branch", stackedOnPullRequest: 5, parentState: RemoteParentState.ClosedUnmerged);
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { BaseRefName = "parent-branch" } };
+        await NewDrivenEngine(driven, inspector, git: StackedGit()).PollOnceAsync(cts.Token);
+
+        RunDetails run = await LoadRunAsync(driven.RunId, cts.Token);
+        run.State.Should().Be(RunState.CloseoutParked, "the park for a dead parent is not a lap, and the flag does not hold it");
+        run.ParkedReason.Should().Contain("closed without merging");
+        (await CountStreamEventsAsync<TaskEvents.TaskReopened>(driven.TaskId, cts.Token)).Should().Be(0);
+    }
+
+    // ─── What still runs under the flag ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task A_driven_task_still_records_the_external_review_and_still_detects_a_merge()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { CopilotReviewState = ExternalReviewState.Landed },
+        };
+        await NewDrivenEngine(driven, inspector).PollOnceAsync(cts.Token);
+        (await LoadRunAsync(driven.RunId, cts.Token)).ExternalReviewState.Should().Be(ExternalReviewState.Landed);
+
+        inspector.Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(1) };
+        CloseoutSweepResult sweep = await NewDrivenEngine(driven, inspector).PollOnceAsync(cts.Token);
+        sweep.MergesObserved.Should().Be(1);
+        (await LoadRunAsync(driven.RunId, cts.Token)).State.Should().Be(RunState.Completed);
+    }
+
+    [Fact]
+    public async Task A_driven_task_still_re_requests_an_errored_copilot_review()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                ErroredReview = new ErroredReview("copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1"),
+            },
+        };
+        await NewDrivenEngine(driven, inspector).PollOnceAsync(cts.Token);
+
+        inspector.ReviewRerequests.Should().Equal("copilot-pull-request-reviewer");
+        (await LoadRunAsync(driven.RunId, cts.Token)).State.Should().Be(RunState.ReviewPending);
+        await CleanUpDrivenAsync(driven, cts.Token);
+    }
+
+    [Fact]
+    public async Task A_driven_task_still_holds_a_non_members_review_through_the_gate_and_does_not_report_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
+        EnrolledNodeSnapshots roster = new();
+        roster.Set(driven.ProjectId, new EnrolledFleetSnapshot([driven.Node.NodeId], [1001L], []));
+        PullRequestSnapshot strangers = FakeInspector.Quiet() with
+        {
+            RepositoryIsPrivate = false,
+            HeadCommit = "cafe1",
+            ChangesRequestedReviews =
+            [
+                new ChangesRequestedReview(
+                    "stranger", ChangesRequestedReviewUrl, Now.AddMinutes(-5),
+                    [new ChangesRequestedFinding("A stranger's finding.", "src/Limiter.cs:42", "PRRT_9")], 2001L),
+            ],
+        };
+        CloseoutEngine engine = new(
+            postgres.Store, driven.Node, new DaemonConnection(postgres.ConnectionString),
+            new FakeInspector { Snapshot = strangers }, new NoRepositoryWorktrees(),
+            new StackedParentWatch(new NoRepositoryWorktrees(), new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance),
+            RecordingProcessRunner.Succeeding(string.Empty).Runner, RecordingJiraRequester.Succeeding(200, "{}").Requester,
+            Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance, enrolledNodes: roster);
+        await engine.PollOnceAsync(cts.Token);
+
+        TaskDetails details = await LoadDetailsAsync(driven.TaskId, cts.Token);
+        details.NonMemberFeedback.Should().ContainSingle("the gate raised its needs-you item exactly as it does for any task");
+        (await LoadRunAsync(driven.RunId, cts.Token)).CloseoutReport.Should().BeNull(
+            "a non-member's review is taken out of the snapshot before anything is reported");
+        await CleanUpDrivenAsync(driven, cts.Token);
+    }
+
+    // ─── The report: once per change, and the row names the go that matches it ───────────────────
+
+    [Fact]
+    public async Task Several_polls_of_an_unchanged_finding_record_one_report_and_a_change_records_another()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
+        FakeInspector inspector = new() { Snapshot = DrivenSnapshot("failing-checks") };
+        CloseoutEngine engine = NewDrivenEngine(driven, inspector);
+
+        await engine.PollOnceAsync(cts.Token);
+        await engine.PollOnceAsync(cts.Token);
+        await engine.PollOnceAsync(cts.Token);
+        (await CountStreamEventsAsync<CloseoutReportRecorded>(driven.RunId, cts.Token)).Should().Be(1,
+            "three polls of the same failing checks are one fact");
+
+        inspector.Snapshot = FakeInspector.Quiet() with { HeadCommit = "cafe1", FailingChecks = ["build"] };
+        await engine.PollOnceAsync(cts.Token);
+        (await CountStreamEventsAsync<CloseoutReportRecorded>(driven.RunId, cts.Token)).Should().Be(2, "a check cleared is a change");
+
+        inspector.Snapshot = FakeInspector.Quiet() with { HeadCommit = "cafe2" };
+        await engine.PollOnceAsync(cts.Token);
+        await engine.PollOnceAsync(cts.Token);
+        (await CountStreamEventsAsync<CloseoutReportRecorded>(driven.RunId, cts.Token)).Should().Be(3, "all clear is recorded once, and clears the row");
+        (await LoadRunAsync(driven.RunId, cts.Token)).CloseoutReport.Should().BeNull();
+
+        inspector.Snapshot = DrivenSnapshot("conflict");
+        await engine.PollOnceAsync(cts.Token);
+        inspector.Snapshot = FakeInspector.Quiet() with { HeadCommit = "cafe3" };
+        await engine.PollOnceAsync(cts.Token);
+        (await CountStreamEventsAsync<CloseoutReportRecorded>(driven.RunId, cts.Token)).Should().Be(5,
+            "a conflict appearing and then clearing are two more");
+        await CleanUpDrivenAsync(driven, cts.Token);
+    }
+
+    [Theory]
+    [InlineData("review-feedback", "h9k pr resolve {0}")]
+    [InlineData("failing-checks", "h9k pr resolve {0} --checks")]
+    [InlineData("conflict", "h9k pr resolve {0} --rebase")]
+    [InlineData("changes-requested", "h9k task revise {0} --clear-interactive-mode")]
+    public async Task The_needs_you_row_names_the_report_and_the_go_that_matches_it(string finding, string leverFormat)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
+        await NewDrivenEngine(driven, new FakeInspector { Snapshot = DrivenSnapshot(finding) }).PollOnceAsync(cts.Token);
+
+        TaskStatusRow row = await ComposeRowAsync(driven.TaskId, cts.Token);
+        row.Attention.NeedsYou.Should().BeTrue();
+        row.Attention.Lever.Should().Be(string.Format(leverFormat, Short(driven.TaskId)));
+        row.Attention.Cause.Should().Contain("left alone while you drive this task").And.Contain("hands the task back to automation");
+        row.Attention.Cause.Should().Contain(finding switch
+        {
+            "failing-checks" => "build, lint",
+            "conflict" => "conflicts with its base",
+            "changes-requested" => ChangesRequestedReviewUrl,
+            _ => "2 unresolved review threads",
+        });
+        await CleanUpDrivenAsync(driven, cts.Token);
+    }
+
+    // ─── The merge waits while a human drives ────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("On")]
+    [InlineData("AfterHumanReview")]
+    public async Task A_pre_approved_driven_task_does_not_merge_and_shows_the_row_that_names_both_ways_out(string mode)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token, preApproval: PreApprovalMode.FromInput(mode));
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Reviewed(["alice"], [FakeInspector.Approved("alice")]),
+        };
+        await NewDrivenEngine(driven, inspector).PollOnceAsync(cts.Token);
+        await NewDrivenEngine(driven, inspector).PollOnceAsync(cts.Token);
+
+        inspector.MergeAttempts.Should().Be(0, "pre-approval belongs to the automated workflow");
+        (await LoadRunAsync(driven.RunId, cts.Token)).State.Should().Be(RunState.AwaitingReview);
+        (await CountStreamEventsAsync<CloseoutReportRecorded>(driven.RunId, cts.Token)).Should().Be(1);
+        TaskStatusRow row = await ComposeRowAsync(driven.TaskId, cts.Token);
+        row.Attention.NeedsYou.Should().BeTrue();
+        string id = Short(driven.TaskId);
+        row.Attention.Cause.Should().Be(
+            $"pre-approved; end iteration with `h9k task revise {id} --clear-interactive-mode`, or merge it yourself on GitHub");
+        row.Attention.Lever.Should().Be($"h9k task revise {id} --clear-interactive-mode");
+        await CleanUpDrivenAsync(driven, cts.Token);
+    }
+
+    [Fact]
+    public async Task A_driven_follow_up_does_not_rerequest_reviewers_and_a_pre_approved_one_still_shows_the_merge_hold()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token, preApproval: PreApprovalMode.On, asFollowUp: true);
+        await EnableReviewRerequestAsync(postgres.Store, driven.Node.OwnerId, onTheOwner: true, cts.Token);
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                HeadCommit = "cafe1",
+                Reviewers = [new PullRequestReviewer("teammate", ReviewerKind.Human)],
+            },
+        };
+        await NewDrivenEngine(driven, inspector).PollOnceAsync(cts.Token);
+
+        inspector.ReviewRerequests.Should().BeEmpty("a countersign writes to the pull request, which a human drives while the flag is on");
+        inspector.MergeAttempts.Should().Be(0);
+        (await ComposeRowAsync(driven.TaskId, cts.Token)).Attention.Lever.Should().Be(
+            $"h9k task revise {Short(driven.TaskId)} --clear-interactive-mode");
+        await ClearOwnerReviewRerequestAsync(postgres.Store, driven.Node.OwnerId, cts.Token);
+        await CleanUpDrivenAsync(driven, cts.Token);
+    }
+
+    [Fact]
+    public async Task A_driven_task_that_is_not_pre_approved_shows_no_merge_hold_row()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token, preApproval: PreApprovalMode.Off);
+        await NewDrivenEngine(driven, new FakeInspector { Snapshot = FakeInspector.Quiet() with { HeadCommit = "cafe1" } })
+            .PollOnceAsync(cts.Token);
+
+        (await CountStreamEventsAsync<CloseoutReportRecorded>(driven.RunId, cts.Token)).Should().Be(0);
+        (await ComposeRowAsync(driven.TaskId, cts.Token)).Attention.Cause.Should().NotContain("pre-approved; end iteration");
+        await CleanUpDrivenAsync(driven, cts.Token);
+    }
+
+    [Fact]
+    public async Task With_the_flag_cleared_pre_approval_merges_as_it_always_did_and_the_stale_report_is_cleared()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token, preApproval: PreApprovalMode.On);
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { HeadCommit = "cafe123" } };
+        await NewDrivenEngine(driven, inspector).PollOnceAsync(cts.Token);
+        inspector.MergeAttempts.Should().Be(0);
+        (await LoadRunAsync(driven.RunId, cts.Token)).CloseoutReport!.MergeHeld.Should().BeTrue();
+
+        await ClearTheFlagAsync(driven, cts.Token);
+        await NewDrivenEngine(driven, inspector).PollOnceAsync(cts.Token);
+
+        inspector.MergeAttempts.Should().Be(1, "the poll after the flag clears is today's closeout, a pre-approved merge included");
+        (await LoadRunAsync(driven.RunId, cts.Token)).State.Should().Be(RunState.Completed);
+    }
+
+    [Fact]
+    public async Task The_lap_closeout_dispatches_after_revise_clears_the_flag_also_starts_from_the_triage_report()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
+        FakeProcessManager processes = new();
+        TriageExecutor executor = new(processes)
+        {
+            Report = "THREAD DISPOSITION: thread=PRRT_abc; disposition=fix; kind=human; author=teammate\nThe limiter never resets.\n",
+        };
+        CloseoutTriageSessions triage = NewTriage(executor, processes);
+        FakeInspector inspector = new() { Snapshot = DrivenSnapshot("changes-requested") };
+        CloseoutEngine engine = NewDrivenEngine(driven, inspector, triage);
+        await engine.PollOnceAsync(cts.Token);
+        await triage.WhenIdleAsync();
+        await engine.PollOnceAsync(cts.Token);
+        string reportPath = executor.Requests.Single().AssessmentFile!;
+
+        await ClearTheFlagAsync(driven, cts.Token);
+        await engine.PollOnceAsync(cts.Token);
+
+        TaskDetails lap = await LoadDetailsAsync(driven.TaskId, cts.Token);
+        lap.FollowUpKind.Should().Be(FollowUpKind.ReviewRequestedChanges);
+        lap.FollowUpTriageReportPath.Should().Be(reportPath, "the first lap after the flag clears starts from the analysis");
+        await CleanUpDrivenAsync(driven, cts.Token);
+    }
+
+    [Fact]
+    public async Task Handing_a_driven_task_back_clears_its_report_and_the_next_poll_dispatches_the_lap_as_today()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
+        FakeInspector inspector = new() { Snapshot = DrivenSnapshot("changes-requested") };
+        await NewDrivenEngine(driven, inspector).PollOnceAsync(cts.Token);
+        (await CountStreamEventsAsync<TaskEvents.TaskReopened>(driven.TaskId, cts.Token)).Should().Be(0);
+
+        await ClearTheFlagAsync(driven, cts.Token);
+        await NewDrivenEngine(driven, inspector).PollOnceAsync(cts.Token);
+
+        (await LoadDetailsAsync(driven.TaskId, cts.Token)).FollowUpKind.Should().Be(
+            FollowUpKind.ReviewRequestedChanges, "the lever the row named is exactly what lets the changes-requested lap run");
+        (await CountStreamEventsAsync<CloseoutReportRecorded>(driven.RunId, cts.Token)).Should().Be(2,
+            "the report, then its clearing on the first poll that acts");
+    }
+
+    // ─── The read-only triage of the threads closeout leaves alone ───────────────────────────────
+
+    [Fact]
+    public async Task Triage_is_dispatched_once_for_a_thread_set_however_many_polls_see_it_and_again_for_a_new_set()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
+        FakeProcessManager processes = new();
+        TriageExecutor executor = new(processes);
+        CloseoutTriageSessions triage = NewTriage(executor, processes);
+        FakeInspector inspector = new() { Snapshot = DrivenSnapshot("review-feedback") };
+        CloseoutEngine engine = NewDrivenEngine(driven, inspector, triage);
+
+        await engine.PollOnceAsync(cts.Token);
+        await engine.PollOnceAsync(cts.Token);
+        await triage.WhenIdleAsync();
+        await engine.PollOnceAsync(cts.Token);
+        await engine.PollOnceAsync(cts.Token);
+
+        executor.Requests.Should().ContainSingle("one set of outstanding threads earns one session, not one per poll");
+        AgentSpawnRequest request = executor.Requests[0];
+        request.SkipPermissions.Should().BeFalse("no read-only session ever skips permissions");
+        request.UsesReviewPermissions.Should().BeTrue("the triage runs under the pr-review permission file");
+        request.UntrustedWorkingDirectory.Should().BeTrue("a reviewer's text never meets the checkout's own project settings");
+        request.MaxTurns.Should().Be(new DaemonOptions().CloseoutTriageMaxTurns);
+        request.AssessmentFile.Should().StartWith(DrivenRunDirectory(driven.RunId)).And.EndWith(".md");
+        request.Prompt.Should().Contain("PRRT_a").And.Contain("PRRT_b").And.Contain("Never post anything to GitHub");
+        request.Prompt.Should().Contain("does not gate review feedback", "the scope the gate decided is what the session reads under");
+        (await CountStreamEventsAsync<TaskEvents.CloseoutTriageDispatched>(driven.TaskId, cts.Token)).Should().Be(1);
+        (await CountStreamEventsAsync<TaskEvents.TaskReopened>(driven.TaskId, cts.Token)).Should().Be(0, "a triage is not a lap");
+
+        // The same threads in another order are the same set; a different set is a new triage.
+        inspector.Snapshot = DrivenSnapshot("review-feedback") with { UnresolvedReviewThreadIds = ["PRRT_b", "PRRT_a"] };
+        await engine.PollOnceAsync(cts.Token);
+        executor.Requests.Should().HaveCount(1);
+        inspector.Snapshot = DrivenSnapshot("review-feedback") with
+        {
+            UnresolvedReviewThreadCount = 1,
+            UnresolvedReviewThreadIds = ["PRRT_c"],
+            UnresolvedHumanThreadIds = ["PRRT_c"],
+        };
+        await engine.PollOnceAsync(cts.Token);
+        await triage.WhenIdleAsync();
+        executor.Requests.Should().HaveCount(2);
+        await CleanUpDrivenAsync(driven, cts.Token);
+    }
+
+    [Fact]
+    public async Task The_dispatch_is_recorded_with_the_reports_path_before_the_session_is_spawned()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
+        FakeProcessManager processes = new();
+        TriageExecutor executor = new(processes);
+        TaskEvents.CloseoutTriageDispatched? atSpawn = null;
+        executor.OnSpawn = async _ =>
+        {
+            await using IQuerySession query = postgres.Store.QuerySession();
+            atSpawn = (await query.Events.FetchStreamAsync(driven.TaskId, token: cts.Token))
+                .Select(stored => stored.Data).OfType<TaskEvents.CloseoutTriageDispatched>().SingleOrDefault();
+        };
+        CloseoutTriageSessions triage = NewTriage(executor, processes);
+        await NewDrivenEngine(driven, new FakeInspector { Snapshot = DrivenSnapshot("review-feedback") }, triage)
+            .PollOnceAsync(cts.Token);
+        await triage.WhenIdleAsync();
+
+        atSpawn.Should().NotBeNull("a restart between the dispatch and the spawn must find the dispatch on the stream");
+        atSpawn!.ReportPath.Should().Be(executor.Requests.Single().AssessmentFile);
+        await CleanUpDrivenAsync(driven, cts.Token);
+    }
+
+    [Fact]
+    public async Task The_stream_and_the_row_carry_the_triage_counts_and_none_of_the_reports_prose()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
+        FakeProcessManager processes = new();
+        TriageExecutor executor = new(processes);
+        CloseoutTriageSessions triage = NewTriage(executor, processes);
+        CloseoutEngine engine = NewDrivenEngine(driven, new FakeInspector { Snapshot = DrivenSnapshot("review-feedback") }, triage);
+
+        await engine.PollOnceAsync(cts.Token);
+        await triage.WhenIdleAsync();
+        await engine.PollOnceAsync(cts.Token);
+
+        string reportPath = executor.Requests.Single().AssessmentFile!;
+        File.ReadAllText(reportPath).Should().Contain(ProseThatMustStayInTheFile, "the prose is in the file for the owner to read");
+        TaskAggregate task = await LoadTaskAggregateAsync(driven.TaskId, cts.Token);
+        CloseoutTriage recorded = task.CloseoutTriages.Values.Should().ContainSingle().Subject;
+        (recorded.Status, recorded.Fix, recorded.Decline, recorded.Route).Should().Be((FeedbackEvaluationStatus.Assessed, 1, 1, 0));
+        recorded.ReportPath.Should().Be(reportPath);
+
+        await using (IQuerySession query = postgres.Store.QuerySession())
+        {
+            foreach (IEvent stored in await query.Events.FetchStreamAsync(driven.TaskId, token: cts.Token))
+            {
+                System.Text.Json.JsonSerializer.Serialize(stored.Data, stored.Data.GetType())
+                    .Should().NotContain(ProseThatMustStayInTheFile);
+            }
+
+            foreach (IEvent stored in await query.Events.FetchStreamAsync(driven.RunId, token: cts.Token))
+            {
+                System.Text.Json.JsonSerializer.Serialize(stored.Data, stored.Data.GetType())
+                    .Should().NotContain(ProseThatMustStayInTheFile);
+            }
+        }
+
+        TaskStatusRow row = await ComposeRowAsync(driven.TaskId, cts.Token);
+        row.Attention.Cause.Should().Contain("triaged: 1 fix, 1 decline, 0 route").And.Contain(reportPath);
+        row.Attention.Cause.Should().NotContain(ProseThatMustStayInTheFile);
+        row.Attention.Markup.Should().NotContain(ProseThatMustStayInTheFile);
+        row.Attention.Lever.Should().Be($"h9k pr resolve {Short(driven.TaskId)}");
+        await CleanUpDrivenAsync(driven, cts.Token);
+    }
+
+    [Fact]
+    public async Task A_restart_with_the_dispatch_already_recorded_starts_no_second_session_and_records_the_loss()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
+        FakeProcessManager processes = new();
+        TriageExecutor executor = new(processes) { HoldOpen = true };
+        FakeInspector inspector = new() { Snapshot = DrivenSnapshot("review-feedback") };
+        await NewDrivenEngine(driven, inspector, NewTriage(executor, processes)).PollOnceAsync(cts.Token);
+        executor.Requests.Should().ContainSingle();
+
+        // A daemon restart builds new objects over the same stream; nothing of the first one's memory survives.
+        CloseoutTriageSessions afterRestart = NewTriage(executor, processes);
+        CloseoutEngine restarted = NewDrivenEngine(driven, inspector, afterRestart);
+        await restarted.PollOnceAsync(cts.Token);
+        await restarted.PollOnceAsync(cts.Token);
+
+        executor.Requests.Should().ContainSingle("the recorded dispatch is never re-dispatched");
+        CloseoutTriage recorded = (await LoadTaskAggregateAsync(driven.TaskId, cts.Token)).CloseoutTriages.Values.Single();
+        recorded.Status.Should().Be(FeedbackEvaluationStatus.Failed);
+        recorded.Reason.Should().Contain("daemon restarted");
+        (await CountStreamEventsAsync<TaskEvents.CloseoutTriageDispatched>(driven.TaskId, cts.Token)).Should().Be(1);
+        await executor.ReleaseAsync();
+        await CleanUpDrivenAsync(driven, cts.Token);
+    }
+
+    [Fact]
+    public async Task A_task_past_its_triage_allowance_gets_no_session_and_a_row_that_says_so()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
+        FakeProcessManager processes = new();
+        TriageExecutor executor = new(processes);
+        CloseoutTriageSessions triage = NewTriage(executor, processes, daemon => daemon.CloseoutTriageCap = 1);
+        FakeInspector inspector = new() { Snapshot = DrivenSnapshot("review-feedback") };
+        CloseoutEngine engine = NewDrivenEngine(driven, inspector, triage);
+
+        await engine.PollOnceAsync(cts.Token);
+        await triage.WhenIdleAsync();
+        inspector.Snapshot = DrivenSnapshot("review-feedback") with
+        {
+            UnresolvedReviewThreadCount = 1,
+            UnresolvedReviewThreadIds = ["PRRT_c"],
+            UnresolvedHumanThreadIds = ["PRRT_c"],
+        };
+        await engine.PollOnceAsync(cts.Token);
+        await engine.PollOnceAsync(cts.Token);
+
+        executor.Requests.Should().ContainSingle("the second set is past the lifetime allowance of one");
+        (await LoadTaskAggregateAsync(driven.TaskId, cts.Token)).CloseoutTriagesDispatched.Should().Be(1);
+        TaskStatusRow row = await ComposeRowAsync(driven.TaskId, cts.Token);
+        row.Attention.Cause.Should().Contain("no triage ran").And.Contain("allowance of 1");
+        row.Attention.Lever.Should().Be($"h9k pr resolve {Short(driven.TaskId)}");
+        await CleanUpDrivenAsync(driven, cts.Token);
+    }
+
+    [Fact]
+    public async Task A_triage_that_writes_no_report_is_recorded_as_failed_and_not_retried()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
+        FakeProcessManager processes = new();
+        TriageExecutor executor = new(processes) { Report = null };
+        CloseoutTriageSessions triage = NewTriage(executor, processes);
+        CloseoutEngine engine = NewDrivenEngine(driven, new FakeInspector { Snapshot = DrivenSnapshot("review-feedback") }, triage);
+
+        await engine.PollOnceAsync(cts.Token);
+        await triage.WhenIdleAsync();
+        await engine.PollOnceAsync(cts.Token);
+        await engine.PollOnceAsync(cts.Token);
+
+        executor.Requests.Should().ContainSingle();
+        (await LoadTaskAggregateAsync(driven.TaskId, cts.Token)).CloseoutTriages.Values.Single()
+            .Status.Should().Be(FeedbackEvaluationStatus.Failed);
+        (await ComposeRowAsync(driven.TaskId, cts.Token)).Attention.Cause.Should().Contain("no triage: the triage session wrote no report");
+        await CleanUpDrivenAsync(driven, cts.Token);
+    }
+
+    [Fact]
+    public async Task A_triage_report_cannot_inflate_its_counts_by_repeating_or_inventing_threads()
+    {
+        string path = Path.Combine(_root, $"inflated-{Guid.NewGuid():N}.md");
+        Directory.CreateDirectory(_root);
+        await File.WriteAllTextAsync(
+            path,
+            string.Join(
+                "\n",
+                "THREAD DISPOSITION: thread=PRRT_a; disposition=fix; kind=human; author=x",
+                "THREAD DISPOSITION: thread=PRRT_a; disposition=fix; kind=human; author=x",
+                "THREAD DISPOSITION: thread=PRRT_a; disposition=route; kind=human; author=x",
+                "THREAD DISPOSITION: thread=PRRT_invented; disposition=fix; kind=human; author=x",
+                "THREAD DISPOSITION: thread=PRRT_b; disposition=maybe; kind=human; author=x",
+                "THREAD DISPOSITION: thread=PRRT_b; disposition=DECLINE; kind=bot; author=y"));
+
+        (CloseoutTriageSessions.TriageCounts? counts, string? reason) = await CloseoutTriageSessions.ReadReportAsync(
+            path, ["PRRT_a", "PRRT_b"], 2, CancellationToken.None);
+
+        reason.Should().BeNull();
+        counts.Should().Be(new CloseoutTriageSessions.TriageCounts(Fix: 0, Decline: 1, Route: 1),
+            "each real thread counts once, by its last block, and a thread the set never named counts for nothing");
+    }
+
+    [Theory]
+    [InlineData(0, 3, "Dispatch")]
+    [InlineData(2, 3, "Dispatch")]
+    [InlineData(3, 3, "PastCap")]
+    public void Plan_dispatches_a_new_set_while_the_allowance_lasts_and_skips_it_after(
+        int dispatchedSoFar, int cap, string expected) =>
+        CloseoutTriageSessions.Plan(null, dispatchedSoFar, cap, _ => false).ToString().Should().Be(expected);
+
+    [Fact]
+    public void Plan_never_dispatches_a_set_twice_and_marks_a_dispatch_nothing_is_running_as_abandoned()
+    {
+        Guid session = DomainId.New();
+        CloseoutTriage running = new(
+            "PRRT_a", FeedbackEvaluationStatus.Running, 1, session, "/run/report.md", 0, 0, 0, null, Now);
+
+        CloseoutTriageSessions.Plan(running, 1, 3, id => id == session).Should().Be(CloseoutTriageAction.None);
+        CloseoutTriageSessions.Plan(running, 1, 3, _ => false).Should().Be(CloseoutTriageAction.Abandoned);
+        foreach (FeedbackEvaluationStatus settled in new[]
+        {
+            FeedbackEvaluationStatus.Assessed, FeedbackEvaluationStatus.Failed, FeedbackEvaluationStatus.PastCap,
+        })
+        {
+            CloseoutTriageSessions.Plan(running with { Status = settled }, 1, 3, _ => false)
+                .Should().Be(CloseoutTriageAction.None, "a settled set is never triaged again");
+        }
+    }
+
+    // ─── The go: pr resolve hands a driven task back, in one append, and the lap carries the report ───
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Pr_resolve_in_each_form_records_the_flag_clear_in_the_same_append_as_the_reopen(bool checks, bool rebase)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
+
+        await using (IDocumentSession session = postgres.Store.LightweightSession())
+        {
+            PullRequestResolveCommand.Resolution resolution = await PullRequestResolveCommand.ResolveAsync(
+                session, driven.TaskId, checks, rebase, null, driven.Node.OwnerId, cts.Token);
+            resolution.HandedBack.Should().BeTrue();
+        }
+
+        await using IQuerySession query = postgres.Store.QuerySession();
+        IReadOnlyList<IEvent> events = await query.Events.FetchStreamAsync(driven.TaskId, token: cts.Token);
+        IEvent revised = events.Single(e => e.Data is TaskEvents.TaskRevised { ClearInteractiveMode: true });
+        IEvent reopened = events.Single(e => e.Data is TaskEvents.TaskReopened);
+        reopened.Sequence.Should().Be(revised.Sequence + 1, "the clear is recorded as revise records it, immediately before the reopen");
+        reopened.Timestamp.Should().BeCloseTo(revised.Timestamp, TimeSpan.FromSeconds(5));
+        TaskAggregate task = await LoadTaskAggregateAsync(driven.TaskId, cts.Token);
+        task.InteractiveModeEnabled.Should().BeFalse();
+        task.State.Should().Be(TaskState.Queued);
+        task.FollowUpKind.Should().Be(checks ? FollowUpKind.FailingChecks : rebase ? FollowUpKind.Rebase : FollowUpKind.ReviewFeedback);
+        await CleanUpDrivenAsync(driven, cts.Token);
+    }
+
+    [Fact]
+    public async Task Pr_resolve_on_a_task_that_is_not_driven_records_no_flag_clear()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed automatic = await SeedDrivenAsync(cts.Token, interactive: false);
+
+        await using IDocumentSession session = postgres.Store.LightweightSession();
+        PullRequestResolveCommand.Resolution resolution = await PullRequestResolveCommand.ResolveAsync(
+            session, automatic.TaskId, false, false, null, automatic.Node.OwnerId, cts.Token);
+
+        resolution.HandedBack.Should().BeFalse();
+        (await CountStreamEventsAsync<TaskEvents.TaskRevised>(automatic.TaskId, cts.Token)).Should().Be(0);
+        await CleanUpDrivenAsync(automatic, cts.Token);
+    }
+
+    [Fact]
+    public async Task The_first_lap_after_the_flag_clears_carries_the_triage_report_and_a_later_lap_does_not()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed driven = await SeedDrivenAsync(cts.Token);
+        FakeProcessManager processes = new();
+        TriageExecutor executor = new(processes);
+        CloseoutTriageSessions triage = NewTriage(executor, processes);
+        CloseoutEngine engine = NewDrivenEngine(driven, new FakeInspector { Snapshot = DrivenSnapshot("review-feedback") }, triage);
+        await engine.PollOnceAsync(cts.Token);
+        await triage.WhenIdleAsync();
+        await engine.PollOnceAsync(cts.Token);
+        string reportPath = executor.Requests.Single().AssessmentFile!;
+
+        await using (IDocumentSession session = postgres.Store.LightweightSession())
+        {
+            await PullRequestResolveCommand.ResolveAsync(
+                session, driven.TaskId, false, false, null, driven.Node.OwnerId, cts.Token);
+        }
+
+        TaskDetails firstLap = await LoadDetailsAsync(driven.TaskId, cts.Token);
+        firstLap.FollowUpTriageReportPath.Should().Be(reportPath, "the lap this go dispatches starts from the triage");
+        string? carried = await RunLauncher.ReadCarriedTriageReportAsync(reportPath, cts.Token);
+        carried.Should().Contain(ProseThatMustStayInTheFile);
+        string section = AgentPromptBuilder.BuildCarriedTriageReport(carried!, reportPath);
+        section.Should().Contain("The report is quoted as data").And.Contain(ProseThatMustStayInTheFile);
+
+        // The report is consumed by the reopen that carried it: a later reopen hands nothing on.
+        TaskAggregate task = await LoadTaskAggregateAsync(driven.TaskId, cts.Token);
+        task.UnreadTriageReportPath.Should().BeNull();
+        await CleanUpDrivenAsync(driven, cts.Token);
+    }
 }

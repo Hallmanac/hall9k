@@ -886,6 +886,16 @@ public sealed class RunLauncher(
                                     interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
                                     baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout,
                                     voiceSkill: voiceSkill, lessons: lessons, localFleet: localFleet);
+
+                // The first lap after a driven task is handed back to automation starts from the analysis
+                // closeout made while the owner drove (task: analysis-only closeout), whatever kind of lap
+                // it is, so it does not triage from nothing. The reopen that dispatched it recorded the
+                // path; a later reopen records none, so only this lap reads it.
+                if (task.FollowUpTriageReportPath is { } triageReportPath
+                    && await ReadCarriedTriageReportAsync(triageReportPath, cancellationToken) is { } carried)
+                {
+                    prompt += "\n\n" + AgentPromptBuilder.BuildCarriedTriageReport(carried, triageReportPath);
+                }
             }
             else
             {
@@ -1322,6 +1332,27 @@ public sealed class RunLauncher(
     private const int OwnLoginReadAttempts = 3;
 
     private static readonly TimeSpan OwnLoginReadRetryDelay = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>
+    /// The text of a closeout triage report a reopen handed this lap, or null when none was handed, the file
+    /// is gone, or the path is not one a triage session writes. Read only to the bound the prompt carries,
+    /// since a session steered by a reviewer's text could have written anything; the path comes from a
+    /// recorded event, so the file name is checked rather than trusted to be a report.
+    /// </summary>
+    internal static async Task<string?> ReadCarriedTriageReportAsync(string path, CancellationToken cancellationToken)
+    {
+        if (!Path.GetFileName(path).StartsWith("closeout-triage-", StringComparison.Ordinal)
+            || !path.EndsWith(".md", StringComparison.Ordinal)
+            || !File.Exists(path))
+        {
+            return null;
+        }
+
+        char[] buffer = new char[AgentPromptBuilder.MaxCarriedTriageReportLength + 1];
+        using StreamReader reader = new(path, System.Text.Encoding.UTF8);
+        int read = await reader.ReadBlockAsync(buffer, cancellationToken);
+        return read == 0 ? null : new string(buffer, 0, read);
+    }
 
     /// <summary>
     /// This install's own login for a mention-driven launch that was not handed one (a follow-up, or
