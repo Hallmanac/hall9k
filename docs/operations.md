@@ -1817,7 +1817,7 @@ is the fallback that clears the flag directly in either case, with no active cla
 
 | Verb | Command | Who's in charge afterward |
 |---|---|---|
-| **work** | `h9k task drive <id>` | The human, on the build, and turns on the task's interactive-mode flag — see [Working a task interactively](#working-a-task-interactively) below. |
+| **drive** | `h9k task drive <id>` | The human, on the build, and turns on the task's interactive-mode flag — see [Working a task interactively](#working-a-task-interactively) below. |
 | **dispatch-the-phase** | `h9k task delegate <id> --note "<text>"` | Still the human: this delegates one phase (today, the build) to a headless contractor without touching the claim, the assignment, or interactive mode — `h9k task drive` resumes it once the contractor reports back (design ruling R6). |
 | **handback** | `h9k task handback <id> [--first \| --now]` | The machine: this always ends interactive mode. Three pickup speeds — the default (normal rotation by assignment age), `--first` (next free slot regardless of age), or `--now` (immediate, ceiling-exempt). |
 | **release** | `h9k task release <id> [--keep-interactive] [--unassign]` | The machine, same as `handback`, unless `--keep-interactive` is given — the one way to hand a task back headless while it still parks at every boundary. `--unassign` takes it straight to Published instead, atomically, keeping its assignee, so the task stays not queued and dispatcher-ineligible until a later explicit go (`h9k task queue`, `h9k task drive`, or `h9k task start`). |

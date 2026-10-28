@@ -14,7 +14,7 @@ public sealed partial class AssignQueueSplitGuardTests
     /// <summary>
     /// Every caller of <c>TaskDecider.Assign</c> in <c>src/</c>, by file and count. <c>h9k task queue</c> and
     /// <c>h9k task publish --queue</c> reach it through the one call in <c>TaskAssignCommand.AppendAsync</c>;
-    /// start, work, pr review and the two auto-pr-review mints queue in their own append because each is a go
+    /// start, drive, pr review and the two auto-pr-review mints queue in their own append because each is a go
     /// act of its own, not an assignment. A new caller is a new way to dispatch a task, so it has to be
     /// named here on purpose.
     /// </summary>
@@ -44,7 +44,7 @@ public sealed partial class AssignQueueSplitGuardTests
 
         found.Should().BeEquivalentTo(
             GoEventCallers.ToDictionary(caller => caller.File, caller => caller.Calls),
-            "these are the go acts: queue (through AppendAsync), start, work, pr review and both auto-pr-review mints");
+            "these are the go acts: queue (through AppendAsync), start, drive, pr review and both auto-pr-review mints");
 
         List<string> constructors = [];
         foreach (string file in SourceFiles(sourceDirectory))

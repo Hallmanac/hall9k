@@ -345,7 +345,7 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
     /// <summary>
     /// <c>--direct-launch</c>'s own path, kept for one release exactly as this command always
     /// behaved: launches a plain interactive <c>claude</c> process attached to this terminal,
-    /// waits for it to exit, and prints the same deliver/verify/work/handback/release menu this
+    /// waits for it to exit, and prints the same deliver/verify/drive/handback/release menu this
     /// command always has. Everything before the launch (the claim, the worktree cut, the prompt,
     /// the settings file, the pre-launch re-checks) is identical to the default path above; this
     /// method starts exactly where the two paths diverge.
@@ -511,7 +511,7 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
         // reaches here, so there is nothing left to cancel, and an ordinary Ctrl-C pressed as
         // input to the now-exited child (or Claude Code's own double-tap exit gesture) must
         // never turn a perfectly normal session end into a silent error exit that swallows the
-        // deliver/verify/work/handback/release guidance below (independent pre-PR review,
+        // deliver/verify/drive/handback/release guidance below (independent pre-PR review,
         // cycle 7).
         TaskDetails? taskAfterSession = await session.LoadAsync<TaskDetails>(taskId, CancellationToken.None);
         bool stillClaimedHere = taskAfterSession is not null

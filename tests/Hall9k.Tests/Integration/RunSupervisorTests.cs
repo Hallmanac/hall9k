@@ -378,7 +378,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         run.ExitedUnattendedDeliverConfirmedRefuses.Should().BeFalse(
             "the tree was never checked, so h9k task deliver is not confirmed to refuse here");
         run.State.Should().BeOneOf(RunState.Dispatched, RunState.Running,
-            "the run must stay where h9k task deliver/work/release already expect it — no widened guard needed");
+            "the run must stay where h9k task deliver/drive/release already expect it — no widened guard needed");
 
         IReadOnlyList<object> events =
             [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
@@ -416,10 +416,10 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         run.ExitedUnattendedDeliverConfirmedRefuses.Should().BeTrue(
             "h9k task deliver runs this identical uncommitted-files check and refuses on the same ground");
         run.State.Should().BeOneOf(RunState.Dispatched, RunState.Running,
-            "the run must stay where h9k task deliver/work/release already expect it — no widened guard needed");
+            "the run must stay where h9k task deliver/drive/release already expect it — no widened guard needed");
         run.InputTokens.Should().Be(
             0,
-            "a flagged run's tokens are recorded by whichever lever the human ends up using (deliver, work, "
+            "a flagged run's tokens are recorded by whichever lever the human ends up using (deliver, drive, "
             + "release, abandon, handback), never here too, or the node's spend budget double-counts this "
             + "session");
 
@@ -460,7 +460,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         run.ExitedUnattendedDeliverConfirmedRefuses.Should().BeTrue(
             "h9k task deliver runs this identical no-commits-beyond-base check and refuses on the same ground");
         run.State.Should().BeOneOf(RunState.Dispatched, RunState.Running,
-            "the run must stay where h9k task deliver/work/release already expect it — no widened guard needed");
+            "the run must stay where h9k task deliver/drive/release already expect it — no widened guard needed");
 
         IReadOnlyList<object> events =
             [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
@@ -502,7 +502,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         run.ExitedUnattendedDeliverConfirmedRefuses.Should().BeTrue(
             "h9k task deliver runs this identical branch-checkout check and refuses on the same ground");
         run.State.Should().BeOneOf(RunState.Dispatched, RunState.Running,
-            "the run must stay where h9k task deliver/work/release already expect it — no widened guard needed");
+            "the run must stay where h9k task deliver/drive/release already expect it — no widened guard needed");
 
         IReadOnlyList<object> events =
             [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
