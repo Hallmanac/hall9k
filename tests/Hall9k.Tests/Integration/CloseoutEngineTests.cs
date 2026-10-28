@@ -9,6 +9,7 @@ using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
@@ -6432,14 +6433,16 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         FakeInspector inspector,
         CloseoutTriageSessions? triage = null,
         RecordingProcessRunner? git = null,
-        int maxAutomaticCloseoutRuns = 4)
+        int maxAutomaticCloseoutRuns = 4,
+        NoRepositoryWorktrees? worktreeManager = null,
+        RecordingProcessRunner? engineProcess = null)
     {
-        NoRepositoryWorktrees worktrees = new();
+        NoRepositoryWorktrees worktrees = worktreeManager ?? new();
         return new CloseoutEngine(
             postgres.Store, seed.Node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
             new StackedParentWatch(
                 worktrees, new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance, git?.Runner),
-            RecordingProcessRunner.Succeeding(string.Empty).Runner,
+            (engineProcess ?? RecordingProcessRunner.Succeeding(string.Empty)).Runner,
             RecordingJiraRequester.Succeeding(200, "{}").Requester,
             Options.Create(new DaemonOptions
             {
@@ -6471,6 +6474,181 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     {
         await using IQuerySession query = postgres.Store.QuerySession();
         return (await query.LoadAsync<RunDetails>(runId, cancellationToken))!;
+    }
+
+    // ─── An interactive claim on the open pull request (h9k task drive at the PR stage) ──────────
+
+    /// <summary>
+    /// Takes the seeded task's open pull request back into an interactive claim exactly as
+    /// <c>h9k task drive</c> records it: the manual reopen and the claim in one append, and the claim's own
+    /// run, dispatched as a follow-up under the sentinel node.
+    /// </summary>
+    private async Task<(Guid ClaimRunId, string Worktree)> ClaimAtPullRequestStageAsync(
+        DrivenSeed seed, CancellationToken cancellationToken, bool createWorktree = false,
+        IEnumerable<object>? claimRunEvents = null)
+    {
+        await using IDocumentSession session = postgres.Store.LightweightSession();
+        StreamState fence = (await session.Events.FetchStreamStateAsync(seed.TaskId, cancellationToken))!;
+        TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
+            seed.TaskId, token: cancellationToken))!;
+        Guid claimRunId = DomainId.New();
+        (TaskEvents.TaskReopened? reopened, TaskEvents.TaskClaimed claimed) = TaskDecider.ClaimPullRequestInteractively(
+            task, task.PullRequestRunId!.Value, DrivenBranch, pullRequestIsOpen: true, liveHeadlessSession: null,
+            claimRunId, Now, seed.Node.OwnerId);
+        session.Events.Append(seed.TaskId, expectedVersion: fence.Version + 2, reopened!, claimed);
+
+        string worktree = Path.Combine(Path.GetTempPath(), $"hall9k-pr-stage-{claimRunId:N}");
+        if (createWorktree)
+        {
+            Directory.CreateDirectory(worktree);
+        }
+
+        session.Events.StartStream<RunAggregate>(
+            claimRunId,
+            [
+                new RunDispatched(
+                    claimRunId, seed.TaskId, Guid.Empty, seed.Node.OwnerId, claimed.LeaseGeneration, DomainId.New(),
+                    worktree, DrivenBranch, ExecutorMode.Subscription, Now, IsFollowUp: true,
+                    RunDirectory: DrivenRunDirectory(claimRunId)),
+                .. claimRunEvents ?? [],
+            ]);
+        await session.SaveChangesAsync(cancellationToken);
+        return (claimRunId, worktree);
+    }
+
+    [Fact]
+    public async Task A_pull_request_held_by_an_interactive_claim_gets_only_the_state_check_and_its_run_is_not_superseded()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed seed = await SeedDrivenAsync(cts.Token, interactive: false, preApproval: PreApprovalMode.On);
+        await ClaimAtPullRequestStageAsync(seed, cts.Token);
+
+        // Everything a task without the claim would act on: a finding on every axis, and a pre-approved merge.
+        FakeInspector inspector = new() { Snapshot = DrivenSnapshot("failing-checks") with { UnresolvedReviewThreadCount = 2 } };
+        await NewDrivenEngine(seed, inspector).PollOnceAsync(cts.Token);
+
+        inspector.StateInspections.Should().Be(1, "one state read per sweep, as the orphan sweep makes");
+        inspector.Inspections.Should().Be(0, "no reviews-and-checks read");
+        inspector.MergeAttempts.Should().Be(0, "no auto-merge while the owner holds the claim");
+        (await LoadRunAsync(seed.RunId, cts.Token)).State.Should().Be(RunState.AwaitingReview, "not superseded");
+        (await CountStreamEventsAsync<RunSuperseded>(seed.RunId, cts.Token)).Should().Be(0);
+        (await CountStreamEventsAsync<TaskEvents.TaskReopened>(seed.TaskId, cts.Token)).Should().Be(1, "only the claim's own reopen; no lap");
+        TaskAggregate task = await LoadTaskAggregateAsync(seed.TaskId, cts.Token);
+        task.State.Should().Be(TaskState.Claimed);
+
+        await CleanUpDrivenAsync(seed, cts.Token);
+    }
+
+    [Fact]
+    public async Task A_merge_completes_the_claims_run_and_the_task_together_and_retires_the_earlier_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed seed = await SeedDrivenAsync(cts.Token, interactive: false);
+        (Guid claimRunId, _) = await ClaimAtPullRequestStageAsync(seed, cts.Token);
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(1) } };
+        NoRepositoryWorktrees worktrees = new();
+        CloseoutSweepResult result = await NewDrivenEngine(seed, inspector, worktreeManager: worktrees).PollOnceAsync(cts.Token);
+
+        result.MergesObserved.Should().Be(1);
+        RunDetails claimRun = await LoadRunAsync(claimRunId, cts.Token);
+        claimRun.State.Should().Be(RunState.Completed, "the merge is recorded on the claim's own run");
+        (await CountStreamEventsAsync<PullRequestMerged>(claimRunId, cts.Token)).Should().Be(1);
+        (await CountStreamEventsAsync<PullRequestMerged>(seed.RunId, cts.Token)).Should().Be(0);
+        TaskAggregate task = await LoadTaskAggregateAsync(seed.TaskId, cts.Token);
+        task.State.Should().Be(TaskState.Done, "the claim ends with the merge");
+        (await LoadRunAsync(seed.RunId, cts.Token)).State.Should().Be(RunState.Superseded, "the earlier run is retired in the same sweep");
+        worktrees.BranchesDeleted.Should().Contain(DrivenBranch, "nothing is live and no work is at risk, so cleanup goes ahead");
+
+        await using IQuerySession query = postgres.Store.QuerySession();
+        IReadOnlyList<JasperFx.Events.IEvent> events = await query.Events.FetchStreamAsync(seed.TaskId, token: cts.Token);
+        events.Select(e => e.Data).OfType<TaskEvents.TaskCompleted>().Last().RunId.Should().Be(claimRunId);
+    }
+
+    [Fact]
+    public async Task A_merge_leaves_the_worktree_and_branch_when_the_tree_holds_uncommitted_work_and_the_event_names_the_path()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed seed = await SeedDrivenAsync(cts.Token, interactive: false);
+        (Guid claimRunId, string worktree) = await ClaimAtPullRequestStageAsync(seed, cts.Token, createWorktree: true);
+
+        try
+        {
+            FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(1) } };
+            NoRepositoryWorktrees worktrees = new();
+            await NewDrivenEngine(
+                seed, inspector, worktreeManager: worktrees,
+                engineProcess: RecordingProcessRunner.Succeeding(" M src/Limiter.cs\n")).PollOnceAsync(cts.Token);
+
+            worktrees.Removed.Should().BeEmpty();
+            worktrees.BranchesDeleted.Should().BeEmpty();
+            await using IQuerySession query = postgres.Store.QuerySession();
+            PullRequestMerged merged = (await query.Events.FetchStreamAsync(claimRunId, token: cts.Token))
+                .Select(e => e.Data).OfType<PullRequestMerged>().Single();
+            merged.KeptWorktreePath.Should().Be(worktree);
+            OrchestratorFeedDescription.Of(merged).Should().Contain(worktree);
+        }
+        finally
+        {
+            Directory.Delete(worktree, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task A_merge_leaves_the_worktree_while_a_session_is_still_live_in_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed seed = await SeedDrivenAsync(cts.Token, interactive: false);
+        using Process self = Process.GetCurrentProcess();
+        (Guid claimRunId, string worktree) = await ClaimAtPullRequestStageAsync(
+            seed, cts.Token, createWorktree: true,
+            claimRunEvents:
+            [
+                new InteractiveSessionStarted(
+                    Guid.Empty, DomainId.New(), new DateTimeOffset(self.StartTime.ToUniversalTime(), TimeSpan.Zero),
+                    self.Id, Environment.MachineName, "limiter-drive"),
+            ]);
+
+        try
+        {
+            NoRepositoryWorktrees worktrees = new();
+            FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(1) } };
+            await NewDrivenEngine(seed, inspector, worktreeManager: worktrees).PollOnceAsync(cts.Token);
+
+            worktrees.Removed.Should().BeEmpty("a live session is standing in it");
+            await using IQuerySession query = postgres.Store.QuerySession();
+            (await query.Events.FetchStreamAsync(claimRunId, token: cts.Token))
+                .Select(e => e.Data).OfType<PullRequestMerged>().Single().KeptWorktreePath.Should().Be(worktree);
+        }
+        finally
+        {
+            Directory.Delete(worktree, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task A_close_without_a_merge_is_recorded_and_shown_while_the_claim_stays()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed seed = await SeedDrivenAsync(cts.Token, interactive: false);
+        (Guid claimRunId, _) = await ClaimAtPullRequestStageAsync(seed, cts.Token);
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { IsClosed = true, ClosedAt = Now.AddHours(1) } };
+        NoRepositoryWorktrees worktrees = new();
+        await NewDrivenEngine(seed, inspector, worktreeManager: worktrees).PollOnceAsync(cts.Token);
+
+        RunDetails earlier = await LoadRunAsync(seed.RunId, cts.Token);
+        earlier.State.Should().Be(RunState.Failed);
+        earlier.FailureReason.Should().Be(RunDetails.PullRequestClosedWithoutMerge);
+        (await CountStreamEventsAsync<PullRequestClosed>(seed.RunId, cts.Token)).Should().Be(1);
+        TaskAggregate task = await LoadTaskAggregateAsync(seed.TaskId, cts.Token);
+        task.State.Should().Be(TaskState.Claimed, "the claim stays");
+        task.CurrentRunId.Should().Be(claimRunId);
+        worktrees.Removed.Should().BeEmpty("the owner is standing in the worktree");
+
+        // A second sweep has nothing left to say about it.
+        await NewDrivenEngine(seed, inspector, worktreeManager: worktrees).PollOnceAsync(cts.Token);
+        (await CountStreamEventsAsync<PullRequestClosed>(seed.RunId, cts.Token)).Should().Be(1);
     }
 
     private async Task<TaskAggregate> LoadTaskAggregateAsync(Guid taskId, CancellationToken cancellationToken)
@@ -6629,12 +6807,18 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>A worktree manager for an engine with no repository behind it: nothing here is ever reached.</summary>
-    private sealed class NoRepositoryWorktrees : IWorktreeManager
+    internal sealed class NoRepositoryWorktrees : IWorktreeManager
     {
         private sealed class Released : IAsyncDisposable
         {
             public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         }
+
+        /// <summary>The worktree paths the engine asked to remove, in order.</summary>
+        public List<string> Removed { get; } = [];
+
+        /// <summary>The branches the engine asked to delete everywhere, in order.</summary>
+        public List<string> BranchesDeleted { get; } = [];
 
         public Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("Not reached by these tests.");
@@ -6645,15 +6829,22 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         public Task<Worktree> CreatePrReviewCheckoutAsync(PrReviewWorktreeRequest request, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("Not reached by these tests.");
 
-        public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>
-            Task.CompletedTask;
+        public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken)
+        {
+            Removed.Add(worktreePath);
+            return Task.CompletedTask;
+        }
 
         public Task DeletePrReviewTrackingRefAsync(string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
         public Task DeleteBranchEverywhereAsync(
             string repositoryPath, string branch, RemoteBranchDeletionOwner remoteDeletion,
-            CancellationToken cancellationToken) => Task.CompletedTask;
+            CancellationToken cancellationToken)
+        {
+            BranchesDeleted.Add(branch);
+            return Task.CompletedTask;
+        }
 
         public Task PruneAsync(string repositoryPath, CancellationToken cancellationToken) => Task.CompletedTask;
 
@@ -6776,7 +6967,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         run.CloseoutReport!.StackedParent.Should().Contain("merged");
         TaskStatusRow row = await ComposeRowAsync(driven.TaskId, cts.Token);
         row.Attention.NeedsYou.Should().BeTrue();
-        row.Attention.Lever.Should().Be($"h9k task revise {Short(driven.TaskId)} --clear-interactive-mode",
+        row.Attention.Lever.Should().StartWith($"h9k task revise {Short(driven.TaskId)} --clear-interactive-mode",
             "no pr resolve form dispatches a replay lap, so the way back is to hand the task to automation");
 
         await CleanUpDrivenAsync(driven, cts.Token);
@@ -6950,7 +7141,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         TaskStatusRow row = await ComposeRowAsync(driven.TaskId, cts.Token);
         row.Attention.NeedsYou.Should().BeTrue();
-        row.Attention.Lever.Should().Be(string.Format(leverFormat, Short(driven.TaskId)));
+        row.Attention.Lever.Should().StartWith(string.Format(leverFormat, Short(driven.TaskId)))
+            .And.Contain($"h9k task drive {Short(driven.TaskId)}", "the row names driving it by hand beside the go");
         row.Attention.Cause.Should().Contain("left alone while you drive this task").And.Contain("hands the task back to automation");
         row.Attention.Cause.Should().Contain(finding switch
         {
@@ -6986,7 +7178,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         string id = Short(driven.TaskId);
         row.Attention.Cause.Should().Be(
             $"pre-approved; end iteration with `h9k task revise {id} --clear-interactive-mode`, or merge it yourself on GitHub");
-        row.Attention.Lever.Should().Be($"h9k task revise {id} --clear-interactive-mode");
+        row.Attention.Lever.Should().StartWith($"h9k task revise {id} --clear-interactive-mode");
         await CleanUpDrivenAsync(driven, cts.Token);
     }
 
@@ -7008,7 +7200,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         inspector.ReviewRerequests.Should().Equal(["teammate"], "the countersign after fixes keeps running while the flag is on");
         inspector.MergeAttempts.Should().Be(0);
-        (await ComposeRowAsync(driven.TaskId, cts.Token)).Attention.Lever.Should().Be(
+        (await ComposeRowAsync(driven.TaskId, cts.Token)).Attention.Lever.Should().StartWith(
             $"h9k task revise {Short(driven.TaskId)} --clear-interactive-mode");
         await ClearOwnerReviewRerequestAsync(postgres.Store, driven.Node.OwnerId, cts.Token);
         await CleanUpDrivenAsync(driven, cts.Token);
@@ -7203,7 +7395,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         row.Attention.Cause.Should().Contain("triaged: 1 fix, 1 decline, 0 route").And.Contain(reportPath);
         row.Attention.Cause.Should().NotContain(ProseThatMustStayInTheFile);
         row.Attention.Markup.Should().NotContain(ProseThatMustStayInTheFile);
-        row.Attention.Lever.Should().Be($"h9k pr resolve {Short(driven.TaskId)}");
+        row.Attention.Lever.Should().StartWith($"h9k pr resolve {Short(driven.TaskId)}");
         await CleanUpDrivenAsync(driven, cts.Token);
     }
 
@@ -7259,7 +7451,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         (await LoadTaskAggregateAsync(driven.TaskId, cts.Token)).CloseoutTriagesDispatched.Should().Be(1);
         TaskStatusRow row = await ComposeRowAsync(driven.TaskId, cts.Token);
         row.Attention.Cause.Should().Contain("no triage ran").And.Contain("allowance of 1");
-        row.Attention.Lever.Should().Be($"h9k pr resolve {Short(driven.TaskId)}");
+        row.Attention.Lever.Should().StartWith($"h9k pr resolve {Short(driven.TaskId)}");
         await CleanUpDrivenAsync(driven, cts.Token);
     }
 

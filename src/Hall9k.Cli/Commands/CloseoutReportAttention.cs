@@ -57,7 +57,8 @@ internal static class CloseoutReportAttention
                 + "or merge it yourself on GitHub");
         }
 
-        string lever = Lever(report, id);
+        // The go hands the task back to automation; driving it is the other choice, so both are named.
+        string lever = $"{Lever(report, id)}, or h9k task drive {id} to iterate on the pull request by hand";
         string cause = report.MergeHeld && found.Count == 1
             ? found[0]
             : $"closeout found, and left alone while you drive this task: {string.Join("; ", found)}. "
