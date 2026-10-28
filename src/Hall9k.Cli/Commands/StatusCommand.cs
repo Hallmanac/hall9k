@@ -173,7 +173,8 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
                 DateTimeOffset periodStart = resolvedPeriod.StartOf(now);
                 ThroughputSummary throughput = await ThroughputQuery.ReadAsync(
                     session, periodStart, now, now, projectId: null, cancellationToken);
-                foreach (string line in ThroughputPane.ComposeLines(throughput, resolvedPeriod.Value))
+                string? viewerOwnerKey = await ThroughputViewer.ReadOwnerKeyAsync(session, cancellationToken);
+                foreach (string line in ThroughputPane.ComposeLines(throughput, resolvedPeriod.Value, viewerOwnerKey))
                 {
                     AnsiConsole.MarkupLineInterpolated($"[dim]{line}[/]");
                 }
