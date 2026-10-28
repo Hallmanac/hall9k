@@ -164,6 +164,28 @@ not closed yet renders its elapsed-so-far rather than nothing; a phase whose own
 genuinely cannot be found (an older stream missing a field, or a wait a run ended without ever
 resolving) renders "unknown" rather than a bare zero.
 
+The passage section also carries one row saying who ran each phase, computed on read in the same
+fold with no new event field, so it covers every existing stream with no backfill. Each phase of a
+task (the build, the gates, each review cycle, the pull request opening, and each closeout lap) is
+classed as human, delegated, automatic, or skipped. A run is held by a person when it was dispatched
+under the self-claim sentinel node and is not a deliberate headless start: neither the sentinel nor
+the task's interactive flag is the key, because `h9k task start` sets both on a headless build, so a
+start run is told apart by its recorded flag or, for a run from before the flag, by the build suffix
+on its session name, while an `h9k task work` claim records an `interactive-claim` name. On a
+person-held run the build, or the closeout lap on a follow-up run, is human, or delegated when the run
+recorded a delegation before its session completed (a delegation records no end, so the whole phase
+reads as delegated). A gate recorded on that run before its session completed was run by hand with
+`h9k task verify`, because that command refuses any other run, and it takes the class of the build.
+The daemon's own gates and review cycles after delivery are automatic, and so is every phase of a task
+with no person-held run. A pull request opened under `h9k task skip-to-pr` is human, and each gate or
+review track the override lists as skipped is skipped. Delivering, approving a park boundary,
+resolving a park, and fixing by hand (`h9k review fixed`) are human acts inside a phase and do not
+change its class; the row names a hand fix, and it names the hand-off points where a person gave the
+task back to the platform (`h9k pr resolve` and `h9k task handback`), so the laps after them read as the
+daemon's own. A pr-review task is not classified. The row groups consecutive phases that share a class,
+for example "Build and gates by hand; review cycles 1 and 2 automatic; PR opened by hand (skip to PR);
+closeout automatic after pr resolve".
+
 ### Interactive claims
 
 `h9k task drive <id> [--print-prompt | --direct-launch] [--acknowledge-unmet-dependencies]` lets an operator work a
@@ -1131,6 +1153,19 @@ that queued during the period, whether it is still queued now or has since been 
 the rows still on the board. `h9k project show` prints the identical block scoped to its own
 project, the current period beside the previous one, so a trend reads without needing two
 separate reads to compare.
+
+The throughput block also reports who ran the period's phases, using the classification above: the
+share of phases a person ran by hand, that were delegated to an agent, that ran automatically, and
+that an override skipped. Each share is a share of the period's total phase count over the same merged
+tasks the other figures read, not an average of each task's own percentage, and it stays back under
+five merged tasks like the rest. The same fold splits the shares per owner, keying each phase to the
+owner who held the claim it ran under by that claim's root fingerprint (resolved from the owner's local
+id when an older claim recorded none), so one person's several nodes count as one owner; an owner's
+slice counts the merged tasks with at least one phase keyed to them and holds back its shares under
+five. When more than one owner held claims in the period the block adds a line for the viewer's own
+phases, keyed by this node's owner root, and never prints another owner's figures. `h9k status` shows
+the install-wide shares for the current period, and `h9k project show` shows the project's, the current
+period beside the previous one.
 
 The review loop's four cycle caps — the conformance and adversarial per-track caps, the mandatory
 final-full-pass round cap, and the task-lifetime review-cycle budget that survives run resets — are
