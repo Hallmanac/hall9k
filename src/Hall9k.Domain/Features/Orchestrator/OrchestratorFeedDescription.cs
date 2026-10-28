@@ -220,6 +220,7 @@ public static class OrchestratorFeedDescription
             ReviewSettled settled =>
                 $"review cycle {settled.Cycle} settled as {settled.Settlement.Value} "
                 + $"({settled.ResidualsFixed} fixed, {settled.ResidualsRouted} routed)",
+            ReviewSkippedToPullRequest skipped => SkipLine(skipped, labels),
             ReviewFeedbackReceived feedback =>
                 $"{Count(feedback.UnresolvedThreadCount, "unresolved review thread")} observed on the pull request",
             PullRequestUpdated updated => $"pull request #{updated.PullRequestNumber} updated with new commits",
@@ -306,6 +307,25 @@ public static class OrchestratorFeedDescription
         string shortId = DomainId.Short(
             MessageStreamId.ForMessage(received.FromNodeId, received.ProjectId, received.Seq));
         return $"{shortId} a message from {from}: {Quote(received.Body)}";
+    }
+
+    /// <summary>
+    /// A manual override, worded from the same <see cref="ReviewSkipRecord"/> every other surface renders
+    /// from: who skipped, what, and the reason (marked when the driving session wrote it) or the plain
+    /// statement that none was given.
+    /// </summary>
+    private static string SkipLine(ReviewSkippedToPullRequest skipped, MemberLabelLookup labels)
+    {
+        ReviewSkipRecord record = new(
+            skipped.SkippedByOwnerId, skipped.OwnerRootFingerprint, skipped.SkippedAt, skipped.Reason,
+            skipped.ReasonByAgent, skipped.Skipped);
+        string reason = !record.HasReason
+            ? ReviewSkipRecord.NoReasonGiven
+            : record.ReasonByAgent
+                ? $"reason ({ReviewSkipRecord.AgentWrittenMarker}): {Quote(record.Reason)}"
+                : $"reason: {Quote(record.Reason)}";
+        return $"{Field(record.Who(labels), 64)} skipped the rest of review and sent the run straight to its pull "
+            + $"request, bypassing {Field(record.SkippedText, MaximumQuotedLength)}; {reason}";
     }
 
     /// <summary>

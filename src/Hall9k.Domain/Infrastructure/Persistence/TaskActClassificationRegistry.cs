@@ -311,6 +311,11 @@ public static class TaskActClassificationRegistry
         [typeof(ReviewRerequested)] = TaskActClassification.MemberSafe,
         [typeof(ReviewRerequestedAfterFixes)] = TaskActClassification.MemberSafe,
         [typeof(ReviewSettled)] = TaskActClassification.MemberSafe,
+
+        // h9k task skip-to-pr — an owner bypassing the rest of the pre-PR pipeline on their own run,
+        // the same call ReviewParkResolved is. A project member's node must never replicate one onto
+        // an owner's run.
+        [typeof(ReviewSkippedToPullRequest)] = TaskActClassification.OwnerOnly,
         [typeof(ReviewBodyReplyPosted)] = TaskActClassification.MemberSafe,
         [typeof(ReviewBodyReplyRefused)] = TaskActClassification.MemberSafe,
         [typeof(ReviewThreadReplyPosted)] = TaskActClassification.MemberSafe,

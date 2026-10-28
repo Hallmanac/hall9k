@@ -195,6 +195,10 @@ public sealed partial class RunListItemProjection : SingleStreamProjection<RunLi
 
     public void Apply(IEvent<ReviewParkResolved> @event, RunListItem view) => view.State = RunState.UnderReview;
 
+    // h9k task skip-to-pr leaves the run UnderReview at merge-ready, like a resolved park does, so
+    // this lean row needs the same transition off ReviewParked or Verifying.
+    public void Apply(IEvent<ReviewSkippedToPullRequest> @event, RunListItem view) => view.State = RunState.UnderReview;
+
     // Mirrors RunAggregate/RunDetails: a fix session redispatched over a budget park
     // (backlog 40) is the one path that needs this stated, since nothing else moves State
     // off BudgetParked between a review cycle's ReviewDispatched entries.

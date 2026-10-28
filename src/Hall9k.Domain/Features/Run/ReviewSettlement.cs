@@ -24,6 +24,14 @@ public sealed record ReviewSettlement
     /// </summary>
     public static readonly ReviewSettlement Settled = new("Settled");
 
+    /// <summary>
+    /// A human skipped the rest of the pre-PR review and sent the run straight to its pull request
+    /// (<c>h9k task skip-to-pr</c>). Nobody read the tip and no severity gate ended anything, so it
+    /// is neither of the two above; <see cref="Events.ReviewSkippedToPullRequest"/> names who skipped
+    /// and what.
+    /// </summary>
+    public static readonly ReviewSettlement Overridden = new("Overridden");
+
     /// <summary>Not recognized, or a review that has not ended yet. Serializes as an empty string.</summary>
     public static readonly ReviewSettlement Unknown = new("");
 
