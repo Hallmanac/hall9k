@@ -28,7 +28,3 @@ origin-branch: task/5537e708-for-every-task-the-platform-sh
 published: 2026-10-28 01:27:41Z
 context: |-
   Cut from idea 6e6d0200 (progressive automation: a user drives a task by hand, from manual to full auto; the idea took no new verb, and its front door is h9k task drive), Card 6 of 7 (Cards 0 to 6). The idea workspace's draft-task.md holds the Shape section and the sibling cards; read the Shape section and the neighboring cards before building, so this card does not take on a sibling's criteria. The workspace journal.md records why each criterion reads as it does. Workspace: /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/6e6d0200-progressive-automation-h9k-task-iterate-lets-a-user-drive-a/workspace
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-10-28 10:15:05Z
