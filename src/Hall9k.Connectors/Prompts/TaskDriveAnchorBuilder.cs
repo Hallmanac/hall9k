@@ -77,7 +77,7 @@ public static class TaskDriveAnchorBuilder
         };
 
         StringBuilder anchor = pullRequestStage is null
-            ? BuildFragments(file, values, ["title", "register", "read-first", "never-advance", "verb-map", "job-changes", "worktree-rules", "pr-summary"])
+            ? BuildFragments(file, values, ["title", "register", "read-first", "never-advance", "verb-map", "job-changes", "worktree-rules", "pr-summary", "skip-to-pr"])
             : BuildFollowUp(file, values, pullRequestStage);
 
         WorkPromptBuilder.AppendWritingConventions(

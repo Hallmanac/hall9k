@@ -96,6 +96,50 @@ public sealed class TaskDriveAnchorBuilderTests
         anchor.Should().Contain(WritingConventions.PlatformRule);
     }
 
+    /// <summary>
+    /// The skip-to-pr lines, pinned whole because a session reads them as a rule: the verb, the
+    /// reason it writes itself and never invents, the fallback when it has nothing to go on, the
+    /// one-line report, and the guard that it runs only on the owner's explicit word.
+    /// </summary>
+    [Fact]
+    public void The_anchors_skip_to_pr_lines_match_their_golden()
+    {
+        string anchor = Build();
+        int start = anchor.IndexOf("## Skipping straight to the pull request", StringComparison.Ordinal);
+        start.Should().BeGreaterThan(0);
+        const string lastSentence = "it adds nothing to the pull request.";
+        int end = anchor.IndexOf(lastSentence, start, StringComparison.Ordinal);
+        end.Should().BeGreaterThan(start);
+        string section = anchor[start..(end + lastSentence.Length)];
+
+        string expected =
+            $"""
+            ## Skipping straight to the pull request
+
+            When the owner says to skip straight to the pull request, run `h9k task skip-to-pr {TaskId}
+            --reason "<why>" --reason-by-agent`. Write the reason yourself, from what you saw or what the owner
+            told you, and never invent a motive. If you have nothing to go on, run `h9k task skip-to-pr
+            {TaskId} --no-reason` instead. Compose the pull request summary first, as above, and pass it with
+            `--pr-summary`; from the build, pass `--handoff` too, as you would when you deliver. Then tell the
+            owner in one line what you recorded: the reason you wrote, or that you recorded none.
+
+            Run it only on the owner's explicit word. Never run it on your own initiative, and never as a
+            suggestion you then act on: offering a skip and acting on it in the same turn is not their word. It
+            records a manual override on the run, naming who skipped what, and it adds nothing to the pull request.
+            """;
+
+        section.Should().Be(expected.Replace("\r\n", "\n", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void The_verb_map_sends_skip_straight_to_the_pr_to_the_verb_and_the_owners_word_gates_it()
+    {
+        string anchor = Build();
+
+        anchor.Should().Contain($"- **\"Skip straight to the PR\"** means `h9k task skip-to-pr {TaskId}`");
+        anchor.Should().Contain("skipping to the pull request, and giving\nthe task back are each the owner's call");
+    }
+
     [Fact]
     public void Without_a_task_drive_recipe_the_anchor_says_nothing_about_one()
     {
