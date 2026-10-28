@@ -480,7 +480,7 @@ internal static class TaskPhaseComposer
     /// deliver), and it is not a stage of the pipeline, so it must neither name the leg the run is
     /// on nor hide a gate or a wait that is the real activity.
     /// </summary>
-    private static List<ActiveSession> PipelineSessions(RunDetails run) => run.State.IsPastBuild
+    private static List<ActiveSession> PipelineSessions(RunDetails run) => run.IsPastBuild()
         ? [.. run.ActiveSessions.Where(session => session.Role != AgentRole.Interactive)]
         : run.ActiveSessions;
 

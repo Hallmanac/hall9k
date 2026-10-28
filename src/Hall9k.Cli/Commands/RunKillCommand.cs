@@ -85,7 +85,7 @@ public sealed class RunKillCommand : Hall9kAsyncCommand<RunKillCommand.Settings>
         // the owner's session down with it, along with this very command when the session is the
         // one that ran it, before RunKilled is ever appended. Before the build the interactive
         // session is the claim itself, and stays killable as it always was.
-        List<ActiveSession> killTargets = [.. run.ActiveSessions.Where(activeSession => TaskStatusComposer.IsPipelineSession(run, activeSession))];
+        List<ActiveSession> killTargets = [.. run.ActiveSessions.Where(run.IsPipelineSession)];
         if (killTargets.Count == 0)
         {
             throw new DomainConflictException(

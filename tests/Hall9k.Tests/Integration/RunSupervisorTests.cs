@@ -3817,6 +3817,52 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
 
+    /// <summary>
+    /// After <c>h9k task deliver</c> the owner's driving session is recorded beside the pipeline's
+    /// own sessions on the same run. A takeover sweep ends the pipeline's processes, but the driving
+    /// session is the owner's own Claude Code process and is never one of them.
+    /// </summary>
+    [Fact]
+    public async Task A_takeover_sweep_terminates_the_pipelines_sessions_but_never_the_owners_driving_session()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        const int reviewPid = 424243;
+        const int drivingPid = 424244;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(
+                runId,
+                new AgentSessionCompleted(runId, Now),
+                new ReviewDispatched(runId, DomainId.New(), 1, reviewPid, Now, Now, Lens: ReviewLens.Conformance),
+                new InteractiveSessionStarted(runId, DomainId.New(), Now, drivingPid, "operator-mac", "drive"));
+
+            Guid newHolderOwnerId = DomainId.New();
+            var fence = await session.Events.FetchStreamStateAsync(taskId, cts.Token);
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, version: fence!.Version, token: cts.Token))!;
+            session.Events.Append(
+                taskId, expectedVersion: fence.Version + 1,
+                TaskDecider.TakeOver(
+                    task, DomainId.New(), newHolderOwnerId, "new-owner-fingerprint",
+                    "Offline for six hours.", newHolderOwnerId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeProcessManager processManager = new();
+        processManager.MarkAlive(reviewPid);
+        processManager.MarkAlive(drivingPid);
+
+        await NewSupervisor(store, node, processManager).StopRunsSupersededByTakeoverAsync(cts.Token);
+
+        processManager.TreeTerminations.Should().Contain(t => t.ProcessId == reviewPid);
+        processManager.TreeTerminations.Should().NotContain(t => t.ProcessId == drivingPid);
+        RunDetails afterSweep = (await store.QuerySession().LoadAsync<RunDetails>(runId, cts.Token))!;
+        afterSweep.State.Should().Be(RunState.Killed);
+    }
+
+
     /// <param name="humanReviewThreads">
     /// The human-authored threads closeout observed when it dispatched this follow-up (task: a
     /// review-feedback follow-up never answers a human reviewer in the owner's name on its own).

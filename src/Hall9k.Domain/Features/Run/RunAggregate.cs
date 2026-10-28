@@ -65,6 +65,8 @@ public sealed class RunAggregate
     /// </summary>
     public ReviewStageComposition ReviewStageComposition { get; private set; } = ReviewStageComposition.FullPipeline;
     public RunState State { get; private set; } = RunState.Unknown;
+    /// <summary>See <see cref="Projections.RunDetails.Delivered"/>.</summary>
+    public bool Delivered { get; private set; }
     public int? ProcessId { get; private set; }
     public DateTimeOffset? ProcessStartedAt { get; private set; }
     public string? PullRequestUrl { get; private set; }
@@ -1051,6 +1053,7 @@ public sealed class RunAggregate
     public void Apply(AgentSessionCompleted @event)
     {
         State = RunState.Verifying;
+        Delivered = true;
         if (@event.DeliveredByNodeId is { } deliveredByNodeId)
         {
             NodeId = deliveredByNodeId;
@@ -2513,7 +2516,7 @@ public sealed class RunAggregate
         InteractiveSessionCount++;
         // A session registered once the pipeline owns the run (the driving session after deliver)
         // records itself and moves nothing: the stage that owns the run keeps its state.
-        if (!State.IsPastBuild)
+        if (!State.IsPastBuild(Delivered))
         {
             State = RunState.Running;
         }

@@ -20,16 +20,94 @@ public sealed class InteractiveSessionPastBuildTests
     private static readonly DateTimeOffset Now = new(2026, 10, 27, 12, 0, 0, TimeSpan.Zero);
 
     [Theory]
-    [InlineData("Verifying", true)]
-    [InlineData("UnderReview", true)]
-    [InlineData("ReviewParked", true)]
-    [InlineData("Dispatched", false)]
-    [InlineData("Running", false)]
-    public void The_pipeline_stages_are_exactly_the_ones_past_the_build(string state, bool pastBuild)
+    [InlineData("Verifying", false, true)]
+    [InlineData("UnderReview", false, true)]
+    [InlineData("ReviewParked", false, true)]
+    [InlineData("BudgetParked", true, true)]
+    [InlineData("LaunchHeld", true, true)]
+    [InlineData("BudgetParked", false, false)]
+    [InlineData("LaunchHeld", false, false)]
+    [InlineData("Dispatched", false, false)]
+    [InlineData("Running", false, false)]
+    public void The_pipeline_stages_are_exactly_the_ones_past_the_build(string state, bool delivered, bool pastBuild)
     {
         RunState parsed = state;
 
-        parsed.IsPastBuild.Should().Be(pastBuild);
+        parsed.IsPastBuild(delivered).Should().Be(pastBuild);
+    }
+
+    [Theory]
+    [InlineData("BudgetParked")]
+    [InlineData("LaunchHeld")]
+    public void A_park_after_the_delivery_keeps_the_driving_session_and_the_run_where_it_is(string park)
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = UnderReviewWithDrivingSession(projection, id);
+        view.ActiveSessions.Should().HaveCount(2);
+
+        if (park == "BudgetParked")
+        {
+            projection.Apply(new FakeEvent<RunBudgetExhausted>(new RunBudgetExhausted(id, "limit", Now)), view);
+        }
+        else
+        {
+            projection.Apply(new FakeEvent<RunLaunchHeld>(new RunLaunchHeld(id, "no launch", Now)), view);
+        }
+
+        view.State.Value.Should().Be(park);
+        view.IsPastBuild().Should().BeTrue();
+        view.ActiveSessions.Should().Contain(session => session.Role == AgentRole.Interactive && session.ProcessId == 9001,
+            "the owner's driving session is not the process that hit the limit");
+
+        // A registration while parked records itself and leaves the park standing.
+        projection.Apply(new FakeEvent<InteractiveSessionStarted>(
+            new InteractiveSessionStarted(id, DomainId.New(), Now, 9002, "operator-mac", "again")), view);
+        view.State.Value.Should().Be(park);
+        view.ActiveSessions.Should().ContainSingle(session => session.Role == AgentRole.Interactive && session.ProcessId == 9002);
+    }
+
+    [Fact]
+    public void The_retry_sweeps_fix_redispatch_after_a_budget_park_keeps_the_driving_session()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = UnderReviewWithDrivingSession(projection, id);
+        projection.Apply(new FakeEvent<RunBudgetExhausted>(new RunBudgetExhausted(id, "limit", Now)), view);
+
+        projection.Apply(new FakeEvent<ReviewFixDispatched>(
+            new ReviewFixDispatched(id, DomainId.New(), 1, 5002, Now, Now)), view);
+
+        view.State.Should().Be(RunState.UnderReview);
+        view.ActiveSessions.Select(session => session.Role).Should().BeEquivalentTo([AgentRole.Fix, AgentRole.Interactive]);
+    }
+
+    [Theory]
+    [InlineData("BudgetParked")]
+    [InlineData("LaunchHeld")]
+    public void A_park_before_the_delivery_is_still_the_build_and_a_registration_there_runs_it(string park)
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = projection.Create(new FakeEvent<RunDispatched>(Dispatched(id)));
+        projection.Apply(new FakeEvent<InteractiveSessionStarted>(
+            new InteractiveSessionStarted(id, DomainId.New(), Now, 9001, "operator-mac", "build")), view);
+        if (park == "BudgetParked")
+        {
+            projection.Apply(new FakeEvent<RunBudgetExhausted>(new RunBudgetExhausted(id, "limit", Now)), view);
+        }
+        else
+        {
+            projection.Apply(new FakeEvent<RunLaunchHeld>(new RunLaunchHeld(id, "no launch", Now)), view);
+        }
+
+        view.IsPastBuild().Should().BeFalse();
+        view.IsPipelineSession(new ActiveSession(AgentRole.Interactive, ReviewLens.Unknown, 9001, Now)).Should().BeTrue();
+
+        projection.Apply(new FakeEvent<InteractiveSessionStarted>(
+            new InteractiveSessionStarted(id, DomainId.New(), Now, 9002, "operator-mac", "build")), view);
+
+        view.State.Should().Be(RunState.Running);
     }
 
     [Fact]
@@ -198,6 +276,26 @@ public sealed class InteractiveSessionPastBuildTests
         projection.Apply(new FakeEvent<InteractiveSessionStarted>(
             new InteractiveSessionStarted(id, DomainId.New(), Now, 9003, "operator-mac", "brians-terminal")), row);
         row.State.Should().Be(RunState.UnderReview);
+    }
+
+    [Fact]
+    public void A_park_after_the_delivery_stays_parked_in_the_aggregate_and_the_list_row()
+    {
+        Guid id = DomainId.New();
+        RunAggregate aggregate = new();
+        aggregate.Apply(Dispatched(id));
+        aggregate.Apply(new AgentSessionCompleted(id, Now));
+        aggregate.Apply(new RunBudgetExhausted(id, "limit", Now));
+        aggregate.Apply(new InteractiveSessionStarted(id, DomainId.New(), Now, ProcessId: 4242));
+        aggregate.State.Should().Be(RunState.BudgetParked);
+
+        RunListItemProjection projection = new();
+        RunListItem row = projection.Create(new FakeEvent<RunDispatched>(Dispatched(id)));
+        projection.Apply(new FakeEvent<AgentSessionCompleted>(new AgentSessionCompleted(id, Now)), row);
+        projection.Apply(new FakeEvent<RunLaunchHeld>(new RunLaunchHeld(id, "no launch", Now)), row);
+        projection.Apply(new FakeEvent<InteractiveSessionStarted>(
+            new InteractiveSessionStarted(id, DomainId.New(), Now, 9001, "operator-mac", "brians-terminal")), row);
+        row.State.Should().Be(RunState.LaunchHeld);
     }
 
     [Fact]

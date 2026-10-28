@@ -267,7 +267,7 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
         // catch that, since a run just handed to the standard pipeline reads as having no live
         // attached session either (independent pre-PR review, cycle 7). Launching into that worktree
         // anyway would double-book it against whatever the other command already started.
-        if (RunStateRefusal(currentRun.State, taskId, runId, "while this session was preparing to launch") is { } movedOn)
+        if (RunStateRefusal(currentRun.State, currentRun.Delivered, taskId, runId, "while this session was preparing to launch") is { } movedOn)
         {
             throw new DomainConflictException(movedOn);
         }
@@ -276,7 +276,7 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
         // continue from the worktree, commit. Past the build the pipeline owns the worktree, and
         // only the default launch line's anchor carries the rules for that, so a build prompt here
         // would send a session editing and committing under the gates and review sessions.
-        if ((settings.PrintPrompt || settings.DirectLaunch) && PastBuildPromptRefusal(currentRun.State, taskId) is { } pastBuild)
+        if ((settings.PrintPrompt || settings.DirectLaunch) && PastBuildPromptRefusal(currentRun.State, currentRun.Delivered, taskId) is { } pastBuild)
         {
             throw new DomainConflictException(pastBuild);
         }
@@ -330,7 +330,7 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
     /// state rule is pinned without a store. <paramref name="when"/> places the discovery for the
     /// callers that find it out after preparing, rather than at the door.
     /// </summary>
-    internal static string? RunStateRefusal(RunState state, Guid taskId, Guid runId, string? when = null) => state.AdmitsInteractiveSession
+    internal static string? RunStateRefusal(RunState state, bool delivered, Guid taskId, Guid runId, string? when = null) => state.AdmitsInteractiveSession(delivered)
         ? null
         : $"Task {taskId}'s run {runId} is already {state.Value}"
           + (when is null
@@ -344,7 +344,7 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
     /// the worktree; the default launch line is the one path whose anchor says the pipeline owns it.
     /// Pure, so the rule is pinned without a store.
     /// </summary>
-    internal static string? PastBuildPromptRefusal(RunState state, Guid taskId) => state.IsPastBuild
+    internal static string? PastBuildPromptRefusal(RunState state, bool delivered, Guid taskId) => state.IsPastBuild(delivered)
         ? $"Task {taskId}'s run is {state.Value}, past the build: the daemon's gates and review sessions own the "
           + "worktree now, and the starting prompt --print-prompt and --direct-launch hand over tells a session "
           + $"to build in it. Run h9k task drive {taskId} with neither flag; the launch line it prints starts a "
@@ -450,8 +450,13 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
             LaunchLineWriter.Write(text.FreshFallbackLine);
         }
 
-        AnsiConsole.MarkupLineInterpolated(
-            $"[dim]h9k task drive {task.Id} --print-prompt prints the starting prompt instead, for pasting into a session you start yourself.[/]");
+        // Past the build --print-prompt is refused (PastBuildPromptRefusal), so it is not offered there.
+        if (!run.IsPastBuild())
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]h9k task drive {task.Id} --print-prompt prints the starting prompt instead, for pasting into a session you start yourself.[/]");
+        }
+
         return ExitCodes.Ok;
     }
 
@@ -739,7 +744,7 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
         // (RunState.AdmitsInteractiveSession); recording the session there moves nothing, because the
         // run's state and the pipeline's own sessions are left where the pipeline put them
         // (InteractiveSessionStarted's projections). What is refused is a run past all of them.
-        if (RunStateRefusal(run.State, task.Id, runId) is { } refusal)
+        if (RunStateRefusal(run.State, run.Delivered, task.Id, runId) is { } refusal)
         {
             throw new DomainConflictException(refusal);
         }

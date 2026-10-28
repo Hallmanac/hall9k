@@ -983,7 +983,11 @@ public sealed class RunSupervisor(
 
         foreach (RunDetails run in candidates)
         {
-            if (run.ActiveSessions.Count == 0)
+            // Not the owner's driving session, which sits beside the pipeline's after deliver: it is
+            // the owner's own Claude Code process, not one of this run's, and no sweep may kill it. A
+            // run with only that recorded is as sessionless as it was before it could be.
+            List<ActiveSession> pipelineSessions = [.. run.ActiveSessions.Where(run.IsPipelineSession)];
+            if (pipelineSessions.Count == 0)
             {
                 continue;
             }
@@ -1010,7 +1014,7 @@ public sealed class RunSupervisor(
                 continue;
             }
 
-            foreach (ActiveSession activeSession in run.ActiveSessions)
+            foreach (ActiveSession activeSession in pipelineSessions)
             {
                 if (activeSession.StartedAt is { } startedAt)
                 {

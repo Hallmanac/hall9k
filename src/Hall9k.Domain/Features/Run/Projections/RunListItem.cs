@@ -14,6 +14,8 @@ public sealed class RunListItem
     public Guid NodeId { get; set; }
     public int LeaseGeneration { get; set; }
     public RunState State { get; set; } = RunState.Unknown;
+    /// <summary>See <see cref="RunDetails.Delivered"/>.</summary>
+    public bool Delivered { get; set; }
     /// <summary>The model the build session was spawned on, shown by h9k task show (Decisions Log #33).</summary>
     public AgentModel Model { get; set; } = AgentModel.Unknown;
     /// <summary>
@@ -130,7 +132,7 @@ public sealed partial class RunListItemProjection : SingleStreamProjection<RunLi
     public void Apply(IEvent<InteractiveSessionStarted> @event, RunListItem view)
     {
         // A driving session registered after deliver leaves the pipeline's own stage standing.
-        if (!view.State.IsPastBuild)
+        if (!view.State.IsPastBuild(view.Delivered))
         {
             view.State = RunState.Running;
         }
@@ -139,6 +141,7 @@ public sealed partial class RunListItemProjection : SingleStreamProjection<RunLi
     public void Apply(IEvent<AgentSessionCompleted> @event, RunListItem view)
     {
         view.State = RunState.Verifying;
+        view.Delivered = true;
         if (@event.Data.DeliveredByNodeId is { } deliveredByNodeId)
         {
             view.NodeId = deliveredByNodeId;
