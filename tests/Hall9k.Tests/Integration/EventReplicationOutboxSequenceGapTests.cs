@@ -8,7 +8,6 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Ids;
-using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Marten.Services;
 using Npgsql;
@@ -91,7 +90,62 @@ public sealed class EventReplicationOutboxSequenceGapTests : IClassFixture<Postg
         (await SweepAsync(Now.AddSeconds(2) + EventReplicationOutbox.MaxSequenceGapWait - TimeSpan.FromSeconds(1), cts.Token))
             .EventsQueued.Should().Be(0, "the wait has not passed yet");
         (await SweepAsync(Now.AddSeconds(2) + EventReplicationOutbox.MaxSequenceGapWait, cts.Token))
+            .EventsQueued.Should().Be(0, "the deadline is only acted on by the sweep after the one that first sees it pass");
+        (await SweepAsync(Now.AddSeconds(3) + EventReplicationOutbox.MaxSequenceGapWait, cts.Token))
             .EventsQueued.Should().Be(EventsPerSeededTask, "the wait has passed, so the later event is sent");
+    }
+
+    [Fact]
+    public async Task Several_missing_numbers_seen_together_are_waited_out_together_not_one_after_another()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        await SwitchReplicationOnAsync(cts.Token);
+
+        await TakeUnwrittenSequenceNumberAsync(cts.Token);
+        await SeedTaskAsync(Now.AddSeconds(1), cts.Token);
+        await TakeUnwrittenSequenceNumberAsync(cts.Token);
+        await SeedTaskAsync(Now.AddSeconds(2), cts.Token);
+        await TakeUnwrittenSequenceNumberAsync(cts.Token);
+        await SeedTaskAsync(Now.AddSeconds(3), cts.Token);
+
+        DateTimeOffset firstSweep = Now.AddSeconds(4);
+        (await SweepAsync(firstSweep, cts.Token)).EventsQueued.Should().Be(0, "the gaps are first seen here");
+        (await SweepAsync(firstSweep + EventReplicationOutbox.MaxSequenceGapWait, cts.Token))
+            .EventsQueued.Should().Be(0, "the deadline has only just been seen to pass");
+        (await SweepAsync(firstSweep + EventReplicationOutbox.MaxSequenceGapWait.Add(TimeSpan.FromSeconds(1)), cts.Token))
+            .EventsQueued.Should().Be(3 * EventsPerSeededTask, "one wait covers every hole that was visible when it started");
+    }
+
+    [Fact]
+    public async Task A_missing_number_below_what_was_already_queued_is_never_waited_on()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        await SwitchReplicationOnAsync(cts.Token);
+
+        await HoldBackAPrivateIdeaAsync(Now.AddSeconds(1), cts.Token);
+        await TakeUnwrittenSequenceNumberAsync(cts.Token);
+        await SeedTaskAsync(Now.AddSeconds(3), cts.Token);
+
+        DateTimeOffset firstSweep = Now.AddSeconds(3);
+        await SweepAsync(firstSweep, cts.Token);
+        await SweepAsync(firstSweep + EventReplicationOutbox.MaxSequenceGapWait, cts.Token);
+        (await SweepAsync(firstSweep + EventReplicationOutbox.MaxSequenceGapWait.Add(TimeSpan.FromSeconds(1)), cts.Token))
+            .EventsQueued.Should().Be(EventsPerSeededTask, "the first hole is waited out once");
+
+        // A position written before the waited-out mark existed, rescanning a region whose holes an
+        // earlier sweep had already moved past.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventReplicationOutboxPosition position =
+                (await session.LoadAsync<EventReplicationOutboxPosition>(_projectId, cts.Token))!;
+            position.GapsWaitedOutThroughSequence = 0;
+            session.Store(position);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await SeedTaskAsync(Now.AddSeconds(5), cts.Token);
+        (await SweepAsync(firstSweep + EventReplicationOutbox.MaxSequenceGapWait.Add(TimeSpan.FromSeconds(2)), cts.Token))
+            .EventsQueued.Should().Be(EventsPerSeededTask, "the hole sits below the high-water mark, where waiting recovers nothing");
     }
 
     [Fact]
@@ -100,27 +154,15 @@ public sealed class EventReplicationOutboxSequenceGapTests : IClassFixture<Postg
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         await SwitchReplicationOnAsync(cts.Token);
 
-        Guid ideaId = DomainId.New();
-        await using (IDocumentSession session = _postgres.Store.LightweightSession())
-        {
-            session.Events.StartStream<IdeaAggregate>(ideaId, IdeaDecider.Capture(
-                ideaId, _ownerId, "Private for now", projectId: _projectId, Now.AddSeconds(1), ProjectHome.None));
-            await session.SaveChangesAsync(cts.Token);
-        }
-
-        await using (IDocumentSession session = _postgres.Store.LightweightSession())
-        {
-            IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
-            session.Events.Append(ideaId, IdeaDecider.SetPrivate(idea, isPrivate: true, Now.AddSeconds(2), _ownerId));
-            await session.SaveChangesAsync(cts.Token);
-        }
+        await HoldBackAPrivateIdeaAsync(Now.AddSeconds(1), cts.Token);
 
         await TakeUnwrittenSequenceNumberAsync(cts.Token);
         await SeedTaskAsync(Now.AddSeconds(3), cts.Token);
 
         DateTimeOffset firstSweep = Now.AddSeconds(4);
         (await SweepAsync(firstSweep, cts.Token)).EventsQueued.Should().Be(0, "the gap is first seen here");
-        DateTimeOffset waitedOut = firstSweep + EventReplicationOutbox.MaxSequenceGapWait;
+        (await SweepAsync(firstSweep + EventReplicationOutbox.MaxSequenceGapWait, cts.Token)).EventsQueued.Should().Be(0);
+        DateTimeOffset waitedOut = firstSweep + EventReplicationOutbox.MaxSequenceGapWait.Add(TimeSpan.FromSeconds(1));
         (await SweepAsync(waitedOut, cts.Token)).EventsQueued.Should().Be(EventsPerSeededTask);
 
         await using (IQuerySession session = _postgres.Store.QuerySession())
@@ -133,6 +175,24 @@ public sealed class EventReplicationOutboxSequenceGapTests : IClassFixture<Postg
         await SeedTaskAsync(Now.AddSeconds(5), cts.Token);
         (await SweepAsync(waitedOut.AddSeconds(1), cts.Token)).EventsQueued.Should().Be(
             EventsPerSeededTask, "the rescan finds the same dead number but never waits on it a second time");
+    }
+
+    private async Task HoldBackAPrivateIdeaAsync(DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        Guid ideaId = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<IdeaAggregate>(ideaId, IdeaDecider.Capture(
+                ideaId, _ownerId, "Private for now", projectId: _projectId, now, ProjectHome.None));
+            await session.SaveChangesAsync(cancellationToken);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cancellationToken))!;
+            session.Events.Append(ideaId, IdeaDecider.SetPrivate(idea, isPrivate: true, now.AddSeconds(1), _ownerId));
+            await session.SaveChangesAsync(cancellationToken);
+        }
     }
 
     private async Task SwitchReplicationOnAsync(CancellationToken cancellationToken)
