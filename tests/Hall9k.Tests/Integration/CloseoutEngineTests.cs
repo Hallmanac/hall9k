@@ -6627,6 +6627,81 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     [Fact]
+    public async Task A_merge_leaves_the_worktree_and_branch_when_the_branch_holds_commits_the_pull_request_never_carried()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed seed = await SeedDrivenAsync(cts.Token, interactive: false);
+        (Guid claimRunId, string worktree) = await ClaimAtPullRequestStageAsync(seed, cts.Token, createWorktree: true);
+
+        try
+        {
+            FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(1) } };
+            NoRepositoryWorktrees worktrees = new();
+            // A clean tree and no live session, but two local commits past every boundary the pull request has.
+            RecordingProcessRunner git = new(arguments => arguments[0] == "rev-list"
+                ? new ProcessResult(0, "2\n", string.Empty)
+                : new ProcessResult(0, string.Empty, string.Empty));
+            await NewDrivenEngine(seed, inspector, worktreeManager: worktrees, engineProcess: git).PollOnceAsync(cts.Token);
+
+            worktrees.Removed.Should().BeEmpty("the commits exist nowhere else");
+            worktrees.BranchesDeleted.Should().BeEmpty();
+            await using IQuerySession query = postgres.Store.QuerySession();
+            (await query.Events.FetchStreamAsync(claimRunId, token: cts.Token))
+                .Select(e => e.Data).OfType<PullRequestMerged>().Single().KeptWorktreePath.Should().Be(worktree);
+        }
+        finally
+        {
+            Directory.Delete(worktree, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task A_pull_request_whose_run_an_automatic_reopen_already_retired_is_still_watched_while_the_claim_is_held()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed seed = await SeedDrivenAsync(cts.Token, interactive: false);
+        (Guid claimRunId, _) = await ClaimAtPullRequestStageAsync(seed, cts.Token);
+        await using (IDocumentSession session = postgres.Store.LightweightSession())
+        {
+            session.Events.Append(seed.RunId, new RunSuperseded(seed.RunId, 1, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(1) } };
+        CloseoutSweepResult result = await NewDrivenEngine(seed, inspector).PollOnceAsync(cts.Token);
+
+        result.MergesObserved.Should().Be(1, "a superseded run is no reason to stop looking at a held pull request");
+        (await LoadRunAsync(claimRunId, cts.Token)).State.Should().Be(RunState.Completed);
+        (await LoadTaskAggregateAsync(seed.TaskId, cts.Token)).State.Should().Be(TaskState.Done);
+        (await CountStreamEventsAsync<RunSuperseded>(seed.RunId, cts.Token)).Should().Be(1, "retired once, not again");
+    }
+
+    [Fact]
+    public async Task A_pull_request_run_that_failed_is_not_retired_by_the_orphan_sweep_while_the_claim_is_held()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DrivenSeed seed = await SeedDrivenAsync(cts.Token, interactive: false);
+        await using (IDocumentSession session = postgres.Store.LightweightSession())
+        {
+            session.Events.Append(seed.RunId, new RunFailed(seed.RunId, "agent crashed after the pull request opened", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        (Guid claimRunId, _) = await ClaimAtPullRequestStageAsync(seed, cts.Token);
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() };
+        await NewDrivenEngine(seed, inspector).PollOnceAsync(cts.Token);
+
+        (await CountStreamEventsAsync<RunSuperseded>(seed.RunId, cts.Token)).Should().Be(0, "it is the only watcher of the pull request");
+        inspector.StateInspections.Should().Be(1);
+
+        inspector.Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(1) };
+        CloseoutSweepResult result = await NewDrivenEngine(seed, inspector).PollOnceAsync(cts.Token);
+
+        result.MergesObserved.Should().Be(1);
+        (await LoadRunAsync(claimRunId, cts.Token)).State.Should().Be(RunState.Completed);
+    }
+
+    [Fact]
     public async Task A_close_without_a_merge_is_recorded_and_shown_while_the_claim_stays()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
@@ -7408,6 +7483,12 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         TriageExecutor executor = new(processes) { HoldOpen = true };
         FakeInspector inspector = new() { Snapshot = DrivenSnapshot("review-feedback") };
         await NewDrivenEngine(driven, inspector, NewTriage(executor, processes)).PollOnceAsync(cts.Token);
+        // The session is spawned from a background task the poll starts and does not wait for.
+        while (executor.Requests.Count == 0)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(10), cts.Token);
+        }
+
         executor.Requests.Should().ContainSingle();
 
         // A daemon restart builds new objects over the same stream; nothing of the first one's memory survives.

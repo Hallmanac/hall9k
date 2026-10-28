@@ -82,7 +82,7 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         public bool KeepInteractive { get; init; }
 
         [CommandOption("--unassign")]
-        [Description("Take the claim straight to Published instead of back to the dispatch queue, in one atomic act, keeping the task's assignee as h9k task dequeue does — the dispatcher never sees this task claimable in between, closing the race a separate release then h9k task dequeue cannot avoid. The task is no longer queued; h9k task queue puts it back, and h9k task unassign lets go of the assignee Refused on a claim taken on an open pull request, which has no Published state to return to.")]
+        [Description("Take the claim straight to Published instead of back to the dispatch queue, in one atomic act, keeping the task's assignee as h9k task dequeue does — the dispatcher never sees this task claimable in between, closing the race a separate release then h9k task dequeue cannot avoid. The task is no longer queued; h9k task queue puts it back, and h9k task unassign lets go of the assignee. Refused on a claim taken on an open pull request, which has no Published state to return to.")]
         public bool Unassign { get; init; }
     }
 
@@ -133,6 +133,14 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         {
             throw new DomainValidationException(UnassignRefusal(taskId, task.PullRequestUrl));
         }
+
+        // The pull request goes back to closeout only through a run closeout still watches. When an automatic
+        // reopen already retired that run, the claim goes back to the reopened lap it took over instead, so
+        // the task never sits Done with a pull request nothing looks at.
+        RunDetails? pullRequestRun = pullRequestStage && task.PullRequestRunId is { } pullRequestRunId
+            ? await session.LoadAsync<RunDetails>(pullRequestRunId, cancellationToken)
+            : null;
+        bool returnsToPullRequest = pullRequestRun is not null && PullRequestStageFacts.CloseoutResumesThrough(pullRequestRun);
 
         bool supersedeRun = false;
         RunDetails? releasedRun = null;
@@ -194,9 +202,14 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         // so the Queued/Blocked state a plain release then h9k task dequeue would pass through
         // is never written to the stream at all — nothing for the dispatcher to ever see and
         // claim in between (this task's own acceptance criteria; cd7e0202, 2026-09-04).
-        if (pullRequestStage)
+        if (returnsToPullRequest)
         {
             session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.ReleaseInteractiveClaimToPullRequest(
+                task, DateTimeOffset.UtcNow, settings.KeepInteractive));
+        }
+        else if (pullRequestStage)
+        {
+            session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.ReleasePullRequestStageClaimToLap(
                 task, DateTimeOffset.UtcNow, settings.KeepInteractive));
         }
         else if (settings.Unassign)
@@ -237,10 +250,15 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         }
 
         await Doorbell.RingAsync($"task-released:{taskId}", cancellationToken);
-        if (pullRequestStage)
+        if (returnsToPullRequest)
         {
             AnsiConsole.MarkupLineInterpolated(
                 $"[dim]Task {taskId} released back to its pull request {task.PullRequestUrl} — it is Done again and closeout resumes its ordinary watch. Its worktree and branch are left as they stood.[/]");
+        }
+        else if (pullRequestStage)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} released back to the follow-up lap its pull request {task.PullRequestUrl} was reopened for; closeout had already handed the pull request to that lap, so it dispatches as it would have before the claim.[/]");
         }
         else if (settings.Unassign)
         {
@@ -449,7 +467,7 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         {
             // The branch already carries the pull request's commits, so "beyond the base" is the wrong
             // question. What release must not strand is work the pull request does not carry yet.
-            int beyondPushedTip = await TaskDeliveryPush.CountBeyondPushedTipAsync(
+            int beyondPushedTip = await BranchPushedTip.CountBeyondAsync(
                 ExternalProcess.Runner, worktreeExists ? run.WorktreePath : project.RepositoryPath, run.Branch,
                 task.LastPushedBranch, task.LastPushedBranchTip, cancellationToken);
             if (beyondPushedTip < 0)

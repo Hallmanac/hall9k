@@ -815,13 +815,14 @@ public sealed partial class TaskListItemProjection : SingleStreamProjection<Task
     public void Apply(IEvent<TaskRequeued> @event, TaskListItem view)
     {
         view.ClaimedByNodeId = null;
-        view.CurrentRunId = null;
         // A deliberate start-it-mine claim (h9k task start --acknowledge-unmet-dependencies) can
         // give the claim back while UnmetDependencies still names an open blocker — Claim never
         // clears it, only Assign does — and Queued is only ever reachable with every dependency
         // closed out. Landing back on Blocked instead keeps this view honest with the aggregate
         // it mirrors.
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+        // Mirrors TaskAggregate.Apply(TaskRequeued): only a Blocked landing keeps the run a PR-stage give-back names.
+        view.CurrentRunId = view.State == TaskState.Blocked ? @event.Data.RestoredCurrentRunId : null;
         // Mirrors TaskAggregate.Apply(TaskRequeued): stated afresh by every requeue.
         view.LaunchNetworkRetryNotBefore = @event.Data.Reason == RequeueReason.LaunchNetworkRetry
             ? @event.Data.LaunchNetworkRetryNotBefore

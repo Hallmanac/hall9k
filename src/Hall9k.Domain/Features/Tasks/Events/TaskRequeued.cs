@@ -33,6 +33,13 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// comment again (<see cref="TaskAggregate.PendingMentionFollowUpAfterPreflight"/>) instead of
 /// running an unrequested full review. Only read for <see cref="RequeueReason.LaunchNetworkRetry"/>.
 /// </param>
+/// <param name="RestoredCurrentRunId">
+/// Set only when an interactive claim taken at the PR stage is given back to the reopened lap it took
+/// over (<see cref="Handlers.TaskDecider.ReleasePullRequestStageClaimToLap"/>): the pull request's run. A
+/// reopen that landed Blocked behind an open dependency kept that run current so closeout's merge and
+/// close detection kept running, and the requeue puts it back instead of clearing it. Read only when the
+/// task lands Blocked; a Queued task never carries a current run.
+/// </param>
 public sealed record TaskRequeued(
     Guid Id,
     RequeueReason Reason,
@@ -42,4 +49,5 @@ public sealed record TaskRequeued(
     int? LaunchNetworkRetryBound = null,
     DateTimeOffset? LaunchNetworkRetryNotBefore = null,
     string? LaunchNetworkRetryError = null,
-    bool LaunchNetworkRetryMentionFollowUp = false);
+    bool LaunchNetworkRetryMentionFollowUp = false,
+    Guid? RestoredCurrentRunId = null);
