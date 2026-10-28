@@ -808,8 +808,16 @@ entry's reason is read as a dismissal exactly as a `--merge-ready` reason is. A 
 both: `h9k review fixed` refuses `--no-change` over a branch tip it watched move, so a dismissal
 is never recorded over commits the next pass is reading.
 
+**A human at the wheel can skip the rest of review, and the skip is recorded.** On an
+interactive-mode task, `h9k task skip-to-pr` opens the pull request at once, from the build or from any
+review park. It bypasses the gates, every review track, the final pass, and the settling gate, and
+appends a manual-override event to the run that names who skipped, when, why, and exactly what was
+skipped. The run settles as `Overridden` rather than `Clean` or `Settled`, so no surface can mistake
+an unreviewed tip for a reviewed one. The override covers that run only, and it adds nothing to the
+pull request unless the person writes it into their own summary.
+
 **A human at the wheel can take the fix role herself (Decisions Log #148).** On an
-interactive-mode task, the review-verdict-to-fix boundary has four choices rather than three:
+interactive-mode task, the review-verdict-to-fix boundary has four review choices rather than three (the skip above is a fifth, offered beside them):
 `h9k review proceed` dispatches the fix session the verdict asked for, `h9k review resolve
 --needs-fixes "<redirect>"` dispatches one carrying their redirect instead, `h9k review resolve
 --merge-ready` overrules the finding outright, and `h9k review fixed` records that the human did
