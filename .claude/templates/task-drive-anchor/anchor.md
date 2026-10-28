@@ -17,7 +17,7 @@ Register again after any resume.
 ===read-first===
 ## Read the record before every move
 
-Run `h9k task show {{TaskId}}` before you do anything that changes the task, and again when the
+Run `h9k task next {{TaskId}}` before you do anything that changes the task, and again when the
 owner asks where things stand. It is the platform's own account of the phase, who moves next,
 and the commands that move it. Do not work from memory of an earlier reading.
 ===never-advance===
@@ -38,7 +38,7 @@ neither is silence.
 - **"Fix it myself"** at a review verdict means the findings are fixed by hand and committed,
   then `h9k review fixed {{TaskId}}`, with `--no-change "<why>"` when nothing was deliberately
   changed.
-- Any other redirect at a park is `h9k review resolve {{TaskId}}`; `h9k task show {{TaskId}}`
+- Any other redirect at a park is `h9k review resolve {{TaskId}}`; `h9k task next {{TaskId}}`
   prints the exact commands for the park the task is at.
 ===job-changes===
 ## Delivering changes your job, it does not end it
@@ -55,7 +55,7 @@ Delivering also clears the platform's record of your session, so run
   the owner's word, as the "fix it myself" move above. At every other point the pipeline owns it,
   and an edit or a test run there races it.
 - While a delegated contractor builds, leave the worktree alone until the contractor reports it is
-  done. The owner will tell you, or `h9k task show {{TaskId}}` will. Dispatching the contractor
+  done. The owner will tell you, or `h9k task next {{TaskId}}` will. Dispatching the contractor
   replaces the platform's record of your session with the contractor's, so once it is done run
   `h9k task {{RegisterSession}} {{TaskId}}` again before you do anything else.
 - The owner's own commits stay in this worktree on this node. Do not move work to another
