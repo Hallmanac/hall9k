@@ -1099,6 +1099,94 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             "the delivering node's id replaces the interactive sentinel from AgentSessionCompleted onward");
     }
 
+    /// <summary>
+    /// <c>h9k task skip-to-pr</c> records <see cref="ReviewSkippedToPullRequest"/> and rings the
+    /// doorbell (idea 6e6d0200, Card 3); the daemon's stranded-pipeline sweep then has to hand the run
+    /// to <see cref="PullRequestOpener"/> with no gate, no review or fix session, and no further
+    /// interactive park. Proven from both doors: straight from the build (delivered and skipped in one
+    /// step, the run never having passed a gate) and from an interactive park. There is no git
+    /// repository and no GitHub here, so the real opener fails the run at its first push, and that
+    /// failure (<see cref="RunDetails.FailedDuringPullRequestOpen"/>) is the observable proof it was
+    /// reached at all.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_skipped_run_reaches_the_opener_with_no_gate_no_review_session_and_no_further_park(bool fromPark)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(60));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        string repositoryPath = Path.Combine(Path.GetTempPath(), $"hall9k-skip-to-pr-repo-{taskId:N}");
+        string worktreePath = Path.Combine(Path.GetTempPath(), $"hall9k-skip-to-pr-worktree-{taskId:N}");
+        Directory.CreateDirectory(worktreePath);
+        _createdWorktreePaths.Add(worktreePath);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"skip-to-pr-{taskId:N}", repositoryPath,
+                new Uri("https://github.com/acme/web"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            TaskAggregate task = new();
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, projectId, "Skip straight to the pull request", ["it opens"],
+                    TaskType.Chore, null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
+            TaskClaimed claimed = TaskDecider.ClaimInteractively(task, node.OwnerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+
+            session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+                runId, taskId, Guid.Empty, node.OwnerId, claimed.LeaseGeneration, DomainId.New(),
+                worktreePath, "task/skip-to-pr", ExecutorMode.Subscription, Now));
+            session.Events.Append(runId, new AgentSessionCompleted(runId, Now, DeliveredByNodeId: node.NodeId));
+            if (fromPark)
+            {
+                session.Events.Append(runId, new VerificationPassed(runId, Now));
+                session.Events.Append(runId, new ReviewParked(
+                    runId, "Interactive mode is on for this task.", Now, IsInteractiveGate: true));
+            }
+
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // What the verb itself would compute and record, through the same aggregate fold.
+        RunAggregate before;
+        await using (IQuerySession query = store.QuerySession())
+        {
+            before = (await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token))!;
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewSkippedToPullRequest(
+                runId, node.OwnerId, Now, "docs only", false, ReviewSkipPlan.Compute(before)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        await supervisor.ResumeStrandedPipelinesAsync(cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "Failed", cts.Token);
+        details.FailedDuringPullRequestOpen.Should().BeTrue(
+            "the real opener was reached and failed at its first push, there being no repository here");
+
+        IReadOnlyList<object> events =
+            [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<GateStarted>().Should().BeEmpty("no gate ran for a skipped run");
+        events.OfType<VerificationFailed>().Should().BeEmpty();
+        events.OfType<VerificationPassed>().Should().HaveCount(fromPark ? 1 : 0, "only the one seeded before the skip");
+        events.OfType<ReviewDispatched>().Should().BeEmpty("no review session was dispatched");
+        events.OfType<ReviewFixDispatched>().Should().BeEmpty("no fix session was dispatched");
+        events.OfType<ReviewParked>().Should().HaveCount(fromPark ? 1 : 0, "no further interactive park was raised");
+        events.OfType<ReviewSettled>().Should().BeEmpty("the override is the run's settlement");
+    }
+
     [Fact]
     public async Task Agent_dying_without_a_result_fails_run_and_task_and_releases_the_lease()
     {

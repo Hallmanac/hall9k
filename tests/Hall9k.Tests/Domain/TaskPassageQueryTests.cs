@@ -830,6 +830,56 @@ public sealed class TaskPassageQueryTests
     }
 
     [Fact]
+    public void A_skip_to_pr_from_a_park_closes_the_wait_and_rides_the_passage_as_the_recorded_override()
+    {
+        Guid runId = DomainId.New();
+        DateTimeOffset parkedAt = Now.AddMinutes(-30);
+        DateTimeOffset skippedAt = Now.AddMinutes(-5);
+        Guid owner = DomainId.New();
+
+        RunEventSet run = new(runId, Now.AddHours(-1), null,
+        [
+            Ev(new ReviewParked(runId, "interactive gate", parkedAt, IsInteractiveGate: true)),
+            Ev(new ReviewSkippedToPullRequest(
+                runId, owner, skippedAt, "docs only", false, [ReviewSkipPlan.Gates, ReviewSkipPlan.SettlingGate], "fp")),
+        ]);
+
+        TaskPassage passage = Compute([], [run]);
+
+        passage.HumanWaits.Should().ContainSingle(w => w.Kind == HumanWaitKind.ReviewPark)
+            .Subject.Elapsed.Elapsed.Should().Be(TimeSpan.FromMinutes(25));
+        ReviewSkipRecord skip = passage.ReviewSkips.Should().ContainSingle().Subject;
+        skip.SkippedByOwnerId.Should().Be(owner);
+        skip.Reason.Should().Be("docs only");
+        skip.Skipped.Should().Equal(ReviewSkipPlan.Gates, ReviewSkipPlan.SettlingGate);
+    }
+
+    [Fact]
+    public void A_skip_to_pr_from_the_build_carries_the_override_with_no_park_to_close()
+    {
+        Guid runId = DomainId.New();
+
+        RunEventSet run = new(runId, Now.AddHours(-1), null,
+        [
+            Ev(new ReviewSkippedToPullRequest(runId, DomainId.New(), Now.AddMinutes(-5), null, false, [])),
+        ]);
+
+        TaskPassage passage = Compute([], [run]);
+
+        passage.ReviewSkips.Should().ContainSingle();
+        passage.HumanWaits.Should().NotContain(w => w.Kind == HumanWaitKind.ReviewPark);
+    }
+
+    [Fact]
+    public void A_stream_without_a_skip_carries_none()
+    {
+        Guid runId = DomainId.New();
+        RunEventSet run = new(runId, Now.AddHours(-1), null, [Ev(new ReviewParked(runId, "x", Now.AddMinutes(-3)))]);
+
+        Compute([], [run]).ReviewSkips.Should().BeEmpty();
+    }
+
+    [Fact]
     public void Closeout_park_is_its_own_human_wait_row()
     {
         Guid runId = DomainId.New();

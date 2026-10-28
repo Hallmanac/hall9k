@@ -635,6 +635,12 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// clean bill of health.
     /// </summary>
     public ReviewSettlement ReviewSettlement { get; set; } = ReviewSettlement.Unknown;
+    /// <summary>
+    /// The manual override that sent this run straight to its pull request (<c>h9k task skip-to-pr</c>),
+    /// or null when none was recorded, which is every run on a stream that predates the event. Scoped
+    /// to this run: a later run of the same task has its own view and starts with null.
+    /// </summary>
+    public ReviewSkipRecord? ReviewSkip { get; set; }
     /// <summary>Residual findings the loop fixed without a reviewer ever reading the fix (log #63).</summary>
     public int ReviewResidualsFixed { get; set; }
     /// <summary>Residual findings routed to draft bug tasks instead of fixed in this pull request (log #63).</summary>
@@ -1760,6 +1766,29 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         view.ParkedOnSettlingGateRepairCap = false;
         view.ParkedOnReviewDisagreement = false;
         // The resume sweep re-dispatches; until it does, nothing is running.
+        EndPipelineSessions(view);
+        view.State = RunState.UnderReview;
+    }
+
+    /// <summary>
+    /// <c>h9k task skip-to-pr</c> (idea 6e6d0200, Card 3). Mirrors <c>RunAggregate.Apply(ReviewSkippedToPullRequest)</c>:
+    /// the run is merge-ready as far as the pipeline is concerned, whatever park or build state the
+    /// skip was recorded from, so the resume sweep reads it as UnderReview and goes straight to
+    /// the opener. Nothing is running until it does.
+    /// </summary>
+    public void Apply(IEvent<ReviewSkippedToPullRequest> @event, RunDetails view)
+    {
+        view.ReviewSkip = new ReviewSkipRecord(
+            @event.Data.SkippedByOwnerId, @event.Data.OwnerRootFingerprint, @event.Data.SkippedAt,
+            @event.Data.Reason, @event.Data.ReasonByAgent, [.. @event.Data.Skipped]);
+        view.LastReviewVerdict = ReviewVerdict.MergeReady;
+        view.ReviewSettlement = ReviewSettlement.Overridden;
+        view.ParkedReason = null;
+        view.ParkedNeedsFixesOffersNoProgress = false;
+        view.ParkedIsInteractiveGate = false;
+        view.ParkedOnRebaseRecoveryDispute = false;
+        view.ParkedOnSettlingGateRepairCap = false;
+        view.ParkedOnReviewDisagreement = false;
         EndPipelineSessions(view);
         view.State = RunState.UnderReview;
     }

@@ -1,3 +1,5 @@
+using Hall9k.Domain.Features.Run;
+
 namespace Hall9k.Domain.Features.Tasks.Queries;
 
 /// <summary>
@@ -129,4 +131,10 @@ public sealed record TaskPassage(
     /// against only <see cref="ClaimToMerge"/> read over 100% queued whenever a task ever waited
     /// before its first claim).
     /// </summary>
-    PassagePhase QueuedBeforeFirstClaim);
+    PassagePhase QueuedBeforeFirstClaim,
+    /// <summary>
+    /// Every manual override (<c>h9k task skip-to-pr</c>) recorded on any of this task's runs, oldest
+    /// first. Empty or null for the ordinary task and for a stream that predates the event, so a
+    /// passage that carries none renders exactly as it always has.
+    /// </summary>
+    IReadOnlyList<ReviewSkipRecord>? ReviewSkips = null);

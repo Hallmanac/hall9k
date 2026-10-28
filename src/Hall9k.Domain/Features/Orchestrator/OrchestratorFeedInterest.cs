@@ -207,6 +207,7 @@ public static class OrchestratorFeedInterest
         [typeof(ReviewParkResolved)] = OrchestratorFeedLevel.Everything,
         [typeof(ReviewBoundaryApproved)] = OrchestratorFeedLevel.Everything,
         [typeof(ReviewSettled)] = OrchestratorFeedLevel.Everything,
+        [typeof(ReviewSkippedToPullRequest)] = OrchestratorFeedLevel.Everything,
         [typeof(ReviewFeedbackReceived)] = OrchestratorFeedLevel.Everything,
         [typeof(PullRequestUpdated)] = OrchestratorFeedLevel.Everything,
         [typeof(PullRequestConflictObserved)] = OrchestratorFeedLevel.Everything,

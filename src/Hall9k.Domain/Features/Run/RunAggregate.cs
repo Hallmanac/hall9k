@@ -770,6 +770,13 @@ public sealed class RunAggregate
     public bool FixDispatchedThisCycle => _fixDispatchedThisCycle;
 
     /// <summary>
+    /// Whether this run has ever passed (or legitimately skipped) its verification gates. False for
+    /// a run still in the build and for a park raised before the gates, which is what
+    /// <see cref="ReviewSkipPlan"/> reads to decide whether a skip bypasses them.
+    /// </summary>
+    public bool GatesPassed { get; private set; }
+
+    /// <summary>
     /// Whether the most recently recorded <see cref="Events.VerificationPassed"/> ran every
     /// `dotnet test`-shaped gate at full scope (task: a fix cycle's verification gate) — set from
     /// the event itself, never re-derived, since only <c>VerificationRunner.VerifyAsync</c>'s own
@@ -1082,6 +1089,7 @@ public sealed class RunAggregate
     public void Apply(VerificationPassed @event)
     {
         _failedGates.Clear();
+        GatesPassed = true;
         LastGateRanFullScope = @event.RanFullScope;
         LastGateHeadSha = @event.HeadSha;
         LastGateVerifyCommandsFingerprint = @event.VerifyCommandsFingerprint;
@@ -1133,6 +1141,7 @@ public sealed class RunAggregate
     public void Apply(VerificationSkipped @event)
     {
         _failedGates.Clear();
+        GatesPassed = true;
         PreFinalPassRebaseAwaitingGate = false;
     }
 
@@ -1293,6 +1302,26 @@ public sealed class RunAggregate
         // full build/test gate over an already-merge-ready tip, discarding the settled result if
         // that rerun failed for any reason a gate can fail for (independent pre-PR review, cycle 1,
         // adversarial finding). Setting it here, unconditionally, is what closes that gap.
+        State = RunState.UnderReview;
+    }
+
+    /// <summary>
+    /// <c>h9k task skip-to-pr</c>: the run goes straight to its pull request. Lands exactly where a
+    /// settled review does (UnderReview at MergeReady, which <c>RunSupervisor.ResumePipeline</c> hands
+    /// to <c>PullRequestOpener</c>), with <see cref="InteractiveGateCleared"/> so the gates-to-pull-request
+    /// boundary does not ask again, and any park the skip was recorded from closed out. The override
+    /// belongs to this run's stream alone; the next run starts clean.
+    /// </summary>
+    public void Apply(ReviewSkippedToPullRequest @event)
+    {
+        LastReviewVerdict = ReviewVerdict.MergeReady;
+        ReviewSettlement = ReviewSettlement.Overridden;
+        ReviewPhase = ReviewPhase.MergeReady;
+        InteractiveGateCleared = true;
+        ParkedIsInteractiveGate = false;
+        ParkedNeedsFixesOffersNoProgress = false;
+        ParkedDisagreements = [];
+        ParkedOnReviewDisagreement = false;
         State = RunState.UnderReview;
     }
 

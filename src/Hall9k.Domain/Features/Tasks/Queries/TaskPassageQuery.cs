@@ -169,7 +169,7 @@ public static class TaskPassageQuery
 
         return new TaskPassage(
             queued, building, gates, review, delivery, mergeWait, humanWaits, claimToMerge, laps, sessions, mergedAt,
-            queuedBeforeFirstClaim);
+            queuedBeforeFirstClaim, [.. folds.SelectMany(fold => fold.ReviewSkips)]);
     }
 
     /// <summary>
@@ -515,6 +515,7 @@ public static class TaskPassageQuery
         public DateTimeOffset? OpenCloseoutParkSince { get; set; }
         public List<DateTimeOffset> ReviewCompletedTimes { get; } = [];
         public List<DateTimeOffset> PrReviewDeliveredTimes { get; } = [];
+        public List<ReviewSkipRecord> ReviewSkips { get; } = [];
         public DateTimeOffset? PullRequestMergedAt { get; set; }
         public bool PullRequestClosedWithoutMerge { get; set; }
         public int SessionCount { get; set; }
@@ -677,6 +678,19 @@ public static class TaskPassageQuery
                 case ReviewHumanFixApplied applied when reviewParkedSince is { } parkedSince:
                     fold.ReviewParkIntervals.Add((parkedSince, applied.AppliedAt));
                     reviewParkedSince = null;
+                    break;
+                case ReviewSkippedToPullRequest skipped:
+                    // h9k task skip-to-pr can be recorded from a park, which it closes like a resolve
+                    // does, or from the build, where no park is open and only the override is kept.
+                    fold.ReviewSkips.Add(new ReviewSkipRecord(
+                        skipped.SkippedByOwnerId, skipped.OwnerRootFingerprint, skipped.SkippedAt, skipped.Reason,
+                        skipped.ReasonByAgent, skipped.Skipped));
+                    if (reviewParkedSince is { } skippedFrom)
+                    {
+                        fold.ReviewParkIntervals.Add((skippedFrom, skipped.SkippedAt));
+                        reviewParkedSince = null;
+                    }
+
                     break;
                 case CloseoutParked closeoutParked:
                     closeoutParkedSince ??= closeoutParked.ParkedAt;
