@@ -235,7 +235,14 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
     /// the same run passes back as <paramref name="quiet"/>.
     /// </summary>
     internal static bool EnsureNoOtherSessionAttached(RunDetails run, Guid taskId, bool force, bool quiet = false) =>
-        !InteractiveSessionLiveness.IsSelfInvocation(run)
+        EnsureNoOtherSessionAttached(InteractiveSessionLiveness.IsSelfInvocation(run), run, taskId, force, quiet);
+
+    /// <summary>
+    /// The rule itself, with the caller's own identity already answered, so it is pinned without
+    /// reading the process environment or the process table that answer comes from.
+    /// </summary>
+    internal static bool EnsureNoOtherSessionAttached(bool isSelfInvocation, RunDetails run, Guid taskId, bool force, bool quiet = false) =>
+        !isSelfInvocation
         && InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "delegate", force, quiet);
 
     /// <summary>

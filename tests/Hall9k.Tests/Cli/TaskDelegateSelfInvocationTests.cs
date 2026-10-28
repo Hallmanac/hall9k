@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Connectors.Prompts;
@@ -8,7 +7,6 @@ using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
-using Hall9k.Tests.Fakes;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -18,7 +16,6 @@ namespace Hall9k.Tests.Cli;
 /// <c>h9k task drive</c> starts and tells to delegate the build on the owner's word, and the
 /// milestones the contractor it dispatches sends back to that session.
 /// </summary>
-[Collection("Environment")]
 public sealed class TaskDelegateSelfInvocationTests
 {
     private static readonly Guid TaskId = Guid.Parse("01a18010-1cf3-7210-a7df-387dbd533657");
@@ -26,42 +23,21 @@ public sealed class TaskDelegateSelfInvocationTests
     [Fact]
     public void The_claims_own_registered_session_may_delegate()
     {
-        using Process current = Process.GetCurrentProcess();
-        RunDetails run = RunWithSessionAt(current.Id, InteractiveSessionLiveness.ReadStartedAt(current));
-        using EnvironmentVariableScope scope = EnvironmentVariableScope.Set(
-            (InteractiveSessionLiveness.InteractiveRunEnvironmentVariable, null),
-            (InteractiveSessionLiveness.ClaudeCodePidEnvironmentVariable, current.Id.ToString()));
+        RunDetails run = RunWithSessionOnAnotherMachine();
 
-        Action delegating = () => TaskDelegateCommand.EnsureNoOtherSessionAttached(run, TaskId, force: false);
+        Action delegating = () => TaskDelegateCommand.EnsureNoOtherSessionAttached(isSelfInvocation: true, run, TaskId, force: false);
 
-        delegating.Should().NotThrow("the recorded live session is the caller itself, waiting on this command");
+        delegating.Should().NotThrow("the recorded session is the caller itself, waiting on this command");
     }
 
     [Fact]
-    public void A_second_live_session_still_refuses()
+    public void Any_other_recorded_session_still_refuses()
     {
-        using Process current = Process.GetCurrentProcess();
-        RunDetails run = RunWithSessionAt(current.Id, InteractiveSessionLiveness.ReadStartedAt(current));
-        using EnvironmentVariableScope scope = EnvironmentVariableScope.Set(
-            (InteractiveSessionLiveness.InteractiveRunEnvironmentVariable, null),
-            (InteractiveSessionLiveness.ClaudeCodePidEnvironmentVariable, null));
+        RunDetails run = RunWithSessionOnAnotherMachine();
 
-        Action delegating = () => TaskDelegateCommand.EnsureNoOtherSessionAttached(run, TaskId, force: false);
+        Action delegating = () => TaskDelegateCommand.EnsureNoOtherSessionAttached(isSelfInvocation: false, run, TaskId, force: false);
 
-        delegating.Should().Throw<DomainConflictException>().WithMessage("*still attached*delegate*");
-    }
-
-    [Fact]
-    public void A_session_that_has_exited_does_not_block_a_delegate()
-    {
-        RunDetails run = RunWithSessionAt(processId: int.MaxValue - 1, startedAt: DateTimeOffset.UtcNow.AddHours(-1));
-        using EnvironmentVariableScope scope = EnvironmentVariableScope.Set(
-            (InteractiveSessionLiveness.InteractiveRunEnvironmentVariable, null),
-            (InteractiveSessionLiveness.ClaudeCodePidEnvironmentVariable, null));
-
-        Action delegating = () => TaskDelegateCommand.EnsureNoOtherSessionAttached(run, TaskId, force: false);
-
-        delegating.Should().NotThrow();
+        delegating.Should().Throw<DomainConflictException>().WithMessage("*another-machine*delegate*");
     }
 
     [Fact]
@@ -83,11 +59,15 @@ public sealed class TaskDelegateSelfInvocationTests
         prompt.Should().NotContain("Address: `");
     }
 
-    private static RunDetails RunWithSessionAt(int processId, DateTimeOffset startedAt) => new()
+    /// <summary>
+    /// A session recorded on another machine is refused from here without asking the process table
+    /// anything, which keeps these tests off the host.
+    /// </summary>
+    private static RunDetails RunWithSessionOnAnotherMachine() => new()
     {
         Id = DomainId.New(),
         SessionName = "abcd1234-" + SessionRoleName.InteractiveClaim,
-        ActiveSessions = [new ActiveSession(AgentRole.Interactive, ReviewLens.Unknown, processId, startedAt, Environment.MachineName)],
+        ActiveSessions = [new ActiveSession(AgentRole.Interactive, ReviewLens.Unknown, 4242, DateTimeOffset.UnixEpoch, "another-machine")],
     };
 
     private static string ContractorPrompt(string? registeredSessionName) =>
