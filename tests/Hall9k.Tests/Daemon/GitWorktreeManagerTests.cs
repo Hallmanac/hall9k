@@ -87,7 +87,7 @@ public sealed class GitWorktreeManagerTests : IDisposable
     }
 
     /// <summary>
-    /// h9k task work runs a second, unsynchronized GitWorktreeManager in the CLI process
+    /// h9k task drive runs a second, unsynchronized GitWorktreeManager in the CLI process
     /// against the same repository the daemon's own singleton touches (adversarial review,
     /// cycle 4) — the in-process semaphore alone cannot serialize two separate instances, so
     /// this proves the cross-process file lock does.

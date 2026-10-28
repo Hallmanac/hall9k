@@ -1,7 +1,7 @@
 namespace Hall9k.Domain.Features.Tasks.Events;
 
 /// <summary>
-/// An operator working a task interactively (h9k task work) handed it back to a headless
+/// An operator working a task interactively (h9k task drive) handed it back to a headless
 /// agent partway through (h9k task handback): the human's claim releases, the task returns to
 /// Queued through normal dispatch, and Branch is what the next claim resumes — mechanically the
 /// existing follow-up resume-existing-branch flow (RunLauncher.CheckoutFreshOrRetryAsync reads

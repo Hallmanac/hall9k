@@ -69,7 +69,7 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
                 + "dispatch queue.");
 
         // A pr-review task's own Claimed+sentinel state is never a human's own interactive claim
-        // (TaskWorkCommand and TaskStartCommand both refuse to create one) — it is auto-pr-review's
+        // (TaskDriveCommand and TaskStartCommand both refuse to create one) — it is auto-pr-review's
         // Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync), driven headlessly by this
         // daemon's own RunSupervisor. Running the project's build/test gates here would execute the
         // untrusted pull-request-head worktree's own code under the operator's account — exactly the
@@ -105,7 +105,7 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "verify", settings.Force);
         }
 
-        // Mirrors TaskWorkCommand.ReenterAsync's own guard: once h9k task deliver or handback
+        // Mirrors TaskDriveCommand.ReenterAsync's own guard: once h9k task deliver or handback
         // hands the run to the standard pipeline, the task can still read Claimed+interactive
         // for the whole review loop, but the worktree now belongs to the daemon's own gates and
         // review sessions — running dotnet build/test here would collide with them (adversarial
@@ -584,8 +584,8 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             }
             catch (Win32Exception exception)
             {
-                // The worktree can vanish between h9k task work claiming it and this gate running
-                // (deleted by hand, or pruned) — TaskWorkCommand.ReenterAsync guards this exact
+                // The worktree can vanish between h9k task drive claiming it and this gate running
+                // (deleted by hand, or pruned) — TaskDriveCommand.ReenterAsync guards this exact
                 // state explicitly, and this is the one command in the interactive surface that
                 // would otherwise crash on it with a raw stack trace instead of the domain-shaped
                 // failure every other gate outcome here already returns (adversarial review,

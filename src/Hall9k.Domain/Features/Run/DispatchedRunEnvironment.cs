@@ -23,7 +23,7 @@ namespace Hall9k.Domain.Features.Run;
 /// is pinned to it meaning exactly that. This one flows only from the daemon or a deliberate headless
 /// launch into the agent it spawns and its own descendants — never from an attended session into
 /// anything it starts — so nothing attended ever carries it, and an operator's own <c>h9k task
-/// work</c>, a pasted prompt, or <c>--direct-launch</c> session never does either.
+/// drive</c>, a pasted prompt, or <c>--direct-launch</c> session never does either.
 /// </para>
 /// </summary>
 public static class DispatchedRunEnvironment

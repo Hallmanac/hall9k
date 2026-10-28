@@ -52,7 +52,7 @@ public static class TaskPassageQuery
     /// alongside the rest (independent pre-PR review, cycle 6, conformance finding — the
     /// enumeration above omitted all three). <see cref="InteractiveSessionStarted"/> is excluded
     /// here on its own, and folded into the loop below instead, because it does not always name a
-    /// distinct process: <c>h9k task work</c>/<c>h9k task start</c>'s own interactive claim
+    /// distinct process: <c>h9k task drive</c>/<c>h9k task start</c>'s own interactive claim
     /// appends it for the identical process <see cref="RunDispatched"/> already named
     /// (<see cref="RunDispatched.SessionId"/>), and only a genuine re-attach carries a different
     /// session id (independent pre-PR review, cycle 6, adversarial finding).

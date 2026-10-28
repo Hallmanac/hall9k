@@ -136,11 +136,11 @@ internal static class RecordingProvenanceReader
 
         if (run.IsDeliberateHeadlessStart && run.RegisteredInteractiveSessionName is null)
         {
-            // h9k task start's own claim carries the same sentinel an operator's h9k task work
+            // h9k task start's own claim carries the same sentinel an operator's h9k task drive
             // claim does, and nobody is attached to it. Reached only from OUTSIDE the spawned
             // session (that case never gets past the first check) — a human at their own shell
             // naming this run with --task is not attending it either. The registration is what
-            // ends it: h9k task work re-enters this same run, and register-session's own
+            // ends it: h9k task drive re-enters this same run, and register-session's own
             // InteractiveSessionStarted sets RegisteredInteractiveSessionName for every attended
             // registration while deliberately skipping the build agent's own (that field's doc).
             return HumanAttendance.Unattended;

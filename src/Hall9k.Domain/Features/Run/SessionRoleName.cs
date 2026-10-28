@@ -44,7 +44,7 @@ public static class SessionRoleName
     /// <summary>Composes a task up as a card in an external tracker (Decisions Log #102).</summary>
     public const string CardPublication = "card-publication";
 
-    /// <summary>An operator's own attached session (h9k task work) — held by the human, not a spawned agent.</summary>
+    /// <summary>An operator's own attached session (h9k task drive) — held by the human, not a spawned agent.</summary>
     public const string InteractiveClaim = "interactive-claim";
 
     /// <summary>

@@ -99,7 +99,7 @@ public sealed record InjectedLessons(
 /// (idea d805fd8b, piece 5; backlog 55). Pure: the store read and the node's own identity are the
 /// caller's (<see cref="Queries.LessonPromptFeed"/>), so every rule below is provable with no
 /// database and reads identically for the daemon's dispatch, the daemon's review passes, and an
-/// interactive <c>h9k task work</c> claim in the CLI process.
+/// interactive <c>h9k task drive</c> claim in the CLI process.
 /// </summary>
 public static class LessonInjection
 {

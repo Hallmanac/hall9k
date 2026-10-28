@@ -321,7 +321,7 @@ public sealed class TaskDetails
     /// <summary>
     /// Whether the current claim's <see cref="Events.TaskClaimed"/> recorded a human's deliberate
     /// override of unmet dependency edges — <c>h9k task start --acknowledge-unmet-dependencies</c>
-    /// (task 8a56af78-h9k) or <c>h9k task work</c>'s own equivalent, freshly given or carried
+    /// (task 8a56af78-h9k) or <c>h9k task drive</c>'s own equivalent, freshly given or carried
     /// forward from an earlier claim (design ruling R7, task 0ac72cb8-h9k; see
     /// <see cref="DependencyOverrideCarriedForward"/>) — false for every ordinary claim that never
     /// crossed an unmet edge. Cleared when the claim is given back to run again (requeue, handback, retry, …), so a
@@ -391,7 +391,7 @@ public sealed class TaskDetails
     /// signal than <see cref="RetryBranchResumesForeignNode"/>, which only fires when
     /// <see cref="Queries.ForeignResumeBranchResolver"/> found a branch to resume and is false on
     /// other reachable holder-change paths: a claim whose predecessor's latest run carried the
-    /// interactive/deliberate <see cref="Guid.Empty"/> sentinel (an operator's own <c>h9k task work</c>
+    /// interactive/deliberate <see cref="Guid.Empty"/> sentinel (an operator's own <c>h9k task drive</c>
     /// or <c>h9k task start</c> claim, never a foreign NODE's own run), and every
     /// <see cref="TaskType.PrReview"/> task, which that resolver refuses unconditionally
     /// (independent pre-PR review, cycle 1, conformance and adversarial lenses). Computed from

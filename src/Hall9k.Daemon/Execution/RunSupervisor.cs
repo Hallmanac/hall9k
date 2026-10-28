@@ -1073,8 +1073,8 @@ public sealed class RunSupervisor(
     /// checkout a reviewer is reading in.
     /// </item>
     /// </list>
-    /// <c>h9k task work</c> and <c>h9k task start</c> do both refuse a pr-review task outright
-    /// (<c>TaskWorkCommand.cs</c>, <c>TaskStartCommand.cs</c>: "it has no diff of its own... it
+    /// <c>h9k task drive</c> and <c>h9k task start</c> do both refuse a pr-review task outright
+    /// (<c>TaskDriveCommand.cs</c>, <c>TaskStartCommand.cs</c>: "it has no diff of its own... it
     /// dispatches headlessly against the pull request instead") — which is why this comment once
     /// said a pr-review task was never a human's claim at all, true until <c>h9k pr review</c>
     /// existed (independent pre-PR review, cycle 1, adversarial lens: the comment predated that
@@ -1786,14 +1786,14 @@ public sealed class RunSupervisor(
     /// <para>
     /// This kind of claim never appends <see cref="RunProcessStarted"/> — <c>TaskStartCommand</c>
     /// records its own agent with <see cref="InteractiveSessionStarted"/> instead, the same event
-    /// <c>h9k task work</c> uses, so <see cref="RunDetails.ProcessId"/> is never set for it and a
+    /// <c>h9k task drive</c> uses, so <see cref="RunDetails.ProcessId"/> is never set for it and a
     /// filter on that field matched nothing here in production (independent pre-PR review, cycle
     /// 1, both lenses). The pid instead comes off <see cref="RunDetails.ActiveSessions"/>'s own
     /// <see cref="AgentRole.Interactive"/> entry, exactly as <c>TaskPhaseComposer</c> already reads
     /// it. <see cref="RunDetails.RegisteredInteractiveSessionName"/> being null is the re-entry
     /// guard that decision needed: it stays null only while the run's own build-named session (the
     /// one <c>TaskStartCommand</c> launched) is the only one ever recorded, and flips the moment a
-    /// human re-enters with <c>h9k task work</c> under their own session name — a claim a human has
+    /// human re-enters with <c>h9k task drive</c> under their own session name — a claim a human has
     /// since attached to must never have its own later, ordinary "closed the terminal" treated as
     /// this run kind's unattended exit (independent pre-PR review, cycle 1, adversarial lens: doing
     /// so would auto-deliver or flag the moment that operator's terminal closed, over a worktree
@@ -1808,7 +1808,7 @@ public sealed class RunSupervisor(
     /// same way a human's own re-entry clears it. Without the <see cref="RunDetails.PhaseDelegations"/>
     /// filter below, a contractor's own exit would be adopted and treated as this run kind's own
     /// unattended exit, auto-delivering (or re-flagging) a claim <c>h9k task delegate</c> explicitly
-    /// promises stays the operator's own to finish by hand with <c>h9k task work</c>. Once a run has
+    /// promises stays the operator's own to finish by hand with <c>h9k task drive</c>. Once a run has
     /// ever been delegated it is permanently out of this sweep's reach — the operator, not the
     /// platform, is the one who decides what a delegated phase's own exit means.
     /// </para>

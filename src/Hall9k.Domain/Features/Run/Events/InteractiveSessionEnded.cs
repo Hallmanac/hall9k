@@ -2,7 +2,7 @@ namespace Hall9k.Domain.Features.Run.Events;
 
 /// <summary>
 /// The operator's attached Claude Code session exited — the process the CLI spawned for
-/// <see cref="InteractiveSessionStarted"/> returned control to `h9k task work`. Usage is
+/// <see cref="InteractiveSessionStarted"/> returned control to `h9k task drive`. Usage is
 /// whatever is observable at exit, null for what is not (the same nullable-Turns convention
 /// <c>StreamJsonParser.AgentResult.Turns</c> already follows for headless runs): an interactive
 /// session is attached to the operator's terminal rather than driven headlessly through

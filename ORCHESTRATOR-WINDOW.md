@@ -67,7 +67,7 @@ of "assign means go" is retired: a task that was only assigned is still Ready an
 
 The window can also put its own hands on a task's code instead of only drafting the task and
 stepping back — claiming a Published task (held by nobody, or already Queued or Blocked) and
-either building it directly in an interactive session (`h9k task work`) or dispatching it headless
+either building it directly in an interactive session (`h9k task drive`) or dispatching it headless
 on the spot while still standing as the boundary arbiter (`h9k task start`), plus the levers
 documented under both in `AGENTS.md`'s *Build / test / run* section. Doing that runs on its own doctrine, settled
 in one long design conversation on 2026-09-02 (idea fcaded0b; Take the Wheel epic 9272e514, Slice
@@ -79,13 +79,13 @@ Code session in a worktree, builds, opens the pull request, and merges it, telli
 after the fact — is explicitly unsupported: that work belongs outside Hall9k entirely. Brian's own
 "at least not yet" on the bypass is recorded as the park trigger, not a closed door: if a
 diligent-user path for it ever earns its keep, this is where it gets built, rather than a wall
-nobody may cross. `h9k task work` is not that bypass, even though a human's own hands do the
+nobody may cross. `h9k task drive` is not that bypass, even though a human's own hands do the
 build: its one manual region is bounded on both ends by an act Hall9k performs (the claim going
 in; `deliver`, `handback`, or `release` coming out), so Hall9k performs every transition even when
 a human types the code.
 
 **Two modes (R2, R3).** Hands on the code: the human builds, in their own interactive session (the
-`work` path). Hands on the judgment: agents do all the building, reviewing, and fixing, and the
+`drive` path). Hands on the judgment: agents do all the building, reviewing, and fixing, and the
 human is the arbiter at the boundaries. Interactive mode is a recorded property of the *task*, not
 of the claim that started it (design ruling R2): once it is on, it stays on across every later run,
 follow-up, retry, or reopen, whether or not a human is still attached, until one of the exit doors
@@ -99,8 +99,8 @@ in charge once it returns.
 
 | Verb | Command | What it does | Who's in charge after |
 |---|---|---|---|
-| **work** | `h9k task work <id>` | Claims the task for the human, interactively, and turns on the task's interactive-mode flag. | The human, on the build. |
-| **dispatch-the-phase** | `h9k task delegate <id> --note "<text>"` | Delegates one phase (today, the build) to a headless contractor dispatched onto the same live claim, briefed by the human's own handoff note. | Still the human — the claim, the assignment, and interactive mode are all untouched; the contractor reports back and `h9k task work` resumes it (design ruling R6). |
+| **drive** | `h9k task drive <id>` | Claims the task for the human, interactively, and turns on the task's interactive-mode flag. | The human, on the build. |
+| **dispatch-the-phase** | `h9k task delegate <id> --note "<text>"` | Delegates one phase (today, the build) to a headless contractor dispatched onto the same live claim, briefed by the human's own handoff note. | Still the human — the claim, the assignment, and interactive mode are all untouched; the contractor reports back and `h9k task drive` resumes it (design ruling R6). |
 | **handback** | `h9k task handback <id> [--first \| --now]` | Ends the human's claim and returns the task to headless dispatch, resuming the branch from wherever it stands, at one of three pickup speeds: the default (normal rotation, ordered by assignment age), `--first` (a recorded priority marker — the next free slot takes it regardless of age), or `--now` (ceiling-exempt, immediate, through `h9k task start`'s own mechanism). | The machine — a handback always clears interactive mode (design ruling R6; the three pickup speeds themselves are R7). |
 | **release** | `h9k task release <id> [--keep-interactive]` | Gives an untouched claim back to the queue (refused once there is committed work; `handback` or `deliver` is the lever then). | The machine, exactly as `handback` — `--keep-interactive` is the one stated exception: the operator explicitly asks for a headless run that still parks at every boundary, rather than that being the default. |
 
@@ -234,7 +234,7 @@ of the pane, and today a row lands there for one of seven reasons:
 | `NeedsHuman`, closeout parked | The same obstruction survived its automatic-lap cap without clearing, or the pull request's lifetime automatic-closeout budget is spent (#22, #80) | `h9k pr resolve` |
 | `NeedsHuman`, dependency failed | A blocker died, so the dependent stays Blocked rather than silently unblocking (#34, #61) | recover the blocker |
 | needs-you, Jira write pending, Status unchanged | A Jira write (an operator's own `write-jira`, or a daemon-dispatched one such as closeout's own merge comment) is stuck on a rejected credential (#102, #114) — the write carries no lifecycle state of its own, so the row's Status stays whatever it already was (Working, Delivered, or Done) | `h9k connection add jira` |
-| needs-you, "an interactive claim (h9k task work) last recorded activity …" | An `h9k task work` claim has sat untouched past the configured threshold (default 3 days) — closing the terminal is a normal way to leave an interactive claim (#103), so nothing reclaims it automatically; this is only a nudge asking whether it is still yours | `h9k task work <id>` if you're still on it, or `h9k task handback <id>` to finish it headlessly |
+| needs-you, "an interactive claim (h9k task drive) last recorded activity …" | An `h9k task drive` claim has sat untouched past the configured threshold (default 3 days) — closing the terminal is a normal way to leave an interactive claim (#103), so nothing reclaims it automatically; this is only a nudge asking whether it is still yours | `h9k task drive <id>` if you're still on it, or `h9k task handback <id>` to finish it headlessly |
 | `Failed` | The run itself failed | `h9k task retry` / `resolve` / `abandon` |
 
 Once `h9k connection add jira` records a working credential again, the daemon's retry sweep

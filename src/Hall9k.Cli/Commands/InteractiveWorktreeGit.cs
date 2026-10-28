@@ -64,7 +64,7 @@ internal static class InteractiveWorktreeGit
 
     /// <summary>
     /// Always --force-with-lease, for the same reason PullRequestOpener's own push carries the
-    /// flag: a fresh branch cut by h9k task work has no remote history, so the bare lease is
+    /// flag: a fresh branch cut by h9k task drive has no remote history, so the bare lease is
     /// satisfied trivially and this behaves like a plain first push — but CheckoutFreshOrRetryAsync
     /// resumes a task's RetryBranch (h9k task retry after a failed deliver) or a handed-back
     /// branch, either of which may already carry the history this same push published last time,

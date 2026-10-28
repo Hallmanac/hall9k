@@ -791,7 +791,7 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// <see cref="ExitedUnattendedDeliverConfirmedRefuses"/> for whether <c>h9k task deliver</c> is
     /// worth advising for that particular variant. Null otherwise: cleared directly by a fresh
     /// <see cref="Events.InteractiveSessionStarted"/> (<c>h9k task register-session</c>, or
-    /// <c>h9k task work --direct-launch</c>, re-entering the claim), or made moot once
+    /// <c>h9k task drive --direct-launch</c>, re-entering the claim), or made moot once
     /// <c>h9k task handback</c> or <c>h9k task release</c> moves <see cref="State"/> off
     /// Dispatched/Running — both composers only ever read this while the run still sits in one of
     /// those two states, so a stale value left behind is never surfaced.
@@ -875,7 +875,7 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// </para>
     /// </summary>
     public string? RegisteredInteractiveSessionName { get; set; }
-    /// <summary>How many interactive attach/detach cycles this run has recorded (h9k task work, held and re-entered).</summary>
+    /// <summary>How many interactive attach/detach cycles this run has recorded (h9k task drive, held and re-entered).</summary>
     public int InteractiveSessionCount { get; set; }
     /// <summary>
     /// The last time an interactive claim was actually touched — a session attaching or
@@ -2246,9 +2246,9 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         view.InteractiveSessionCount++;
         // A live session is now actually recorded against this run, whether this append is
         // h9k task start's own original launch (already null, a no-op) or a human re-entering
-        // after the unattended sweep flagged it needs-you — h9k task work is one of the three
+        // after the unattended sweep flagged it needs-you — h9k task drive is one of the three
         // levers RunUnattendedExitFlagged's own doc advises for that, but only once this exact
-        // event lands: the default h9k task work re-entry prints a prompt and appends nothing on
+        // event lands: the default h9k task drive re-entry prints a prompt and appends nothing on
         // its own, so what actually clears this field is the pasted session's own first act,
         // h9k task register-session (or, on the legacy --direct-launch path, the launch itself)
         // (independent pre-PR review, cycle 3, adversarial lens — the field stayed stale, and the
@@ -2266,7 +2266,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         // review, conformance lens, cycle 1). LastInteractiveActivityAt means "the claim was
         // touched", not "the process began existing".
         view.LastInteractiveActivityAt = @event.Timestamp;
-        // Mirrors RunResumed's own update: a start-it-mine claim re-entered with h9k task work
+        // Mirrors RunResumed's own update: a start-it-mine claim re-entered with h9k task drive
         // spawns under a different recorded name (the interactive-claim suffix, not build), and
         // without this the headless-versus-attended discriminator in TaskPhaseComposer keeps
         // reading the pre-re-entry build name forever (conformance and adversarial review, cycle

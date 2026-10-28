@@ -1055,7 +1055,7 @@ public sealed class TaskDeciderTests
 
         TaskClaimed claimed = TaskDecider.ClaimInteractively(task, Owner, runId, Now);
 
-        claimed.NodeId.Should().Be(Guid.Empty, "h9k task work holds no node — a human, not a machine");
+        claimed.NodeId.Should().Be(Guid.Empty, "h9k task drive holds no node — a human, not a machine");
         claimed.LeaseGeneration.Should().Be(1);
         claimed.RunId.Should().Be(runId);
 
@@ -1071,7 +1071,7 @@ public sealed class TaskDeciderTests
     /// <see cref="TaskAggregate.HolderNodeId"/> (<c>DispatchEngine.TryClaimLedgerHolderAsync</c> is
     /// the sole writer), so the sentinel <see cref="Guid.Empty"/> node id an interactive or
     /// deliberate claim's own <see cref="TaskClaimed"/> carries must never overwrite it — a fix
-    /// that failed and was retried, then picked up with <c>h9k task work</c> while the ledger
+    /// that failed and was retried, then picked up with <c>h9k task drive</c> while the ledger
     /// still names the node that claimed it, would otherwise sever the aggregate from a holder
     /// nothing could ever release again (independent pre-PR review, this branch, conformance and
     /// adversarial lenses).
@@ -1099,7 +1099,7 @@ public sealed class TaskDeciderTests
 
     /// <summary>
     /// Task: interactive mode becomes a recorded property of the task, design ruling R2 — every
-    /// h9k task work claim is the human's own hands-on-the-wheel act, so ClaimInteractively always
+    /// h9k task drive claim is the human's own hands-on-the-wheel act, so ClaimInteractively always
     /// turns TaskAggregate.InteractiveModeEnabled on, with no parameter to opt out.
     /// </summary>
     [Fact]
@@ -1233,9 +1233,9 @@ public sealed class TaskDeciderTests
     }
 
     /// <summary>
-    /// h9k task start shares h9k task work's own carry-forward shape (task 0ac72cb8-h9k): closing
+    /// h9k task start shares h9k task drive's own carry-forward shape (task 0ac72cb8-h9k): closing
     /// the gap task 8a56af78-h9k deliberately left open by naming, in the caller's own advice,
-    /// h9k task work as the lever that carries an acknowledgment forward — that reasoning was about
+    /// h9k task drive as the lever that carries an acknowledgment forward — that reasoning was about
     /// re-entering a live claim, which this decider still never does, not about a fresh claim on an
     /// already-Blocked task honoring a recorded acknowledgment.
     /// </summary>

@@ -189,7 +189,7 @@ internal static class AttentionComposer
         // interactive-claim arms below, all of which this row's own Dispatched/Running state and
         // Gone/NotApplicable liveness would otherwise also match, each with a less specific or
         // outright wrong cause (the stale-claim nudge, in particular, would advise re-attaching
-        // with h9k task work as though a terminal were still open to it). RunSupervisor never
+        // with h9k task drive as though a terminal were still open to it). RunSupervisor never
         // moves RunState for this flag, so this reads directly off the recorded reason rather than
         // any state transition.
         if (run?.ExitedUnattendedReason is { } exitedUnattendedReason
@@ -207,18 +207,18 @@ internal static class AttentionComposer
             // git status (both of which TaskDeliverCommand only warns about and proceeds past
             // rather than refusing on), a process that vanished without reporting, or a plain error
             // result — none of which ever confirmed the tree was bad, so deliver may well succeed.
-            // h9k task work always works (reattach and look by hand); h9k task handback and h9k
+            // h9k task drive always works (reattach and look by hand); h9k task handback and h9k
             // task release both work whenever there are no uncommitted files still sitting in the
             // worktree, and refuse the same files for the same reason otherwise — never advise a
             // lever the platform will refuse.
             string lever = run.ExitedUnattendedDeliverConfirmedRefuses
-                ? $"h9k task work {id} (to look at it yourself), h9k task handback {id} (to queue a fresh "
+                ? $"h9k task drive {id} (to look at it yourself), h9k task handback {id} (to queue a fresh "
                   + $"headless follow-up), or h9k task release {id} (to give it back) — the latter two refuse "
-                  + "while uncommitted files remain, which h9k task work can still resolve by hand"
+                  + "while uncommitted files remain, which h9k task drive can still resolve by hand"
                 : $"h9k task deliver {id} (it re-checks the worktree itself, so it may still succeed), "
-                  + $"h9k task work {id} (to look at it yourself), h9k task handback {id} (to queue a fresh "
+                  + $"h9k task drive {id} (to look at it yourself), h9k task handback {id} (to queue a fresh "
                   + $"headless follow-up), or h9k task release {id} (to give it back) — the latter two refuse "
-                  + "while uncommitted files remain, which h9k task work can still resolve by hand";
+                  + "while uncommitted files remain, which h9k task drive can still resolve by hand";
             return new TaskAttention(AttentionLevel.NeedsYou, exitedUnattendedReason, lever);
         }
 
@@ -289,7 +289,7 @@ internal static class AttentionComposer
                 "h9k connection add jira --site https://your-org.atlassian.net --email you@example.com");
         }
 
-        // An interactive claim (h9k task work) carries no lease and no heartbeat by design
+        // An interactive claim (h9k task drive) carries no lease and no heartbeat by design
         // (Decisions Log #103) — closing the terminal is a normal way to leave, so a quiet claim
         // is never a fault the way a stalled headless run is, and nothing here ever reclaims one
         // automatically (idea 3ba186b6: "a staleness nudge, not a timeout"). But a claim nobody
@@ -303,13 +303,13 @@ internal static class AttentionComposer
         // authenticate, so it must not shadow the rejected-credential row either) and gated on the run's
         // own state (adversarial review, cycle 1): once h9k task deliver hands the run to the
         // standard pipeline the task can still read Claimed+interactive for the whole review
-        // loop (TaskHandbackCommand and TaskWorkCommand both document this and refuse once
+        // loop (TaskHandbackCommand and TaskDriveCommand both document this and refuse once
         // run.State is past Dispatched/Running), so nudging here too would advertise both levers
         // this row would in fact refuse — never advise a lever the platform will refuse. Also
         // gated on liveness (conformance review, cycle 2): the run-state guard alone still let
         // the nudge fire on a session this machine can see is Alive right now, offering the same
         // two levers — InteractiveSessionLiveness.EnsureNotAttachedElsewhere refuses both
-        // h9k task work re-entry and h9k task handback with "still attached in another terminal"
+        // h9k task drive re-entry and h9k task handback with "still attached in another terminal"
         // for exactly that observation, and never overrides it even with --force. Restricted to
         // Gone, NotApplicable, or an Unobserved claim IsInteractiveSessionRecordedElsewhere below
         // reads as not-actually-elsewhere (adversarial review, cycle 6, following cycle 4's finding): a
@@ -327,8 +327,8 @@ internal static class AttentionComposer
         // task.Type != TaskType.PrReview excludes the same third Guid.Empty-claimed shape
         // TaskPhaseComposer's own Working() now excludes (independent pre-PR review, cycle 1,
         // both lenses): AutoPrReviewEngine's Now speed launches a headless pr-review run under
-        // this identical sentinel, which is never an attended h9k task work claim, so nudging
-        // toward h9k task work here — a command TaskWorkCommand refuses outright for a pr-review
+        // this identical sentinel, which is never an attended h9k task drive claim, so nudging
+        // toward h9k task drive here — a command TaskDriveCommand refuses outright for a pr-review
         // task — would advise a lever the platform will refuse, the exact rule this arm's own
         // comment above states.
         if (task.State == TaskState.Claimed && task.IsInteractiveClaim && task.Type != TaskType.PrReview
@@ -386,8 +386,8 @@ internal static class AttentionComposer
                         : $"was claimed {TaskStatusComposer.RelativeAge(age)} and has not recorded a touch since";
                 return new TaskAttention(
                     AttentionLevel.NeedsYou,
-                    $"an interactive claim (h9k task work) {activity} — still yours, or ready to hand off?",
-                    $"h9k task work {id} if you're still on it, or h9k task handback {id} to finish it headlessly");
+                    $"an interactive claim (h9k task drive) {activity} — still yours, or ready to hand off?",
+                    $"h9k task drive {id} if you're still on it, or h9k task handback {id} to finish it headlessly");
             }
         }
 

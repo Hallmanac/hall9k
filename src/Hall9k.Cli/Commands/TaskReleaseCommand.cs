@@ -22,7 +22,7 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// Give an untouched interactive claim (h9k task work) back to the dispatch queue. Refused on a
+/// Give an untouched interactive claim (h9k task drive) back to the dispatch queue. Refused on a
 /// task a node holds — that is running headless work with its own levers (let it finish, or
 /// h9k task abandon) — and refused on a claim that already holds commits beyond the base branch:
 /// Requeue clears the claim without recording a resume branch (TaskAggregate.Apply(TaskRequeued)),
@@ -114,7 +114,7 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
             return ExitCodes.Ok;
         }
 
-        // Mirrors TaskWorkCommand.ReenterAsync's own guard: once h9k task deliver (or handback)
+        // Mirrors TaskDriveCommand.ReenterAsync's own guard: once h9k task deliver (or handback)
         // hands the run to the standard pipeline, the task can still read Claimed+interactive
         // for the whole review loop, so the decider's own state check alone would let this
         // requeue a task whose delivered run is mid-gate or mid-review, double-booking the
@@ -131,7 +131,7 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
             if (task.Type == TaskType.PrReview)
             {
                 // A pr-review task's own Claimed+sentinel state is never a human's own interactive
-                // claim (TaskWorkCommand and TaskStartCommand both refuse to create one) — it is
+                // claim (TaskDriveCommand and TaskStartCommand both refuse to create one) — it is
                 // auto-pr-review's Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync).
                 // Checked ahead of the run-null branch below, not only the terminal/non-terminal
                 // split that branch used to apply after it (independent pre-PR review, cycle 10,
@@ -160,7 +160,7 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
                 // there is no expiry sweep to reclaim it the way a headless claim's would, and
                 // every other lever (work, handback, deliver, verify) refuses a run with no
                 // record — each one's own no-record message names h9k task release by id as the
-                // way out (TaskWorkCommand.cs, TaskDeliverCommand.cs, TaskHandbackCommand.cs,
+                // way out (TaskDriveCommand.cs, TaskDeliverCommand.cs, TaskHandbackCommand.cs,
                 // TaskVerifyCommand.cs — adversarial review, cycle 2). Nothing has run yet at
                 // this point in ClaimAndCutAsync — RunDispatched is the last thing it commits —
                 // so there is nothing to check and no run to supersede, only the claim itself to
@@ -300,7 +300,7 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {taskId}'s project no longer exists.");
 
-        // h9k task work directs an operator here by name for exactly this case (TaskWorkCommand's
+        // h9k task drive directs an operator here by name for exactly this case (TaskDriveCommand's
         // ReenterAsync: "worktree ... no longer exists on disk ... h9k task release <id>"), which
         // means the two checks below cannot read run.WorktreePath — it is gone. Reading the
         // worktree's own git status was never possible to skip honestly there (adversarial

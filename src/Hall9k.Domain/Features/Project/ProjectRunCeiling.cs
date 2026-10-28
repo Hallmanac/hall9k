@@ -26,7 +26,7 @@ namespace Hall9k.Domain.Features.Project;
 /// </summary>
 /// <param name="LiveRuns">
 /// The project's live task runs as the measuring node observed them. An interactive claim
-/// (<c>h9k task work</c>, <c>h9k task start</c>) is not among them: those carry the
+/// (<c>h9k task drive</c>, <c>h9k task start</c>) is not among them: those carry the
 /// ceiling-exempt <see cref="System.Guid.Empty"/> node-id sentinel, so they cost zero runs at
 /// the project level exactly as they already do at the node level (Decisions Log #111).
 /// </param>

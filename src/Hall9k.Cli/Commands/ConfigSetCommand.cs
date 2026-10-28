@@ -48,7 +48,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "Log #111) — every value is meaningful, unlike the retired --max-concurrent-agent-sessions, where a "
             + "run's two-lens review cycle meant 3 sessions and 2 sessions both admitted exactly one run. Durable "
             + "here, so an autostart-launched daemon (no shell to export it into) still runs at the ceiling this "
-            + "machine can actually hold. An interactive claim (h9k task work) occupies zero runs and is never "
+            + "machine can actually hold. An interactive claim (h9k task drive) occupies zero runs and is never "
             + "counted against this ceiling.")]
         public int? MaxConcurrentTaskRuns { get; init; }
 
@@ -428,7 +428,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
 
         [CommandOption("--interactive-claim-stale-after-days <DAYS>")]
         [Description(
-            "How many days an interactive claim (h9k task work) can sit untouched before h9k status nudges "
+            "How many days an interactive claim (h9k task drive) can sit untouched before h9k status nudges "
             + "about it, asking whether it is still yours or ready for h9k task handback (OperatingSettings."
             + "DefaultInteractiveClaimStaleAfterDays, default 3). There is no reclaim to configure — the nudge "
             + "is the whole remedy, never a timeout.")]

@@ -14,7 +14,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     // Parallel worktree add/fetch against one repo hits git's internal locks; a per-repo
     // mutex is cleaner than retry loops (Decisions Log #4). In-process only — it used to
     // be enough because the daemon's DI singleton was the only thing in the platform that
-    // ever touched a worktree. h9k task work (adversarial review, cycle 4) now runs a
+    // ever touched a worktree. h9k task drive (adversarial review, cycle 4) now runs a
     // second GitWorktreeManager in the CLI process against the same repository, so the
     // cross-process lock below is what actually serializes the two.
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _repositoryLocks = new();
@@ -654,7 +654,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     /// <summary>
     /// Serializes worktree/fetch operations against one repository both within this process
     /// (the semaphore) and across processes (a lock file dropped in the repository itself):
-    /// h9k task work now runs a second GitWorktreeManager in the CLI process against the same
+    /// h9k task drive now runs a second GitWorktreeManager in the CLI process against the same
     /// repository the daemon's own DI singleton touches, so the in-process semaphore alone no
     /// longer covers every writer (adversarial review, cycle 4).
     /// </summary>
@@ -759,7 +759,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                 // Unbounded on purpose (a holder wedged on a hung fetch still has to release
                 // eventually, and there is no safe value to time this out to), but silent for
                 // the whole wait was the actual defect: before this lock existed, the CLI never
-                // contended for anything the daemon held, so an operator running h9k task work
+                // contended for anything the daemon held, so an operator running h9k task drive
                 // against a repository the daemon's own GitWorktreeManager was mid-fetch on saw
                 // nothing at all print until they gave up and interrupted it (adversarial
                 // review, cycle 4). A periodic line naming the lock file is the minimum needed

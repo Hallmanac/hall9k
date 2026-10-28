@@ -6,7 +6,7 @@ namespace Hall9k.Cli.Commands;
 /// <summary>
 /// The refusal every interactive-claim lever owes a pr-review task's sentinel claim. A pr-review
 /// task's own Claimed+sentinel state is never a human's own interactive claim — <c>h9k task
-/// work</c> and <c>h9k task start</c> both refuse to create one (Decisions Log #99) — it is
+/// drive</c> and <c>h9k task start</c> both refuse to create one (Decisions Log #99) — it is
 /// auto-pr-review's Now-speed deliberate claim (<c>AutoPrReviewEngine.CreateOneAsync</c>), which
 /// reads identically to an attended one on <c>TaskAggregate.IsInteractiveClaim</c>'s own
 /// <see cref="Guid.Empty"/> discriminator.

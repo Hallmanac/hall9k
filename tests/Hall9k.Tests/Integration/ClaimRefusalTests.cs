@@ -25,7 +25,7 @@ namespace Hall9k.Tests.Integration;
 
 /// <summary>
 /// The entry-state refusals and success paths of the three commands that take a claim by hand —
-/// <c>h9k task start</c> (task 8a56af78-h9k), <c>h9k task work</c> (task 688a1ccf-h9k), and
+/// <c>h9k task start</c> (task 8a56af78-h9k), <c>h9k task drive</c> (task 688a1ccf-h9k), and
 /// <c>h9k task delegate</c> (task 15f889e3-h9k, design ruling R6, idea fcaded0b's design rulings,
 /// Take the Wheel epic 9272e514's slice 10) — sharing one container. All three read the dependency
 /// snapshot for a Published task straight off Marten, which is why each is pinned against a real
@@ -33,7 +33,7 @@ namespace Hall9k.Tests.Integration;
 /// own run and worktree off both the store and a real git repository. The three were separate
 /// classes for ten to thirteen tests each, with a byte-identical <c>Git</c>,
 /// <c>CreateRepository</c>, and teardown copied into all three; folding them leaves one of each.
-/// Where <c>h9k task start</c> and <c>h9k task work</c> both cover the same refusal, the two tests
+/// Where <c>h9k task start</c> and <c>h9k task drive</c> both cover the same refusal, the two tests
 /// keep their scenarios and take a <c>_by_task_start</c> / <c>_by_task_work</c> suffix, since one
 /// class cannot hold two methods of one name.
 /// <para>
@@ -89,7 +89,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
     /// The conversion this task (0ac72cb8-h9k) makes to an already-Blocked entry: no longer a
     /// hard refusal on Blocked alone — a <see cref="DomainBusinessRuleException"/> that names the
     /// open blocker and points at <c>--acknowledge-unmet-dependencies</c>, the same shape the
-    /// atomic Published entry's own refusal already had, and the same conversion h9k task work
+    /// atomic Published entry's own refusal already had, and the same conversion h9k task drive
     /// made for its own identical Blocked entry.
     /// </summary>
     [Fact]
@@ -201,7 +201,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// The carry-forward this task adds (design ruling R7), on h9k task start's own Blocked entry
-    /// exactly as h9k task work's identical entry already gets it: once an earlier deliberate claim
+    /// exactly as h9k task drive's identical entry already gets it: once an earlier deliberate claim
     /// already acknowledged this exact blocker and gave the claim back (h9k task handback, landing
     /// Blocked again since the blocker is still on record unmet), a later start of the same
     /// still-open blocker needs no flag and is recorded as relying on the earlier acknowledgment.
@@ -433,7 +433,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
 
         TaskAggregate final = (await verify.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
         final.State.Should().Be(TaskState.Claimed);
-        final.IsInteractiveClaim.Should().BeTrue("the same ceiling-exempt sentinel h9k task work's own claim uses");
+        final.IsInteractiveClaim.Should().BeTrue("the same ceiling-exempt sentinel h9k task drive's own claim uses");
         final.AssignedOwnerId.Should().Be(ownerId);
 
         RunDetails run = (await verify.LoadAsync<RunDetails>(runId, cts.Token))!;
@@ -443,7 +443,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// The atomic Published entry: two events append together (Assigned then Claimed), exactly
-    /// as h9k task work's own atomic entry does, when there is nothing to warn about.
+    /// as h9k task drive's own atomic entry does, when there is nothing to warn about.
     /// </summary>
     [Fact]
     public async Task A_published_task_with_no_open_dependencies_is_assigned_and_claimed_atomically_in_two_events()
@@ -653,7 +653,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
-    /// h9k task start is a third run-dispatch site alongside RunLauncher and TaskWorkCommand
+    /// h9k task start is a third run-dispatch site alongside RunLauncher and TaskDriveCommand
     /// (PLAN.md #129), and used to be the one that never resolved the setting at all — a run it
     /// dispatched always recorded FullPipeline regardless of what the project or node set
     /// (independent pre-PR review, cycle 1, conformance lens). Pinning the project-level override
@@ -795,10 +795,10 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
     /// <summary>
     /// Idea 202383dc, piece C's residual, criterion 1, threaded through this door's own claim
     /// rather than the daemon's: <see cref="Hall9k.Domain.Features.Tasks.Queries.ForeignResumeBranchResolver"/>
-    /// is shared by three callers (<c>DispatchEngine.TryClaimAsync</c>, <c>h9k task work</c>, and
+    /// is shared by three callers (<c>DispatchEngine.TryClaimAsync</c>, <c>h9k task drive</c>, and
     /// this one), but nothing exercised either CLI door's own call into it before this test and its
     /// <c>_by_task_work</c> sibling — <c>DispatchEngineTests</c> only pins the daemon's own claim
-    /// (independent pre-PR review, cycle 2, conformance lens, at TaskWorkCommand.cs:722).
+    /// (independent pre-PR review, cycle 2, conformance lens, at TaskDriveCommand.cs:722).
     /// </summary>
     [Fact]
     public async Task A_foreign_nodes_latest_run_is_resumed_through_the_resolver_by_task_start()
@@ -861,10 +861,10 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
             "ForeignResumeBranchResolver's own answer reached TaskClaimed.ResumesBranch, not a human-requested retry");
     }
 
-    // ── h9k task work ──
+    // ── h9k task drive ──
     /// <summary>
     /// A Published task somebody else has laid hold of (<see cref="TaskAssigneeSet"/>) is not the
-    /// operator's to queue and claim in one append: <c>h9k task start</c> and <c>h9k task work</c> both
+    /// operator's to queue and claim in one append: <c>h9k task start</c> and <c>h9k task drive</c> both
     /// take an unassigned Published task for the operator, and a hold by another owner stops that.
     /// </summary>
     [Theory]
@@ -1176,10 +1176,10 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
-    /// Mirrors <c>TaskHandbackCommand</c>'s own guard and <see cref="TaskWorkCommand.ExecuteAsync"/>'s
+    /// Mirrors <c>TaskHandbackCommand</c>'s own guard and <see cref="TaskDriveCommand.ExecuteAsync"/>'s
     /// pre-launch re-check: once <c>h9k task deliver</c> (or an earlier <c>h9k task handback</c>)
     /// hands a run to the standard pipeline, the task can still read Claimed+interactive for the
-    /// whole review loop, so <see cref="TaskWorkCommand.ReenterAsync"/> is what actually stops a
+    /// whole review loop, so <see cref="TaskDriveCommand.ReenterAsync"/> is what actually stops a
     /// second session from rewriting a worktree the pipeline's own gates and review sessions now
     /// own. No worktree or task-stream setup is needed: <c>ReenterAsync</c> throws on the run's
     /// own <c>State</c> before it ever touches the filesystem or the task's stream.
@@ -1208,7 +1208,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
         }
 
         await using IDocumentSession session = store.LightweightSession();
-        Func<Task> act = () => TaskWorkCommand.ReenterAsync(session, task, force: false, cts.Token);
+        Func<Task> act = () => TaskDriveCommand.ReenterAsync(session, task, force: false, cts.Token);
 
         await act.Should().ThrowAsync<DomainConflictException>()
             .WithMessage("*already AwaitingReview*")
@@ -1221,7 +1221,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
     /// carrying a previously recorded <see cref="RunDetails.InteractiveClaudeSessionId"/> hands it
     /// back as <c>ReenterAsync</c>'s own <c>PreviousClaudeSessionId</c>, which is what the launch
     /// above attempts <c>--resume</c> on before ever minting a fresh session. Nothing else on this
-    /// branch pins that one field of the returned tuple — <see cref="TaskWorkResumeArgumentsTests"/>
+    /// branch pins that one field of the returned tuple — <see cref="TaskDriveResumeArgumentsTests"/>
     /// pins only the argument policy once a session id is already in hand, never the wiring that
     /// hands it to that policy in the first place (conformance review, cycle 1).
     /// </summary>
@@ -1261,7 +1261,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
 
         await using IDocumentSession session = store.LightweightSession();
         (Guid resultRunId, string resultWorktreePath, _, _, bool resumesPreviousWork, _, Guid? previousClaudeSessionId) =
-            await TaskWorkCommand.ReenterAsync(session, task, force: false, cts.Token);
+            await TaskDriveCommand.ReenterAsync(session, task, force: false, cts.Token);
 
         resultRunId.Should().Be(runId);
         resultWorktreePath.Should().Be(worktreePath);
@@ -1270,7 +1270,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
-    /// The Queued entry's own success path through <see cref="TaskWorkCommand.ClaimAndCutAsync"/>
+    /// The Queued entry's own success path through <see cref="TaskDriveCommand.ClaimAndCutAsync"/>
     /// is unchanged by the Published entry this branch adds (the <c>else if</c> restructure keeps
     /// it reachable exactly as before), but nothing pinned that claim used to append exactly one
     /// event — with no <see cref="TaskAssigned"/> beside it, since a Queued task is already
@@ -1314,7 +1314,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
             // connection off Hall9kDatabase.Resolve rather than this fixture (see the class-level
             // comment above), so it has to be pointed at the fixture for the one call that reaches it.
             using ScopedConnectionString scope = new(postgres.ConnectionString);
-            await TaskWorkCommand.ClaimAndCutAsync(
+            await TaskDriveCommand.ClaimAndCutAsync(
                 store, session, task, fence, context, DomainId.New(),
                 SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
                 acknowledgeUnmetDependencies: false, trackerClaimGate: null, cts.Token);
@@ -1366,7 +1366,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
                 BranchNameTemplate = BranchNameTemplate.Default,
             });
             seed.Events.StartStream<TaskAggregate>(taskId, TaskSeed.Dispatchable(
-                TaskDecider.Add(taskId, projectId, "Resume a foreign node's own latest run via task work",
+                TaskDecider.Add(taskId, projectId, "Resume a foreign node's own latest run via task drive",
                     ["it is done"], TaskType.Chore, null, null, null, WorkClaimNow, ownerId),
                 ownerId, WorkClaimNow));
             seed.Store(new RunDetails
@@ -1388,7 +1388,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
             BootstrapContext context = new(ownerId, DomainId.New(), DomainId.New());
 
             using ScopedConnectionString scope = new(postgres.ConnectionString);
-            (_, _, string branch, _, bool resumesPreviousWork, _, _) = await TaskWorkCommand.ClaimAndCutAsync(
+            (_, _, string branch, _, bool resumesPreviousWork, _, _) = await TaskDriveCommand.ClaimAndCutAsync(
                 store, session, task, fence, context, DomainId.New(),
                 SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
                 acknowledgeUnmetDependencies: false, trackerClaimGate: null, cts.Token);
@@ -1460,7 +1460,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
             Guid runId;
             using (new ScopedConnectionString(postgres.ConnectionString))
             {
-                (runId, _, _, _, _, _, _) = await TaskWorkCommand.ClaimAndCutAsync(
+                (runId, _, _, _, _, _, _) = await TaskDriveCommand.ClaimAndCutAsync(
                     store, session, task, fence, context, DomainId.New(),
                     SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
                     acknowledgeUnmetDependencies: false, trackerClaimGate: null, cts.Token);
@@ -1480,8 +1480,8 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// The atomic Published entry's own headline behavior (task 688a1ccf-h9k), driven through
-    /// <see cref="TaskWorkCommand.ClaimAndCutAsync"/> itself rather than the pure
-    /// <see cref="TaskWorkCommand.PrepareInteractiveClaimFromPublished"/> helper both the
+    /// <see cref="TaskDriveCommand.ClaimAndCutAsync"/> itself rather than the pure
+    /// <see cref="TaskDriveCommand.PrepareInteractiveClaimFromPublished"/> helper both the
     /// conformance and adversarial review passes point at
     /// (<see cref="ClaimAndLeaseArbitrationTests"/> already proves the helper's own math and the
     /// race arbitration; nothing before this pinned the production wiring around it — the
@@ -1533,7 +1533,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
             // success path rings the doorbell, which resolves off Hall9kDatabase.Resolve
             // rather than this fixture.
             using ScopedConnectionString scope = new(postgres.ConnectionString);
-            await TaskWorkCommand.ClaimAndCutAsync(
+            await TaskDriveCommand.ClaimAndCutAsync(
                 store, session, task, fence, context, DomainId.New(),
                 SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
                 acknowledgeUnmetDependencies: false, trackerClaimGate: null, cts.Token);
@@ -1556,9 +1556,9 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// The dependency refusal the Published entry's own branch introduces
-    /// (<see cref="TaskWorkCommand.ClaimAndCutAsync"/> loads the dependency snapshot for a
+    /// (<see cref="TaskDriveCommand.ClaimAndCutAsync"/> loads the dependency snapshot for a
     /// Published task before either event is built), driven through <c>ClaimAndCutAsync</c>
-    /// itself rather than <see cref="TaskWorkCommand.PrepareInteractiveClaimFromPublished"/>
+    /// itself rather than <see cref="TaskDriveCommand.PrepareInteractiveClaimFromPublished"/>
     /// directly, so this also pins the real <see cref="Hall9k.Domain.Features.Tasks.Queries.TaskDependencyQuery"/>
     /// read the earlier refusal tests in this class never exercise (they hand-build the
     /// <see cref="TaskDependency"/> list themselves).
@@ -1637,7 +1637,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
         // the acknowledged-claim tests, which do reach that path, do not need their own copy of
         // this dance.
         using ScopedConnectionString scope = new(postgres.ConnectionString);
-        await TaskWorkCommand.ClaimAndCutAsync(
+        await TaskDriveCommand.ClaimAndCutAsync(
             store, session, task, fence, context, DomainId.New(),
             SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
             acknowledgeUnmetDependencies, trackerClaimGate: null, cancellationToken);
@@ -1810,8 +1810,8 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// Orchestrator ruling on cycle 2's own medium finding: the refusal must not send the operator
-    /// to a command that cannot actually fix the problem it names. h9k task work re-enters this
-    /// exact claim (<see cref="Hall9k.Cli.Commands.TaskWorkCommand.ReenterAsync"/>) without
+    /// to a command that cannot actually fix the problem it names. h9k task drive re-enters this
+    /// exact claim (<see cref="Hall9k.Cli.Commands.TaskDriveCommand.ReenterAsync"/>) without
     /// appending any event, so it can never turn <see cref="TaskAggregate.InteractiveModeEnabled"/>
     /// back on — only a fresh <c>TaskClaimed</c> does that (<c>TaskRevised.ClearInteractiveMode</c>'s
     /// own doc). The refusal instead has to name the release-then-reclaim path (only possible on an

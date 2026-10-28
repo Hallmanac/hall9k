@@ -24,13 +24,13 @@ internal static class InteractiveSessionLiveness
 {
     /// <summary>
     /// Carries the claiming run's id into the launched Claude Code process's own environment
-    /// (<c>TaskWorkCommand.LaunchInteractiveClaudeAsync</c>), inherited by every descendant it
+    /// (<c>TaskDriveCommand.LaunchInteractiveClaudeAsync</c>), inherited by every descendant it
     /// spawns. A nested <c>h9k task verify</c> invoked from inside that very session reads it back
     /// to recognise itself — the one case <see cref="EnsureNotAttachedElsewhere"/> cannot
     /// otherwise tell apart from a second terminal, since that session is blocked waiting on the
     /// command it just started rather than racing it (conformance review, cycle 2). Checked by
     /// callers for whom self-invocation is actually safe rather than built into this guard itself:
-    /// <c>h9k task work</c>'s own re-entry spawns a second, concurrent session rather than
+    /// <c>h9k task drive</c>'s own re-entry spawns a second, concurrent session rather than
     /// blocking on this one, so the same exemption there would open the collision this guard
     /// exists to prevent.
     /// </summary>
@@ -65,7 +65,7 @@ internal static class InteractiveSessionLiveness
     /// unobservable cross-machine case; a session this machine can itself confirm is still alive
     /// always refuses, force or not. <paramref name="quiet"/> suppresses only the cross-machine
     /// --force notice below, for a caller that already showed this exact notice for this same run
-    /// earlier in the same command and would otherwise print it twice (h9k task work's own
+    /// earlier in the same command and would otherwise print it twice (h9k task drive's own
     /// pre-launch re-check, right after ReenterAsync's identical check — conformance review,
     /// cycle 6). The return value tells such a caller whether the notice fired, so it can pass
     /// <paramref name="quiet"/> on to its own repeat check.
@@ -124,7 +124,7 @@ internal static class InteractiveSessionLiveness
         bool selfInvocation = IsSelfInvocation(run);
 
         // AgentRole.Interactive is recorded for three genuinely different shapes of process — an
-        // operator's own attached terminal (h9k task work, SessionRoleName.InteractiveClaim), and
+        // operator's own attached terminal (h9k task drive, SessionRoleName.InteractiveClaim), and
         // two headless, detached ones dispatched under the identical Guid.Empty sentinel
         // (h9k task start, and h9k task delegate's own contractor — both SessionRoleName.Build) —
         // so "exit it first (Ctrl+D or /exit)" is only ever true of the first. Matched against this
@@ -177,7 +177,7 @@ internal static class InteractiveSessionLiveness
     /// <para>
     /// Two independent signals, either sufficient on its own: <see cref="InteractiveRunEnvironmentVariable"/>
     /// is the direct-launch path's own — set on the child's environment at <c>Process.Start()</c>
-    /// time (<c>TaskWorkCommand.LaunchInteractiveClaudeAsync</c>), inherited by every descendant.
+    /// time (<c>TaskDriveCommand.LaunchInteractiveClaudeAsync</c>), inherited by every descendant.
     /// A self-registered session was never spawned by this platform, so that variable was never
     /// injected into it; for that path, <see cref="ClaudeCodePidEnvironmentVariable"/> — read
     /// straight from Claude Code's own environment, not something hall9k set — matching this run's
@@ -226,7 +226,7 @@ internal static class InteractiveSessionLiveness
 
         // A deliberate h9k task start claim records its InteractiveSessionStarted under the
         // identical AgentRole.Interactive this check already filtered on above (TaskStartCommand
-        // mirrors h9k task work's own append exactly), so a bare role-plus-pid match alone cannot
+        // mirrors h9k task drive's own append exactly), so a bare role-plus-pid match alone cannot
         // tell the two apart. Excluding it here matters because that session's own prompt
         // (isDeliberateHeadlessStart) never received AppendSelfDeliveryRule and states deliver/
         // verify refuse unconditionally from inside it, so letting CLAUDE_PID wave a start-it-mine
@@ -236,13 +236,13 @@ internal static class InteractiveSessionLiveness
         // TaskPhaseComposer already uses for the identical distinction and for the identical
         // reason: run.SessionName is not a stable "which claim kind is this" tag, it is the most
         // recently recorded session's own name, and h9k task register-session (this same guard's
-        // other caller, once an operator's own h9k task work re-enters a start-it-mine claim)
+        // other caller, once an operator's own h9k task drive re-enters a start-it-mine claim)
         // deliberately overwrites it with that session's real, un-role-shaped Claude Code name —
         // so requiring a positive InteractiveClaim-suffix match here would wrongly exclude the
         // ordinary, fully-attended prompt-handoff session the moment it registers itself. Once
         // re-entry has touched it, the suffix reads as something other than "-build" and this
         // exemption correctly applies again, because a re-entered session's own prompt always
-        // carries AppendSelfDeliveryRule too (h9k task work is isInteractive: true on every path).
+        // carries AppendSelfDeliveryRule too (h9k task drive is isInteractive: true on every path).
         if (run.SessionName.EndsWith("-" + SessionRoleName.Build, StringComparison.Ordinal))
         {
             return false;
@@ -255,7 +255,7 @@ internal static class InteractiveSessionLiveness
 
     /// <summary>
     /// Mirrors <c>Hall9k.Daemon.ProcessManagement.ProcessManagerBase.ReadStartedAt</c> exactly, and
-    /// shared by <c>TaskWorkCommand</c> (a launch it just performed) and
+    /// shared by <c>TaskDriveCommand</c> (a launch it just performed) and
     /// <see cref="TaskRegisterSessionCommand"/> (a process it is only just learning about) rather
     /// than duplicated a second time in the same project: <see cref="DateTimeOffset.MinValue"/> is
     /// recorded instead of a plausible-looking guess when the process's own start time cannot be

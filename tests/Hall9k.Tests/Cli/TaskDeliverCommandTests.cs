@@ -23,7 +23,7 @@ public sealed class TaskDeliverCommandTests : IDisposable
     {
         TaskDeliverCommand.HeadlessResult result = TaskDeliverCommand.ReadHeadlessResult(_runDirectory);
 
-        result.Handoff.Should().BeNull("an attended h9k task work claim never writes a stream.jsonl at all");
+        result.Handoff.Should().BeNull("an attended h9k task drive claim never writes a stream.jsonl at all");
         result.Usage.Should().BeNull("there is no result line to have measured usage from");
     }
 

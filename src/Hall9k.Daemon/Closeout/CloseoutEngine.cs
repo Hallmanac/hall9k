@@ -864,7 +864,7 @@ public sealed class CloseoutEngine(
         // check ever ran, closing the run record the criterion says must stay open for whichever
         // node still holds the task (independent pre-PR review, this branch's fix cycle). Guid.Empty
         // is never "held elsewhere": it is the interactive/deliberate self-claim sentinel (h9k task
-        // work, h9k task start — TaskAggregate.IsInteractiveClaim's own discriminator), inherently
+        // drive, h9k task start — TaskAggregate.IsInteractiveClaim's own discriminator), inherently
         // single-node by construction, and the ledger never carries a holder write for one at all
         // (DispatchEngine's own claim path is the only writer).
         if (task.HolderNodeId is { } holderNodeId && holderNodeId != Guid.Empty && holderNodeId != node.NodeId)
@@ -4205,7 +4205,7 @@ public sealed class CloseoutEngine(
     /// on <paramref name="project"/>'s own repository — the same lock every worktree-add/fetch
     /// operation on that repository already serializes behind (Decisions Log #4, adversarial
     /// review cycle 4), so this path cannot lose a ref update to, or clobber, a dispatch or an
-    /// operator's <c>h9k task work</c> racing the same repository (independent pre-PR review,
+    /// operator's <c>h9k task drive</c> racing the same repository (independent pre-PR review,
     /// cycle 1, both lenses).
     /// </para>
     /// <para>

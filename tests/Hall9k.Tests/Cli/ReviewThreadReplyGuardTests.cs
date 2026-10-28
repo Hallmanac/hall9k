@@ -430,7 +430,7 @@ public sealed class ReviewThreadReplyGuardTests
     /// Every headless launch carries the hook, not only follow-ups (task: a dispatched session
     /// never speaks to a person at the top level of a pull request on its own): the CLI's own
     /// <c>h9k task start</c> and <c>h9k task delegate</c> write what this returns. The interactive
-    /// <c>h9k task work</c> session, where the operator is present, does not.
+    /// <c>h9k task drive</c> session, where the operator is present, does not.
     /// </summary>
     [Fact]
     public void Headless_cli_launches_carry_the_hook_and_the_interactive_claim_does_not()
@@ -440,7 +440,7 @@ public sealed class ReviewThreadReplyGuardTests
         headless.RootElement.GetProperty("effortLevel").GetString().Should().Be("high");
         headless.RootElement.GetProperty("hooks").GetProperty("PreToolUse").GetArrayLength().Should().Be(1);
 
-        TaskWorkCommand.SettingsContent().Should().NotContain("reply-guard").And.NotContain("hooks");
+        TaskDriveCommand.SettingsContent().Should().NotContain("reply-guard").And.NotContain("hooks");
     }
 
     private static string Payload(string tool, string command) => JsonSerializer.Serialize(new

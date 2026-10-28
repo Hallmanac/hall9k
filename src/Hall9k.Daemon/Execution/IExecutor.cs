@@ -54,7 +54,7 @@ namespace Hall9k.Daemon.Execution;
 /// <c>gh pr comment</c> was named as a deliberate hole.
 /// </para>
 /// <para>
-/// Not guarded: the interactive <c>h9k task work</c> session, where the operator is present, and
+/// Not guarded: the interactive <c>h9k task drive</c> session, where the operator is present, and
 /// the daemon's own provider writes (the pull-request opener, re-requests, the merge note and
 /// closeout comments), which run in the daemon rather than in a session's shell. The hook fails
 /// open and reads command text, so it is not a sandbox: a client library that spells no recognized

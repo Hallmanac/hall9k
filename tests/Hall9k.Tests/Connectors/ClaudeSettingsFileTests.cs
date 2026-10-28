@@ -11,8 +11,8 @@ namespace Hall9k.Tests.Connectors;
 
 /// <summary>
 /// Pins the one settings-file shape every dispatched session and every interactive
-/// <c>h9k task work</c> claim launches with (<c>ClaudeExecutor</c> builds it from the live
-/// <c>DaemonOptions.VerifyGateTimeout</c>; <c>TaskWorkCommand</c>, unable to reach that option
+/// <c>h9k task drive</c> claim launches with (<c>ClaudeExecutor</c> builds it from the live
+/// <c>DaemonOptions.VerifyGateTimeout</c>; <c>TaskDriveCommand</c>, unable to reach that option
 /// at all, builds it from <see cref="ClaudeSettingsFile.DefaultCommandTimeout"/>): the
 /// co-authored-by suppression (PLAN.md §6.6) and, since the 2026-09-01 finding, the
 /// command-timeout headroom that lets a foreground gate run survive without a session needing to
@@ -40,16 +40,16 @@ public sealed class ClaudeSettingsFileTests
     public void The_default_command_timeout_matches_the_platforms_own_gate_timeout_default()
     {
         // ClaudeSettingsFile.DefaultCommandTimeout is the fallback a caller with no live-configured
-        // ceiling in reach (TaskWorkCommand, which cannot reference Hall9k.Daemon at all) falls back
+        // ceiling in reach (TaskDriveCommand, which cannot reference Hall9k.Daemon at all) falls back
         // to — it mirrors DaemonOptions.VerifyGateTimeout's own default. Hall9k.Daemon does
         // reference Hall9k.Connectors, so collapsing the two into one constant is possible in that
         // direction; it is declined deliberately (the gate ceiling should not be defined by a
         // Claude Code settings type), which is what leaves this test as the thing holding them
         // equal.
         ClaudeSettingsFile.DefaultCommandTimeout.Should().Be(new DaemonOptions().VerifyGateTimeout,
-            "TaskWorkCommand builds its settings file from this default when VerifyGateTimeout's " +
+            "TaskDriveCommand builds its settings file from this default when VerifyGateTimeout's " +
             "live value is out of reach; a drift here silently reopens the 2026-09-01 finding for " +
-            "an interactive h9k task work claim on any machine that never overrode the option");
+            "an interactive h9k task drive claim on any machine that never overrode the option");
     }
 
     [Fact]

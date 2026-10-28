@@ -19,7 +19,7 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// without the tree ever being checked at all (independent pre-PR review, cycle 1, both lenses:
 /// a blanket "never advise deliver" contradicted the two variants where deliver does not, in
 /// fact, refuse). Deliberately does not move <see cref="RunState"/>: the run stays exactly where
-/// a live <c>h9k task work</c>/<c>h9k task handback</c>/<c>h9k task release</c> already expects
+/// a live <c>h9k task drive</c>/<c>h9k task handback</c>/<c>h9k task release</c> already expects
 /// it (Dispatched or Running), so none of those three levers needs a widened guard to keep
 /// working once this is recorded.
 /// </summary>

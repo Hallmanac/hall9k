@@ -22,7 +22,7 @@ public sealed record AgentRole
     public static readonly AgentRole Synthesis = new("Synthesis");
     public static readonly AgentRole Refinement = new("Refinement");
     /// <summary>
-    /// An operator's own attached Claude Code session (h9k task work), not a spawned agent —
+    /// An operator's own attached Claude Code session (h9k task drive), not a spawned agent —
     /// its own role so a reader can tell an interactive claim's process from a headless one's on
     /// <see cref="Projections.RunDetails.ActiveSessions"/> rather than conflating the two under Build.
     /// </summary>

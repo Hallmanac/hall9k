@@ -46,7 +46,7 @@ public sealed class AttentionSurfaceTests
         row.Attention.NeedsYou.Should().BeTrue();
         row.Attention.Cause.Should().Be(run.ExitedUnattendedReason, "the recorded state is quoted, never re-guessed");
         row.Attention.Lever.Should().NotContain("h9k task deliver", "deliver refuses the same check this reason already failed");
-        row.Attention.Lever.Should().Contain("h9k task work");
+        row.Attention.Lever.Should().Contain("h9k task drive");
         row.Attention.Lever.Should().Contain("h9k task handback");
         row.Attention.Lever.Should().Contain("h9k task release");
     }
@@ -75,7 +75,7 @@ public sealed class AttentionSurfaceTests
 
         row.Attention.NeedsYou.Should().BeTrue();
         row.Attention.Lever.Should().Contain("h9k task deliver", "the tree was never checked, so deliver may well succeed");
-        row.Attention.Lever.Should().Contain("h9k task work");
+        row.Attention.Lever.Should().Contain("h9k task drive");
         row.Attention.Lever.Should().Contain("h9k task handback");
         row.Attention.Lever.Should().Contain("h9k task release");
     }

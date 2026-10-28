@@ -8,7 +8,7 @@ namespace Hall9k.Tests.Cli;
 
 /// <summary>
 /// <see cref="HeadlessLaunch"/> against a real, harmless stand-in for <c>claude</c> (a shell
-/// script pointed at through <c>HALL9K_CLAUDE_PATH</c>, exactly as h9k task work's own
+/// script pointed at through <c>HALL9K_CLAUDE_PATH</c>, exactly as h9k task drive's own
 /// <c>ClaudeBinary()</c> resolves it), since a real launch is otherwise unobservable from a test
 /// with no Claude Code install to hand. Unix-only: <see cref="HeadlessLaunch"/> dispatches to a
 /// different, cmd.exe-based implementation on Windows this repository's CI machine cannot exercise

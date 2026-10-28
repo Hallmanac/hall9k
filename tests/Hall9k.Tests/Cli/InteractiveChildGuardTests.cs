@@ -6,7 +6,7 @@ namespace Hall9k.Tests.Cli;
 
 /// <summary>
 /// Program.cs's global Ctrl-C handler reads <see cref="InteractiveChildGuard.Attached"/> to
-/// suppress its own escalate-to-terminate window while h9k task work's attached Claude Code
+/// suppress its own escalate-to-terminate window while h9k task drive's attached Claude Code
 /// child is alive (adversarial review, cycle 4) — so the flag's own Enter/Dispose pairing is
 /// what that suppression rests on.
 /// </summary>

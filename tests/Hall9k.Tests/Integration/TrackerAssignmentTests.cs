@@ -1193,7 +1193,7 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
         await AbandonAsync(store, taskId, cts.Token);
     }
 
-    // ── h9k task work / h9k task start: refuse, exit 70 ───────────────────────────────────────
+    // ── h9k task drive / h9k task start: refuse, exit 70 ───────────────────────────────────────
 
     /// <summary>
     /// The doors that start work now refuse, with the sentence <c>h9k task assign</c> warns with
@@ -1568,7 +1568,7 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
         StreamState fence = (await session.Events.FetchStreamStateAsync(taskId, cancellationToken))!;
         TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
             taskId, version: fence.Version, token: cancellationToken))!;
-        await TaskWorkCommand.ClaimAndCutAsync(
+        await TaskDriveCommand.ClaimAndCutAsync(
             store, session, task, fence, context, DomainId.New(),
             SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
             acknowledgeUnmetDependencies: false, gate, cancellationToken);

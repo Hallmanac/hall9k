@@ -9,7 +9,7 @@ namespace Hall9k.Connectors.Prompts;
 /// gets timeout headroom sized for this platform's own gates rather than Claude Code's stock
 /// defaults. Shared between the daemon's headless spawn
 /// (<c>Hall9k.Daemon.Execution.ClaudeExecutor</c>) and an operator's interactive claim
-/// (<c>h9k task work</c>) so both settings reach a session identically regardless of who
+/// (<c>h9k task drive</c>) so both settings reach a session identically regardless of who
 /// launched it — the CLI cannot reference <c>Hall9k.Daemon</c>, so this is the shared home
 /// both sides read the content from, the same pattern <see cref="WorkPromptBuilder"/> already
 /// uses for the prompt itself.
@@ -40,8 +40,8 @@ namespace Hall9k.Connectors.Prompts;
 /// default via its own explicit per-command timeout on a day the suite runs long — the platform
 /// sizes the floor; the ceiling stays a session's own call. <see cref="DefaultCommandTimeout"/>
 /// (30 minutes, mirroring <c>DaemonOptions.VerifyGateTimeout</c>'s own default) is what a caller
-/// with no live option in reach falls back to — today, only <c>h9k task work</c>
-/// (<c>TaskWorkCommand</c>, in <c>Hall9k.Cli</c>), which structurally cannot reference
+/// with no live option in reach falls back to — today, only <c>h9k task drive</c>
+/// (<c>TaskDriveCommand</c>, in <c>Hall9k.Cli</c>), which structurally cannot reference
 /// <c>Hall9k.Daemon</c> at all (Reference graph: Cli -> Domain + Connectors). That the platform's
 /// 30 minutes is written down more than once is a choice about which project owns the number
 /// rather than a reference the compiler forbids — see <see cref="DefaultCommandTimeout"/> for
@@ -50,7 +50,7 @@ namespace Hall9k.Connectors.Prompts;
 /// An operator who raises <c>VerifyGateTimeout</c> past 30 minutes therefore gets the raised
 /// ceiling on every headless dispatch. Two CLI surfaces stay unmoved by that setting, because
 /// neither can reach <c>DaemonOptions</c>: a foreground gate run inside an interactive
-/// <c>h9k task work</c> claim still falls back to the 30-minute <see cref="DefaultCommandTimeout"/>
+/// <c>h9k task drive</c> claim still falls back to the 30-minute <see cref="DefaultCommandTimeout"/>
 /// above, and <c>h9k task verify</c>'s own gate timeout (<c>TaskVerifyCommand</c>, a separate
 /// hardcoded 30-minute <c>CancelAfter</c> on the gate process itself, not a
 /// <see cref="Build"/> caller at all) stays pinned regardless of the option.
@@ -84,7 +84,7 @@ public static class ClaudeSettingsFile
     /// <see cref="ReviewThreadReplyGuardHook"/>. True for every headless session: the daemon's
     /// (<c>ClaudeExecutor</c> sets it on the ordinary settings file for fresh builds and follow-ups
     /// alike) and the CLI's own headless launches (<c>h9k task start</c>, <c>h9k task delegate</c>).
-    /// False for the interactive <c>h9k task work</c> session, where the operator is present, whose
+    /// False for the interactive <c>h9k task drive</c> session, where the operator is present, whose
     /// settings are byte-for-byte what they were. The default is false so a caller has to choose.
     /// </param>
     /// <param name="effort">
@@ -304,7 +304,7 @@ public static class ClaudeSettingsFile
     /// actually reaches for — and it is not a sandbox, because a command spelled around the
     /// prefix (<c>git -C &lt;path&gt; push</c>) does not match it, and
     /// <c>--dangerously-skip-permissions</c> voids the whole engine (which is why the lap's own
-    /// handoff never prints that flag, unlike <c>h9k task work</c>'s, whose project setting can
+    /// handoff never prints that flag, unlike <c>h9k task drive</c>'s, whose project setting can
     /// ask for it). The honest enforcement story stays node-signed authorship in the P2P identity
     /// layer (PLAN.md §16 #38-#58).
     /// </para>

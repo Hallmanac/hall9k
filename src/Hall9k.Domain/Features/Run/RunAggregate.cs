@@ -994,7 +994,7 @@ public sealed class RunAggregate
     /// <summary>The operator's Claude Code session id, from the most recent <see cref="InteractiveSessionStarted"/>.</summary>
     public Guid? InteractiveClaudeSessionId { get; private set; }
 
-    /// <summary>How many interactive attach/detach cycles this run has recorded (h9k task work, held and re-entered).</summary>
+    /// <summary>How many interactive attach/detach cycles this run has recorded (h9k task drive, held and re-entered).</summary>
     public int InteractiveSessionCount { get; private set; }
 
     public void Apply(RunDispatched @event)

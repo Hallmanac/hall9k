@@ -199,7 +199,7 @@ another member is the assignee; `--assign` is refused for one minor release with
 still does and `queue` puts it back. `unassign <id>` lets go of the hold: on a queued task it dequeues and
 clears the assignee in one append, and on a Draft or a Published task that is not queued it clears the
 assignee and the task falls back to its creator. `release --unassign` and the pre-flight park also leave
-a task Published with its assignee kept. `start`, `work` and `publish --queue` refuse a task another owner
+a task Published with its assignee kept. `start`, `drive` and `publish --queue` refuse a task another owner
 holds. Because a node that predates these verbs still treats `assign` as the go signal and replays a dequeue
 as a full unassign, every node of every member must be updated before anyone relies on `assign` meaning
 hold, hands off to another member, or dequeues across members: a node that does not know the assignee
@@ -677,7 +677,7 @@ tool the session has: the reply and review routes inside a thread, and now the t
 (`gh pr comment`, `gh issue comment`, a write to the issue-comment REST endpoint, and the GraphQL
 comment mutations), so the sanctioned route is the only one left. A search pattern or a commit
 message that only names one of them is not refused, and neither is a read. The interactive
-`h9k task work` session, where you are present, does not carry it. The guard reads command text and
+`h9k task drive` session, where you are present, does not carry it. The guard reads command text and
 fails open, so it is a refusal of the ordinary routes rather than a sandbox.
 
 ### The claim gate
@@ -699,7 +699,7 @@ snapshot a task's adoption took is untouched. A GitHub issue may carry several a
 being among them passes.
 
 Every claim door re-checks. The dispatcher leaves a refused task Queued and says why once per
-episode in the daemon log; `h9k task work` and `h9k task start` refuse with the same wording and
+episode in the daemon log; `h9k task drive` and `h9k task start` refuse with the same wording and
 exit 70. `h9k task queue` warns on stderr — naming who holds the item, or that nobody does, with
 its link — and queues anyway, because the tracker is the go signal and the task is meant to wait
 in the queue until it turns green. A queued task's own line on `h9k status`, `h9k task show` and
@@ -788,10 +788,10 @@ guard working as intended, not a bug to route around. On a project tracked under
 
 ### Working a task interactively
 
-`h9k task work <id> [--direct-launch] [--acknowledge-unmet-dependencies] | register-session | verify | deliver | delegate | handback | release`
+`h9k task drive <id> [--direct-launch] [--acknowledge-unmet-dependencies] | register-session | verify | deliver | delegate | handback | release`
 
 An operator can work a Published, Queued, or already-Blocked task in their own terminal instead of dispatching it
-headless (Decisions Log #122). On a Published task assigned to nobody, `work` queues it for the
+headless (Decisions Log #122). On a Published task assigned to nobody, `drive` queues it for the
 operator's own owner and claims it interactively in one atomic event append: the task is never
 observably Queued in between, so the dispatcher can never win the race to it. An unmet
 dependency — whether just discovered here or already sitting Blocked from an ordinary
@@ -803,16 +803,16 @@ blockers is honored without asking again, and `h9k task show` names whether a cl
 acknowledgment was given fresh or carried forward from an earlier one (design ruling R7). `h9k task
 queue` and `h9k task publish --queue` are unchanged and remain the headless dispatch triggers —
 edges still gate automatic dispatch exactly as before; only this deliberate human claim gets the
-warn-and-proceed path. Either way, `work` cuts the same branch and worktree headless dispatch
+warn-and-proceed path. Either way, `drive` cuts the same branch and worktree headless dispatch
 would, assembles the prompt through the same code path (its working rules swapped for an attached
 operator) — and by default prints the worktree, the branch, and that prompt for the operator to
 paste into a Claude Code session started anywhere, rather than launching one itself. The pasted
 session's first act is `register-session`, which records its own process identity (from
 `CLAUDE_PID`) against the claim; `--direct-launch` keeps the old behavior (a regular interactive
-Claude Code session `work` launches and waits on itself) for one release, and re-running `work`
+Claude Code session `drive` launches and waits on itself) for one release, and re-running `drive`
 under it resumes the most recently recorded session's own conversation (falling back to a fresh
 session, announced, only when the recorded one cannot be resumed). The claim is held by the human,
-not a process either way, so closing the terminal is a normal way to leave and re-running `work`
+not a process either way, so closing the terminal is a normal way to leave and re-running `drive`
 re-enters the same worktree — by default with a fresh prompt. From there, `verify` runs the
 project's gates on demand, `deliver` pushes the branch and hands the claim into the standard
 delivery pipeline, `delegate <id> --note "<text>"` dispatches a headless build contractor onto this
@@ -830,21 +830,21 @@ the queue-first marker so the next free dispatch slot takes the task regardless 
 `h9k task start <id> [--acknowledge-unmet-dependencies]`
 
 `start` dispatches a Published, Queued, or already-Blocked task on the spot, headless, instead of waiting on the
-dispatch queue or working it interactively. It reuses `work`'s own claim shape exactly — the same
+dispatch queue or working it interactively. It reuses `drive`'s own claim shape exactly — the same
 ceiling-exempt sentinel `NodeId`, so every lever above (`verify`, `deliver`, `handback`, `release`,
-the stale-claim nudge, and re-entering with `work` itself) accepts a start-it-mine claim on the
+the stale-claim nudge, and re-entering with `drive` itself) accepts a start-it-mine claim on the
 identical terms an interactive one already gets — but launches the
 agent headless and detached (`claude -p`) under the `<task-shortid>-build` name, addressable on the
 session mesh, rather than attached to the caller's terminal, and returns as soon as the process is
-confirmed alive rather than waiting for it to finish. Shares `work`'s own warn-then-acknowledge
+confirmed alive rather than waiting for it to finish. Shares `drive`'s own warn-then-acknowledge
 shape for an unmet dependency, on a Published task and on an already-Blocked one alike (a task
 already sitting Blocked from an ordinary `h9k task queue`, or from a handed-back/retried
 deliberate claim): the platform names every open blocker, and
 `--acknowledge-unmet-dependencies` is the human's recorded override to start it anyway. Not needed
 twice: an acknowledgment this task already carries from an earlier claim on the same still-open
-blockers is honored without asking again, whichever of `start` or `work` gave it. Refused otherwise
+blockers is honored without asking again, whichever of `start` or `drive` gave it. Refused otherwise
 on Draft, a pr-review task, a reopened task's follow-up branch, and any task that already carries a
-live claim; there is no re-entry path the way `work` has one — a fresh claim on an already-Blocked
+live claim; there is no re-entry path the way `drive` has one — a fresh claim on an already-Blocked
 task is exactly what its Blocked entry is, not a re-entry. Giving the claim back (`handback`,
 `release`, `retry`, or `pr resolve` reopening it) lands the task on Blocked rather than Queued when
 the acknowledged dependency is still open, since only `h9k task queue` clears that snapshot — and
@@ -1400,7 +1400,7 @@ How prose an agent composes for people has to read on this project. The text is 
 into every prompt that asks a session to write something a person reads under your login: a pull
 request's title and body, the summary comment and the thread replies a review-feedback lap writes,
 the note a review lap drafts for `h9k pr approve` or `h9k pr request-changes`, and an attended
-`h9k task work` session's own commit messages and drafts. `h9k project show` prints it, and
+`h9k task drive` session's own commit messages and drafts. `h9k project show` prints it, and
 `default` (or an empty value) restores the platform's own, which is: no em dashes (U+2014), full
 sentences over telegraphic fragments, and no AI attribution such as "Generated with Claude" or a
 Co-Authored-By trailer.
@@ -1444,9 +1444,9 @@ h9k project prompt-addendum remove <project> <builder>
 
 A team's own house guidance for one shipped prompt builder, set once and spliced into that builder's
 every future prompt after its rules section, never replacing or referenced by any of the platform's
-own prose: `work` (`h9k task work`, and also the daemon's own fresh-dispatch build run — a task with
+own prose: `work` (`h9k task drive`, and also the daemon's own fresh-dispatch build run — a task with
 no retry branch to resume composes through the identical `WorkPromptBuilder`, so a headless build the
-daemon starts on its own carries this addendum too, not only an interactive `h9k task work`),
+daemon starts on its own carries this addendum too, not only an interactive `h9k task drive`),
 `review-lap` (`h9k pr review`), `agent` (every daemon-dispatched review and lifecycle prompt
 `AgentPromptBuilder` composes that carries project context — follow-up, review, review-fix, and
 rebase; its five purely mechanical retry/recovery builders carry no project context today), and

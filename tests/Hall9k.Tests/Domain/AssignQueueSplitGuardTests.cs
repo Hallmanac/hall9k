@@ -22,7 +22,7 @@ public sealed partial class AssignQueueSplitGuardTests
     [
         (Path.Combine("Hall9k.Cli", "Commands", "TaskAssignCommand.cs"), 1),
         (Path.Combine("Hall9k.Cli", "Commands", "TaskStartCommand.cs"), 1),
-        (Path.Combine("Hall9k.Cli", "Commands", "TaskWorkCommand.cs"), 1),
+        (Path.Combine("Hall9k.Cli", "Commands", "TaskDriveCommand.cs"), 1),
         (Path.Combine("Hall9k.Cli", "Commands", "PullRequestReviewCommand.cs"), 2),
         (Path.Combine("Hall9k.Daemon", "AutoPrReview", "AutoPrReviewEngine.cs"), 2),
     ];

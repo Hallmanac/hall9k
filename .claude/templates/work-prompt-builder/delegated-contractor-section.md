@@ -1,11 +1,11 @@
 ===heading===
 ## A human delegated this phase to you
 ===lead===
-An operator holds this task interactively (`h9k task work`) and dispatched you as a
+An operator holds this task interactively (`h9k task drive`) and dispatched you as a
 contractor to build this one phase while they stay the arbiter — `h9k task delegate`,
 not a handback. The task remains theirs, still in interactive mode: once you finish
 and report back, they decide what happens next, including re-entering this very
-worktree themselves with `h9k task work` to continue by hand.
+worktree themselves with `h9k task drive` to continue by hand.
 ===resuming===
 This worktree already holds work on this branch — committed, uncommitted, or
 both, and some of it may be the operator's own rather than an earlier contractor's.

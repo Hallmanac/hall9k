@@ -138,7 +138,7 @@ public sealed class RecordingProvenanceReaderTests
     [Fact]
     public void A_deliberate_headless_start_an_operator_re_entered_reads_attended()
     {
-        // h9k task work re-enters that same run, and register-session's own
+        // h9k task drive re-enters that same run, and register-session's own
         // InteractiveSessionStarted records the human's name — the one write h9k task start's own
         // build agent is deliberately skipped for.
         HumanAttendance attendance = RecordingProvenanceReader.Classify(

@@ -13,7 +13,7 @@ namespace Hall9k.Domain.Shared.ValueObjects;
 [JsonConverter(typeof(HumanAttendanceJsonConverter))]
 public sealed record HumanAttendance
 {
-    /// <summary>Recorded from inside a run held by an operator's own attached session (h9k task work).</summary>
+    /// <summary>Recorded from inside a run held by an operator's own attached session (h9k task drive).</summary>
     public static readonly HumanAttendance Attended = new("Attended");
 
     /// <summary>Recorded from inside a run nobody is attached to: a dispatched agent, a deliberate headless start, or a delegated contractor.</summary>

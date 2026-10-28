@@ -3,7 +3,7 @@ using Hall9k.Domain.Shared.ValueObjects;
 namespace Hall9k.Domain.Features.Run.Events;
 
 /// <summary>
-/// An operator holding a task interactively (<c>h9k task work</c>) dispatched a contractor build
+/// An operator holding a task interactively (<c>h9k task drive</c>) dispatched a contractor build
 /// agent to do this one phase while staying the arbiter (<c>h9k task delegate</c>, task
 /// 15f889e3-h9k, design ruling R6, idea fcaded0b's design rulings, Take the Wheel epic 9272e514's
 /// slice 10) — distinct from <c>h9k task handback</c>, which ends interactive mode and hands the

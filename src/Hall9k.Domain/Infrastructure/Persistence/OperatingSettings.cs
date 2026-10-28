@@ -81,7 +81,7 @@ public sealed class OperatingSettings
     public int? MaxConcurrentTaskRuns { get; set; }
 
     /// <summary>
-    /// How many days an interactive claim (h9k task work) can sit untouched before h9k status
+    /// How many days an interactive claim (h9k task drive) can sit untouched before h9k status
     /// nudges about it (Decisions Log #103's own follow-up, idea 3ba186b6: "a staleness nudge,
     /// not a timeout"). Read directly by the CLI's attention composer rather than through
     /// <see cref="OperatingSettingsResolver"/> — nothing binds it through <c>DaemonOptions</c>,
@@ -168,7 +168,7 @@ public sealed class OperatingSettings
     /// Read fresh on every prompt composition rather than bound through <c>DaemonOptions</c>, the
     /// same reasoning <see cref="InteractiveClaimStaleAfterDays"/> documents for itself: nothing
     /// acts on it except the composition itself, so a change takes effect at the next dispatch
-    /// instead of the next daemon restart, and an interactive <c>h9k task work</c> claim, which
+    /// instead of the next daemon restart, and an interactive <c>h9k task drive</c> claim, which
     /// structurally cannot reach <c>DaemonOptions</c> (Reference graph: Cli to Domain plus
     /// Connectors), resolves it through the identical code path a headless dispatch does.
     /// </summary>
@@ -245,7 +245,7 @@ public sealed class OperatingSettings
     /// This node's review stage composition (task: the review pipeline's stage composition
     /// becomes configuration recorded per run) — the config-file record <c>h9k config set
     /// --review-stage-composition</c> writes and reads back for <c>h9k config show</c>, and what
-    /// an interactive dispatch (<c>Hall9k.Cli.Commands.TaskWorkCommand</c>, no live
+    /// an interactive dispatch (<c>Hall9k.Cli.Commands.TaskDriveCommand</c>, no live
     /// <c>DaemonOptions</c> to read) resolves the node level from directly, the same file
     /// <c>DaemonOptions.ReviewStageComposition</c> eventually binds from for a headless dispatch.
     /// Null means unset — <see cref="Hall9k.Domain.Features.Run.ReviewStageCompositionResolver"/>

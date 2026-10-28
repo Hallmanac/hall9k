@@ -152,7 +152,7 @@ internal static class TaskPhaseComposer
         // (task ef2fefe5) sat behind for an hour. Gated on run.State, not on the reason alone
         // (mirrors AttentionComposer's own identical guard on this same field): the reason is
         // cleared by a fresh InteractiveSessionStarted (h9k task register-session, or
-        // h9k task work --direct-launch, re-entering the claim, independent pre-PR review, cycle
+        // h9k task drive --direct-launch, re-entering the claim, independent pre-PR review, cycle
         // 1) but nothing clears it when one of the OTHER levers it names moves RunState off
         // Dispatched/Running instead — h9k task handback, h9k task release, or (whenever
         // RunUnattendedExitFlagged.DeliverConfirmedRefuses is false — an unreadable branch, an
@@ -177,7 +177,7 @@ internal static class TaskPhaseComposer
         }
 
         // An interactive claim has no lease or heartbeat (Decisions Log #103): closing the
-        // terminal is a normal way to leave, and h9k task work re-enters the same claim. The
+        // terminal is a normal way to leave, and h9k task drive re-enters the same claim. The
         // Gone reading is correct — the process really is gone — but printing it in red as "the
         // recorded process is gone" (TaskPhase.LivenessMarkup) misfiles that normal wait as a
         // machine failure, the same misfiling TaskStatusComposer.Silence's own interactive check
@@ -202,8 +202,8 @@ internal static class TaskPhaseComposer
         // launches a headless pr-review run under this identical sentinel, and its session name
         // (SessionRoleName.ReviewAdversarial and friends) carries neither the -build nor the
         // -interactive-claim suffix, so it fell into the else arm below and read as an attended
-        // h9k task work claim nobody can actually re-enter — TaskWorkCommand refuses a pr-review
-        // task outright. TaskWorkCommand and TaskStartCommand both refuse a pr-review task
+        // h9k task drive claim nobody can actually re-enter — TaskDriveCommand refuses a pr-review
+        // task outright. TaskDriveCommand and TaskStartCommand both refuse a pr-review task
         // (Decisions Log #99), so no pr-review task ever carries this sentinel from either of
         // those two commands — every pr-review task reaching here got here only through this
         // engine, and excluding the type lets it fall through to the ordinary state-based switch
@@ -218,7 +218,7 @@ internal static class TaskPhaseComposer
             // narrow terminal truncates the tail first — putting the actionable half first keeps
             // it visible even when the explanatory half is cut (adversarial review, cycle 2).
             //
-            // Both an operator's own h9k task work and a deliberate h9k task start dispatch carry
+            // Both an operator's own h9k task drive and a deliberate h9k task start dispatch carry
             // this same Guid.Empty sentinel (TaskAggregate.IsInteractiveClaim's own discriminator
             // does not tell them apart), but only the former is actually attended — a finished
             // start-it-mine session's process really did just exit on its own, and nobody closed
@@ -227,7 +227,7 @@ internal static class TaskPhaseComposer
             // never interactive-claim (adversarial review, cycle 4, on h9k task start). Checked
             // for the build suffix specifically, not the interactive-claim one: h9k task start is
             // new to this branch, so every run recorded before it existed is an ordinary h9k task
-            // work claim regardless of what SessionName carries (blank, on a stream older than
+            // drive claim regardless of what SessionName carries (blank, on a stream older than
             // session naming itself) — that history reads as attended, the message this branch
             // already gave before this distinction existed, rather than guessing headless from an
             // absent name.
@@ -235,11 +235,11 @@ internal static class TaskPhaseComposer
                 ? new TaskPhase("building", SessionLiveness.NotApplicable,
                     "h9k task deliver hands this session's work to the standard pipeline; a headless run exiting on its own is normal, not a lost process")
                 : new TaskPhase("building", SessionLiveness.NotApplicable,
-                    "h9k task work re-enters this claim; closing the terminal is a normal way to leave");
+                    "h9k task drive re-enters this claim; closing the terminal is a normal way to leave");
         }
 
         // An interactive claim's own Dispatched window is no longer necessarily brief (Decisions
-        // Log #126): by default h9k task work returns as soon as it prints the worktree, branch,
+        // Log #126): by default h9k task drive returns as soon as it prints the worktree, branch,
         // and starting prompt, before the operator has pasted it anywhere — so the generic
         // "worktree and prompt being prepared" wording below would misdescribe a fully-prepared
         // claim sitting untouched, possibly for a long while, as still mid-setup.
@@ -269,10 +269,10 @@ internal static class TaskPhaseComposer
         {
             return run.SessionName.EndsWith("-" + SessionRoleName.Build, StringComparison.Ordinal)
                 ? new TaskPhase("awaiting launch", SessionLiveness.NotApplicable,
-                    "h9k task start recorded this claim but its headless session never started — h9k task work re-enters it")
+                    "h9k task start recorded this claim but its headless session never started — h9k task drive re-enters it")
                 : new TaskPhase("awaiting a pasted session", SessionLiveness.NotApplicable,
-                    "h9k task work already printed the worktree, branch, and prompt — paste it into a Claude Code "
-                    + "session (it self-registers) or h9k task work --direct-launch to launch one yourself");
+                    "h9k task drive already printed the worktree, branch, and prompt — paste it into a Claude Code "
+                    + "session (it self-registers) or h9k task drive --direct-launch to launch one yourself");
         }
 
         return run.State.Value switch

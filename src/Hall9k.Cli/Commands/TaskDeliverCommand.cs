@@ -63,12 +63,12 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         }
 
         // A pr-review task's own Claimed+sentinel state is never a human's own interactive claim
-        // (TaskWorkCommand and TaskStartCommand both refuse to create one) — it is auto-pr-review's
+        // (TaskDriveCommand and TaskStartCommand both refuse to create one) — it is auto-pr-review's
         // Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync), which reads identically to
         // one on IsInteractiveClaim's own Guid.Empty discriminator. Delivering it here would push its
         // read-only detached refs/pull/<n>/head worktree and hand a run with no PrReviewBaseRefName
         // and no adversarial report into PrReviewEngine.DriveAsync — the same failure
-        // TaskWorkCommand.ClaimAndCutAsync's own pr-review refusal exists to prevent, reachable here
+        // TaskDriveCommand.ClaimAndCutAsync's own pr-review refusal exists to prevent, reachable here
         // only because this command has no refusal of its own (independent pre-PR review, cycle 1,
         // conformance lens).
         if (task.Type == TaskType.PrReview)
@@ -91,7 +91,7 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // this worktree — pushing and handing it into the standard pipeline out from under it
         // risks delivering a tree mid-edit (adversarial review, cycle 1). Skipped when this
         // invocation is that very session delivering itself on the operator's own go — the
-        // prompt-handoff model's ordinary shape once h9k task work no longer launches a blocking
+        // prompt-handoff model's ordinary shape once h9k task drive no longer launches a blocking
         // child process: the session is not racing this command, it is waiting on it, exactly the
         // reasoning h9k task verify's own exemption already rests on
         // (InteractiveSessionLiveness.IsSelfInvocation's own doc has both signals). Two things a
@@ -252,7 +252,7 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // automatic-delivery path — a claim that instead gets flagged needs-you and later reaches
         // THIS command still needs its own recovered handoff read here, because the operator sitting
         // at this delivery was never attached to that session and cannot retype from memory what
-        // they never saw. An attended h9k task work claim never writes a stream.jsonl at all
+        // they never saw. An attended h9k task drive claim never writes a stream.jsonl at all
         // (LaunchInteractiveClaudeAsync attaches claude to this terminal directly, no
         // --output-format stream-json), so this read finds nothing there and PromptForHandoff's own
         // blank-default behavior is unchanged for that claim.
@@ -313,7 +313,7 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // PullRequestOpener for a task that no longer reads Claimed (adversarial review, cycle
         // 6). Reloading here (a lightweight session, so this hits the database rather than an
         // identity-map cache) narrows the window down to the append itself, mirroring
-        // TaskWorkCommand's own pre-launch re-check.
+        // TaskDriveCommand's own pre-launch re-check.
         TaskDetails taskBeforeAppend = await session.LoadAsync<TaskDetails>(taskId, CancellationToken.None)
             ?? throw new DomainConflictException($"Task {taskId} no longer exists — the claim was lost while delivering.");
         if (taskBeforeAppend.State != TaskState.Claimed || !taskBeforeAppend.IsInteractiveClaim || taskBeforeAppend.CurrentRunId != runId)
@@ -336,7 +336,7 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // Re-checked here too, not only at the top of this command: the window between that
         // first check and this append (the git checks, the push, and PromptForHandoff blocking
         // on operator input with no timeout) is long enough for a second terminal's h9k task
-        // work to pass its own pre-launch guard and launch a live Claude into this worktree —
+        // drive to pass its own pre-launch guard and launch a live Claude into this worktree —
         // that guard only catches a delivery, release, or handback that beat it there, not one
         // that starts after it already passed. Appending AgentSessionCompleted unconditionally
         // from here would then hand this run to RunSupervisor.ResumeStrandedPipelinesAsync
@@ -433,7 +433,7 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
     /// cycle 3, both lenses) — without this, the node's periodic token-spend budget
     /// (<c>PeriodSpend</c>) silently under-counts every session <c>h9k task start</c> launches
     /// (adversarial review, cycle 1, on h9k task start). Both fields null/absent when the file
-    /// is missing (an attended h9k task work claim never writes one) or carries no parseable
+    /// is missing (an attended h9k task drive claim never writes one) or carries no parseable
     /// result line — never guessed at as empty or zero, which would read as an observed session
     /// that authored no handoff and spent no tokens rather than one this command could not
     /// measure (AGENTS.md: never guess at unobserved facts).

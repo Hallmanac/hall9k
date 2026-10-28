@@ -18,7 +18,7 @@ namespace Hall9k.Connectors.WorkItems;
 /// installs cannot both run the same card.
 /// <para>
 /// Every claim door goes through here rather than reading the tracker itself: the dispatcher's own
-/// <c>DispatchEngine.TryClaimAsync</c>, <c>h9k task work</c>, <c>h9k task start</c>, and
+/// <c>DispatchEngine.TryClaimAsync</c>, <c>h9k task drive</c>, <c>h9k task start</c>, and
 /// <c>h9k task queue</c> (which warns and proceeds — the tracker stays the go signal, so the task
 /// simply waits in the queue). One place, so the rule and its sentences cannot drift between them.
 /// </para>

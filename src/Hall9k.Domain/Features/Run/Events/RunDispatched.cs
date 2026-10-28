@@ -90,14 +90,14 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// dispatches (task: a do-now session launched by h9k task start is caught within seconds) — both
 /// <c>h9k task start</c>'s own entry point and <c>h9k task handback --now</c>'s redispatch through
 /// that same method (<c>TaskHandbackCommand.cs</c>): it carries the same ceiling-exempt
-/// <see cref="Guid.Empty"/> NodeId sentinel an operator's own <c>h9k task work</c>
+/// <see cref="Guid.Empty"/> NodeId sentinel an operator's own <c>h9k task drive</c>
 /// claim does, but nothing attends it - the CLI process that launched it exits as soon as the
 /// detached agent is confirmed alive, so unlike an interactive claim it has no terminal to close
 /// and no operator to notice when it finishes. Frozen at dispatch, never re-derived from
 /// <see cref="SessionName"/>'s own "-build" suffix (independent pre-PR review: that suffix is
 /// overwritten the moment this same claim delegates a phase, RunDetails.SessionName's own doc,
 /// so a live check would misread an attended claim mid-delegation as this same unattended shape).
-/// False for every other caller, including <c>h9k task work</c>'s own interactive claim and every
+/// False for every other caller, including <c>h9k task drive</c>'s own interactive claim and every
 /// ordinary daemon dispatch, so <see cref="Hall9k.Daemon.Execution.RunSupervisor"/>'s own
 /// unattended-exit sweep - the one reader of this field - never widens past the two commands this
 /// exists for.

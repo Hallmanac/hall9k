@@ -212,11 +212,11 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
 
         if (queuedFor is null || queued is null)
         {
-            // h9k task work is refused outright for a pr-review task (TaskWorkCommand.ClaimAndCutAsync:
+            // h9k task drive is refused outright for a pr-review task (TaskDriveCommand.ClaimAndCutAsync:
             // "it has no diff of its own for an interactive session to build"), so the hint is
             // named only where the claim would actually be accepted (independent pre-PR review,
             // cycle 1 and 3). An open dependency no longer suppresses the hint (task 0ac72cb8-h9k):
-            // h9k task work now warns and asks instead of refusing outright, so the hint just names
+            // h9k task drive now warns and asks instead of refusing outright, so the hint just names
             // the flag that answers it (adversarial lens, cycle 1).
             // Read through StackedEdgeRules, not off IsClosedOut alone: a stacked parent already at
             // Delivered no longer holds this task, so naming --acknowledge-unmet-dependencies for
@@ -232,8 +232,8 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             string interactiveClaimHint = task.Type == TaskType.PrReview
                 ? string.Empty
                 : hasOpenDependency
-                    ? $" [dim](or h9k task work {shortId} --acknowledge-unmet-dependencies to claim across the open dependency yourself)[/]"
-                    : $" [dim](or h9k task work {shortId} to claim and work it yourself)[/]";
+                    ? $" [dim](or h9k task drive {shortId} --acknowledge-unmet-dependencies to claim across the open dependency yourself)[/]"
+                    : $" [dim](or h9k task drive {shortId} to claim and work it yourself)[/]";
             AnsiConsole.MarkupLine(
                 $"[dim]It is ready but not queued, so it will not run until you say so:[/] h9k task queue {shortId}"
                 + interactiveClaimHint);

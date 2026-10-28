@@ -113,7 +113,7 @@ public sealed class OrchestratorFeedRendererTests
     [Fact]
     public void A_claim_that_names_no_node_is_never_described_as_node_00000000()
     {
-        // h9k task work and h9k task start both record Guid.Empty as the node id, deliberately
+        // h9k task drive and h9k task start both record Guid.Empty as the node id, deliberately
         // naming no node; shortening that sentinel would assert a node nothing observed.
         TaskClaimed byHand = new(
             FeedTask, Guid.Empty, Guid.NewGuid(), 1, Guid.NewGuid(), At,

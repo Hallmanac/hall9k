@@ -20,7 +20,7 @@ namespace Hall9k.Cli.Infrastructure;
 /// same file itself on the automatic-delivery path — a run that skips every one of these five
 /// levers entirely — never on the path that flags the claim needs-you, which leaves the read to
 /// whichever of these levers the human ends up using; recording it on both sides would double the
-/// spend (independent pre-PR review, cycle 1, adversarial lens). An attended <c>h9k task work</c>
+/// spend (independent pre-PR review, cycle 1, adversarial lens). An attended <c>h9k task drive</c>
 /// claim writes no <c>stream.jsonl</c> at all, so calling this for that run finds nothing and
 /// appends nothing — the same no-op <c>ReadHeadlessResult</c> already returns for a missing file.
 /// </summary>
@@ -67,7 +67,7 @@ internal static class HeadlessTokenRecovery
     /// <paramref name="model"/> is the session that actually earned the spend — <see cref="AppendIfRecorded"/>'s
     /// own overload passes <paramref name="run"/>'s own model, but a delegated contractor's overload
     /// passes its own separately-resolved <see cref="PhaseDelegation.Model"/> instead, never
-    /// <c>run.Model</c>, which for an <c>h9k task work</c> claim is hard-wired to the human-interactive
+    /// <c>run.Model</c>, which for an <c>h9k task drive</c> claim is hard-wired to the human-interactive
     /// tier and says nothing about what the contractor ran on (independent pre-PR review, cycle 1,
     /// conformance lens).
     /// </summary>

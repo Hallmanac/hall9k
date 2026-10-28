@@ -12,18 +12,18 @@ using Xunit;
 namespace Hall9k.Tests.Cli;
 
 /// <summary>
-/// The atomic decision behind h9k task work's Published entry (task 688a1ccf-h9k):
-/// <see cref="TaskWorkCommand.PrepareInteractiveClaimFromPublished"/> composes
+/// The atomic decision behind h9k task drive's Published entry (task 688a1ccf-h9k):
+/// <see cref="TaskDriveCommand.PrepareInteractiveClaimFromPublished"/> composes
 /// <see cref="TaskDecider.Assign"/> and <see cref="TaskDecider.ClaimInteractively"/> into one
 /// unit, with no session and no append, so the composition itself is pinned here without a
 /// database — the concurrency arbitration this composition feeds is pinned separately, against a
-/// real store, in Integration.ClaimAndLeaseArbitrationTests. <see cref="TaskWorkCommand.PrepareInteractiveClaimFromBlocked"/>'s
+/// real store, in Integration.ClaimAndLeaseArbitrationTests. <see cref="TaskDriveCommand.PrepareInteractiveClaimFromBlocked"/>'s
 /// own sibling composition, for the already-Blocked entry (task 0ac72cb8-h9k), is pinned in the
 /// second half of this file — it mirrors TaskStartClaimTests's identical shape, carry-forward case
 /// included: h9k task start's own Blocked entry gained the identical carry-forward behavior in the
 /// same task, closing the gap task 8a56af78-h9k had originally left open.
 /// </summary>
-public sealed class TaskWorkClaimTests
+public sealed class TaskDriveClaimTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 2, 12, 0, 0, TimeSpan.Zero);
     private static readonly Guid Owner = DomainId.New();
@@ -37,7 +37,7 @@ public sealed class TaskWorkClaimTests
         Guid runId = DomainId.New();
 
         (TaskAssigned assigned, TaskClaimed claimed, IReadOnlyList<TaskDependency> unmet) =
-            TaskWorkCommand.PrepareInteractiveClaimFromPublished(
+            TaskDriveCommand.PrepareInteractiveClaimFromPublished(
                 task, Owner, [], runId, Now, acknowledgeUnmetDependencies: false);
 
         assigned.AssignedOwnerId.Should().Be(Owner);
@@ -65,7 +65,7 @@ public sealed class TaskWorkClaimTests
         TaskAggregate task = PublishedTask(closed.Id);
 
         (TaskAssigned assigned, TaskClaimed claimed, IReadOnlyList<TaskDependency> unmet) =
-            TaskWorkCommand.PrepareInteractiveClaimFromPublished(
+            TaskDriveCommand.PrepareInteractiveClaimFromPublished(
                 task, Owner, [closed], DomainId.New(), Now, acknowledgeUnmetDependencies: false);
 
         assigned.UnmetDependencies.Should().BeEmpty("the one dependency has already closed out");
@@ -80,7 +80,7 @@ public sealed class TaskWorkClaimTests
         TaskDependency open = OpenDependency();
         TaskAggregate task = PublishedTask(open.Id);
 
-        Action act = () => TaskWorkCommand.PrepareInteractiveClaimFromPublished(
+        Action act = () => TaskDriveCommand.PrepareInteractiveClaimFromPublished(
             task, Owner, [open], DomainId.New(), Now, acknowledgeUnmetDependencies: false);
 
         act.Should().Throw<DomainBusinessRuleException>()
@@ -100,7 +100,7 @@ public sealed class TaskWorkClaimTests
     /// <summary>
     /// The conversion this task (0ac72cb8-h9k) makes: an open dependency no longer refuses
     /// outright — with the acknowledgment, the assignment and claim proceed anyway, landing
-    /// Blocked (not Claimed straight through, since the claim is what h9k task work commits) with
+    /// Blocked (not Claimed straight through, since the claim is what h9k task drive commits) with
     /// the override recorded, the same "the platform advises rather than refuses" shape h9k task
     /// start already has.
     /// </summary>
@@ -112,7 +112,7 @@ public sealed class TaskWorkClaimTests
         Guid runId = DomainId.New();
 
         (TaskAssigned assigned, TaskClaimed claimed, IReadOnlyList<TaskDependency> unmet) =
-            TaskWorkCommand.PrepareInteractiveClaimFromPublished(
+            TaskDriveCommand.PrepareInteractiveClaimFromPublished(
                 task, Owner, [open], runId, Now, acknowledgeUnmetDependencies: true);
 
         assigned.UnmetDependencies.Should().ContainSingle().Which.Should().Be(open.Id);
@@ -130,8 +130,8 @@ public sealed class TaskWorkClaimTests
     /// A blocker that is dead (<see cref="TaskDependency.IsDead"/>) will never close out, so the
     /// refusal must not promise it "queues itself the moment the last one's pull request merges"
     /// — <see cref="TaskDependency.DescribeDeath"/>'s honest remedy is what belongs here instead
-    /// (independent pre-PR review, cycle 1: conformance finding at TaskWorkCommand.cs:546,
-    /// adversarial finding at TaskWorkCommand.cs:545 — the same defect from both lenses).
+    /// (independent pre-PR review, cycle 1: conformance finding at TaskDriveCommand.cs:546,
+    /// adversarial finding at TaskDriveCommand.cs:545 — the same defect from both lenses).
     /// </summary>
     [Fact]
     public void A_published_task_with_a_dead_dependency_is_refused_without_a_false_merge_promise()
@@ -139,7 +139,7 @@ public sealed class TaskWorkClaimTests
         TaskDependency dead = DeadDependency();
         TaskAggregate task = PublishedTask(dead.Id);
 
-        Action act = () => TaskWorkCommand.PrepareInteractiveClaimFromPublished(
+        Action act = () => TaskDriveCommand.PrepareInteractiveClaimFromPublished(
             task, Owner, [dead], DomainId.New(), Now, acknowledgeUnmetDependencies: false);
 
         act.Should().Throw<DomainBusinessRuleException>()
@@ -156,7 +156,7 @@ public sealed class TaskWorkClaimTests
         TaskDependency open = OpenDependency();
         TaskAggregate task = BlockedTask(open);
 
-        Action act = () => TaskWorkCommand.PrepareInteractiveClaimFromBlocked(
+        Action act = () => TaskDriveCommand.PrepareInteractiveClaimFromBlocked(
             task, Owner, [open], DomainId.New(), Now, acknowledgeUnmetDependencies: false);
 
         act.Should().Throw<DomainBusinessRuleException>()
@@ -178,7 +178,7 @@ public sealed class TaskWorkClaimTests
         TaskAggregate task = BlockedTask(open);
         Guid runId = DomainId.New();
 
-        (TaskClaimed claimed, bool carriedForward) = TaskWorkCommand.PrepareInteractiveClaimFromBlocked(
+        (TaskClaimed claimed, bool carriedForward) = TaskDriveCommand.PrepareInteractiveClaimFromBlocked(
             task, Owner, [open], runId, Now, acknowledgeUnmetDependencies: true);
 
         carriedForward.Should().BeFalse("the flag was passed fresh this time, not carried from an earlier claim");
@@ -208,7 +208,7 @@ public sealed class TaskWorkClaimTests
         task.UnmetDependenciesAlreadyAcknowledged.Should().BeTrue();
 
         Guid runId = DomainId.New();
-        (TaskClaimed claimed, bool carriedForward) = TaskWorkCommand.PrepareInteractiveClaimFromBlocked(
+        (TaskClaimed claimed, bool carriedForward) = TaskDriveCommand.PrepareInteractiveClaimFromBlocked(
             task, Owner, [open], runId, Now, acknowledgeUnmetDependencies: false);
 
         carriedForward.Should().BeTrue("this exact blocker was already acknowledged by the earlier claim");
@@ -229,7 +229,7 @@ public sealed class TaskWorkClaimTests
     {
         TaskDependency dead = DeadDependency();
 
-        string output = ScopedAnsiConsoleCapture.Capture(() => TaskWorkCommand.PrintUnmetDependencyWarning(
+        string output = ScopedAnsiConsoleCapture.Capture(() => TaskDriveCommand.PrintUnmetDependencyWarning(
             "Claiming", DomainId.New(), [dead], carriedForward: true));
 
         output.Should().Contain(dead.Describe());
@@ -251,7 +251,7 @@ public sealed class TaskWorkClaimTests
     {
         TaskAggregate task = RemoteStackedPublishedTask();
 
-        Action act = () => TaskWorkCommand.PrepareInteractiveClaimFromPublished(
+        Action act = () => TaskDriveCommand.PrepareInteractiveClaimFromPublished(
             task, Owner, [], DomainId.New(), Now, acknowledgeUnmetDependencies: false);
 
         act.Should().Throw<DomainBusinessRuleException>()
@@ -278,7 +278,7 @@ public sealed class TaskWorkClaimTests
         task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner));
         task.State.Should().Be(TaskState.Blocked, "an unobserved parent holds the assignment");
 
-        Action act = () => TaskWorkCommand.PrepareInteractiveClaimFromBlocked(
+        Action act = () => TaskDriveCommand.PrepareInteractiveClaimFromBlocked(
             task, Owner, [], DomainId.New(), Now, acknowledgeUnmetDependencies: false);
 
         act.Should().Throw<DomainBusinessRuleException>()

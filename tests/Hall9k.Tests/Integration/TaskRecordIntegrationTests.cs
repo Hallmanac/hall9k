@@ -62,9 +62,9 @@ namespace Hall9k.Tests.Integration;
 /// to <c>h9k task resolve --pr</c> (backlog: a pull request recorded by h9k task resolve --pr is
 /// observed to merge like every other pull request the platform knows about). The defect those
 /// tests guard (independent pre-PR review, cycle 1, high): an interactive claim
-/// (<c>h9k task work</c>) whose worktree cut fails leaves a Failed task with
+/// (<c>h9k task drive</c>) whose worktree cut fails leaves a Failed task with
 /// <see cref="TaskAggregate.CurrentRunId"/> naming a run whose stream was never started
-/// (<c>TaskWorkCommand.FailInteractiveClaimAsync</c> appends only to the task stream). Appending
+/// (<c>TaskDriveCommand.FailInteractiveClaimAsync</c> appends only to the task stream). Appending
 /// unconditionally onto that run id would implicitly create the stream and materialize a stub
 /// <c>RunDetails</c> row, which drops the task out of
 /// <c>CloseoutEngine.TasksWithMissingRunRecordsAsync</c>'s own candidate set — the one sweep
@@ -1539,8 +1539,8 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
 
 
     /// <summary>
-    /// Mirrors TaskWorkCommand.ClaimInteractivelyAsync's own shape up to the exact point its
-    /// worktree cut can fail: TaskClaimed lands, then TaskWorkCommand.FailInteractiveClaimAsync
+    /// Mirrors TaskDriveCommand.ClaimInteractivelyAsync's own shape up to the exact point its
+    /// worktree cut can fail: TaskClaimed lands, then TaskDriveCommand.FailInteractiveClaimAsync
     /// appends TaskFailed to the task stream alone — the run stream is never started, because
     /// RunDispatched is only ever appended after the checkout succeeds.
     /// </summary>

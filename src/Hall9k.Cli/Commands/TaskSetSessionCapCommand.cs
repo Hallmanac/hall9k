@@ -35,7 +35,7 @@ public sealed class TaskSetSessionCapCommand : Hall9kAsyncCommand<TaskSetSession
             + "today's routine peak is 2, so anything above 2 is inert headroom until a future coded activity "
             + "actually overlaps a third session. Settable any time, including on a task with no live run yet — "
             + "it takes effect at the run's next session dispatch, once one exists, and never terminates a "
-            + "session already running. An interactive claim (h9k task work) occupies zero runs and ignores this "
+            + "session already running. An interactive claim (h9k task drive) occupies zero runs and ignores this "
             + "cap entirely.")]
         public string Cap { get; init; } = string.Empty;
     }
@@ -84,7 +84,7 @@ public sealed class TaskSetSessionCapCommand : Hall9kAsyncCommand<TaskSetSession
         AnsiConsole.MarkupLine(
             $"[green]Task {TaskListCommand.ShortId(taskId)} session cap set to {description}[/] — takes effect "
             + "at the run's next session dispatch, once one exists; a session already running is never terminated. "
-            + "An interactive claim (h9k task work) occupies zero runs and ignores this cap.");
+            + "An interactive claim (h9k task drive) occupies zero runs and ignores this cap.");
         return ExitCodes.Ok;
     }
 }

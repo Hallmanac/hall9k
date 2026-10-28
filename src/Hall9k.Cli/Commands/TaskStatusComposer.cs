@@ -862,7 +862,7 @@ internal static class TaskStatusComposer
         if (session == SessionLiveness.Gone)
         {
             // An interactive claim has no lease or heartbeat (Decisions Log #103): closing the
-            // terminal is a normal way to leave, and h9k task work re-enters the same claim.
+            // terminal is a normal way to leave, and h9k task drive re-enters the same claim.
             // Reporting the gone process as a stall renames that wait for the operator as a
             // machine failure, the same misfiling Live's own doc comment argues against for a
             // parked run — and the lever it would print (h9k logs) is unusable here, since an

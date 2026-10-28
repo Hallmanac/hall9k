@@ -181,7 +181,7 @@ public sealed class DispatchEngine(
     /// first slot cannot starve anything, because being served is what makes a project yield.
     /// </para>
     /// <para>
-    /// An interactive claim (<c>h9k task work</c>, <c>h9k task start</c>) never lands here: it
+    /// An interactive claim (<c>h9k task drive</c>, <c>h9k task start</c>) never lands here: it
     /// costs no slot at either ceiling (Decisions Log #111, #140) and this dispatcher never made
     /// it, so counting it as this node having served that project would make a rotation turn out
     /// of something that consumed nothing.

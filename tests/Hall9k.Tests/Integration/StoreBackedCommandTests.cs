@@ -590,7 +590,7 @@ public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFi
     /// medium): a second registration attempt, from a session CLAUDE_PID identifies as a
     /// different, still-live process than the one already recorded, must be refused rather than
     /// silently overwriting the first session's own liveness record — the exact failure
-    /// <c>TaskWorkCommand.ReenterAsync</c>'s own comment names for the parallel <c>h9k task work</c>
+    /// <c>TaskDriveCommand.ReenterAsync</c>'s own comment names for the parallel <c>h9k task drive</c>
     /// door onto this same collision.
     /// </summary>
     [Fact]

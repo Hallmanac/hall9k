@@ -1490,7 +1490,7 @@ public static class CliCommandTree
                     + "including while the task's run is live. A cap of 1 serializes the run's two review lenses "
                     + "instead of dispatching them together, for maximum throttle. Takes effect at the run's next "
                     + "session dispatch: raising it lets the next phase fan out wider, lowering it never "
-                    + "terminates a session already running. An interactive claim (h9k task work) occupies zero "
+                    + "terminates a session already running. An interactive claim (h9k task drive) occupies zero "
                     + "runs and ignores this cap entirely. Pass 'default' to clear this task's own override and "
                     + "let the node's global session-cap-per-run decide again.")
                 .WithExample("task", "set-session-cap", "28b19893", "1")
@@ -1743,9 +1743,9 @@ public static class CliCommandTree
                 .WithExample("task", "resolve", "28b19893", "--reason", "\"Work merged as PR #7; only the daemon's push step failed\"")
                 .WithExample("task", "resolve", "28b19893", "--holder", "Casey", "--reason", "\"Merged as PR #7 by Casey; the push step failed\"")
                 .WithExample("task", "resolve", "28b19893", "--reason", "\"Objective met by hand in the worktree\"", "--pr", "https://github.com/x/y/pull/7");
-            task.AddCommand<TaskWorkCommand>("work")
+            task.AddCommand<TaskDriveCommand>("drive")
                 .WithDescription(
-                    "Work a Published, Queued, or already-Blocked task interactively. On a Published task assigned to nobody, "
+                    "Drive a Published, Queued, or already-Blocked task interactively. On a Published task assigned to nobody, "
                     + "this queues it for your own owner and claims it interactively in one atomic event append, "
                     + "the same collapsing h9k task publish --queue already does for publish and queue: the "
                     + "task is never observably Queued in between, so the dispatcher (woken within moments by "
@@ -1781,12 +1781,15 @@ public static class CliCommandTree
                     + "engine's own four phase boundaries for a recorded h9k review proceed, whether or not a "
                     + "human is still attached. h9k task release (default) or h9k task revise "
                     + "--clear-interactive-mode turns it back off.")
-                .WithExample("task", "work", "28b19893")
-                .WithExample("task", "work", "28b19893", "--direct-launch")
-                .WithExample("task", "work", "28b19893", "--acknowledge-unmet-dependencies");
+                .WithExample("task", "drive", "28b19893")
+                .WithExample("task", "drive", "28b19893", "--direct-launch")
+                .WithExample("task", "drive", "28b19893", "--acknowledge-unmet-dependencies");
+            task.AddCommand<TaskWorkAliasCommand>("work")
+                .WithDescription("Renamed h9k task drive; kept for one release as a hidden alias.")
+                .IsHidden();
             task.AddCommand<TaskRegisterSessionCommand>("register-session")
                 .WithDescription(
-                    "The self-registration observation gate a starting prompt (h9k task work's default, "
+                    "The self-registration observation gate a starting prompt (h9k task drive's default, "
                     + "prompt-handoff output) tells the pasted-in Claude Code session to call as its first act: "
                     + "records this session's own process identity (read from CLAUDE_PID, Claude Code's own "
                     + "environment variable) against the run the same way a direct launch's own onStarted "
@@ -1794,7 +1797,7 @@ public static class CliCommandTree
                     + "handback, release) key off this record from here on. Refuses rather than guessing when "
                     + "CLAUDE_PID is absent — not a session this platform can ever check, so nothing is recorded, "
                     + "the same honest degradation a session that never calls this at all already gets. Only for "
-                    + "a task you hold interactively (h9k task work). Also refused when another session is "
+                    + "a task you hold interactively (h9k task drive). Also refused when another session is "
                     + "already registered and still attached — --force attests you confirmed by hand that a "
                     + "session recorded on another machine has actually exited.")
                 .WithExample("task", "register-session", "28b19893");
@@ -1803,22 +1806,22 @@ public static class CliCommandTree
                     "Dispatch a Published, Queued, or already-Blocked task on the spot, headless, instead of waiting for the "
                     + "dispatcher's own ceiling and ordering to reach it (a deliberate human kick-off). On a "
                     + "Published task assigned to nobody, this queues it for your own owner and claims it in "
-                    + "one atomic event append, the same collapsing h9k task work's own Published entry already "
-                    + "uses, including h9k task work's own warn-then-acknowledge shape for an unmet dependency, on "
+                    + "one atomic event append, the same collapsing h9k task drive's own Published entry already "
+                    + "uses, including h9k task drive's own warn-then-acknowledge shape for an unmet dependency, on "
                     + "a Published task and on an already-Blocked one alike: the platform names every open "
                     + "blocker and advises, and --acknowledge-unmet-dependencies is your recorded override to "
                     + "start it anyway. Not needed twice: an acknowledgment this task already carries from an "
                     + "earlier claim on the same still-open blockers is honored without asking again, whichever "
-                    + "of h9k task start or h9k task work gave it. Refused on Draft (publish it first), a task "
+                    + "of h9k task start or h9k task drive gave it. Refused on Draft (publish it first), a task "
                     + "that already has a live claim, and every terminal state — there is nothing there to "
-                    + "start; there is no re-entry branch the way h9k task work has one, but a fresh claim on an "
+                    + "start; there is no re-entry branch the way h9k task drive has one, but a fresh claim on an "
                     + "already-Blocked task is exactly what this command's own Blocked entry is, not a re-entry. "
-                    + "Ceiling-exempt on the same reasoning h9k task work's own "
+                    + "Ceiling-exempt on the same reasoning h9k task drive's own "
                     + "claim already is (Decisions Log #103): a deliberate human act is outside the automation's "
                     + "budget. The session launches headless and detached under the <task-shortid>-build name — "
                     + "reachable on the session mesh (claude agents --json, ListAgents/SendMessage) — and this "
                     + "command returns as soon as the process is confirmed alive, without waiting for it to "
-                    + "finish. Once it is done: h9k task deliver, h9k task verify, h9k task work (to attach), "
+                    + "finish. Once it is done: h9k task deliver, h9k task verify, h9k task drive (to attach), "
                     + "h9k task handback, or h9k task release. This claim always turns the task's own "
                     + "interactive-mode flag on: from here on, this run — and any later follow-up, retry, or "
                     + "reopen of it — parks at each of the review engine's own four phase boundaries for a "
@@ -1832,7 +1835,7 @@ public static class CliCommandTree
                     + "and record the outcome as the same gate events a headless run's own verification records. "
                     + "Reports modified-but-uncommitted files rather than refusing on them — the gates run "
                     + "against the worktree as it stands; h9k task deliver is the one that refuses on them, "
-                    + "before it pushes. Only for a task you hold interactively (h9k task work). Refused when the "
+                    + "before it pushes. Only for a task you hold interactively (h9k task drive). Refused when the "
                     + "claim's session was recorded on another machine this one cannot check — --force attests "
                     + "you confirmed by hand that it has exited.")
                 .WithExample("task", "verify", "28b19893");
@@ -1841,7 +1844,7 @@ public static class CliCommandTree
                     "Deliver an interactive claim: refuses on uncommitted files, naming them, then pushes the "
                     + "branch and hands the run into the standard delivery pipeline — gates, the independent "
                     + "review loop, the pull request, the closeout watcher — indistinguishable downstream from a "
-                    + "headless run from this point on. Only for a task you hold interactively (h9k task work). "
+                    + "headless run from this point on. Only for a task you hold interactively (h9k task drive). "
                     + "Refused when the claim's session was recorded on another machine this one cannot check — "
                     + "--force attests you confirmed by hand that it has exited.")
                 .WithExample("task", "deliver", "28b19893");
@@ -1967,12 +1970,12 @@ public static class CliCommandTree
                     + "launched under the <task-shortid>-build name. Works before or after any work exists in the "
                     + "worktree — a branch with prior work dispatches with ResumesPreviousWork exactly as a "
                     + "resumed retry does — and refuses everything except your own live interactive claim "
-                    + "(h9k task work), naming why. --note is required and carries your handoff into the "
+                    + "(h9k task drive), naming why. --note is required and carries your handoff into the "
                     + "contractor's starting prompt in the blocker-handoff mold (what was attempted, what is "
                     + "deliberate versus abandoned, what latitude is granted); its default posture toward "
                     + "whatever the branch already holds is conservative — discard or rewrite latitude exists "
                     + "only when the note grants it explicitly. The reverse move: once the contractor reports "
-                    + "back, h9k task work re-enters this same worktree interactively so you can finish the build "
+                    + "back, h9k task drive re-enters this same worktree interactively so you can finish the build "
                     + "yourself — the wheel changes hands in both directions, always at a boundary. Refused when "
                     + "the claim's session was recorded on another machine this one cannot check — --force "
                     + "attests you confirmed by hand that it has exited.")
