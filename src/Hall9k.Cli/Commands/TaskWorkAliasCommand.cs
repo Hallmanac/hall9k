@@ -10,10 +10,14 @@ public sealed class TaskWorkAliasCommand : TaskDriveCommand
 {
     public const string RenamedNotice = "h9k task work is renamed h9k task drive; work will be removed in a later release.";
 
-    protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
-    {
-        await Console.Error.WriteLineAsync(RenamedNotice.AsMemory(), cancellationToken);
+    protected override Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken) =>
+        RunAsync(Console.Error, () => base.ExecuteAsync(settings, cancellationToken), cancellationToken);
 
-        return await base.ExecuteAsync(settings, cancellationToken);
+    /// <summary>Says the verb was renamed before anything else happens, then returns the drive's own exit code.</summary>
+    internal static async Task<int> RunAsync(TextWriter error, Func<Task<int>> drive, CancellationToken cancellationToken)
+    {
+        await error.WriteLineAsync(RenamedNotice.AsMemory(), cancellationToken);
+
+        return await drive();
     }
 }
