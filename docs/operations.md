@@ -1947,7 +1947,7 @@ reclaim, only a question (Decisions Log #103).
 
 | Command | What it does |
 |---|---|
-| `h9k task drive <id>` | Claims a Published, Queued, or already-Blocked task, or takes a task whose pull request is open back into an interactive claim on the pull request's branch ([below](#iterating-on-an-open-pull-request)) (assigning a Published one to your own owner in the same atomic event append), cuts the same branch and worktree headless dispatch would, and by default prints the worktree, the branch, and one line that starts a Claude Code session driving the task under a task anchor. `--print-prompt` prints the starting prompt to paste into a session started elsewhere instead, and `--direct-launch` opens a regular interactive Claude Code session itself, kept for one release. On a task you already hold, re-enters that same worktree and branch at any stage before the pull request opens, with a line that resumes the registered session's conversation (the fresh line beneath it as the fallback), or, under `--direct-launch`, resuming the most recently recorded session's own conversation, falling back to a fresh session, announced rather than silent, only when the recorded one cannot be resumed. A Done task is refused. |
+| `h9k task drive <id>` | Claims a Published, Queued, or already-Blocked task, or takes a task whose pull request is open back into an interactive claim on the pull request's branch ([below](#iterating-on-an-open-pull-request)) (assigning a Published one to your own owner in the same atomic event append), cuts the same branch and worktree headless dispatch would, and by default prints the worktree, the branch, and one line that starts a Claude Code session driving the task under a task anchor. `--print-prompt` prints the starting prompt to paste into a session started elsewhere instead, and `--direct-launch` opens a regular interactive Claude Code session itself, kept for one release. On a task you already hold, re-enters that same worktree and branch at any stage before the pull request opens, with a line that resumes the registered session's conversation (the fresh line beneath it as the fallback), or, under `--direct-launch`, resuming the most recently recorded session's own conversation, falling back to a fresh session, announced rather than silent, only when the recorded one cannot be resumed. A Done task whose pull request has merged or closed is refused. |
 | `h9k task register-session <id>` | The driving session's own first act: records its process identity (from `CLAUDE_PID`) and name against the claim, the way a direct launch's own launch-time recording always did, at any stage before the pull request opens. Past the build it records nothing else. Refuses rather than guessing when `CLAUDE_PID` cannot be read. |
 | `h9k task verify <id>` | Runs the project's verification gates on demand against the claim's worktree, recording the outcome on the run's own stream exactly as a headless gate pass would. |
 | `h9k task deliver <id> [--pr-summary <file>]` | Pushes the branch (through the pull request opener's push guard, which refuses a branch someone else moved on origin) and hands the claim into the standard delivery pipeline — from here the run is indistinguishable from a headless one: gates, the pre-PR review loop, and the pull request all follow. `--pr-summary` names a file (a `Title:` line, a blank line, the description) that becomes the run's pull request summary, so the pull request is built from it exactly as from a headless session's. |
@@ -1984,7 +1984,9 @@ into the session. It refuses while a headless follow-up session is still running
 
 The task anchor for this stage names the pull request, the unresolved threads the session may read (the same
 read scope a headless follow-up is given), what closeout last observed, the read-only triage report if
-analysis-only closeout wrote one, and the project's commit style. Under the narrative style it offers
+analysis-only closeout wrote one, and the project's commit style (a project that sets none takes
+`Hall9k__DefaultCommitStyle`, which `drive` reads from the environment it runs in, since the CLI cannot read the
+daemon's own configuration). Under the narrative style it offers
 `absorb-review-fixes` and runs it only on your word. The commits belong in this worktree: a push to the branch
 from another clone moves it on origin, and then `deliver`'s push guard refuses.
 
@@ -1992,8 +1994,11 @@ from another clone moves it on origin, and then `deliver`'s push guard refuses.
 and nothing else: no lap, no rebase, no auto-merge, and the pull request's earlier run is not superseded. A merge
 on GitHub is recorded on the claim's own run, which completes together with the task in one transaction and ends
 the claim; the earlier run is retired in the same sweep. The worktree and branch are left in place while a
-session is live in the worktree or it holds uncommitted work, and the feed line for the merge names the path. A
-close without a merge is recorded and shown, and the claim stays.
+session is live in the worktree, it holds uncommitted work, or the branch holds commits the pull request never
+carried (a merge at the pushed tip would otherwise leave them reachable from nothing), and the feed line for the
+merge names the path. A close without a merge is recorded and shown, and the claim stays. The stand-down holds
+whatever state the pull request's run is in: a run an automatic reopen already retired, or one that failed or was
+killed after the pull request opened, is still read for a merge or a close for as long as the claim is held.
 
 **Delivering returns it to closeout.** `h9k task deliver` runs the ordinary follow-up pipeline: the claim's run
 is recorded as a follow-up, and the push goes through the same ancestor-or-reflog guard the pull request opener
@@ -2007,7 +2012,10 @@ Delivering refuses when the branch holds nothing beyond the pull request's pushe
 headless way to finish the work.
 
 **Two ways out without delivering.** `h9k task release <id>` returns the task to Done with its pull request, and
-the pull request's earlier run is its current run again, so closeout's ordinary watch resumes. It refuses when
+the pull request's earlier run is its current run again, so closeout's ordinary watch resumes. When an automatic
+reopen had already retired that run, closeout has nothing to resume through, so the claim goes back to the reopened
+lap instead (Queued, or Blocked behind its dependency), and the dispatcher runs it as it would have before the
+claim. A triage report the reopen consumed is unread again after a release. It refuses when
 the branch holds commits beyond the pull request's pushed tip and names `deliver` and `handback`; it clears the
 interactive flag unless `--keep-interactive` is given, and `--unassign` is refused. `h9k task handback <id>`
 queues a headless follow-up lap on the pull request's branch, which pushes the claim's commits and takes the full

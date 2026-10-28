@@ -2808,6 +2808,18 @@ public static class TaskDecider
     }
 
     /// <summary>
+    /// A PR-stage claim given back to the reopened lap it took over, rather than to Done: the lap goes back to
+    /// the queue (or to Blocked, behind the dependency it was waiting on) as it stood before the claim. Used
+    /// when the pull request's run was already retired by the reopen, so closeout has no run to resume watching,
+    /// and when the claim's worktree would not check out. A reopen that landed Blocked kept the pull request's
+    /// run current so merge and close detection kept running; the requeue restores it
+    /// (<see cref="TaskRequeued.RestoredCurrentRunId"/>) instead of clearing it.
+    /// </summary>
+    public static TaskRequeued ReleasePullRequestStageClaimToLap(
+        TaskAggregate task, DateTimeOffset releasedAt, bool keepInteractive = false) =>
+        ReleaseInteractiveClaim(task, releasedAt, keepInteractive) with { RestoredCurrentRunId = task.PullRequestRunId };
+
+    /// <summary>
     /// <c>h9k task release</c> on a claim taken at the PR stage: the task returns to Done with its pull
     /// request, and the run that opened it is the task's current run again. Refused for any claim that
     /// is not an interactive one on a task with a pull request and a run to return to. Whether the

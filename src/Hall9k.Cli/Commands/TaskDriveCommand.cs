@@ -1548,10 +1548,8 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
     /// <summary>
     /// What the follow-up anchor says about the open pull request, read from the record after the claim
     /// landed: the read scope the reopen recorded, the triage report it carried, the last thing closeout
-    /// saw on the pull request's run, and the commit style the project resolves to. The platform's own
-    /// default commit style lives in the daemon's options, which the CLI cannot read, so a project that
-    /// names none gets the documented default (narrative), the same answer the daemon gives with its
-    /// option unset.
+    /// saw on the pull request's run, and the commit style the project resolves to, which a project that
+    /// names none takes from <see cref="PlatformDefaultCommitStyle"/>.
     /// </summary>
     private static async Task<TaskDriveAnchorBuilder.PullRequestStage> BuildPullRequestStageAsync(
         IDocumentSession session, TaskAggregate task, TaskDetails taskDetails, ProjectDetails project, RunDetails claimRun,
@@ -1567,11 +1565,21 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
             taskDetails.ReviewReadScope,
             pullRequestRun is null ? null : PullRequestStageFacts.DescribeLastObservation(pullRequestRun),
             taskDetails.FollowUpTriageReportPath,
-            CommitStyle.Resolve(project.CommitStyle, platformDefault: null),
+            CommitStyle.Resolve(project.CommitStyle, PlatformDefaultCommitStyle()),
             baseBranch,
             FollowUpPromptFragments.ResumedStackedFold(project, baseBranch, claimRun.BaseCommit),
             voiceSkill);
     }
+
+    /// <summary>
+    /// The node's default commit style for a project that sets none, as the daemon would resolve it for a
+    /// headless follow-up lap. The daemon binds <c>DefaultCommitStyle</c> from its configuration, which the
+    /// CLI cannot read, so this reads the documented <c>Hall9k__DefaultCommitStyle</c> environment variable
+    /// the same way <see cref="OperatingSettingsResolver"/> reads the other node settings; unset or
+    /// unrecognised falls through to narrative in <see cref="CommitStyle.Resolve"/>, as it does there.
+    /// </summary>
+    private static string? PlatformDefaultCommitStyle() =>
+        Environment.GetEnvironmentVariable($"{OperatingSettingsResolver.EnvironmentPrefix}DefaultCommitStyle");
 
     /// <summary>The facts a PR-stage claim is decided from, read before anything is appended.</summary>
     internal sealed record PullRequestStageClaim(
@@ -1616,7 +1624,8 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
     /// <summary>
     /// The way back for a PR-stage claim whose worktree would not check out. A Done task's claim is
     /// returned to its pull request, with the interactive flag as it stood before the claim; a reopened
-    /// lap's claim is requeued, so the lap that was waiting for the dispatcher still is. Fenced on the
+    /// lap's claim is requeued with the lap restored as it stood (a Blocked one keeps its pull request's run
+    /// current, so merge and close detection keep running), so the lap that was waiting still is. Fenced on the
     /// version the claim landed at, so a release or handback that already moved it is left alone.
     /// </summary>
     private static async Task GiveBackPullRequestStageClaimAsync(
@@ -1642,7 +1651,7 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
             taskBeforeClaim.Id,
             expectedVersion: fence.Version + 1,
             stage.WasReopenedLap
-                ? TaskDecider.ReleaseInteractiveClaim(current, at, keepInteractive: stage.FlagWasOn)
+                ? TaskDecider.ReleasePullRequestStageClaimToLap(current, at, keepInteractive: stage.FlagWasOn)
                 : TaskDecider.ReleaseInteractiveClaimToPullRequest(current, at, keepInteractive: stage.FlagWasOn));
         await session.SaveChangesAsync(cancellationToken);
     }

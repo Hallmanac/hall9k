@@ -232,6 +232,18 @@ public sealed class PullRequestStageCliTests
         PullRequestStageFacts.IsOpen(run).Should().Be(open);
     }
 
+    [Theory]
+    [InlineData("AwaitingReview", true)]
+    [InlineData("CloseoutParked", true)]
+    [InlineData("Failed", true)]
+    [InlineData("Superseded", false)]
+    public void Closeout_resumes_through_a_pull_request_run_unless_a_reopen_already_retired_it(string state, bool resumes)
+    {
+        RunDetails run = new() { State = state };
+
+        PullRequestStageFacts.CloseoutResumesThrough(run).Should().Be(resumes);
+    }
+
     [Fact]
     public void The_last_observation_names_the_state_threads_checks_and_decision()
     {
@@ -336,7 +348,7 @@ public sealed class PullRequestStageCliTests
         git.Answer($"rev-list --count {Tip}..refs/heads/{Branch}", output: pastRecorded + "\n")
             .Answer($"rev-list --count origin/{Branch}..refs/heads/{Branch}", output: pastOrigin + "\n");
 
-        int beyond = await TaskDeliveryPush.CountBeyondPushedTipAsync(
+        int beyond = await BranchPushedTip.CountBeyondAsync(
             git.Runner, Worktree, Branch, Branch, Tip, CancellationToken.None);
 
         beyond.Should().Be(expected);
@@ -345,7 +357,7 @@ public sealed class PullRequestStageCliTests
     [Fact]
     public async Task Commits_beyond_the_pushed_tip_are_unknown_when_neither_boundary_resolves()
     {
-        int beyond = await TaskDeliveryPush.CountBeyondPushedTipAsync(
+        int beyond = await BranchPushedTip.CountBeyondAsync(
             new ScriptedGit().Runner, Worktree, Branch, null, null, CancellationToken.None);
 
         beyond.Should().Be(-1);

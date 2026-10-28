@@ -1334,7 +1334,6 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
     public void Apply(IEvent<TaskRequeued> @event, TaskDetails view)
     {
         view.ClaimedByNodeId = null;
-        view.CurrentRunId = null;
         EndAnyOpenReviewLap(view);
         view.ResumesFromHandback = false;
         view.DependencyOverrideAcknowledged = false;
@@ -1345,6 +1344,8 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         // closed out. Landing back on Blocked instead keeps this view honest with the aggregate
         // it mirrors and lets the ordinary Blocked-state dependency sweep pick it back up.
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+        // Mirrors TaskAggregate.Apply(TaskRequeued): only a Blocked landing keeps the run a PR-stage give-back names.
+        view.CurrentRunId = view.State == TaskState.Blocked ? @event.Data.RestoredCurrentRunId : null;
         // Mirrors TaskAggregate.Apply(TaskRequeued): a network requeue states the wait, any other
         // reason ends it.
         if (@event.Data.Reason == RequeueReason.LaunchNetworkRetry)

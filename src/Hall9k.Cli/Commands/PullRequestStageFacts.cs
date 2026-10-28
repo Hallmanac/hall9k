@@ -20,6 +20,15 @@ internal static class PullRequestStageFacts
         && pullRequestRun.FailureReason != RunDetails.PullRequestClosedWithoutMerge;
 
     /// <summary>
+    /// Whether closeout can resume watching the pull request through this run once a claim on it is
+    /// given up. A run an automatic reopen retired (<see cref="RunState.Superseded"/>) is never looked at
+    /// again, so making it the task's current run would leave a Done task nothing watches; the claim goes
+    /// back to the reopened lap instead, which the dispatcher still owns.
+    /// </summary>
+    public static bool CloseoutResumesThrough(RunDetails pullRequestRun) =>
+        pullRequestRun.State != RunState.Superseded;
+
+    /// <summary>
     /// One line on what closeout last observed on the pull request, for the follow-up anchor: the run's
     /// state and the findings it last recorded. Null when the run recorded nothing worth saying.
     /// </summary>

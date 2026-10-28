@@ -250,7 +250,7 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // for a claim with nothing to deliver is release, which gives the pull request back to closeout.
         if (run.IsFollowUp && task.PullRequestUrl.IsNotBlank())
         {
-            int beyondPushedTip = await TaskDeliveryPush.CountBeyondPushedTipAsync(
+            int beyondPushedTip = await BranchPushedTip.CountBeyondAsync(
                 git, run.WorktreePath, run.Branch, task.LastPushedBranch, task.LastPushedBranchTip, cancellationToken);
             if (beyondPushedTip == 0)
             {

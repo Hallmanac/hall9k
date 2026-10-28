@@ -597,6 +597,14 @@ public sealed class TaskAggregate
     /// </summary>
     public string? UnreadTriageReportPath { get; private set; }
 
+    /// <summary>
+    /// The triage report the latest reopen handed its lap (<see cref="TaskReopened.TriageReportPath"/>). A
+    /// reopen consumes <see cref="UnreadTriageReportPath"/>, so this is what lets an interactive claim
+    /// taken on the pull request and returned without delivering (<see cref="Events.InteractiveClaimReturnedToPullRequest"/>)
+    /// put the report back: nobody acted on it.
+    /// </summary>
+    public string? FollowUpTriageReportPath { get; private set; }
+
     public void Apply(CloseoutTriageDispatched @event)
     {
         CloseoutTriagesDispatched++;
@@ -2099,7 +2107,6 @@ public sealed class TaskAggregate
     public void Apply(TaskRequeued @event)
     {
         ClaimedByNodeId = null;
-        CurrentRunId = null;
         PendingQuestionId = null;
         EndAnyOpenReviewLap();
         // A deliberate start-it-mine claim (h9k task start --acknowledge-unmet-dependencies) can
@@ -2109,6 +2116,9 @@ public sealed class TaskAggregate
         // instead preserves that invariant and lets TaskDependencyResolver's ordinary Blocked
         // sweep pick the task back up once the blocker actually clears.
         State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+        // Only a Blocked landing keeps a current run, and only the one a PR-stage claim's give-back names:
+        // see TaskRequeued.RestoredCurrentRunId and Apply(TaskReopened), which keeps it the same way.
+        CurrentRunId = State == TaskState.Blocked ? @event.RestoredCurrentRunId : null;
         // Recomputed fresh from this event's own reason alone every time (PendingMentionFollowUpAfterPreflight's
         // own doc) — never OR-accumulated, so any requeue reason other than one of the two mention
         // follow-up's own pre-flight uses clears it the same way it was set. The retry reason keeps
@@ -2232,6 +2242,10 @@ public sealed class TaskAggregate
     // closeout's watch picks up where the claim paused it.
     public void Apply(InteractiveClaimReturnedToPullRequest @event)
     {
+        // The reopen under the claim consumed the unread triage report and the claim did nothing with it, so
+        // it is unread again; a report parked after the reopen is newer and wins.
+        UnreadTriageReportPath ??= FollowUpTriageReportPath;
+        FollowUpTriageReportPath = null;
         ClaimedByNodeId = null;
         CurrentRunId = @event.PullRequestRunId;
         PendingQuestionId = null;
@@ -2313,6 +2327,7 @@ public sealed class TaskAggregate
         ChangesRequestedReviews = @event.ChangesRequestedReviews ?? [];
         ReviewReadScope = @event.ReviewReadScope;
         UnreadTriageReportPath = null;
+        FollowUpTriageReportPath = @event.TriageReportPath;
         foreach (ChangesRequestedReview carried in @event.ChangesRequestedReviews ?? [])
         {
             // The owner's go dispatches ONE lap for a review: marking it carried is what stops a

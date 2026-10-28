@@ -248,6 +248,55 @@ public sealed class PullRequestStageClaimTests
     }
 
     [Fact]
+    public void Release_puts_back_the_triage_report_the_reopen_under_the_claim_consumed()
+    {
+        TaskAggregate task = DoneWithPullRequest(out Guid pullRequestRunId);
+        (TaskReopened? reopened, TaskClaimed claimed) = TaskDecider.ClaimPullRequestInteractively(
+            task, pullRequestRunId, Branch, pullRequestIsOpen: true, liveHeadlessSession: null, DomainId.New(), Now, Owner,
+            triageReportPath: "/reports/triage.md");
+        task.Apply(reopened!);
+        task.Apply(claimed);
+        task.UnreadTriageReportPath.Should().BeNull("the reopen handed it to the claim");
+
+        task.Apply(TaskDecider.ReleaseInteractiveClaimToPullRequest(task, Now));
+
+        task.UnreadTriageReportPath.Should().Be("/reports/triage.md", "nobody acted on it");
+    }
+
+    [Fact]
+    public void A_pull_request_stage_claim_given_back_to_a_blocked_lap_keeps_the_pull_requests_run_current()
+    {
+        Guid blocker = DomainId.New();
+        TaskAggregate task = DoneWithPullRequest(out Guid pullRequestRunId, [blocker]);
+        task.Apply(TaskDecider.Reopen(
+            task, pullRequestRunId, Branch, "CI failing", FollowUpKind.FailingChecks, automatic: true, Now, Owner));
+        task.CurrentRunId.Should().Be(pullRequestRunId, "a Blocked reopen keeps merge and close detection running");
+        (_, TaskClaimed claimed) = Claim(task, pullRequestRunId);
+        task.Apply(claimed);
+        task.CurrentRunId.Should().Be(claimed.RunId);
+
+        task.Apply(TaskDecider.ReleasePullRequestStageClaimToLap(task, Now));
+
+        task.State.Should().Be(TaskState.Blocked);
+        task.CurrentRunId.Should().Be(pullRequestRunId);
+        task.FollowUpBranch.Should().Be(Branch, "the lap is as it stood");
+    }
+
+    [Fact]
+    public void A_pull_request_stage_claim_given_back_to_a_queued_lap_leaves_it_queued_with_no_current_run()
+    {
+        TaskAggregate task = ReopenedLap(out Guid pullRequestRunId, FollowUpKind.FailingChecks);
+        (_, TaskClaimed claimed) = Claim(task, pullRequestRunId);
+        task.Apply(claimed);
+
+        task.Apply(TaskDecider.ReleasePullRequestStageClaimToLap(task, Now));
+
+        task.State.Should().Be(TaskState.Queued);
+        task.CurrentRunId.Should().BeNull();
+        task.FollowUpBranch.Should().Be(Branch);
+    }
+
+    [Fact]
     public void Release_to_the_pull_request_is_refused_without_an_interactive_claim()
     {
         TaskAggregate task = DoneWithPullRequest(out _);

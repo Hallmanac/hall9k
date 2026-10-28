@@ -198,6 +198,8 @@ public sealed class CloseoutEngine(
                 .Where(r => r.PullRequestNumber != null)
                 .Where(r => r.FailureReason != RunDetails.PullRequestClosedWithoutMerge)
                 .ToListAsync(cancellationToken);
+
+            watched = [.. watched, .. await HeldSupersededPullRequestRunsAsync(query, nodeId, cancellationToken)];
         }
 
         int inspected = 0;
@@ -743,6 +745,14 @@ public sealed class CloseoutEngine(
         // aggregate replay forever, for a task-state mismatch that will never change.
         if (task.CurrentRunId != run.Id)
         {
+            // The same exception InspectAndActAsync makes: a pull request run that failed or was killed
+            // after the pull request opened is still the only watcher of a pull request the owner is
+            // iterating on by hand, so the claim's newer run does not retire it.
+            if (IsHeldByPullRequestStageClaim(task, run))
+            {
+                return await WatchHeldPullRequestAsync(session, fence, task, run, project, cancellationToken);
+            }
+
             if (task.CurrentRunId is not null)
             {
                 session.Events.Append(run.Id, new RunSuperseded(run.Id, task.LeaseGeneration, DateTimeOffset.UtcNow));
@@ -819,6 +829,44 @@ public sealed class CloseoutEngine(
     }
 
     /// <summary>
+    /// The pull request runs an owner's interactive claim is holding that no state-based query above reaches:
+    /// a run an automatic reopen already retired (<see cref="RunState.Superseded"/>) before the owner took the
+    /// reopened lap with <c>h9k task drive</c>. Nothing else watches such a pull request while the claim is
+    /// held, so a merge on GitHub would go unrecorded. A run that failed or was killed is already in the
+    /// orphan sweep and an awaiting one in the watched sweep, so only the superseded case is added here, and
+    /// the set is the handful of held claims rather than every superseded run on record.
+    /// </summary>
+    private static async Task<IReadOnlyList<RunDetails>> HeldSupersededPullRequestRunsAsync(
+        IQuerySession query, Guid nodeId, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<Guid> heldTaskIds = await query.Query<TaskListItem>()
+            .Where(t => t.MatchesSql("d.data ->> 'state' = ?", TaskState.Claimed.Value))
+            .Where(t => t.ClaimedByNodeId == Guid.Empty && t.PullRequestUrl != null)
+            .Select(t => t.Id)
+            .ToListAsync(cancellationToken);
+
+        List<RunDetails> held = [];
+        foreach (Guid taskId in heldTaskIds)
+        {
+            TaskAggregate? task = await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
+            if (task?.PullRequestRunId is not { } pullRequestRunId)
+            {
+                continue;
+            }
+
+            RunDetails? run = await query.LoadAsync<RunDetails>(pullRequestRunId, cancellationToken);
+            if (run is not null && run.State == RunState.Superseded && run.NodeId == nodeId
+                && run.FailureReason != RunDetails.PullRequestClosedWithoutMerge
+                && IsHeldByPullRequestStageClaim(task, run))
+            {
+                held.Add(run);
+            }
+        }
+
+        return held;
+    }
+
+    /// <summary>
     /// Whether <paramref name="run"/> is the run the pull request was opened through and the task is
     /// currently held by the owner's interactive claim on that pull request's branch (<c>h9k task drive</c>
     /// at the PR stage). Pure, so the rule is pinned without a store.
@@ -863,7 +911,7 @@ public sealed class CloseoutEngine(
         {
             Guid claimRunId = task.CurrentRunId!.Value;
             RunDetails? claimRun = await session.LoadAsync<RunDetails>(claimRunId, cancellationToken);
-            string? kept = claimRun is null ? null : await WorktreeInUseAsync(claimRun, cancellationToken);
+            string? kept = claimRun is null ? null : await WorktreeInUseAsync(claimRun, task, cancellationToken);
             bool committed = await ReconstructAndCompleteAsync(
                 session, task, project, claimRunId, node.NodeId, node.OwnerId, snapshot.MergedAt, now,
                 cancellationToken, completeClaimedTaskHere: true, keptWorktreePath: kept);
@@ -872,12 +920,17 @@ public sealed class CloseoutEngine(
                 return InspectionOutcome.Inspected;
             }
 
-            session.Events.Append(run.Id, new RunSuperseded(run.Id, task.LeaseGeneration, now));
-            await session.SaveChangesAsync(cancellationToken);
+            // A run an automatic reopen already retired needs no second RunSuperseded.
+            if (run.State != RunState.Superseded)
+            {
+                session.Events.Append(run.Id, new RunSuperseded(run.Id, task.LeaseGeneration, now));
+                await session.SaveChangesAsync(cancellationToken);
+            }
+
             return InspectionOutcome.MergeObserved;
         }
 
-        if (snapshot.IsClosed)
+        if (snapshot.IsClosed && run.FailureReason != RunDetails.PullRequestClosedWithoutMerge)
         {
             // Recorded where the pull request's watch lives, and the worktree is not touched: the owner is
             // standing in it. The claim stays, so deliver and release still work on the branch.
@@ -895,9 +948,12 @@ public sealed class CloseoutEngine(
 
     /// <summary>
     /// The claim's worktree path when it must not be removed after a merge: a session is still alive in it,
-    /// or the tree holds uncommitted work (or git could not say it does not). Null when it is safe to clean up.
+    /// the tree holds uncommitted work, or the branch holds commits the pull request never carried (a merge
+    /// at the pushed tip leaves those reachable from nothing once the worktree and branch go). In each case
+    /// git failing to say otherwise counts as in use. Null when it is safe to clean up.
     /// </summary>
-    private async Task<string?> WorktreeInUseAsync(RunDetails claimRun, CancellationToken cancellationToken)
+    private async Task<string?> WorktreeInUseAsync(
+        RunDetails claimRun, TaskAggregate task, CancellationToken cancellationToken)
     {
         if (claimRun.WorktreePath.IsBlank() || !Directory.Exists(claimRun.WorktreePath))
         {
@@ -914,7 +970,15 @@ public sealed class CloseoutEngine(
 
         ProcessResult status = await processRunner(
             "git", ["status", "--porcelain"], claimRun.WorktreePath, cancellationToken);
-        return status.ExitCode != 0 || status.StandardOutput.Trim().Length > 0 ? claimRun.WorktreePath : null;
+        if (status.ExitCode != 0 || status.StandardOutput.Trim().Length > 0)
+        {
+            return claimRun.WorktreePath;
+        }
+
+        int beyondPushedTip = await BranchPushedTip.CountBeyondAsync(
+            processRunner, claimRun.WorktreePath, claimRun.Branch, task.LastPushedBranch, task.LastPushedBranchTip,
+            cancellationToken);
+        return beyondPushedTip != 0 ? claimRun.WorktreePath : null;
     }
 
     private static bool IsProcessAlive(int processId, DateTimeOffset startedAt)
@@ -2712,14 +2776,15 @@ public sealed class CloseoutEngine(
         await TellTheCardAsync(run.TaskId, project, task, cancellationToken);
 
         // The owner was iterating on this pull request by hand and a session is still live in the
-        // worktree, or the tree holds uncommitted work: removing either would pull the floor out from
-        // under them, so both are left and the merge event names the path.
+        // worktree, the tree holds uncommitted work, or the branch holds commits the pull request never
+        // carried: removing either would pull the floor out from under them, so both are left and the
+        // merge event names the path.
         if (keptWorktreePath is not null)
         {
             logger.LogInformation(
                 "Run {RunId}: pull request {Url} merged while the owner was iterating on it; leaving worktree "
                 + "{WorktreePath} and branch {Branch} in place because a session is live there or it holds "
-                + "uncommitted work",
+                + "uncommitted or unpushed work",
                 run.Id, run.PullRequestUrl, keptWorktreePath, run.Branch);
             return;
         }
