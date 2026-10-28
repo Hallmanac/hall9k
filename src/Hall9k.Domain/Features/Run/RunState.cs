@@ -59,18 +59,29 @@ public sealed record RunState
     public bool IsLive => this == Dispatched || this == Running || this == Verifying || this == UnderReview;
 
     /// <summary>
-    /// The stages the daemon's pipeline owns between <c>h9k task deliver</c> and the pull request:
-    /// the gates, an independent review or fix session, and the park a human answers. A session
-    /// registered against the run in one of them is the human's driving session, not the build, so
-    /// recording it must leave the state and the pipeline's own recorded sessions where they are.
+    /// Whether a run in this state, delivered or not, is in the stages the daemon's pipeline owns
+    /// between <c>h9k task deliver</c> and the pull request: the gates, an independent review or fix
+    /// session, and the park a human answers. A session registered against the run there is the
+    /// human's driving session, not the build, so recording it must leave the state and the
+    /// pipeline's own recorded sessions where they are.
+    /// <para>
+    /// <see cref="Verifying"/>, <see cref="UnderReview"/> and <see cref="ReviewParked"/> only ever
+    /// follow a delivery. <see cref="BudgetParked"/> and <see cref="LaunchHeld"/> are shared with
+    /// the build itself (a build session that hits the usage limit parks the same way), so the
+    /// state alone cannot say which side of the delivery they are on; <paramref name="delivered"/>,
+    /// whether <c>AgentSessionCompleted</c> was recorded, is what tells the two apart.
+    /// </para>
     /// </summary>
-    public bool IsPastBuild => this == Verifying || this == UnderReview || this == ReviewParked;
+    public bool IsPastBuild(bool delivered) =>
+        this == Verifying || this == UnderReview || this == ReviewParked
+        || (delivered && (this == BudgetParked || this == LaunchHeld));
 
     /// <summary>
     /// Whether an interactive claim's own session can be entered or registered against a run in this
     /// state: the build itself, or any pre-pull-request stage the driving session stays on for.
     /// </summary>
-    public bool AdmitsInteractiveSession => this == Dispatched || this == Running || IsPastBuild;
+    public bool AdmitsInteractiveSession(bool delivered) =>
+        this == Dispatched || this == Running || IsPastBuild(delivered);
 
     public static implicit operator string(RunState? value) => value?.Value ?? string.Empty;
 

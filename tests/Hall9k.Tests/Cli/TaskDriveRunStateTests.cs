@@ -23,7 +23,20 @@ public sealed class TaskDriveRunStateTests
     [InlineData("ReviewParked")]
     public void A_run_at_any_stage_before_the_pull_request_opens_is_admitted(string state)
     {
-        TaskDriveCommand.RunStateRefusal(state, TaskId, RunId).Should().BeNull();
+        TaskDriveCommand.RunStateRefusal(state, delivered: false, TaskId, RunId).Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("BudgetParked")]
+    [InlineData("LaunchHeld")]
+    public void A_park_after_the_delivery_is_admitted_and_a_park_before_it_is_not(string state)
+    {
+        // The build parks on the same usage limit and launch failure the review loop does, so the
+        // state alone cannot say which side of the delivery the run is on.
+        TaskDriveCommand.RunStateRefusal(state, delivered: true, TaskId, RunId).Should().BeNull();
+        TaskDriveCommand.RunStateRefusal(state, delivered: false, TaskId, RunId).Should().Contain($"is already {state}");
+        TaskDriveCommand.PastBuildPromptRefusal(state, delivered: true, TaskId).Should().NotBeNull();
+        TaskDriveCommand.PastBuildPromptRefusal(state, delivered: false, TaskId).Should().BeNull();
     }
 
     [Theory]
@@ -34,7 +47,7 @@ public sealed class TaskDriveRunStateTests
     [InlineData("Superseded")]
     public void A_run_past_the_review_loop_is_refused_with_the_way_to_see_where_it_stands(string state)
     {
-        string? refusal = TaskDriveCommand.RunStateRefusal(state, TaskId, RunId);
+        string? refusal = TaskDriveCommand.RunStateRefusal(state, delivered: false, TaskId, RunId);
 
         refusal.Should().Contain($"is already {state}").And.Contain($"h9k task show {TaskId}");
     }
@@ -45,7 +58,7 @@ public sealed class TaskDriveRunStateTests
     [InlineData("ReviewParked")]
     public void The_build_prompt_is_refused_once_the_pipeline_owns_the_worktree(string state)
     {
-        TaskDriveCommand.PastBuildPromptRefusal(state, TaskId).Should().Contain($"h9k task drive {TaskId}").And.Contain("neither flag");
+        TaskDriveCommand.PastBuildPromptRefusal(state, delivered: false, TaskId).Should().Contain($"h9k task drive {TaskId}").And.Contain("neither flag");
     }
 
     [Theory]
@@ -53,13 +66,13 @@ public sealed class TaskDriveRunStateTests
     [InlineData("Running")]
     public void The_build_prompt_is_handed_over_while_the_build_is_still_the_work(string state)
     {
-        TaskDriveCommand.PastBuildPromptRefusal(state, TaskId).Should().BeNull();
+        TaskDriveCommand.PastBuildPromptRefusal(state, delivered: false, TaskId).Should().BeNull();
     }
 
     [Fact]
     public void A_run_that_moves_on_while_the_launch_is_prepared_says_so()
     {
-        string? refusal = TaskDriveCommand.RunStateRefusal(RunState.Completed, TaskId, RunId, "while this session was preparing to launch");
+        string? refusal = TaskDriveCommand.RunStateRefusal(RunState.Completed, delivered: true, TaskId, RunId, "while this session was preparing to launch");
 
         refusal.Should().Contain("moved out of those stages while this session was preparing to launch");
     }

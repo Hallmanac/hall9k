@@ -164,7 +164,7 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
         // run. Registering there records the session and its name and moves nothing, because
         // InteractiveSessionStarted leaves a run past the build in the state, and with the review and
         // fix sessions, the pipeline put it in. A run past all of those has nothing to attach to.
-        if (TaskDriveCommand.RunStateRefusal(run.State, task.Id, runId) is { } refusal)
+        if (TaskDriveCommand.RunStateRefusal(run.State, run.Delivered, task.Id, runId) is { } refusal)
         {
             throw new DomainConflictException(refusal);
         }

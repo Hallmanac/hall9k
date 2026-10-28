@@ -108,6 +108,26 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// </summary>
     public ReviewStageComposition ReviewStageComposition { get; set; } = ReviewStageComposition.FullPipeline;
     public RunState State { get; set; } = RunState.Unknown;
+    /// <summary>
+    /// Whether <c>AgentSessionCompleted</c> was recorded: the build handed the run to the daemon's
+    /// pipeline. <see cref="RunState.BudgetParked"/> and <see cref="RunState.LaunchHeld"/> are shared
+    /// by the build and the pipeline, so this is what says which side of the delivery a park is on.
+    /// </summary>
+    public bool Delivered { get; set; }
+
+    /// <summary>
+    /// Whether the daemon's pipeline owns this run now: <see cref="RunState.IsPastBuild"/> read with
+    /// <see cref="Delivered"/>. A method, not a property, so the document does not persist it.
+    /// </summary>
+    public bool IsPastBuild() => State.IsPastBuild(Delivered);
+
+    /// <summary>
+    /// Whether <paramref name="session"/> is one of the pipeline's own. Past the build the owner's
+    /// driving session (<c>h9k task drive</c>, registered after deliver) is recorded beside them, and
+    /// it is not something the daemon or <c>h9k run kill</c> may terminate, nor what a running gate or
+    /// the stall clock is about. Before then the interactive session is the claim itself.
+    /// </summary>
+    public bool IsPipelineSession(ActiveSession session) => !IsPastBuild() || session.Role != AgentRole.Interactive;
     public int? ProcessId { get; set; }
     public DateTimeOffset? ProcessStartedAt { get; set; }
     /// <summary>
@@ -1248,6 +1268,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
     {
         EndSessions(view);
         view.State = RunState.Verifying;
+        view.Delivered = true;
         if (@event.Data.DeliveredByNodeId is { } deliveredByNodeId)
         {
             view.NodeId = deliveredByNodeId;
@@ -2176,7 +2197,9 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         // rebase-recovery, or pr-review dispatch event with no generic leg-completed event first,
         // so without this ActiveSessions would still name the process that just exited, and
         // h9k status/task show would read a launch-held run as though a session were still live.
-        EndSessions(view);
+        // Past the build the owner's driving session is recorded beside the pipeline's and is not
+        // the process that failed to launch, so it stays (EndPipelineSessions).
+        EndPipelineSessions(view);
         view.ParkedReason = $"waiting on the node to relaunch sessions - {@event.Data.ObservedMessage}";
         view.State = RunState.LaunchHeld;
         view.LaunchHeldAt = @event.Data.HeldAt;
@@ -2298,7 +2321,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         }
         // Once the pipeline owns the run, the driving session joins whatever review or fix session
         // is already recorded rather than clearing it, and the pipeline's state stays where it is.
-        bool pipelineOwnsRun = view.State.IsPastBuild;
+        bool pipelineOwnsRun = view.IsPastBuild();
         StartSession(
             view, AgentRole.Interactive, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.StartedAt,
             @event.Data.MachineName, @event.Data.SessionName, joinsPipelineSessions: pipelineOwnsRun);
@@ -2328,7 +2351,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         view.LastInteractiveActivityAt = @event.Data.EndedAt;
         // Past the build the interactive session that ends is the owner's driving session, and the
         // review and fix sessions the pipeline recorded beside it are still running.
-        if (view.State.IsPastBuild)
+        if (view.IsPastBuild())
         {
             view.ActiveSessions.RemoveAll(session => session.Role == AgentRole.Interactive);
         }
@@ -2363,7 +2386,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
             // recorded on this run stay recorded.
             view.ActiveSessions.RemoveAll(session => session.Role == AgentRole.Interactive);
         }
-        else if (role != AgentRole.Build && view.State.IsPastBuild)
+        else if (role != AgentRole.Build && view.IsPastBuild())
         {
             // A fix or recovery session replaces whatever else the pipeline had out, but not the
             // owner's driving session, which is recorded beside the pipeline and not part of it.
@@ -2392,7 +2415,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
     /// </summary>
     private static void EndPipelineSessions(RunDetails view)
     {
-        if (view.State.IsPastBuild)
+        if (view.IsPastBuild())
         {
             view.ActiveSessions.RemoveAll(session => session.Role != AgentRole.Interactive);
         }

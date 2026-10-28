@@ -1084,7 +1084,8 @@ the human's word, and map instructions to verbs: build here or `h9k task delegat
 hand. It carries the project's writing conventions, and names `recipes/task-drive.md` in the project home
 when that file exists. `register-session` records the session's process identity (read from `CLAUDE_PID`,
 Claude Code's own environment variable) and name, and is accepted at every stage before the pull request
-opens (Dispatched, Running, Verifying, UnderReview, ReviewParked); past the build it records the session
+opens (Dispatched, Running, Verifying, UnderReview, ReviewParked, and a usage-limit or launch-hold park
+after the build was delivered); past the build it records the session
 and nothing else, so the run's state and the review sessions already recorded stay as they are. The
 double-booking and liveness guards below key off that record, and a session that never registers
 degrades honestly to a no-op rather than a false block, exactly as a claim nobody ever recorded a
