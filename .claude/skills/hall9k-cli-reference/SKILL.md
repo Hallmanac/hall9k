@@ -1718,7 +1718,23 @@ for a single reply on a task's own pull request, inside a review thread (`--thre
 top-level comment that answers a review's own body (`--review`), and the only route any dispatched
 session has to either.
 
+**Closeout while a human drives, and the go.** While a task's interactive flag is on (`h9k task drive`
+and every direct `h9k task start` set it), closeout is analysis-only: it dispatches no lap (review
+feedback, changes requested, failing checks, rebase, stack replay), attempts no mechanical rebase, makes
+no stacked retarget, and never auto-merges a pre-approved task. Merge and close detection, the external
+review observation, the membership gate, and the re-request of an errored Copilot review still run. It
+reports instead, as a needs-you row on `h9k status` and `h9k task show` that names the matching go:
+unresolved threads (triaged once per distinct thread set by one read-only session; only the counts of
+fix, decline, and route reach the row, and the report's path is named) take `h9k pr resolve <task>`,
+failing checks `--checks`, a conflict `--rebase`, and a changes-requested review, a stacked parent that
+moved or merged, or a held pre-approved merge take `h9k task revise <task> --clear-interactive-mode`
+(a held merge can also be merged on GitHub by hand). Every one hands the task back to automation:
+`h9k pr resolve` in any form clears the interactive flag in the same append as its reopen and then
+dispatches the lap, whose prompt carries the triage report fenced as data. A task already Done with the
+flag on switches to this behavior at upgrade.
+
 ```bash
+h9k pr resolve <task> [--checks | --rebase]    # the go on a driven task: clears the interactive flag and dispatches the lap, which then runs fully automatically
 h9k pr feedback <task>                         # list the feedback from outside the project's roster this task holds (reviewer, kind, link, status, and a read-only evaluator's one-word recommendation with the path of its assessment file; never the feedback's text or the assessment's prose)
 h9k pr feedback <task> <link-or-thread-id> --go        # the owner's go: the next poll dispatches ONE fix lap carrying it, even if the head moved
 h9k pr feedback <task> <link-or-thread-id> --decline   # dispatch nothing; a declined review releases the merge hold, a declined thread stays unresolved and keeps holding it

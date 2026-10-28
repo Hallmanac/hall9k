@@ -1084,6 +1084,35 @@ progress-cap park) or the full lap history (a lifetime-ceiling park) so the huma
 machine already tried. A manual resolve resets both counters, because a human asking for another
 attempt is a fresh grant.
 
+**Closeout is analysis-only while a human drives the task.** Everything above describes a task
+whose interactive-mode flag is off. While the flag is on (it is set by `h9k task drive` and by every
+direct `h9k task start`), closeout still watches for the merge and the close, still records what
+GitHub says about the review, still holds a non-member's feedback at the membership gate, and still
+re-requests a Copilot review that errored. What it stops doing is acting on the branch or in the
+thread: it dispatches none of the laps above (review feedback, changes requested, failing checks,
+rebase, stack replay), attempts no mechanical rebase, and makes no stacked retarget. It reports
+instead. Unresolved threads that would have bought a lap are triaged once per distinct set of
+thread ids by one read-only session, which applies the `resolve-review-threads` triage step,
+classifies each thread as fix, decline, or route with its reasoning, writes the report into the
+run directory, and posts and files nothing; only the counts of the three dispositions reach the
+stream and the board. Failing checks, a conflict, a changes-requested review, and a stacked parent
+that moved or merged are reported with no session at all. A report is recorded only when what it
+reports changes, never once per poll, and `h9k status` and `h9k task show` show it as a needs-you
+row naming the go that matches it: `h9k pr resolve <id>` for threads, `--checks` for failing
+checks, `--rebase` for a conflict, and `h9k task revise <id> --clear-interactive-mode` for a
+changes-requested review or a stacked parent, because no `pr resolve` form dispatches those laps.
+Every one of those levers hands the task back to automation, which then does the work as it always
+did. `h9k pr resolve` in any form clears the interactive flag in the same step as its reopen, and
+the first lap after that starts from the triage report, fenced as data, instead of triaging from
+nothing.
+
+A pre-approved task with the flag on does not auto-merge either. Once nothing else needs a human or
+an agent, closeout shows a needs-you row (pre-approved; end iteration with
+`h9k task revise <id> --clear-interactive-mode`, or merge it yourself on GitHub) and waits. With
+the flag cleared, pre-approval behaves exactly as described next. A task that was already Done with
+the flag on when this shipped gets the same behavior with no special case, and every lever its row
+names clears the flag, so the way back to today's closeout is always on the row.
+
 **The platform never merges — unless a task opts in.** That is the last human checkpoint by
 default, and it stays one, with one deliberate exception: a task published or later set
 `h9k task publish --pre-approved` / `h9k task set-pre-approved <id> on` removes the owner as a

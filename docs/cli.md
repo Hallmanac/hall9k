@@ -1026,7 +1026,15 @@ resets the closeout monitor's automatic retry budget. The flag says which proble
 `--checks` dispatches the fix-the-CI prompt when the pull request's checks are failing, and
 `--rebase` dispatches the rebase-onto-main prompt when its branch conflicts with its base, which is
 for when you see the conflict before the closeout monitor's next inspection does. With neither, the
-lap resolves review comments. `h9k task resolve <id> --pr <url>` is the attestation exit from a
+lap resolves review comments. On a task you are driving by hand (its interactive flag is on),
+closeout only reports what it finds and holds a pre-approved merge, and `h9k pr resolve` is your go:
+in any of its forms it clears the interactive flag, recorded as `h9k task revise
+--clear-interactive-mode` records it and in the same append as the reopen, and then dispatches the
+lap, so the follow-up and the closeout after it run fully automatically, a pre-approved merge
+included. The lap starts from the closeout triage report when one exists. A changes-requested review
+or a stacked parent that moved is not a lap any `pr resolve` form dispatches; for those the row names
+`h9k task revise <id> --clear-interactive-mode`, after which the next poll dispatches the lap.
+`h9k task resolve <id> --pr <url>` is the attestation exit from a
 Failed task, and `--pr` records where the work landed.
 
 ### Projects, owners, connections
