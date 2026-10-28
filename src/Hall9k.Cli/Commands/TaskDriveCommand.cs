@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Cli.Orchestrator;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
@@ -55,19 +56,21 @@ namespace Hall9k.Cli.Commands;
 /// <c>NodeLoad</c>'s ceiling measurement never counts), so it starts even when the daemon's
 /// session ceiling is fully consumed and never competes with headless dispatch throughput.
 /// <para>
-/// <b>Default: the prompt-handoff connector (R4, idea fcaded0b's design rulings, Take the Wheel
-/// epic 9272e514's slice 7).</b> This command claims the task and cuts the worktree exactly as
-/// before, then prints the worktree path, the branch, and a starting prompt — it no longer
-/// launches or waits on a Claude Code process itself. The operator pastes that prompt into a
-/// Claude Code session started anywhere; the prompt carries the coordinates and tells the session
-/// to self-register through <c>h9k task register-session</c> (replacing the launch-time pid
-/// observation the direct-launch path below still performs), which is what lets the
-/// double-booking and liveness guards (re-entry, verify, deliver, handback, release) recognise
-/// it. A session that never registers gets the honest degradation every guard already had for a
-/// task nobody ever recorded a session against — a silent no-op, not a false block. Re-entry here
-/// always opens with a fresh prompt rather than resuming a prior conversation: the operator's own
-/// pasted-in session is not one this command ever launched, so there is nothing of its own for
-/// this command to reattach to.
+/// <b>Default: the launch line.</b> This command claims the task and cuts the worktree exactly as
+/// before, writes the task anchor into the run directory, then prints the worktree path, the branch,
+/// and one line that starts a Claude Code session under that anchor
+/// (<see cref="LaunchTextDefaults.RenderTaskDrive"/>); it no longer launches or waits on a process
+/// itself. The anchor (<see cref="TaskDriveAnchorBuilder"/>) has the session self-register through
+/// <c>h9k task register-session</c> as its first act, read <c>h9k task show</c> before every move, and
+/// carry out the human's instructions a phase at a time, which is what lets the double-booking and
+/// liveness guards (re-entry, verify, deliver, delegate, handback, release) recognise it. A session
+/// that never registers gets the honest degradation every guard already had for a task nobody ever
+/// recorded a session against: a silent no-op, not a false block. Re-entry works at every stage before
+/// the pull request opens (<see cref="RunState.AdmitsInteractiveSession"/>) and, when a session has
+/// registered, prints a line that resumes its conversation with the fresh line beneath it as the
+/// fallback. <c>--print-prompt</c> keeps the earlier prompt handoff for a human who pastes it into a
+/// session of their own; that prompt always opens fresh, since a pasted-in session is not one this
+/// command ever launched.
 /// </para>
 /// <para>
 /// <b><c>--direct-launch</c>: the prior behavior, kept for one release.</b> Launches a plain
@@ -105,13 +108,23 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
         [Description("Re-enter even though the claim's interactive session was recorded on another machine this one cannot check — attests you confirmed by hand that it has exited")]
         public bool Force { get; init; }
 
+        [CommandOption("--print-prompt")]
+        [Description(
+            "Print the starting prompt to paste into a Claude Code session you start yourself, instead of the "
+            + "default launch line. The pasted session self-registers (h9k task register-session), which is what "
+            + "lets the double-booking and liveness guards recognise it. Choose this or the default, not both "
+            + "with --direct-launch. Refused once the task has been delivered and the pipeline owns the "
+            + "worktree: the default launch line is the path for that stage.")]
+        public bool PrintPrompt { get; init; }
+
         [CommandOption("--direct-launch")]
         [Description(
             "Launch a plain interactive Claude Code process attached to this terminal yourself, the way this "
-            + "command always did, instead of printing a prompt to paste into a session you start on your own. "
-            + "Kept for one release; the prompt-handoff default is the supported path going forward. Refused on "
-            + "a machine where Claude Code resolves to a Windows script shim (.cmd/.bat/.ps1) — the opening "
-            + "prompt cannot travel through cmd.exe's argv with its newlines intact.")]
+            + "command always did, instead of printing the launch line. Kept for one release; the launch line "
+            + "is the supported path going forward, and --print-prompt remains for a session you paste into. "
+            + "Refused on a machine where Claude Code resolves to a Windows script shim (.cmd/.bat/.ps1) — the "
+            + "opening prompt cannot travel through cmd.exe's argv with its newlines intact. Refused once the "
+            + "task has been delivered and the pipeline owns the worktree, as --print-prompt is.")]
         public bool DirectLaunch { get; init; }
 
         [CommandOption("--acknowledge-unmet-dependencies")]
@@ -124,6 +137,13 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
+        if (settings.PrintPrompt && settings.DirectLaunch)
+        {
+            throw new DomainValidationException(
+                "--print-prompt prints a prompt for you to paste and --direct-launch launches the session itself; "
+                + "choose one. With neither, h9k task drive prints the line that starts a session for this task.");
+        }
+
         // Checked before anything is claimed, not inside the launch's own catch (adversarial
         // review, cycle 8), and only for --direct-launch: the prompt-handoff default below never
         // puts the prompt on an argv at all (the operator pastes it as a chat message into a
@@ -203,24 +223,14 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(taskDetails.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {taskId}'s project no longer exists.");
 
-        // The raw document rather than BlockerContextAssembler's own call: that type lives in
-        // Hall9k.Daemon (it can spawn a synthesis session for a wide fan-in) and the CLI cannot
-        // reference it. BlockerContextDocument and BlockerHandoffQuery are the shared renderer
-        // and depth-one reader both surfaces already agree on — h9k task show pastes the same
-        // unsynthesized document into its own "Starting context" screen (Decisions Log #36) —
-        // so an operator's session gets the real context rather than none at all.
-        LocalFleetSource fleet = new(session, project, context.OwnerId);
-        string? blockerContext = await LoadBlockerContextAsync(session, taskDetails, fleet, cancellationToken);
-        // The same lesson section a headless dispatch composes (idea d805fd8b, piece 5), through
-        // the same Domain read: an interactive claim cuts its own worktree outside dispatch, so it
-        // gets no rendered lessons.md there, which makes the injected section the only route this
-        // session's own lessons take.
-        InjectedLessons lessons = await LessonPromptFeed.LoadAsync(
-            session, project.Id, fleet.LessonReader, cancellationToken);
-        string prompt = WorkPromptBuilder.Build(
-            taskDetails, project, branch, worktreePath, resumesPreviousWork, blockerContext, taskDetails.RetryReason,
-            isInteractive: true, requiresSelfRegistration: !settings.DirectLaunch, lessons: lessons,
-            localFleet: await fleet.GetIfCarriedByAsync(taskDetails, cancellationToken));
+        // The pasted prompt (and --direct-launch's opening message) carries the whole task; the
+        // default launch line does not, because the anchor it names has the session read the
+        // record with h9k task show instead, so none of this is assembled for it.
+        string prompt = settings.PrintPrompt || settings.DirectLaunch
+            ? await BuildPromptAsync(
+                session, context, taskDetails, project, branch, worktreePath, resumesPreviousWork,
+                requiresSelfRegistration: !settings.DirectLaunch, cancellationToken)
+            : string.Empty;
 
         // The same settings file every headless spawn writes (ClaudeExecutor), so the
         // platform-imposed overrides — no co-authored-by trailers (PLAN.md §6.6), and command-tool
@@ -253,18 +263,22 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
         // blocker-context load, the skill discovery WorkPromptBuilder.Build runs, and the
         // settings-file write) takes long enough for a delivery, release, handback, or abandon
         // running concurrently in another terminal to land in between — each of which moves this
-        // run past Dispatched/Running — and liveness alone does not catch that, since a run just
-        // handed to the standard pipeline reads as having no live attached session either
-        // (independent pre-PR review, cycle 7). Launching into that worktree anyway would double-book
-        // it against whatever the other command already started, and InteractiveSessionStarted's
-        // own projection would reset the run's State back to Running underneath the pipeline stage
-        // that now owns it.
-        if (currentRun.State != RunState.Dispatched && currentRun.State != RunState.Running)
+        // run past the states an interactive claim can be entered at — and liveness alone does not
+        // catch that, since a run just handed to the standard pipeline reads as having no live
+        // attached session either (independent pre-PR review, cycle 7). Launching into that worktree
+        // anyway would double-book it against whatever the other command already started.
+        if (RunStateRefusal(currentRun.State, taskId, runId, "while this session was preparing to launch") is { } movedOn)
         {
-            throw new DomainConflictException(
-                $"Task {taskId}'s run {runId} is already {currentRun.State.Value} — it was handed off to the "
-                + "standard pipeline (delivered, handed back, or otherwise) while this session was preparing to "
-                + $"launch. h9k task show {taskId} to see where it stands.");
+            throw new DomainConflictException(movedOn);
+        }
+
+        // The prompt these two paths hand a session is the build prompt: implement the objective,
+        // continue from the worktree, commit. Past the build the pipeline owns the worktree, and
+        // only the default launch line's anchor carries the rules for that, so a build prompt here
+        // would send a session editing and committing under the gates and review sessions.
+        if ((settings.PrintPrompt || settings.DirectLaunch) && PastBuildPromptRefusal(currentRun.State, taskId) is { } pastBuild)
+        {
+            throw new DomainConflictException(pastBuild);
         }
 
         InteractiveSessionLiveness.EnsureNotAttachedElsewhere(currentRun, taskId, "drive", settings.Force, quiet: crossMachineNoticeShown);
@@ -273,8 +287,83 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
             ? await LaunchDirectlyAsync(
                 store, session, taskId, runId, worktreePath, branch, prompt, claudeSessionId, previousClaudeSessionId,
                 settingsFile, project.SkipPermissions, sessionName, isFreshInteractiveClaim, cancellationToken)
-            : PrintPromptHandoff(taskId, worktreePath, branch, prompt, settingsFile, isFreshInteractiveClaim);
+            : settings.PrintPrompt
+                ? PrintPromptHandoff(taskId, worktreePath, branch, prompt, settingsFile, isFreshInteractiveClaim)
+                : await PrintLaunchLineAsync(
+                    taskDetails, project, currentRun, worktreePath, branch, resolvedRunDirectory, settingsFile, sessionName,
+                    isFreshInteractiveClaim, cancellationToken);
     }
+
+    /// <summary>
+    /// The prompt the paste flow (<c>--print-prompt</c>) and <c>--direct-launch</c> hand a session: the
+    /// task, the working rules for an attached operator, and the lessons and blocker context a headless
+    /// dispatch composes, through the identical code.
+    /// </summary>
+    private static async Task<string> BuildPromptAsync(
+        IDocumentSession session, BootstrapContext context, TaskDetails taskDetails, ProjectDetails project, string branch,
+        string worktreePath, bool resumesPreviousWork, bool requiresSelfRegistration, CancellationToken cancellationToken)
+    {
+        // The raw document rather than BlockerContextAssembler's own call: that type lives in
+        // Hall9k.Daemon (it can spawn a synthesis session for a wide fan-in) and the CLI cannot
+        // reference it. BlockerContextDocument and BlockerHandoffQuery are the shared renderer
+        // and depth-one reader both surfaces already agree on — h9k task show pastes the same
+        // unsynthesized document into its own "Starting context" screen (Decisions Log #36) —
+        // so an operator's session gets the real context rather than none at all.
+        LocalFleetSource fleet = new(session, project, context.OwnerId);
+        string? blockerContext = await LoadBlockerContextAsync(session, taskDetails, fleet, cancellationToken);
+        // The same lesson section a headless dispatch composes (idea d805fd8b, piece 5), through
+        // the same Domain read: an interactive claim cuts its own worktree outside dispatch, so it
+        // gets no rendered lessons.md there, which makes the injected section the only route this
+        // session's own lessons take.
+        InjectedLessons lessons = await LessonPromptFeed.LoadAsync(
+            session, project.Id, fleet.LessonReader, cancellationToken);
+        return WorkPromptBuilder.Build(
+            taskDetails, project, branch, worktreePath, resumesPreviousWork, blockerContext, taskDetails.RetryReason,
+            isInteractive: true, requiresSelfRegistration: requiresSelfRegistration, lessons: lessons,
+            localFleet: await fleet.GetIfCarriedByAsync(taskDetails, cancellationToken));
+    }
+
+    /// <summary>
+    /// The refusal for a run in a state an interactive claim cannot be entered or registered at, or null
+    /// when the state is one the driving session can work from: the build, or any stage of the review
+    /// loop before the pull request opens (<see cref="RunState.AdmitsInteractiveSession"/>). Pure, so the
+    /// state rule is pinned without a store. <paramref name="when"/> places the discovery for the
+    /// callers that find it out after preparing, rather than at the door.
+    /// </summary>
+    internal static string? RunStateRefusal(RunState state, Guid taskId, Guid runId, string? when = null) => state.AdmitsInteractiveSession
+        ? null
+        : $"Task {taskId}'s run {runId} is already {state.Value}"
+          + (when is null
+              ? " — it is past the pre-pull-request stages an interactive claim can be entered at. "
+              : $" — it moved out of those stages {when}. ")
+          + $"h9k task show {taskId} to see where it stands.";
+
+    /// <summary>
+    /// The refusal for <c>--print-prompt</c> and <c>--direct-launch</c> on a run the pipeline owns, or
+    /// null before then. Both hand over the build prompt, which has the session edit and commit in
+    /// the worktree; the default launch line is the one path whose anchor says the pipeline owns it.
+    /// Pure, so the rule is pinned without a store.
+    /// </summary>
+    internal static string? PastBuildPromptRefusal(RunState state, Guid taskId) => state.IsPastBuild
+        ? $"Task {taskId}'s run is {state.Value}, past the build: the daemon's gates and review sessions own the "
+          + "worktree now, and the starting prompt --print-prompt and --direct-launch hand over tells a session "
+          + $"to build in it. Run h9k task drive {taskId} with neither flag; the launch line it prints starts a "
+          + "session whose anchor holds the rules for this stage."
+        : null;
+
+    /// <summary>
+    /// What an unclaimable task state needs to hear, after the state itself is named. A Done task is
+    /// the one worth its own sentence: its pull request is open or merged, and driving one is not
+    /// built yet.
+    /// </summary>
+    internal static string UnclaimableStateAdvice(TaskState state, Guid taskId) => state switch
+    {
+        var pre when pre.IsPreDispatch => $"Publish it first: h9k task publish {taskId}.",
+        var claimed when claimed == TaskState.Claimed => "It is claimed by a node running headless work already.",
+        var done when done == TaskState.Done =>
+            $"Iterating on an open pull request with h9k task drive is not supported yet. h9k task show {taskId} to see where it stands.",
+        _ => "Its story has already moved past dispatch.",
+    };
 
     /// <summary>
     /// The settings file an interactive claim writes: the platform-imposed overrides and nothing
@@ -296,6 +385,74 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
     {
         AnsiConsole.MarkupLineInterpolated(
             $"[dim]Task {taskId}'s interactive-mode flag is now on — this run, and any later follow-up, retry, or reopen of it, parks at each review-engine phase boundary for a recorded h9k review proceed. h9k task release {taskId} (default) or h9k task revise {taskId} --clear-interactive-mode turns it back off.[/]");
+    }
+
+    /// <summary>
+    /// The default: the claim and the worktree cut already happened, and this renders the task anchor
+    /// into the run directory and prints the one line that starts a session under it. Nothing is
+    /// launched and nothing about the run is recorded here; the session registers itself
+    /// (<c>h9k task register-session</c>) as the anchor's first instruction, which is what lets the
+    /// double-booking and liveness guards recognise it.
+    /// </summary>
+    private static async Task<int> PrintLaunchLineAsync(
+        TaskDetails task, ProjectDetails project, RunDetails run, string worktreePath, string branch,
+        string runDirectory, string settingsFile, string sessionName, bool isFreshInteractiveClaim,
+        CancellationToken cancellationToken)
+    {
+        string anchorFile = Path.GetFullPath(RunPaths.TaskAnchorFile(runDirectory));
+        string? recipeFile = project.HomeDirectory.HasValue
+            && ProjectHomePaths.TaskDriveRecipeFile(project.HomeDirectory.Value) is { } recipe
+            && File.Exists(recipe)
+            ? recipe
+            : null;
+        await File.WriteAllTextAsync(
+            anchorFile,
+            TaskDriveAnchorBuilder.Build(
+                task.Id, worktreePath, branch, RunPaths.PrSummaryDraftFile(runDirectory), project.WritingConventions, recipeFile),
+            cancellationToken);
+
+        // The pair a headless build of this task would get on this node, named on the line rather than
+        // left to the CLI's default; delegate resolves the same two for its contractor.
+        AgentModel model = await TaskStartCommand.ResolveBuildModelAsync(task, project, cancellationToken);
+        AgentEffort effort = await TaskStartCommand.ResolveBuildEffortAsync(task, project, cancellationToken);
+
+        // Only the conversation a person's own session registered is worth resuming. The run's latest
+        // started session is not that: a headless build or a delegated contractor records one too.
+        Guid? resumeSessionId = run.RegisteredInteractiveClaudeSessionId;
+        TaskDriveLaunchText text = LaunchTextDefaults.RenderTaskDrive(
+            new TaskDriveLaunch(
+                worktreePath, anchorFile, Path.GetFullPath(settingsFile), sessionName,
+                $"You are driving task {DomainId.Short(task.Id)} ({task.Id}). Follow the task anchor: register this "
+                + "session, read the task, tell me where it stands, and wait for my word before you move it.",
+                model, effort, project.SkipPermissions, resumeSessionId),
+            LaunchTextDefaults.HostShell);
+
+        AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {worktreePath}[/]");
+        AnsiConsole.MarkupLineInterpolated($"[dim]Branch: {branch}[/]");
+        if (isFreshInteractiveClaim)
+        {
+            AnnounceInteractiveModeIfFreshClaim(task.Id);
+        }
+
+        AnsiConsole.MarkupLineInterpolated($"[dim]Task anchor: {anchorFile}[/]");
+        if (text.EffortNotice is not null)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]{text.EffortNotice}[/]");
+        }
+
+        AnsiConsole.MarkupLine(text.FreshFallbackLine is null
+            ? "[dim]Paste this line into a terminal to start a session that drives the task:[/]"
+            : "[dim]Paste this line to resume this task's session:[/]");
+        LaunchLineWriter.Write(text.Line);
+        if (text.FreshFallbackLine is not null)
+        {
+            AnsiConsole.MarkupLine("[dim]If that conversation cannot be found, start a fresh session with this line instead:[/]");
+            LaunchLineWriter.Write(text.FreshFallbackLine);
+        }
+
+        AnsiConsole.MarkupLineInterpolated(
+            $"[dim]h9k task drive {task.Id} --print-prompt prints the starting prompt instead, for pasting into a session you start yourself.[/]");
+        return ExitCodes.Ok;
     }
 
     /// <summary>
@@ -523,7 +680,7 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
             AnsiConsole.MarkupLineInterpolated($"[dim]Task {taskId} is still claimed —[/]");
             AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task deliver {taskId}    push and hand into the standard delivery pipeline[/]");
             AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task verify {taskId}     run the project's gates on demand[/]");
-            AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task drive {taskId}       re-enter (prints a fresh prompt; add --direct-launch to resume this conversation)[/]");
+            AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task drive {taskId}       re-enter (prints the launch line; add --direct-launch to resume this conversation here)[/]");
             AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task handback {taskId}   let a headless agent finish from here[/]");
             AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task release {taskId}    give it back to the dispatch queue[/]");
         }
@@ -575,19 +732,16 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
                 + $"while preparing the worktree. h9k task release {task.Id} to give the claim back to the "
                 + "dispatch queue.");
 
-        // Mirrors TaskDeliverCommand's own guard: once h9k task deliver hands the run to the
-        // daemon's pipeline (AgentSessionCompleted moves it to Verifying), the task can still
-        // read Claimed+interactive for the whole review loop — closeout only moves the task
-        // off Claimed once the pull request opens. Re-entering here anyway would rewrite the
-        // worktree the pipeline's own gates and review sessions are reading, and would reset
-        // the run's own State back to Running underneath whichever pipeline stage owns it now
-        // (adversarial review, cycle 1).
-        if (run.State != RunState.Dispatched && run.State != RunState.Running)
+        // Once h9k task deliver hands the run to the daemon's pipeline (AgentSessionCompleted moves
+        // it to Verifying), the task still reads Claimed+interactive for the whole review loop —
+        // closeout only moves the task off Claimed once the pull request opens — and the driving
+        // session stays on for that loop. Re-entering is allowed at every stage of it
+        // (RunState.AdmitsInteractiveSession); recording the session there moves nothing, because the
+        // run's state and the pipeline's own sessions are left where the pipeline put them
+        // (InteractiveSessionStarted's projections). What is refused is a run past all of them.
+        if (RunStateRefusal(run.State, task.Id, runId) is { } refusal)
         {
-            throw new DomainConflictException(
-                $"Task {task.Id}'s run {runId} is already {run.State.Value} — it was handed off with "
-                + $"h9k task deliver (or handback) and is now in the standard pipeline. h9k task show {task.Id} "
-                + "to see where it stands.");
+            throw new DomainConflictException(refusal);
         }
 
         if (!Directory.Exists(run.WorktreePath))
@@ -660,14 +814,7 @@ public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
         {
             throw new DomainConflictException(
                 $"Task {task.Id} is {task.State.Value} — only a Published, Queued, or Blocked task (or one you "
-                + "already hold interactively) can be worked this way. " + task.State switch
-                {
-                    var state when state.IsPreDispatch =>
-                        $"Publish it first: h9k task publish {task.Id}.",
-                    var state when state == TaskState.Claimed =>
-                        "It is claimed by a node running headless work already.",
-                    _ => "Its story has already moved past dispatch.",
-                });
+                + "already hold interactively) can be worked this way. " + UnclaimableStateAdvice(task.State, task.Id));
         }
         else if (!TaskDecider.IsGrantedToThisOwner(
             task.AssignedOwnerId, task.AssignedOwnerFingerprint, context.OwnerId, ownerRootFingerprint))

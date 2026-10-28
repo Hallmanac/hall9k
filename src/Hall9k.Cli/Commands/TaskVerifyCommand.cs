@@ -105,11 +105,11 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "verify", settings.Force);
         }
 
-        // Mirrors TaskDriveCommand.ReenterAsync's own guard: once h9k task deliver or handback
-        // hands the run to the standard pipeline, the task can still read Claimed+interactive
-        // for the whole review loop, but the worktree now belongs to the daemon's own gates and
-        // review sessions — running dotnet build/test here would collide with them (adversarial
-        // review, cycle 1).
+        // Unlike TaskDriveCommand.ReenterAsync, which now admits a driving session through the review
+        // loop, this stays tight: once h9k task deliver or handback hands the run to the standard
+        // pipeline, the task can still read Claimed+interactive for the whole review loop, but the
+        // worktree now belongs to the daemon's own gates and review sessions — running dotnet
+        // build/test here would collide with them (adversarial review, cycle 1).
         if (run.State != RunState.Dispatched && run.State != RunState.Running)
         {
             throw new DomainConflictException(

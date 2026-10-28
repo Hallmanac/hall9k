@@ -114,11 +114,12 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
             return ExitCodes.Ok;
         }
 
-        // Mirrors TaskDriveCommand.ReenterAsync's own guard: once h9k task deliver (or handback)
-        // hands the run to the standard pipeline, the task can still read Claimed+interactive
-        // for the whole review loop, so the decider's own state check alone would let this
-        // requeue a task whose delivered run is mid-gate or mid-review, double-booking the
-        // worktree with a freshly dispatched headless agent (adversarial review, cycle 1).
+        // Unlike TaskDriveCommand.ReenterAsync, which now admits a driving session through the review
+        // loop, this stays tight: once h9k task deliver (or handback) hands the run to the standard
+        // pipeline, the task can still read Claimed+interactive for the whole review loop, so the
+        // decider's own state check alone would let this requeue a task whose delivered run is
+        // mid-gate or mid-review, double-booking the worktree with a freshly dispatched headless
+        // agent (adversarial review, cycle 1).
         Guid? releasedRunId = task.State == TaskState.Claimed && task.IsInteractiveClaim
             ? task.CurrentRunId
             : null;
