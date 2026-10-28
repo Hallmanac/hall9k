@@ -1911,7 +1911,7 @@ with the run's settings file, a session name, `--dangerously-skip-permissions` o
 allows it, this node's build model and effort named explicitly (the pair a headless build of the task
 would get; with no effort set anywhere it names none and says the model's own default applies), and a
 task anchor written into the run directory. The anchor tells the session to register itself first, read
-`h9k task show` before every move, advance nothing without the person's word, and carry out their
+`h9k task next` before every move, advance nothing without the person's word, and carry out their
 instructions as the verbs: build here or `delegate`, `deliver` then `h9k review proceed`, or `h9k review
 fixed`. It also carries the project's writing conventions, because the session writes commits and the
 pull request summary under the owner's login, and names `recipes/task-drive.md` in the project home when
