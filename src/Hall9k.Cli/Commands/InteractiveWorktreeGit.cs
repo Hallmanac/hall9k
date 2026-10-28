@@ -73,9 +73,10 @@ internal static class InteractiveWorktreeGit
     /// mirrors PullRequestOpener's push exactly, though: that one now runs an ancestor-or-reflog
     /// guard before pinning the lease's expected value explicitly (Decisions Log #104), refusing
     /// outright rather than forcing over a tip it cannot account for, while this one still trusts
-    /// the bare flag against whatever this node's own refs/remotes/origin/&lt;branch&gt; last read —
-    /// a gap the interactive path has not needed to close yet (a foreign push onto a pre-PR task
-    /// branch has no routine source in a single-node install).
+    /// the bare flag against whatever this node's own refs/remotes/origin/&lt;branch&gt; last read.
+    /// <c>h9k task deliver</c> no longer pushes this way: it goes through <see cref="TaskDeliveryPush"/>,
+    /// which calls the opener's guard (<c>ForceWithLeasePusher</c>), because a pull request's branch can
+    /// be moved on origin by someone else. The one caller left is <c>h9k review fixed</c>.
     /// </summary>
     public static async Task<(bool Succeeded, string Error)> PushAsync(
         string worktreePath, string branch, CancellationToken cancellationToken)

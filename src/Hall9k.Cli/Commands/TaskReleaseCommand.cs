@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Ledger;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project;
@@ -81,7 +82,7 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         public bool KeepInteractive { get; init; }
 
         [CommandOption("--unassign")]
-        [Description("Take the claim straight to Published instead of back to the dispatch queue, in one atomic act, keeping the task's assignee as h9k task dequeue does — the dispatcher never sees this task claimable in between, closing the race a separate release then h9k task dequeue cannot avoid. The task is no longer queued; h9k task queue puts it back, and h9k task unassign lets go of the assignee")]
+        [Description("Take the claim straight to Published instead of back to the dispatch queue, in one atomic act, keeping the task's assignee as h9k task dequeue does — the dispatcher never sees this task claimable in between, closing the race a separate release then h9k task dequeue cannot avoid. The task is no longer queued; h9k task queue puts it back, and h9k task unassign lets go of the assignee Refused on a claim taken on an open pull request, which has no Published state to return to.")]
         public bool Unassign { get; init; }
     }
 
@@ -123,6 +124,16 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         Guid? releasedRunId = task.State == TaskState.Claimed && task.IsInteractiveClaim
             ? task.CurrentRunId
             : null;
+
+        // A claim taken at the PR stage (h9k task drive on a task whose pull request is open) holds the
+        // reopen that put the pull request's branch under it. Releasing it gives the pull request back to
+        // closeout rather than queuing the follow-up lap that reopen would otherwise buy.
+        bool pullRequestStage = IsPullRequestStageClaim(task);
+        if (pullRequestStage && settings.Unassign)
+        {
+            throw new DomainValidationException(UnassignRefusal(taskId, task.PullRequestUrl));
+        }
+
         bool supersedeRun = false;
         RunDetails? releasedRun = null;
         if (releasedRunId is { } currentRunId)
@@ -173,7 +184,8 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
             else
             {
                 supersedeRun = true;
-                await ReleaseAttachedRunAsync(session, task, taskId, currentRunId, run, settings, cancellationToken);
+                await ReleaseAttachedRunAsync(
+                    session, task, taskId, currentRunId, run, settings, pullRequestStage, cancellationToken);
             }
         }
 
@@ -182,7 +194,12 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         // so the Queued/Blocked state a plain release then h9k task dequeue would pass through
         // is never written to the stream at all — nothing for the dispatcher to ever see and
         // claim in between (this task's own acceptance criteria; cd7e0202, 2026-09-04).
-        if (settings.Unassign)
+        if (pullRequestStage)
+        {
+            session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.ReleaseInteractiveClaimToPullRequest(
+                task, DateTimeOffset.UtcNow, settings.KeepInteractive));
+        }
+        else if (settings.Unassign)
         {
             session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.ReleaseInteractiveClaimUnassigned(
                 task, DateTimeOffset.UtcNow, settings.KeepInteractive));
@@ -220,7 +237,12 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         }
 
         await Doorbell.RingAsync($"task-released:{taskId}", cancellationToken);
-        if (settings.Unassign)
+        if (pullRequestStage)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} released back to its pull request {task.PullRequestUrl} — it is Done again and closeout resumes its ordinary watch. Its worktree and branch are left as they stood.[/]");
+        }
+        else if (settings.Unassign)
         {
             // TaskInteractiveClaimUnassigned always lands Published, unconditionally — the same
             // "there is no unmet set left to matter to" reasoning
@@ -272,9 +294,34 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         return ExitCodes.Ok;
     }
 
+    /// <summary>
+    /// Whether the claim in hand was taken at the PR stage: an interactive claim on a task whose pull
+    /// request is open and whose follow-up branch the reopen under the claim recorded. Read off the
+    /// aggregate alone, so a claim whose run never got a record is told apart too.
+    /// </summary>
+    internal static bool IsPullRequestStageClaim(TaskAggregate task) =>
+        task.State == TaskState.Claimed && task.IsInteractiveClaim
+        && task.PullRequestUrl.IsNotBlank() && task.FollowUpBranch.IsNotBlank();
+
+    /// <summary>The refusal for <c>--unassign</c> on a claim taken at the PR stage, which has nowhere to be unassigned to.</summary>
+    internal static string UnassignRefusal(Guid taskId, string? pullRequestUrl) =>
+        $"Task {taskId}'s claim is on an open pull request ({pullRequestUrl}). --unassign takes an untouched "
+        + "claim to Published, and a task with a pull request in flight has nowhere to be unassigned to: "
+        + $"h9k task release {taskId} (without --unassign) returns it to Done with its pull request.";
+
+    /// <summary>The refusal for a release when the branch holds commits the pull request does not carry; it names both ways forward.</summary>
+    internal static string PastPushedTipRefusal(Guid taskId, string branch, int commits, bool worktreeExists) =>
+        $"Task {taskId}'s branch {branch} holds {commits} commit(s) the pull request does not carry — "
+        + "releasing would leave them in a worktree nothing points at. "
+        + (worktreeExists
+            ? $"h9k task deliver {taskId} to push them onto the pull request and take the gates and review, or "
+              + $"h9k task handback {taskId} to hand them to a headless lap that does the same."
+            : $"h9k task handback {taskId} to hand them to a headless lap, which will re-create the worktree "
+              + "from the branch.");
+
     private static async Task ReleaseAttachedRunAsync(
         IDocumentSession session, TaskAggregate task, Guid taskId, Guid currentRunId, RunDetails run, Settings settings,
-        CancellationToken cancellationToken)
+        bool pullRequestStage, CancellationToken cancellationToken)
     {
         // Mirrors TaskHandbackCommand's own guard: an operator's own session, still attached
         // in another terminal, may be editing this exact worktree right now — requeuing it
@@ -398,6 +445,27 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         // smaller of the two, for the same reason again: a force-pushed parent leaves this branch's
         // copies of its rewritten-away commits counted here (class sweep, conformance review
         // cycle 4).
+        if (pullRequestStage)
+        {
+            // The branch already carries the pull request's commits, so "beyond the base" is the wrong
+            // question. What release must not strand is work the pull request does not carry yet.
+            int beyondPushedTip = await TaskDeliveryPush.CountBeyondPushedTipAsync(
+                ExternalProcess.Runner, worktreeExists ? run.WorktreePath : project.RepositoryPath, run.Branch,
+                task.LastPushedBranch, task.LastPushedBranchTip, cancellationToken);
+            if (beyondPushedTip < 0)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]Could not read how far branch {run.Branch} is past the pull request's pushed tip; skipping that check.[/]");
+            }
+            else if (beyondPushedTip > 0)
+            {
+                throw new DomainConflictException(
+                    PastPushedTipRefusal(taskId, run.Branch, beyondPushedTip, worktreeExists));
+            }
+
+            return;
+        }
+
         string baseBranch = run.BaseBranchOr(project.BaseBranch);
         string? forkPoint = run.StackedForkPoint(project.BaseBranch);
         int commits = worktreeExists

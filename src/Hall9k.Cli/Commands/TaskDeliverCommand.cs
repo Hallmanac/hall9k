@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project.Projections;
@@ -8,6 +9,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -32,6 +34,9 @@ namespace Hall9k.Cli.Commands;
 /// </summary>
 public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.Settings>
 {
+    /// <summary>How long a push may take before it is given up on, as the pull request opener's own is.</summary>
+    private static readonly TimeSpan PushDeadline = TimeSpan.FromMinutes(10);
+
     public sealed class Settings : CommandSettings
     {
         [CommandArgument(0, "<ID>")]
@@ -50,6 +55,11 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         [Description("Deliver even though the claim's interactive session was recorded on another machine this one cannot check — attests you confirmed by hand that it has exited")]
         public bool Force { get; init; }
     }
+
+    /// <summary>The refusal for a PR-stage delivery whose branch holds nothing the pull request does not already carry; it names <c>release</c>.</summary>
+    internal static string NothingBeyondPushedTipMessage(Guid taskId, string branch, string? pullRequestUrl) =>
+        $"Branch '{branch}' holds nothing beyond what pull request {pullRequestUrl} already carries — nothing to deliver. "
+        + $"h9k task release {taskId} gives the pull request back to closeout.";
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
@@ -232,11 +242,55 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
             return ExitCodes.Conflict;
         }
 
-        (bool pushed, string pushError) = await InteractiveWorktreeGit.PushAsync(run.WorktreePath, run.Branch, cancellationToken);
-        if (!pushed)
+        ProcessRunner git = ExternalProcess.RunnerWithDeadline(PushDeadline);
+
+        // On a claim taken at the pull request stage (the run is a follow-up on an open pull request), a
+        // branch holding nothing the pull request does not already carry has nothing to push, and the
+        // pipeline it would hand the run to would gate and review a tree that did not change. The way out
+        // for a claim with nothing to deliver is release, which gives the pull request back to closeout.
+        if (run.IsFollowUp && task.PullRequestUrl.IsNotBlank())
         {
-            AnsiConsole.MarkupLineInterpolated($"[red]Push failed: {pushError}[/]");
-            return ExitCodes.Error;
+            int beyondPushedTip = await TaskDeliveryPush.CountBeyondPushedTipAsync(
+                git, run.WorktreePath, run.Branch, task.LastPushedBranch, task.LastPushedBranchTip, cancellationToken);
+            if (beyondPushedTip == 0)
+            {
+                AnsiConsole.MarkupLineInterpolated($"[red]{NothingBeyondPushedTipMessage(taskId, run.Branch, task.PullRequestUrl)}[/]");
+                return ExitCodes.Conflict;
+            }
+
+            if (beyondPushedTip < 0)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]Could not read how far branch '{run.Branch}' is past the pull request's pushed tip; skipping the nothing-to-deliver check.[/]");
+            }
+        }
+
+        // Through the same ancestor-or-reflog guard the pull request opener pushes with, handed the task's
+        // recorded pushed tip as the opener hands it, instead of a bare lease that trusts whatever this
+        // node's remote-tracking ref last read. A refusal says which tip origin holds that the branch never did.
+        TaskDeliveryPush.Outcome push = await TaskDeliveryPush.PushAsync(
+            git, run.WorktreePath, run.Branch, task.LastPushedBranch, task.LastPushedBranchTip, cancellationToken);
+        if (!push.Pushed)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[red]Push refused: {push.Refusal}[/]");
+            return push.GuardRefused ? ExitCodes.Conflict : ExitCodes.Error;
+        }
+
+        // Recorded straight after the push, on the task's own stream, so the guard's recorded-tip check
+        // covers this push too on the next one. Best effort and never fatal, as the opener's is: the push
+        // already landed, and the ancestor and reflog checks still cover the ordinary case without it.
+        if (push.PushedTip is { } pushedTip)
+        {
+            try
+            {
+                session.Events.Append(taskId, new TaskBranchPushed(taskId, run.Branch, pushedTip, DateTimeOffset.UtcNow));
+                await session.SaveChangesAsync(CancellationToken.None);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]Pushed {run.Branch} but could not record the pushed tip ({exception.Message}); the push guard's ancestor and reflog checks still cover the next push.[/]");
+            }
         }
 
         // Mirrors RunSupervisor.CaptureHandoffAsync, called in the same place relative to

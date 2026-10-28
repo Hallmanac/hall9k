@@ -1763,7 +1763,9 @@ public static class CliCommandTree
                 .WithExample("task", "resolve", "28b19893", "--reason", "\"Objective met by hand in the worktree\"", "--pr", "https://github.com/x/y/pull/7");
             task.AddCommand<TaskDriveCommand>("drive")
                 .WithDescription(
-                    "Drive a Published, Queued, or already-Blocked task interactively. On a Published task assigned to nobody, "
+                    "Drive a Published, Queued, or already-Blocked task interactively, or take a task whose pull request is "
+                    + "already open back into an interactive claim on its branch (see the pull-request stage below). "
+                    + "On a Published task assigned to nobody, "
                     + "this queues it for your own owner and claims it interactively in one atomic event append, "
                     + "the same collapsing h9k task publish --queue already does for publish and queue: the "
                     + "task is never observably Queued in between, so the dispatcher (woken within moments by "
@@ -1795,8 +1797,13 @@ public static class CliCommandTree
                     + "consumed. Closing the terminal is a normal way to leave — the task stays claimed, and "
                     + "running this again re-enters the same worktree and branch at any stage before the pull "
                     + "request opens, with a line that resumes the registered session's own conversation (and "
-                    + "the fresh line beneath it for when that conversation cannot be found). A Done task is "
-                    + "refused: iterating on an open pull request is not supported yet. Exits are h9k task "
+                    + "the fresh line beneath it for when that conversation cannot be found). On a task whose pull "
+                    + "request is open (Done, or a reopened follow-up lap that has not started) this records a manual "
+                    + "reopen and the claim in one append, keeps the pull request, and checks out its branch the way "
+                    + "a headless follow-up lap does, saying in one line when it left the tree behind origin or reset "
+                    + "it. Closeout then only watches that pull request for a merge or a close while you hold the "
+                    + "claim. It refuses while a headless follow-up session is still running on the task, naming it, "
+                    + "and --print-prompt and --direct-launch are refused at this stage. Exits are h9k task "
                     + "deliver (push and hand into the standard pipeline), "
                     + "h9k task release (give it "
                     + "back to the queue), or h9k task handback (let a headless agent finish from here). "
@@ -1880,7 +1887,11 @@ public static class CliCommandTree
                     + "holding the pull request's title and description (a 'Title:' first line, a blank "
                     + "line, then the description, composed with the pr-summary skill); it is captured as "
                     + "the run's summary, so the pull request is built from it exactly as from a headless "
-                    + "session's.")
+                    + "session's. The push goes through the pull request opener's guard, which refuses with the reason "
+                    + "when origin holds a tip this branch never held. On a claim taken on an open pull request the "
+                    + "push lands on that pull request before the gates and the review loop run, and delivery is "
+                    + "refused (naming h9k task release) when the branch holds nothing beyond the pull request's "
+                    + "pushed tip; afterwards the task returns to Done and closeout resumes.")
                 .WithExample("task", "deliver", "28b19893")
                 .WithExample("task", "deliver", "28b19893", "--handoff", "\"Migration is in; rollback stub untested\"", "--pr-summary", "pr-summary-draft.md");
             task.AddCommand<TaskReleaseCommand>("release")
@@ -1901,7 +1912,11 @@ public static class CliCommandTree
                     + "attests you confirmed by hand that it has exited. --unassign takes the same untouched claim "
                     + "straight to Published instead of back to the queue, in one atomic act, keeping the task's "
                     + "assignee: nothing between them ever leaves the task visible to the dispatcher as claimable, "
-                    + "unlike a separate release followed by h9k task dequeue. A second, unrelated case: a task this node still names "
+                    + "unlike a separate release followed by h9k task dequeue. On a claim taken on an open pull request "
+                    + "(h9k task drive at the PR stage) it instead returns the task to Done with its pull request, "
+                    + "closeout's ordinary watch resumes, it is refused when the branch holds commits beyond the pull "
+                    + "request's pushed tip (h9k task deliver or h9k task handback instead), and --unassign is refused. "
+                    + "A second, unrelated case: a task this node still names "
                     + "itself the ledger holder of, but that is no longer claimed at all (in any state but Claimed: "
                     + "Done or Blocked with an open pull request, the window the holder deliberately survives "
                     + "into, or Queued, Failed, NeedsHuman and the rest) — releases just that holder, untouched "
@@ -1921,7 +1936,10 @@ public static class CliCommandTree
                     + "today's behavior; --first records the queue-first marker so the next free dispatch slot "
                     + "takes this task regardless of assignment age; --now dispatches it immediately instead, "
                     + "ceiling-exempt, through the same mechanism h9k task start uses. --first and --now are "
-                    + "refused together — pass one. Refused when the claim's "
+                    + "refused together — pass one. On a claim taken on an open pull request this queues a headless "
+                    + "follow-up lap on the pull request's branch, which pushes your commits and takes the full "
+                    + "review; --now cannot start a deliberate headless build for a follow-up, so there it queues the "
+                    + "lap through the ordinary queue. Refused when the claim's "
                     + "session was recorded on another machine this one cannot check — --force attests you "
                     + "confirmed by hand that it has exited.")
                 .WithExample("task", "handback", "28b19893")
