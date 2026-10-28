@@ -1831,7 +1831,8 @@ Each go hands the task back to automation: `pr resolve` clears the interactive f
 append as its reopen and then dispatches its lap as it always did, so the follow-up and the
 closeout after it run fully automatically, a pre-approved merge included. The first lap carries
 the triage report in its prompt, fenced as data. Merge and close detection, the review observation,
-the membership gate, and the re-request of an errored Copilot review keep running while you drive.
+the membership gate, the re-request of an errored Copilot review, and the countersign re-request
+after a fix lap keep running while you drive.
 A task that was already Done with the flag on when this shipped switches to this behavior at
 upgrade; its row names the lever back to today's closeout.
 

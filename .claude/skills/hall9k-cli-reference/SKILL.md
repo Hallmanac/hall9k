@@ -1722,7 +1722,8 @@ session has to either.
 and every direct `h9k task start` set it), closeout is analysis-only: it dispatches no lap (review
 feedback, changes requested, failing checks, rebase, stack replay), attempts no mechanical rebase, makes
 no stacked retarget, and never auto-merges a pre-approved task. Merge and close detection, the external
-review observation, the membership gate, and the re-request of an errored Copilot review still run. It
+review observation, the membership gate, the re-request of an errored Copilot review, and the
+countersign re-request after a fix lap still run. It
 reports instead, as a needs-you row on `h9k status` and `h9k task show` that names the matching go:
 unresolved threads (triaged once per distinct thread set by one read-only session; only the counts of
 fix, decline, and route reach the row, and the report's path is named) take `h9k pr resolve <task>`,

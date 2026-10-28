@@ -1087,8 +1087,9 @@ attempt is a fresh grant.
 **Closeout is analysis-only while a human drives the task.** Everything above describes a task
 whose interactive-mode flag is off. While the flag is on (it is set by `h9k task drive` and by every
 direct `h9k task start`), closeout still watches for the merge and the close, still records what
-GitHub says about the review, still holds a non-member's feedback at the membership gate, and still
-re-requests a Copilot review that errored. What it stops doing is acting on the branch or in the
+GitHub says about the review, still holds a non-member's feedback at the membership gate, still
+re-requests a Copilot review that errored, and still asks reviewers to look again (the countersign)
+after a fix lap. What it stops doing is acting on the branch or in the
 thread: it dispatches none of the laps above (review feedback, changes requested, failing checks,
 rebase, stack replay), attempts no mechanical rebase, and makes no stacked retarget. It reports
 instead. Unresolved threads that would have bought a lap are triaged once per distinct set of
