@@ -523,7 +523,7 @@ public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFi
     }
 
     [Fact]
-    public async Task Refuses_once_the_run_has_already_moved_to_the_standard_pipeline()
+    public async Task Refuses_once_the_run_is_past_the_pre_pull_request_stages_a_driving_session_can_register_at()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
@@ -534,7 +534,7 @@ public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFi
             seed.Events.StartStream<RunAggregate>(runId, new RunDispatched(
                 runId, taskId, Guid.Empty, node.OwnerId, 1, DomainId.New(), "/tmp/register-session-worktree",
                 "task/register-session-branch", ExecutorMode.Subscription, SessionNow));
-            seed.Events.Append(runId, new AgentSessionCompleted(runId, SessionNow, node.NodeId));
+            seed.Events.Append(runId, new PullRequestOpened(runId, "https://example.test/pull/7", 7, SessionNow));
             await seed.SaveChangesAsync(cts.Token);
         }
 
@@ -544,7 +544,8 @@ public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFi
         Func<Task> act = () => TaskRegisterSessionCommand.RegisterAsync(session, details, force: false, cts.Token);
 
         await act.Should().ThrowAsync<DomainConflictException>()
-            .WithMessage("*h9k task deliver (or handback)*");
+            .WithMessage("*already AwaitingReview*")
+            .Where(exception => exception.Message.Contains($"h9k task show {taskId}"));
     }
 
     [Fact]

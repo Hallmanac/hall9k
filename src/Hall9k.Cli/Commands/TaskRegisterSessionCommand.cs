@@ -158,17 +158,15 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
                 + "to see where it stands.");
         }
 
-        // Mirrors TaskVerifyCommand's own guard: once h9k task deliver or handback hands the run
-        // to the standard pipeline, the task can still read Claimed+interactive for the whole
-        // review loop, but the worktree now belongs to the daemon's own gates and review sessions —
-        // registering a fresh interactive session against it would reset RunDetails.State back to
-        // Running underneath whichever pipeline stage now owns it.
-        if (run.State != RunState.Dispatched && run.State != RunState.Running)
+        // The driving session registers at every stage of the loop before the pull request opens
+        // (RunState.AdmitsInteractiveSession), including the stages the daemon's pipeline owns
+        // after h9k task deliver: it is the session the owner talks to while the gates and review
+        // run. Registering there records the session and its name and moves nothing, because
+        // InteractiveSessionStarted leaves a run past the build in the state, and with the review and
+        // fix sessions, the pipeline put it in. A run past all of those has nothing to attach to.
+        if (TaskDriveCommand.RunStateRefusal(run.State, task.Id, runId) is { } refusal)
         {
-            throw new DomainConflictException(
-                $"Task {task.Id}'s run {runId} is already {run.State.Value} — it was handed off with "
-                + $"h9k task deliver (or handback) and is now in the standard pipeline. h9k task show {task.Id} "
-                + "to see where it stands.");
+            throw new DomainConflictException(refusal);
         }
 
         // The second, unguarded door into the exact overwrite TaskDriveCommand.ReenterAsync's own
@@ -265,10 +263,13 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
 
     /// <summary>
     /// Best-effort only, unlike <see cref="ReadClaudeProcess"/>: nothing downstream keys liveness
-    /// off this value (<see cref="RunDetails.InteractiveClaudeSessionId"/> is audit/display only —
-    /// <see cref="InteractiveSessionLiveness"/> never reads it), so a missing or unparsable
-    /// <c>CLAUDE_CODE_SESSION_ID</c> degrades to a freshly minted id rather than refusing
-    /// registration over a fact no guard is actually built on.
+    /// off this value (<see cref="InteractiveSessionLiveness"/> never reads it), so a missing or
+    /// unparsable <c>CLAUDE_CODE_SESSION_ID</c> degrades to a freshly minted id rather than refusing
+    /// registration over a fact no guard is actually built on. The value is not display-only,
+    /// though: it is recorded as <see cref="RunDetails.RegisteredInteractiveClaudeSessionId"/>, which
+    /// <c>h9k task drive</c> prints as <c>claude --resume &lt;id&gt;</c> when the owner re-enters. A
+    /// minted id names no conversation, so that resume finds nothing and the launch line falls over
+    /// to its fresh-session form; it costs the owner the resume and nothing else.
     /// </summary>
     internal static Guid ReadClaudeSessionId()
     {

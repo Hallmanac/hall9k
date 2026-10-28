@@ -1176,16 +1176,16 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
-    /// Mirrors <c>TaskHandbackCommand</c>'s own guard and <see cref="TaskDriveCommand.ExecuteAsync"/>'s
-    /// pre-launch re-check: once <c>h9k task deliver</c> (or an earlier <c>h9k task handback</c>)
-    /// hands a run to the standard pipeline, the task can still read Claimed+interactive for the
-    /// whole review loop, so <see cref="TaskDriveCommand.ReenterAsync"/> is what actually stops a
-    /// second session from rewriting a worktree the pipeline's own gates and review sessions now
-    /// own. No worktree or task-stream setup is needed: <c>ReenterAsync</c> throws on the run's
-    /// own <c>State</c> before it ever touches the filesystem or the task's stream.
+    /// Mirrors <see cref="TaskDriveCommand.ExecuteAsync"/>'s pre-launch re-check: re-entry is open
+    /// through the build and every review-loop stage before the pull request opens
+    /// (<see cref="RunState.AdmitsInteractiveSession"/>), and a run past those, here AwaitingReview,
+    /// is refused by <see cref="TaskDriveCommand.ReenterAsync"/> with the state named and
+    /// <c>h9k task show</c> as the lever that says where it stands. No worktree or task-stream setup is needed:
+    /// <c>ReenterAsync</c> throws on the run's own <c>State</c> before it ever touches the
+    /// filesystem or the task's stream.
     /// </summary>
     [Fact]
-    public async Task A_run_already_past_dispatched_or_running_refuses_reentry()
+    public async Task A_run_past_the_pre_pull_request_stages_refuses_reentry()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
@@ -1212,7 +1212,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
 
         await act.Should().ThrowAsync<DomainConflictException>()
             .WithMessage("*already AwaitingReview*")
-            .Where(exception => exception.Message.Contains("h9k task deliver (or handback)")
+            .Where(exception => exception.Message.Contains("past the pre-pull-request stages")
                 && exception.Message.Contains($"h9k task show {taskId}"));
     }
 

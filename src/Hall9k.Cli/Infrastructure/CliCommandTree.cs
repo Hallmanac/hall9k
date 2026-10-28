@@ -1326,7 +1326,9 @@ public static class CliCommandTree
                 "Manage tasks. Development and dispatch are separate lifecycles (Decisions Log #34): "
                 + "add drafts, revise develops, publish is the readiness gate, assign records who holds a task "
                 + "and never dispatches it, and queue is the go signal. A task runs only once a human queues "
-                + "it and every dependency has closed out.");
+                + "it and every dependency has closed out. To do a task yourself, by hand or with the "
+                + "platform's help at each step, h9k task drive claims it and prints the line that starts a "
+                + "Claude Code session driving it on your word, from the build through the review loop.");
             task.AddCommand<TaskAddCommand>("add")
                 .WithDescription(
                     "Create a draft (flags, --file task.md, --from-idea to cut it from an idea's "
@@ -1763,19 +1765,26 @@ public static class CliCommandTree
                     + "you, this claims it exactly as before: cuts the same branch and worktree headless "
                     + "dispatch would, assembles the prompt through the identical code path (its working rules "
                     + "swapped for an attached operator). By default it then prints the worktree path, the "
-                    + "branch, and that prompt for you to paste into a Claude Code session you start yourself, "
-                    + "anywhere — the pasted session self-registers (h9k task register-session), which is what "
-                    + "lets the double-booking and liveness guards below recognise it; --direct-launch instead "
-                    + "launches a plain interactive Claude Code process attached to this terminal the way this "
-                    + "command always did (kept for one release; refused on a machine where Claude Code resolves "
-                    + "to a Windows script shim). The claim is held by you, not a process — no liveness "
+                    + "branch, and one line that starts a Claude Code session driving the task: it cd's into the "
+                    + "worktree and runs claude with this node's build model and effort, the run's settings "
+                    + "file, and a task anchor (written into the run directory) that has the session register "
+                    + "itself (h9k task register-session), read h9k task show before every move, and carry out "
+                    + "your instructions one phase at a time: build here or h9k task delegate, h9k task deliver "
+                    + "then h9k review proceed at each park, or h9k review fixed when you fix a verdict "
+                    + "yourself. Nothing advances without your word. With --print-prompt it instead prints the "
+                    + "starting prompt, for you to paste into a session you start yourself (the pasted session "
+                    + "self-registers the same way); --direct-launch instead launches a plain interactive "
+                    + "Claude Code process attached to this terminal the way this command always did (kept for "
+                    + "one release; refused on a machine where Claude Code resolves to a Windows script shim). "
+                    + "The claim is held by you, not a process — no liveness "
                     + "lease, no heartbeat reclaim, and the dispatcher never claims a task you hold this way. "
                     + "Occupies zero concurrency slots: it starts even when the daemon's session ceiling is fully "
                     + "consumed. Closing the terminal is a normal way to leave — the task stays claimed, and "
-                    + "running this again re-enters the same worktree and branch with a fresh prompt "
-                    + "(--direct-launch instead resumes the most recently recorded session's own conversation, "
-                    + "falling back to a fresh one — announced, never silent — only when the recorded one cannot "
-                    + "be resumed). Exits are h9k task deliver (push and hand into the standard pipeline), "
+                    + "running this again re-enters the same worktree and branch at any stage before the pull "
+                    + "request opens, with a line that resumes the registered session's own conversation (and "
+                    + "the fresh line beneath it for when that conversation cannot be found). A Done task is "
+                    + "refused: iterating on an open pull request is not supported yet. Exits are h9k task "
+                    + "deliver (push and hand into the standard pipeline), "
                     + "h9k task release (give it "
                     + "back to the queue), or h9k task handback (let a headless agent finish from here). "
                     + "Re-entry is refused when the claim's session was recorded on another machine this one "
@@ -1786,6 +1795,7 @@ public static class CliCommandTree
                     + "human is still attached. h9k task release (default) or h9k task revise "
                     + "--clear-interactive-mode turns it back off.")
                 .WithExample("task", "drive", "28b19893")
+                .WithExample("task", "drive", "28b19893", "--print-prompt")
                 .WithExample("task", "drive", "28b19893", "--direct-launch")
                 .WithExample("task", "drive", "28b19893", "--acknowledge-unmet-dependencies");
             task.AddCommand<TaskWorkAliasCommand>("work")
@@ -1793,15 +1803,18 @@ public static class CliCommandTree
                 .IsHidden();
             task.AddCommand<TaskRegisterSessionCommand>("register-session")
                 .WithDescription(
-                    "The self-registration observation gate a starting prompt (h9k task drive's default, "
-                    + "prompt-handoff output) tells the pasted-in Claude Code session to call as its first act: "
+                    "The self-registration observation gate the task anchor (h9k task drive's default) and "
+                    + "the pasted prompt (--print-prompt) tell a Claude Code session to call as its first act: "
                     + "records this session's own process identity (read from CLAUDE_PID, Claude Code's own "
                     + "environment variable) against the run the same way a direct launch's own onStarted "
                     + "callback used to. The double-booking and liveness guards (re-entry, verify, deliver, "
                     + "handback, release) key off this record from here on. Refuses rather than guessing when "
                     + "CLAUDE_PID is absent — not a session this platform can ever check, so nothing is recorded, "
                     + "the same honest degradation a session that never calls this at all already gets. Only for "
-                    + "a task you hold interactively (h9k task drive). Also refused when another session is "
+                    + "a task you hold interactively (h9k task drive), at any stage before the pull request "
+                    + "opens: after h9k task deliver it records the session and its name and nothing else, "
+                    + "leaving the run's state and the review sessions it already has as they are. Also "
+                    + "refused when another session is "
                     + "already registered and still attached — --force attests you confirmed by hand that a "
                     + "session recorded on another machine has actually exited.")
                 .WithExample("task", "register-session", "28b19893");
@@ -1850,8 +1863,13 @@ public static class CliCommandTree
                     + "review loop, the pull request, the closeout watcher — indistinguishable downstream from a "
                     + "headless run from this point on. Only for a task you hold interactively (h9k task drive). "
                     + "Refused when the claim's session was recorded on another machine this one cannot check — "
-                    + "--force attests you confirmed by hand that it has exited.")
-                .WithExample("task", "deliver", "28b19893");
+                    + "--force attests you confirmed by hand that it has exited. --pr-summary names a file "
+                    + "holding the pull request's title and description (a 'Title:' first line, a blank "
+                    + "line, then the description, composed with the pr-summary skill); it is captured as "
+                    + "the run's summary, so the pull request is built from it exactly as from a headless "
+                    + "session's.")
+                .WithExample("task", "deliver", "28b19893")
+                .WithExample("task", "deliver", "28b19893", "--handoff", "\"Migration is in; rollback stub untested\"", "--pr-summary", "pr-summary-draft.md");
             task.AddCommand<TaskReleaseCommand>("release")
                 .WithDescription(
                     "Give an interactive claim back to the dispatch queue, exactly as any other queued task — "
@@ -1982,7 +2000,10 @@ public static class CliCommandTree
                     + "back, h9k task drive re-enters this same worktree interactively so you can finish the build "
                     + "yourself — the wheel changes hands in both directions, always at a boundary. Refused when "
                     + "the claim's session was recorded on another machine this one cannot check — --force "
-                    + "attests you confirmed by hand that it has exited.")
+                    + "attests you confirmed by hand that it has exited. The claim's own registered session "
+                    + "(the one h9k task drive starts) may run this itself; any other attached session "
+                    + "refuses it. When that session is registered, the contractor is given its address and "
+                    + "sends it a claimed and a done milestone.")
                 .WithExample("task", "delegate", "28b19893", "--note",
                     "\"Drafted the migration; untested past the happy path. Latitude: rewrite the rollback stub freely.\"");
         });
