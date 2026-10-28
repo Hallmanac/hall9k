@@ -1208,7 +1208,7 @@ internal static class AttentionComposer
             // this lever is, and it names exactly the choices that apply. Naming the verb here
             // anyway is what makes it discoverable at all from the attention pane; asserting it
             // applies would be the guess.
-            ? $"h9k review proceed {id} (or h9k review resolve {id} --merge-ready / --needs-fixes \"…\" to redirect it, or h9k review fixed {id} once your own fix is committed — the reason above names which apply)"
+            ? $"h9k review proceed {id} (or h9k review resolve {id} --merge-ready / --needs-fixes \"…\" to redirect it, or h9k review fixed {id} once your own fix is committed, or h9k task skip-to-pr {id} to skip the rest of review — the reason above names which apply)"
             // A changes-requested disagreement park (task: a changes-requested pull-request review
             // from a human becomes a fix lap) asks a question none of the arms below do: what the
             // reviewer hears. It is checked ahead of them because the verdict alone is not

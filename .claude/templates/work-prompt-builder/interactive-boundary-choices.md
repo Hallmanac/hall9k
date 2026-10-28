@@ -12,7 +12,7 @@ commands, rather than sending them to the docs.
 dispatch. Also **fix to re-review**, after any fix lands:
 ===review-verdict-to-fix-intro===
 **Review verdict to fix** — a review pass filed findings and something has to be
-done about them. Four choices, and the second is the one that is easy to miss: the
+done about them. Five choices, and the second is the one that is easy to miss: the
 operator can do the fix by hand, in this worktree, and hand the branch back for the
 review agents to check exactly as they would check a fix session's work. No fix
 agent runs unless they ask for one:

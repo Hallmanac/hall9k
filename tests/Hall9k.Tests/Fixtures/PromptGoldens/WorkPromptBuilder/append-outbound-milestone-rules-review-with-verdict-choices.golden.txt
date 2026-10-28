@@ -40,6 +40,7 @@ boundary, where there are four choices:
 - `h9k review fixed 01a09162-ad44-723a-8963-ed48e339ec23` — the findings get fixed by hand, by them or by their driving session on their word, and committed; this hands the branch back and the review agents check that fix exactly as they would check a fix session's. No fix agent runs. Add `--no-change "<why>"` if nothing was deliberately changed, which is otherwise refused.
 - `h9k review resolve 01a09162-ad44-723a-8963-ed48e339ec23 --needs-fixes "<what to do instead>"` — dispatch a fix session carrying their redirect as its findings rather than the reviewer's own.
 - `h9k review resolve 01a09162-ad44-723a-8963-ed48e339ec23 --merge-ready --reason "<why it is sound>"` — overrule the finding; the loop stops asking and moves on.
+- `h9k task skip-to-pr 01a09162-ad44-723a-8963-ed48e339ec23 --reason "<why>"` — open the pull request now and skip whatever review is left: the gates, every review track, the final pass, and the settling gate. Recorded on the run as a manual override naming who skipped what. Only on their explicit word; `--no-reason` records none.
 
 **If your verdict is merge-ready**, the loop may still owe this branch one more
 review dispatch (the mandatory final full pass), which parks at the fix-to-re-review
@@ -47,6 +48,7 @@ boundary first, where there are two:
 
 - `h9k review proceed 01a09162-ad44-723a-8963-ed48e339ec23` — continue exactly where the loop parked.
 - `h9k review resolve 01a09162-ad44-723a-8963-ed48e339ec23 --merge-ready` or `--needs-fixes "<reason>"` — redirect the boundary instead of merely approving it.
+- `h9k task skip-to-pr 01a09162-ad44-723a-8963-ed48e339ec23 --reason "<why>"` — open the pull request now and skip whatever review is left: the gates, every review track, the final pass, and the settling gate. Recorded on the run as a manual override naming who skipped what. Only on their explicit word; `--no-reason` records none.
 
 Once the run does settle, the last boundary before the pull request opens is the
 human's too:
