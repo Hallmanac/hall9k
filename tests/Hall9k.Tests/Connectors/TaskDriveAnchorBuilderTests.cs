@@ -23,7 +23,7 @@ public sealed class TaskDriveAnchorBuilderTests
         string anchor = Build();
 
         anchor.Should().Contain($"Your first action is `h9k task register-session {TaskId}`");
-        anchor.Should().Contain($"Run `h9k task show {TaskId}` before you do anything that changes the task");
+        anchor.Should().Contain($"Run `h9k task next {TaskId}` before you do anything that changes the task");
     }
 
     [Fact]
