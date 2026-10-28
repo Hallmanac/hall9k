@@ -349,7 +349,7 @@ Smaller flags on the same commands:
 | `h9k task release <id> --unassign` | Takes a claim straight to Published in one atomic act that keeps the task's assignee, so the dispatcher never sees the task claimable between a release and a `dequeue`. |
 | `h9k task release <id> --keep-interactive` | Preserves the interactive-mode flag across the release, so the next headless run still parks at each phase boundary for a recorded `h9k review proceed`. |
 | `h9k task deliver <id> --handoff "<text>"` | States what the run hands down to a dependent task or a resuming session, and is prompted for on an interactive terminal when omitted. |
-| `h9k task skip-to-pr <id> --reason "<text>"` | Opens the pull request at once on an interactive-mode task, skipping the gates, every review track, the final pass, and the settling gate, and records a manual override on the run naming who skipped what. `--no-reason` records none, and `--reason-by-agent` marks a reason the driving session wrote. |
+| `h9k task skip-to-pr <id> --reason "<text>"` | Opens the pull request at once on an interactive-mode task, skipping any gates still owed, every review track, the final pass, and the settling gate, and records a manual override on the run naming who skipped what. `--no-reason` records none, and `--reason-by-agent` marks a reason the driving session wrote. |
 | `h9k task resolve <id> --pr <url>` | Records where the work landed, and when it names a real pull request on the project's repository it enrolls that pull request in closeout's orphan sweep. |
 | `h9k task list --limit <N>` | Shows that many rows, newest first, twenty by default, with a footer saying how many were held back. |
 | `h9k task list --everyone` | Also lists other owners' tasks, which the default view holds back as it does on `h9k status` and says so in its footer. `--state teammates` selects them, and no other attention group (`needs-you`, `stalled` and the rest) includes one. `h9k project list --everyone` adds a Teammates column the same way. |
@@ -861,7 +861,7 @@ the queue-first marker so the next free dispatch slot takes the task regardless 
 `h9k task skip-to-pr <id> [--reason "<text>" | --no-reason] [--reason-by-agent] [--pr-summary <file>]`
 
 `skip-to-pr` is for the day a task has earned its pull request without the rest of the pipeline.
-It opens the pull request at once on a task whose interactive flag is on, bypassing the gates, every
+It opens the pull request at once on a task whose interactive flag is on, bypassing any gates still owed, every
 review track, the final pass, and the settling gate, and it **records** the bypass as a manual-override
 event on the run that names who skipped it, when, why, and what was skipped. Nothing is skipped quietly.
 The skipped list is computed from where the run stood, so it names the gates only when the run had not

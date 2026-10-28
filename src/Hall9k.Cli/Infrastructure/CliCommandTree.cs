@@ -1896,7 +1896,7 @@ public static class CliCommandTree
                 .WithExample("task", "deliver", "28b19893", "--handoff", "\"Migration is in; rollback stub untested\"", "--pr-summary", "pr-summary-draft.md");
             task.AddCommand<TaskSkipToPullRequestCommand>("skip-to-pr")
                 .WithDescription(
-                    "Open the pull request at once on a task in interactive mode, bypassing the gates, every "
+                    "Open the pull request at once on a task in interactive mode, bypassing any gates still owed, every "
                     + "review track, the final pass, and the settling gate (progressive automation: you decide "
                     + "how much of the pipeline a task earns). It is recorded on the run as a manual override "
                     + "naming who skipped what, and shown on h9k task show, the orchestrator feed, and the "

@@ -75,7 +75,7 @@ dispatch. Also **fix to re-review**, after any fix lands:
 
 - `h9k review proceed 01a09162-ad44-723a-8963-ed48e339ec23` — continue exactly where the loop parked.
 - `h9k review resolve 01a09162-ad44-723a-8963-ed48e339ec23 --merge-ready` or `--needs-fixes "<reason>"` — redirect the boundary instead of merely approving it.
-- `h9k task skip-to-pr 01a09162-ad44-723a-8963-ed48e339ec23 --reason "<why>"` — open the pull request now and skip whatever review is left: the gates, every review track, the final pass, and the settling gate. Recorded on the run as a manual override naming who skipped what. Only on their explicit word; `--no-reason` records none.
+- `h9k task skip-to-pr 01a09162-ad44-723a-8963-ed48e339ec23 --reason "<why>"` — open the pull request now and skip whatever review is left: any gates still owed, every review track, the final pass, and the settling gate. Recorded on the run as a manual override naming who skipped what. Only on their explicit word; `--no-reason` records none.
 
 **Review verdict to fix** — a review pass filed findings and something has to be
 done about them. Five choices, and the second is the one that is easy to miss: the
@@ -87,7 +87,7 @@ agent runs unless they ask for one:
 - `h9k review fixed 01a09162-ad44-723a-8963-ed48e339ec23` — the findings get fixed by hand, by them or by their driving session on their word, and committed; this hands the branch back and the review agents check that fix exactly as they would check a fix session's. No fix agent runs. Add `--no-change "<why>"` if nothing was deliberately changed, which is otherwise refused.
 - `h9k review resolve 01a09162-ad44-723a-8963-ed48e339ec23 --needs-fixes "<what to do instead>"` — dispatch a fix session carrying their redirect as its findings rather than the reviewer's own.
 - `h9k review resolve 01a09162-ad44-723a-8963-ed48e339ec23 --merge-ready --reason "<why it is sound>"` — overrule the finding; the loop stops asking and moves on.
-- `h9k task skip-to-pr 01a09162-ad44-723a-8963-ed48e339ec23 --reason "<why>"` — open the pull request now and skip whatever review is left: the gates, every review track, the final pass, and the settling gate. Recorded on the run as a manual override naming who skipped what. Only on their explicit word; `--no-reason` records none.
+- `h9k task skip-to-pr 01a09162-ad44-723a-8963-ed48e339ec23 --reason "<why>"` — open the pull request now and skip whatever review is left: any gates still owed, every review track, the final pass, and the settling gate. Recorded on the run as a manual override naming who skipped what. Only on their explicit word; `--no-reason` records none.
 
 **Gates to pull request** — review settled merge-ready and only opening the pull
 request is left:

@@ -19,7 +19,7 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// Opens the pull request at once on a task in interactive mode, bypassing the gates, every review
+/// Opens the pull request at once on a task in interactive mode, bypassing any gates still owed, every review
 /// track, the final pass, and the settling gate, and records a manual override naming who skipped
 /// what (idea 6e6d0200, Card 3). It has two doors.
 /// <para>
