@@ -180,6 +180,9 @@ public static class TaskActClassificationRegistry
         [typeof(TaskTakeRequested)] = TaskActClassification.Conditional,
         [typeof(TaskTakeRefused)] = TaskActClassification.Conditional,
 
+        // Giving a PR-stage claim back moves the task's state and current run exactly as a release does,
+        // so a forged copy from a sender who holds nothing must not apply.
+        [typeof(InteractiveClaimReturnedToPullRequest)] = TaskActClassification.Conditional,
         [typeof(TaskInteractiveClaimUnassigned)] = TaskActClassification.Conditional,
 
         [typeof(TaskMechanicalResolutionAttempted)] = TaskActClassification.MemberSafe,

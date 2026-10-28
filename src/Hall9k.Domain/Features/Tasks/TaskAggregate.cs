@@ -462,6 +462,16 @@ public sealed class TaskAggregate
     public string? LastPushedBranchTip { get; private set; }
 
     /// <summary>
+    /// The run whose completion put <see cref="PullRequestUrl"/> on the task: the run closeout
+    /// watches the pull request through. Unlike <see cref="CurrentRunId"/>, it survives a reopen and
+    /// the interactive claim that follows one (<c>h9k task drive</c> at the PR stage), which is how
+    /// closeout tells the run it must keep watching, and not retire, from a run that has been
+    /// superseded, and how <see cref="Events.InteractiveClaimReturnedToPullRequest"/> names the run
+    /// that becomes current again. Null until a completion carries a pull request.
+    /// </summary>
+    public Guid? PullRequestRunId { get; private set; }
+
+    /// <summary>
     /// Automatic (monitor-driven) reopens since the last human-initiated one — the
     /// lifetime-ceiling counter for PR closeout (Decisions Log #22, backlog 45). A manual
     /// reopen resets it: the human asking for another attempt restores the automatic budget.
@@ -2183,6 +2193,11 @@ public sealed class TaskAggregate
         }
 
         PullRequestUrl = @event.PullRequestUrl;
+        if (@event.PullRequestUrl.IsNotBlank())
+        {
+            PullRequestRunId = @event.RunId;
+        }
+
         FollowUpBranch = null;
         FollowUpKind = FollowUpKind.Unknown;
         FollowUpPullRequestHeadSha = null;
@@ -2208,6 +2223,33 @@ public sealed class TaskAggregate
         // mention to attach to). Leaving the flag standing would keep the closeout watcher
         // spending a gh read per interval on a task nothing will act on again.
         EndAnyPrReviewFollowThrough();
+    }
+
+    // The reverse of a PR-stage reopen-and-claim (h9k task release on a claim taken with
+    // h9k task drive at the PR stage): everything the claim and the reopen under it set is cleared
+    // the way Apply(TaskCompleted) clears it, but without its reset of the closeout counters, since
+    // the pull request has not changed, and with the pull request's own run made current again so
+    // closeout's watch picks up where the claim paused it.
+    public void Apply(InteractiveClaimReturnedToPullRequest @event)
+    {
+        ClaimedByNodeId = null;
+        CurrentRunId = @event.PullRequestRunId;
+        PendingQuestionId = null;
+        FollowUpBranch = null;
+        FollowUpKind = FollowUpKind.Unknown;
+        FollowUpPullRequestHeadSha = null;
+        StackReplayUpstreamCommit = null;
+        StackReplayOntoCommit = null;
+        ChangesRequestedReviews = [];
+        RetryBranch = null;
+        RetryBranchResumesForeignNode = false;
+        State = TaskState.Done;
+        QueuePriorityMarked = false;
+        EndAnyOpenReviewLap();
+        if (@event.ClearInteractiveMode)
+        {
+            InteractiveModeEnabled = false;
+        }
     }
 
     public void Apply(NonMemberFeedbackHeld @event)
