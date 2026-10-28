@@ -31,6 +31,24 @@ namespace Hall9k.Domain.Features.Run;
 public static class InteractiveBoundaryChoices
 {
     /// <summary>
+    /// Which levers apply at the boundary a run parked from, read off <see cref="RunAggregate.ParkedFromReviewPhase"/>
+    /// (the boundary's own kind is never recorded; <c>ReviewEngine</c> only chooses it at its five
+    /// park sites, and each of them parks from the phase named here). <see cref="ReviewPhase.FixNeeded"/>
+    /// is the review-verdict-to-fix boundary, <see cref="ReviewPhase.MergeReady"/> the
+    /// gates-to-pull-request one, and <see cref="ReviewPhase.None"/>, <see cref="ReviewPhase.Reverify"/>
+    /// and <see cref="ReviewPhase.Settling"/> the proceed-or-redirect ones. Null for any other phase,
+    /// which is not an interactive boundary at all (a dispute, a cap, a budget), so a caller never
+    /// offers these choices at a park they do not answer.
+    /// </summary>
+    public static InteractiveBoundaryLevers? LeversFor(ReviewPhase parkedFrom) => parkedFrom switch
+    {
+        ReviewPhase.FixNeeded => InteractiveBoundaryLevers.ReviewVerdictToFix,
+        ReviewPhase.MergeReady => InteractiveBoundaryLevers.GatesToPullRequest,
+        ReviewPhase.None or ReviewPhase.Reverify or ReviewPhase.Settling => InteractiveBoundaryLevers.ProceedOrRedirect,
+        _ => null,
+    };
+
+    /// <summary>
     /// One line per choice, each opening with the exact command, for a surface that renders a list
     /// (a prompt's bullets, a help topic). Ordered most-expected-first: at the review-verdict-to-fix
     /// boundary that is the fix session the reviewer's verdict already asked for, with the human's
