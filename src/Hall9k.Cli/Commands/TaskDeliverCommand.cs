@@ -11,6 +11,7 @@ using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
@@ -61,7 +62,22 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         $"Branch '{branch}' holds nothing beyond what pull request {pullRequestUrl} already carries — nothing to deliver. "
         + $"h9k task release {taskId} gives the pull request back to closeout.";
 
-    protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
+    protected override Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken) =>
+        DeliverAsync(settings, skip: null, cancellationToken);
+
+    /// <summary>
+    /// What <c>h9k task skip-to-pr</c> hands the delivery when it skips from the build: the reason
+    /// to record and whether the driving session wrote it. A null request is an ordinary delivery.
+    /// </summary>
+    internal sealed record SkipRequest(string? Reason, bool ReasonByAgent);
+
+    /// <summary>
+    /// The whole delivery, shared with <see cref="TaskSkipToPullRequestCommand"/> so a skip from the
+    /// build pushes, prompts for the handoff, records tokens, and re-checks exactly as a delivery
+    /// does. With <paramref name="skip"/>, the manual-override event is appended in the same
+    /// transaction as the delivery, so the run never sits at Verifying with the gates owed.
+    /// </summary>
+    internal static async Task<int> DeliverAsync(Settings settings, SkipRequest? skip, CancellationToken cancellationToken)
     {
         // Read before anything is pushed, so a missing or empty file costs nothing: once the push
         // lands the delivery proceeds whatever happens to the summary.
@@ -392,6 +408,14 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
                 + $"Branch {run.Branch} was already pushed; h9k task show {taskId} to see where it stands.");
         }
 
+        if (skip is not null && !taskBeforeAppend.InteractiveModeEnabled)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId}'s interactive mode was cleared while skipping. Branch {run.Branch} was already "
+                + $"pushed; h9k task deliver {taskId} sends it through the full pipeline, or turn interactive "
+                + "mode back on by claiming it with h9k task drive.");
+        }
+
         RunDetails runBeforeAppend = await session.LoadAsync<RunDetails>(runId, CancellationToken.None)
             ?? throw new DomainConflictException($"Task {taskId}'s run {runId} no longer has a record while delivering.");
         if (runBeforeAppend.State != RunState.Dispatched && runBeforeAppend.State != RunState.Running)
@@ -423,6 +447,18 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // every node's session ceiling forever (conformance review, cycle 1).
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, CancellationToken.None);
         DateTimeOffset completedAt = DateTimeOffset.UtcNow;
+
+        // Computed from the run as it stands before the delivery lands, so the recorded list is what
+        // this run still owed. A fresh aggregate, not the snapshot loaded at the top, for the same
+        // reason runBeforeAppend is: the prompt above can block for as long as the operator likes.
+        ReviewSkippedToPullRequest? overrideEvent = skip is null
+            ? null
+            : new ReviewSkippedToPullRequest(
+                runId, context.OwnerId, completedAt, skip.Reason, skip.ReasonByAgent,
+                ReviewSkipPlan.Compute(
+                    await session.Events.AggregateStreamAsync<RunAggregate>(runId, token: CancellationToken.None)
+                        ?? throw new DomainConflictException($"Task {taskId}'s run {runId} has no run stream.")),
+                await OwnerRootFingerprintResolver.ResolveAsync(session, context.OwnerId, CancellationToken.None));
         session.Events.Append(runId, new AgentSessionCompleted(runId, completedAt, context.NodeId));
         if (headlessResult.Usage is { } usage)
         {
@@ -448,11 +484,27 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // contractor's own token usage — the exact under-count this call exists to close.
         HeadlessTokenRecovery.AppendDelegatedPhaseTokens(session, runBeforeAppend, completedAt);
 
+        // Last in the batch, so a reader replaying the stream sees the delivery, then the tokens,
+        // then the override that sent the run to its pull request.
+        if (overrideEvent is not null)
+        {
+            session.Events.Append(runId, overrideEvent);
+        }
+
         await session.SaveChangesAsync(CancellationToken.None);
 
         await Doorbell.RingAsync($"task-delivered:{taskId}", CancellationToken.None);
-        AnsiConsole.MarkupLineInterpolated(
-            $"[dim]Branch {run.Branch} pushed. Task {taskId} handed into the standard delivery pipeline — h9k task show {taskId} to watch it.[/]");
+        if (overrideEvent is null)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Branch {run.Branch} pushed. Task {taskId} handed into the standard delivery pipeline — h9k task show {taskId} to watch it.[/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Branch {run.Branch} pushed. Task {taskId} skipped to its pull request, recorded as a manual override; the daemon opens it next. h9k task show {taskId} to watch it.[/]");
+        }
+
         return ExitCodes.Ok;
     }
 
