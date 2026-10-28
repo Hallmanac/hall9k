@@ -78,7 +78,7 @@ internal static class FeedbackMembershipGate
     /// it, a megabyte of ids. A comment not named is a comment no session may read, so cutting the list
     /// short only ever reads less.
     /// </summary>
-    internal const int MaxReadableCommentIds = 500;
+    internal const int MaxReadableCommentIds = Hall9k.Connectors.Prompts.FollowUpPromptFragments.MaxReadableCommentIds;
 
     /// <summary>
     /// The longest comment body a held thread keeps a copy of, which is also the longest the prompt

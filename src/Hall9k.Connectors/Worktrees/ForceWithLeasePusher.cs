@@ -1,12 +1,13 @@
 using Hall9k.Connectors.Processes;
 
-namespace Hall9k.Daemon.Execution;
+namespace Hall9k.Connectors.Worktrees;
 
 /// <summary>
 /// The ancestor-or-reflog-or-recorded force-with-lease guard (Decisions Log #104), shared by every
-/// path that pushes a task branch whose local history may have been rewritten: <see cref="PullRequestOpener"/>'s
+/// path that pushes a task branch whose local history may have been rewritten: <c>PullRequestOpener</c>'s
 /// own push (a follow-up's narrative-history rebase, or a fresh build session's checkpoint
-/// recompose) and the closeout engine's mechanical rebase-onto-base fast path alike. Origin's
+/// recompose), the closeout engine's mechanical rebase-onto-base fast path, the spike engine's
+/// push, and <c>h9k task deliver</c> alike. Origin's
 /// current tip for the branch is safe to overwrite when it fast-forwards into local HEAD, when it
 /// was ever this branch's own local tip per the branch ref's own reflog — the identical check
 /// <c>Hall9k.Connectors.Worktrees.GitWorktreeManager.WasEverLocalHeadAsync</c> uses on the pull
@@ -26,7 +27,7 @@ namespace Hall9k.Daemon.Execution;
 /// whether the push moved the head against it.
 /// </para>
 /// </summary>
-internal static class ForceWithLeasePusher
+public static class ForceWithLeasePusher
 {
     public static async Task<string?> PushAsync(
         ProcessRunner processRunner, string worktreePath, string branch,
@@ -85,7 +86,7 @@ internal static class ForceWithLeasePusher
 
         if (!safe)
         {
-            throw new InvalidOperationException(
+            throw new ForcePushRefusedException(
                 $"origin/{branch} is at {originTip}, a tip this node's own history never held and cannot "
                 + "fast-forward into — someone else moved the branch since this node last accounted for "
                 + "it. Refusing to force-push over it.");
@@ -111,3 +112,11 @@ internal static class ForceWithLeasePusher
         }
     }
 }
+
+/// <summary>
+/// <see cref="ForceWithLeasePusher"/> declined to push because origin holds a tip this branch never held
+/// and cannot fast-forward into. Derived from <see cref="InvalidOperationException"/> so every caller that
+/// already catches the refusal that way keeps catching it; a caller that needs to tell this refusal from
+/// git itself failing (a dropped connection, an unreadable remote) catches this type.
+/// </summary>
+public sealed class ForcePushRefusedException(string message) : InvalidOperationException(message);
