@@ -191,6 +191,18 @@ public sealed class TaskSkipToPullRequestCommand : Hall9kAsyncCommand<TaskSkipTo
                 + "and its handoff was recorded then.");
         }
 
+        // Re-read after the reason prompt, which can sit open while someone clears interactive mode;
+        // the run-stream fence below does not cover the task stream. The build door makes the same check.
+        TaskDetails taskNow = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+        if (!taskNow.InteractiveModeEnabled)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId}'s interactive mode was cleared while skipping, so nothing was recorded. "
+                + "Skipping the review pipeline is only for a task you are driving by hand; turn interactive "
+                + $"mode back on, or let the daemon run the full pipeline (h9k task show {taskId}).");
+        }
+
         RunDetails runDetails = await session.LoadAsync<RunDetails>(runId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {taskId}'s run {runId} has no recorded details.");
         await EnsureWorktreeReadyAsync(taskId, runDetails, cancellationToken);

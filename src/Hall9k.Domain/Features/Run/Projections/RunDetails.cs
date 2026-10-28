@@ -1175,10 +1175,10 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         // RunDispatched.ResumedReviewSettlement's own doc. Every field below stays at its
         // ordinary default (Unknown/0/empty) for every other dispatch shape, exactly as it did
         // before this field existed. LastReviewVerdict is carried as MergeReady alongside it —
-        // ResumedReviewSettlement.Settlement is only ever Clean or Settled, both of which only
-        // exist because the failed run's own review already concluded merge-ready — so
-        // `h9k task show` (WriteReviewOutcome) reports the carried settlement instead of
-        // silently dropping the outcome line for this run.
+        // ResumedReviewSettlement.Settlement is Clean or Settled when the failed run's own review
+        // concluded merge-ready, or Overridden when a skip-to-pr bypassed that review and the
+        // branch went straight to the pull request — so `h9k task show` (WriteReviewOutcome)
+        // reports the carried settlement instead of silently dropping the outcome line for this run.
         LastReviewVerdict = @event.Data.ResumedReviewSettlement is null
             ? ReviewVerdict.Unknown
             : ReviewVerdict.MergeReady,
