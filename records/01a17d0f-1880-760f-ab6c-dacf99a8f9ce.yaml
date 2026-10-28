@@ -24,7 +24,3 @@ context: |-
   - PendingPrivateSequences (EventReplicationOutboxPosition.cs:59) only tracks sequences a scan saw and held back as private; it is not a guard for this and must keep working as is. While it holds sinceSequence down, sweeps rescan the region above it, which is where a waited-out gap can be found again.
   - Tests: the shared PostgresFixture as in EventReplicationTests; a second session is a second connection. Hold a write open with a session-scoped Marten IChangeListener whose BeforeCommitAsync awaits a signal (the seq_id is assigned by then). Make the never-written number with a raw nextval on the store's mt_events_sequence, never a Marten write that fails, because Marten tombstones that. No new container, no git.
   - Out of scope: OrchestratorFeedReader.cs:80 has the same pattern (parked); repairing events already lost.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-10-27 23:31:59Z
