@@ -12,7 +12,7 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// this same task pushed, and a run's own stream ends with that run. <see cref="TaskAggregate.LastPushedBranch"/>
 /// and <see cref="TaskAggregate.LastPushedBranchTip"/> are what
 /// <c>Hall9k.Daemon.Execution.PullRequestOpener</c> reads back before its own next push and hands to
-/// <c>Hall9k.Daemon.Execution.ForceWithLeasePusher</c> as a third way to call origin's tip safe,
+/// <c>Hall9k.Connectors.Worktrees.ForceWithLeasePusher</c> as a third way to call origin's tip safe,
 /// alongside the ancestor and reflog checks that already existed — recognizing this node's own
 /// history even when the reflog that used to prove it has since been expired out from under it.
 /// </para>

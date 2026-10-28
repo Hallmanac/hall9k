@@ -870,7 +870,7 @@ public static class WorkPromptBuilder
     /// call site per entry point (or per shared helper those entry points call) rather than the
     /// text itself repeated across each template file (origin incident, 2026-09-15: a fix session's
     /// own history surgery in the shared repository wiped a sibling task's branch reflog; see
-    /// <c>Hall9k.Daemon.Execution.ForceWithLeasePusher</c>'s own doc for the guard fix this prompt
+    /// <c>Hall9k.Connectors.Worktrees.ForceWithLeasePusher</c>'s own doc for the guard fix this prompt
     /// rule is the other half of). Every prompt that can leave this session inside a git worktree
     /// with a shell now carries it — the interactive build, both resume-after-error legs
     /// (<c>Hall9k.Daemon.Execution.AgentPromptBuilder.BuildBudgetRetry</c>,
