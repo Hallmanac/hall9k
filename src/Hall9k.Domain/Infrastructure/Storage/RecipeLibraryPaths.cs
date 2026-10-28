@@ -32,6 +32,13 @@ public static class RecipeLibraryPaths
     public const string LaunchAnchorFileName = "launch-anchor.md";
     public const string SettingsFileName = "settings.json";
     public const string OrchestratorRecipeFileName = "orchestrator.md";
+
+    /// <summary>
+    /// The scoped recipe a project's task-driving sessions follow, written once by the
+    /// <c>orchestrator-recipe-generator</c> skill. Only a project home has one; the platform reads
+    /// nothing from it beyond whether it exists.
+    /// </summary>
+    public const string TaskDriveRecipeFileName = "task-drive.md";
     public const string JournalFileName = "journal.md";
 
     public static string CanonicalDirectory => Path.Combine(PlatformPaths.Home, "recipes");

@@ -17,6 +17,26 @@ namespace Hall9k.Tests.Cli;
 public sealed class TaskPhaseSurfaceTests
 {
     [Fact]
+    public void A_driving_session_registered_beside_the_review_does_not_rename_the_leg_the_run_is_on()
+    {
+        // h9k task drive's session stays registered through the review loop; it is the person's
+        // session, not a stage of the pipeline, so it must not hide the review pass the run waits on.
+        Guid runId = DomainId.New();
+        RunDetails reviewing = StatusFixtures.Run(runId, RunState.UnderReview, sessionProcessId: null);
+        reviewing.ReviewCycle = 1;
+        reviewing.ActiveSessions =
+        [
+            StatusFixtures.Session(AgentRole.Interactive, 9001),
+            StatusFixtures.Session(AgentRole.Review, 4711, ReviewLens.Conformance),
+        ];
+
+        TaskStatusRow row = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Claimed, runId), reviewing);
+
+        row.Phase.Text.Should().Be("review cycle 1");
+        row.Phase.Detail.Should().Be("conformance pending");
+    }
+
+    [Fact]
     public void A_phase_that_names_a_session_says_what_was_observed_of_it()
     {
         // Origin incident (2026-08-22): the board said the lane was quiet while a fix agent was

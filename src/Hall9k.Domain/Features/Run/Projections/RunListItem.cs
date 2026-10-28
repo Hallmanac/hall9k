@@ -127,7 +127,14 @@ public sealed partial class RunListItemProjection : SingleStreamProjection<RunLi
     // at Dispatched (RunDispatched's own state) for the whole time an operator holds it, while
     // RunDetails — and the phase line built from it — already reads Running (conformance
     // review, cycle 1).
-    public void Apply(IEvent<InteractiveSessionStarted> @event, RunListItem view) => view.State = RunState.Running;
+    public void Apply(IEvent<InteractiveSessionStarted> @event, RunListItem view)
+    {
+        // A driving session registered after deliver leaves the pipeline's own stage standing.
+        if (!view.State.IsPastBuild)
+        {
+            view.State = RunState.Running;
+        }
+    }
 
     public void Apply(IEvent<AgentSessionCompleted> @event, RunListItem view)
     {

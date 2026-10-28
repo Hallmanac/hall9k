@@ -882,6 +882,15 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// </para>
     /// </summary>
     public string? RegisteredInteractiveSessionName { get; set; }
+
+    /// <summary>
+    /// The Claude Code conversation id of the same human registration <see cref="RegisteredInteractiveSessionName"/>
+    /// names, set under the same guard. <see cref="InteractiveClaudeSessionId"/> cannot stand in for it:
+    /// that field moves with every started session, so a contractor <c>h9k task delegate</c> dispatches
+    /// overwrites it, and resuming that id would put the person in the contractor's conversation. Null
+    /// until a human's session registers, and on a run recorded before this field existed.
+    /// </summary>
+    public Guid? RegisteredInteractiveClaudeSessionId { get; set; }
     /// <summary>How many interactive attach/detach cycles this run has recorded (h9k task drive, held and re-entered).</summary>
     public int InteractiveSessionCount { get; set; }
     /// <summary>
@@ -1329,7 +1338,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
             // A new cycle starts with nothing in flight from the last one; a second dispatch
             // inside the same cycle is the other lens joining it (log #59), and joining is
             // exactly what it does — the first lens's pass keeps its own record.
-            EndSessions(view);
+            EndPipelineSessions(view);
         }
 
         view.ReviewCycle = @event.Data.Cycle;
@@ -1369,7 +1378,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
     /// </summary>
     public void Apply(IEvent<ReviewFixCompleted> @event, RunDetails view)
     {
-        EndSessions(view);
+        EndPipelineSessions(view);
         view.LastFixEndedWaitingOnBackgroundGate = @event.Data.Outcome == ReviewFixOutcome.WaitingOnBackgroundGate;
     }
 
@@ -1400,7 +1409,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         view.LastReviewVerdict = @event.Data.Verdict;
         // A run whose passes predate per-lens milestones records no ReviewPassCompleted at all,
         // so the cycle's own conclusion is where its sessions are known to have ended.
-        EndSessions(view);
+        EndPipelineSessions(view);
     }
 
     /// <summary>
@@ -1416,7 +1425,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
     /// </summary>
     public void Apply(IEvent<ReviewSettled> @event, RunDetails view)
     {
-        EndSessions(view);
+        EndPipelineSessions(view);
         view.LastReviewVerdict = ReviewVerdict.MergeReady;
         view.ReviewSettlement = @event.Data.Settlement;
         view.ReviewResidualsFixed = @event.Data.ResidualsFixed;
@@ -1631,7 +1640,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         view.ParkedReason = @event.Data.Reason;
         view.ParkedNeedsFixesOffersNoProgress = @event.Data.NeedsFixesOffersNoProgress;
         view.ParkedIsInteractiveGate = @event.Data.IsInteractiveGate;
-        EndSessions(view);
+        EndPipelineSessions(view);
         view.State = RunState.ReviewParked;
     }
 
@@ -1642,7 +1651,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         view.ParkedNeedsFixesOffersNoProgress = false;
         view.ParkedIsInteractiveGate = false;
         // The resume sweep re-dispatches; until it does, nothing is running.
-        EndSessions(view);
+        EndPipelineSessions(view);
         view.State = RunState.UnderReview;
     }
 
@@ -1666,7 +1675,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         view.ParkedReason = null;
         view.ParkedNeedsFixesOffersNoProgress = false;
         view.ParkedIsInteractiveGate = false;
-        EndSessions(view);
+        EndPipelineSessions(view);
         view.State = RunState.UnderReview;
     }
 
@@ -1726,7 +1735,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         view.ParkedOnSettlingGateRepairCap = false;
         view.ParkedOnReviewDisagreement = false;
         // The resume sweep re-dispatches; until it does, nothing is running.
-        EndSessions(view);
+        EndPipelineSessions(view);
         view.State = RunState.UnderReview;
     }
 
@@ -2039,7 +2048,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
     /// <summary>The recovery session ended — see Apply(IEvent&lt;ReviewFixCompleted&gt;) above for why nothing is left running either way.</summary>
     public void Apply(IEvent<PreFinalPassRebaseRecoveryCompleted> @event, RunDetails view)
     {
-        EndSessions(view);
+        EndPipelineSessions(view);
         view.ParkedOnRebaseRecoveryDispute = @event.Data.Outcome == ReviewFixOutcome.Disputed;
     }
 
@@ -2059,7 +2068,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
     }
 
     /// <summary>The repair session ended — see Apply(IEvent&lt;PreFinalPassRebaseRecoveryCompleted&gt;) above for the identical shape.</summary>
-    public void Apply(IEvent<SettlingGateRepairCompleted> @event, RunDetails view) => EndSessions(view);
+    public void Apply(IEvent<SettlingGateRepairCompleted> @event, RunDetails view) => EndPipelineSessions(view);
 
     /// <summary>
     /// The Settling-gate repair round cap is spent and the run parked (task: a pre-final-pass
@@ -2252,6 +2261,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         if (!string.Equals(@event.Data.SessionName, buildSessionName, StringComparison.Ordinal))
         {
             view.RegisteredInteractiveSessionName = @event.Data.SessionName;
+            view.RegisteredInteractiveClaudeSessionId = @event.Data.ClaudeSessionId;
         }
         view.InteractiveSessionCount++;
         // A live session is now actually recorded against this run, whether this append is
@@ -2286,10 +2296,16 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         {
             view.SessionName = @event.Data.SessionName;
         }
+        // Once the pipeline owns the run, the driving session joins whatever review or fix session
+        // is already recorded rather than clearing it, and the pipeline's state stays where it is.
+        bool pipelineOwnsRun = view.State.IsPastBuild;
         StartSession(
             view, AgentRole.Interactive, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.StartedAt,
-            @event.Data.MachineName, @event.Data.SessionName);
-        view.State = RunState.Running;
+            @event.Data.MachineName, @event.Data.SessionName, joinsPipelineSessions: pipelineOwnsRun);
+        if (!pipelineOwnsRun)
+        {
+            view.State = RunState.Running;
+        }
     }
 
     public void Apply(IEvent<InteractiveSessionEnded> @event, RunDetails view)
@@ -2310,7 +2326,16 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         }
 
         view.LastInteractiveActivityAt = @event.Data.EndedAt;
-        EndSessions(view);
+        // Past the build the interactive session that ends is the owner's driving session, and the
+        // review and fix sessions the pipeline recorded beside it are still running.
+        if (view.State.IsPastBuild)
+        {
+            view.ActiveSessions.RemoveAll(session => session.Role == AgentRole.Interactive);
+        }
+        else
+        {
+            EndSessions(view);
+        }
     }
 
     /// <summary>
@@ -2325,12 +2350,24 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
     /// </summary>
     private static void StartSession(
         RunDetails view, AgentRole role, ReviewLens? lens, int processId, DateTimeOffset? startedAt,
-        string machineName = "", string name = "")
+        string machineName = "", string name = "", bool joinsPipelineSessions = false)
     {
         ReviewLens track = lens ?? ReviewLens.Unknown;
         if (role == AgentRole.Review)
         {
             view.ActiveSessions.RemoveAll(session => session.Role == AgentRole.Review && session.Lens == track);
+        }
+        else if (joinsPipelineSessions)
+        {
+            // Only a previous driving session gives way; the review and fix sessions the daemon
+            // recorded on this run stay recorded.
+            view.ActiveSessions.RemoveAll(session => session.Role == AgentRole.Interactive);
+        }
+        else if (role != AgentRole.Build && view.State.IsPastBuild)
+        {
+            // A fix or recovery session replaces whatever else the pipeline had out, but not the
+            // owner's driving session, which is recorded beside the pipeline and not part of it.
+            EndPipelineSessions(view);
         }
         else
         {
@@ -2345,4 +2382,23 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
     /// process), but no agent process is recorded as running, and saying so is the point.
     /// </summary>
     private static void EndSessions(RunDetails view) => view.ActiveSessions.Clear();
+
+    /// <summary>
+    /// Every session the pipeline had out is over, for the events that close a stage of the loop
+    /// before the pull request opens. While the run is past the build, the owner's driving session
+    /// (<c>h9k task drive</c>, registered after deliver) is recorded beside the pipeline's and is
+    /// not one of them, so it stays; its own end, or the run's, is what removes it. Before then the
+    /// interactive session is the build itself and goes with the rest.
+    /// </summary>
+    private static void EndPipelineSessions(RunDetails view)
+    {
+        if (view.State.IsPastBuild)
+        {
+            view.ActiveSessions.RemoveAll(session => session.Role != AgentRole.Interactive);
+        }
+        else
+        {
+            EndSessions(view);
+        }
+    }
 }

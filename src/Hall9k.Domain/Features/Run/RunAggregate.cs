@@ -2511,7 +2511,12 @@ public sealed class RunAggregate
     {
         InteractiveClaudeSessionId = @event.ClaudeSessionId;
         InteractiveSessionCount++;
-        State = RunState.Running;
+        // A session registered once the pipeline owns the run (the driving session after deliver)
+        // records itself and moves nothing: the stage that owns the run keeps its state.
+        if (!State.IsPastBuild)
+        {
+            State = RunState.Running;
+        }
     }
 
     // No state change: the run stays wherever the interactive session left it (Claimed on the
