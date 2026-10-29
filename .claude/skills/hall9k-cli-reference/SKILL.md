@@ -896,6 +896,16 @@ h9k epic link-jira <id> <key-or-url>              # record the Jira item this on
 h9k epic close <id> --reason "<why>"              # the only way an epic ends
 ```
 
+In a project that belongs to a solution (below) every epic is a **solution epic**: `h9k epic add --project <p>`
+creates one ordinary epic per member project this node holds, all sharing a solution epic key and the title,
+and names any member this node does not hold, which gets no copy from it. `<id>` on every epic command, and
+`--epic` on `task add`/`task revise`/`task list`, takes the solution epic key (or a fragment) or any copy's id.
+A task joins the copy in its own project; a task from a project outside the solution, or a closed epic, is
+refused. `epic show`/`epic list` give one row per solution epic with the solution named and tasks grouped by
+project (only projects this node has joined); `epic close` closes every copy this node holds, still an explicit
+act with a reason. A project in a solution cannot create a project-only epic; epics it held before linking stay
+project epics.
+
 ## Solutions: grouping one-repo projects
 
 The ladder is solution, project, epic, task: a solution groups one-repo projects. It has no stream
@@ -919,6 +929,19 @@ h9k solution rename <name> <new-name>             # an explicit human act
 h9k solution close <name> --reason "<why>"        # the only way a solution ends; final
 h9k task list --solution <name>                   # also: h9k epic list --solution <name>
 ```
+
+`link` and `add` give a newly linked project a copy of every open solution epic this node holds for the
+solution. `unlink` leaves the project's copies and every task under them where they are, still shown on the
+solution epic; later solution epics and later closes no longer reach it, and it may create project epics again.
+
+**Shared tracker issue.** The one-live-task-per-issue refusal (`--from-issue`, `--from-jira`,
+`task link-issue`, `task link-jira`) has one exception: a second task may hold the issue when it is in the same
+solution epic as every live holder and in a different member project (an issue that needs a backend and a
+frontend change). The new task's epic comes from `--epic` at add time and from the task at link time. A holder
+that is a member project's task outside the epic is named with the remedy of joining it to the epic first
+(`h9k task revise <holder> --epic <key>`); every other case refuses as before. At closeout such an issue is
+closed only when this node holds every member project of the solution and every other linked task is done or
+abandoned; otherwise the issue stays open and the daemon's closeout log line says why.
 
 `add` and `link` refuse a project with no recorded project key (`h9k project join`, or `h9k project
 assign-key` for the genesis owner) and one with no recorded repository URL. They warn and ask when

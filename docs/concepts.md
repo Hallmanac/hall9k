@@ -12,6 +12,7 @@ summary that gets you there knowing what you are looking at.
 - [The three surfaces: state, phase, attention](#the-three-surfaces-state-phase-attention)
 - [Dependencies and true closeout](#dependencies-and-true-closeout)
 - [Solutions: grouping one-repo projects](#solutions-grouping-one-repo-projects)
+  - [Solution epics](#solution-epics)
 - [Runs](#runs)
 - [Leases](#leases)
 - [Verification gates](#verification-gates)
@@ -564,6 +565,51 @@ the same rollup and task table `h9k project show` uses. Two nodes linking the sa
 different solutions at the same moment resolve as last write wins on replication, which is parked
 until it first happens. See [the CLI map](cli.md#solutions-grouping-one-repo-projects) for the
 commands.
+
+### Solution epics
+
+In a project that belongs to a solution, every epic is a **solution epic**: one epic that spans the
+member projects, so that every member knows of it before any task exists and a task from any member
+can join it. It is not a new kind of stream. A solution epic is one ordinary epic per member project,
+and all the copies carry the same **solution epic key** (a 26-character ULID minted once) beside the
+key of the solution they were made for, as two trailing optional fields on `EpicAdded`. Streams written
+before the fields replay unchanged, and a build that does not know them reads each copy as the plain
+project epic it is. Each copy replicates through its own project's ledger exactly as an epic does
+today, so the replication path needed no change.
+
+`h9k epic add --project <p>`, where `<p>` belongs to a solution, creates a copy in every member project
+this node holds, all sharing the key and the title, and names any member this node does not hold, which
+receives no copy from it. A project in a solution cannot create a project-only epic. Epics it held
+before it was linked stay project epics, and a project outside any solution behaves as it always did.
+`h9k solution link` and `h9k solution add` give a newly linked project a copy of every open solution
+epic this node holds for that solution, in the same commit as the membership, so a project linked later
+can take tasks under the solution's existing epics.
+
+A task joins a solution epic at `task add --epic` or `task revise --epic` by naming the solution epic key
+(or a fragment of it) or the id of any copy. It joins its own project's copy. A task from a project that
+is not a member of the epic's solution is refused, and so is a closed epic. `epic show` and `epic list`
+read a solution epic as one epic: one row with the solution named, and the member tasks grouped by
+project, counting only the projects this node has joined. `epic list --project <member>` includes the
+solution's epics. Closing is still an explicit human act with a reason; `epic close` on a solution epic
+closes every copy this node holds, and nothing closes one automatically.
+
+The one-live-task-per-issue rule has a single exception here. A second task may hold a tracker issue
+when it sits in the same solution epic as every live holder and in a different member project, which is
+the case of one issue that needs a backend change and a frontend change. The new task's epic is read
+from `--epic` when the task is added and from the task itself when `task link-issue` or `task link-jira`
+links it. Every other case is refused with the usual message, and a holder that is another member
+project's task outside the epic is named with the remedy of joining it to the epic first.
+
+Closeout reads only the tasks this node holds, so it cannot see a task in a project the node has not
+joined. When a task closes out and its issue is also held by a task in another member project of the
+same solution epic, the issue is closed only if this node holds every member project of the solution
+and every other linked task is done or abandoned. Otherwise the issue stays open and the closeout log
+line says why, and the last task to close out closes it.
+
+Unlinking a project leaves its copies and every task under them where they are, still shown on the
+solution epic. Later solution epics and later closes no longer reach it, and it may create project
+epics again. A member that did not hold a project when an epic was created has no copy from that node;
+the copies come from nodes that hold the project, and a task there cannot join the epic until one exists.
 
 ## Runs
 
