@@ -180,7 +180,7 @@ public sealed class CommandTreeHelpTests
             // ever runs (idea d805fd8b, piece 1): h9k decide "…" and h9k learn "…" reach their
             // record subcommand there, and a check that skipped this step would call an example
             // the shipped binary accepts unrunnable.
-            app.Run(BarePositionalRecording.Normalise([.. tokens.Skip(1)]));
+            app.Run(CommandLineArguments.Normalise([.. tokens.Skip(1)]));
         }
         catch (StopOnceBound.Bound)
         {
