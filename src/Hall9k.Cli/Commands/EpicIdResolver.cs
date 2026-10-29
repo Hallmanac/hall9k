@@ -25,11 +25,18 @@ internal static class EpicIdResolver
             EpicDetails epic = await session.LoadAsync<EpicDetails>(id, cancellationToken)
                 ?? throw new DomainNotFoundException(
                     $"No epic {id}. See what exists: h9k epic list");
-            return epic.SolutionEpicKey is { } key
-                ? new EpicGroup([.. await session.Query<EpicDetails>()
-                    .Where(candidate => candidate.SolutionEpicKey == key)
-                    .ToListAsync(cancellationToken)])
-                : new EpicGroup([epic]);
+            if (epic.SolutionEpicKey is not { } key)
+            {
+                return new EpicGroup([epic]);
+            }
+
+            IReadOnlyList<EpicDetails> sharing = await session.Query<EpicDetails>()
+                .Where(candidate => candidate.SolutionEpicKey == key)
+                .ToListAsync(cancellationToken);
+            return EpicGroup.Of(sharing, await session.Query<ProjectDetails>().ToListAsync(cancellationToken))
+                       .FirstOrDefault(group => group.Copies.Any(copy => copy.Id == id))
+                   ?? throw new DomainNotFoundException(
+                       $"Epic {id} is not a copy of a solution epic this node can read. See what exists: h9k epic list");
         }
 
         string fragment = idOrFragment.Replace("-", "");
@@ -41,7 +48,8 @@ internal static class EpicIdResolver
         }
 
         IReadOnlyList<EpicDetails> all = await session.Query<EpicDetails>().ToListAsync(cancellationToken);
-        EpicGroup[] matches = [.. EpicGroup.Of(all).Where(group => Names(group, fragment))];
+        IReadOnlyList<ProjectDetails> projects = await session.Query<ProjectDetails>().ToListAsync(cancellationToken);
+        EpicGroup[] matches = [.. EpicGroup.Of(all, projects).Where(group => Names(group, fragment))];
 
         return matches switch
         {
@@ -55,7 +63,7 @@ internal static class EpicIdResolver
 
     /// <summary>What a person types for an epic: a project epic's short id, a solution epic's shared key shortened to its tail.</summary>
     public static string ReferenceOf(Guid epicId, string? solutionEpicKey) =>
-        solutionEpicKey is { } key ? key[^8..] : TaskListCommand.ShortId(epicId);
+        solutionEpicKey is { Length: >= 8 } key ? key[^8..] : solutionEpicKey ?? TaskListCommand.ShortId(epicId);
 
     private static bool Names(EpicGroup group, string fragment) =>
         group.Copies.Any(copy => copy.Id.ToString("N").StartsWith(fragment, StringComparison.OrdinalIgnoreCase)
@@ -130,13 +138,17 @@ internal static class EpicIdResolver
             : throw new DomainConflictException(
                 $"Epic '{title}' is {state.Value} — Open is the only state a task can join.");
 
-    /// <summary>Loads the aggregate of every copy behind a reference, for the commands that decide on state.</summary>
+    /// <summary>
+    /// Loads the aggregate of every copy behind a reference that speaks for the epic, for the commands that
+    /// decide on state. A project taken out of its solution keeps its copy, but a close or a Jira link no
+    /// longer reaches it (<see cref="EpicGroup.Current"/>).
+    /// </summary>
     public static async Task<IReadOnlyList<EpicAggregate>> LoadAsync(
         IDocumentSession session, string idOrFragment, CancellationToken cancellationToken)
     {
         EpicGroup group = await ResolveGroupAsync(session, idOrFragment, cancellationToken);
         List<EpicAggregate> copies = [];
-        foreach (EpicDetails copy in group.Copies.OrderBy(copy => copy.AddedAt))
+        foreach (EpicDetails copy in group.Current.OrderBy(copy => copy.AddedAt))
         {
             copies.Add(await session.Events.AggregateStreamAsync<EpicAggregate>(copy.Id, token: cancellationToken)
                 ?? throw new DomainNotFoundException($"No epic {copy.Id}."));

@@ -131,8 +131,10 @@ internal static class SolutionEpicCopies
     {
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         IReadOnlyList<EpicDetails> epics = await session.Query<EpicDetails>().ToListAsync(cancellationToken);
+        IReadOnlyList<ProjectDetails> projects = await session.Query<ProjectDetails>().ToListAsync(cancellationToken);
         IReadOnlyList<EpicAdded> copies = SolutionEpicDecider.CopiesForNewMembers(
             epics,
+            projects,
             solutionKey,
             [.. joining.Where(project => project.PurgeAt is null).Select(project => project.Id)],
             DomainId.New,

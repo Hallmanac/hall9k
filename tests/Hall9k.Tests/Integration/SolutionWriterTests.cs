@@ -522,7 +522,24 @@ public sealed class SolutionWriterTests : IClassFixture<PostgresFixture>, IAsync
     }
 
     [Fact]
-    public async Task Closeout_has_nothing_to_say_about_an_issue_only_one_projects_task_holds()
+    public async Task Closeout_has_nothing_to_say_about_an_issue_only_one_projects_task_holds_when_this_node_holds_every_member()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid api = await SeedJoinedProjectAsync("shop-api", ApiKey, cts.Token);
+        await SeedJoinedProjectAsync("shop-web", WebKey, cts.Token);
+        await GroupAsync("storefront", cts.Token, "shop-api", "shop-web");
+        IReadOnlyList<EpicAdded> cart = await AddEpicAsync("shop-api", "Cart", cts.Token);
+        ExternalReference issue = Issue();
+        Guid closing = await AddTaskAsync("shop-api", CopyIn(cart, api), issue, cts.Token);
+        Guid plain = await AddTaskAsync("shop-api", null, Issue(), cts.Token);
+
+        await using IQuerySession session = _postgres.Store.QuerySession();
+        (await CloseoutEngine.SharedIssueHoldAsync(session, closing, issue, cts.Token)).Should().BeNull();
+        (await CloseoutEngine.SharedIssueHoldAsync(session, plain, Issue(), cts.Token)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Closeout_holds_an_issue_open_while_a_member_is_not_held_even_when_no_other_task_is_visible()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         Guid api = await SeedJoinedProjectAsync("shop-api", ApiKey, cts.Token);
@@ -534,8 +551,34 @@ public sealed class SolutionWriterTests : IClassFixture<PostgresFixture>, IAsync
         Guid plain = await AddTaskAsync("shop-api", null, Issue(), cts.Token);
 
         await using IQuerySession session = _postgres.Store.QuerySession();
-        (await CloseoutEngine.SharedIssueHoldAsync(session, closing, issue, cts.Token)).Should().BeNull();
+        (await CloseoutEngine.SharedIssueHoldAsync(session, closing, issue, cts.Token))
+            .Should().Contain("does not hold 'shop-web'", "a task in the project this node has not joined could hold the issue unseen");
         (await CloseoutEngine.SharedIssueHoldAsync(session, plain, Issue(), cts.Token)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Revising_a_task_out_of_its_solution_epic_is_refused_while_another_projects_task_shares_its_issue()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid api = await SeedJoinedProjectAsync("shop-api", ApiKey, cts.Token);
+        Guid web = await SeedJoinedProjectAsync("shop-web", WebKey, cts.Token);
+        await GroupAsync("storefront", cts.Token, "shop-api", "shop-web");
+        IReadOnlyList<EpicAdded> cart = await AddEpicAsync("shop-api", "Cart", cts.Token);
+        IReadOnlyList<EpicAdded> checkout = await AddEpicAsync("shop-api", "Checkout", cts.Token);
+        ExternalReference issue = Issue();
+        await AddTaskAsync("shop-api", CopyIn(cart, api), issue, cts.Token);
+        Guid sharing = await AddTaskAsync("shop-web", CopyIn(cart, web), issue, cts.Token);
+        Guid alone = await AddTaskAsync("shop-web", CopyIn(cart, web), Issue(), cts.Token);
+
+        await using IQuerySession session = _postgres.Store.QuerySession();
+        async Task Move(Guid taskId, Guid? toEpic) => await TaskReviseCommand.RefuseLeavingSharedIssueAsync(
+            session, (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!, toEpic, cts.Token);
+
+        Func<Task> clear = () => Move(sharing, null);
+        await clear.Should().ThrowAsync<DomainConflictException>().WithMessage("*one issue is one live task*cannot leave*");
+        Func<Task> other = () => Move(sharing, CopyIn(checkout, web));
+        await other.Should().ThrowAsync<DomainConflictException>().WithMessage("*cannot leave*");
+        await Move(alone, null);
     }
 
     [Fact]
@@ -562,7 +605,7 @@ public sealed class SolutionWriterTests : IClassFixture<PostgresFixture>, IAsync
 
         await using IQuerySession read = _postgres.Store.QuerySession();
         SolutionContext after = await SolutionContext.LoadAsync(read, cts.Token);
-        EpicGroup group = EpicGroup.Of(await read.Query<EpicDetails>().ToListAsync(cts.Token))
+        EpicGroup group = EpicGroup.Of(await read.Query<EpicDetails>().ToListAsync(cts.Token), after.Projects)
             .Single(candidate => candidate.SolutionEpicKey == cart[0].SolutionEpicKey);
         group.Copies.Select(copy => copy.ProjectId).Should().BeEquivalentTo([api, web], "the unlinked project's copy stays on the solution epic");
         (await read.LoadAsync<TaskListItem>(webTask, cts.Token))!.EpicId.Should().Be(CopyIn(cart, web), "its task stays where it was");
@@ -570,6 +613,10 @@ public sealed class SolutionWriterTests : IClassFixture<PostgresFixture>, IAsync
 
         Func<Task> join = () => EpicIdResolver.ResolveForMembershipAsync(read, cart[0].SolutionEpicKey!, web, cts.Token);
         await join.Should().ThrowAsync<DomainConflictException>().WithMessage("*not*", "an unlinked project's new tasks no longer join the solution epic");
+
+        await using IDocumentSession close = _postgres.Store.LightweightSession();
+        (await EpicIdResolver.LoadAsync(close, cart[0].SolutionEpicKey!, cts.Token)).Select(copy => copy.Id)
+            .Should().Equal([CopyIn(cart, api)], "a later close or Jira link reaches only the projects still in the solution");
     }
 
     [Fact]

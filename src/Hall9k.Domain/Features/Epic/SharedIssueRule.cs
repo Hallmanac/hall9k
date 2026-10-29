@@ -61,11 +61,14 @@ public static class SharedIssueRule
 
     /// <summary>
     /// Why the issue a closing task holds stays open, or null when this rule has nothing to say.
-    /// It speaks only when another task of a different project, in the same solution epic, holds the
-    /// issue too. Then closing needs this node to hold every member project of the solution (a task in a
-    /// project it does not hold could still be open without this node being able to see it) and every
-    /// other linked task done or abandoned. <paramref name="membership"/> is the solution's record on this
-    /// node and <paramref name="membersNotHeld"/> the members of it this node does not hold.
+    /// It speaks only for a task in a solution epic. Such an epic is open to tasks from every member
+    /// project, and a task in a project this node does not hold could hold the same issue without this
+    /// node being able to see it, so while <paramref name="membersNotHeld"/> (the members of the
+    /// solution, as <paramref name="membership"/> records it on this node, that this node does not hold)
+    /// is not empty the issue stays open whether or not another holder is visible. When this node holds
+    /// every member, it stays open only until every other task of a different project in the same
+    /// solution epic that holds it is done or abandoned. A node with no record of the solution cannot
+    /// name what it is missing, and says something only when it can already see such another task.
     /// </summary>
     public static string? CloseoutHold(
         TaskListItem closing,
@@ -80,31 +83,29 @@ public static class SharedIssueRule
             return null;
         }
 
-        SharedIssueHolder[] sharing =
-        [
-            .. others.Where(other => other.Task.ProjectId != closing.ProjectId
-                && other.Epic is { IsSolutionEpic: true } epic
-                && string.Equals(epic.SolutionEpicKey, closingEpic.SolutionEpicKey, StringComparison.OrdinalIgnoreCase)),
-        ];
-        if (sharing.Length == 0)
-        {
-            return null;
-        }
+        bool anotherProjectShares = others.Any(other => other.Task.ProjectId != closing.ProjectId
+            && other.Epic is { IsSolutionEpic: true } epic
+            && string.Equals(epic.SolutionEpicKey, closingEpic.SolutionEpicKey, StringComparison.OrdinalIgnoreCase));
 
         if (membership is null)
         {
-            return $"its solution epic '{closingEpic.Title}' is shared with another project's task, and this node holds no record of "
-                + "the solution to check that it holds every member project";
+            return anotherProjectShares
+                ? $"its solution epic '{closingEpic.Title}' is shared with another project's task, and this node holds no record of "
+                    + "the solution to check that it holds every member project"
+                : null;
         }
 
         if (membersNotHeld.Count > 0)
         {
-            return $"another project's task in the solution epic '{closingEpic.Title}' holds it too, and this node does not hold "
-                + $"{string.Join(", ", membersNotHeld.Select(member => $"'{member.Name}'"))} of the solution '{membership.Name}', "
-                + "so it cannot see every task that holds it";
+            string unseen = string.Join(", ", membersNotHeld.Select(member => $"'{member.Name}'"));
+            return anotherProjectShares
+                ? $"another project's task in the solution epic '{closingEpic.Title}' holds it too, and this node does not hold "
+                    + $"{unseen} of the solution '{membership.Name}', so it cannot see every task that holds it"
+                : $"the solution epic '{closingEpic.Title}' is open to tasks from every project of the solution '{membership.Name}', "
+                    + $"and this node does not hold {unseen}, so it cannot see whether a task there holds it too";
         }
 
-        return everyOtherLinkedTaskClosedOut
+        return !anotherProjectShares || everyOtherLinkedTaskClosedOut
             ? null
             : $"another project's task in the solution epic '{closingEpic.Title}' holds it too and is not yet done or abandoned; "
                 + "the last of them to close out closes it";

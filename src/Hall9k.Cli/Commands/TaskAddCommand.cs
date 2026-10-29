@@ -1214,8 +1214,10 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     /// The project and epic a task would hold an issue in: the only two facts that decide whether it may
     /// share the issue with a task of another member project (<see cref="SharedIssueRule"/>). At add time
     /// they come from the command's own --project and --epic, at link time from the task itself.
+    /// <paramref name="SelfTaskId"/> names a task that already holds the issue and is changing its site
+    /// (a revise moving it between epics), which is not a holder that bars itself.
     /// </summary>
-    internal sealed record AdoptionSite(Guid ProjectId, Guid? EpicId);
+    internal sealed record AdoptionSite(Guid ProjectId, Guid? EpicId, Guid? SelfTaskId = null);
 
     /// <summary>
     /// The guard with the site the new task would sit in. A second task may hold an issue only when it is
@@ -1255,8 +1257,11 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 TaskState.NeedsHuman.Value))
             .OrderBy(task => task.AddedAt)
             .ToListAsync(cancellationToken);
-        IReadOnlyList<TaskListItem> holders = await NotAnotherOwnersReviewsAsync(
-            session, reference, ownerRootFingerprint, blocking, cancellationToken);
+        IReadOnlyList<TaskListItem> holders =
+        [
+            .. (await NotAnotherOwnersReviewsAsync(session, reference, ownerRootFingerprint, blocking, cancellationToken))
+                .Where(holder => holder.Id != site?.SelfTaskId),
+        ];
         if (holders.Count == 0)
         {
             return;
@@ -1283,7 +1288,10 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             $"{canonical} is already adopted by task {shortId} ({ExternalText.OneLine(existing.Objective)}), "
             + $"which is {existing.State.Value}. Adoption is selective, never mirroring (PLAN.md §3.1a), so one "
             + $"issue is one live task: see it with h9k task show {shortId}, then {Remedy(existing.State, shortId)}"
-            + joinFirst);
+            + joinFirst
+            + (site?.SelfTaskId is null
+                ? string.Empty
+                : " This task holds the issue too, and it may share it only inside the solution epic it is in now, so it cannot leave."));
     }
 
     /// <summary>The first live holder that bars the new task under <see cref="SharedIssueRule"/>, or null when the issue may be shared.</summary>
