@@ -601,10 +601,14 @@ links it. Every other case is refused with the usual message, and a holder that 
 project's task outside the epic is named with the remedy of joining it to the epic first.
 
 Closeout reads only the tasks this node holds, so it cannot see a task in a project the node has not
-joined. When a task closes out and its issue is also held by a task in another member project of the
-same solution epic, the issue is closed only if this node holds every member project of the solution
-and every other linked task is done or abandoned. Otherwise the issue stays open and the closeout log
-line says why, and the last task to close out closes it.
+joined. When a task in a solution epic closes out and this node does not hold every member project of the
+solution, the issue stays open even when no other task holding it is visible, because one in a project the
+node does not hold could be working on it unseen. When the node holds every member and the issue is also
+held by a task in another member project of the same solution epic, the issue is closed only if every other
+linked task is done or abandoned. Either way the closeout log line says why it stayed open, and the last
+task to close out closes it. A task that shares an issue this way cannot be revised out of its solution epic
+or into another one (`task revise --epic` or `--clear-epic`) while another project's task holds the issue,
+for the same reason adoption refuses it outside the epic.
 
 Unlinking a project leaves its copies and every task under them where they are, still shown on the
 solution epic. Later solution epics and later closes no longer reach it, and it may create project

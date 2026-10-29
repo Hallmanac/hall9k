@@ -439,8 +439,8 @@ project linked later the open ones it lacks, and a task from any member joins th
 by naming the key or any copy's id. `epic show` and `epic list` read one epic as one row with the
 solution named and its tasks grouped by project. `epic close` closes every copy this node holds and is
 still explicit and never automatic. A second task may hold a tracker issue only inside the same solution
-epic in a different member project, and closeout closes such an issue only when this node holds every
-member project and every other linked task is done or abandoned; otherwise it stays open and says why.
+epic in a different member project, and closeout closes an issue of a task in a solution epic only when this node holds every
+member project and every other task holding it is done or abandoned; otherwise it stays open and says why.
 Unlinking a project leaves its copies and tasks in place. Not built: a copy made on a node that does not
 hold a member project (the member gets none from that node), and any repair that makes one later.
 

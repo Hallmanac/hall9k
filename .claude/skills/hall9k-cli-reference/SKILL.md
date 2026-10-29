@@ -939,9 +939,10 @@ solution epic; later solution epics and later closes no longer reach it, and it 
 solution epic as every live holder and in a different member project (an issue that needs a backend and a
 frontend change). The new task's epic comes from `--epic` at add time and from the task at link time. A holder
 that is a member project's task outside the epic is named with the remedy of joining it to the epic first
-(`h9k task revise <holder> --epic <key>`); every other case refuses as before. At closeout such an issue is
-closed only when this node holds every member project of the solution and every other linked task is done or
-abandoned; otherwise the issue stays open and the daemon's closeout log line says why.
+(`h9k task revise <holder> --epic <key>`); every other case refuses as before. At closeout a task in a solution epic
+closes its issue only when this node holds every member project of the solution and every other task holding
+it is done or abandoned; otherwise the issue stays open and the daemon's closeout log line says why.
+`task revise --epic`/`--clear-epic` is refused while it would take a task out of the epic it shares an issue in.
 
 `add` and `link` refuse a project with no recorded project key (`h9k project join`, or `h9k project
 assign-key` for the genesis owner) and one with no recorded repository URL. They warn and ask when
