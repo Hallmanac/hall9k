@@ -1,3 +1,5 @@
+using Hall9k.Domain.Features.Project.Projections;
+
 namespace Hall9k.Domain.Features.Epic;
 
 /// <summary>
@@ -35,10 +37,12 @@ public static class SolutionEpicDecider
     /// <paramref name="epics"/> holds for <paramref name="solutionKey"/>: one per open solution epic the
     /// project has no copy of, carrying that epic's key and title. A closed solution epic is not copied
     /// (a task can no longer join it), and a project that kept a copy from an earlier membership is not
-    /// given a second one.
+    /// given a second one. <paramref name="projects"/> tells which copies sit in a project that is still a member,
+    /// so a copy a project outside the solution holds cannot close the epic for the others.
     /// </summary>
     public static IReadOnlyList<EpicAdded> CopiesForNewMembers(
         IReadOnlyList<EpicDetails> epics,
+        IReadOnlyCollection<ProjectDetails> projects,
         string solutionKey,
         IReadOnlyList<Guid> newProjectIds,
         Func<Guid> newId,
@@ -48,7 +52,8 @@ public static class SolutionEpicDecider
         IReadOnlyList<EpicGroup> open =
         [
             .. EpicGroup.Of(epics.Where(epic =>
-                    epic.IsSolutionEpic && string.Equals(epic.SolutionKey, solutionKey, StringComparison.OrdinalIgnoreCase)))
+                    epic.IsSolutionEpic && string.Equals(epic.SolutionKey, solutionKey, StringComparison.OrdinalIgnoreCase)),
+                projects)
                 .Where(group => group.State == EpicState.Open)
                 .OrderBy(group => group.AddedAt),
         ];

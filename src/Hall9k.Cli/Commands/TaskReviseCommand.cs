@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -408,6 +409,11 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             epicId = namesCurrentEpic ? Optional<Guid?>.None : Optional<Guid?>.Of(joined);
         }
 
+        if (epicId.HasValue)
+        {
+            await RefuseLeavingSharedIssueAsync(session, task, epicId.Value, cancellationToken);
+        }
+
         Optional<bool> queuePriority = settings.QueueFirst
             ? Optional<bool>.Of(true)
             : settings.ClearQueueFirst
@@ -770,6 +776,29 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             yield return revised.Constraints.Value is { } budget
                 ? $"budget (max turns {budget.MaxTurns?.ToString() ?? "none"}, max tokens {budget.MaxTokens?.ToString() ?? "none"}, max wall clock {budget.MaxWallClock?.ToString() ?? "none"})"
                 : "budget cleared";
+        }
+    }
+
+    /// <summary>
+    /// A task in a solution epic may hold a tracker issue another member project's task holds too, but only
+    /// inside that epic (<see cref="SharedIssueRule"/>). Taking it out of the epic, or into another one, would
+    /// leave two live tasks on the issue outside the one place that allows it, so the move is held to the
+    /// same rule adoption is: it is refused while another live task holds an issue this one holds.
+    /// </summary>
+    internal static async Task RefuseLeavingSharedIssueAsync(
+        IQuerySession session, TaskAggregate task, Guid? newEpicId, CancellationToken cancellationToken)
+    {
+        if (task.EpicId is not { } currentEpicId
+            || await session.LoadAsync<EpicDetails>(currentEpicId, cancellationToken) is not { IsSolutionEpic: true })
+        {
+            return;
+        }
+
+        foreach (ExternalReference reference in new[] { task.ExternalReference, task.SecondaryExternalReference }.OfType<ExternalReference>())
+        {
+            await TaskAddCommand.RefuseSecondAdoptionAsync(
+                session, reference, new TaskAddCommand.AdoptionSite(task.ProjectId, newEpicId, task.Id),
+                ownerRootFingerprint: null, cancellationToken);
         }
     }
 

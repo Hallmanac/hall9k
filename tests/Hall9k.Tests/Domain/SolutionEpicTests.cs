@@ -130,6 +130,44 @@ public sealed class SolutionEpicTests
     }
 
     [Fact]
+    public void A_copy_in_a_project_outside_the_solution_cannot_rename_close_or_split_the_epic()
+    {
+        ProjectDetails api = Project(Api, Storefront);
+        ProjectDetails web = Project(Web, Storefront);
+        ProjectDetails stranger = Project(new SolutionMember(WebKey.Replace('B', 'C'), "stranger", new Uri("https://github.com/acme/stranger.git")), null);
+        IReadOnlyList<EpicAdded> cart = SolutionEpicDecider.Add(Storefront.Key, "Cart", [api.Id, web.Id], DomainId.New, Now, Owner);
+        string key = cart[0].SolutionEpicKey!;
+        EpicDetails forgedClosed = Copy(new EpicAdded(DomainId.New(), stranger.Id, "Hijack", Now.AddDays(-30), Owner, key, Storefront.Key), EpicState.Closed);
+        EpicDetails forgedSolution = Copy(new EpicAdded(DomainId.New(), stranger.Id, "Other", Now, Owner, key, SolutionDecider.NewKey()));
+        EpicDetails forgedShortKey = Copy(new EpicAdded(DomainId.New(), stranger.Id, "Short", Now, Owner, "abc", Storefront.Key));
+
+        IReadOnlyList<EpicGroup> groups = EpicGroup.Of(
+            [Copy(cart[0]), Copy(cart[1]), forgedClosed, forgedSolution, forgedShortKey], [api, web, stranger]);
+
+        EpicGroup epic = groups.Should().ContainSingle().Subject;
+        epic.Title.Should().Be("Cart", "a backdated copy in a project the solution does not name cannot rename the epic");
+        epic.State.Should().Be(EpicState.Open, "nor close it for the members");
+        epic.SolutionKey.Should().Be(Storefront.Key);
+        epic.Current.Select(copy => copy.ProjectId).Should().BeEquivalentTo([api.Id, web.Id]);
+        Hall9k.Cli.Commands.EpicListCommand.Reference(new EpicGroup([forgedShortKey]))
+            .Should().Be("abc", "a key too short to shorten is shown whole instead of throwing");
+    }
+
+    [Fact]
+    public void A_project_taken_out_of_its_solution_keeps_its_copy_on_the_epic_but_no_longer_speaks_for_it()
+    {
+        ProjectDetails api = Project(Api, Storefront);
+        ProjectDetails unlinkedWeb = Project(Web, null);
+        IReadOnlyList<EpicAdded> cart = SolutionEpicDecider.Add(Storefront.Key, "Cart", [api.Id, unlinkedWeb.Id], DomainId.New, Now, Owner);
+
+        EpicGroup epic = EpicGroup.Of([Copy(cart[0]), Copy(cart[1], EpicState.Closed)], [api, unlinkedWeb]).Single();
+
+        epic.Copies.Should().HaveCount(2, "its tasks stay on the solution epic");
+        epic.Current.Select(copy => copy.ProjectId).Should().BeEquivalentTo([api.Id], "a close or a Jira link reaches only the projects still in the solution");
+        epic.State.Should().Be(EpicState.Open);
+    }
+
+    [Fact]
     public void A_project_linked_later_gets_a_copy_of_every_open_solution_epic_it_lacks_and_nothing_else()
     {
         Guid api = DomainId.New();
@@ -144,7 +182,7 @@ public sealed class SolutionEpicTests
             Copy(cart[0]), Copy(checkout[0]), Copy(retired[0], EpicState.Closed), Copy(elsewhere[0]), projectEpic,
         ];
 
-        IReadOnlyList<EpicAdded> copies = SolutionEpicDecider.CopiesForNewMembers(held, Storefront.Key, [admin], DomainId.New, Now.AddDays(1), Owner);
+        IReadOnlyList<EpicAdded> copies = SolutionEpicDecider.CopiesForNewMembers(held, [], Storefront.Key, [admin], DomainId.New, Now.AddDays(1), Owner);
 
         copies.Select(copy => copy.Title).Should().BeEquivalentTo("Cart", "Checkout");
         copies.Should().OnlyContain(copy => copy.ProjectId == admin && copy.SolutionKey == Storefront.Key);
@@ -159,7 +197,7 @@ public sealed class SolutionEpicTests
         IReadOnlyList<EpicAdded> cart = SolutionEpicDecider.Add(Storefront.Key, "Cart", [api, web], DomainId.New, Now, Owner);
 
         IReadOnlyList<EpicAdded> copies = SolutionEpicDecider.CopiesForNewMembers(
-            [Copy(cart[0]), Copy(cart[1])], Storefront.Key, [web], DomainId.New, Now.AddDays(1), Owner);
+            [Copy(cart[0]), Copy(cart[1])], [], Storefront.Key, [web], DomainId.New, Now.AddDays(1), Owner);
 
         copies.Should().BeEmpty();
     }
@@ -231,8 +269,23 @@ public sealed class SolutionEpicTests
         SharedIssueHolder noEpic = new(Task(web, null), null, web);
 
         SharedIssueRule.CloseoutHold(closing, null, [], Storefront, [], everyOtherLinkedTaskClosedOut: true).Should().BeNull();
-        SharedIssueRule.CloseoutHold(closing, apiCopy, [sameProject, noEpic], Storefront, [Web], everyOtherLinkedTaskClosedOut: false)
+        SharedIssueRule.CloseoutHold(closing, apiCopy, [sameProject, noEpic], Storefront, [], everyOtherLinkedTaskClosedOut: false)
             .Should().BeNull("a holder in the same project or outside the epic is the ordinary cross-task gate's business");
+    }
+
+    [Fact]
+    public void Closeout_holds_the_issue_while_a_member_is_unseen_even_when_no_other_holder_is_visible()
+    {
+        ProjectDetails api = Project(Api, Storefront);
+        EpicDetails apiCopy = Copy(SolutionEpicDecider.Add(Storefront.Key, "Cart", [api.Id], DomainId.New, Now, Owner)[0]);
+        TaskListItem closing = Task(api, apiCopy, TaskState.Done);
+
+        SharedIssueRule.CloseoutHold(closing, apiCopy, [], Storefront, [Web], everyOtherLinkedTaskClosedOut: true)
+            .Should().Contain("does not hold 'shop-web'").And.Contain("whether a task there holds it too");
+        SharedIssueRule.CloseoutHold(closing, apiCopy, [], Storefront, [], everyOtherLinkedTaskClosedOut: true)
+            .Should().BeNull("this node holds every member, so no other holder is hidden from it");
+        SharedIssueRule.CloseoutHold(closing, null, [], Storefront, [Web], everyOtherLinkedTaskClosedOut: true)
+            .Should().BeNull("a task outside any solution epic is not this rule's business");
     }
 
     [Fact]

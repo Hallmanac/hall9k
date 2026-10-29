@@ -56,7 +56,7 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
         // A solution epic is one row, so the filters and the state count read whole epics: --project keeps a
         // solution epic when the project holds a copy or is a member of its solution, which includes the
         // epics created before it was linked and whose copy has not been made on this node.
-        List<EpicGroup> scoped = [.. EpicGroup.Of(epics)
+        List<EpicGroup> scoped = [.. EpicGroup.Of(epics, context.Projects)
             .Where(group => project is null || InProject(group, project))
             .Where(group => solutionProjectIds is null || group.Copies.Any(copy => solutionProjectIds.Contains(copy.ProjectId)))];
         List<EpicGroup> matched = [.. scoped
