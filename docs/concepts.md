@@ -563,8 +563,14 @@ every member registered and joined on this node, and refuses, naming the ones th
 `h9k solution show` composes the board across the members this node holds, grouped by project, with
 the same rollup and task table `h9k project show` uses. Two nodes linking the same project into
 different solutions at the same moment resolve as last write wins on replication, which is parked
-until it first happens. See [the CLI map](cli.md#solutions-grouping-one-repo-projects) for the
-commands.
+until it first happens.
+
+A solution also has a thin home on each node that holds it, at `~/.hall9k/solutions/<name>`, where one
+interactive **solution window** runs. The window is a director: it monitors the member projects' own
+orchestrators and sends each act that belongs to a member to that member's live orchestrator, handing
+the operator that member's launch line when none is live. It registers no presence of its own and never
+drains a member's feed, and ideas stay in the member projects. See
+[the CLI map](cli.md#solutions-grouping-one-repo-projects) for the commands.
 
 ### Solution epics
 

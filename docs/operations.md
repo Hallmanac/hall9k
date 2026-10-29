@@ -667,7 +667,7 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 ├── skills/                     the canonical skill set, published by h9k install
 ├── templates/                  the canonical prompt-template set, published by h9k install (PLAN.md §16 #175)
 ├── recipes/                    the node orchestrator window's own recipe ([README's Orchestrator windows](../README.md#orchestrator-windows))
-│   ├── launch-anchor.md        platform-owned, overwritten outright on every install/update (which also refreshes every registered project home's anchor)
+│   ├── launch-anchor.md        platform-owned, overwritten outright on every install/update (which also refreshes every registered project home's and every solution home's anchor)
 │   ├── settings.json           platform-owned the same way — rides the launch line as --settings
 │   ├── orchestrator-recipe-generator/  the generator skill, published beside the anchor it writes for
 │   └── orchestrator.md         written once by that skill; never overwritten, only .new beside it
@@ -695,6 +695,11 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 │   ├── sessions.md             seeded alongside it: the registry of sessions this window has spawned
 │   └── notes/prototype-feedback.md  seeded alongside it: dated feedback about this project's own
 │                               generated recipes
+├── solutions/<name>/           a solution's thin home (h9k solution init): no repo/, ideas/ or tasks/
+│   ├── AGENTS.md               rendered from the solution's membership by the daemon's home render sweep; never hand-maintained
+│   ├── recipes/                the solution window's own recipe: platform-written launch-anchor.md and settings.json, the generator skill, and orchestrator.md written once by it
+│   ├── skills/, .claude/skills/  symlinks, the same shape as a project home's
+│   └── journal.md, sessions.md, notes/  seeded once by the generator skill, like a project window's
 ├── ideas/<idea-id>/workspace/  the fallback for an idea captured with no project, or a project
 │                               with no home yet: permanent, never relocated after capture
 ├── postgres/docker-compose.yml Hall9k's own Postgres definition (h9k install writes it, §Postgres)
