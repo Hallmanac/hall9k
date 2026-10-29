@@ -1,12 +1,13 @@
 ---
 name: orchestrator-recipe-generator
-description: Generate or regenerate this project's (or this node's) orchestrator recipe: the files that let a human launch a lean, disposable orchestrator session for this project from a terminal, plus the recipes for the scoped sessions it spawns. Use when a project is new, when the platform or the machine changed, or when Brian asks for the recipe to be redone.
+description: Generate or regenerate this project's (or this node's, or this solution's) orchestrator recipe: the files that let a human launch a lean, disposable orchestrator session for this project from a terminal, plus the recipes for the scoped sessions it spawns. Use when a project or solution is new, when the platform or the machine changed, or when Brian asks for the recipe to be redone.
 ---
 
-You are writing the recipe for an orchestrator session: a node's or a project's. Read this whole
-skill before touching anything. Do not implement platform features; you write prompts and seed
-files only. Nothing you write here is rendered by the platform — the platform owns exactly two
+You are writing the recipe for an orchestrator session: a node's, a project's, or a solution's. Read
+this whole skill before touching anything. Do not implement platform features; you write prompts and
+seed files only. Nothing you write here is rendered by the platform — the platform owns exactly two
 files beside what you write (`launch-anchor.md` and `settings.json`), and you never touch either.
+A solution home's `AGENTS.md` is a platform render as well, and you never touch it either.
 
 ## What an orchestrator session is
 
@@ -17,12 +18,14 @@ concurrency ceiling, the budget, the daemon, the binaries, `config.json`, projec
 the node), and never implements a feature itself; work enters through `h9k task add` and is built
 by dispatched sessions.
 
-The one-sentence seam: **the node owns the resource, the project owns the work.**
+The one-sentence seam: **the node owns the resource, the project owns the work.** A solution window
+sits beside the project windows rather than above the seam: it directs the member projects' own
+orchestrators and does none of their work itself.
 
 ## Which mode you are in
 
-This skill runs from two places, sharing one discovery and one set of canonical blocks, and
-writing two different recipe sets:
+This skill runs from three places, sharing one discovery and one set of canonical blocks, and
+writing three different recipe sets:
 
 - **Project mode.** You were run from inside a project's home directory (or a worktree beneath its
   `repo/`). `h9k project list` names every registered project but does not print where any of them
@@ -33,6 +36,17 @@ writing two different recipe sets:
 - **Node mode.** You were run from the node's own home — `h9k config show` prints the config
   file's own path, whose parent directory is the home; it defaults to `~/.hall9k` — or the human
   told you explicitly this is a node run. There is no project to resolve.
+
+- **Solution mode.** You were run from inside a solution's thin home, `~/.hall9k/solutions/<name>`
+  (or a directory beneath it). Resolve which solution by matching the working directory against the
+  `Home:` line `h9k solution show <name>` prints: read `AGENTS.md` at the home's root (it is the
+  platform's render, and its heading and `Solution key` line name the solution), run
+  `h9k solution show "<name from AGENTS.md>"`, and confirm that its `Home:` line is the working
+  directory or an ancestor of it. If `AGENTS.md` is missing or names no solution, or the `Home:`
+  line does not match, run `h9k solution list --state all` and `h9k solution show` for each name
+  until one matches; if none does, or more than one does, stop and ask which solution rather than
+  guessing. A `Home:` line that says there is none means `h9k solution init <name>` has not run
+  here: say so and stop. Everything from here on that says "the solution" means that one.
 
 Do not infer the mode from anything else — not the invoking agent's own working directory if it
 differs from both of the above, not a guess at what "seems more useful" to generate. If neither
@@ -93,6 +107,18 @@ instead from a few recent Done tasks (`h9k task list --project <name> --state do
 on its own once gates and review are satisfied) or does the owner merge each pull request by hand.
 State what you actually saw, not a rule you inferred from it — a pattern in five tasks is not a
 standing policy, and this skill does not mint one (see *Never invent a standing rule* below).
+
+**The solution (solution mode only).**
+
+`h9k solution show "<name>"` for the board and the `Home:` line, and `AGENTS.md` at the solution
+home's root for each member's repository URL and its home on this node (or the plain statement that
+this node has not joined it). For each member this node has joined, `h9k project show <member>` for
+what a director needs to know about it: its home, its base branch, and the orchestrator feed band
+it reads at. For each, `h9k orchestrator project <member>` for where its recipe lives and its own
+launch line (recorded in the recipe as a pointer to the command, never copied). Do not run
+`h9k orchestrator register`, and do not run `h9k orchestrator feed` for a member: a solution
+window has no presence of its own and never reads or drains a member's feed, which is that member
+orchestrator's job.
 
 **The node.**
 
@@ -184,13 +210,14 @@ adopt it.
 These blocks are defined exactly once, here. *Writing conventions* and *Talking to the operator*
 are universal: copy them verbatim, unedited, into every recipe you write (the orchestrator recipe,
 `idea-discovery.md`, `task-refinement.md`, `task-drive.md`, and the node recipe). *Other owners'
-work* is the second kind: copy it verbatim into the project's `recipes/orchestrator.md` and into the
-node recipe, the two windows an operator talks to and that can reach a task's lifecycle, and never
+work* is the second kind: copy it verbatim into the project's `recipes/orchestrator.md`, into the
+node recipe, and into the solution recipe, the windows an operator talks to and that can reach a
+task's lifecycle, and never
 into the scoped recipes, `task-drive.md` included (the first two run headless against one idea or
 one draft and never act on a board row; the third belongs to a session driving the one task its
 owner has just claimed, which is theirs by construction).
 *Model and effort* is narrower:
-copy it verbatim into a project's `recipes/orchestrator.md` only, never into the node recipe (a
+copy it verbatim into a project's and a solution's `recipes/orchestrator.md` only, never into the node recipe (a
 node window spawns nothing of its own) and never into the scoped recipes (they spawn no further
 sessions of their own either). This is what "rendered from one place" means: the wording lives in
 this skill, not independently re-typed into each recipe, so the copies cannot drift apart from each
@@ -250,7 +277,7 @@ other or from what this skill says next time it runs.
 > reconcile, exactly like any other change this skill makes to an existing recipe. Nothing about
 > that flow ever touches `launch-anchor.md`.
 
-### Other owners' work (copy verbatim, project and node orchestrator recipes only)
+### Other owners' work (copy verbatim, project, node and solution orchestrator recipes only)
 
 > **Other owners' work.** Every task on this project's board belongs to one owner: the person whose
 > fleet holds it, is assigned it, claimed it, or created it. `h9k task show <id>` names the assignee
@@ -290,7 +317,7 @@ other or from what this skill says next time it runs.
 > When you are not sure whose a task is, or whether the operator meant for you to act on it, do not
 > act. Report what you see in one line and ask.
 
-### Model and effort (copy verbatim, project orchestrator recipe only)
+### Model and effort (copy verbatim, project and solution orchestrator recipes only)
 
 > This window does routine orchestration only: reading the board, relaying, merges and calls under
 > standing grants, cutting a task from a clear gap report, and rulings that need a line or two.
@@ -361,7 +388,8 @@ inherits or resets.
 Every path in this section is relative to the home *Which mode you are in* above resolves to: the
 project's home directory in project mode, the node's home directory in node mode (`h9k config
 show`'s config-file path, parent directory — not a hand-typed `~/.hall9k`, which is only its
-default). If you were invoked from anywhere else under that home (a `repo/dev` or `repo/wt-*`
+default), the solution's home directory in solution mode (the `Home:` line `h9k solution show`
+printed). If you were invoked from anywhere else under that home (a `repo/dev` or `repo/wt-*`
 worktree, in particular — README.md documents running this skill from there), resolve the home
 first and read and write every path below against it, never against your own working directory.
 
@@ -369,11 +397,13 @@ first and read and write every path below against it, never against your own wor
 `recipes/settings.json` render on `h9k project init`/`h9k project add` (project mode) or
 `h9k install`/`h9k update` (node mode) — not on any background render loop — so a project or node
 whose home predates this skill, or whose anchor has not been (re-)rendered since, may not have
-them yet. `h9k install` and `h9k update` also refresh `launch-anchor.md` in the node home and in
-every registered project home that already has one, through the newly installed build; a project
-home's `settings.json` still renders only on `h9k project init` and `h9k project add`. If either
-is missing, stop and tell the operator to run `h9k project init <name>` (or
-`h9k install`) once, first; do not write recipe content that a session will never actually load.
+them yet. `h9k install` and `h9k update` also refresh `launch-anchor.md` in the node home, in
+every registered project home that already has one, and in every solution home that already has
+one, through the newly installed build; a project home's `settings.json` still renders only on
+`h9k project init` and `h9k project add`, and a solution home's on `h9k solution init` and
+`h9k solution add`. If either is missing, stop and tell the operator to run `h9k project init <name>`
+(`h9k solution init <name>` in solution mode, or `h9k install`) once, first; do not write recipe
+content that a session will never actually load.
 
 **Never overwrite an existing recipe file.** If `recipes/orchestrator.md` (or any recipe file
 below) already exists, write `recipes/orchestrator.md.new` instead and say so in your summary;
@@ -425,6 +455,15 @@ contract below, plus the same journal/sessions/notes seeding rule at the node's 
 home root as resolved above (`<node home>/journal.md`, `<node home>/sessions.md`,
 `<node home>/notes/prototype-feedback.md` — `~/.hall9k`
 only where that is what discovery actually found, never assumed).
+
+Solution mode: `recipes/orchestrator.md` (or `.new`) against the solution contract below,
+`recipes/idea-discovery.md` and `recipes/task-refinement.md` (or `.new`) against the scoped-session
+contracts below as the solution mode paragraph there adapts them, and the same journal, sessions
+and `notes/prototype-feedback.md` seeding rule at the solution home's own root (`journal.md`,
+`sessions.md`, `notes/prototype-feedback.md`, each only when absent). No `recipes/task-drive.md`:
+driving a task belongs to its owner in the member project's own context, never to a solution
+window. Do not write a `repo/`, `ideas/` or `tasks/` directory into a solution home; ideas stay in
+member projects and tasks are cut into one.
 
 Never write `recipes/settings.json`, never write or edit `recipes/launch-anchor.md`, and never put
 a launch line inside any recipe you write — see *Launch text* below for what you do instead, and
@@ -738,6 +777,79 @@ Same shape as the project recipe above, with these differences:
   *Other owners' work* block, copied verbatim, exactly as in the project recipe; *Model and effort*
   is left out entirely, per the point above.
 
+## The solution orchestrator recipe's contract
+
+Same shape as the project recipe above, with these differences. A solution window is a standalone
+interactive window that monitors the member projects' orchestrators and directs them to act on the
+solution's behalf. It is a director, not a project orchestrator: it owns no board, no ideas and no
+tasks of its own, and the act that belongs to a member is always that member's orchestrator's to take.
+
+- **What you are.** The solution orchestrator for the solution `AGENTS.md` names, running from the
+  solution's thin home. State the seam in one sentence: the member project's orchestrator owns that
+  project's work and this window directs. Name each member, its repository URL and its home on this
+  node as `AGENTS.md` lists them, by pointing at `AGENTS.md` for the current facts rather than
+  copying them (the platform keeps that file current and a copy here would drift). A member this
+  node has not joined cannot be directed from here; say so.
+- **No presence, no feed.** The recipe states that this window registers no orchestrator presence
+  and never reads or drains a member's feed, which is why the launch anchor's registration step
+  does not apply here. Registering against a member would collide with that member's own window.
+  There is no `deregister` step and no "Presence: closing and restarting" section.
+- **Start-up sequence**, in this order, ending in a report:
+  1. Read `journal.md` at the solution home's root: what is in flight, which member was asked what,
+     what to do first. Trust it over anything remembered.
+  2. Read `sessions.md` (same root).
+  3. Nothing to arm and nothing to drain. No courier reaches this window and no member's feed is
+     read from it.
+  4. Run `h9k solution show "<name>"`: the board across the member projects.
+  5. For each member this node has joined, run `h9k orchestrator status --project <member>`: whether
+     that member's orchestrator is live, and which window it names.
+  6. Run `h9k daemon status`.
+  7. Report to the operator in plain language: the board by member, each member's presence, what
+     needs them, and what this window will do next. Repeat steps 4 and 5 whenever the operator
+     asks, not only at start-up.
+- **Directing a member.** An act that belongs to a member is sent to that member's live
+  orchestrator, never done here. That covers a park ruling, a merge, a dispatch or a placement
+  (`h9k task start`, `queue`, `dequeue`, `assign`, `--node`), and reading or draining that member's
+  feed; when it is unclear whether an act is a member's, treat it as one and send it. Find the
+  window by name: `h9k orchestrator status --project <member>` names the live session, `ListAgents`
+  confirms it is reachable, and `SendMessage` carries the act to it by that name, saying exactly
+  what the operator asked, with the task id, and then relay the outcome to the operator. This is
+  the same forwarding a project window already does for a node-scope command, with one difference:
+  a project window falls back to running the command itself when no node window is up, and this
+  window never does. When the member's orchestrator is not live, stop. Print that member's own
+  launch line from `h9k orchestrator project <member>` (reassemble it into one line if it wrapped;
+  the `Last measured` sentence after it is not part of it) for the operator to open in a new
+  terminal, say plainly that the act waits on it, and continue once the operator says it is up and
+  `h9k orchestrator status --project <member>` shows it live. Never pass `--replace`, never
+  register as the member, and never run the act here to avoid the wait.
+- **What runs here without a member's window.** Reads: `h9k task show <id>`, `h9k epic show <id>`,
+  `h9k idea show <id>`, `h9k idea list --project <member>` once for each joined member, `h9k task
+  list --solution <name>` and `h9k epic list --solution <name>`. Cutting work: tasks are cut into a
+  member with `h9k task add --project <member>` (`--from-idea` when it comes from one of that
+  member's ideas), and ideas stay in the member projects, so `h9k idea add --project <member>`
+  records one in the member it belongs to (ask which when that is unclear). Drafting and revising are
+  ordinary add and revise; what happens to a draft on that member's board afterward is the member
+  orchestrator's, reached as above.
+- **The node seam.** A node-scope command typed here forwards the way a project recipe's does:
+  look for a live node orchestrator with `ListAgents`, send it the command with `SendMessage` and
+  relay the outcome, and if none is up run the command here and say in the journal that this window
+  did it. Never refuse or block one.
+- **Journal and registry** are identical in shape to the project recipe's (state document under
+  about 1,500 tokens, snapshot to `notes/`, re-orientation log; one row per spawned session with
+  its fresh-start command), scoped to solution-level activity: which member was asked what and is
+  awaiting an outcome, and which scoped sessions this window spawned.
+- **Spawning a scoped session** follows the project recipe's procedure, step for step, including the
+  stated exception that the scoped-session launch line is written into this recipe, with the working
+  directory being the solution home and the opening message naming the member project and the idea or
+  draft. Its hand-off `journal.md` lives where that subject's own working state does (read the path
+  from `h9k idea show` or `h9k task show`).
+- **Clocks, standing rules, ideas and drift, feedback about this recipe**: carry them as the project
+  recipe states them, with feedback written into this home's `notes/prototype-feedback.md`.
+- Carry the *Writing conventions*, *Talking to the operator*, *Other owners' work* and *Model and
+  effort* canonical blocks, verbatim, as their own sections. A `Standing grant`, `Opt-out`, `Tier
+  override` or `House rule` line carries forward on regeneration exactly as *Never invent a standing
+  rule* states.
+
 ## The scoped session recipes' contract
 
 `recipes/idea-discovery.md` and `recipes/task-refinement.md` are shorter, single-purpose recipes
@@ -804,6 +916,14 @@ their own. Both:
   end with a short summary and the open questions the operator still has to settle.
 - Carry the *Writing conventions* and *Talking to the operator* canonical blocks, verbatim; the
   *Model and effort* block is not one of them here (see *The canonical blocks* above).
+- **In solution mode** the same two recipes are launched by the solution orchestrator and differ in
+  three ways only. They run in the solution's home, and their subject always belongs to one named
+  member project, which the opening message names. Their working state lives where that subject's
+  does: the idea's `workspace/` or the draft's directory under the member's `tasks/`, whichever
+  path `h9k idea show` or `h9k task show` prints, never in the solution home. And every `h9k task
+  add` they run names `--project <member>` explicitly. They touch no member's board lifecycle
+  beyond what this contract already allows, and they never contact a member's orchestrator; the
+  solution window does that.
 - A `Standing grant`, `Opt-out`, `Tier override`, or `House rule` line the operator has placed in
   either of these recipes carries forward on regeneration exactly as *Never invent a standing rule*
   above states for the project and node recipes: into the same-named section of the `.new` file, or
@@ -850,6 +970,11 @@ scoped session* above, the scoped-session command itself, which you do write, in
 `settings.json` — both are platform-owned, always overwritten, and carry no fact a recipe would
 ever need to restate. Instead, for each agent CLI discovery found installed:
 
+- In solution mode there is no stored launch text to read or set: the `launch-text` commands take
+  a node or a project, not a solution. The platform prints the solution window's launch line itself
+  when `h9k solution init <name>` runs (it is idempotent, so run it again to see the line), and you
+  never copy that line into a recipe. Skip the rest of this section and *Finish*'s measuring step
+  in solution mode, and hand the operator that printed line instead.
 - Read what the platform already has: `h9k orchestrator launch-text show --cli <name>` in node
   mode, or `... --cli <name> --project <name>` in project mode. Before anything has ever been set,
   this prints the platform's own computed default for `claude-code` (there is no computed default
@@ -903,6 +1028,9 @@ line replacing part of it, names an agent CLI with no computed launch shape (any
 with no computed default is handled above for the orchestrator's own launch line.
 
 ## Finish
+
+In solution mode there is no stored launch text to measure: run `h9k solution init <name>` and hand
+the operator the launch line it prints, then give your summary as below.
 
 For each CLI with a stored launch text (yours from the step above), run `h9k orchestrator measure
 --cli <name>` (add `--project <name>` in project mode) and let it stamp the observed turn-one cost
