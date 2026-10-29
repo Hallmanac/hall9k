@@ -8,6 +8,7 @@ using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Execution;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -3115,6 +3116,19 @@ public sealed class CloseoutEngine(
             return false;
         }
 
+        // An issue a task in another member project of the same solution epic holds too is closed only when this
+        // node can see all of them and every one is done or abandoned, whatever the close rule says, so the
+        // rule below never closes it from under a project's task that is still working.
+        await using (IQuerySession sharedSession = store.QuerySession())
+        {
+            if (await SharedIssueHoldAsync(sharedSession, taskId, reference, cancellationToken) is { } hold)
+            {
+                logger.LogInformation(
+                    "Task {TaskId}: left {Reference} open, because {Reason}", taskId, reference, hold);
+                return false;
+            }
+        }
+
         if (taskOverride is null && project.NeverCloseLabels.Count == 0 && project.CloseLinkedIssue == CloseLinkedIssueRule.Never)
         {
             // An inherited never can still be beaten by a sibling's own explicit override once
@@ -3178,7 +3192,7 @@ public sealed class CloseoutEngine(
     /// so a fresh read here sees this task correctly without needing to special-case it — it is
     /// simply excluded, since the question is about every task besides it.
     /// </summary>
-    private static async Task<bool> AllOtherLinkedTasksClosedOutAsync(
+    internal static async Task<bool> AllOtherLinkedTasksClosedOutAsync(
         IQuerySession session, Guid currentTaskId, ExternalReference reference, CancellationToken cancellationToken)
     {
         string canonical = reference.ToString();
@@ -3210,6 +3224,55 @@ public sealed class CloseoutEngine(
                 && candidate.CurrentRunId is { } runId
                 && runStates.TryGetValue(runId, out RunState? runState)
                 && runState == RunState.Completed));
+    }
+
+    /// <summary>
+    /// Why the issue a closing task holds stays open because another project's task in the same solution
+    /// epic holds it too, or null when that rule has nothing to say (<see cref="SharedIssueRule.CloseoutHold"/>).
+    /// A closing task's closeout reads only the tasks this node holds, so closing is allowed only when this
+    /// node holds every member project of the solution and every other linked task is done or abandoned.
+    /// </summary>
+    internal static async Task<string?> SharedIssueHoldAsync(
+        IQuerySession session, Guid taskId, ExternalReference reference, CancellationToken cancellationToken)
+    {
+        TaskListItem? closing = await session.LoadAsync<TaskListItem>(taskId, cancellationToken);
+        EpicDetails? closingEpic = closing?.EpicId is { } epicId
+            ? await session.LoadAsync<EpicDetails>(epicId, cancellationToken)
+            : null;
+        if (closing is null || closingEpic is not { IsSolutionEpic: true })
+        {
+            return null;
+        }
+
+        string canonical = reference.ToString();
+        IReadOnlyList<TaskListItem> linked = await session.Query<TaskListItem>()
+            .Where(candidate => candidate.ExternalReference == canonical)
+            .ToListAsync(cancellationToken);
+        List<SharedIssueHolder> others = [];
+        foreach (TaskListItem other in linked.Where(candidate => candidate.Id != taskId))
+        {
+            others.Add(new SharedIssueHolder(
+                other,
+                other.EpicId is { } otherEpic ? await session.LoadAsync<EpicDetails>(otherEpic, cancellationToken) : null,
+                null));
+        }
+
+        SolutionContext solutions = await SolutionContext.LoadAsync(session, cancellationToken);
+        SolutionView? view = closingEpic.SolutionKey is { } solutionKey ? solutions.ViewOf(solutionKey) : null;
+        HashSet<string> held = [.. view is null
+            ? []
+            : solutions.HeldMembers(view).Select(project => project.ProjectKey).OfType<string>()];
+        SolutionMember[] notHeld = view is null
+            ? []
+            : [.. view.Membership.Members.Where(member => !held.Contains(member.ProjectKey, StringComparer.OrdinalIgnoreCase))];
+
+        return SharedIssueRule.CloseoutHold(
+            closing,
+            closingEpic,
+            others,
+            view?.Membership,
+            notHeld,
+            await AllOtherLinkedTasksClosedOutAsync(session, taskId, reference, cancellationToken));
     }
 
     /// <summary>

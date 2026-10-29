@@ -4,6 +4,7 @@ using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Infrastructure.Bootstrap;
+using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
@@ -255,8 +256,10 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         [Description(
             "The epic this task joins: its id or an unambiguous fragment (h9k epic list shows them "
             + "all). Must be Open and belong to the same --project; a closed or another project's "
-            + "epic is refused. Optional — a task belongs to at most one epic, and most tasks belong "
-            + "to none")]
+            + "epic is refused. A solution epic is named by its solution epic key or any copy's id and is "
+            + "joined in the --project's own copy, when that project is a member of its solution, and "
+            + "only inside one may a second task hold an issue another member project's task holds. "
+            + "Optional — a task belongs to at most one epic, and most tasks belong to none")]
         public string? Epic { get; init; }
 
         [CommandOption("--review-stage-composition <COMPOSITION|default>")]
@@ -544,7 +547,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         Adoption? adopted = adoption is null
             ? null
             : await AdoptAsync(
-                store, session, projectDetails, adoption, settings.Again, ledger, context.NodeId, ownerRootFingerprint,
+                store, session, projectDetails, epicId, adoption, settings.Again, ledger, context.NodeId, ownerRootFingerprint,
                 cancellationToken);
         // The secondary is adopted through the identical seam and earns the identical "already
         // spoken for" refusals (RefuseSecondAdoptionAsync, RefuseIfRecordedElsewhereAsync) — it is
@@ -554,7 +557,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         Adoption? secondaryAdopted = secondaryAdoption is null
             ? null
             : await AdoptAsync(
-                store, session, projectDetails, secondaryAdoption, settings.Again, ledger, context.NodeId, ownerRootFingerprint,
+                store, session, projectDetails, epicId, secondaryAdoption, settings.Again, ledger, context.NodeId, ownerRootFingerprint,
                 cancellationToken);
         // A pull request this node already reviewed, or is still following a posted review through
         // on: named rather than minted a second time (task: a pr-review task stays open while the
@@ -891,7 +894,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     private sealed record Adoption(ImportedWorkItem Imported, ReviewCoverage? ExistingPrReviewTask);
 
     private static async Task<Adoption> AdoptAsync(
-        IDocumentStore store, IDocumentSession session, ProjectDetails project, AdoptionSource source, bool again,
+        IDocumentStore store, IDocumentSession session, ProjectDetails project, Guid? epicId, AdoptionSource source, bool again,
         ILedger ledger, Guid nodeId, string? ownerRootFingerprint, CancellationToken cancellationToken)
     {
         WorkItemImporter importer = await WorkItemConnections.ImporterAsync(
@@ -912,7 +915,8 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             : await FindPrReviewHolderAsync(session, imported.Reference, ownerRootFingerprint, cancellationToken);
         if (holder is null)
         {
-            await RefuseSecondAdoptionAsync(session, imported.Reference, ownerRootFingerprint, cancellationToken);
+            await RefuseSecondAdoptionAsync(
+                session, imported.Reference, new AdoptionSite(project.Id, epicId), ownerRootFingerprint, cancellationToken);
             if (source.Provider != WorkItemProvider.GitHubPullRequest)
             {
                 // The cheap check above only ever finds a task already replicated here. A record
@@ -1201,8 +1205,26 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     /// cannot attribute still blocks, because it may be this owner's own. Any other type of task on
     /// the same reference blocks whoever owns it, and a node with no root keeps the unscoped answer.
     /// </summary>
-    internal static async Task RefuseSecondAdoptionAsync(
+    internal static Task RefuseSecondAdoptionAsync(
         IQuerySession session, ExternalReference reference, string? ownerRootFingerprint,
+        CancellationToken cancellationToken) =>
+        RefuseSecondAdoptionAsync(session, reference, site: null, ownerRootFingerprint, cancellationToken);
+
+    /// <summary>
+    /// The project and epic a task would hold an issue in: the only two facts that decide whether it may
+    /// share the issue with a task of another member project (<see cref="SharedIssueRule"/>). At add time
+    /// they come from the command's own --project and --epic, at link time from the task itself.
+    /// </summary>
+    internal sealed record AdoptionSite(Guid ProjectId, Guid? EpicId);
+
+    /// <summary>
+    /// The guard with the site the new task would sit in. A second task may hold an issue only when it is
+    /// in a solution epic and every live holder is in that same solution epic in a different member
+    /// project; every other case refuses with the message below, and a holder that is a member project's
+    /// task outside the epic is also told to join the epic first.
+    /// </summary>
+    internal static async Task RefuseSecondAdoptionAsync(
+        IQuerySession session, ExternalReference reference, AdoptionSite? site, string? ownerRootFingerprint,
         CancellationToken cancellationToken)
     {
         string canonical = reference.ToString();
@@ -1233,26 +1255,68 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 TaskState.NeedsHuman.Value))
             .OrderBy(task => task.AddedAt)
             .ToListAsync(cancellationToken);
-        TaskListItem? existing = await FirstNotAnotherOwnersReviewAsync(
+        IReadOnlyList<TaskListItem> holders = await NotAnotherOwnersReviewsAsync(
             session, reference, ownerRootFingerprint, blocking, cancellationToken);
-        if (existing is null)
+        if (holders.Count == 0)
         {
             return;
         }
 
+        TaskListItem existing = holders[0];
+        SharedIssueBar? bar = site is not null && reference.Provider != WorkItemProvider.GitHubPullRequest
+            ? await SharedIssueBarAsync(session, site, holders, cancellationToken)
+            : new SharedIssueBar(new SharedIssueHolder(existing, null, null), OutsideSolutionEpic: false);
+        if (bar is null)
+        {
+            return;
+        }
+
+        existing = bar.Holder.Task;
         string shortId = TaskListCommand.ShortId(existing.Id);
+        string joinFirst = bar.OutsideSolutionEpic && site?.EpicId is { } epicId
+            ? $" Task {shortId} is in another member project of the same solution but outside the solution epic "
+                + $"this task is in, which is the only place two projects' tasks may share an issue: join it to the epic first "
+                + $"with h9k task revise {shortId} --epic {await SolutionEpicReferenceAsync(session, epicId, cancellationToken)} "
+                + "(revision is Draft-only; h9k task revise --help says how to get an assigned or Published task back to Draft)."
+            : string.Empty;
         throw new DomainConflictException(
             $"{canonical} is already adopted by task {shortId} ({ExternalText.OneLine(existing.Objective)}), "
             + $"which is {existing.State.Value}. Adoption is selective, never mirroring (PLAN.md §3.1a), so one "
-            + $"issue is one live task: see it with h9k task show {shortId}, then {Remedy(existing.State, shortId)}");
+            + $"issue is one live task: see it with h9k task show {shortId}, then {Remedy(existing.State, shortId)}"
+            + joinFirst);
     }
 
+    /// <summary>The first live holder that bars the new task under <see cref="SharedIssueRule"/>, or null when the issue may be shared.</summary>
+    private static async Task<SharedIssueBar?> SharedIssueBarAsync(
+        IQuerySession session, AdoptionSite site, IReadOnlyList<TaskListItem> holders, CancellationToken cancellationToken)
+    {
+        EpicDetails? epic = site.EpicId is { } epicId
+            ? await session.LoadAsync<EpicDetails>(epicId, cancellationToken)
+            : null;
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(site.ProjectId, cancellationToken);
+
+        List<SharedIssueHolder> read = [];
+        foreach (TaskListItem holder in holders)
+        {
+            read.Add(new SharedIssueHolder(
+                holder,
+                holder.EpicId is { } holderEpic ? await session.LoadAsync<EpicDetails>(holderEpic, cancellationToken) : null,
+                await session.LoadAsync<ProjectDetails>(holder.ProjectId, cancellationToken)));
+        }
+
+        return SharedIssueRule.FirstBar(site.ProjectId, project, epic, read);
+    }
+
+    private static async Task<string> SolutionEpicReferenceAsync(
+        IQuerySession session, Guid epicId, CancellationToken cancellationToken) =>
+        (await session.LoadAsync<EpicDetails>(epicId, cancellationToken))?.SolutionEpicKey ?? TaskListCommand.ShortId(epicId);
+
     /// <summary>
-    /// The first of <paramref name="blocking"/>, oldest first, once a teammate's pr-review task on a
-    /// pull request is dropped from it. Ownership is not SQL-filterable, so the guard's query reads
-    /// every candidate and this applies the rule to them.
+    /// <paramref name="blocking"/>, oldest first, once a teammate's pr-review task on a pull request is
+    /// dropped from it. Ownership is not SQL-filterable, so the guard's query reads every candidate and
+    /// this applies the rule to them.
     /// </summary>
-    private static async Task<TaskListItem?> FirstNotAnotherOwnersReviewAsync(
+    private static async Task<IReadOnlyList<TaskListItem>> NotAnotherOwnersReviewsAsync(
         IQuerySession session, ExternalReference reference, string? ownerRootFingerprint,
         IReadOnlyList<TaskListItem> blocking, CancellationToken cancellationToken)
     {
@@ -1261,7 +1325,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             : [];
         if (reviews.Length == 0)
         {
-            return blocking.FirstOrDefault();
+            return blocking;
         }
 
         IReadOnlyList<CoveringTaskCandidate> read = await OwnerScopedCoverage.ReadAsync(
@@ -1272,7 +1336,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 .Where(candidate => OwnerScopedCoverage.IsAnotherOwners(ownerRootFingerprint, candidate.Facts))
                 .Select(candidate => candidate.Task.Id),
         ];
-        return blocking.FirstOrDefault(task => !anotherOwners.Contains(task.Id));
+        return [.. blocking.Where(task => !anotherOwners.Contains(task.Id))];
     }
 
     /// <summary>
