@@ -100,7 +100,9 @@ public sealed class TaskLinkJiraCommand : Hall9kAsyncCommand<TaskLinkJiraCommand
         // publication prompt makes that the likely mistake rather than an exotic one: a session
         // told to search for an earlier attempt's card before creating a second can find somebody
         // else's and report the key back in good faith.
-        await TaskAddCommand.RefuseSecondAdoptionAsync(session, card.Reference, cancellationToken);
+        await TaskAddCommand.RefuseSecondAdoptionAsync(
+            session, card.Reference, new TaskAddCommand.AdoptionSite(task.ProjectId, task.EpicId),
+            ownerRootFingerprint: null, cancellationToken);
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         WorkItemLinked linked = TaskDecider.LinkWorkItem(

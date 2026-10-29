@@ -169,7 +169,9 @@ public sealed class TaskLinkIssueCommand : Hall9kAsyncCommand<TaskLinkIssueComma
                 + $"or clean it up. Wait for it to finish, or watch it with h9k task show {taskId}.");
         }
 
-        await TaskAddCommand.RefuseSecondAdoptionAsync(session, issue.Reference, cancellationToken);
+        await TaskAddCommand.RefuseSecondAdoptionAsync(
+            session, issue.Reference, new TaskAddCommand.AdoptionSite(task.ProjectId, task.EpicId),
+            ownerRootFingerprint: null, cancellationToken);
 
         WorkItemLinked linked = TaskDecider.LinkWorkItem(
             task, issue.Reference, issue.Title, issue.Status.ToString(), issue.ObservedAt,
