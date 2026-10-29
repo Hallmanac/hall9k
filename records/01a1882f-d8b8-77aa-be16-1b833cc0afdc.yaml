@@ -27,3 +27,7 @@ origin-branch: task/3cc0afdc-a-teammate-joins-every-member
 published: 2026-10-29 15:46:07Z
 context: |-
   Discovery for idea f8212260: findings.md and journal.md in the idea's workspace; the challenge's evidence is notes/challenge-3cc0afdc/journal.md in the project home. Each join is the existing per-project join (push on that member's repository required, the minting node's daemon sweep vouches it in later; nothing in the command waits for that). This piece only batches them. The member list travels in the bundle because a joining node has no membership record until the daemon's catch-up delivers a member's team settings (EventCatchUpCoordinator.RequestBootstrapAsync); the solution then appears on that node from the membership itself, which this task does not change. Expect two small extractions: the mint in ProjectInviteCommand.RunAsync returning its secret instead of printing it, and project add's registration (ProjectAddCommand.ExecuteAsync) callable per member, with the join's outcome returned rather than swallowed by TryJoinAsync. Blocked by the solution base task, not stacked: it touches the invite and add commands, which the base does not.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-10-29 18:26:47Z
