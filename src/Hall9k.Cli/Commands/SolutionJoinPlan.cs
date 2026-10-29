@@ -24,24 +24,33 @@ internal sealed record SolutionJoinStep(SolutionInviteMember Entry, SolutionJoin
 /// <summary>The pure half of <c>h9k solution join</c>: the bundle and this node's projects in, one action per member out.</summary>
 internal static class SolutionJoinPlanner
 {
+    /// <summary>
+    /// <paramref name="remoteUrlOf"/> names the origin of a project registered with <c>--repo</c> alone,
+    /// which records no repository URL of its own; null (or a null answer) leaves such a project
+    /// matchable by project key only.
+    /// </summary>
     public static IReadOnlyList<SolutionJoinStep> Plan(
-        SolutionInviteBundle bundle, IReadOnlyList<ProjectDetails> projects, Func<Guid, string?> rootFingerprintOf) =>
+        SolutionInviteBundle bundle, IReadOnlyList<ProjectDetails> projects, Func<Guid, string?> rootFingerprintOf,
+        Func<ProjectDetails, Uri?>? remoteUrlOf = null) =>
     [
-        .. bundle.Members.Select(entry => PlanMember(entry, projects, rootFingerprintOf)),
+        .. bundle.Members.Select(entry => PlanMember(entry, projects, rootFingerprintOf, remoteUrlOf)),
     ];
 
     private static SolutionJoinStep PlanMember(
-        SolutionInviteMember entry, IReadOnlyList<ProjectDetails> projects, Func<Guid, string?> rootFingerprintOf)
+        SolutionInviteMember entry, IReadOnlyList<ProjectDetails> projects, Func<Guid, string?> rootFingerprintOf,
+        Func<ProjectDetails, Uri?>? remoteUrlOf)
     {
         // An archived project is not a project this node still works on; it still holds its name, which a registration would collide with.
         IReadOnlyList<ProjectDetails> live = [.. projects.Where(project => !project.IsArchived)];
 
         // By project key first, which names the project on every node, then by repository URL, the only thing an unjoined project has.
+        // A project registered from a path alone records no URL, so its repository's own origin stands in for it.
+        string memberIdentity = RepositoryIdentity(entry.Member.RepositoryUrl);
         ProjectDetails? local =
             live.FirstOrDefault(project => project.ProjectKey is { } key
                 && key.Equals(entry.Member.ProjectKey, StringComparison.OrdinalIgnoreCase))
-            ?? live.FirstOrDefault(project => project.RepositoryUrl is { } url
-                && RepositoryIdentity(url) == RepositoryIdentity(entry.Member.RepositoryUrl));
+            ?? live.FirstOrDefault(project => (project.RepositoryUrl ?? remoteUrlOf?.Invoke(project)) is { } url
+                && RepositoryIdentity(url) == memberIdentity);
 
         if (local is not null)
         {

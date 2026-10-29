@@ -49,10 +49,15 @@ internal static class SolutionJoinHandCommands
     public static string RenameThenRetry(string existingProjectName) =>
         $"h9k project rename {Quote(existingProjectName)} <new-name>, then {Rerun}";
 
+    /// <summary>
+    /// A name that arrived in the bundle is pasted into a shell, so anything beyond letters, digits, dot,
+    /// underscore and hyphen is single-quoted, the one quoting in which nothing expands, with each embedded
+    /// quote closed, escaped and reopened.
+    /// </summary>
     private static string Quote(string value) =>
-        value.Any(char.IsWhiteSpace) || value.Contains('"')
-            ? $"\"{value.Replace("\"", "\\\"")}\""
-            : value;
+        value.Length > 0 && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-')
+            ? value
+            : $"'{value.Replace("'", "'\\''")}'";
 }
 
 /// <summary>Runs a plan one member at a time, so a member that does not finish never stops the ones after it.</summary>

