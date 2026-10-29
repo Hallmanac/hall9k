@@ -1294,9 +1294,11 @@ public static class CliCommandTree
             epic.AddCommand<EpicListCommand>("list")
                 .WithDescription(
                     "Every epic with a member-task rollup by attention bucket, same columns h9k project "
-                    + "list shows. Defaults to open epics; --state all adds closed ones.")
+                    + "list shows. Defaults to open epics; --state all adds closed ones. --solution narrows "
+                    + "the list to the epics of one solution's member projects known on this node.")
                 .WithExample("epic", "list")
                 .WithExample("epic", "list", "--project", "hall9k")
+                .WithExample("epic", "list", "--solution", "storefront")
                 .WithExample("epic", "list", "--state", "all");
             epic.AddCommand<EpicShowCommand>("show")
                 .WithDescription(
@@ -1318,6 +1320,83 @@ public static class CliCommandTree
                     + "reason. Nothing closes an epic automatically, including its last member task "
                     + "closing out.")
                 .WithExample("epic", "close", "28b19893", "--reason", "\"Interactive mode shipped\"");
+        });
+
+        config.AddBranch("solution", solution =>
+        {
+            solution.SetDescription(
+                "Group one-repo projects into a solution. The ladder is solution, project, epic, task: a "
+                + "solution is a set of projects (each one repository), a project holds epics, an epic holds "
+                + "tasks. A solution is not a stream of its own: it is a membership team setting written onto "
+                + "every member project (its key and name, its open or closed state with a close reason, and "
+                + "every member by project key with its name and repository URL), so it replicates with the "
+                + "projects and a node that holds any one member knows the whole solution. A project belongs to "
+                + "at most one open solution, because a project in two would put each solution's member names "
+                + "and repository URLs in front of the other solution's teammates. A solution closes only by "
+                + "explicit human act, never automatically, not even when every member is archived. Every "
+                + "command that writes rewrites the membership on every member in one step, and refuses, "
+                + "naming them, when a member is not registered and joined on this node.");
+            solution.AddCommand<SolutionAddCommand>("add")
+                .WithDescription(
+                    "Create a solution over projects: mints its key (a 26-character ULID) and writes the "
+                    + "membership into each named project's team settings in this one command. The name "
+                    + "follows the rules a project name follows (unique on this node, case-insensitive). "
+                    + "Every --project needs a recorded project key (h9k project join, or h9k project "
+                    + "assign-key for the genesis owner) and a recorded repository URL, and must not already "
+                    + "be in another open solution (h9k solution unlink frees it). When a member's repository "
+                    + "owner or organization differs from every other member's it warns and asks; --yes "
+                    + "answers, and a session that cannot prompt refuses without it.")
+                .WithExample("solution", "add", "storefront", "--project", "shop-api", "--project", "shop-web")
+                .WithExample("solution", "add", "storefront", "--project", "shop-api", "--project", "shop-web", "--yes");
+            solution.AddCommand<SolutionListCommand>("list")
+                .WithDescription(
+                    "Every solution this node knows, one row each: key, name, state, members, and how many "
+                    + "of them this node has joined. Defaults to open solutions; --state all adds closed ones. "
+                    + "Read-only. h9k task list --solution and h9k epic list --solution narrow those lists to a "
+                    + "solution's member projects.")
+                .WithExample("solution", "list")
+                .WithExample("solution", "list", "--state", "all");
+            solution.AddCommand<SolutionShowCommand>("show")
+                .WithDescription(
+                    "One solution's board across its member projects, grouped by project: each project's "
+                    + "rollup and tasks composed the way h9k project show composes them, every row a task id "
+                    + "and a plain description. Members this node has not joined are listed by name and "
+                    + "repository URL, and a closed solution shows its reason. Takes the solution's name or "
+                    + "a prefix of its key. Read-only.")
+                .WithExample("solution", "show", "storefront");
+            solution.AddCommand<SolutionLinkCommand>("link")
+                .WithDescription(
+                    "Bring projects into a solution, rewriting the membership on every member in one "
+                    + "command. The same refusals as h9k solution add apply to each project (a recorded "
+                    + "project key and repository URL, at most one open solution), a closed solution cannot "
+                    + "take new members, and a member this node has not registered and joined refuses the "
+                    + "command, naming it. A different repository owner or organization warns and asks "
+                    + "(--yes answers it).")
+                .WithExample("solution", "link", "storefront", "--project", "shop-admin")
+                .WithExample("solution", "link", "storefront", "--project", "shop-admin", "--yes");
+            solution.AddCommand<SolutionUnlinkCommand>("unlink")
+                .WithDescription(
+                    "Take projects out of a solution: the remaining members are rewritten without them and "
+                    + "each removed project's own membership is cleared, in one command. It is how a project "
+                    + "in one open solution is freed to join another. The last member cannot be unlinked "
+                    + "(close the solution instead), and a member this node has not registered and joined "
+                    + "refuses the command, naming it.")
+                .WithExample("solution", "unlink", "storefront", "--project", "shop-admin");
+            solution.AddCommand<SolutionRenameCommand>("rename")
+                .WithDescription(
+                    "Rename a solution on every member in one command: an explicit human act. The new name "
+                    + "follows the rules a project name follows (unique on this node, case-insensitive); the "
+                    + "key and the members are untouched. A member this node has not registered and joined "
+                    + "refuses the command, naming it.")
+                .WithExample("solution", "rename", "storefront", "storefront-v2");
+            solution.AddCommand<SolutionCloseCommand>("close")
+                .WithDescription(
+                    "Close a solution on every member in one command: the only way one ever closes, always "
+                    + "an explicit human act with a reason. Nothing closes a solution automatically, including "
+                    + "every member being archived. A closed solution no longer holds its members to it, and "
+                    + "is final. A member this node has not registered and joined refuses the command, "
+                    + "naming it.")
+                .WithExample("solution", "close", "storefront", "--reason", "\"Storefront retired in favour of the marketplace\"");
         });
 
         config.AddBranch("task", task =>
@@ -1590,7 +1669,8 @@ public static class CliCommandTree
                     + "--include-archived. Bounded to the newest 20 by default — the footer says how many were "
                     + "held back and how to see them (--all, --limit <n>), and how many Archived rows the "
                     + "default hid. Like h9k status it shows your own work: a teammate's task is held back "
-                    + "(the footer counts them) until --everyone is passed.")
+                    + "(the footer counts them) until --everyone is passed. --solution narrows the list to the "
+                    + "member projects of one solution known on this node (solution, project, epic, task is the ladder).")
                 .WithExample("task", "list")
                 .WithExample("task", "list", "--everyone")
                 .WithExample("task", "list", "--project", "hall9k", "--state", "needs-you")
@@ -1600,7 +1680,8 @@ public static class CliCommandTree
                 .WithExample("task", "list", "--state", "published,working", "--state", "delivered")
                 .WithExample("task", "list", "--state", "archived")
                 .WithExample("task", "list", "--include-archived")
-                .WithExample("task", "list", "--epic", "28b19893");
+                .WithExample("task", "list", "--epic", "28b19893")
+                .WithExample("task", "list", "--solution", "storefront");
             task.AddCommand<TaskShowCommand>("show")
                 .WithDescription(
                     "One task in full: the readiness contract it was published against, its dependencies "

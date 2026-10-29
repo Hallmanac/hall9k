@@ -22,6 +22,13 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         [Description("Only this project's tasks: its name, an unambiguous fragment of it, or its id (h9k project list shows them all)")]
         public string? Project { get; init; }
 
+        [CommandOption("--solution <SOLUTION>")]
+        [Description(
+            "Only the tasks of this solution's member projects known on this node: its name, or a prefix of "
+            + "its key (h9k solution list shows them). The ladder is solution, project, epic, task, so this "
+            + "is every member project's tasks at once; a member this node has not joined has none here")]
+        public string? Solution { get; init; }
+
         [CommandOption("--epic <EPIC>")]
         [Description("Only this epic's tasks: its id or an unambiguous fragment (h9k epic list shows them all)")]
         public string? Epic { get; init; }
@@ -95,6 +102,9 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         ProjectDetails? project = settings.Project.IsNotBlank()
             ? await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken)
             : null;
+        IReadOnlySet<Guid>? solutionProjectIds = settings.Solution.IsNotBlank()
+            ? await SolutionScope.ProjectIdsAsync(session, settings.Solution, cancellationToken)
+            : null;
         Guid? epicId = settings.Epic.IsNotBlank()
             ? await EpicIdResolver.ResolveAsync(session, settings.Epic, cancellationToken)
             : null;
@@ -110,6 +120,7 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
 
         List<TaskStatusRow> candidates = [.. all
             .Where(row => project is null || row.ProjectId == project.Id)
+            .Where(row => solutionProjectIds is null || solutionProjectIds.Contains(row.ProjectId))
             .Where(row => epicId is null || row.EpicId == epicId)
             .Where(row => states.Count == 0 || states.Any(state => TaskStateFilter.Matches(row, state)))];
 
@@ -239,7 +250,7 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         int hiddenArchived, int hiddenPartialHistory, Settings settings, ProjectDetails? project,
         int hiddenTeammates = 0)
     {
-        bool unfiltered = project is null && settings.Epic.IsBlank() && StateDisplay(settings).IsBlank();
+        bool unfiltered = project is null && settings.Solution.IsBlank() && settings.Epic.IsBlank() && StateDisplay(settings).IsBlank();
         // Said after an archived or partial-history cause too, so a result that also held teammates'
         // rows back never reads as the whole board (independent pre-PR review, cycle 1, adversarial
         // lens, low).
@@ -297,6 +308,7 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
     private static string Scope(Settings settings, ProjectDetails? project)
     {
         string scope = project is null ? string.Empty : $" in {project.Name.EscapeMarkup()}";
+        scope += settings.Solution.IsNotBlank() ? $" in solution {settings.Solution.EscapeMarkup()}" : string.Empty;
         scope += settings.Epic.IsNotBlank() ? $" in epic {settings.Epic.EscapeMarkup()}" : string.Empty;
         string states = StateDisplay(settings);
         return states.IsNotBlank() ? $"{scope} matching --state {states.EscapeMarkup()}" : scope;
@@ -328,6 +340,7 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
     /// <summary>The active filters, echoed so --all keeps the view the reader is looking at.</summary>
     private static string Repeat(Settings settings, ProjectDetails? project) =>
         (project is null ? string.Empty : $" --project {project.Name.EscapeMarkup()}")
+        + (settings.Solution.IsNotBlank() ? $" --solution {settings.Solution.EscapeMarkup()}" : string.Empty)
         + (settings.Epic.IsNotBlank() ? $" --epic {settings.Epic.EscapeMarkup()}" : string.Empty)
         + (StateDisplay(settings) is { Length: > 0 } states ? $" --state {states.EscapeMarkup()}" : string.Empty)
         + (settings.IncludeArchived ? " --include-archived" : string.Empty)
@@ -344,6 +357,11 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         if (project is not null)
         {
             filters.Add($"--project {project.Name.EscapeMarkup()}");
+        }
+
+        if (settings.Solution.IsNotBlank())
+        {
+            filters.Add($"--solution {settings.Solution.EscapeMarkup()}");
         }
 
         if (settings.Epic.IsNotBlank())
