@@ -116,4 +116,85 @@ public sealed class LaunchAnchorRefreshTests : IDisposable
         File.ReadAllText(blockedAnchor).Should().Be(Stale);
         File.ReadAllText(ProjectHomePaths.LaunchAnchorFile(fine)).Should().Be(LaunchAnchorDocument.Render());
     }
+
+    [Fact]
+    public async Task A_solution_home_that_has_an_anchor_is_refreshed_and_one_without_stays_without()
+    {
+        string withAnchor = SolutionHomePaths.DefaultFor("storefront");
+        Directory.CreateDirectory(ProjectHomePaths.RecipesDirectory(withAnchor));
+        File.WriteAllText(ProjectHomePaths.LaunchAnchorFile(withAnchor), Stale);
+        string withoutAnchor = SolutionHomePaths.DefaultFor("marketplace");
+        Directory.CreateDirectory(withoutAnchor);
+
+        int exitCode = await LaunchAnchorRefresh.RunAsync(Registry(), CancellationToken.None);
+
+        exitCode.Should().Be(ExitCodes.Ok);
+        File.ReadAllText(ProjectHomePaths.LaunchAnchorFile(withAnchor)).Should().Be(LaunchAnchorDocument.Render());
+        File.Exists(ProjectHomePaths.LaunchAnchorFile(withoutAnchor)).Should().BeFalse();
+        Directory.Exists(ProjectHomePaths.RecipesDirectory(withoutAnchor)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task A_solution_home_is_refreshed_even_when_the_registry_cannot_be_read()
+    {
+        string home = SolutionHomePaths.DefaultFor("storefront");
+        Directory.CreateDirectory(ProjectHomePaths.RecipesDirectory(home));
+        File.WriteAllText(ProjectHomePaths.LaunchAnchorFile(home), Stale);
+
+        await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
+        {
+            int exitCode = await LaunchAnchorRefresh.RunAsync(
+                _ => throw new InvalidOperationException("connection refused"), CancellationToken.None);
+
+            exitCode.Should().Be(ExitCodes.Ok);
+        });
+
+        File.ReadAllText(ProjectHomePaths.LaunchAnchorFile(home)).Should().Be(LaunchAnchorDocument.Render());
+    }
+
+    [Fact]
+    public async Task A_solution_home_that_cannot_be_written_is_named_and_the_others_are_still_refreshed()
+    {
+        string blocked = SolutionHomePaths.DefaultFor("blocked");
+        string fine = SolutionHomePaths.DefaultFor("fine");
+        string[] homes = [blocked, fine];
+        foreach (string home in homes)
+        {
+            Directory.CreateDirectory(ProjectHomePaths.RecipesDirectory(home));
+            File.WriteAllText(ProjectHomePaths.LaunchAnchorFile(home), Stale);
+        }
+
+        string blockedAnchor = ProjectHomePaths.LaunchAnchorFile(blocked);
+        string output = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
+        {
+            int exitCode = await LaunchAnchorRefresh.RunAsync(
+                Registry(),
+                CancellationToken.None,
+                writeAnchor: path =>
+                {
+                    if (path == blockedAnchor)
+                    {
+                        throw new NotSupportedException("access denied");
+                    }
+
+                    LaunchAnchorDocument.Write(path);
+                });
+
+            exitCode.Should().Be(ExitCodes.Ok);
+        });
+
+        output.Should().Contain("solution home").And.Contain("access denied").And.Contain("h9k solution init");
+        File.ReadAllText(blockedAnchor).Should().Be(Stale);
+        File.ReadAllText(ProjectHomePaths.LaunchAnchorFile(fine)).Should().Be(LaunchAnchorDocument.Render());
+    }
+
+    [Fact]
+    public void The_anchor_tells_a_solution_window_it_registers_no_presence_and_never_drains_a_feed()
+    {
+        string rendered = LaunchAnchorDocument.Render().ReplaceLineEndings(" ");
+
+        rendered.Should().Contain("solution window")
+            .And.Contain("registers no orchestrator presence")
+            .And.Contain("never drains a member project's feed");
+    }
 }

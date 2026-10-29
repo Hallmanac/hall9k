@@ -5,6 +5,7 @@ using Hall9k.Domain.Features.Idea.Rendering;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Project.Rendering;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
@@ -20,7 +21,8 @@ namespace Hall9k.Daemon.ProjectHomes;
 
 /// <summary>One sweep's tally, for the loop's log line — see <c>CardPublicationLoop</c> for the pattern.</summary>
 public sealed record ProjectHomeRenderSweepResult(
-    int ProjectsInspected, int TasksRendered, int IdeasRendered, int OrphansHandled, int KnowledgeDocumentsRendered);
+    int ProjectsInspected, int TasksRendered, int IdeasRendered, int OrphansHandled, int KnowledgeDocumentsRendered,
+    int SolutionHomesRendered = 0);
 
 /// <summary>
 /// Renders every task and idea in every project that has a home on this machine (backlog 48).
@@ -256,8 +258,73 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
             }
         }
 
+        int solutionHomesRendered = await RenderSolutionHomesAsync(query, projects, cancellationToken);
+
         return new ProjectHomeRenderSweepResult(
-            projectsInspected, tasksRendered, ideasRendered, orphansHandled, knowledgeDocumentsRendered);
+            projectsInspected, tasksRendered, ideasRendered, orphansHandled, knowledgeDocumentsRendered,
+            solutionHomesRendered);
+    }
+
+    private async Task<int> RenderSolutionHomesAsync(
+        IQuerySession query, IReadOnlyList<ProjectDetails> projects, CancellationToken cancellationToken)
+    {
+        Dictionary<Guid, string?> roots = [];
+        foreach (Guid ownerId in projects.Select(project => project.OwnerId).Distinct())
+        {
+            roots[ownerId] = await OwnerRootFingerprintResolver.ResolveAsync(query, ownerId, cancellationToken);
+        }
+
+        return RenderSolutionHomes(projects, roots, logger);
+    }
+
+    /// <summary>
+    /// Re-renders the <c>AGENTS.md</c> of every solution whose thin home exists on this node
+    /// (<see cref="SolutionHomePaths.DefaultFor"/>) and answers how many files it wrote. The
+    /// solutions come from <see cref="SolutionRegistry.Read"/> over all registered projects, so a
+    /// membership that arrives by replication, a rename and a member this node joins later each
+    /// change the bytes on the next sweep, and <see cref="SolutionAgentsDocument.Write"/> touches
+    /// disk only when they differ. A solution with no home here is skipped: <c>h9k solution
+    /// init</c> is what creates one, and rendering into a directory that does not exist would
+    /// invent a half-made home. A file this platform did not render is left alone and logged.
+    /// </summary>
+    public static int RenderSolutionHomes(
+        IReadOnlyList<ProjectDetails> projects, IReadOnlyDictionary<Guid, string?> rootFingerprints, ILogger logger)
+    {
+        int rendered = 0;
+        foreach (SolutionView view in SolutionRegistry.Read(projects))
+        {
+            SolutionMembership membership = view.Membership;
+            try
+            {
+                string home = SolutionHomePaths.DefaultFor(membership.Name);
+                if (!Directory.Exists(home))
+                {
+                    continue;
+                }
+
+                string document = SolutionAgentsDocument.Render(
+                    membership, projects, ownerId => rootFingerprints.GetValueOrDefault(ownerId));
+                switch (SolutionAgentsDocument.Write(home, membership.Key, document))
+                {
+                    case SolutionAgentsWriteOutcome.Created or SolutionAgentsWriteOutcome.Rewritten:
+                        rendered++;
+                        break;
+                    case SolutionAgentsWriteOutcome.Refused:
+                        logger.LogWarning(
+                            "AGENTS.md in solution {Solution}'s home {Home} is not this platform's render for it and was left alone; "
+                            + "it cannot be kept current until it is moved",
+                            membership.Name, home);
+                        break;
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                logger.LogWarning(exception,
+                    "Solution home render failed for solution {Solution}; a future sweep retries it", membership.Name);
+            }
+        }
+
+        return rendered;
     }
 
     /// <summary>

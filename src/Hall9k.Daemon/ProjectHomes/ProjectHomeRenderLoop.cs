@@ -29,14 +29,14 @@ public sealed class ProjectHomeRenderLoop(
             {
                 ProjectHomeRenderSweepResult sweep = await engine.PollOnceAsync(stoppingToken);
                 if (sweep.TasksRendered > 0 || sweep.IdeasRendered > 0 || sweep.OrphansHandled > 0
-                    || sweep.KnowledgeDocumentsRendered > 0)
+                    || sweep.KnowledgeDocumentsRendered > 0 || sweep.SolutionHomesRendered > 0)
                 {
                     logger.LogInformation(
                         "Project home render: {Tasks} task file(s), {Ideas} idea file(s), {Knowledge} "
                         + "decisions/lessons file(s) written across {Projects} home(s) on this machine; "
-                        + "{Orphans} orphaned director(y/ies) handled",
+                        + "{Orphans} orphaned director(y/ies) handled, {Solutions} solution home AGENTS.md file(s) written",
                         sweep.TasksRendered, sweep.IdeasRendered, sweep.KnowledgeDocumentsRendered,
-                        sweep.ProjectsInspected, sweep.OrphansHandled);
+                        sweep.ProjectsInspected, sweep.OrphansHandled, sweep.SolutionHomesRendered);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
