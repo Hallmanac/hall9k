@@ -120,7 +120,9 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         [CommandOption("--epic <EPIC>")]
         [Description(
             "Join this epic: its id or an unambiguous fragment. Must be Open and belong to this "
-            + "task's own project; a closed or another project's epic is refused. A task belongs to "
+            + "task's own project; a closed or another project's epic is refused. A solution epic is "
+            + "named by its solution epic key or any copy's id and is joined in this task's own project, "
+            + "when that project is a member of its solution. A task belongs to "
             + "at most one epic. Since h9k task revise is Draft-only (Decisions Log #34), a "
             + "Published task returns with h9k task draft <id> alone; an assigned task (Queued or "
             + "Blocked) needs h9k task dequeue <id> && h9k task draft <id> first — then this "
@@ -391,12 +393,20 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         }
 
         bool namesCurrentEpic = !settings.ClearEpic && epic.IsNotBlank() && NamesCurrentEpic(epic, task.EpicId);
-        Optional<Guid?> epicId = settings.ClearEpic
-            ? Optional<Guid?>.Of(null)
-            : epic.IsNotBlank() && !namesCurrentEpic
-                ? Optional<Guid?>.Of(await EpicIdResolver.ResolveForMembershipAsync(
-                    session, epic, task.ProjectId, cancellationToken))
-                : Optional<Guid?>.None;
+        Optional<Guid?> epicId = Optional<Guid?>.None;
+        if (settings.ClearEpic)
+        {
+            epicId = Optional<Guid?>.Of(null);
+        }
+        else if (epic.IsNotBlank() && !namesCurrentEpic)
+        {
+            // A solution epic is named by its shared key or any copy's id and resolves to the task's own
+            // project's copy, which can be the epic the task is already in.
+            Guid joined = await EpicIdResolver.ResolveForMembershipAsync(
+                session, epic, task.ProjectId, cancellationToken);
+            namesCurrentEpic = joined == task.EpicId;
+            epicId = namesCurrentEpic ? Optional<Guid?>.None : Optional<Guid?>.Of(joined);
+        }
 
         Optional<bool> queuePriority = settings.QueueFirst
             ? Optional<bool>.Of(true)

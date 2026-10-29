@@ -77,6 +77,9 @@ public sealed class SolutionAddCommand : Hall9kAsyncCommand<SolutionAddCommand.S
             return ExitCodes.Ok;
         }
 
+        // A key minted a moment ago has no solution epics yet, so this stages nothing today; it is the same
+        // step h9k solution link takes, so a solution that gains a way to start with epics is already covered.
+        await SolutionEpicCopies.StageAsync(session, membership.Key, projects, cancellationToken);
         await SolutionWriter.WriteAsync(session, SolutionWriter.Rewrite(membership, context, removed: []), cancellationToken);
 
         AnsiConsole.MarkupLineInterpolated(
