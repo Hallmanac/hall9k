@@ -59,14 +59,42 @@ public sealed class ProjectInviteCommand : Hall9kAsyncCommand<ProjectInviteComma
         IDocumentSession session, ProjectDetails project, string? roleInput, ILedger ledger,
         ILedgerChainReader chainReader, NodeKeyStore keyStore, CancellationToken cancellationToken)
     {
+        ProjectMemberRole role = ParseRole(roleInput);
+        MintedInvite minted = await MintAsync(session, project, role, ledger, chainReader, keyStore, cancellationToken);
+
+        AnsiConsole.MarkupLine(
+            $"[green]Minted[/] a member-of-project ({minted.Role.Value}) invite for '{project.Name.EscapeMarkup()}', "
+            + $"expiring {minted.ExpiresAt:u}.");
+        AnsiConsole.MarkupLine($"[bold]Secret (shown once — copy it now):[/] {minted.Secret}");
+        AnsiConsole.MarkupLine(
+            "[dim]Give it to the new member. On their own node: h9k project join "
+            + $"{project.Name.EscapeMarkup()} --invite <secret> — this node's own daemon sweep vouches it in "
+            + "automatically once the proof appears, no further prompt needed.[/]");
+        return ExitCodes.Ok;
+    }
+
+    /// <summary>What one mint produced: the secret itself, which only the caller may show, and when it stops working.</summary>
+    internal sealed record MintedInvite(string Secret, DateTimeOffset ExpiresAt, ProjectMemberRole Role);
+
+    internal static ProjectMemberRole ParseRole(string? roleInput)
+    {
         ProjectMemberRole role = roleInput.IsBlank() ? ProjectMemberRole.Member : (ProjectMemberRole)roleInput;
-        if (role != ProjectMemberRole.Owner && role != ProjectMemberRole.Member)
-        {
-            throw new DomainValidationException(
+        return role == ProjectMemberRole.Owner || role == ProjectMemberRole.Member
+            ? role
+            : throw new DomainValidationException(
                 $"--role must be {ProjectMemberRole.Owner} or {ProjectMemberRole.Member} (idea 202383dc: "
                 + "\"roles are owner and member only\").");
-        }
+    }
 
+    /// <summary>
+    /// The mint itself, every gate and write <c>h9k project invite</c> performs, returning the secret
+    /// instead of printing it so a caller that batches mints (<c>h9k solution invite</c>) decides where
+    /// the secret is shown. Refuses, before any push, exactly as the command does.
+    /// </summary>
+    internal static async Task<MintedInvite> MintAsync(
+        IDocumentSession session, ProjectDetails project, ProjectMemberRole role, ILedger ledger,
+        ILedgerChainReader chainReader, NodeKeyStore keyStore, CancellationToken cancellationToken)
+    {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         await session.SaveChangesAsync(cancellationToken);
@@ -134,15 +162,7 @@ public sealed class ProjectInviteCommand : Hall9kAsyncCommand<ProjectInviteComma
                 project.RepositoryPath, secret, secretHash, now, expiresAt));
         await session.SaveChangesAsync(cancellationToken);
 
-        AnsiConsole.MarkupLine(
-            $"[green]Minted[/] a member-of-project ({role.Value}) invite for '{project.Name.EscapeMarkup()}', "
-            + $"expiring {expiresAt:u}.");
-        AnsiConsole.MarkupLine($"[bold]Secret (shown once — copy it now):[/] {secret}");
-        AnsiConsole.MarkupLine(
-            "[dim]Give it to the new member. On their own node: h9k project join "
-            + $"{project.Name.EscapeMarkup()} --invite <secret> — this node's own daemon sweep vouches it in "
-            + "automatically once the proof appears, no further prompt needed.[/]");
-        return ExitCodes.Ok;
+        return new MintedInvite(secret, expiresAt, role);
     }
 
     private static async Task WriteInviteFileAsync(

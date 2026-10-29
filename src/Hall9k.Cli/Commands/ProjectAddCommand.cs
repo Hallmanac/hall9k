@@ -131,6 +131,28 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             pendingRenameMessage = outcome.PendingMessage;
         }
 
+        Registration registration = await RegisterAsync(
+            session, settings, homeOverride, pendingRenameMessage, invite, unattended: false, cancellationToken);
+        return registration.ExitCode;
+    }
+
+    /// <summary>What registering one project produced: the exit code h9k project add returns, the project's id and the
+    /// repository path it was registered against, and the join that ran right behind it.</summary>
+    internal sealed record Registration(int ExitCode, Guid ProjectId, string RepositoryPath, JoinAttempt Join);
+
+    /// <summary>
+    /// Registers the project <paramref name="settings"/> describes, builds its home, asks for its run
+    /// skill, and attempts its join, the part of <c>h9k project add</c> after any archived-name collision
+    /// is resolved. <paramref name="unattended"/> is the batch caller's (<c>h9k solution join</c>) mode:
+    /// it never prompts for an invite token and leaves the join's report, and the orchestrator hint a
+    /// single add ends with, to the caller, who has the whole batch to report.
+    /// </summary>
+    internal static async Task<Registration> RegisterAsync(
+        IDocumentSession session, Settings settings, string? homeOverride, string? pendingRenameMessage,
+        string? invite, bool unattended, CancellationToken cancellationToken)
+    {
+        string name = settings.Name;
+
         if (settings.RepositoryPath.IsBlank() && settings.RepositoryUrl.IsBlank())
         {
             throw new DomainValidationException(
@@ -239,8 +261,9 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             AnsiConsole.MarkupLine(
                 $"[dim]No home created (--no-home). Give it one later:[/] h9k project init {name.EscapeMarkup()}");
             await AskForRunSkillAsync(session, projectId, name, context.OwnerId, cancellationToken);
-            await TryJoinAsync(session, projectId, name, repositoryPath, invite, cancellationToken);
-            return ExitCodes.Ok;
+            JoinAttempt noHomeJoin = await JoinRegisteredAsync(
+                session, projectId, name, repositoryPath, invite, unattended, cancellationToken);
+            return new Registration(ExitCodes.Ok, projectId, repositoryPath, noHomeJoin);
         }
 
         // The home is built after the registration lands rather than before it, so a half-made
@@ -257,11 +280,15 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         bool ok = ProjectHomeRecipe.Report(steps);
 
         await AskForRunSkillAsync(session, projectId, name, context.OwnerId, cancellationToken);
-        await TryJoinAsync(session, projectId, name, repositoryPath, invite, cancellationToken);
+        JoinAttempt join = await JoinRegisteredAsync(
+            session, projectId, name, repositoryPath, invite, unattended, cancellationToken);
 
-        AnsiConsole.MarkupLine(OrchestratorPointer.ForProject(name));
+        if (!unattended)
+        {
+            AnsiConsole.MarkupLine(OrchestratorPointer.ForProject(name));
+        }
 
-        return ok ? ExitCodes.Ok : ExitCodes.Error;
+        return new Registration(ok ? ExitCodes.Ok : ExitCodes.Error, projectId, repositoryPath, join);
     }
 
     /// <summary>
@@ -319,6 +346,22 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
     /// --invite path; with none, a ledger that already has a real owner defers rather than minting
     /// this install a second one, the identical decision h9k project join makes on its own.
     /// </summary>
+    private static async Task<JoinAttempt> JoinRegisteredAsync(
+        IDocumentSession session, Guid projectId, string name, string repositoryPath, string? invite, bool unattended,
+        CancellationToken cancellationToken)
+    {
+        if (unattended)
+        {
+            return await AttemptJoinAsync(
+                session, projectId, name, repositoryPath, invite,
+                new GitLedger(new ConsoleWorktreeLogger<GitLedger>()), new NodeKeyStore(), new ProjectGitHubAccessMirror(),
+                new GitLedgerChainReader(), promptForInviteToken: null, cancellationToken);
+        }
+
+        await TryJoinAsync(session, projectId, name, repositoryPath, invite, cancellationToken);
+        return JoinAttempt.Reported;
+    }
+
     private static Task TryJoinAsync(
         IDocumentSession session, Guid projectId, string name, string repositoryPath, string? invite,
         CancellationToken cancellationToken) =>
@@ -351,13 +394,43 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         ILedger ledger, NodeKeyStore keyStore, ProjectGitHubAccessMirror githubAccess,
         ILedgerChainReader? chainReader, Func<string?>? promptForInviteToken, CancellationToken cancellationToken)
     {
+        JoinAttempt attempt = await AttemptJoinAsync(
+            session, projectId, name, repositoryPath, invite, ledger, keyStore, githubAccess, chainReader,
+            promptForInviteToken, cancellationToken);
+
+        switch (attempt)
+        {
+            case { RepositoryUnreachable: true }:
+                AnsiConsole.MarkupLine(
+                    $"[dim]Not joined yet — {repositoryPath.EscapeMarkup()} is not reachable. Once it is: "
+                    + $"h9k project join {name.EscapeMarkup()}"
+                    + (invite.IsNotBlank() ? " --invite <secret>" : string.Empty) + "[/]");
+                break;
+            case { Failure: { } failure }:
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Registered, but could not join yet:[/] {failure.EscapeMarkup()} Retry with: "
+                    + $"h9k project join {name.EscapeMarkup()}"
+                    + (invite.IsNotBlank() ? " --invite <secret>" : string.Empty));
+                break;
+            case { Project: { } project, Outcome: { } outcome }:
+                ProjectJoinCommand.Report(project, outcome);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// The join <see cref="TryJoinAsync(IDocumentSession,Guid,string,string,string?,ILedger,NodeKeyStore,ProjectGitHubAccessMirror,ILedgerChainReader?,Func{string?}?,CancellationToken)"/>
+    /// runs, with its outcome returned instead of printed or swallowed, so a caller that joins many
+    /// projects can report each one itself. Never throws for a join that did not finish.
+    /// </summary>
+    internal static async Task<JoinAttempt> AttemptJoinAsync(
+        IDocumentSession session, Guid projectId, string name, string repositoryPath, string? invite,
+        ILedger ledger, NodeKeyStore keyStore, ProjectGitHubAccessMirror githubAccess,
+        ILedgerChainReader? chainReader, Func<string?>? promptForInviteToken, CancellationToken cancellationToken)
+    {
         if (!Directory.Exists(repositoryPath))
         {
-            AnsiConsole.MarkupLine(
-                $"[dim]Not joined yet — {repositoryPath.EscapeMarkup()} is not reachable. Once it is: "
-                + $"h9k project join {name.EscapeMarkup()}"
-                + (invite.IsNotBlank() ? " --invite <secret>" : string.Empty) + "[/]");
-            return;
+            return JoinAttempt.Unreachable;
         }
 
         try
@@ -366,15 +439,27 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
                 session, project, claimedOwnerOverride: null, invite, fromProject: null, ledger, keyStore, githubAccess,
                 chainReader, commitReader: null, promptForInviteToken, cancellationToken);
-            ProjectJoinCommand.Report(project, outcome);
+            return new JoinAttempt(project, outcome, Failure: null, RepositoryUnreachable: false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            AnsiConsole.MarkupLine(
-                $"[yellow]Registered, but could not join yet:[/] {exception.Message.EscapeMarkup()} Retry with: "
-                + $"h9k project join {name.EscapeMarkup()}"
-                + (invite.IsNotBlank() ? " --invite <secret>" : string.Empty));
+            return new JoinAttempt(Project: null, Outcome: null, exception.Message, RepositoryUnreachable: false);
         }
+    }
+
+    /// <summary>
+    /// What one attempt to join a freshly registered project came to. <see cref="Reported"/> is the
+    /// attended caller's, whose own printing already said everything there is to say.
+    /// </summary>
+    internal sealed record JoinAttempt(
+        ProjectDetails? Project, ProjectJoinCommand.JoinOutcome? Outcome, string? Failure, bool RepositoryUnreachable)
+    {
+        public static readonly JoinAttempt Reported = new(null, null, null, false);
+
+        public static readonly JoinAttempt Unreachable = new(null, null, null, true);
+
+        /// <summary>Whether the join wrote this node's claim: it finished and was not deferred for want of an invite.</summary>
+        public bool Joined => Outcome is { Deferred: false };
     }
 
     /// <summary>
