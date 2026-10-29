@@ -3,6 +3,7 @@ using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
 using Spectre.Console;
@@ -50,6 +51,13 @@ public sealed class SolutionCloseCommand : Hall9kAsyncCommand<SolutionCloseComma
         await SolutionWriter.WriteAsync(session, SolutionWriter.Rewrite(closed, context, removed: []), cancellationToken);
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Solution '{closed.Name}' closed:[/] {closed.CloseReason}");
+
+        string home = SolutionHomePaths.DefaultFor(closed.Name);
+        if (Directory.Exists(home))
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]Its home at {home} was left on disk; remove it by hand if you no longer want it.[/]");
+        }
+
         return ExitCodes.Ok;
     }
 }

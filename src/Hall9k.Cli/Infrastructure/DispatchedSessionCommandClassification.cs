@@ -154,6 +154,7 @@ internal static class DispatchedSessionCommandClassification
             [typeof(SolutionAddCommand.Settings)] = (DispatchedSessionAccess.Refused, "solution add"),
             [typeof(SolutionListCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "solution list"),
             [typeof(SolutionShowCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "solution show"),
+            [typeof(SolutionInitCommand.Settings)] = (DispatchedSessionAccess.Refused, "solution init"),
             [typeof(SolutionLinkCommand.Settings)] = (DispatchedSessionAccess.Refused, "solution link"),
             [typeof(SolutionUnlinkCommand.Settings)] = (DispatchedSessionAccess.Refused, "solution unlink"),
             [typeof(SolutionRenameCommand.Settings)] = (DispatchedSessionAccess.Refused, "solution rename"),

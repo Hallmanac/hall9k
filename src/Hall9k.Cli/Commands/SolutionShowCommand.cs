@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Infrastructure.Storage;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -37,8 +38,22 @@ public sealed class SolutionShowCommand : Hall9kAsyncCommand<SolutionShowCommand
         SolutionBoard board = SolutionBoard.Compose(view, context.Projects, rows, context.RootFingerprintOf);
 
         AnsiConsole.Write(Header(view.Membership));
+        WriteHome(view.Membership);
         WriteBoard(board, AnsiConsole.Profile.Width, DateTimeOffset.UtcNow);
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// The solution home's path on this node, on a line of its own and written past the console's
+    /// word wrap: a solution window matches its working directory against this exact text, which a
+    /// wrapped path would never equal. A node without the home is told the command that makes one.
+    /// </summary>
+    internal static void WriteHome(SolutionMembership membership)
+    {
+        string home = SolutionHomePaths.DefaultFor(membership.Name);
+        AnsiConsole.Profile.Out.Writer.WriteLine(Directory.Exists(home)
+            ? $"Home: {home}"
+            : $"Home: none on this node. Create it: h9k solution init \"{membership.Name}\"");
     }
 
     internal static Table Header(SolutionMembership membership)

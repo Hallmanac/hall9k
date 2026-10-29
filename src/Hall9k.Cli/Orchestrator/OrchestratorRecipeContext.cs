@@ -16,6 +16,9 @@ public static class OrchestratorRecipeContext
     public static string ProjectOpeningMessage(string projectName) =>
         $"You are the {projectName} project orchestrator.";
 
+    public static string SolutionOpeningMessage(string solutionName) =>
+        $"You are the {solutionName} solution orchestrator.";
+
     /// <summary>
     /// The project's home directory, or a placeholder naming the gap when none is recorded yet —
     /// a default launch line rendered against a placeholder is honestly synthetic rather than a

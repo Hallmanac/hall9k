@@ -1354,7 +1354,8 @@ public static class CliCommandTree
                     + "assign-key for the genesis owner) and a recorded repository URL, and must not already "
                     + "be in another open solution (h9k solution unlink frees it). When a member's repository "
                     + "owner or organization differs from every other member's it warns and asks; --yes "
-                    + "answers, and a session that cannot prompt refuses without it.")
+                    + "answers, and a session that cannot prompt refuses without it. It then runs h9k solution "
+                    + "init for the new solution, so the solution's home exists on this node.")
                 .WithExample("solution", "add", "storefront", "--project", "shop-api", "--project", "shop-web")
                 .WithExample("solution", "add", "storefront", "--project", "shop-api", "--project", "shop-web", "--yes");
             solution.AddCommand<SolutionListCommand>("list")
@@ -1370,9 +1371,24 @@ public static class CliCommandTree
                     "One solution's board across its member projects, grouped by project: each project's "
                     + "rollup and tasks composed the way h9k project show composes them, every row a task id "
                     + "and a plain description. Members this node has not joined are listed by name and "
-                    + "repository URL, and a closed solution shows its reason. Takes the solution's name or "
+                    + "repository URL, and a closed solution shows its reason. Prints the solution home's path "
+                    + "on this node on a Home line (a solution window matches its working directory against "
+                    + "it), or says there is none and names h9k solution init. Takes the solution's name or "
                     + "a prefix of its key. Read-only.")
                 .WithExample("solution", "show", "storefront");
+            solution.AddCommand<SolutionInitCommand>("init")
+                .WithDescription(
+                    "Create or repair the solution's thin home on this node at ~/.hall9k/solutions/<name> "
+                    + "(the path is a convention from the solution's name, so nothing records it) and report "
+                    + "each step the way h9k project init does. The home holds an AGENTS.md rendered from the "
+                    + "membership that names every member's repository URL and its home on this node (or says "
+                    + "this node has not joined it), recipes/ with the platform-written launch anchor and "
+                    + "settings.json plus the orchestrator-recipe-generator, and the canonical skills; it has no "
+                    + "repo/, ideas/ or tasks/. Idempotent, so it is also the repair command. An AGENTS.md "
+                    + "already at the path that the platform did not render is refused before anything is "
+                    + "written. The daemon keeps AGENTS.md current afterwards. Run the "
+                    + "orchestrator-recipe-generator skill in the home to write the solution window's recipe.")
+                .WithExample("solution", "init", "storefront");
             solution.AddCommand<SolutionLinkCommand>("link")
                 .WithDescription(
                     "Bring projects into a solution, rewriting the membership on every member in one "
@@ -1404,7 +1420,7 @@ public static class CliCommandTree
                     + "an explicit human act with a reason. Nothing closes a solution automatically, including "
                     + "every member being archived. A closed solution no longer holds its members to it, and "
                     + "is final. A member this node has not registered and joined refuses the command, "
-                    + "naming it.")
+                    + "naming it. The solution's home on this node is left on disk.")
                 .WithExample("solution", "close", "storefront", "--reason", "\"Storefront retired in favour of the marketplace\"");
         });
 
