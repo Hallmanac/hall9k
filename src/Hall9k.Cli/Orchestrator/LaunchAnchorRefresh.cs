@@ -9,9 +9,9 @@ namespace Hall9k.Cli.Orchestrator;
 public sealed record RegisteredProjectHome(string ProjectName, string HomeDirectory);
 
 /// <summary>
-/// Re-renders <see cref="LaunchAnchorDocument"/> in the node home and in every registered project
-/// home that already has an anchor, so a project window never launches on an anchor older than the
-/// installed build. A project window reads its own home's <c>recipes/launch-anchor.md</c>, which
+/// Re-renders <see cref="LaunchAnchorDocument"/> in the node home, in every registered project
+/// home that already has an anchor, and in every solution home on this node that already has one,
+/// so a project or solution window never launches on an anchor older than the installed build. A project window reads its own home's <c>recipes/launch-anchor.md</c>, which
 /// only <c>h9k project add</c> and <c>h9k project init</c> ever wrote, so without this an anchor
 /// change would reach no project window that was registered before it.
 /// <para>
@@ -28,12 +28,17 @@ public sealed record RegisteredProjectHome(string ProjectName, string HomeDirect
 /// gets the whole set. A project home's <c>settings.json</c> is not touched here; it still renders
 /// only on <c>h9k project init</c> and <c>h9k project add</c>.
 /// </para>
+/// <para>
+/// Solution homes are found by listing <see cref="SolutionHomePaths.SolutionsRoot"/>, not through
+/// the registry: their path is a convention, so the refresh reaches them even when the registry
+/// cannot be read, and a home left behind by a renamed solution is refreshed too.
+/// </para>
 /// </summary>
 public static class LaunchAnchorRefresh
 {
     /// <summary>The planned invocation of the freshly installed <c>h9k</c> that runs the refresh.</summary>
     public static RestartStep Step { get; } = new(
-        "refresh the launch anchor in the node home and every registered project home that has one",
+        "refresh the launch anchor in the node home, every registered project home that has one, and every solution home that has one",
         ["orchestrator", "refresh-anchors"]);
 
     /// <summary>The one line install prints when no project home's anchor could be refreshed,
@@ -53,15 +58,19 @@ public static class LaunchAnchorRefresh
     /// can fail it or feed it homes without a database; any exception it throws is the "registry
     /// cannot be read" case. <paramref name="writeAnchor"/> defaults to
     /// <see cref="LaunchAnchorDocument.Write"/>, a seam so a test can fail one home's write
-    /// deterministically. Always returns <see cref="ExitCodes.Ok"/>.
+    /// deterministically. <paramref name="listSolutionHomes"/> defaults to
+    /// <see cref="SolutionHomePaths.Existing"/>, a seam so a test can name its own solution homes.
+    /// Always returns <see cref="ExitCodes.Ok"/>.
     /// </summary>
     public static async Task<int> RunAsync(
         Func<CancellationToken, Task<IReadOnlyList<RegisteredProjectHome>>> readRegistry,
         CancellationToken cancellationToken,
-        Action<string>? writeAnchor = null)
+        Action<string>? writeAnchor = null,
+        Func<IReadOnlyList<string>>? listSolutionHomes = null)
     {
         Action<string> write = writeAnchor ?? LaunchAnchorDocument.Write;
         RefreshNodeAnchor(write);
+        RefreshSolutionAnchors(listSolutionHomes ?? SolutionHomePaths.Existing, write);
 
         IReadOnlyList<RegisteredProjectHome> homes;
         try
@@ -98,6 +107,42 @@ public static class LaunchAnchorRefresh
         AnsiConsole.MarkupLineInterpolated(
             $"[dim]Refreshed the launch anchor in {refreshed} registered project home(s) that already had one.[/]");
         return ExitCodes.Ok;
+    }
+
+    private static void RefreshSolutionAnchors(Func<IReadOnlyList<string>> listSolutionHomes, Action<string> write)
+    {
+        int refreshed = 0;
+        try
+        {
+            foreach (string home in listSolutionHomes())
+            {
+                string anchor = ProjectHomePaths.LaunchAnchorFile(home);
+                if (!File.Exists(anchor))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    write(anchor);
+                    refreshed++;
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    AnsiConsole.MarkupLineInterpolated(
+                        $"[yellow]Could not refresh the launch anchor in solution home {home} ({exception.Message.ReplaceLineEndings(" ")}). Run h9k orchestrator refresh-anchors to try again, or h9k solution init <solution> if that home never rendered its recipe files.[/]");
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]Could not list the solution homes under {SolutionHomePaths.SolutionsRoot} ({exception.Message.ReplaceLineEndings(" ")}). Run h9k orchestrator refresh-anchors to try again.[/]");
+            return;
+        }
+
+        AnsiConsole.MarkupLineInterpolated(
+            $"[dim]Refreshed the launch anchor in {refreshed} solution home(s) that already had one.[/]");
     }
 
     private static void RefreshNodeAnchor(Action<string> write)
