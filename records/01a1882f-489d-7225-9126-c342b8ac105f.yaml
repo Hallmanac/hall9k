@@ -1,0 +1,33 @@
+hall9k-task-record: 1
+task-id: 01a1882f-489d-7225-9126-c342b8ac105f
+project: hall9k
+type: feature
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#780
+objective: |-
+  A solution groups one-repo projects: h9k solution add, show, list, link, unlink, rename and close, with the solution carried as a membership team setting on every member project, exactly one solution per project, and a cross-project board.
+criteria:
+  - |-
+    h9k solution add <name> --project <p> (repeatable) mints a solution key (a 26-character ULID) and writes a SolutionMembership into each named project's team settings in that one command: the solution's key and name, its state (open or closed) with a close reason, and every member by project key with its project name and repository URL. The name follows the rules a project name follows (unique on this node, case-insensitive), and every solution command resolves <name> by name or key prefix. There is no separate Solution stream: the membership on the members is the solution.
+  - The membership is one more optional team field, set through ProjectDecider.ChangeSettings and carried by ProjectTeamSettingsChanged.From, and every solution command appends the team companion the way h9k project set does, so it replicates with no new replication path, no new stream, and no change to EventReplicationInbox; the existing callers of ChangeSettings compile unchanged. A node that receives a membership for any member knows the whole solution from it, with nothing further to record.
+  - |-
+    A project belongs to at most one open solution, enforced in ProjectDecider.ChangeSettings: writing a membership with a different key onto a project whose current membership is open is refused, naming the solution it is in and pointing at h9k solution unlink. A closed membership does not hold the project. The setting is a single value in storage.
+  - h9k solution add and link refuse a project with no recorded project key (naming h9k project join, or h9k project assign-key for the genesis owner) and a project with no recorded repository URL. Link, unlink, rename and close rewrite the membership on every member in one command, and refuse, naming the members, when any member is not registered and joined on this node.
+  - h9k solution add and link warn and ask for confirmation when the new member's repository owner or organization differs from every existing member's; --yes answers it, and a session that cannot prompt refuses without --yes.
+  - h9k solution rename and h9k solution close --reason are explicit human acts; close marks the membership closed with its reason on every member. Nothing closes a solution automatically, including every member being archived.
+  - h9k solution show <name> composes the solution's board across members grouped by project, reusing TaskStatusComposer, TaskRollup and the project show task table, every row a task id plus a plain description; it lists members this node has not joined by name and repository URL, and shows a closed solution's reason.
+  - h9k solution list exists, h9k project show gains a Solution row, and task list and epic list accept --solution, resolved to the member projects known on this node.
+  - Every new command and option carries help that teaches the ladder solution, project, epic, task, and every refusal quotes the rule it enforces. The commands that write are refused to dispatched sessions and show and list are read-only there, in DispatchedSessionCommandClassification.
+  - Unit tests cover the membership's validation, the one-solution refusal, the team companion carrying the membership, a replicated membership landing on a second store's project through the existing in-memory replication tests, the missing-key and not-held-here refusals, the owner-mismatch decision, and board composition; no test creates a branch or touches GitHub.
+  - docs/scope.md, docs/concepts.md, docs/cli.md and the hall9k-cli-reference skill describe the solution concept and its commands.
+dependencies: []
+epic-title: |-
+  Solutions: linked projects over one-repo projects
+epic-id: 01a1882e-f056-7728-961d-e29361a43d0a
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/b8ac105f-a-solution-groups-one-repo-pro
+published: 2026-10-29 15:45:31Z
+context: |-
+  Discovery for idea f8212260 is in the idea's workspace: findings.md (the design, the name, the hard-to-reverse choices) and journal.md (Brian's rulings on 2026-10-29); the challenge's evidence is notes/challenge-b8ac105f/journal.md in the project home. Model the membership on ContextLinks: a named record, replace-the-whole-record semantics on ProjectTeamSettingsChanged, a repeatable flag. Members are named by project key (the 26-character ULID from the ledger genesis, identical across nodes), never by local project id. The challenge of 2026-10-29, accepted by Brian, dropped the node-scoped SolutionAggregate the findings first described: nothing on main mints a local stream from a received event, and a node-scoped close would never reach the other nodes, so the membership itself carries the name, state and close reason. The one-solution rule exists for a security reason Brian gave: a project in two solutions would put each solution's member names and repository URLs in front of the other solution's teammates. Two nodes linking one project into different solutions at the same moment resolve as last write wins on replication; that is parked until it first happens. This piece changes nothing in dispatch, delivery, review, closeout or the gh layer. It is the base of a stack: solution epics stack on it, the solution window and onboarding are blocked by it, and the solution home in the window card is named after the solution's name.
