@@ -815,7 +815,9 @@ are explicit human acts. `unlink` clears the removed project's own membership an
 and it refuses to remove the last member (close the solution instead). Closing is final, requires
 its reason, and never happens on its own, not even when every member is archived. Each of these
 rewrites the membership on every member in one commit, and refuses, naming the members, when any
-member is not registered and joined on this node.
+member is not registered and joined on this node (`add` included), when a member no longer carries
+the solution or carries a different copy of its record (let replication settle, then run it again),
+or when the solution is already closed, which no command changes.
 
 `h9k solution show <name>` is the board across the members, grouped by project: each project's
 rollup and task table are the ones `h9k project show` composes, every row a task id and a plain

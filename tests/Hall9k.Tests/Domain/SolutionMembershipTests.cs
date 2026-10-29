@@ -218,6 +218,7 @@ public sealed class SolutionMembershipTests
         ProjectDetailsProjection projection = new();
         ProjectDetails view = projection.Create(new FakeEvent<ProjectRegistered>(new ProjectRegistered(
             DomainId.New(), DomainId.New(), DomainId.New(), "shop-api", "/repos/shop-api", null, "main", Now)));
+        projection.Apply(new FakeEvent<ProjectKeyAssigned>(new ProjectKeyAssigned(view.Id, ApiKey, Now)), view);
         projection.Apply(new FakeEvent<ProjectTeamSettingsChanged>(replicated), view);
 
         view.Solution.Should().BeEquivalentTo(membership);
@@ -244,5 +245,27 @@ public sealed class SolutionMembershipTests
         projection.Apply(new FakeEvent<ProjectTeamSettingsChanged>(new ProjectTeamSettingsChanged(
             view.Id, Now.AddMinutes(3), DomainId.New(), Solution: Optional<SolutionMembership?>.Of(null))), view);
         view.Solution.Should().BeNull();
+    }
+
+    [Fact]
+    public void The_aggregate_applies_a_membership_by_stamp_like_the_projection_so_the_one_solution_rule_reads_what_the_operator_sees()
+    {
+        ProjectAggregate project = KeyedProject("shop-api", ApiKey);
+        string key = SolutionDecider.NewKey();
+        SolutionMembership newer = SolutionDecider.Rename(Open(key), "storefront-v2");
+
+        project.Apply(new ProjectTeamSettingsChanged(
+            project.Id, Now.AddMinutes(2), DomainId.New(), Solution: Optional<SolutionMembership?>.Of(newer)));
+        project.Apply(new ProjectTeamSettingsChanged(
+            project.Id, Now.AddMinutes(1), DomainId.New(), Solution: Optional<SolutionMembership?>.Of(Open(key))));
+        project.Solution!.Name.Should().Be("storefront-v2", "a catch-up answer that arrives out of order never overwrites a newer record");
+
+        // The rule therefore judges the newer, still-open record: joining another solution is refused.
+        Action join = () => Write(project, Open(SolutionDecider.NewKey(), "marketplace"));
+        join.Should().Throw<DomainConflictException>().WithMessage("*already in the open solution 'storefront-v2'*");
+
+        project.Apply(new ProjectTeamSettingsChanged(
+            project.Id, Now.AddMinutes(3), DomainId.New(), Solution: Optional<SolutionMembership?>.Of(null)));
+        project.Solution.Should().BeNull();
     }
 }

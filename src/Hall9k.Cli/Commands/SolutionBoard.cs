@@ -23,7 +23,7 @@ internal sealed record SolutionBoard(
 {
     /// <summary>
     /// Composes the board in member order from every row on the node (a row belongs to the board
-    /// when its project carries a member's key), newest task first within a project.
+    /// when its project carries a member's key and none other solution), newest task first within a project.
     /// </summary>
     public static SolutionBoard Compose(
         SolutionView solution,
@@ -31,6 +31,7 @@ internal sealed record SolutionBoard(
         IReadOnlyList<TaskStatusRow> rows,
         Func<Guid, string?> rootFingerprintOf)
     {
+        projects = [.. projects.Where(solution.NotInAnotherSolution)];
         List<SolutionBoardProject> held = [];
         List<SolutionMember> notJoined = [];
         foreach (SolutionMember member in solution.Membership.Members)
@@ -54,7 +55,7 @@ internal static class SolutionScope
 {
     /// <summary>
     /// The ids of the projects on this node that are members of the named solution: every project
-    /// carrying the membership, and any registered project holding a member's key. A member this
+    /// carrying the membership, and any registered project holding a member's key that carries no other solution. A member this
     /// node has no project for contributes nothing.
     /// </summary>
     public static async Task<IReadOnlySet<Guid>> ProjectIdsAsync(
@@ -67,7 +68,8 @@ internal static class SolutionScope
     public static IReadOnlySet<Guid> ProjectIds(SolutionView solution, IReadOnlyList<ProjectDetails> projects) =>
         new HashSet<Guid>(projects
             .Where(project => solution.HeldProjects.Any(held => held.Id == project.Id)
-                || (project.ProjectKey is { } key
+                || (solution.NotInAnotherSolution(project)
+                    && project.ProjectKey is { } key
                     && solution.Membership.Members.Any(member => member.ProjectKey.Equals(key, StringComparison.OrdinalIgnoreCase))))
             .Select(project => project.Id));
 }

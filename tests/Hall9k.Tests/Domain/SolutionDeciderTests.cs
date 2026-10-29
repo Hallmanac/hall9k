@@ -158,6 +158,78 @@ public sealed class SolutionDeciderTests
     }
 
     [Fact]
+    public void A_closed_solution_is_final_so_unlink_and_rename_refuse_it_the_way_link_and_close_do()
+    {
+        SolutionMembership closed = SolutionDecider.Close(
+            SolutionDecider.Create(SolutionDecider.NewKey(), "storefront", [Api, Web]), "retired");
+
+        Action unlink = () => SolutionDecider.Unlink(closed, WebKey);
+        Action rename = () => SolutionDecider.Rename(closed, "storefront-v2");
+
+        unlink.Should().Throw<DomainConflictException>().WithMessage("*is closed (retired)*final*unlink a project from*");
+        rename.Should().Throw<DomainConflictException>().WithMessage("*is closed (retired)*final*be renamed*");
+    }
+
+    [Fact]
+    public void A_rewrite_is_refused_when_a_held_member_no_longer_carries_the_solution()
+    {
+        SolutionMembership storefront = SolutionDecider.Create(SolutionDecider.NewKey(), "storefront", [Api, Web]);
+        SolutionMembership marketplace = SolutionDecider.Create(SolutionDecider.NewKey(), "marketplace", [Web]);
+        ProjectDetails api = Project("shop-api", ApiKey, Api.RepositoryUrl.ToString(), solution: storefront);
+        ProjectDetails web = Project("shop-web", WebKey, Web.RepositoryUrl.ToString(), solution: marketplace);
+        ProjectDetails bare = Project("shop-web", WebKey, Web.RepositoryUrl.ToString());
+
+        SolutionView view = SolutionRegistry.Read([api, web]).Single(solution => solution.Membership.Key == storefront.Key);
+        Action elsewhere = () => SolutionDecider.RequireConsistent(view, [api, web], RootOf, "unlink a project from");
+        Action cleared = () => SolutionDecider.RequireConsistent(view, [api, bare], RootOf, "rename");
+
+        elsewhere.Should().Throw<DomainConflictException>()
+            .WithMessage("*Cannot unlink a project from the solution 'storefront'*'shop-web' (carries 'marketplace')*no longer carries it*");
+        cleared.Should().Throw<DomainConflictException>().WithMessage("*Cannot rename*'shop-web'*no longer carries it*");
+    }
+
+    [Fact]
+    public void A_rewrite_is_refused_while_a_carrier_holds_a_different_copy_and_passes_when_they_all_agree()
+    {
+        string key = SolutionDecider.NewKey();
+        SolutionMembership original = SolutionDecider.Create(key, "storefront", [Api, Web]);
+        SolutionMembership forged = SolutionDecider.Close(original, "forged");
+        ProjectDetails api = Project("shop-api", ApiKey, Api.RepositoryUrl.ToString(), solution: forged);
+        api.TeamSettingStamps[nameof(ProjectDetails.Solution)] = new DateTimeOffset(2099, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        ProjectDetails web = Project("shop-web", WebKey, Web.RepositoryUrl.ToString(), solution: original);
+
+        SolutionView disagreeing = SolutionRegistry.Read([api, web]).Single();
+        Action refuse = () => SolutionDecider.RequireConsistent(disagreeing, [api, web], RootOf, "rename");
+
+        disagreeing.Inconsistent.Select(project => project.Name).Should().Equal("shop-web");
+        refuse.Should().Throw<DomainConflictException>().WithMessage("*'shop-web' carries a different record*");
+
+        // The same record read back from a stream is a different object with a different member list instance.
+        ProjectDetails agreeingWeb = Project("shop-web", WebKey, Web.RepositoryUrl.ToString(), solution: original with { Members = [.. original.Members] });
+        ProjectDetails agreeingApi = Project("shop-api", ApiKey, Api.RepositoryUrl.ToString(), solution: original);
+        SolutionView agreeing = SolutionRegistry.Read([agreeingApi, agreeingWeb]).Single();
+        SolutionDecider.RequireConsistent(agreeing, [agreeingApi, agreeingWeb], RootOf, "rename");
+        agreeing.Inconsistent.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void A_project_the_record_does_not_list_never_speaks_for_the_solution()
+    {
+        string key = SolutionDecider.NewKey();
+        SolutionMembership genuine = SolutionDecider.Create(key, "storefront", [Api, Web]);
+        SolutionMembership forged = SolutionDecider.Create(key, "hijacked", [Member(AdminKey, "shop-admin", "https://github.com/acme/shop-admin.git")]);
+        ProjectDetails api = Project("shop-api", ApiKey, Api.RepositoryUrl.ToString(), solution: genuine);
+        ProjectDetails stranger = Project("stranger", "01JDDDDDDDDDDDDDDDDDDDDDDD", "https://github.com/acme/stranger.git", solution: forged);
+        stranger.TeamSettingStamps[nameof(ProjectDetails.Solution)] = new DateTimeOffset(2099, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        SolutionView view = SolutionRegistry.Read([api, stranger]).Should().ContainSingle().Subject;
+
+        view.Membership.Name.Should().Be("storefront");
+        view.Inconsistent.Select(project => project.Name).Should().Equal("stranger");
+        SolutionRegistry.Read([stranger]).Should().BeEmpty("a record that no carrier is listed in vouches for nothing");
+    }
+
+    [Fact]
     public void Close_is_an_explicit_act_with_a_reason_and_is_terminal()
     {
         SolutionMembership solution = SolutionDecider.Create(SolutionDecider.NewKey(), "storefront", [Api]);

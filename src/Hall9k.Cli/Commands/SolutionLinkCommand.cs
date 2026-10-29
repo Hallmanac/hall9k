@@ -61,6 +61,7 @@ public sealed class SolutionLinkCommand : Hall9kAsyncCommand<SolutionLinkCommand
         }
 
         SolutionDecider.RequireEveryMemberHeld(membership, context.Projects, context.RootFingerprintOf, "link a project into");
+        SolutionDecider.RequireConsistent(view, context.Projects, context.RootFingerprintOf, "link a project into");
 
         if (!SolutionOwnerConfirmation.Confirm(
                 SolutionDecider.OwnerMismatches(view.Membership.Members, newMembers),

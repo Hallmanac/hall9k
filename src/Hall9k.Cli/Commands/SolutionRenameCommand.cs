@@ -34,6 +34,7 @@ public sealed class SolutionRenameCommand : Hall9kAsyncCommand<SolutionRenameCom
         SolutionRegistry.RequireUniqueName(context.Solutions, settings.NewName, view.Membership.Key);
         SolutionMembership renamed = SolutionDecider.Rename(view.Membership, settings.NewName);
         SolutionDecider.RequireEveryMemberHeld(view.Membership, context.Projects, context.RootFingerprintOf, "rename");
+        SolutionDecider.RequireConsistent(view, context.Projects, context.RootFingerprintOf, "rename");
 
         await SolutionWriter.WriteAsync(session, SolutionWriter.Rewrite(renamed, context, removed: []), cancellationToken);
 
