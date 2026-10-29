@@ -12,7 +12,8 @@ namespace Hall9k.Domain.Features.Epic;
 public static class EpicDecider
 {
     public static EpicAdded Add(
-        Guid id, Guid projectId, string title, DateTimeOffset addedAt, Guid addedByOwnerId)
+        Guid id, Guid projectId, string title, DateTimeOffset addedAt, Guid addedByOwnerId,
+        string? solutionEpicKey = null, string? solutionKey = null)
     {
         if (projectId == Guid.Empty)
         {
@@ -25,7 +26,19 @@ public static class EpicDecider
                 "An epic needs a title: h9k epic add --project <p> --title \"<name>\".");
         }
 
-        return new EpicAdded(id, projectId, title.Trim(), addedAt, addedByOwnerId);
+        if ((solutionEpicKey is null) != (solutionKey is null))
+        {
+            throw new DomainValidationException(
+                "A solution epic carries both its solution epic key and its solution's key, or neither.");
+        }
+
+        if (solutionEpicKey is not null && (!Ulid.TryParse(solutionEpicKey, out _) || !Ulid.TryParse(solutionKey, out _)))
+        {
+            throw new DomainValidationException(
+                "A solution epic key and a solution key are each the 26-character ULID the platform mints.");
+        }
+
+        return new EpicAdded(id, projectId, title.Trim(), addedAt, addedByOwnerId, solutionEpicKey, solutionKey);
     }
 
     /// <summary>

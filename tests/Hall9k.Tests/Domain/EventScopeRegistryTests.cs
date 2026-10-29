@@ -57,6 +57,12 @@ public sealed class EventScopeRegistryTests
         "Hall9k.Domain.Features.Decision.LegacyDecisionEntry",
         "Hall9k.Domain.Features.Decision.LegacyImportPlan",
         "Hall9k.Domain.Features.Epic.EpicState",
+        // Solution epics (reads over the epic copies this node holds, and the facts the shared-issue
+        // rule decides on): never appended to any stream, so none has a scope to classify. The same
+        // exemption the orchestrator feed's read shapes have below, for the same reason.
+        "Hall9k.Domain.Features.Epic.EpicGroup",
+        "Hall9k.Domain.Features.Epic.SharedIssueHolder",
+        "Hall9k.Domain.Features.Epic.SharedIssueBar",
         "Hall9k.Domain.Features.Learning.LearningStatus",
         // The prompt feed (idea d805fd8b, piece 5) is a read over the Learning streams composed
         // into prompt text, never a stream of its own: not one of these is ever appended anywhere,

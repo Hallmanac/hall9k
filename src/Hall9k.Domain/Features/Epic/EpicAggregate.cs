@@ -18,6 +18,10 @@ public sealed class EpicAggregate
     public string? CloseReason { get; private set; }
     public DateTimeOffset AddedAt { get; private set; }
     public Guid AddedByOwnerId { get; private set; }
+    /// <summary>The key every copy of a solution epic shares; null for a project epic.</summary>
+    public string? SolutionEpicKey { get; private set; }
+    /// <summary>The solution this copy was made for; null for a project epic.</summary>
+    public string? SolutionKey { get; private set; }
 
     public void Apply(EpicAdded @event)
     {
@@ -26,6 +30,8 @@ public sealed class EpicAggregate
         Title = @event.Title;
         AddedAt = @event.AddedAt;
         AddedByOwnerId = @event.AddedByOwnerId;
+        SolutionEpicKey = @event.SolutionEpicKey;
+        SolutionKey = @event.SolutionKey;
         State = EpicState.Open;
     }
 

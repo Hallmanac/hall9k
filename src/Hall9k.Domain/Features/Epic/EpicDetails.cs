@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using JasperFx.Events;
 using Marten.Events.Aggregation;
 
@@ -20,6 +21,12 @@ public sealed class EpicDetails
     public DateTimeOffset? ClosedAt { get; set; }
     public DateTimeOffset AddedAt { get; set; }
     public Guid AddedByOwnerId { get; set; }
+    /// <summary>The key every copy of a solution epic shares; null for a project epic.</summary>
+    public string? SolutionEpicKey { get; set; }
+    /// <summary>The solution this copy was made for; null for a project epic.</summary>
+    public string? SolutionKey { get; set; }
+    [JsonIgnore]
+    public bool IsSolutionEpic => SolutionEpicKey is not null;
 }
 
 public sealed partial class EpicDetailsProjection : SingleStreamProjection<EpicDetails, Guid>
@@ -32,6 +39,8 @@ public sealed partial class EpicDetailsProjection : SingleStreamProjection<EpicD
         State = EpicState.Open,
         AddedAt = @event.Data.AddedAt,
         AddedByOwnerId = @event.Data.AddedByOwnerId,
+        SolutionEpicKey = @event.Data.SolutionEpicKey,
+        SolutionKey = @event.Data.SolutionKey,
     };
 
     public void Apply(IEvent<EpicLinkedToJira> @event, EpicDetails view) =>
