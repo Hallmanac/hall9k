@@ -1,0 +1,29 @@
+hall9k-task-record: 1
+task-id: 01a1882f-d8b8-77aa-be16-1b833cc0afdc
+project: hall9k
+type: feature
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#783
+objective: |-
+  A teammate joins every member of a solution in one step: h9k solution invite mints one member-of-project invite per member and prints them as a single invite bundle, and h9k solution join reads that bundle and registers and joins each member this node has not already joined.
+criteria:
+  - h9k solution invite <s> mints one member-of-project invite, role member, for each member of <s> that this node holds and in which this node's owner holds the owner role, through the same mint h9k project invite performs today, with no new trust semantics; a member it cannot mint for (not registered here, owner role not held, or any other mint refusal) is listed with that refusal's reason and left out, and the command fails when it minted none.
+  - h9k solution invite prints its result once, as a single-line invite bundle carrying the solution's key and name and, for each minted member, its project key, name, repository URL, and secret, with the same shown-once warning h9k project invite gives; no secret is printed anywhere outside the bundle.
+  - h9k solution join --invite <bundle> takes the bundle as its only input and accepts '-' to read it from stdin through the same handling h9k project join --invite uses; it needs no solution record, membership, or member project already present on this node.
+  - |-
+    For each member in the bundle, h9k solution join looks for a local project by project key, then by repository URL: when none is found it registers the member from the bundle's name and URL the way h9k project add --repo-url does and joins it with that member's secret; when one is found but not yet joined it joins it with the secret; when one is already joined it leaves it alone and does not spend the secret. It never prompts.
+  - |-
+    A member that does not finish (a local name collision, a failed clone, no push on its repository, a spent or expired secret) is reported with its reason and the hand command that finishes it, the remaining members still proceed, and the command exits non-zero when any member did not finish; the report gives every member one state: registered and joined, joined, already joined, or not finished, and says that each join is vouched in by the minting node's daemon on its next sweep.
+  - Unit tests cover the bundle round trip, the per-member plan (the bundle and this node's projects in, one action per member out), the report and exit code over faked outcomes, and the mint loop through h9k project invite's existing ledger seam; no test clones, creates a branch, mints against GitHub, or touches a remote.
+  - docs/cli.md and the hall9k-cli-reference skill describe solution invite and join, including that each member still needs push on its repository and the minting node's daemon running to vouch the join in.
+dependencies: [01a1882f-489d-7225-9126-c342b8ac105f]
+epic-title: |-
+  Solutions: linked projects over one-repo projects
+epic-id: 01a1882e-f056-7728-961d-e29361a43d0a
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/3cc0afdc-a-teammate-joins-every-member
+published: 2026-10-29 15:46:07Z
+context: |-
+  Discovery for idea f8212260: findings.md and journal.md in the idea's workspace; the challenge's evidence is notes/challenge-3cc0afdc/journal.md in the project home. Each join is the existing per-project join (push on that member's repository required, the minting node's daemon sweep vouches it in later; nothing in the command waits for that). This piece only batches them. The member list travels in the bundle because a joining node has no membership record until the daemon's catch-up delivers a member's team settings (EventCatchUpCoordinator.RequestBootstrapAsync); the solution then appears on that node from the membership itself, which this task does not change. Expect two small extractions: the mint in ProjectInviteCommand.RunAsync returning its secret instead of printing it, and project add's registration (ProjectAddCommand.ExecuteAsync) callable per member, with the join's outcome returned rather than swallowed by TryJoinAsync. Blocked by the solution base task, not stacked: it touches the invite and add commands, which the base does not.
