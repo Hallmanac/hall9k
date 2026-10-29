@@ -17,6 +17,12 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
         [Description("Only this project's epics: its name, an unambiguous fragment of it, or its id")]
         public string? Project { get; init; }
 
+        [CommandOption("--solution <SOLUTION>")]
+        [Description(
+            "Only the epics of this solution's member projects known on this node: its name, or a prefix of "
+            + "its key (h9k solution list shows them). The ladder is solution, project, epic, task")]
+        public string? Solution { get; init; }
+
         [CommandOption("--state <STATE>")]
         [Description("open | closed | all — defaults to open")]
         public string? State { get; init; }
@@ -33,6 +39,10 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
             ? await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken)
             : null;
 
+        IReadOnlySet<Guid>? solutionProjectIds = settings.Solution.IsNotBlank()
+            ? await SolutionScope.ProjectIdsAsync(session, settings.Solution, cancellationToken)
+            : null;
+
         IReadOnlyList<EpicDetails> epics = await session.Query<EpicDetails>().ToListAsync(cancellationToken);
         if (epics.Count == 0)
         {
@@ -41,14 +51,16 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
             return ExitCodes.Ok;
         }
 
-        List<EpicDetails> scoped = [.. epics.Where(epic => project is null || epic.ProjectId == project.Id)];
+        List<EpicDetails> scoped = [.. epics
+            .Where(epic => project is null || epic.ProjectId == project.Id)
+            .Where(epic => solutionProjectIds is null || solutionProjectIds.Contains(epic.ProjectId))];
         List<EpicDetails> matched = [.. scoped
             .Where(epic => state is null || epic.State == state)
             .OrderByDescending(epic => epic.AddedAt)];
         if (matched.Count == 0)
         {
             AnsiConsole.MarkupLine(
-                $"[dim]No epics match {Filters(project, state)}. Drop a filter, or see everything:[/] "
+                $"[dim]No epics match {Filters(project, state, settings.Solution)}. Drop a filter, or see everything:[/] "
                 + "h9k epic list --state all");
             return ExitCodes.Ok;
         }
@@ -99,7 +111,7 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
         }
 
         AnsiConsole.Write(table);
-        AnsiConsole.MarkupLine(Footer(matched, scoped, project, state));
+        AnsiConsole.MarkupLine(Footer(matched, scoped, project, state, settings.Solution));
         return ExitCodes.Ok;
     }
 
@@ -110,22 +122,24 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
     /// </summary>
     internal static string Footer(
         IReadOnlyList<EpicDetails> matched, IReadOnlyList<EpicDetails> scoped, ProjectDetails? project,
-        EpicState? state)
+        EpicState? state, string? solution = null)
     {
-        string scope = $"{matched.Count} epic{(matched.Count == 1 ? string.Empty : "s")}{Scope(project, state)}";
-        return $"[dim]{scope}{Elsewhere(scoped, project, state)} — see one's tasks:[/] "
+        string scope = $"{matched.Count} epic{(matched.Count == 1 ? string.Empty : "s")}{Scope(project, state, solution)}";
+        return $"[dim]{scope}{Elsewhere(scoped, project, state, solution)} — see one's tasks:[/] "
             + $"h9k epic show {TaskListCommand.ShortId(matched[0].Id)} [dim]· filter tasks by epic:[/] "
             + $"h9k task list --epic {TaskListCommand.ShortId(matched[0].Id)}";
     }
 
-    private static string Scope(ProjectDetails? project, EpicState? state)
+    private static string Scope(ProjectDetails? project, EpicState? state, string? solution)
     {
         string scope = project is null ? string.Empty : $" in {project.Name.EscapeMarkup()}";
+        scope += solution.IsNotBlank() ? $" in solution {solution.EscapeMarkup()}" : string.Empty;
         return state is null ? $"{scope}, every state" : $"{scope} {state.Value.ToLowerInvariant()}";
     }
 
     /// <summary>What the state filter is hiding, counted and named by the state it is actually in.</summary>
-    private static string Elsewhere(IReadOnlyList<EpicDetails> scoped, ProjectDetails? project, EpicState? state)
+    private static string Elsewhere(
+        IReadOnlyList<EpicDetails> scoped, ProjectDetails? project, EpicState? state, string? solution)
     {
         if (state is null)
         {
@@ -140,20 +154,26 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
 
         return named.Length == 0
             ? string.Empty
-            : $" · {string.Join(", ", named)} — see them with: h9k epic list --state all{Repeat(project)}";
+            : $" · {string.Join(", ", named)} — see them with: h9k epic list --state all{Repeat(project, solution)}";
     }
 
     /// <summary>The active filters, echoed so --state all keeps the view the reader is looking at.</summary>
-    private static string Repeat(ProjectDetails? project) =>
-        project is null ? string.Empty : $" --project {project.Name.EscapeMarkup()}";
+    private static string Repeat(ProjectDetails? project, string? solution) =>
+        (project is null ? string.Empty : $" --project {project.Name.EscapeMarkup()}")
+        + (solution.IsNotBlank() ? $" --solution {solution.EscapeMarkup()}" : string.Empty);
 
     /// <summary>The narrowing filters, for messages that suggest dropping one to widen the result.</summary>
-    private static string Filters(ProjectDetails? project, EpicState? state)
+    private static string Filters(ProjectDetails? project, EpicState? state, string? solution)
     {
         List<string> filters = [];
         if (project is not null)
         {
             filters.Add($"--project {project.Name.EscapeMarkup()}");
+        }
+
+        if (solution.IsNotBlank())
+        {
+            filters.Add($"--solution {solution.EscapeMarkup()}");
         }
 
         if (state is not null)

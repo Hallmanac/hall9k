@@ -150,6 +150,15 @@ internal static class DispatchedSessionCommandClassification
             [typeof(EpicLinkJiraCommand.Settings)] = (DispatchedSessionAccess.Refused, "epic link-jira"),
             [typeof(EpicCloseCommand.Settings)] = (DispatchedSessionAccess.Refused, "epic close"),
 
+            // ---- solution ----
+            [typeof(SolutionAddCommand.Settings)] = (DispatchedSessionAccess.Refused, "solution add"),
+            [typeof(SolutionListCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "solution list"),
+            [typeof(SolutionShowCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "solution show"),
+            [typeof(SolutionLinkCommand.Settings)] = (DispatchedSessionAccess.Refused, "solution link"),
+            [typeof(SolutionUnlinkCommand.Settings)] = (DispatchedSessionAccess.Refused, "solution unlink"),
+            [typeof(SolutionRenameCommand.Settings)] = (DispatchedSessionAccess.Refused, "solution rename"),
+            [typeof(SolutionCloseCommand.Settings)] = (DispatchedSessionAccess.Refused, "solution close"),
+
             // ---- run ----
             [typeof(RunKillCommand.Settings)] = (DispatchedSessionAccess.Refused, "run kill"),
 

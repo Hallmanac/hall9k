@@ -183,9 +183,26 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             : $"[dim]not recorded yet — h9k project join {project.Name.EscapeMarkup()} reads it back once "
               + $"the ledger has one, or, for a ledger whose genesis predates it, h9k project assign-key "
               + $"{project.Name.EscapeMarkup()} mints it[/]");
+        table.AddRow("Solution", SolutionRow(project));
         table.AddRow("Registered", $"[dim]{project.RegisteredAt.ToLocalTime():g}[/]");
         return table;
     }
+
+    /// <summary>
+    /// The solution this project belongs to, the rung above it on the ladder solution, project, epic,
+    /// task. A closed solution is named as closed with its reason, since it no longer holds the project.
+    /// </summary>
+    internal static string SolutionRow(ProjectDetails project) => project.Solution switch
+    {
+        null => "[dim]none, group it with others: h9k solution add <name> --project "
+            + $"{project.Name.EscapeMarkup()} --project <other>[/]",
+        { State: var state } solution when state == SolutionState.Closed =>
+            $"{solution.Name.EscapeMarkup()} [yellow]closed[/] [dim]({solution.CloseReason.EscapeMarkup()}), see "
+            + $"h9k solution show \"{solution.Name.EscapeMarkup()}\"[/]",
+        var solution =>
+            $"{solution.Name.EscapeMarkup()} [dim]({solution.Members.Count} projects), see "
+            + $"h9k solution show \"{solution.Name.EscapeMarkup()}\"[/]",
+    };
 
     /// <summary>
     /// The settings pane. <paramref name="history"/> is this project's own recorded settings
