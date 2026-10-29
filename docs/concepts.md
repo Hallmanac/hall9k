@@ -11,6 +11,7 @@ summary that gets you there knowing what you are looking at.
 - [The task lifecycle](#the-task-lifecycle)
 - [The three surfaces: state, phase, attention](#the-three-surfaces-state-phase-attention)
 - [Dependencies and true closeout](#dependencies-and-true-closeout)
+- [Solutions: grouping one-repo projects](#solutions-grouping-one-repo-projects)
 - [Runs](#runs)
 - [Leases](#leases)
 - [Verification gates](#verification-gates)
@@ -531,6 +532,38 @@ to: the edge is declared by pull request number precisely because not every repo
 works in tracks its backlog in GitHub issues.
 
 Depth: Decisions Log #144, #146, #153.
+
+## Solutions: grouping one-repo projects
+
+A project is one repository. Work that spans several repositories (an API, a web client, an admin
+tool) is grouped one rung higher: the ladder is **solution, project, epic, task**. A solution is a
+set of projects, a project holds epics, an epic holds tasks.
+
+A solution has no stream or document of its own. It is a **membership**, a team setting written onto
+every member project the way `h9k project set` writes the claim gate or the branch template: the
+solution's key (a 26-character ULID minted once) and name, its state (open or closed) with a close
+reason, and every member by project key with its project name and repository URL. Members are named
+by project key, the ULID from the ledger genesis that is identical on every node, never by a node's
+own project id. Because the membership rides `ProjectTeamSettingsChanged`, it replicates through the
+path team settings already use, with no new stream and no change to the replication inbox. A node
+that receives the membership for any one member knows the whole solution from it, including the
+members it has not joined, which it shows by name and repository URL.
+
+Two rules shape the commands. **A project belongs to at most one open solution**, enforced where
+the setting is written: a project in two would put each solution's member names and repository URLs
+in front of the other solution's teammates. A closed solution no longer holds its members, and
+`h9k solution unlink` is how a project is freed for another. And **a solution closes only by an
+explicit human act with a reason**; nothing closes one automatically, including every member being
+archived.
+
+Every command that writes (`add`, `link`, `unlink`, `rename`, `close`) rewrites the membership on
+every member in one commit, so a solution is never half written. Everything but `add` first needs
+every member registered and joined on this node, and refuses, naming the ones that are not.
+`h9k solution show` composes the board across the members this node holds, grouped by project, with
+the same rollup and task table `h9k project show` uses. Two nodes linking the same project into
+different solutions at the same moment resolve as last write wins on replication, which is parked
+until it first happens. See [the CLI map](cli.md#solutions-grouping-one-repo-projects) for the
+commands.
 
 ## Runs
 

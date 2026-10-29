@@ -788,6 +788,44 @@ guard working as intended, not a bug to route around. On a project tracked under
 `ExternalReference` of its own, so the ordinary publish gate either refuses it or, taken past with
 `--no-existing-item`, auto-mints a second card or issue for it instead.
 
+### Solutions: grouping one-repo projects
+
+`h9k solution add | list | show | link | unlink | rename | close`
+
+The ladder is solution, project, epic, task: a solution groups one-repo projects. It is not a
+stream of its own. It is a membership team setting on every member project (the solution's key and
+name, its open or closed state with a close reason, and every member by project key with its name
+and repository URL), so it replicates with the projects and a node that holds any one member knows
+the whole solution.
+
+`h9k solution add <name> --project <p> [--project <p> …]` mints the key and writes the membership
+into each named project's team settings in that one command. The name follows the rules a project
+name follows (unique on this node, case-insensitive), and every solution command takes the solution
+by name or by a prefix of its key. Each project needs a recorded project key (`h9k project join`, or
+`h9k project assign-key` for the genesis owner) and a recorded repository URL, and belongs to at
+most one open solution; a project already in one is refused, naming it and pointing at
+`h9k solution unlink`. A closed solution does not hold its projects.
+
+When a new member's repository owner or organization differs from every member that is already
+there, `add` and `link` warn and ask. `--yes` answers the prompt, and a session that cannot prompt
+refuses without it.
+
+`link` and `unlink` bring projects into a solution and take them out; `rename` and `close --reason`
+are explicit human acts. `unlink` clears the removed project's own membership and rewrites the rest,
+and it refuses to remove the last member (close the solution instead). Closing is final, requires
+its reason, and never happens on its own, not even when every member is archived. Each of these
+rewrites the membership on every member in one commit, and refuses, naming the members, when any
+member is not registered and joined on this node.
+
+`h9k solution show <name>` is the board across the members, grouped by project: each project's
+rollup and task table are the ones `h9k project show` composes, every row a task id and a plain
+description. A member this node has not joined is listed by name and repository URL, and a closed
+solution shows its reason. `h9k solution list` lists the solutions this node knows (`--state
+open|closed|all`, open by default). `h9k project show` carries a Solution row, and
+`h9k task list --solution <name>` and `h9k epic list --solution <name>` narrow those lists to the
+member projects known on this node. The write verbs are refused to dispatched sessions; `show` and
+`list` are read-only there.
+
 ### Working a task interactively
 
 `h9k task drive <id> [--print-prompt | --direct-launch] [--acknowledge-unmet-dependencies] | register-session | verify | deliver [--pr-summary <file>] | delegate | handback | release`
@@ -1958,6 +1996,9 @@ miss in the sections above.
 | `h9k project remove --reason "<why>"` | Records why a project is being archived, and leaves it unknown when omitted. |
 | `h9k epic close --reason "<why>"` | States why the epic is done, which is required because closing without a reason is exactly the automatic close this platform never does. |
 | `h9k epic list --state open\|closed\|all` | Filters epics by their state, and shows only the open ones by default. |
+| `h9k solution close --reason "<why>"` | States why the solution is done, which is required because closing without a reason is exactly the automatic close this platform never does. |
+| `h9k solution add\|link --yes` | Answers the warning that a new member's repository owner or organization differs from every existing member's, which a session that cannot prompt needs to proceed. |
+| `h9k task list\|epic list --solution <name>` | Narrows the list to the member projects of one solution known on this node. |
 | `h9k task revise --objective "<sentence>"` | Replaces the objective with one outcome-phrased sentence, on a Draft. |
 | `h9k task revise --criteria "<criterion>"` | Replaces the whole acceptance-criteria set, repeating the option for each criterion. |
 | `h9k task revise --stacked-on-pull-request <number>` | Declares the stacked edge against a teammate's pull request instead of a local task, the same as on `task add`. |
