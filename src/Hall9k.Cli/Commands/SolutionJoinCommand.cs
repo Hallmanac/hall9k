@@ -52,7 +52,8 @@ public sealed class SolutionJoinCommand : Hall9kAsyncCommand<SolutionJoinCommand
             context = await SolutionContext.LoadAsync(session, cancellationToken);
         }
 
-        IReadOnlyList<SolutionJoinStep> plan = SolutionJoinPlanner.Plan(bundle, context.Projects, context.RootFingerprintOf);
+        IReadOnlyList<SolutionJoinStep> plan = SolutionJoinPlanner.Plan(
+            bundle, context.Projects, context.RootFingerprintOf, SolutionJoinRepositoryProbe.OriginUrlOf);
 
         if (plan.Any(step => step.Action is SolutionJoinAction.Register or SolutionJoinAction.Join))
         {

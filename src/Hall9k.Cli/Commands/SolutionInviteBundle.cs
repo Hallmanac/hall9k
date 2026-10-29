@@ -4,6 +4,7 @@ using System.Text.Json;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Cli.Commands;
 
@@ -85,10 +86,17 @@ internal sealed record SolutionInviteBundle(string SolutionKey, string SolutionN
                     $"The solution invite bundle's member '{wireMember.Name}' carries no secret.");
             }
 
+            string? baseBranch = string.IsNullOrWhiteSpace(wireMember.BaseBranch) ? null : wireMember.BaseBranch.Trim();
+            if (baseBranch is not null && !GitArgumentValidation.IsLegalBranchName(baseBranch, out string? refusalReason))
+            {
+                throw new DomainValidationException(
+                    $"The solution invite bundle's member '{wireMember.Name}' names a base branch git would not take as a branch name: {refusalReason}");
+            }
+
             members.Add(new SolutionInviteMember(
                 new SolutionMember(wireMember.ProjectKey ?? string.Empty, wireMember.Name ?? string.Empty, repositoryUrl),
                 wireMember.Secret.Trim(),
-                string.IsNullOrWhiteSpace(wireMember.BaseBranch) ? null : wireMember.BaseBranch.Trim()));
+                baseBranch));
         }
 
         SolutionInviteBundle bundle = new(wire.SolutionKey ?? string.Empty, wire.SolutionName ?? string.Empty, members);
