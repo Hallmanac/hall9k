@@ -88,7 +88,7 @@ public sealed class DispatchedSessionTreeTests
 
         try
         {
-            app.Run(BarePositionalRecording.Normalise([.. tokens.Skip(1)]));
+            app.Run(CommandLineArguments.Normalise([.. tokens.Skip(1)]));
         }
         catch (CaptureSettingsType.Captured)
         {

@@ -12,7 +12,7 @@ app.Configure(CliCommandTree.Configure);
 // Spectre cannot bind a positional argument to a branch's default command — see
 // BarePositionalRecording for the verification behind that claim. Normalised once, and used for
 // the usage explainer below too, so what an error message quotes back is what actually ran.
-string[] commandArguments = BarePositionalRecording.Normalise(args);
+string[] commandArguments = CommandLineArguments.Normalise(args);
 
 // Without this, Ctrl-C takes SIGINT's default action and the process terminates immediately —
 // no command's own cancellation handling (e.g. TaskDriveCommand's started/ended pairing, PLAN.md
