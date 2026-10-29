@@ -346,4 +346,14 @@ public sealed record ProjectSettingsChanged(
     /// Trailing and optional so every stream written before this setting existed replays
     /// byte-for-byte unchanged.
     /// </summary>
-    Optional<CiPolicy> CiPolicy = default);
+    Optional<CiPolicy> CiPolicy = default,
+    /// <summary>
+    /// The solution this project belongs to (a team field: every node holding any member of the
+    /// solution reads the same name, state, close reason, and member list from it). Present with a
+    /// value rewrites the whole record, the <see cref="ContextLinks"/> idiom; present with null
+    /// clears it, which is how <c>h9k solution unlink</c> takes a project out. A project belongs to
+    /// at most one open solution, enforced in <see cref="Handlers.ProjectDecider.ChangeSettings"/>.
+    /// Trailing and optional so every stream written before this setting existed replays
+    /// byte-for-byte unchanged.
+    /// </summary>
+    Optional<SolutionMembership?> Solution = default);

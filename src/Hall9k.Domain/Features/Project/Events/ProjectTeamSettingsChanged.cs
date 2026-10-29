@@ -90,7 +90,13 @@ public sealed record ProjectTeamSettingsChanged(
     /// rather than parking on one node and merging on another. See
     /// <see cref="ProjectSettingsChanged.CiPolicy"/>'s own doc.
     /// </summary>
-    Optional<CiPolicy> CiPolicy = default)
+    Optional<CiPolicy> CiPolicy = default,
+    /// <summary>
+    /// The solution this project belongs to, the whole record, replicated like any other team field
+    /// so a node that receives it for any one member knows the whole solution. See
+    /// <see cref="ProjectSettingsChanged.Solution"/>'s own doc.
+    /// </summary>
+    Optional<SolutionMembership?> Solution = default)
 {
     /// <summary>
     /// Builds the team companion from whatever <see cref="ProjectDecider.ChangeSettings"/> just
@@ -124,7 +130,8 @@ public sealed record ProjectTeamSettingsChanged(
             || changed.QaReviewDrive.HasValue
             || changed.NonExecutablePaths.HasValue
             || changed.SecurityReview.HasValue
-            || changed.CiPolicy.HasValue;
+            || changed.CiPolicy.HasValue
+            || changed.Solution.HasValue;
 
         return anyTeamField
             ? new ProjectTeamSettingsChanged(
@@ -157,7 +164,8 @@ public sealed record ProjectTeamSettingsChanged(
                 changed.QaReviewDrive,
                 changed.NonExecutablePaths,
                 changed.SecurityReview,
-                changed.CiPolicy)
+                changed.CiPolicy,
+                changed.Solution)
             : null;
     }
 }

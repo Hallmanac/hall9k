@@ -217,6 +217,12 @@ public sealed class ProjectDetails
     /// <summary>When <see cref="LastApprovedRunSkillStepFingerprint"/> was last recorded.</summary>
     public DateTimeOffset? RunSkillStepsApprovedAt { get; set; }
     public List<ContextLink> ContextLinks { get; set; } = [];
+    /// <summary>
+    /// The solution this project belongs to, or null while it belongs to none (a team field, so it
+    /// replicates and is stamped in <see cref="TeamSettingStamps"/> like the others). The solution
+    /// itself is nothing more than this record read across every member project.
+    /// </summary>
+    public SolutionMembership? Solution { get; set; }
     /// <summary>This project's launch text, one per agent CLI (task: an operator starts a lean orchestrator window).</summary>
     public List<LaunchText> LaunchTexts { get; set; } = [];
     public DateTimeOffset RegisteredAt { get; set; }
@@ -370,6 +376,11 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
         if (@event.Data.MaxParallelTasks.HasValue)
         {
             view.MaxParallelTasks = @event.Data.MaxParallelTasks.Value;
+        }
+
+        if (@event.Data.Solution.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.Solution), @event.Data.ChangedAt))
+        {
+            view.Solution = @event.Data.Solution.Value;
         }
 
         if (@event.Data.ContextLinks.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.ContextLinks), @event.Data.ChangedAt))
@@ -683,6 +694,11 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
         if (@event.Data.WritingConventions.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.WritingConventions), @event.Data.ChangedAt))
         {
             view.WritingConventions = @event.Data.WritingConventions.Value ?? WritingConventions.Default;
+        }
+
+        if (@event.Data.Solution.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.Solution), @event.Data.ChangedAt))
+        {
+            view.Solution = @event.Data.Solution.Value;
         }
 
         if (@event.Data.ContextLinks.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.ContextLinks), @event.Data.ChangedAt))
