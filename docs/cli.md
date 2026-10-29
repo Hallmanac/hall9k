@@ -817,7 +817,14 @@ its reason, and never happens on its own, not even when every member is archived
 rewrites the membership on every member in one commit, and refuses, naming the members, when any
 member is not registered and joined on this node (`add` included), when a member no longer carries
 the solution or carries a different copy of its record (let replication settle, then run it again),
-or when the solution is already closed, which no command changes.
+or when the solution is already closed, which no command changes. One state replication never heals:
+a project carries a copy of the record that the winning record does not list, because two nodes
+rewrote the same solution at once. Every rewrite refuses while it exists, and the two ways out are
+`h9k solution link <name> --project <project>` to bring it back in, or `unlink` to clear its copy
+(which works on a closed solution too).
+
+A member that is registered and joined here but has since joined another solution is listed on the
+board under "Now in another solution", with the solution it moved to, rather than as not joined.
 
 `h9k solution show <name>` is the board across the members, grouped by project: each project's
 rollup and task table are the ones `h9k project show` composes, every row a task id and a plain

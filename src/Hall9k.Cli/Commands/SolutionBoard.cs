@@ -9,16 +9,21 @@ namespace Hall9k.Cli.Commands;
 internal sealed record SolutionBoardProject(
     SolutionMember Member, ProjectDetails Project, IReadOnlyList<TaskStatusRow> Rows, TaskRollup Rollup);
 
+/// <summary>A listed member that is registered and joined here but now carries <paramref name="MovedTo"/>, another solution.</summary>
+internal sealed record SolutionBoardMovedMember(SolutionMember Member, SolutionMembership MovedTo);
+
 /// <summary>
 /// A solution's board across its members, grouped by project: the rows
 /// <see cref="TaskStatusComposer"/> already composes for each member this node holds, the
-/// <see cref="TaskRollup"/> over them, and the members this node has not joined, which have no
-/// tasks here to show and are named by their recorded name and repository URL instead.
+/// <see cref="TaskRollup"/> over them, the members this node has not joined, which have no
+/// tasks here to show and are named by their recorded name and repository URL instead, and the
+/// members that have since joined another solution, which are named with the solution they moved to.
 /// </summary>
 internal sealed record SolutionBoard(
     SolutionView Solution,
     IReadOnlyList<SolutionBoardProject> Projects,
     IReadOnlyList<SolutionMember> NotJoined,
+    IReadOnlyList<SolutionBoardMovedMember> MovedOn,
     TaskRollup Rollup)
 {
     /// <summary>
@@ -31,14 +36,23 @@ internal sealed record SolutionBoard(
         IReadOnlyList<TaskStatusRow> rows,
         Func<Guid, string?> rootFingerprintOf)
     {
-        projects = [.. projects.Where(solution.NotInAnotherSolution)];
+        IReadOnlyList<ProjectDetails> candidates = [.. projects.Where(solution.NotInAnotherSolution)];
         List<SolutionBoardProject> held = [];
         List<SolutionMember> notJoined = [];
+        List<SolutionBoardMovedMember> movedOn = [];
         foreach (SolutionMember member in solution.Membership.Members)
         {
-            if (SolutionDecider.HeldProject(member, projects, rootFingerprintOf) is not { } project)
+            if (SolutionDecider.HeldProject(member, candidates, rootFingerprintOf) is not { } project)
             {
-                notJoined.Add(member);
+                if (SolutionDecider.HeldProject(member, projects, rootFingerprintOf) is { Solution: { } movedTo })
+                {
+                    movedOn.Add(new SolutionBoardMovedMember(member, movedTo));
+                }
+                else
+                {
+                    notJoined.Add(member);
+                }
+
                 continue;
             }
 
@@ -46,7 +60,7 @@ internal sealed record SolutionBoard(
             held.Add(new SolutionBoardProject(member, project, projectRows, TaskRollup.From(projectRows)));
         }
 
-        return new SolutionBoard(solution, held, notJoined, TaskRollup.From(held.SelectMany(project => project.Rows)));
+        return new SolutionBoard(solution, held, notJoined, movedOn, TaskRollup.From(held.SelectMany(project => project.Rows)));
     }
 }
 
@@ -55,7 +69,8 @@ internal static class SolutionScope
 {
     /// <summary>
     /// The ids of the projects on this node that are members of the named solution: every project
-    /// carrying the membership, and any registered project holding a member's key that carries no other solution. A member this
+    /// holding a listed member's key that carries no other solution, which is the board's own reading
+    /// of membership. A project the record does not list, even one carrying it, is not a member. A member this
     /// node has no project for contributes nothing.
     /// </summary>
     public static async Task<IReadOnlySet<Guid>> ProjectIdsAsync(
@@ -67,9 +82,8 @@ internal static class SolutionScope
 
     public static IReadOnlySet<Guid> ProjectIds(SolutionView solution, IReadOnlyList<ProjectDetails> projects) =>
         new HashSet<Guid>(projects
-            .Where(project => solution.HeldProjects.Any(held => held.Id == project.Id)
-                || (solution.NotInAnotherSolution(project)
-                    && project.ProjectKey is { } key
-                    && solution.Membership.Members.Any(member => member.ProjectKey.Equals(key, StringComparison.OrdinalIgnoreCase))))
+            .Where(project => solution.NotInAnotherSolution(project)
+                && project.ProjectKey is { } key
+                && solution.Membership.Members.Any(member => member.ProjectKey.Equals(key, StringComparison.OrdinalIgnoreCase)))
             .Select(project => project.Id));
 }

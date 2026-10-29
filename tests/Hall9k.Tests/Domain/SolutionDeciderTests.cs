@@ -230,6 +230,32 @@ public sealed class SolutionDeciderTests
     }
 
     [Fact]
+    public void A_carrier_the_winning_record_does_not_list_blocks_a_rewrite_but_not_the_link_or_unlink_that_repairs_it()
+    {
+        string key = SolutionDecider.NewKey();
+        SolutionMembership linked = SolutionDecider.Create(key, "storefront", [Api, Web, Member(AdminKey, "shop-admin", "https://github.com/acme/shop-admin.git")]);
+        SolutionMembership renamed = SolutionDecider.Rename(SolutionDecider.Create(key, "storefront", [Api, Web]), "storefront-v2");
+        ProjectDetails api = Project("shop-api", ApiKey, Api.RepositoryUrl.ToString(), solution: renamed);
+        ProjectDetails web = Project("shop-web", WebKey, Web.RepositoryUrl.ToString(), solution: renamed);
+        ProjectDetails admin = Project("shop-admin", AdminKey, "https://github.com/acme/shop-admin.git", solution: linked);
+        api.TeamSettingStamps[nameof(ProjectDetails.Solution)] = new DateTimeOffset(2026, 10, 29, 12, 5, 0, TimeSpan.Zero);
+        web.TeamSettingStamps[nameof(ProjectDetails.Solution)] = new DateTimeOffset(2026, 10, 29, 12, 5, 0, TimeSpan.Zero);
+        admin.TeamSettingStamps[nameof(ProjectDetails.Solution)] = new DateTimeOffset(2026, 10, 29, 12, 0, 0, TimeSpan.Zero);
+        ProjectDetails[] projects = [api, web, admin];
+
+        SolutionView view = SolutionRegistry.Read(projects).Single();
+        Action rewrite = () => SolutionDecider.RequireConsistent(view, projects, RootOf, "rename");
+        Action repair = () => SolutionDecider.RequireConsistent(view, projects, RootOf, "link a project into", repairing: [admin]);
+        Action unrelated = () => SolutionDecider.RequireConsistent(view, projects, RootOf, "link a project into", repairing: [api]);
+
+        view.Unlisted.Should().ContainSingle().Which.Should().BeSameAs(admin);
+        rewrite.Should().Throw<DomainConflictException>()
+            .WithMessage("*'shop-admin' carries a different record*h9k solution link \"storefront-v2\" --project shop-admin*h9k solution unlink*");
+        repair.Should().NotThrow();
+        unrelated.Should().Throw<DomainConflictException>();
+    }
+
+    [Fact]
     public void Close_is_an_explicit_act_with_a_reason_and_is_terminal()
     {
         SolutionMembership solution = SolutionDecider.Create(SolutionDecider.NewKey(), "storefront", [Api]);

@@ -251,9 +251,17 @@ public static class SolutionDecider
     /// membership overwritten or cleared) and that no carrier holds a different copy, or is a project
     /// the record does not list (a rewrite still replicating, or one teammate's copy of the solution
     /// that would otherwise be copied onto members of teams that teammate is not on).
+    /// <paramref name="repairing"/> names the projects this very command links or unlinks: a carrier
+    /// the record does not list is the state only <c>link</c> and <c>unlink</c> can end (no newer
+    /// record is coming for it, so waiting for replication never helps), so those carriers do not
+    /// block the command that brings them back in or clears them.
     /// </summary>
     public static void RequireConsistent(
-        SolutionView view, IReadOnlyList<ProjectDetails> projects, Func<Guid, string?> rootFingerprintOf, string verb)
+        SolutionView view,
+        IReadOnlyList<ProjectDetails> projects,
+        Func<Guid, string?> rootFingerprintOf,
+        string verb,
+        IReadOnlyList<ProjectDetails>? repairing = null)
     {
         ProjectDetails[] notCarrying =
         [.. view.Membership.Members
@@ -270,13 +278,36 @@ public static class SolutionDecider
                 + "Check h9k solution show and h9k project show, let replication settle, then run this again.");
         }
 
-        if (view.Inconsistent.Count > 0)
+        HashSet<Guid> repairingIds = [.. (repairing ?? []).Select(project => project.Id)];
+        HashSet<Guid> unlistedIds = [.. view.Unlisted.Select(project => project.Id)];
+        ProjectDetails[] blocking =
+        [.. view.Inconsistent.Where(project => !(unlistedIds.Contains(project.Id) && repairingIds.Contains(project.Id)))];
+        if (blocking.Length == 0)
+        {
+            return;
+        }
+
+        ProjectDetails[] unlisted = [.. blocking.Where(project => unlistedIds.Contains(project.Id))];
+        string way = unlisted.Length > 0
+            ? $" A carrier the record does not list stays that way until it is linked back in or cleared: h9k solution link \"{view.Membership.Name}\" --project {unlisted[0].Name}, "
+                + $"or h9k solution unlink \"{view.Membership.Name}\" --project {unlisted[0].Name} to clear it."
+            : " Let replication settle and run this again, or find who changed it with h9k project members.";
+        throw new DomainConflictException(
+            $"Cannot {verb} the solution '{view.Membership.Name}': {string.Join(", ", blocking.Select(project => $"'{project.Name}'"))} "
+            + $"{(blocking.Length == 1 ? "carries" : "carry")} a different record of it, or one that does not list the project. "
+            + "A command that rewrites the solution copies one record onto every member, so it would spread that copy to "
+            + "teams that did not write it."
+            + way);
+    }
+
+    /// <summary>Refuses clearing a project this node has not joined, whose stream it cannot write.</summary>
+    public static void RequireHeld(ProjectDetails project, Func<Guid, string?> rootFingerprintOf)
+    {
+        if (ProjectJoinStatus.NotJoined(project, rootFingerprintOf(project.OwnerId)))
         {
             throw new DomainConflictException(
-                $"Cannot {verb} the solution '{view.Membership.Name}': {string.Join(", ", view.Inconsistent.Select(project => $"'{project.Name}'"))} "
-                + $"{(view.Inconsistent.Count == 1 ? "carries" : "carry")} a different record of it, or one that does not list the project. "
-                + "A command that rewrites the solution copies one record onto every member, so it would spread that copy to "
-                + "teams that did not write it. Let replication settle and run this again, or find who changed it with h9k project members.");
+                $"Project '{project.Name}' is not joined on this node, so its solution record cannot be cleared from here. "
+                + $"Join it first: h9k project join {project.Name}");
         }
     }
 
