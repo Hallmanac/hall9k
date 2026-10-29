@@ -145,8 +145,26 @@ public sealed class SolutionBoardTests
             view, [api, web], [Row(web, TaskState.Published, "Belongs to marketplace now", 1)], RootOf);
 
         board.Projects.Select(project => project.Project.Name).Should().Equal("shop-api");
-        board.NotJoined.Should().Equal(Web);
+        board.NotJoined.Should().BeEmpty("the member is registered and joined, it has only moved on");
+        board.MovedOn.Should().ContainSingle().Which.Should().Be(new SolutionBoardMovedMember(Web, marketplace));
         board.Rollup.Total.Should().Be(0);
+    }
+
+    [Fact]
+    public void A_carrier_the_record_does_not_list_is_on_neither_the_board_nor_the_filter()
+    {
+        string key = SolutionDecider.NewKey();
+        SolutionMembership rename = SolutionDecider.Rename(SolutionDecider.Create(key, "storefront", [Api, Web]), "storefront-v2");
+        SolutionMembership older = SolutionDecider.Create(key, "storefront", [Api, Web, Admin]);
+        ProjectDetails api = Project(Api, rename);
+        api.TeamSettingStamps[nameof(ProjectDetails.Solution)] = Now;
+        ProjectDetails admin = Project(Admin, older);
+        SolutionView view = SolutionRegistry.Read([api, admin]).Single();
+
+        view.Unlisted.Should().ContainSingle().Which.Should().BeSameAs(admin);
+        SolutionScope.ProjectIds(view, [api, admin]).Should().BeEquivalentTo([api.Id]);
+        SolutionBoard.Compose(view, [api, admin], [], RootOf).Projects.Select(project => project.Project.Name)
+            .Should().Equal("shop-api");
     }
 
     [Fact]

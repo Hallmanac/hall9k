@@ -45,9 +45,19 @@ public sealed class SolutionUnlinkCommand : Hall9kAsyncCommand<SolutionUnlinkCom
 
         SolutionMembership membership = view.Membership;
         List<ProjectDetails> removed = [];
+        List<ProjectDetails> cleared = [];
         foreach (string reference in settings.Project)
         {
             ProjectDetails project = await ProjectResolver.ResolveAsync(session, reference, cancellationToken);
+            if (view.Unlisted.Any(carrier => carrier.Id == project.Id))
+            {
+                // A carrier the record does not list (a rewrite elsewhere that never reached it): there is
+                // no member to remove, only its own copy to clear, and that works on a closed solution too.
+                SolutionDecider.RequireHeld(project, context.RootFingerprintOf);
+                cleared.Add(project);
+                continue;
+            }
+
             membership = SolutionDecider.Unlink(
                 membership,
                 project.ProjectKey ?? throw new DomainValidationException(
@@ -55,13 +65,23 @@ public sealed class SolutionUnlinkCommand : Hall9kAsyncCommand<SolutionUnlinkCom
             removed.Add(project);
         }
 
-        SolutionDecider.RequireEveryMemberHeld(view.Membership, context.Projects, context.RootFingerprintOf, "unlink a project from");
-        SolutionDecider.RequireConsistent(view, context.Projects, context.RootFingerprintOf, "unlink a project from");
+        IReadOnlyList<SolutionWrite> writes;
+        if (removed.Count == 0)
+        {
+            writes = [.. cleared.Select(project => new SolutionWrite(project, null))];
+        }
+        else
+        {
+            SolutionDecider.RequireEveryMemberHeld(view.Membership, context.Projects, context.RootFingerprintOf, "unlink a project from");
+            SolutionDecider.RequireConsistent(
+                view, context.Projects, context.RootFingerprintOf, "unlink a project from", repairing: cleared);
+            writes = SolutionWriter.Rewrite(membership, context, [.. removed, .. cleared]);
+        }
 
-        await SolutionWriter.WriteAsync(session, SolutionWriter.Rewrite(membership, context, removed), cancellationToken);
+        await SolutionWriter.WriteAsync(session, writes, cancellationToken);
 
         AnsiConsole.MarkupLineInterpolated(
-            $"[green]Unlinked {string.Join(", ", removed.Select(project => project.Name))} from '{membership.Name}'.[/] It now has {membership.Members.Count} members.");
+            $"[green]Unlinked {string.Join(", ", removed.Concat(cleared).Select(project => project.Name))} from '{membership.Name}'.[/] It now has {membership.Members.Count} members.");
         return ExitCodes.Ok;
     }
 }

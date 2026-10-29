@@ -76,6 +76,15 @@ public sealed class SolutionShowCommand : Hall9kAsyncCommand<SolutionShowCommand
             }
         }
 
+        if (board.MovedOn.Count > 0)
+        {
+            AnsiConsole.MarkupLine("\n[bold]Now in another solution[/] [dim](registered and joined here, but they carry a different solution now, so their tasks are on that board)[/]");
+            foreach (SolutionBoardMovedMember moved in board.MovedOn)
+            {
+                AnsiConsole.MarkupLine($"{moved.Member.Name.EscapeMarkup()} [dim]now in '{moved.MovedTo.Name.EscapeMarkup()}'[/]");
+            }
+        }
+
         if (board.NotJoined.Count > 0)
         {
             AnsiConsole.MarkupLine("\n[bold]Not joined on this node[/] [dim](no tasks to show; register and join one to see it)[/]");

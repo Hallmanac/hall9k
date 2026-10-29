@@ -19,6 +19,16 @@ public sealed record SolutionView(
     /// </summary>
     public bool NotInAnotherSolution(ProjectDetails project) =>
         project.Solution is not { } carried || carried.Key.Equals(Membership.Key, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Whether <see cref="Membership"/> names <paramref name="project"/> as a member.</summary>
+    public bool Lists(ProjectDetails project) => SolutionRegistry.Lists(Membership, project);
+
+    /// <summary>
+    /// The carriers whose copy of the record names a project <see cref="Membership"/> does not: a
+    /// rewrite elsewhere that never reached them. Replication does not heal these (nothing newer is
+    /// coming for them), so <c>h9k solution link</c> and <c>unlink</c> are their way out.
+    /// </summary>
+    public IReadOnlyList<ProjectDetails> Unlisted => [.. Inconsistent.Where(project => !Lists(project))];
 }
 
 /// <summary>
@@ -71,7 +81,7 @@ public static class SolutionRegistry
         return [.. views.OrderBy(view => view.Membership.Name, StringComparer.OrdinalIgnoreCase)];
     }
 
-    private static bool Lists(SolutionMembership membership, ProjectDetails project) =>
+    internal static bool Lists(SolutionMembership membership, ProjectDetails project) =>
         project.ProjectKey is { } key
         && membership.Members.Any(member => member.ProjectKey.Equals(key, StringComparison.OrdinalIgnoreCase));
 
