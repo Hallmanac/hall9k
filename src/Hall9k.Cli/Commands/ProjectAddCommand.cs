@@ -137,8 +137,9 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
     }
 
     /// <summary>What registering one project produced: the exit code h9k project add returns, the project's id and the
-    /// repository path it was registered against, and the join that ran right behind it.</summary>
-    internal sealed record Registration(int ExitCode, Guid ProjectId, string RepositoryPath, JoinAttempt Join);
+    /// repository path it was registered against, the join that ran right behind it, and, when building the home
+    /// failed, what each failed step said (null when none did).</summary>
+    internal sealed record Registration(int ExitCode, Guid ProjectId, string RepositoryPath, JoinAttempt Join, string? HomeFailure = null);
 
     /// <summary>
     /// Registers the project <paramref name="settings"/> describes, builds its home, asks for its run
@@ -288,7 +289,10 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             AnsiConsole.MarkupLine(OrchestratorPointer.ForProject(name));
         }
 
-        return new Registration(ok ? ExitCodes.Ok : ExitCodes.Error, projectId, repositoryPath, join);
+        string? homeFailure = ok
+            ? null
+            : string.Join("; ", steps.Where(step => step.Outcome == ProjectHomeOutcome.Failed).Select(step => step.Message));
+        return new Registration(ok ? ExitCodes.Ok : ExitCodes.Error, projectId, repositoryPath, join, homeFailure);
     }
 
     /// <summary>

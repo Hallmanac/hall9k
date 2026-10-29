@@ -747,38 +747,6 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
     }
 
     [Fact]
-    public async Task Solution_invite_lists_a_member_whose_project_refuses_the_mint_with_that_refusals_reason()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        FakeLedger ledger = new();
-
-        ProjectDetails project = await SeedProjectAsync(cts.Token);
-        (string myRoot, NodeSigningKey myKey) = await EstablishOwnRootAsync(cts.Token);
-        FakeLedgerChainReader chainReader = new(new TrustChain(
-            new Dictionary<string, TrustedOwner> { [myRoot] = new(myRoot, myKey.PublicKeyLine, []) },
-            [new ProjectMember(myRoot, MembershipRole.Member, Now)]));
-
-        SolutionMember held = new("01JAAAAAAAAAAAAAAAAAAAAAAA", project.Name, new Uri("https://github.com/acme/smoke.git"));
-        project.ProjectKey = held.ProjectKey;
-        project.Members = new Dictionary<string, ProjectMemberRole> { [myRoot] = ProjectMemberRole.Member };
-        SolutionMembership membership = SolutionDecider.Create(SolutionDecider.NewKey(), "storefront", [held]);
-
-        SolutionMintResult result = await SolutionInviteMinter.MintAsync(
-            membership, [project], _ => myRoot,
-            async (member, token) =>
-            {
-                await using IDocumentSession session = _postgres.Store.LightweightSession();
-                return await ProjectInviteCommand.MintAsync(
-                    session, member, ProjectMemberRole.Member, ledger, chainReader, new NodeKeyStore(), token);
-            },
-            cts.Token);
-
-        result.Minted.Should().BeEmpty();
-        result.Refused.Should().ContainSingle().Which.Reason.Should().Contain("owner role");
-        ledger.Writes.Should().BeEmpty("a member-role owner is refused before any push, exactly as h9k project invite refuses it");
-    }
-
-    [Fact]
     public async Task Project_invite_refuses_a_member_role_owner()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));

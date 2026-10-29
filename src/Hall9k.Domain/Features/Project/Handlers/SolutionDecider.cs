@@ -354,7 +354,8 @@ public static class SolutionDecider
             ? $"{repositoryUrl.Host}/{owner}"
             : null;
 
-    private static void RefuseClosed(SolutionMembership current, string verb)
+    /// <summary>Refuses <paramref name="verb"/> (completing "it cannot ...") on a closed solution, which is final.</summary>
+    public static void RefuseClosed(SolutionMembership current, string verb)
     {
         if (current.State == SolutionState.Closed)
         {

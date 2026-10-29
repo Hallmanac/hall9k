@@ -885,9 +885,9 @@ this node holds and in which this node's owner holds the owner role, through the
 cannot mint for (not registered and joined here, the owner role not held, or any other mint refusal)
 is listed with that refusal's reason and left out, and the command fails when it minted none. What
 it mints it prints once, as a single-line invite bundle that carries the solution's key and name and,
-for each member, its project key, name, repository URL, and secret. The bundle holds live secrets, so
+for each member, its project key, name, repository URL, base branch, and secret. The bundle holds live secrets, so
 it is shown once with the same warning `h9k project invite` gives, and no secret is printed anywhere
-outside it.
+outside it. A closed solution is refused, as every other solution verb refuses it.
 
 `h9k solution join --invite <bundle>` takes that bundle as its only input; `--invite -` reads it
 from stdin, which keeps the secrets out of shell history (pipe it in, for example
@@ -900,16 +900,22 @@ the membership itself afterward. For each member it looks for a local project by
 repository URL, and then:
 
 - none found: it registers the member from the bundle's name and URL the way
-  `h9k project add --repo-url` does (home, clone and all) and joins it with that member's secret;
+  `h9k project add --repo-url` does (home, clone and all, on the base branch the minting node has
+  the project on) and joins it with that member's secret;
 - found but not yet joined: it joins it with that member's secret;
 - already joined: it leaves it alone and does not spend the secret.
 
 It never prompts. Every member ends in one of four states, which the report prints: registered and
 joined, joined, already joined, or not finished. A member that does not finish (another local project
 already has its name, the clone failed, there is no push access on its repository, or the secret is
-spent or expired) is reported with its reason and the hand command that finishes it, written with
-`<secret>` standing in for that member's secret from the bundle. The remaining members still
-proceed, and the command exits non-zero when any member did not finish.
+spent or expired) is reported with its reason, which for a failed clone or home includes the git error,
+and the hand command that finishes it. That command never asks for a secret, because the bundle is one
+opaque line: it is `h9k project init <name>` first when the project is registered but its repository
+or home is missing, `h9k project rename <name> <new-name>` first for a name collision, and then
+running `h9k solution join --invite -` again with the same bundle, which retries only the members
+that did not finish and does not spend the secret of one that did. The remaining members still
+proceed, and the command exits non-zero when any member did not finish, including one whose home did
+not finish building.
 
 Each join is the ordinary per-project join, so each member still needs push access on its own
 repository, and the minting node's daemon has to be running to vouch each join in on its next sweep.

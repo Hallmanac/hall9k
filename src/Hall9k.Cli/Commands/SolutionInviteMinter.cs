@@ -1,11 +1,12 @@
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Infrastructure.Extensions;
 
 namespace Hall9k.Cli.Commands;
 
 /// <summary>A member of a solution this node minted a member-of-project invite for.</summary>
-internal sealed record SolutionMintedMember(SolutionMember Member, ProjectInviteCommand.MintedInvite Invite);
+internal sealed record SolutionMintedMember(SolutionMember Member, ProjectInviteCommand.MintedInvite Invite, string? BaseBranch = null);
 
 /// <summary>A member of a solution this node did not mint for, and the refusal's own reason.</summary>
 internal sealed record SolutionMintRefusal(SolutionMember Member, string Reason);
@@ -14,7 +15,7 @@ internal sealed record SolutionMintResult(IReadOnlyList<SolutionMintedMember> Mi
 {
     /// <summary>The bundle of what was minted, for the solution named <paramref name="membership"/>.</summary>
     public SolutionInviteBundle ToBundle(SolutionMembership membership) =>
-        new(membership.Key, membership.Name, [.. Minted.Select(minted => new SolutionInviteMember(minted.Member, minted.Invite.Secret))]);
+        new(membership.Key, membership.Name, [.. Minted.Select(minted => new SolutionInviteMember(minted.Member, minted.Invite.Secret, minted.BaseBranch))]);
 }
 
 /// <summary>
@@ -46,7 +47,10 @@ internal static class SolutionInviteMinter
 
             try
             {
-                minted.Add(new SolutionMintedMember(member, await mint(held, cancellationToken)));
+                minted.Add(new SolutionMintedMember(
+                    member,
+                    await mint(held, cancellationToken),
+                    held.BaseBranch.IsBlank() ? null : held.BaseBranch));
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
