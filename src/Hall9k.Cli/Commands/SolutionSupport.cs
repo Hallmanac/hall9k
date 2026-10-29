@@ -1,10 +1,11 @@
 using Hall9k.Cli.Infrastructure;
-using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
@@ -12,27 +13,6 @@ using Marten;
 using Spectre.Console;
 
 namespace Hall9k.Cli.Commands;
-
-/// <summary>What every solution command reads first: the registered projects, the solutions they carry, and each owner's claimed root.</summary>
-internal sealed record SolutionContext(
-    IReadOnlyList<ProjectDetails> Projects,
-    IReadOnlyList<SolutionView> Solutions,
-    IReadOnlyDictionary<Guid, string?> RootFingerprints)
-{
-    public string? RootFingerprintOf(Guid ownerId) => RootFingerprints.GetValueOrDefault(ownerId);
-
-    public static async Task<SolutionContext> LoadAsync(IQuerySession session, CancellationToken cancellationToken)
-    {
-        IReadOnlyList<ProjectDetails> projects = await session.Query<ProjectDetails>().ToListAsync(cancellationToken);
-        Dictionary<Guid, string?> roots = [];
-        foreach (Guid ownerId in projects.Select(project => project.OwnerId).Distinct())
-        {
-            roots[ownerId] = await OwnerRootFingerprintResolver.ResolveAsync(session, ownerId, cancellationToken);
-        }
-
-        return new SolutionContext(projects, SolutionRegistry.Read(projects), roots);
-    }
-}
 
 /// <summary>One project's membership change: a membership to write onto it, or null to take it out of its solution.</summary>
 internal sealed record SolutionWrite(ProjectDetails Project, SolutionMembership? Membership);
@@ -132,6 +112,45 @@ internal static class SolutionWriter
             membership)),
         .. removed.Select(project => new SolutionWrite(project, null)),
     ];
+}
+
+/// <summary>
+/// Gives projects joining a solution the solution epics they missed. A solution epic is one ordinary epic
+/// per member project, so a project linked later has no copy of the epics made before it came, and a
+/// task there could not join them; this makes the copies, in the same commit as the membership write.
+/// </summary>
+internal static class SolutionEpicCopies
+{
+    /// <summary>
+    /// Stages (does not save) a copy in each of <paramref name="joining"/> of every open solution epic this node
+    /// holds for <paramref name="solutionKey"/>, skipping a project that already has one and any scheduled
+    /// for permanent deletion. Returns how many copies it staged.
+    /// </summary>
+    public static async Task<int> StageAsync(
+        IDocumentSession session, string solutionKey, IReadOnlyList<ProjectDetails> joining, CancellationToken cancellationToken)
+    {
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        IReadOnlyList<EpicDetails> epics = await session.Query<EpicDetails>().ToListAsync(cancellationToken);
+        IReadOnlyList<EpicAdded> copies = SolutionEpicDecider.CopiesForNewMembers(
+            epics,
+            solutionKey,
+            [.. joining.Where(project => project.PurgeAt is null).Select(project => project.Id)],
+            DomainId.New,
+            DateTimeOffset.UtcNow,
+            context.OwnerId);
+
+        foreach (EpicAdded copy in copies)
+        {
+            session.Events.StartStream<EpicAggregate>(copy.Id, copy);
+        }
+
+        return copies.Count;
+    }
+
+    public static string Describe(int copied) =>
+        copied == 0
+            ? string.Empty
+            : $" {copied} open solution epic cop{(copied == 1 ? "y was" : "ies were")} made for it.";
 }
 
 /// <summary>The warn-and-ask step <c>h9k solution add</c> and <c>link</c> share when a new member's repository owner is new to the solution.</summary>
