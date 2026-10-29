@@ -3,6 +3,7 @@ using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Infrastructure.Storage;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -39,6 +40,14 @@ public sealed class SolutionRenameCommand : Hall9kAsyncCommand<SolutionRenameCom
         await SolutionWriter.WriteAsync(session, SolutionWriter.Rewrite(renamed, context, removed: []), cancellationToken);
 
         AnsiConsole.MarkupLineInterpolated($"[green]Solution '{view.Membership.Name}' renamed to '{renamed.Name}'.[/] Its key and members are unchanged.");
+
+        string oldHome = SolutionHomePaths.DefaultFor(view.Membership.Name);
+        if (Directory.Exists(oldHome) && !SolutionHomePaths.DefaultFor(renamed.Name).Equals(oldHome, StringComparison.Ordinal))
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]A solution's home is named after it, so the home at {oldHome} is not renamed with it. Create the new one: h9k solution init \"{renamed.Name}\". The old one is left on disk.[/]");
+        }
+
         return ExitCodes.Ok;
     }
 }
