@@ -240,6 +240,9 @@ public sealed class ProjectAggregate
     /// <summary>The solution this project belongs to, or null while it belongs to none; see <see cref="SolutionMembership"/>.</summary>
     public SolutionMembership? Solution { get; private set; }
 
+    /// <summary>The <c>ChangedAt</c> of the change that last wrote <see cref="Solution"/>, so a catch-up delivery that sits out of order never overwrites a newer record (the same last-writer-by-stamp gate <c>ProjectDetails.TryStampTeamSetting</c> applies).</summary>
+    private DateTimeOffset? _solutionStamp;
+
     private readonly List<LaunchText> _launchTexts = [];
     public IReadOnlyList<LaunchText> LaunchTexts => _launchTexts;
 
@@ -288,9 +291,10 @@ public sealed class ProjectAggregate
             MaxParallelTasks = @event.MaxParallelTasks.Value;
         }
 
-        if (@event.Solution.HasValue)
+        if (@event.Solution.HasValue && (_solutionStamp is not { } applied || @event.ChangedAt >= applied))
         {
             Solution = @event.Solution.Value;
+            _solutionStamp = @event.ChangedAt;
         }
 
         if (@event.ContextLinks.HasValue)
@@ -599,9 +603,10 @@ public sealed class ProjectAggregate
             WritingConventions = @event.WritingConventions.Value ?? WritingConventions.Default;
         }
 
-        if (@event.Solution.HasValue)
+        if (@event.Solution.HasValue && (_solutionStamp is not { } applied || @event.ChangedAt >= applied))
         {
             Solution = @event.Solution.Value;
+            _solutionStamp = @event.ChangedAt;
         }
 
         if (@event.ContextLinks.HasValue)

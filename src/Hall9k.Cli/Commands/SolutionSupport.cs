@@ -72,6 +72,13 @@ internal static class SolutionWriter
                     write.Project.Id, version: fence.Version, token: cancellationToken)
                 ?? throw new DomainNotFoundException($"No project {write.Project.Id}.");
 
+            // The command decided from the project as it loaded it; if the stream moved the membership
+            // since (a replicated change lands between the load and this read), that decision is stale.
+            if (!SameMembership(aggregate.Solution, write.Project.Solution))
+            {
+                throw StaleWrite();
+            }
+
             ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
                 aggregate,
                 verifyCommands: default,
@@ -96,17 +103,25 @@ internal static class SolutionWriter
         }
         catch (EventStreamUnexpectedMaxEventIdException)
         {
-            throw new DomainConflictException(
-                "A member project changed while the solution was being rewritten, so nothing was written. "
-                + "Check h9k solution show and run this command again.");
+            throw StaleWrite();
         }
     }
+
+    private static bool SameMembership(SolutionMembership? current, SolutionMembership? loaded) =>
+        current is null
+            ? loaded is null
+            : loaded is not null && current.Agrees(loaded);
+
+    private static DomainConflictException StaleWrite() =>
+        new("A member project changed while the solution was being rewritten, so nothing was written. "
+            + "Check h9k solution show and run this command again.");
 
     /// <summary>
     /// The writes that give <paramref name="membership"/> to the project on this node that holds each of
     /// its members (resolved through <paramref name="context"/>), plus a clear for each project in
     /// <paramref name="removed"/>. Callers check <see cref="SolutionDecider.RequireEveryMemberHeld"/> first,
-    /// which is what makes the resolution here total.
+    /// which is what makes the resolution here total, and <see cref="SolutionDecider.RequireConsistent"/>,
+    /// which is what makes every project written here one that carries the solution (or is joining it).
     /// </summary>
     public static IReadOnlyList<SolutionWrite> Rewrite(
         SolutionMembership membership, SolutionContext context, IReadOnlyList<ProjectDetails> removed) =>

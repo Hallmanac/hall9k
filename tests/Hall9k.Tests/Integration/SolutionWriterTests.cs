@@ -102,6 +102,9 @@ public sealed class SolutionWriterTests : IClassFixture<PostgresFixture>, IAsync
         await WriteAsync([new SolutionWrite(api, storefront), new SolutionWrite(web, storefront)], cts.Token);
 
         // A second open solution over the free project and the one already held: the held one refuses.
+        context = await LoadAsync(cts.Token);
+        admin = context.Projects.Single(project => project.Name == "shop-admin");
+        web = context.Projects.Single(project => project.Name == "shop-web");
         SolutionMembership marketplace = SolutionDecider.Create(
             SolutionDecider.NewKey(), "marketplace", [SolutionDecider.MemberOf(admin), SolutionDecider.MemberOf(web)]);
         Func<Task> act = () => WriteAsync([new SolutionWrite(admin, marketplace), new SolutionWrite(web, marketplace)], cts.Token);
@@ -125,6 +128,9 @@ public sealed class SolutionWriterTests : IClassFixture<PostgresFixture>, IAsync
             SolutionDecider.NewKey(), "storefront", [SolutionDecider.MemberOf(api), SolutionDecider.MemberOf(web)]);
         await WriteAsync([new SolutionWrite(api, storefront), new SolutionWrite(web, storefront)], cts.Token);
 
+        context = await LoadAsync(cts.Token);
+        api = context.Projects.Single(project => project.Name == "shop-api");
+        web = context.Projects.Single(project => project.Name == "shop-web");
         SolutionMembership remaining = SolutionDecider.Unlink(storefront, WebKey);
         await WriteAsync(
             [new SolutionWrite(api, remaining), new SolutionWrite(web, null)], cts.Token);
@@ -133,9 +139,32 @@ public sealed class SolutionWriterTests : IClassFixture<PostgresFixture>, IAsync
         after.Projects.Single(project => project.Name == "shop-web").Solution.Should().BeNull();
         after.Projects.Single(project => project.Name == "shop-api").Solution!.Members.Select(member => member.Name).Should().Equal("shop-api");
 
+        web = (await LoadAsync(cts.Token)).Projects.Single(project => project.Name == "shop-web");
         SolutionMembership marketplace = SolutionDecider.Create(
             SolutionDecider.NewKey(), "marketplace", [SolutionDecider.MemberOf(web)]);
         Func<Task> join = () => WriteAsync([new SolutionWrite(web, marketplace)], cts.Token);
         await join.Should().NotThrowAsync("unlink is what frees a project for another open solution");
+    }
+
+    [Fact]
+    public async Task A_write_decided_from_a_stale_load_is_refused_and_writes_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        await SeedProjectAsync("shop-api", ApiKey, cts.Token);
+        await SeedProjectAsync("shop-web", WebKey, cts.Token);
+        SolutionContext stale = await LoadAsync(cts.Token);
+        ProjectDetails api = stale.Projects.Single(project => project.Name == "shop-api");
+        ProjectDetails web = stale.Projects.Single(project => project.Name == "shop-web");
+        SolutionMembership storefront = SolutionDecider.Create(
+            SolutionDecider.NewKey(), "storefront", [SolutionDecider.MemberOf(api), SolutionDecider.MemberOf(web)]);
+
+        // Another writer (a replicated change, a second command) puts the solution on shop-web after this load.
+        await WriteAsync([new SolutionWrite(web, storefront)], cts.Token);
+
+        Func<Task> act = () => WriteAsync([new SolutionWrite(api, storefront), new SolutionWrite(web, storefront)], cts.Token);
+
+        await act.Should().ThrowAsync<DomainConflictException>().WithMessage("*changed while the solution was being rewritten*");
+        SolutionContext after = await LoadAsync(cts.Token);
+        after.Projects.Single(project => project.Name == "shop-api").Solution.Should().BeNull();
     }
 }

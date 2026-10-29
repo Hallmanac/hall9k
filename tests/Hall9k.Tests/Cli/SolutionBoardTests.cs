@@ -132,6 +132,24 @@ public sealed class SolutionBoardTests
     }
 
     [Fact]
+    public void A_member_that_has_joined_another_solution_is_off_this_solutions_board_and_filter()
+    {
+        SolutionMembership closed = SolutionDecider.Close(SolutionDecider.Create(SolutionDecider.NewKey(), "storefront", [Api, Web]), "retired");
+        SolutionMembership marketplace = SolutionDecider.Create(SolutionDecider.NewKey(), "marketplace", [Web, Admin]);
+        ProjectDetails api = Project(Api, closed);
+        ProjectDetails web = Project(Web, marketplace);
+        SolutionView view = SolutionRegistry.Read([api, web]).Single(solution => solution.Membership.Key == closed.Key);
+
+        SolutionScope.ProjectIds(view, [api, web]).Should().BeEquivalentTo([api.Id]);
+        SolutionBoard board = SolutionBoard.Compose(
+            view, [api, web], [Row(web, TaskState.Published, "Belongs to marketplace now", 1)], RootOf);
+
+        board.Projects.Select(project => project.Project.Name).Should().Equal("shop-api");
+        board.NotJoined.Should().Equal(Web);
+        board.Rollup.Total.Should().Be(0);
+    }
+
+    [Fact]
     public void The_project_show_row_names_the_solution_the_closed_state_or_how_to_make_one()
     {
         SolutionMembership open = SolutionDecider.Create(SolutionDecider.NewKey(), "storefront", [Api, Web]);

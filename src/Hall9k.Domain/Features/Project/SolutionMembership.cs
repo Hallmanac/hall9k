@@ -18,4 +18,15 @@ public sealed record SolutionMembership(
 {
     /// <summary>Whether this membership holds its project to this one solution (an open one does, a closed one does not).</summary>
     public bool Holds => State == SolutionState.Open;
+
+    /// <summary>
+    /// Whether <paramref name="other"/> is the same record: the compiler's record equality compares
+    /// <see cref="Members"/> by reference, which a copy read back from a stream never shares.
+    /// </summary>
+    public bool Agrees(SolutionMembership other) =>
+        Key.Equals(other.Key, StringComparison.OrdinalIgnoreCase)
+        && Name == other.Name
+        && State == other.State
+        && CloseReason == other.CloseReason
+        && Members.SequenceEqual(other.Members);
 }

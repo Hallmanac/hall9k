@@ -422,7 +422,8 @@ no solution stream and no replication path of its own, and a node that holds any
 the whole solution. A project belongs to at most one open solution, because a project in two would
 put each solution's member names and repository URLs in front of the other solution's teammates.
 Every writing command rewrites the membership on every member in one commit and refuses, naming
-the members, when one is not registered and joined on this node. A solution closes only by an
+the members, when one is not registered and joined on this node, when a member no longer carries
+the solution or holds a different copy of it, or when the solution is closed. A solution closes only by an
 explicit human act with a reason, never automatically. `h9k solution show` is the cross-project
 board, and `task list` and `epic list` take `--solution`. Two nodes linking one project into
 different solutions at the same moment resolve as last write wins on replication; that is parked

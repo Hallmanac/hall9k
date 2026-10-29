@@ -43,8 +43,6 @@ public sealed class SolutionUnlinkCommand : Hall9kAsyncCommand<SolutionUnlinkCom
         SolutionContext context = await SolutionContext.LoadAsync(session, cancellationToken);
         SolutionView view = SolutionRegistry.Match(context.Solutions, settings.Solution);
 
-        SolutionDecider.RequireEveryMemberHeld(view.Membership, context.Projects, context.RootFingerprintOf, "unlink a project from");
-
         SolutionMembership membership = view.Membership;
         List<ProjectDetails> removed = [];
         foreach (string reference in settings.Project)
@@ -56,6 +54,9 @@ public sealed class SolutionUnlinkCommand : Hall9kAsyncCommand<SolutionUnlinkCom
                     $"Project '{project.Name}' has no recorded project key, so it is not a member of '{view.Membership.Name}'."));
             removed.Add(project);
         }
+
+        SolutionDecider.RequireEveryMemberHeld(view.Membership, context.Projects, context.RootFingerprintOf, "unlink a project from");
+        SolutionDecider.RequireConsistent(view, context.Projects, context.RootFingerprintOf, "unlink a project from");
 
         await SolutionWriter.WriteAsync(session, SolutionWriter.Rewrite(membership, context, removed), cancellationToken);
 

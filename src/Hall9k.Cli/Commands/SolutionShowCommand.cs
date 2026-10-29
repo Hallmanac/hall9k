@@ -72,7 +72,7 @@ public sealed class SolutionShowCommand : Hall9kAsyncCommand<SolutionShowCommand
             if (project.Rows.Count > shown.Length)
             {
                 AnsiConsole.MarkupLine(
-                    $"[dim]Showing the {shown.Length} newest of {project.Rows.Count}; all of them:[/] h9k task list --project {name} --all");
+                    $"[dim]Showing the {shown.Length} newest of {project.Rows.Count}; all of them, archived and teammates' included:[/] h9k task list --project {name} --all --include-archived --everyone");
             }
         }
 

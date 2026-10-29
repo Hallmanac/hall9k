@@ -45,6 +45,7 @@ public sealed class SolutionCloseCommand : Hall9kAsyncCommand<SolutionCloseComma
 
         SolutionMembership closed = SolutionDecider.Close(view.Membership, settings.Reason);
         SolutionDecider.RequireEveryMemberHeld(view.Membership, context.Projects, context.RootFingerprintOf, "close");
+        SolutionDecider.RequireConsistent(view, context.Projects, context.RootFingerprintOf, "close");
 
         await SolutionWriter.WriteAsync(session, SolutionWriter.Rewrite(closed, context, removed: []), cancellationToken);
 

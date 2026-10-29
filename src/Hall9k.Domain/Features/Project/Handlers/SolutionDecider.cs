@@ -171,11 +171,12 @@ public static class SolutionDecider
 
     /// <summary>
     /// The solution without the member named <paramref name="projectKey"/>. Refused when it is not a
-    /// member, and when it is the last one: a solution no project carries would be gone without a
-    /// word, so closing it is the explicit act.
+    /// member, when it is the last one (a solution no project carries would be gone without a
+    /// word, so closing it is the explicit act), and on a closed solution.
     /// </summary>
     public static SolutionMembership Unlink(SolutionMembership current, string projectKey)
     {
+        RefuseClosed(current, "unlink a project from");
         SolutionMember removed = current.Members.FirstOrDefault(
                 member => member.ProjectKey.Equals(projectKey, StringComparison.OrdinalIgnoreCase))
             ?? throw new DomainValidationException(
@@ -192,9 +193,10 @@ public static class SolutionDecider
         return current with { Members = [.. current.Members.Where(member => member != removed)] };
     }
 
-    /// <summary>The solution under <paramref name="newName"/>, which the caller has already checked is not another solution's.</summary>
+    /// <summary>The solution under <paramref name="newName"/>, which the caller has already checked is not another solution's; refused on a closed solution.</summary>
     public static SolutionMembership Rename(SolutionMembership current, string newName)
     {
+        RefuseClosed(current, "be renamed");
         SolutionMembership renamed = current with { Name = newName.Trim() };
         Validate(renamed);
         return renamed;
@@ -241,6 +243,47 @@ public static class SolutionDecider
                 + "(h9k project add --repo-url <url>) and join it (h9k project join <project>), then run this again.");
         }
     }
+
+    /// <summary>
+    /// Refuses rewriting a solution whose record this node cannot vouch for. A rewrite copies one
+    /// record onto every member, so it first requires that every member project held here carries
+    /// this solution (a member that has since left it or joined another would otherwise have that
+    /// membership overwritten or cleared) and that no carrier holds a different copy, or is a project
+    /// the record does not list (a rewrite still replicating, or one teammate's copy of the solution
+    /// that would otherwise be copied onto members of teams that teammate is not on).
+    /// </summary>
+    public static void RequireConsistent(
+        SolutionView view, IReadOnlyList<ProjectDetails> projects, Func<Guid, string?> rootFingerprintOf, string verb)
+    {
+        ProjectDetails[] notCarrying =
+        [.. view.Membership.Members
+            .Select(member => HeldProject(member, projects, rootFingerprintOf))
+            .OfType<ProjectDetails>()
+            .Where(project => project.Solution is not { } carried
+                || !carried.Key.Equals(view.Membership.Key, StringComparison.OrdinalIgnoreCase))];
+        if (notCarrying.Length > 0)
+        {
+            throw new DomainConflictException(
+                $"Cannot {verb} the solution '{view.Membership.Name}': {string.Join(", ", notCarrying.Select(Describe))} "
+                + $"{(notCarrying.Length == 1 ? "is" : "are")} listed as a member but no longer carries it on this node, so the "
+                + "record here is out of date or the project was changed elsewhere. Writing it again would undo that change. "
+                + "Check h9k solution show and h9k project show, let replication settle, then run this again.");
+        }
+
+        if (view.Inconsistent.Count > 0)
+        {
+            throw new DomainConflictException(
+                $"Cannot {verb} the solution '{view.Membership.Name}': {string.Join(", ", view.Inconsistent.Select(project => $"'{project.Name}'"))} "
+                + $"{(view.Inconsistent.Count == 1 ? "carries" : "carry")} a different record of it, or one that does not list the project. "
+                + "A command that rewrites the solution copies one record onto every member, so it would spread that copy to "
+                + "teams that did not write it. Let replication settle and run this again, or find who changed it with h9k project members.");
+        }
+    }
+
+    private static string Describe(ProjectDetails project) =>
+        project.Solution is { } carried
+            ? $"'{project.Name}' (carries '{carried.Name}')"
+            : $"'{project.Name}'";
 
     /// <summary>
     /// The new members whose repository owner or organization differs from every member that

@@ -68,6 +68,8 @@ public sealed class SolutionAddCommand : Hall9kAsyncCommand<SolutionAddCommand.S
         SolutionMember[] members = [.. projects.Select(SolutionDecider.MemberOf)];
         SolutionMembership membership = SolutionDecider.Create(SolutionDecider.NewKey(), settings.Name, members);
 
+        SolutionDecider.RequireEveryMemberHeld(membership, context.Projects, context.RootFingerprintOf, "create");
+
         if (!SolutionOwnerConfirmation.Confirm(
                 SolutionDecider.OwnerMismatches([], members), membership.Name, settings.Yes, new ConsoleInteractiveConfirmation()))
         {
@@ -75,8 +77,7 @@ public sealed class SolutionAddCommand : Hall9kAsyncCommand<SolutionAddCommand.S
             return ExitCodes.Ok;
         }
 
-        await SolutionWriter.WriteAsync(
-            session, [.. projects.Select(project => new SolutionWrite(project, membership))], cancellationToken);
+        await SolutionWriter.WriteAsync(session, SolutionWriter.Rewrite(membership, context, removed: []), cancellationToken);
 
         AnsiConsole.MarkupLineInterpolated(
             $"[green]Solution '{membership.Name}' created[/] [dim]({membership.Key})[/] over {string.Join(", ", members.Select(member => member.Name))}.");

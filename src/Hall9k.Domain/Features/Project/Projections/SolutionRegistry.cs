@@ -2,15 +2,34 @@ using Hall9k.Domain.Shared.Exceptions;
 
 namespace Hall9k.Domain.Features.Project.Projections;
 
-/// <summary>One solution as this node knows it: the freshest membership any of its held projects carries, and those projects.</summary>
-public sealed record SolutionView(SolutionMembership Membership, IReadOnlyList<ProjectDetails> HeldProjects);
+/// <summary>
+/// One solution as this node knows it: the freshest membership any of its listed projects carries,
+/// and the projects carrying it. <see cref="Inconsistent"/> names the carriers the record cannot
+/// vouch for: one whose copy differs from <see cref="Membership"/> (a rewrite still replicating, or
+/// a teammate's copy that disagrees) and one <see cref="Membership"/> does not list.
+/// </summary>
+public sealed record SolutionView(
+    SolutionMembership Membership, IReadOnlyList<ProjectDetails> HeldProjects, IReadOnlyList<ProjectDetails> Inconsistent)
+{
+    /// <summary>
+    /// Whether <paramref name="project"/> may be read as a member of this solution: it does not
+    /// carry another one. A project that carries no solution yet still counts (a node that has not
+    /// received the record), but one that has since joined another solution, which a closed solution
+    /// allows, no longer belongs on this solution's board or under its filter.
+    /// </summary>
+    public bool NotInAnotherSolution(ProjectDetails project) =>
+        project.Solution is not { } carried || carried.Key.Equals(Membership.Key, StringComparison.OrdinalIgnoreCase);
+}
 
 /// <summary>
 /// Reads the solutions on this node. There is no Solution document: a solution is the membership
 /// its member projects carry, so this groups the registered projects by membership key. A node that
 /// holds any one member knows the whole solution from the record on it. Two members can briefly
 /// carry different copies (a rewrite replicates member by member); the copy stamped latest wins, the
-/// same last-writer rule every team setting follows.
+/// same last-writer rule every team setting follows. Only a copy carried by a project it lists
+/// can win, so a project the solution does not name never speaks for it, and the carriers that
+/// disagree with the winner are reported (<see cref="SolutionView.Inconsistent"/>) so a command
+/// that would copy the winner onto every member can refuse instead of spreading one teammate's copy.
 /// </summary>
 public static class SolutionRegistry
 {
@@ -25,17 +44,36 @@ public static class SolutionRegistry
             }
         }
 
-        return
-        [.. carriers
-            .GroupBy(carrier => carrier.Membership.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(group => new SolutionView(
-                group
-                    .OrderByDescending(carrier => carrier.Project.TeamSettingStamps.GetValueOrDefault(nameof(ProjectDetails.Solution)))
-                    .ThenByDescending(carrier => carrier.Membership.Members.Count)
-                    .First().Membership,
-                [.. group.Select(carrier => carrier.Project).OrderBy(project => project.Name, StringComparer.OrdinalIgnoreCase)]))
-            .OrderBy(view => view.Membership.Name, StringComparer.OrdinalIgnoreCase)];
+        List<SolutionView> views = [];
+        foreach (IGrouping<string, (ProjectDetails Project, SolutionMembership Membership)> group in
+                 carriers.GroupBy(carrier => carrier.Membership.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            (ProjectDetails Project, SolutionMembership Membership)[] speakers =
+                [.. group.Where(carrier => Lists(carrier.Membership, carrier.Project))];
+            if (speakers.Length == 0)
+            {
+                continue;
+            }
+
+            SolutionMembership winner = speakers
+                .OrderByDescending(carrier => carrier.Project.TeamSettingStamps.GetValueOrDefault(nameof(ProjectDetails.Solution)))
+                .ThenByDescending(carrier => carrier.Membership.Members.Count)
+                .First().Membership;
+            views.Add(new SolutionView(
+                winner,
+                [.. group.Select(carrier => carrier.Project).OrderBy(project => project.Name, StringComparer.OrdinalIgnoreCase)],
+                [.. group
+                    .Where(carrier => !Lists(winner, carrier.Project) || !carrier.Membership.Agrees(winner))
+                    .Select(carrier => carrier.Project)
+                    .OrderBy(project => project.Name, StringComparer.OrdinalIgnoreCase)]));
+        }
+
+        return [.. views.OrderBy(view => view.Membership.Name, StringComparer.OrdinalIgnoreCase)];
     }
+
+    private static bool Lists(SolutionMembership membership, ProjectDetails project) =>
+        project.ProjectKey is { } key
+        && membership.Members.Any(member => member.ProjectKey.Equals(key, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Names a solution the way <c>ProjectResolver</c> names a project: the exact name

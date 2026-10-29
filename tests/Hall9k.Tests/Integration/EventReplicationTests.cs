@@ -869,6 +869,13 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
             read.EventsApplied.Should().Be(1, "exactly the team companion travels: the membership needed no path of its own");
         }
 
+        // The receiver joined the ledger, which records the project key the registry matches a carrier by.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.Append(projectIdB, new ProjectKeyAssigned(projectIdB, ApiKey, Now.AddSeconds(5)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
         await using (IQuerySession session = storeB.QuerySession())
         {
             ProjectDetails? receiverProject = await session.LoadAsync<ProjectDetails>(projectIdB, cts.Token);

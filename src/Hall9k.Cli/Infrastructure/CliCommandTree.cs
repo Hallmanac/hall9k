@@ -1335,7 +1335,9 @@ public static class CliCommandTree
                 + "and repository URLs in front of the other solution's teammates. A solution closes only by "
                 + "explicit human act, never automatically, not even when every member is archived. Every "
                 + "command that writes rewrites the membership on every member in one step, and refuses, "
-                + "naming them, when a member is not registered and joined on this node.");
+                + "naming them, when a member is not registered and joined on this node, when a member no "
+                + "longer carries the solution or holds a different copy of its record, and on a closed "
+                + "solution, which is final.");
             solution.AddCommand<SolutionAddCommand>("add")
                 .WithDescription(
                     "Create a solution over projects: mints its key (a 26-character ULID) and writes the "
