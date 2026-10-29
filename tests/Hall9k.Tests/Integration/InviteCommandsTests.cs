@@ -696,6 +696,88 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         memberWrite.Content.Should().Contain($"role: \"{ProjectMemberRole.Member.Value}\"");
     }
 
+    /// <summary>
+    /// <c>h9k solution invite</c>'s loop over <c>h9k project invite</c>'s own mint, on the same fake
+    /// ledger and chain reader: the held member is minted for through the real mint (its invite file
+    /// lands in the ledger as a hash only, the secret travels in the bundle), and a member this node
+    /// does not hold is listed rather than minted for.
+    /// </summary>
+    [Fact]
+    public async Task Solution_invite_mints_for_each_held_member_through_the_project_invite_mint()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        FakeLedger ledger = new();
+
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        (string myRoot, NodeSigningKey myKey) = await EstablishOwnRootAsync(cts.Token);
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner> { [myRoot] = new(myRoot, myKey.PublicKeyLine, []) },
+            [new ProjectMember(myRoot, MembershipRole.Owner, Now)]));
+
+        SolutionMember held = new("01JAAAAAAAAAAAAAAAAAAAAAAA", project.Name, new Uri("https://github.com/acme/smoke.git"));
+        SolutionMember absent = new("01JBBBBBBBBBBBBBBBBBBBBBBB", "elsewhere", new Uri("https://github.com/acme/elsewhere.git"));
+        project.ProjectKey = held.ProjectKey;
+        project.Members = new Dictionary<string, ProjectMemberRole> { [myRoot] = ProjectMemberRole.Owner };
+        SolutionMembership membership = SolutionDecider.Create(SolutionDecider.NewKey(), "storefront", [held, absent]);
+
+        SolutionMintResult result = await SolutionInviteMinter.MintAsync(
+            membership, [project], _ => myRoot,
+            async (member, token) =>
+            {
+                await using IDocumentSession session = _postgres.Store.LightweightSession();
+                return await ProjectInviteCommand.MintAsync(
+                    session, member, ProjectMemberRole.Member, ledger, chainReader, new NodeKeyStore(), token);
+            },
+            cts.Token);
+
+        result.Minted.Should().ContainSingle().Which.Member.Should().Be(held);
+        result.Refused.Should().ContainSingle().Which.Member.Should().Be(absent);
+
+        await using IDocumentSession check = _postgres.Store.LightweightSession();
+        InviteDetails minted = (await check.Query<InviteDetails>().ToListAsync(cts.Token)).Single();
+        InviteAggregate aggregate = (await check.Events.AggregateStreamAsync<InviteAggregate>(minted.Id, token: cts.Token))!;
+        aggregate.Secret.Should().Be(result.Minted.Single().Invite.Secret);
+
+        LedgerWriteRequest write = ledger.Writes.Single();
+        write.Path.Should().Be(InviteLedgerRecord.PathFor(myRoot, minted.Id));
+        write.Content.Should().NotContain(aggregate.Secret, "the ledger carries only the secret's hash");
+
+        SolutionInviteBundle bundle = SolutionInviteBundle.Parse(result.ToBundle(membership).Encode());
+        bundle.Members.Single().Secret.Should().Be(aggregate.Secret);
+    }
+
+    [Fact]
+    public async Task Solution_invite_lists_a_member_whose_project_refuses_the_mint_with_that_refusals_reason()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        FakeLedger ledger = new();
+
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        (string myRoot, NodeSigningKey myKey) = await EstablishOwnRootAsync(cts.Token);
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner> { [myRoot] = new(myRoot, myKey.PublicKeyLine, []) },
+            [new ProjectMember(myRoot, MembershipRole.Member, Now)]));
+
+        SolutionMember held = new("01JAAAAAAAAAAAAAAAAAAAAAAA", project.Name, new Uri("https://github.com/acme/smoke.git"));
+        project.ProjectKey = held.ProjectKey;
+        project.Members = new Dictionary<string, ProjectMemberRole> { [myRoot] = ProjectMemberRole.Member };
+        SolutionMembership membership = SolutionDecider.Create(SolutionDecider.NewKey(), "storefront", [held]);
+
+        SolutionMintResult result = await SolutionInviteMinter.MintAsync(
+            membership, [project], _ => myRoot,
+            async (member, token) =>
+            {
+                await using IDocumentSession session = _postgres.Store.LightweightSession();
+                return await ProjectInviteCommand.MintAsync(
+                    session, member, ProjectMemberRole.Member, ledger, chainReader, new NodeKeyStore(), token);
+            },
+            cts.Token);
+
+        result.Minted.Should().BeEmpty();
+        result.Refused.Should().ContainSingle().Which.Reason.Should().Contain("owner role");
+        ledger.Writes.Should().BeEmpty("a member-role owner is refused before any push, exactly as h9k project invite refuses it");
+    }
+
     [Fact]
     public async Task Project_invite_refuses_a_member_role_owner()
     {

@@ -1422,6 +1422,33 @@ public static class CliCommandTree
                     + "is final. A member this node has not registered and joined refuses the command, "
                     + "naming it. The solution's home on this node is left on disk.")
                 .WithExample("solution", "close", "storefront", "--reason", "\"Storefront retired in favour of the marketplace\"");
+            solution.AddCommand<SolutionInviteCommand>("invite")
+                .WithDescription(
+                    "Mint one member-of-project invite (role member) for each member of a solution this node "
+                    + "holds and owns, through the same mint h9k project invite performs, and print them once "
+                    + "as a single-line invite bundle that carries the solution's key and name and, for each "
+                    + "member, its project key, name, repository URL and secret. A member this node cannot mint "
+                    + "for (not registered and joined here, this node's owner does not hold the owner role in "
+                    + "its project, or any other mint refusal) is listed with the reason and left out; the "
+                    + "command fails when it minted none. The bundle holds live secrets and is shown once. Give "
+                    + "it to the teammate; h9k solution join --invite - on their node joins every member.")
+                .WithExample("solution", "invite", "storefront");
+            solution.AddCommand<SolutionJoinCommand>("join")
+                .WithDescription(
+                    "Join every member of a solution from the invite bundle h9k solution invite printed, in one "
+                    + "step. For each member the bundle lists, this node looks for a local project by project "
+                    + "key, then by repository URL: none found registers it from the bundle's name and URL "
+                    + "(the way h9k project add --repo-url does) and joins it with that member's secret; one "
+                    + "found but not joined is joined; one already joined is left alone and its secret is not "
+                    + "spent. It needs no solution record or member project on this node and never prompts. A "
+                    + "member that does not finish (a name collision with another local project, a failed "
+                    + "clone, no push access on its repository, a spent or expired secret) is reported with "
+                    + "its reason and the hand command that finishes it, the others still proceed, and the "
+                    + "exit code is non-zero. Each join is the ordinary per-project join: the minting node's "
+                    + "daemon vouches it in on its next sweep, and nothing here waits for that. Pass '-' to "
+                    + "read the bundle from stdin instead of argv.")
+                .WithExample("solution", "join", "--invite", "-")
+                .WithExample("solution", "join", "--invite", "h9k-solution-invite-v1.eyJzb2x1dGlvbktleSI6Ii4uLiJ9");
         });
 
         config.AddBranch("task", task =>

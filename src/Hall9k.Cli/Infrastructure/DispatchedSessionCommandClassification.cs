@@ -159,6 +159,8 @@ internal static class DispatchedSessionCommandClassification
             [typeof(SolutionUnlinkCommand.Settings)] = (DispatchedSessionAccess.Refused, "solution unlink"),
             [typeof(SolutionRenameCommand.Settings)] = (DispatchedSessionAccess.Refused, "solution rename"),
             [typeof(SolutionCloseCommand.Settings)] = (DispatchedSessionAccess.Refused, "solution close"),
+            [typeof(SolutionInviteCommand.Settings)] = (DispatchedSessionAccess.Refused, "solution invite"),
+            [typeof(SolutionJoinCommand.Settings)] = (DispatchedSessionAccess.Refused, "solution join"),
 
             // ---- run ----
             [typeof(RunKillCommand.Settings)] = (DispatchedSessionAccess.Refused, "run kill"),
