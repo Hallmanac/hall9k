@@ -46,7 +46,7 @@ internal static class SolutionHomeInit
     public static async Task<bool> RunAsync(
         SolutionMembership membership, SolutionContext context, CancellationToken cancellationToken)
     {
-        string home = SolutionHomePaths.DefaultFor(membership.Name);
+        string home = SolutionHomePaths.For(membership.Name, membership.Key);
         bool succeeded = ProjectHomeRecipe.Report(await SolutionHomeRecipe.BuildAsync(
             home, membership, context.Projects, context.RootFingerprintOf, cancellationToken));
         if (succeeded)

@@ -3,7 +3,6 @@ using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Handlers;
-using Hall9k.Domain.Features.Project.Rendering;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Tests.TestSupport;
@@ -128,21 +127,6 @@ public sealed class SolutionHomeRecipeTests : IDisposable
         steps[0].Message.Should().Contain("was left alone").And.Contain("h9k solution init \"storefront\"");
         File.ReadAllText(ProjectHomePaths.AgentsFile(home)).Should().Be("# Somebody's own AGENTS.md\n");
         Directory.GetFileSystemEntries(home).Should().ContainSingle("nothing but the foreign file may be in the home");
-    }
-
-    [Fact]
-    public async Task The_first_agents_copy_names_the_members_and_a_run_after_a_rename_rewrites_it_in_place()
-    {
-        string home = SolutionHomePaths.DefaultFor("storefront");
-        await Build(home, Membership());
-        File.ReadAllText(ProjectHomePaths.AgentsFile(home)).Should().Contain("shop-api").And.Contain(SolutionAgentsDocument.NotJoinedStatement);
-
-        SolutionMembership renamed = SolutionDecider.Rename(Membership(), "marketplace");
-        ProjectHomeStep step = SolutionHomeRecipe.WriteAgentsStep(home, renamed, [], _ => null);
-
-        step.Outcome.Should().Be(ProjectHomeOutcome.Created);
-        step.Message.Should().Contain("re-rendered");
-        File.ReadAllText(ProjectHomePaths.AgentsFile(home)).Should().Contain("# marketplace: solution home");
     }
 
     private static void WriteSkill(string parent, string name)

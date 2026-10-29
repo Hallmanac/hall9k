@@ -52,7 +52,7 @@ public sealed class SolutionCloseCommand : Hall9kAsyncCommand<SolutionCloseComma
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Solution '{closed.Name}' closed:[/] {closed.CloseReason}");
 
-        string home = SolutionHomePaths.DefaultFor(closed.Name);
+        string home = SolutionHomePaths.For(closed.Name, closed.Key);
         if (Directory.Exists(home))
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]Its home at {home} was left on disk; remove it by hand if you no longer want it.[/]");

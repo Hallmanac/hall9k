@@ -114,5 +114,40 @@ public sealed class SolutionHomeRenderTests : IDisposable
         AgentsFor("storefront").Should().Be("# hand written\n");
     }
 
+    [Fact]
+    public void A_renamed_solutions_home_keeps_its_directory_and_its_agents_file_follows_the_new_name()
+    {
+        const string key = "01JSSSSSSSSSSSSSSSSSSSSSSS";
+        MakeHome("storefront");
+        Sweep(Project(Api, SolutionDecider.Create(key, "storefront", [Api]), joined: true));
+
+        SolutionMembership renamed = SolutionDecider.Rename(SolutionDecider.Create(key, "storefront", [Api]), "marketplace");
+        Sweep(Project(Api, renamed, joined: true)).Should().Be(1);
+
+        AgentsFor("storefront").Should().Contain("# marketplace: solution home");
+        Directory.Exists(SolutionHomePaths.DefaultFor("marketplace")).Should().BeFalse();
+        SolutionHomePaths.For("marketplace", key).Should().Be(SolutionHomePaths.DefaultFor("storefront"));
+    }
+
+    [Fact]
+    public void Two_names_that_slug_alike_keep_separate_homes_and_the_second_never_reads_the_firsts()
+    {
+        const string firstKey = "01JFIRSTFIRSTFIRSTFIRSTFIR";
+        const string secondKey = "01JSECONDSECONDSECONDSECON";
+        MakeHome("Shop API");
+        SolutionMembership first = SolutionDecider.Create(firstKey, "Shop API", [Api]);
+        SolutionMembership second = SolutionDecider.Create(secondKey, "shop-api", [Web]);
+        Sweep(Project(Api, first, joined: true));
+
+        string secondHome = SolutionHomePaths.For("shop-api", secondKey);
+        secondHome.Should().NotBe(SolutionHomePaths.DefaultFor("Shop API"));
+        Directory.Exists(secondHome).Should().BeFalse("only h9k solution init makes a home");
+
+        Sweep(Project(Api, first, joined: true), Project(Web, second, joined: true)).Should().Be(0);
+
+        AgentsFor("Shop API").Should().Contain(firstKey).And.NotContain(secondKey);
+        SolutionHomePaths.For("Shop API", firstKey).Should().Be(SolutionHomePaths.DefaultFor("Shop API"));
+    }
+
     public void Dispose() => _scopedHome.Dispose();
 }

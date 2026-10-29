@@ -50,7 +50,7 @@ public sealed class SolutionShowCommand : Hall9kAsyncCommand<SolutionShowCommand
     /// </summary>
     internal static void WriteHome(SolutionMembership membership)
     {
-        string home = SolutionHomePaths.DefaultFor(membership.Name);
+        string home = SolutionHomePaths.For(membership.Name, membership.Key);
         AnsiConsole.Profile.Out.Writer.WriteLine(Directory.Exists(home)
             ? $"Home: {home}"
             : $"Home: none on this node. Create it: h9k solution init \"{membership.Name}\"");
