@@ -429,7 +429,8 @@ the winning record does not list, left by two nodes rewriting one solution at on
 explicit human act with a reason, never automatically. `h9k solution show` is the cross-project
 board, and `task list` and `epic list` take `--solution`. Two nodes linking one project into
 different solutions at the same moment resolve as last write wins on replication; that is parked
-until it first happens.
+until it first happens. A teammate joins every member in one step with `h9k solution invite` and
+`h9k solution join` (each join still vouched in by the minting node's daemon).
 
 Solution epics are built. In a project that belongs to a solution every epic is a solution epic: one
 ordinary epic per member project this node holds, all sharing a solution epic key and the title (two
