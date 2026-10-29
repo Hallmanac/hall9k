@@ -1,6 +1,6 @@
 ---
 name: hall9k-cli-reference
-description: The full h9k/h9kd command surface and the domain semantics behind it — the board's state/phase/attention model, project homes, task and idea lifecycles, epics, Jira and GitHub backlog integration, branch templates, and auto-pr-review. Load this when a task needs CLI syntax or platform semantics beyond the four dev commands and the rules in AGENTS.md's own "Build / test / run" section.
+description: The full h9k/h9kd command surface and the domain semantics behind it — the board's state/phase/attention model, project homes, task and idea lifecycles, epics, solutions, Jira and GitHub backlog integration, branch templates, and auto-pr-review. Load this when a task needs CLI syntax or platform semantics beyond the four dev commands and the rules in AGENTS.md's own "Build / test / run" section.
 ---
 
 # The hall9k CLI reference
@@ -895,6 +895,37 @@ h9k epic show <id>                                # one epic: title, state, Jira
 h9k epic link-jira <id> <key-or-url>              # record the Jira item this one corresponds to, an epic or a card it tracks on a team's behalf; identity only
 h9k epic close <id> --reason "<why>"              # the only way an epic ends
 ```
+
+## Solutions: grouping one-repo projects
+
+The ladder is solution, project, epic, task: a solution groups one-repo projects. It has no stream
+of its own. It is a membership team setting written onto every member project (the solution's key,
+a 26-character ULID, and name; its open or closed state with a close reason; every member by project
+key with its project name and repository URL), set through `ProjectDecider.ChangeSettings` and
+carried by `ProjectTeamSettingsChanged`, so it replicates with no new path and a node holding any one
+member knows the whole solution. A project belongs to at most one open solution (a project in two
+would put each solution's member names and repository URLs in front of the other solution's
+teammates); a closed solution does not hold its projects. A solution closes only by explicit human
+act with a reason, never automatically, not even when every member is archived. Every command takes
+the solution by name (unique on this node, case-insensitive) or a prefix of its key.
+
+```bash
+h9k solution add <name> --project <p> [--project <p> ...] [--yes]   # mint the key and write the membership into each project; --yes answers the different-owner warning
+h9k solution list [--state open|closed|all]       # every solution this node knows, with how many members it has joined; read-only
+h9k solution show <name>                          # the board across member projects, grouped by project; unjoined members by name and URL; read-only
+h9k solution link <name> --project <p> [--yes]    # bring projects in; rewrites every member in one commit
+h9k solution unlink <name> --project <p>          # take projects out; clears theirs and rewrites the rest; frees a project for another solution
+h9k solution rename <name> <new-name>             # an explicit human act
+h9k solution close <name> --reason "<why>"        # the only way a solution ends; final
+h9k task list --solution <name>                   # also: h9k epic list --solution <name>
+```
+
+`add` and `link` refuse a project with no recorded project key (`h9k project join`, or `h9k project
+assign-key` for the genesis owner) and one with no recorded repository URL. They warn and ask when
+a new member's repository owner or organization differs from every existing member's; a session that
+cannot prompt refuses without `--yes`. `link`, `unlink`, `rename` and `close` refuse, naming the
+members, when any member is not registered and joined on this node. The writing verbs are refused to
+dispatched sessions; `show` and `list` are read-only there.
 
 **A stacked pull-request edge is one explicit opt-in dependency and nothing is inferred**
 (Decisions Log #144, Brian's cohesion ruling 2026-08-28). `--stacked-on <parent>` implies the

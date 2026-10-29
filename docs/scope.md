@@ -411,6 +411,23 @@ is always an explicit human act with a reason, never automatic, and there is no 
 linking is identity-only, stored verbatim, and unlike a task's own `link-jira`, never read back
 against Jira.
 
+### Solutions
+
+`h9k solution add | list | show | link | unlink | rename | close`. A solution groups one-repo
+projects, one rung above the project on the ladder solution, project, epic, task. It is carried as a
+membership team setting on every member project (key, name, open or closed state with a close
+reason, and every member by project key with its name and repository URL), written through
+`ProjectDecider.ChangeSettings` and replicated as part of `ProjectTeamSettingsChanged`, so there is
+no solution stream and no replication path of its own, and a node that holds any one member knows
+the whole solution. A project belongs to at most one open solution, because a project in two would
+put each solution's member names and repository URLs in front of the other solution's teammates.
+Every writing command rewrites the membership on every member in one commit and refuses, naming
+the members, when one is not registered and joined on this node. A solution closes only by an
+explicit human act with a reason, never automatically. `h9k solution show` is the cross-project
+board, and `task list` and `epic list` take `--solution`. Two nodes linking one project into
+different solutions at the same moment resolve as last write wins on replication; that is parked
+until it first happens. Solution epics, a solution window, and onboarding are not built yet.
+
 ### Ideas
 
 Capture with one command and one argument, a discovery workspace per idea, revision with full
