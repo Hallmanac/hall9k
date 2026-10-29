@@ -1,0 +1,32 @@
+hall9k-task-record: 1
+task-id: 01a1882f-8e3a-7000-ac09-37929e4998eb
+project: hall9k
+type: feature
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#781
+objective: In a project that belongs to a solution every epic is a solution epic, created at once in every member project this node holds and open to tasks from any member, and a second task may hold a shared tracker issue when it sits in the same solution epic in a different member project.
+criteria:
+  - |-
+    h9k epic add --project <p>, where p belongs to a solution, creates one solution epic: every member project this node holds gets its own copy, all copies share one solution epic key and the title, and each copy replicates through its own project's ledger exactly as an epic does today. The command names any member this node does not hold, which receives no copy from it.
+  - h9k solution link and h9k solution add give a newly linked project a copy of every open solution epic this node holds for that solution, so a project linked later can take tasks under the solution's existing epics.
+  - A project inside a solution cannot create a project-only epic; epics a project held before it was linked stay project epics, and a project outside any solution behaves exactly as today.
+  - A task from any member project may join a solution epic at task add --epic or task revise --epic by naming the solution epic key or any copy's id; the task joins its own project's copy, and a task from a project outside the solution, or a closed epic, is still refused.
+  - |-
+    epic show and epic list show a solution epic as one epic: one row with the solution named, and member tasks across projects grouped by project. epic list --project <member> includes the solution's epics, and a node shows only the tasks of projects it has joined.
+  - The one-live-task-per-issue refusal (TaskAddCommand.RefuseSecondAdoptionAsync, reached from --from-issue, --from-jira, task link-issue and task link-jira) admits a new task only when that task is in a solution epic and every live holder of the issue is in the same solution epic in a different member project. The new task's epic is read from --epic at add time and from the task itself at link time. Every other case refuses with today's message, and a holder outside the epic is named with the remedy of joining it to the epic first.
+  - When a task closes out and its issue is also held by a task in another member project, closeout closes the issue only if this node holds every member project of the solution and every other linked task is done or abandoned (CloseoutEngine.AllOtherLinkedTasksClosedOutAsync); otherwise the issue stays open and the closeout line says why.
+  - Unlinking a project from its solution leaves that project's copies and every task under them where they are, still shown on the solution epic; later solution epics and later closes no longer reach it, and the project may create project epics again.
+  - Closing a solution epic stays an explicit human act with a reason; it closes every copy this node holds, and nothing closes one automatically.
+  - Tests cover copy creation across held members, link-time copies, the same-solution join, the one-row composition, the shared-issue admission and its refusals, the closeout guard, and unlink. Store-backed cases join an existing shared store-backed class rather than adding a container, and no test creates a branch or touches GitHub.
+  - docs/concepts.md, docs/scope.md and the hall9k-cli-reference skill describe solution epics, the shared-issue rule, the closeout guard and unlink behaviour.
+dependencies: [01a1882f-489d-7225-9126-c342b8ac105f]
+epic-title: |-
+  Solutions: linked projects over one-repo projects
+epic-id: 01a1882e-f056-7728-961d-e29361a43d0a
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/9e4998eb-in-a-project-that-belongs-to-a
+published: 2026-10-29 15:45:40Z
+context: |-
+  Discovery for idea f8212260: findings.md and journal.md in the idea's workspace; the challenge's evidence is notes/challenge-9e4998eb/journal.md in the project home. Brian's rulings (2026-10-29): no home project; in a solution project every epic is solution-wide, so every member knows of it before any task exists; a second task may hold one tracker issue only inside the same solution epic and a different member project (the case of one issue needing a backend and a frontend change, raised by the Linear connector discovery, idea 5d12221a). Mechanism, chosen at challenge and accepted by Brian: a solution epic is one ordinary epic per member project, all carrying a shared solution epic key (one trailing optional field on EpicAdded, so existing streams replay unchanged). No replication code changes: ReplicationProjectResolver, EventReplicationOutbox, EventReplicationInbox and EventCatchUpResponder each resolve a stream to exactly one project, and teaching them otherwise would reopen the inbox's stream-ownership guard. An older build sees each copy as a plain project epic, which is the right fallback. Closeout's linked-task check reads only tasks this node holds, which is why the closeout criterion guards on holding every member. Stacked on the solution base task because it reads the SolutionMembership type and the solution key that task introduces, and it changes the epic list --solution option that task adds.
