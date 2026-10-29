@@ -94,7 +94,8 @@ public static class ProjectDecider
         Optional<AgentEffort> orchestratorEffort = default,
         Optional<ReviewMembershipPolicy> reviewRequiresMembership = default,
         Optional<bool> securityReview = default,
-        Optional<CiPolicy> ciPolicy = default)
+        Optional<CiPolicy> ciPolicy = default,
+        Optional<SolutionMembership?> solution = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -296,6 +297,16 @@ public static class ProjectDecider
                 $"The claim gate must be {ClaimGate.Off} or {ClaimGate.TrackerAssignee} (whether a task "
                 + "linked to a Jira card or a GitHub issue may be claimed on this install only while the "
                 + "tracker shows that item assigned to this install's own tracker identity).");
+        }
+
+        // A project belongs to at most one open solution: a project in two would put each
+        // solution's member names and repository URLs in front of the other solution's teammates.
+        // Clearing (present with null) and rewriting the same solution are always fine, and a
+        // closed membership no longer holds the project.
+        if (solution is { HasValue: true, Value: { } incomingSolution })
+        {
+            SolutionDecider.Validate(incomingSolution);
+            SolutionDecider.RefuseSecondOpenSolution(project, incomingSolution);
         }
 
         // The identical closed-set discipline as ClaimGate just above: CiPolicy's own implicit
@@ -501,7 +512,8 @@ public static class ProjectDecider
             OrchestratorEffort: orchestratorEffort,
             ReviewRequiresMembership: reviewRequiresMembership,
             SecurityReview: securityReview,
-            CiPolicy: ciPolicy);
+            CiPolicy: ciPolicy,
+            Solution: solution);
     }
 
     /// <summary>

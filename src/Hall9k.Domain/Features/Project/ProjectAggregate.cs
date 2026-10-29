@@ -237,6 +237,9 @@ public sealed class ProjectAggregate
     private readonly List<ContextLink> _contextLinks = [];
     public IReadOnlyList<ContextLink> ContextLinks => _contextLinks;
 
+    /// <summary>The solution this project belongs to, or null while it belongs to none; see <see cref="SolutionMembership"/>.</summary>
+    public SolutionMembership? Solution { get; private set; }
+
     private readonly List<LaunchText> _launchTexts = [];
     public IReadOnlyList<LaunchText> LaunchTexts => _launchTexts;
 
@@ -283,6 +286,11 @@ public sealed class ProjectAggregate
         if (@event.MaxParallelTasks.HasValue)
         {
             MaxParallelTasks = @event.MaxParallelTasks.Value;
+        }
+
+        if (@event.Solution.HasValue)
+        {
+            Solution = @event.Solution.Value;
         }
 
         if (@event.ContextLinks.HasValue)
@@ -589,6 +597,11 @@ public sealed class ProjectAggregate
         if (@event.WritingConventions.HasValue)
         {
             WritingConventions = @event.WritingConventions.Value ?? WritingConventions.Default;
+        }
+
+        if (@event.Solution.HasValue)
+        {
+            Solution = @event.Solution.Value;
         }
 
         if (@event.ContextLinks.HasValue)

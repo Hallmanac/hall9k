@@ -780,6 +780,109 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     /// <summary>
+    /// A solution is a membership team setting, so it replicates as the ordinary team companion with
+    /// no path of its own: node A writes it the way <c>h9k solution add</c> does (the decider's own
+    /// settings event and its companion), and node B's own project, under its own id, learns the whole
+    /// solution from the one record. The node-scoped half never travels.
+    /// </summary>
+    [Fact]
+    public async Task A_solution_membership_replicates_to_the_receivers_own_project_as_the_team_companion()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectIdA = DomainId.New();
+        Guid projectIdB = DomainId.New();
+        const string ApiKey = "01JAAAAAAAAAAAAAAAAAAAAAAA";
+        const string WebKey = "01JBBBBBBBBBBBBBBBBBBBBBBB";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            session.Events.StartStream<ProjectAggregate>(
+                projectIdA,
+                new ProjectRegistered(projectIdA, ownerId, DomainId.New(), "shop-api", "/repo-a", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                projectIdB,
+                new ProjectRegistered(projectIdB, ownerId, DomainId.New(), "shop-api", "/repo-b", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(1), cts.Token);
+        }
+
+        SolutionMembership membership = SolutionDecider.Create(
+            SolutionDecider.NewKey(),
+            "storefront",
+            [
+                new SolutionMember(ApiKey, "shop-api", new Uri("https://github.com/acme/shop-api.git")),
+                new SolutionMember(WebKey, "shop-web", new Uri("https://github.com/acme/shop-web.git")),
+            ]);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            ProjectAggregate aggregate = (await session.Events.AggregateStreamAsync<ProjectAggregate>(projectIdA, token: cts.Token))!;
+            aggregate.Apply(new ProjectKeyAssigned(projectIdA, ApiKey, Now));
+            ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
+                aggregate,
+                verifyCommands: default,
+                skipPermissions: default,
+                contextLinks: default,
+                changedAt: Now.AddSeconds(2),
+                changedByOwnerId: ownerId,
+                solution: Optional<SolutionMembership?>.Of(membership));
+            session.Events.Append(projectIdA, changed, ProjectTeamSettingsChanged.From(changed)!);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(3), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectIdA, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(3), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectIdB, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4),
+                trustChain: OwnerChainFor(nodeA), cts.Token);
+            read.SenderIgnored.Should().BeFalse();
+            read.EventsApplied.Should().Be(1, "exactly the team companion travels: the membership needed no path of its own");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            ProjectDetails? receiverProject = await session.LoadAsync<ProjectDetails>(projectIdB, cts.Token);
+            receiverProject.Should().NotBeNull();
+            receiverProject!.Solution.Should().BeEquivalentTo(membership);
+
+            SolutionView view = SolutionRegistry.Read([receiverProject]).Should().ContainSingle().Subject;
+            view.Membership.Members.Select(member => member.Name).Should().Equal("shop-api", "shop-web");
+
+            (await session.LoadAsync<ProjectDetails>(projectIdA, cts.Token)).Should().BeNull();
+        }
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 1, adversarial lens (EventScopeRegistry.cs:204):
     /// <see cref="ProjectPromptAddendumSet"/> was classified <see cref="EventScope.ProjectScoped"/>
     /// — "the same tier as ProjectTeamSettingsChanged" — but was never added to
