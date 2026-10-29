@@ -15,7 +15,8 @@ internal enum SolutionJoinState
 
 /// <summary>
 /// How one member's join ended. <see cref="HandCommand"/> is what finishes a member that did not
-/// finish, and never carries the secret itself: it names the bundle's secret by a placeholder.
+/// finish. It never carries a secret and never asks the user to pull one out of the bundle: the
+/// bundle is opaque, so every retry goes back through <c>h9k solution join --invite -</c> with it.
 /// </summary>
 internal sealed record SolutionJoinOutcome(
     SolutionMember Member, SolutionJoinState State, string? Reason = null, string? HandCommand = null)
@@ -30,13 +31,23 @@ internal sealed record SolutionJoinOutcome(
         new(member, SolutionJoinState.NotFinished, reason, handCommand);
 }
 
-/// <summary>The hand commands that finish a member <c>h9k solution join</c> could not, each naming the bundle's secret as a placeholder.</summary>
+/// <summary>
+/// The hand commands that finish a member <c>h9k solution join</c> could not. The secrets stay in the
+/// bundle: a retry re-reads it, and a member that already finished is left alone and its secret not spent.
+/// </summary>
 internal static class SolutionJoinHandCommands
 {
-    public static string Add(SolutionMember member, string? name = null) =>
-        $"h9k project add --name {Quote(name ?? member.Name)} --repo-url {Quote(member.RepositoryUrl.ToString())} --invite <secret>";
+    private const string Rerun = "h9k solution join --invite - (the same bundle on stdin again)";
 
-    public static string Join(string projectName) => $"h9k project join {Quote(projectName)} --invite <secret>";
+    /// <summary>Re-run the whole bundle; right for any member whose project is registered with its repository on disk, or that never registered at all.</summary>
+    public static string Retry() => Rerun;
+
+    /// <summary>The project is registered but its home or repository is missing: <c>h9k project init</c> clones it afresh, then the bundle finishes the join.</summary>
+    public static string InitThenRetry(string projectName) => $"h9k project init {Quote(projectName)}, then {Rerun}";
+
+    /// <summary>Another local project holds the member's name: rename it, then the bundle registers the member under its own.</summary>
+    public static string RenameThenRetry(string existingProjectName) =>
+        $"h9k project rename {Quote(existingProjectName)} <new-name>, then {Rerun}";
 
     private static string Quote(string value) =>
         value.Any(char.IsWhiteSpace) || value.Contains('"')
@@ -83,7 +94,7 @@ internal static class SolutionJoinRunner
                     $"this node already has a project named '{step.Local?.Name}'"
                     + (step.Local is { IsArchived: true } ? " (archived)" : string.Empty)
                     + ", so registering this member under its name would collide with it",
-                    SolutionJoinHandCommands.Add(member, name: "<another-name>"));
+                    SolutionJoinHandCommands.RenameThenRetry(step.Local?.Name ?? member.Name));
         }
 
         try
@@ -95,9 +106,7 @@ internal static class SolutionJoinRunner
             return SolutionJoinOutcome.NotFinished(
                 member,
                 exception.Message,
-                step.Action == SolutionJoinAction.Join && step.Local is { } local
-                    ? SolutionJoinHandCommands.Join(local.Name)
-                    : SolutionJoinHandCommands.Add(member));
+                SolutionJoinHandCommands.Retry());
         }
     }
 }
@@ -144,7 +153,8 @@ internal static class SolutionJoinReport
         if (unfinished > 0)
         {
             lines.Add(
-                $"[yellow]{unfinished} of {outcomes.Count} did not finish.[/] <secret> in a hand command is that member's secret from the bundle.");
+                $"[yellow]{unfinished} of {outcomes.Count} did not finish.[/] Re-running with the same bundle retries only those; "
+                + "a member that already finished is left alone and its secret is not spent.");
         }
 
         lines.Add(

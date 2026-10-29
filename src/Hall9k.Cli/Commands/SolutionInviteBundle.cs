@@ -7,8 +7,8 @@ using Hall9k.Domain.Shared.Exceptions;
 
 namespace Hall9k.Cli.Commands;
 
-/// <summary>One member of a solution invite bundle: who it is, and the member-of-project invite secret that joins it.</summary>
-internal sealed record SolutionInviteMember(SolutionMember Member, string Secret);
+/// <summary>One member of a solution invite bundle: who it is, the member-of-project invite secret that joins it, and the base branch its project is registered on at the minting node (null when the minting project records none), so a joining node registers it on the same branch.</summary>
+internal sealed record SolutionInviteMember(SolutionMember Member, string Secret, string? BaseBranch = null);
 
 /// <summary>
 /// What <c>h9k solution invite</c> prints and <c>h9k solution join</c> reads: the solution's key and
@@ -34,7 +34,7 @@ internal sealed record SolutionInviteBundle(string SolutionKey, string SolutionN
             SolutionKey,
             SolutionName,
             [.. Members.Select(entry => new WireMember(
-                entry.Member.ProjectKey, entry.Member.Name, entry.Member.RepositoryUrl.ToString(), entry.Secret))]);
+                entry.Member.ProjectKey, entry.Member.Name, entry.Member.RepositoryUrl.ToString(), entry.Secret, entry.BaseBranch))]);
         return Prefix + Base64Url.EncodeToString(JsonSerializer.SerializeToUtf8Bytes(wire, Json));
     }
 
@@ -87,7 +87,8 @@ internal sealed record SolutionInviteBundle(string SolutionKey, string SolutionN
 
             members.Add(new SolutionInviteMember(
                 new SolutionMember(wireMember.ProjectKey ?? string.Empty, wireMember.Name ?? string.Empty, repositoryUrl),
-                wireMember.Secret.Trim()));
+                wireMember.Secret.Trim(),
+                string.IsNullOrWhiteSpace(wireMember.BaseBranch) ? null : wireMember.BaseBranch.Trim()));
         }
 
         SolutionInviteBundle bundle = new(wire.SolutionKey ?? string.Empty, wire.SolutionName ?? string.Empty, members);
@@ -99,5 +100,5 @@ internal sealed record SolutionInviteBundle(string SolutionKey, string SolutionN
 
     private sealed record Wire(string? SolutionKey, string? SolutionName, WireMember[]? Members);
 
-    private sealed record WireMember(string? ProjectKey, string? Name, string? RepositoryUrl, string? Secret);
+    private sealed record WireMember(string? ProjectKey, string? Name, string? RepositoryUrl, string? Secret, string? BaseBranch = null);
 }

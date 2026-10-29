@@ -86,17 +86,30 @@ public sealed class SolutionJoinCommand : Hall9kAsyncCommand<SolutionJoinCommand
 
         if (step.Action == SolutionJoinAction.Join && step.Local is { } local)
         {
+            if (!Directory.Exists(local.RepositoryPath))
+            {
+                return SolutionJoinOutcome.NotFinished(
+                    member,
+                    $"its repository is not on this node ({local.RepositoryPath}), so there is nothing to join against",
+                    SolutionJoinHandCommands.InitThenRetry(local.Name));
+            }
+
             ProjectJoinCommand.JoinOutcome joined = await ProjectJoinCommand.RunAsync(
                 session, local, claimedOwnerOverride: null, secret, fromProject: null,
                 new GitLedger(new ConsoleWorktreeLogger<GitLedger>()), new NodeKeyStore(), new ProjectGitHubAccessMirror(),
                 new GitLedgerChainReader(), new GitLedgerCommitReader(), promptForInviteToken: null, cancellationToken);
             return joined.Deferred
                 ? SolutionJoinOutcome.NotFinished(
-                    member, "the join was deferred rather than written", SolutionJoinHandCommands.Join(local.Name))
+                    member, "the join was deferred rather than written", SolutionJoinHandCommands.Retry())
                 : SolutionJoinOutcome.Joined(member);
         }
 
-        ProjectAddCommand.Settings settings = new() { Name = member.Name, RepositoryUrl = member.RepositoryUrl.ToString() };
+        ProjectAddCommand.Settings settings = new()
+        {
+            Name = member.Name,
+            RepositoryUrl = member.RepositoryUrl.ToString(),
+            BaseBranch = step.Entry.BaseBranch,
+        };
         ProjectAddCommand.Registration registration;
         try
         {
@@ -105,7 +118,25 @@ public sealed class SolutionJoinCommand : Hall9kAsyncCommand<SolutionJoinCommand
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            return SolutionJoinOutcome.NotFinished(member, exception.Message, SolutionJoinHandCommands.Add(member));
+            // The registration may have committed before the step that threw (the home, the doorbell), and
+            // then only h9k project init can repair it: a second registration under the name is refused.
+            return SolutionJoinOutcome.NotFinished(
+                member,
+                exception.Message,
+                await IsRegisteredAsync(store, member.Name, cancellationToken)
+                    ? SolutionJoinHandCommands.InitThenRetry(member.Name)
+                    : SolutionJoinHandCommands.Retry());
+        }
+
+        // The home first: a clone that failed also left nothing for the join to run against, and the clone's own git error is what the user needs.
+        if (registration.ExitCode != ExitCodes.Ok)
+        {
+            return SolutionJoinOutcome.NotFinished(
+                member,
+                "registered, but its home did not finish building: "
+                + (registration.HomeFailure ?? "see the lines above")
+                + (registration.Join is { Joined: true } ? " (the join itself did finish)" : string.Empty),
+                SolutionJoinHandCommands.InitThenRetry(member.Name));
         }
 
         return registration.Join switch
@@ -113,13 +144,20 @@ public sealed class SolutionJoinCommand : Hall9kAsyncCommand<SolutionJoinCommand
             { Joined: true } => SolutionJoinOutcome.RegisteredAndJoined(member),
             { RepositoryUnreachable: true } => SolutionJoinOutcome.NotFinished(
                 member,
-                "registered, but its repository did not finish cloning, so there was nothing to join against "
+                "registered, but its repository is not reachable, so there was nothing to join against "
                 + $"({registration.RepositoryPath})",
-                SolutionJoinHandCommands.Join(member.Name)),
+                SolutionJoinHandCommands.InitThenRetry(member.Name)),
             { Failure: { } failure } => SolutionJoinOutcome.NotFinished(
-                member, $"registered, but the join did not finish: {failure}", SolutionJoinHandCommands.Join(member.Name)),
+                member, $"registered, but the join did not finish: {failure}", SolutionJoinHandCommands.Retry()),
             _ => SolutionJoinOutcome.NotFinished(
-                member, "registered, but the join was deferred rather than written", SolutionJoinHandCommands.Join(member.Name)),
+                member, "registered, but the join was deferred rather than written", SolutionJoinHandCommands.Retry()),
         };
+    }
+
+    private static async Task<bool> IsRegisteredAsync(IDocumentStore store, string name, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession probe = store.LightweightSession();
+        IReadOnlyList<ProjectDetails> projects = await probe.Query<ProjectDetails>().ToListAsync(cancellationToken);
+        return projects.Any(project => project.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
     }
 }

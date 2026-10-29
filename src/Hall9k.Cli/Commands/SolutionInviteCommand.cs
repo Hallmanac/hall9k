@@ -4,6 +4,7 @@ using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -38,6 +39,7 @@ public sealed class SolutionInviteCommand : Hall9kAsyncCommand<SolutionInviteCom
         }
 
         SolutionView view = SolutionRegistry.Match(context.Solutions, settings.Solution);
+        SolutionDecider.RefuseClosed(view.Membership, "have invites minted for its members");
         ILedger ledger = new GitLedger(new ConsoleWorktreeLogger<GitLedger>());
         ILedgerChainReader chainReader = new GitLedgerChainReader();
         NodeKeyStore keyStore = new();

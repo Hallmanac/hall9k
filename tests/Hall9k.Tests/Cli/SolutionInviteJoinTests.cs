@@ -44,7 +44,10 @@ public sealed class SolutionInviteJoinTests
     };
 
     private static SolutionInviteBundle Bundle(params SolutionMember[] members) =>
-        new(SolutionDecider.NewKey(), "storefront", [.. members.Select(member => new SolutionInviteMember(member, $"inv-{member.Name}"))]);
+        new(
+            SolutionDecider.NewKey(),
+            "storefront",
+            [.. members.Select(member => new SolutionInviteMember(member, $"inv-{member.Name}", member == Web ? "develop" : null))]);
 
     // ---- the bundle ----
 
@@ -60,6 +63,7 @@ public sealed class SolutionInviteJoinTests
         parsed.SolutionKey.Should().Be(bundle.SolutionKey);
         parsed.SolutionName.Should().Be("storefront");
         parsed.Members.Should().Equal(bundle.Members);
+        parsed.Members.Select(entry => entry.BaseBranch).Should().Equal(null, "develop", null);
     }
 
     [Fact]
@@ -177,12 +181,11 @@ public sealed class SolutionInviteJoinTests
         outcomes.Select(outcome => outcome.State).Should().Equal(
             SolutionJoinState.NotFinished, SolutionJoinState.Joined, SolutionJoinState.AlreadyJoined);
         outcomes[0].Reason.Should().Be("no push on the repository");
-        outcomes[0].HandCommand.Should().Be(
-            "h9k project add --name shop-api --repo-url https://github.com/acme/shop-api.git --invite <secret>");
+        outcomes[0].HandCommand.Should().Be(SolutionJoinHandCommands.Retry()).And.NotContain("<secret>");
     }
 
     [Fact]
-    public async Task A_join_that_throws_names_the_join_command_for_the_local_project_and_a_collision_asks_for_another_name()
+    public async Task A_join_that_throws_is_retried_through_the_bundle_and_a_collision_asks_for_the_holder_to_be_renamed()
     {
         ProjectDetails unjoined = Project("web checkout", key: null, Web.RepositoryUrl.ToString(), joined: false);
         ProjectDetails holder = Project("shop-api", "01JZZZZZZZZZZZZZZZZZZZZZZZ", "https://github.com/acme/other.git");
@@ -193,9 +196,10 @@ public sealed class SolutionInviteJoinTests
 
         outcomes[0].State.Should().Be(SolutionJoinState.NotFinished);
         outcomes[0].Reason.Should().Contain("already has a project named 'shop-api'");
-        outcomes[0].HandCommand.Should().Contain("--name <another-name>").And.Contain("--invite <secret>");
+        outcomes[0].HandCommand.Should().StartWith("h9k project rename shop-api <new-name>, then h9k solution join --invite -");
         outcomes[1].Reason.Should().Be("secret already spent");
-        outcomes[1].HandCommand.Should().Be("h9k project join \"web checkout\" --invite <secret>");
+        outcomes[1].HandCommand.Should().Be(SolutionJoinHandCommands.Retry());
+        SolutionJoinHandCommands.InitThenRetry("web checkout").Should().StartWith("h9k project init \"web checkout\", then h9k solution join --invite -");
     }
 
     [Fact]
@@ -208,7 +212,7 @@ public sealed class SolutionInviteJoinTests
             SolutionJoinOutcome.AlreadyJoined(Admin),
             SolutionJoinOutcome.NotFinished(
                 new SolutionMember(WebKey, "shop-pay", new Uri("https://github.com/acme/shop-pay.git")),
-                "the clone failed", "h9k project join shop-pay --invite <secret>"),
+                "could not clone https://github.com/acme/shop-pay.git: Permission denied", SolutionJoinHandCommands.InitThenRetry("shop-pay")),
         ];
 
         string report = string.Join("\n", SolutionJoinReport.Lines("storefront", outcomes));
@@ -217,12 +221,12 @@ public sealed class SolutionInviteJoinTests
             .And.Contain("joined[/]: shop-web")
             .And.Contain("already joined[/]: shop-admin")
             .And.Contain("not finished[/]: shop-pay")
-            .And.Contain("why: the clone failed")
-            .And.Contain("finish it with: h9k project join shop-pay --invite <secret>")
+            .And.Contain("why: could not clone https://github.com/acme/shop-pay.git: Permission denied")
+            .And.Contain("finish it with: h9k project init shop-pay, then h9k solution join --invite -")
             .And.Contain("1 of 4 did not finish")
             .And.Contain("vouched in by the minting node's daemon on its next sweep")
             .And.Contain("push access");
-        report.Should().NotContain("inv-", "the report never prints a secret");
+        report.Should().NotContain("inv-", "the report never prints a secret").And.NotContain("<secret>");
         outcomes.Select(outcome => SolutionJoinReport.Label(outcome.State)).Should().OnlyHaveUniqueItems();
     }
 
@@ -242,6 +246,7 @@ public sealed class SolutionInviteJoinTests
     {
         SolutionMembership membership = SolutionDecider.Create(SolutionDecider.NewKey(), "storefront", [Api, Web, Admin]);
         ProjectDetails api = Project("shop-api", ApiKey, Api.RepositoryUrl.ToString());
+        api.BaseBranch = "develop";
         ProjectDetails web = Project("shop-web", WebKey, Web.RepositoryUrl.ToString());
         DateTimeOffset expires = new(2026, 11, 1, 0, 0, 0, TimeSpan.Zero);
 
@@ -262,6 +267,7 @@ public sealed class SolutionInviteJoinTests
         SolutionInviteBundle bundle = SolutionInviteBundle.Parse(result.ToBundle(membership).Encode());
         bundle.Members.Select(entry => entry.Member.Name).Should().Equal("shop-api");
         bundle.Members.Single().Secret.Should().Be("secret-api");
+        bundle.Members.Single().BaseBranch.Should().Be("develop", "the joining node registers the member on the branch it is based on here");
     }
 
     [Fact]
