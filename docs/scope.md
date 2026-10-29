@@ -413,7 +413,7 @@ against Jira.
 
 ### Solutions
 
-`h9k solution add | list | show | link | unlink | rename | close`. A solution groups one-repo
+`h9k solution add | init | list | show | link | unlink | rename | close`. A solution groups one-repo
 projects, one rung above the project on the ladder solution, project, epic, task. It is carried as a
 membership team setting on every member project (key, name, open or closed state with a close
 reason, and every member by project key with its name and repository URL), written through
@@ -429,7 +429,7 @@ the winning record does not list, left by two nodes rewriting one solution at on
 explicit human act with a reason, never automatically. `h9k solution show` is the cross-project
 board, and `task list` and `epic list` take `--solution`. Two nodes linking one project into
 different solutions at the same moment resolve as last write wins on replication; that is parked
-until it first happens. A solution window and onboarding are not built yet.
+until it first happens.
 
 Solution epics are built. In a project that belongs to a solution every epic is a solution epic: one
 ordinary epic per member project this node holds, all sharing a solution epic key and the title (two
@@ -443,6 +443,38 @@ epic in a different member project, and closeout closes an issue of a task in a 
 member project and every other task holding it is done or abandoned; otherwise it stays open and says why.
 Unlinking a project leaves its copies and tasks in place. Not built: a copy made on a node that does not
 hold a member project (the member gets none from that node), and any repair that makes one later.
+
+A solution has a **thin home** on every node that holds it, at `~/.hall9k/solutions/<name>`. The path is
+a convention derived from the solution's name, so nothing records it, and a rename leaves the old home
+where it was (`h9k solution init` makes the one under the new name). `h9k solution init <name>` creates
+or repairs it and reports each step the way `h9k project init` does; `h9k solution add` runs it for the
+new solution. The home holds an `AGENTS.md`, `skills/` seeded from the canonical set, `.claude/`, and
+`recipes/` with the platform-written `launch-anchor.md` and `settings.json` (resolved through the
+node's orchestrator model and effort, since a solution has no project override) and the seeded
+`orchestrator-recipe-generator`; it has no `repo/`, `ideas/` or `tasks/`. An `AGENTS.md` already there
+that the platform did not render for that solution is refused before anything is written. The
+`AGENTS.md` is a render of the membership: the solution's name and key, and every member with its
+repository URL and either its home on this node or a plain statement that this node has not joined it.
+The daemon's home render sweep re-renders it when those facts change, including a membership that
+arrives by replication and a member this node joins later, and writes only when the bytes differ.
+`h9k solution show` prints the home's path on a `Home:` line, or says there is none and names
+`h9k solution init`; `h9k solution close` leaves the home on disk. `h9k orchestrator refresh-anchors`
+(and so `h9k install` and `h9k update`) refreshes the launch anchor in every solution home that has one.
+
+The **solution window** is one standalone interactive session in that home. The
+`orchestrator-recipe-generator` skill has a solution mode beside project and node mode, resolved by
+matching the working directory against the `Home:` line, and writes a solution orchestrator recipe and
+its scoped-session recipes. The window is a **director of the member projects' own orchestrators**: it
+reads the solution board, walks member projects' ideas, cuts tasks into any member with `--project`,
+and sends every act that belongs to a member (a park ruling, a merge, a dispatch or placement, reading
+or draining that member's feed) to that member's live orchestrator by name through `ListAgents` and
+`SendMessage`, relaying the outcome. When the member's orchestrator is not live it stops, prints that
+member's launch line from `h9k orchestrator project <member>` for the operator to open in a new
+terminal, and continues once it is up. It registers no orchestrator presence of its own and never
+drains a member's feed (registering against a member would collide with that member's own window), so
+member orchestrators are expected to be running interactively almost always. A solution-level presence
+and a courier over every member's feed are parked until directing by message proves too slow for daily
+use. Ideas stay in member projects. Onboarding is not built yet.
 
 ### Ideas
 
@@ -1350,10 +1382,10 @@ project's home at `~/.hall9k/projects/hall9k` is canonical, and this repository 
 
 ### Orchestrator windows and their recipes
 
-A node or project orchestrator window is a lean, disposable terminal session that owns a piece of
+A node, project or solution orchestrator window is a lean, disposable terminal session that owns a piece of
 the platform (the machine, or one project's work) without implementing anything itself; the seam
 is one sentence, the node owns the resource and the project owns the work. `h9k install`,
-`h9k project add`, `h9k project init`, and a project-home render each write a tiny, always-
+`h9k project add`, `h9k project init`, `h9k solution init`, and a project-home render each write a tiny, always-
 overwritten `recipes/launch-anchor.md` and its companion `recipes/settings.json`; those two files
 are the only thing the platform ever renders, and the anchor hands off to `recipes/orchestrator.md`,
 which the `orchestrator-recipe-generator` skill

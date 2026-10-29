@@ -809,7 +809,7 @@ out of the epic it shares an issue in. On a project tracked under `jira` or
 
 ### Solutions: grouping one-repo projects
 
-`h9k solution add | list | show | link | unlink | rename | close`
+`h9k solution add | init | list | show | link | unlink | rename | close`
 
 The ladder is solution, project, epic, task: a solution groups one-repo projects. It is not a
 stream of its own. It is a membership team setting on every member project (the solution's key and
@@ -844,6 +844,21 @@ rewrote the same solution at once. Every rewrite refuses while it exists, and th
 
 A member that is registered and joined here but has since joined another solution is listed on the
 board under "Now in another solution", with the solution it moved to, rather than as not joined.
+
+`h9k solution init <name>` creates or repairs the solution's thin home on this node at
+`~/.hall9k/solutions/<name>` and reports each step the way `h9k project init` does; `add` runs it for a
+new solution. The path is a convention from the name, so nothing records it. The home holds an
+`AGENTS.md` rendered from the membership (the daemon's home render sweep keeps it current), `skills/`,
+`.claude/` and `recipes/` with the platform-written launch anchor and `settings.json` plus the seeded
+`orchestrator-recipe-generator`, and no `repo/`, `ideas/` or `tasks/`. An `AGENTS.md` the platform did
+not render at that path is refused before anything is written. `init` ends by printing the solution
+window's launch line. `h9k solution show` prints the home's path on a `Home:` line, or says there is
+none and names `init`; `close` leaves the home on disk, and `rename` leaves the old home where it was.
+The `orchestrator-recipe-generator` skill run from the home writes the solution window's recipe: a
+director of the member projects' orchestrators that sends each act belonging to a member to that
+member's live orchestrator, prints the member's launch line from `h9k orchestrator project <member>`
+when none is live, and registers no presence of its own. `h9k orchestrator refresh-anchors` also
+refreshes the anchor in every solution home that has one.
 
 `h9k solution show <name>` is the board across the members, grouped by project: each project's
 rollup and task table are the ones `h9k project show` composes, every row a task id and a plain

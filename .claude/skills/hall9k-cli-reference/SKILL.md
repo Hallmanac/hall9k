@@ -921,12 +921,13 @@ the solution by name (unique on this node, case-insensitive) or a prefix of its 
 
 ```bash
 h9k solution add <name> --project <p> [--project <p> ...] [--yes]   # mint the key and write the membership into each project; --yes answers the different-owner warning
+h9k solution init <name>                          # create or repair the solution's thin home at ~/.hall9k/solutions/<name> on this node; idempotent; `add` runs it for a new solution
 h9k solution list [--state open|closed|all]       # every solution this node knows, with how many members it has joined; read-only
-h9k solution show <name>                          # the board across member projects, grouped by project; unjoined members by name and URL; read-only
+h9k solution show <name>                          # the board across member projects, grouped by project; unjoined members by name and URL; a Home: line with the solution home's path on this node (or none, naming `solution init`); read-only
 h9k solution link <name> --project <p> [--yes]    # bring projects in; rewrites every member in one commit
 h9k solution unlink <name> --project <p>          # take projects out; clears theirs and rewrites the rest; frees a project for another solution
 h9k solution rename <name> <new-name>             # an explicit human act
-h9k solution close <name> --reason "<why>"        # the only way a solution ends; final
+h9k solution close <name> --reason "<why>"        # the only way a solution ends; final; its home is left on disk
 h9k task list --solution <name>                   # also: h9k epic list --solution <name>
 ```
 
@@ -950,6 +951,31 @@ a new member's repository owner or organization differs from every existing memb
 cannot prompt refuses without `--yes`. `link`, `unlink`, `rename` and `close` refuse, naming the
 members, when any member is not registered and joined on this node. The writing verbs are refused to
 dispatched sessions; `show` and `list` are read-only there.
+
+**The solution home and the solution window.** A solution has a thin home on each node that holds it,
+at `~/.hall9k/solutions/<name>` (a convention from the name, recorded nowhere, so a rename needs a
+fresh `h9k solution init` under the new name). It holds an `AGENTS.md` the platform renders from the
+membership (the name and key, and each member's repository URL with either its home on this node or
+the statement that this node has not joined it; the daemon's home render sweep keeps it current and
+writes only when the bytes differ), `skills/`, `.claude/`, and `recipes/` with the platform-written
+`launch-anchor.md` and `settings.json` plus the seeded `orchestrator-recipe-generator`. It has no
+`repo/`, `ideas/` or `tasks/`. `h9k solution init` refuses an `AGENTS.md` the platform did not render
+before writing anything, prints the solution window's launch line, and is also the repair command.
+`h9k orchestrator refresh-anchors`, `h9k install` and `h9k update` refresh the anchor in every
+solution home that has one.
+
+The `orchestrator-recipe-generator` skill run from a solution home is in solution mode (the working
+directory matches the `Home:` line of `h9k solution show`) and writes the solution orchestrator
+recipe. That window **directs** the member projects' orchestrators: it reports each member's presence
+from `h9k orchestrator status --project <member>` and the board from `h9k solution show`; reads that
+need no window (`task show`, `idea list --project <member>` once per joined member, `epic show`) run
+locally; tasks are cut into a member with `h9k task add --project <member>`, and ideas stay in member
+projects. Any act that belongs to a member (a park ruling, a merge, a dispatch or placement, reading
+or draining that member's feed) is sent to that member's live orchestrator by name through
+`ListAgents` and `SendMessage`, and the outcome relayed. When that orchestrator is not live the window
+stops and prints the member's launch line from `h9k orchestrator project <member>` for the operator to
+open in a new terminal, then continues once it is up. A solution window registers no orchestrator
+presence (it would collide with the member's own window) and never drains a member's feed.
 
 **A stacked pull-request edge is one explicit opt-in dependency and nothing is inferred**
 (Decisions Log #144, Brian's cohesion ruling 2026-08-28). `--stacked-on <parent>` implies the
