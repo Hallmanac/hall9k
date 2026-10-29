@@ -9,7 +9,7 @@ using Hall9k.Domain.Shared.ValueObjects;
 namespace Hall9k.Cli.ProjectHomes;
 
 /// <summary>
-/// Creates, or repairs, a solution's thin home at <see cref="SolutionHomePaths.DefaultFor"/>: the
+/// Creates, or repairs, a solution's thin home at <see cref="SolutionHomePaths.For"/>: the
 /// generated <c>AGENTS.md</c>, <c>skills/</c> seeded from the install's canonical set, the
 /// <c>.claude/</c> adapter, and <c>recipes/</c> holding the platform-owned launch anchor and
 /// settings file plus the seeded orchestrator-recipe-generator. There is no <c>repo/</c>,

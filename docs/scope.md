@@ -445,8 +445,9 @@ Unlinking a project leaves its copies and tasks in place. Not built: a copy made
 hold a member project (the member gets none from that node), and any repair that makes one later.
 
 A solution has a **thin home** on every node that holds it, at `~/.hall9k/solutions/<name>`. The path is
-a convention derived from the solution's name, so nothing records it, and a rename leaves the old home
-where it was (`h9k solution init` makes the one under the new name). `h9k solution init <name>` creates
+a convention, so nothing records it: a home is made at the slug of the solution's name and afterwards
+found by the solution key its `AGENTS.md` names, so a rename keeps the home where it is (its `AGENTS.md`
+follows the new name) and two names that slug alike get separate directories. `h9k solution init <name>` creates
 or repairs it and reports each step the way `h9k project init` does; `h9k solution add` runs it for the
 new solution. The home holds an `AGENTS.md`, `skills/` seeded from the canonical set, `.claude/`, and
 `recipes/` with the platform-written `launch-anchor.md` and `settings.json` (resolved through the

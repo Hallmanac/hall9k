@@ -279,7 +279,8 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
 
     /// <summary>
     /// Re-renders the <c>AGENTS.md</c> of every solution whose thin home exists on this node
-    /// (<see cref="SolutionHomePaths.DefaultFor"/>) and answers how many files it wrote. The
+    /// (<see cref="SolutionHomePaths.For"/>, found by the key the home's own file names, so a
+    /// renamed solution's home is still reached) and answers how many files it wrote. The
     /// solutions come from <see cref="SolutionRegistry.Read"/> over all registered projects, so a
     /// membership that arrives by replication, a rename and a member this node joins later each
     /// change the bytes on the next sweep, and <see cref="SolutionAgentsDocument.Write"/> touches
@@ -296,7 +297,7 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
             SolutionMembership membership = view.Membership;
             try
             {
-                string home = SolutionHomePaths.DefaultFor(membership.Name);
+                string home = SolutionHomePaths.For(membership.Name, membership.Key);
                 if (!Directory.Exists(home))
                 {
                     continue;

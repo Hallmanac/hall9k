@@ -31,8 +31,9 @@ public enum SolutionAgentsWriteOutcome
 /// Every fact in it is read off the <see cref="SolutionMembership"/> and the registered projects,
 /// so a membership that arrives by replication and a member this node joins later both change the
 /// bytes on the next sweep. It names the solution's key as well as its name: the path is derived
-/// from the name, and the key is what tells a home belonging to a different solution whose name
-/// slugs the same apart from this one.
+/// from the name at first, but the key is what <see cref="SolutionHomePaths.For"/> finds a home by
+/// afterwards, so a renamed solution keeps its home and a different solution whose name slugs the
+/// same is told apart.
 /// </para>
 /// </summary>
 public static class SolutionAgentsDocument
@@ -55,6 +56,46 @@ public static class SolutionAgentsDocument
     public static bool IsRenderFor(string current, string key) =>
         current.Contains(GeneratedMarker, StringComparison.Ordinal)
         && current.Contains($"{KeyLinePrefix}{key}`", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The solution key the platform's own render in <paramref name="home"/> names, or null when
+    /// there is no readable <c>AGENTS.md</c> there or it is not a render (no marker, no key line).
+    /// This is how a home is tied to its solution without trusting the directory name, which is a
+    /// lossy slug that a rename changes and two different names can share.
+    /// </summary>
+    public static string? RenderedKeyIn(string home)
+    {
+        string path = ProjectHomePaths.AgentsFile(home);
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            string content = File.ReadAllText(path);
+            if (!content.Contains(GeneratedMarker, StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            int start = content.IndexOf(KeyLinePrefix, StringComparison.Ordinal);
+            if (start < 0)
+            {
+                return null;
+            }
+
+            start += KeyLinePrefix.Length;
+            int end = content.IndexOf('`', start);
+            return end > start
+                ? content[start..end]
+                : null;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>
     /// Whether an <c>AGENTS.md</c> the platform did not render for the solution with
@@ -105,7 +146,8 @@ public static class SolutionAgentsDocument
         document.AppendLine();
         document.AppendLine(
             $"> {GeneratedMarker}. Do not edit it: the daemon's home render sweep and `h9k solution init` "
-            + "overwrite it. Change the membership (`h9k solution link`, `unlink`, `rename`) and the file follows.");
+            + "overwrite it. Change the membership (`h9k solution link`, `unlink`, `rename`) and the file follows; "
+            + "the home keeps its directory when the solution is renamed.");
         document.AppendLine();
         document.AppendLine($"{KeyLinePrefix}{membership.Key}`");
         document.AppendLine();

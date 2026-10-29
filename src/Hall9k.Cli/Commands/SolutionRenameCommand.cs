@@ -41,11 +41,11 @@ public sealed class SolutionRenameCommand : Hall9kAsyncCommand<SolutionRenameCom
 
         AnsiConsole.MarkupLineInterpolated($"[green]Solution '{view.Membership.Name}' renamed to '{renamed.Name}'.[/] Its key and members are unchanged.");
 
-        string oldHome = SolutionHomePaths.DefaultFor(view.Membership.Name);
-        if (Directory.Exists(oldHome) && !SolutionHomePaths.DefaultFor(renamed.Name).Equals(oldHome, StringComparison.Ordinal))
+        string home = SolutionHomePaths.For(renamed.Name, renamed.Key);
+        if (Directory.Exists(home) && !SolutionHomePaths.DefaultFor(renamed.Name).Equals(home, StringComparison.Ordinal))
         {
             AnsiConsole.MarkupLineInterpolated(
-                $"[dim]A solution's home is named after it, so the home at {oldHome} is not renamed with it. Create the new one: h9k solution init \"{renamed.Name}\". The old one is left on disk.[/]");
+                $"[dim]Its home at {home} keeps its directory name; the daemon re-renders the AGENTS.md there under the new name.[/]");
         }
 
         return ExitCodes.Ok;

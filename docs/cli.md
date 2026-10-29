@@ -847,7 +847,7 @@ board under "Now in another solution", with the solution it moved to, rather tha
 
 `h9k solution init <name>` creates or repairs the solution's thin home on this node at
 `~/.hall9k/solutions/<name>` and reports each step the way `h9k project init` does; `add` runs it for a
-new solution. The path is a convention from the name, so nothing records it. The home holds an
+new solution. The path is a convention, so nothing records it: a home is made at the slug of the name and afterwards found by the solution key its `AGENTS.md` names, so a rename keeps the home where it is and two names that slug alike get separate directories. The home holds an
 `AGENTS.md` rendered from the membership (the daemon's home render sweep keeps it current), `skills/`,
 `.claude/` and `recipes/` with the platform-written launch anchor and `settings.json` plus the seeded
 `orchestrator-recipe-generator`, and no `repo/`, `ideas/` or `tasks/`. An `AGENTS.md` the platform did

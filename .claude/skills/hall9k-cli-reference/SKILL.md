@@ -953,8 +953,8 @@ members, when any member is not registered and joined on this node. The writing 
 dispatched sessions; `show` and `list` are read-only there.
 
 **The solution home and the solution window.** A solution has a thin home on each node that holds it,
-at `~/.hall9k/solutions/<name>` (a convention from the name, recorded nowhere, so a rename needs a
-fresh `h9k solution init` under the new name). It holds an `AGENTS.md` the platform renders from the
+at `~/.hall9k/solutions/<name>` (a convention, recorded nowhere: made at the slug of the name, then found by the solution key its
+`AGENTS.md` names, so a rename keeps the home and a name that slugs like another's gets a key suffix). It holds an `AGENTS.md` the platform renders from the
 membership (the name and key, and each member's repository URL with either its home on this node or
 the statement that this node has not joined it; the daemon's home render sweep keeps it current and
 writes only when the bytes differ), `skills/`, `.claude/`, and `recipes/` with the platform-written
