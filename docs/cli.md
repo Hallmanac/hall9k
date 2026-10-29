@@ -799,9 +799,10 @@ task may hold the issue when it is in the same solution epic as every live holde
 member project (one issue that needs a backend and a frontend change). The new task's epic is read from
 `--epic` at add time and from the task at `link-issue`/`link-jira` time; a holder that is a member
 project's task outside the epic is named with the remedy of joining it to the epic first, and every
-other case refuses as above. At closeout such an issue is closed only if this node holds every member
-project of the solution and every other linked task is done or abandoned; otherwise it stays open and
-the closeout log line says why. On a project tracked under `jira` or
+other case refuses as above. At closeout a task in a solution epic closes its issue only if this node holds every member
+project of the solution and every other task holding it is done or abandoned; otherwise it stays open and
+the closeout log line says why. `task revise --epic`/`--clear-epic` is refused while it would take a task
+out of the epic it shares an issue in. On a project tracked under `jira` or
 `github-issues`, every sibling task must still publish with `--untracked` (below): it carries no
 `ExternalReference` of its own, so the ordinary publish gate either refuses it or, taken past with
 `--no-existing-item`, auto-mints a second card or issue for it instead.
