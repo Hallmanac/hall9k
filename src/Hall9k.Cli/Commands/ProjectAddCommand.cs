@@ -339,16 +339,9 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
     }
 
     /// <summary>
-    /// Runs h9k project join on the freshly registered project, once its repository actually
-    /// exists locally for A1 to fetch and push against (idea 202383dc, A2a: "project add runs join
-    /// when the repository is reachable and says so when it could not"). Best-effort and never
-    /// fatal to this command: the project registration above already committed, and a join that
-    /// fails here (ssh-keygen unavailable, the repository not yet pushable) is exactly the
-    /// "says so when it could not" case, not a reason to report the whole registration as failed.
-    /// <paramref name="invite"/> (task: "a newcomer who registers a project whose ledger already
-    /// has an owner...") is handed straight to that join: with one, this call runs exactly the
-    /// --invite path; with none, a ledger that already has a real owner defers rather than minting
-    /// this install a second one, the identical decision h9k project join makes on its own.
+    /// Joins the freshly registered project the way the caller's mode asks: an attended
+    /// <c>h9k project add</c> reports the join as <see cref="TryJoinAsync(IDocumentSession,Guid,string,string,string?,CancellationToken)"/>
+    /// does; an unattended batch caller gets the attempt back to report itself, with no prompt.
     /// </summary>
     private static async Task<JoinAttempt> JoinRegisteredAsync(
         IDocumentSession session, Guid projectId, string name, string repositoryPath, string? invite, bool unattended,
@@ -366,6 +359,18 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         return JoinAttempt.Reported;
     }
 
+    /// <summary>
+    /// Runs h9k project join on the freshly registered project, once its repository actually
+    /// exists locally for A1 to fetch and push against (idea 202383dc, A2a: "project add runs join
+    /// when the repository is reachable and says so when it could not"). Best-effort and never
+    /// fatal to this command: the project registration above already committed, and a join that
+    /// fails here (ssh-keygen unavailable, the repository not yet pushable) is exactly the
+    /// "says so when it could not" case, not a reason to report the whole registration as failed.
+    /// <paramref name="invite"/> (task: "a newcomer who registers a project whose ledger already
+    /// has an owner...") is handed straight to that join: with one, this call runs exactly the
+    /// --invite path; with none, a ledger that already has a real owner defers rather than minting
+    /// this install a second one, the identical decision h9k project join makes on its own.
+    /// </summary>
     private static Task TryJoinAsync(
         IDocumentSession session, Guid projectId, string name, string repositoryPath, string? invite,
         CancellationToken cancellationToken) =>
