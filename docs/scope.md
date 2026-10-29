@@ -429,7 +429,20 @@ the winning record does not list, left by two nodes rewriting one solution at on
 explicit human act with a reason, never automatically. `h9k solution show` is the cross-project
 board, and `task list` and `epic list` take `--solution`. Two nodes linking one project into
 different solutions at the same moment resolve as last write wins on replication; that is parked
-until it first happens. Solution epics, a solution window, and onboarding are not built yet.
+until it first happens. A solution window and onboarding are not built yet.
+
+Solution epics are built. In a project that belongs to a solution every epic is a solution epic: one
+ordinary epic per member project this node holds, all sharing a solution epic key and the title (two
+trailing optional fields on `EpicAdded`, so older streams replay unchanged and an older build reads each
+copy as a project epic). `h9k epic add` makes the copies, `solution link` and `solution add` give a
+project linked later the open ones it lacks, and a task from any member joins the copy in its own project
+by naming the key or any copy's id. `epic show` and `epic list` read one epic as one row with the
+solution named and its tasks grouped by project. `epic close` closes every copy this node holds and is
+still explicit and never automatic. A second task may hold a tracker issue only inside the same solution
+epic in a different member project, and closeout closes such an issue only when this node holds every
+member project and every other linked task is done or abandoned; otherwise it stays open and says why.
+Unlinking a project leaves its copies and tasks in place. Not built: a copy made on a node that does not
+hold a member project (the member gets none from that node), and any repair that makes one later.
 
 ### Ideas
 

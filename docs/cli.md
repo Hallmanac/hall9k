@@ -772,6 +772,17 @@ through the registered connection before recording it. `h9k task list --epic <id
 epic's member tasks; `h9k epic show <id>` answers the same give-me-all-tasks-in-this-epic question
 with each member's state already composed.
 
+In a project that belongs to a solution every epic is a solution epic (see
+[Solutions](#solutions-grouping-one-repo-projects)). `h9k epic add --project <p>` creates one copy in
+every member project this node holds, all sharing a solution epic key and the title, and names any
+member this node does not hold, which gets no copy from it. A task joins one by naming the key (or a
+fragment of it) or the id of any copy at `task add --epic` or `task revise --epic`, and joins its own
+project's copy; a task from a project outside the solution, or a closed epic, is refused.
+`epic show <key-or-id>`, `epic list`, `epic close` and `epic link-jira` treat it as one epic: one row
+with the solution named, the tasks grouped by project (only projects this node has joined), a close that
+reaches every copy this node holds, and a Jira link recorded on each. `h9k task list --epic <key>` lists
+the tasks in every member project.
+
 **One Jira card that needs many pull requests does not distribute across sibling tasks the way it
 looks like it should.** A task's own `h9k task add --from-issue`/`--from-jira` and
 `h9k task link-jira`/`link-issue` refuse to adopt a card another task already carries, unless that
@@ -783,7 +794,14 @@ against exactly that refusal) puts the link on the epic instead:
 `h9k epic link-jira` records the card once at the epic level; exactly one member task formally
 adopts it; every other member task carries the same card only in its agent context, not as a
 second `ExternalReference`. The refusal a second task hits trying to adopt the same card is the
-guard working as intended, not a bug to route around. On a project tracked under `jira` or
+guard working as intended, not a bug to route around. The one exception is a solution epic: a second
+task may hold the issue when it is in the same solution epic as every live holder and in a different
+member project (one issue that needs a backend and a frontend change). The new task's epic is read from
+`--epic` at add time and from the task at `link-issue`/`link-jira` time; a holder that is a member
+project's task outside the epic is named with the remedy of joining it to the epic first, and every
+other case refuses as above. At closeout such an issue is closed only if this node holds every member
+project of the solution and every other linked task is done or abandoned; otherwise it stays open and
+the closeout log line says why. On a project tracked under `jira` or
 `github-issues`, every sibling task must still publish with `--untracked` (below): it carries no
 `ExternalReference` of its own, so the ordinary publish gate either refuses it or, taken past with
 `--no-existing-item`, auto-mints a second card or issue for it instead.
@@ -834,6 +852,11 @@ open|closed|all`, open by default). `h9k project show` carries a Solution row, a
 `h9k task list --solution <name>` and `h9k epic list --solution <name>` narrow those lists to the
 member projects known on this node. The write verbs are refused to dispatched sessions; `show` and
 `list` are read-only there.
+
+Epics in a solution are solution epics: `link` and `add` give a newly linked project a copy of every
+open solution epic this node holds for the solution. `unlink` leaves the project's copies and every task
+under them where they are, still shown on the solution epic; later solution epics and later closes no
+longer reach it, and it may create project epics again.
 
 ### Working a task interactively
 
