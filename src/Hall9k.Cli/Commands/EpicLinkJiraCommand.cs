@@ -18,7 +18,7 @@ public sealed class EpicLinkJiraCommand : Hall9kAsyncCommand<EpicLinkJiraCommand
     public sealed class Settings : CommandSettings
     {
         [CommandArgument(0, "<EPIC>")]
-        [Description("Epic id (full, or an unambiguous fragment)")]
+        [Description("Epic id (full, or an unambiguous fragment). A solution epic is named by its solution epic key or any copy's id, and every copy this node holds is linked")]
         public string Epic { get; init; } = string.Empty;
 
         [CommandArgument(1, "<KEY-OR-URL>")]
@@ -31,8 +31,9 @@ public sealed class EpicLinkJiraCommand : Hall9kAsyncCommand<EpicLinkJiraCommand
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
 
-        EpicAggregate epic = await EpicIdResolver.LoadAsync(session, settings.Epic, cancellationToken);
-        if (EpicDecider.AlreadyLinkedTo(epic, settings.Reference))
+        IReadOnlyList<EpicAggregate> copies = await EpicIdResolver.LoadAsync(session, settings.Epic, cancellationToken);
+        EpicAggregate[] unlinked = [.. copies.Where(copy => !EpicDecider.AlreadyLinkedTo(copy, settings.Reference))];
+        if (unlinked.Length == 0)
         {
             AnsiConsole.MarkupLine(
                 $"[green]Already linked[/] to {settings.Reference.EscapeMarkup()}. [dim]Nothing to do.[/]");
@@ -40,13 +41,17 @@ public sealed class EpicLinkJiraCommand : Hall9kAsyncCommand<EpicLinkJiraCommand
         }
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
-        EpicLinkedToJira linked = EpicDecider.LinkJira(
-            epic, settings.Reference, DateTimeOffset.UtcNow, context.OwnerId);
-        session.Events.Append(epic.Id, linked);
+        EpicLinkedToJira? linked = null;
+        foreach (EpicAggregate epic in unlinked)
+        {
+            linked = EpicDecider.LinkJira(epic, settings.Reference, DateTimeOffset.UtcNow, context.OwnerId);
+            session.Events.Append(epic.Id, linked);
+        }
+
         await session.SaveChangesAsync(cancellationToken);
 
-        string shortId = TaskListCommand.ShortId(epic.Id);
-        AnsiConsole.MarkupLine($"[green]Linked[/] epic {shortId} to {linked.Reference.EscapeMarkup()}");
+        string reference = EpicIdResolver.ReferenceOf(copies[0].Id, copies[0].SolutionEpicKey);
+        AnsiConsole.MarkupLine($"[green]Linked[/] epic {reference} to {linked?.Reference.EscapeMarkup()}");
         return ExitCodes.Ok;
     }
 }

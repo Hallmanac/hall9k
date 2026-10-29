@@ -30,7 +30,7 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         public string? Solution { get; init; }
 
         [CommandOption("--epic <EPIC>")]
-        [Description("Only this epic's tasks: its id or an unambiguous fragment (h9k epic list shows them all)")]
+        [Description("Only this epic's tasks: its id or an unambiguous fragment (h9k epic list shows them all). A solution epic is named by its solution epic key or any copy's id, and its tasks in every member project are listed")]
         public string? Epic { get; init; }
 
         [CommandOption("--state <STATE>")]
@@ -105,8 +105,8 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         IReadOnlySet<Guid>? solutionProjectIds = settings.Solution.IsNotBlank()
             ? await SolutionScope.ProjectIdsAsync(session, settings.Solution, cancellationToken)
             : null;
-        Guid? epicId = settings.Epic.IsNotBlank()
-            ? await EpicIdResolver.ResolveAsync(session, settings.Epic, cancellationToken)
+        IReadOnlyList<Guid>? epicIds = settings.Epic.IsNotBlank()
+            ? await EpicIdResolver.ResolveIdsAsync(session, settings.Epic, cancellationToken)
             : null;
 
         IReadOnlyList<TaskStatusRow> all = await TaskStatusComposer.ComposeAllAsync(
@@ -121,7 +121,7 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         List<TaskStatusRow> candidates = [.. all
             .Where(row => project is null || row.ProjectId == project.Id)
             .Where(row => solutionProjectIds is null || solutionProjectIds.Contains(row.ProjectId))
-            .Where(row => epicId is null || row.EpicId == epicId)
+            .Where(row => epicIds is null || (row.EpicId is { } rowEpic && epicIds.Contains(rowEpic)))
             .Where(row => states.Count == 0 || states.Any(state => TaskStateFilter.Matches(row, state)))];
 
         // Teammates first, ahead of the archived and partial-history defaults, for the reason

@@ -22,7 +22,10 @@ public sealed class EpicAddCommand : Hall9kAsyncCommand<EpicAddCommand.Settings>
         public string? Project { get; init; }
 
         [CommandOption("--title <TITLE>")]
-        [Description("The epic's name — a cohesive family of tasks worth naming (Decisions Log #100). Required.")]
+        [Description(
+            "The epic's name — a cohesive family of tasks worth naming (Decisions Log #100). Required. In a "
+            + "project that belongs to a solution every epic is a solution epic: one copy in each member project "
+            + "this node holds, sharing this title and one solution epic key, open to tasks from any member")]
         public string? Title { get; init; }
     }
 
@@ -58,6 +61,11 @@ public sealed class EpicAddCommand : Hall9kAsyncCommand<EpicAddCommand.Settings>
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
+        if (await SolutionEpicAddition.PlanAsync(session, project, settings.Title ?? string.Empty, context.OwnerId, cancellationToken) is { } addition)
+        {
+            return await AddSolutionEpicAsync(session, addition, project.Name, cancellationToken);
+        }
+
         Guid epicId = DomainId.New();
         EpicAdded added = EpicDecider.Add(
             epicId, project.Id, settings.Title ?? string.Empty, DateTimeOffset.UtcNow, context.OwnerId);
@@ -67,12 +75,47 @@ public sealed class EpicAddCommand : Hall9kAsyncCommand<EpicAddCommand.Settings>
         string shortId = TaskListCommand.ShortId(epicId);
         AnsiConsole.MarkupLine(
             $"[blue]Epic created[/] in '{project.Name.EscapeMarkup()}': {added.Title.EscapeMarkup()} [dim]({shortId})[/]");
+        PrintNext(project.Name, shortId);
+        return ExitCodes.Ok;
+    }
+
+    private static async Task<int> AddSolutionEpicAsync(
+        IDocumentSession session, SolutionEpicAddition addition, string projectName, CancellationToken cancellationToken)
+    {
+        foreach (EpicAdded copy in addition.Copies)
+        {
+            session.Events.StartStream<EpicAggregate>(copy.Id, copy);
+        }
+
+        await session.SaveChangesAsync(cancellationToken);
+
+        string key = addition.Copies[0].SolutionEpicKey ?? string.Empty;
+        string shortKey = EpicIdResolver.ReferenceOf(addition.Copies[0].Id, key);
+        AnsiConsole.MarkupLineInterpolated(
+            $"[blue]Solution epic created[/] in '{addition.View.Membership.Name}': {addition.Copies[0].Title} [dim]({shortKey})[/]");
+        AnsiConsole.MarkupLineInterpolated(
+            $"[dim]A copy in each of {string.Join(", ", addition.Targets.Select(member => member.Name))}; the copies share the key {key}.[/]");
+        if (addition.Purging.Count > 0)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]No copy in {string.Join(", ", addition.Purging.Select(member => member.Name))}[/] [dim](scheduled for permanent deletion).[/]");
+        }
+
+        if (addition.NotHeld.Count > 0)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]No copy in {string.Join(", ", addition.NotHeld.Select(member => member.Name))}[/] [dim](not registered and joined on this node; this node makes copies only in the projects it holds).[/]");
+        }
+
+        PrintNext(projectName, shortKey);
+        return ExitCodes.Ok;
+    }
+
+    private static void PrintNext(string projectName, string reference) =>
         AnsiConsole.MarkupLine(
-            $"[dim]Next:[/] h9k task add --project {project.Name.EscapeMarkup()} --objective \"…\" --epic {shortId} "
-            + $"[dim]for a new task, or for an existing draft:[/] h9k task revise <id> --epic {shortId} "
+            $"[dim]Next:[/] h9k task add --project {projectName.EscapeMarkup()} --objective \"…\" --epic {reference} "
+            + $"[dim]for a new task, or for an existing draft:[/] h9k task revise <id> --epic {reference} "
             + $"[dim](revision is Draft-only — a Published task returns with[/] h9k task draft <id> "
             + $"[dim]alone; an assigned task (Queued or Blocked) needs[/] h9k task dequeue <id> && h9k task draft <id> "
             + $"[dim]first)[/]");
-        return ExitCodes.Ok;
-    }
 }

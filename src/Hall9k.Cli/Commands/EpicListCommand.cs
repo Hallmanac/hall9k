@@ -51,12 +51,17 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
             return ExitCodes.Ok;
         }
 
-        List<EpicDetails> scoped = [.. epics
-            .Where(epic => project is null || epic.ProjectId == project.Id)
-            .Where(epic => solutionProjectIds is null || solutionProjectIds.Contains(epic.ProjectId))];
-        List<EpicDetails> matched = [.. scoped
-            .Where(epic => state is null || epic.State == state)
-            .OrderByDescending(epic => epic.AddedAt)];
+        SolutionContext context = await SolutionContext.LoadAsync(session, cancellationToken);
+
+        // A solution epic is one row, so the filters and the state count read whole epics: --project keeps a
+        // solution epic when the project holds a copy or is a member of its solution, which includes the
+        // epics created before it was linked and whose copy has not been made on this node.
+        List<EpicGroup> scoped = [.. EpicGroup.Of(epics)
+            .Where(group => project is null || InProject(group, project))
+            .Where(group => solutionProjectIds is null || group.Copies.Any(copy => solutionProjectIds.Contains(copy.ProjectId)))];
+        List<EpicGroup> matched = [.. scoped
+            .Where(group => state is null || group.State == state)
+            .OrderByDescending(group => group.AddedAt)];
         if (matched.Count == 0)
         {
             AnsiConsole.MarkupLine(
@@ -67,12 +72,7 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
 
         IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(
             session, DateTimeOffset.UtcNow, cancellationToken);
-        Dictionary<Guid, TaskRollup> rollups = rows
-            .SelectMany(row => row.EpicId is { } epicId ? new[] { (EpicId: epicId, Row: row) } : [])
-            .GroupBy(member => member.EpicId, member => member.Row)
-            .ToDictionary(group => group.Key, TaskRollup.From);
-        Dictionary<Guid, string> projects = (await session.Query<ProjectDetails>()
-            .ToListAsync(cancellationToken)).ToDictionary(p => p.Id, p => p.Name);
+        EpicBoard[] boards = [.. matched.Select(group => EpicBoard.Compose(group, context, rows))];
 
         Table table = new Table().Border(TableBorder.Rounded);
         table.AddColumn("Id");
@@ -91,20 +91,21 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
         // An epic can hold another owner's task. Those are counted in no group above, so the row
         // would otherwise stop adding up to its tasks without saying why; the column appears only
         // where some listed epic has one, which leaves a one-owner install's table as it always was.
-        bool anyTeammates = matched.Any(epic => rollups.GetValueOrDefault(epic.Id)?.Teammates > 0);
+        bool anyTeammates = boards.Any(board => board.Rollup.Teammates > 0);
         if (anyTeammates)
         {
             table.AddColumn(new TableColumn(TaskRollup.TeammatesColumn).RightAligned());
         }
 
-        foreach (EpicDetails epic in matched)
+        foreach (EpicBoard board in boards)
         {
-            TaskRollup rollup = rollups.GetValueOrDefault(epic.Id) ?? TaskRollup.Empty;
+            EpicGroup group = board.Group;
+            TaskRollup rollup = board.Rollup;
             table.AddRow([
-                $"[dim]{TaskListCommand.ShortId(epic.Id)}[/]",
-                StateMarkup(epic.State),
-                .. project is null ? (string[])[projects.GetValueOrDefault(epic.ProjectId, "?").EscapeMarkup()] : [],
-                epic.Title.EscapeMarkup(),
+                $"[dim]{Reference(group)}[/]",
+                StateMarkup(group.State),
+                .. project is null ? (string[])[ProjectCell(board)] : [],
+                TitleCell(board),
                 .. rollup.Cells,
                 .. anyTeammates ? (string[])[rollup.TeammatesCell] : [],
             ]);
@@ -115,19 +116,39 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
         return ExitCodes.Ok;
     }
 
+    /// <summary>What a person types for the epic: the copy's short id, or the short form of a solution epic's shared key.</summary>
+    internal static string Reference(EpicGroup group) =>
+        EpicIdResolver.ReferenceOf(group.First.Id, group.SolutionEpicKey);
+
+    private static bool InProject(EpicGroup group, ProjectDetails project) =>
+        group.Copies.Any(copy => copy.ProjectId == project.Id)
+        || (group.SolutionKey is { } key && project.Solution is { Holds: true } membership
+            && membership.Key.Equals(key, StringComparison.OrdinalIgnoreCase));
+
+    private static string ProjectCell(EpicBoard board) =>
+        board.Projects.Count == 0
+            ? "?"
+            : string.Join(", ", board.Projects.Select(project => project.ProjectName.EscapeMarkup()));
+
+    /// <summary>The title, with the solution named beside a solution epic so its single row says what it spans.</summary>
+    private static string TitleCell(EpicBoard board) =>
+        board.Group.IsSolutionEpic
+            ? $"{board.Group.Title.EscapeMarkup()} [dim](solution {(board.SolutionName ?? "not recorded here").EscapeMarkup()})[/]"
+            : board.Group.Title.EscapeMarkup();
+
     /// <summary>
     /// Names the state scope actually shown, and what the default open-only filter left out — the
     /// same discipline <c>TaskListCommand.Footer</c> and <c>IdeaListCommand.Footer</c> already hold,
     /// so a bare count here never reads as a claim about every epic on the install.
     /// </summary>
     internal static string Footer(
-        IReadOnlyList<EpicDetails> matched, IReadOnlyList<EpicDetails> scoped, ProjectDetails? project,
+        IReadOnlyList<EpicGroup> matched, IReadOnlyList<EpicGroup> scoped, ProjectDetails? project,
         EpicState? state, string? solution = null)
     {
         string scope = $"{matched.Count} epic{(matched.Count == 1 ? string.Empty : "s")}{Scope(project, state, solution)}";
         return $"[dim]{scope}{Elsewhere(scoped, project, state, solution)} — see one's tasks:[/] "
-            + $"h9k epic show {TaskListCommand.ShortId(matched[0].Id)} [dim]· filter tasks by epic:[/] "
-            + $"h9k task list --epic {TaskListCommand.ShortId(matched[0].Id)}";
+            + $"h9k epic show {Reference(matched[0])} [dim]· filter tasks by epic:[/] "
+            + $"h9k task list --epic {Reference(matched[0])}";
     }
 
     private static string Scope(ProjectDetails? project, EpicState? state, string? solution)
@@ -139,7 +160,7 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
 
     /// <summary>What the state filter is hiding, counted and named by the state it is actually in.</summary>
     private static string Elsewhere(
-        IReadOnlyList<EpicDetails> scoped, ProjectDetails? project, EpicState? state, string? solution)
+        IReadOnlyList<EpicGroup> scoped, ProjectDetails? project, EpicState? state, string? solution)
     {
         if (state is null)
         {
@@ -147,8 +168,8 @@ public sealed class EpicListCommand : Hall9kAsyncCommand<EpicListCommand.Setting
         }
 
         string[] named = [.. scoped
-            .Where(epic => epic.State != state)
-            .GroupBy(epic => epic.State)
+            .Where(group => group.State != state)
+            .GroupBy(group => group.State)
             .OrderBy(group => group.Key == EpicState.Open ? 0 : 1)
             .Select(group => $"{group.Count()} {group.Key.Value.ToLowerInvariant()}")];
 

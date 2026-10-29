@@ -17,8 +17,8 @@ public sealed class EpicSurfaceTests
     [Fact]
     public void The_footer_names_what_the_default_open_only_filter_is_hiding()
     {
-        IReadOnlyList<EpicDetails> scoped = [Epic(EpicState.Open), Epic(EpicState.Closed), Epic(EpicState.Closed)];
-        IReadOnlyList<EpicDetails> matched = [scoped[0]];
+        IReadOnlyList<EpicGroup> scoped = EpicGroup.Of([Epic(EpicState.Open), Epic(EpicState.Closed), Epic(EpicState.Closed)]);
+        IReadOnlyList<EpicGroup> matched = [scoped[0]];
 
         string footer = EpicListCommand.Footer(matched, scoped, project: null, state: EpicState.Open);
 
@@ -30,7 +30,7 @@ public sealed class EpicSurfaceTests
     [Fact]
     public void The_footer_stays_quiet_when_the_state_filter_is_hiding_nothing()
     {
-        IReadOnlyList<EpicDetails> scoped = [Epic(EpicState.Open), Epic(EpicState.Open)];
+        IReadOnlyList<EpicGroup> scoped = EpicGroup.Of([Epic(EpicState.Open), Epic(EpicState.Open)]);
 
         string footer = EpicListCommand.Footer(scoped, scoped, project: null, state: EpicState.Open);
 
@@ -40,7 +40,7 @@ public sealed class EpicSurfaceTests
     [Fact]
     public void The_footer_says_every_state_when_the_reader_asked_for_all()
     {
-        IReadOnlyList<EpicDetails> scoped = [Epic(EpicState.Open), Epic(EpicState.Closed)];
+        IReadOnlyList<EpicGroup> scoped = EpicGroup.Of([Epic(EpicState.Open), Epic(EpicState.Closed)]);
 
         string footer = EpicListCommand.Footer(scoped, scoped, project: null, state: null);
 
@@ -52,8 +52,8 @@ public sealed class EpicSurfaceTests
     public void The_footer_names_the_project_the_reader_scoped_to()
     {
         ProjectDetails project = new() { Id = DomainId.New(), Name = "alpha" };
-        IReadOnlyList<EpicDetails> scoped = [Epic(EpicState.Open, project.Id), Epic(EpicState.Closed, project.Id)];
-        IReadOnlyList<EpicDetails> matched = [scoped[0]];
+        IReadOnlyList<EpicGroup> scoped = EpicGroup.Of([Epic(EpicState.Open, project.Id), Epic(EpicState.Closed, project.Id)]);
+        IReadOnlyList<EpicGroup> matched = [scoped[0]];
 
         string footer = EpicListCommand.Footer(matched, scoped, project, state: EpicState.Open);
 

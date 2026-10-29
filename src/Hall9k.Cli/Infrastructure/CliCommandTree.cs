@@ -1289,8 +1289,13 @@ public static class CliCommandTree
                 + "closes only by explicit human act, never automatically — not even when its last task "
                 + "closes out.");
             epic.AddCommand<EpicAddCommand>("add")
-                .WithDescription("Name a new epic: a project and a title, nothing else.")
-                .WithExample("epic", "add", "--project", "hall9k", "--title", "\"Interactive mode\"");
+                .WithDescription(
+                    "Name a new epic: a project and a title, nothing else. In a project that belongs to a "
+                    + "solution every epic is a solution epic: one copy in each member project this node holds, "
+                    + "sharing the title and one solution epic key, open to tasks from any member. The command "
+                    + "names any member this node does not hold, which gets no copy from it.")
+                .WithExample("epic", "add", "--project", "hall9k", "--title", "\"Interactive mode\"")
+                .WithExample("epic", "add", "--project", "shop-api", "--title", "\"Shopping cart\"");
             epic.AddCommand<EpicListCommand>("list")
                 .WithDescription(
                     "Every epic with a member-task rollup by attention bucket, same columns h9k project "
@@ -1304,8 +1309,10 @@ public static class CliCommandTree
                 .WithDescription(
                     "One epic: its title, state, project, Jira link if it has one, and every member "
                     + "task with its current state, composed the same way h9k project show composes a "
-                    + "project's tasks.")
-                .WithExample("epic", "show", "28b19893");
+                    + "project's tasks. A solution epic is one epic however many copies: it names the "
+                    + "solution and groups the member tasks by project.")
+                .WithExample("epic", "show", "28b19893")
+                .WithExample("epic", "show", "01JA5K2W");
             epic.AddCommand<EpicLinkJiraCommand>("link-jira")
                 .WithDescription(
                     "Record the Jira epic this one corresponds to — a key or a URL, stored exactly as "
@@ -1318,7 +1325,7 @@ public static class CliCommandTree
                 .WithDescription(
                     "Close an epic: the only way one ever closes, always an explicit human act with a "
                     + "reason. Nothing closes an epic automatically, including its last member task "
-                    + "closing out.")
+                    + "closing out. Closing a solution epic closes every copy this node holds.")
                 .WithExample("epic", "close", "28b19893", "--reason", "\"Interactive mode shipped\"");
         });
 

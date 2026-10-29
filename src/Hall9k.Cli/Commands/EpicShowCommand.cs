@@ -2,7 +2,6 @@ using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Project.Projections;
-using Hall9k.Domain.Shared.Exceptions;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -14,7 +13,9 @@ public sealed class EpicShowCommand : Hall9kAsyncCommand<EpicShowCommand.Setting
     public sealed class Settings : CommandSettings
     {
         [CommandArgument(0, "<ID>")]
-        [Description("Epic id (full, or an unambiguous fragment)")]
+        [Description(
+            "Epic id (full, or an unambiguous fragment). A solution epic is one epic in every member project: name it "
+            + "by its solution epic key or any copy's id")]
         public string Id { get; init; } = string.Empty;
     }
 
@@ -23,60 +24,104 @@ public sealed class EpicShowCommand : Hall9kAsyncCommand<EpicShowCommand.Setting
         using var store = CliStore.Open();
         await using IQuerySession session = store.QuerySession();
 
-        Guid epicId = await EpicIdResolver.ResolveAsync(session, settings.Id, cancellationToken);
-        EpicDetails epic = await session.LoadAsync<EpicDetails>(epicId, cancellationToken)
-            ?? throw new DomainNotFoundException($"No epic {epicId}.");
-        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(epic.ProjectId, cancellationToken);
+        EpicGroup group = await EpicIdResolver.ResolveGroupAsync(session, settings.Id, cancellationToken);
+        SolutionContext context = await SolutionContext.LoadAsync(session, cancellationToken);
+        IReadOnlyList<TaskStatusRow> allRows = await TaskStatusComposer.ComposeAllAsync(
+            session, DateTimeOffset.UtcNow, cancellationToken);
+        EpicBoard board = EpicBoard.Compose(group, context, allRows);
 
+        AnsiConsole.Write(Header(board));
+        WriteTasks(board, DateTimeOffset.UtcNow);
+        return ExitCodes.Ok;
+    }
+
+    internal static Table Header(EpicBoard board)
+    {
+        EpicGroup group = board.Group;
+        EpicDetails epic = group.First;
         Table header = new Table().Border(TableBorder.None).HideHeaders();
         header.AddColumns("k", "v");
-        header.AddRow("[bold]Epic[/]", $"[bold]{epic.Title.EscapeMarkup()}[/]");
-        header.AddRow("State", EpicListCommand.StateMarkup(epic.State));
-        header.AddRow("Id", $"[dim]{epic.Id}[/]");
-        header.AddRow("Project", project?.Name.EscapeMarkup() ?? $"[dim]id {epic.ProjectId}[/]");
-        if (epic.JiraReference.IsNotBlank())
+        header.AddRow("[bold]Epic[/]", $"[bold]{group.Title.EscapeMarkup()}[/]");
+        header.AddRow("State", EpicListCommand.StateMarkup(group.State));
+        if (group.IsSolutionEpic)
         {
-            header.AddRow("Jira", JiraMarkup(epic.JiraReference));
+            header.AddRow("Solution", board.SolutionName?.EscapeMarkup() ?? "[dim]not recorded on this node[/]");
+            header.AddRow("Key", $"[dim]{group.SolutionEpicKey}[/]");
+            header.AddRow("Projects", string.Join(", ", board.Projects.Select(project =>
+                $"{project.ProjectName.EscapeMarkup()} [dim]({TaskListCommand.ShortId(project.Copy.Id)}"
+                + $"{(project.Copy.State == EpicState.Closed ? ", closed" : string.Empty)})[/]")));
+        }
+        else
+        {
+            header.AddRow("Id", $"[dim]{epic.Id}[/]");
+            header.AddRow("Project", board.Projects.FirstOrDefault()?.ProjectName.EscapeMarkup() ?? $"[dim]id {epic.ProjectId}[/]");
         }
 
-        header.AddRow("Added", $"[dim]{epic.AddedAt.ToLocalTime():g}[/]");
-        if (epic.State == EpicState.Closed)
+        foreach (string reference in group.Copies
+                     .Select(copy => copy.JiraReference)
+                     .Where(reference => reference.IsNotBlank())
+                     .Distinct()
+                     .OfType<string>())
         {
-            header.AddRow("Closed", $"[dim]{epic.ClosedAt?.ToLocalTime().ToString("g") ?? "an unrecorded time"}"
-                + $" — {epic.CloseReason?.EscapeMarkup() ?? "no reason recorded"}[/]");
+            header.AddRow("Jira", JiraMarkup(reference));
         }
 
-        AnsiConsole.Write(header);
+        header.AddRow("Added", $"[dim]{group.AddedAt.ToLocalTime():g}[/]");
+        if (group.Copies.Where(copy => copy.State == EpicState.Closed).OrderBy(copy => copy.ClosedAt).FirstOrDefault() is { } closed)
+        {
+            header.AddRow("Closed", $"[dim]{closed.ClosedAt?.ToLocalTime().ToString("g") ?? "an unrecorded time"}"
+                + $" — {closed.CloseReason?.EscapeMarkup() ?? "no reason recorded"}[/]");
+        }
 
-        IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(
-            session, DateTimeOffset.UtcNow, cancellationToken);
-        List<TaskStatusRow> members = [.. rows.Where(row => row.EpicId == epic.Id)];
+        return header;
+    }
+
+    private static void WriteTasks(EpicBoard board, DateTimeOffset now)
+    {
+        EpicGroup group = board.Group;
+        string reference = EpicIdResolver.ReferenceOf(group.First.Id, group.SolutionEpicKey);
+        string projectHint = group.IsSolutionEpic
+            ? "<member project>"
+            : (board.Projects.FirstOrDefault()?.ProjectName ?? group.First.ProjectId.ToString()).EscapeMarkup();
+        List<TaskStatusRow> members = [.. board.Projects.SelectMany(project => project.Rows)];
 
         if (members.Count == 0)
         {
-            AnsiConsole.MarkupLine(epic.State == EpicState.Open
+            AnsiConsole.MarkupLine(group.State == EpicState.Open
                 ? $"\n[bold]Tasks[/] [dim]none yet. Join one:[/] h9k task add --project "
-                  + $"{(project?.Name ?? epic.ProjectId.ToString()).EscapeMarkup()} --objective \"…\" --epic {TaskListCommand.ShortId(epic.Id)} "
-                  + $"[dim]for a new task, or for an existing draft:[/] h9k task revise <id> --epic {TaskListCommand.ShortId(epic.Id)} "
+                  + $"{projectHint} --objective \"…\" --epic {reference} "
+                  + $"[dim]for a new task, or for an existing draft:[/] h9k task revise <id> --epic {reference} "
                   + $"[dim](revision is Draft-only — a Published task returns with[/] h9k task draft <id> "
                   + $"[dim]alone; an assigned task (Queued or Blocked) needs[/] h9k task dequeue <id> && h9k task draft <id> "
                   + $"[dim]first)[/]"
                 : "\n[bold]Tasks[/] [dim]none — and it's closed, so nothing can join it now.[/]");
-            return ExitCodes.Ok;
+            return;
         }
 
-        AnsiConsole.MarkupLine($"\n[bold]Tasks[/] {TaskRollup.From(members).Summary()}");
-        AnsiConsole.Write(ProjectShowCommand.TaskTable(
-            [.. members.OrderByDescending(row => row.AddedAt)], AnsiConsole.Profile.Width, DateTimeOffset.UtcNow));
+        AnsiConsole.MarkupLine($"\n[bold]Tasks[/] {board.Rollup.Summary()}");
+        if (group.IsSolutionEpic)
+        {
+            foreach (EpicBoardProject project in board.Projects)
+            {
+                AnsiConsole.MarkupLine($"\n[bold]{project.ProjectName.EscapeMarkup()}[/] {project.Rollup.Summary()}");
+                if (project.Rows.Count > 0)
+                {
+                    AnsiConsole.Write(ProjectShowCommand.TaskTable(project.Rows, AnsiConsole.Profile.Width, now));
+                }
+            }
+        }
+        else
+        {
+            AnsiConsole.Write(ProjectShowCommand.TaskTable(
+                [.. members.OrderByDescending(row => row.AddedAt)], AnsiConsole.Profile.Width, now));
+        }
 
-        if (epic.State == EpicState.Open)
+        if (group.State == EpicState.Open)
         {
             AnsiConsole.MarkupLine(
                 $"\n[dim]Nothing closes an epic automatically — not even its last task finishing. "
-                + $"Close it deliberately when it's done:[/] h9k epic close {TaskListCommand.ShortId(epic.Id)} --reason \"<why>\"");
+                + $"Close it deliberately when it's done:[/] h9k epic close {reference} --reason \"<why>\"");
         }
-
-        return ExitCodes.Ok;
     }
 
     /// <summary>

@@ -71,10 +71,13 @@ public sealed class SolutionLinkCommand : Hall9kAsyncCommand<SolutionLinkCommand
             return ExitCodes.Ok;
         }
 
+        // The copies are staged on the same session and saved in the membership write's own commit, so a
+        // project is never in the solution without the epics it can already take tasks under.
+        int copied = await SolutionEpicCopies.StageAsync(session, membership.Key, added, cancellationToken);
         await SolutionWriter.WriteAsync(session, SolutionWriter.Rewrite(membership, context, removed: []), cancellationToken);
 
         AnsiConsole.MarkupLineInterpolated(
-            $"[green]Linked {string.Join(", ", newMembers.Select(member => member.Name))} into '{membership.Name}'.[/] It now has {membership.Members.Count} members.");
+            $"[green]Linked {string.Join(", ", newMembers.Select(member => member.Name))} into '{membership.Name}'.[/] It now has {membership.Members.Count} members.{SolutionEpicCopies.Describe(copied)}");
         return ExitCodes.Ok;
     }
 }

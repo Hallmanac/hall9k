@@ -236,7 +236,7 @@ public sealed class SolutionBoardTests
         EpicDetails open = new() { Id = DomainId.New(), State = EpicState.Open, Title = "Cart" };
         EpicDetails closed = new() { Id = DomainId.New(), State = EpicState.Closed, Title = "Old" };
 
-        string footer = EpicListCommand.Footer([open], [open, closed], project: null, state: EpicState.Open, solution: "storefront");
+        string footer = EpicListCommand.Footer(EpicGroup.Of([open]), EpicGroup.Of([open, closed]), project: null, state: EpicState.Open, solution: "storefront");
 
         footer.Should().Contain("in solution storefront").And.Contain("h9k epic list --state all --solution storefront");
     }
