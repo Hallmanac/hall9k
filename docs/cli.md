@@ -809,7 +809,7 @@ out of the epic it shares an issue in. On a project tracked under `jira` or
 
 ### Solutions: grouping one-repo projects
 
-`h9k solution add | init | list | show | link | unlink | rename | close`
+`h9k solution add | init | list | show | link | unlink | rename | close | invite | join`
 
 The ladder is solution, project, epic, task: a solution groups one-repo projects. It is not a
 stream of its own. It is a membership team setting on every member project (the solution's key and
@@ -873,6 +873,48 @@ Epics in a solution are solution epics: `link` and `add` give a newly linked pro
 open solution epic this node holds for the solution. `unlink` leaves the project's copies and every task
 under them where they are, still shown on the solution epic; later solution epics and later closes no
 longer reach it, and it may create project epics again.
+
+#### Bringing a teammate in: `h9k solution invite` and `h9k solution join`
+
+A teammate joins every member of a solution in one step instead of one `h9k project invite` and one
+`h9k project join` per project.
+
+`h9k solution invite <solution>` mints one member-of-project invite (role `member`) for each member
+this node holds and in which this node's owner holds the owner role, through the same mint
+`h9k project invite` performs, so the trust rules are the ones that command already has. A member it
+cannot mint for (not registered and joined here, the owner role not held, or any other mint refusal)
+is listed with that refusal's reason and left out, and the command fails when it minted none. What
+it mints it prints once, as a single-line invite bundle that carries the solution's key and name and,
+for each member, its project key, name, repository URL, and secret. The bundle holds live secrets, so
+it is shown once with the same warning `h9k project invite` gives, and no secret is printed anywhere
+outside it.
+
+`h9k solution join --invite <bundle>` takes that bundle as its only input; `--invite -` reads it
+from stdin, which keeps the secrets out of shell history (pipe it in, for example
+`pbpaste | h9k solution join --invite -`, because a terminal's line editor can cut a very long pasted
+line, and a bundle grows by about 220 characters per member), and passing it on the command line prints
+the same one-line warning `h9k project join --invite` does. It needs no solution record, membership,
+or member project on the joining node: the member list travels in the bundle, because a node has no
+membership record until the daemon's catch-up delivers one, and the solution appears on the node from
+the membership itself afterward. For each member it looks for a local project by project key, then by
+repository URL, and then:
+
+- none found: it registers the member from the bundle's name and URL the way
+  `h9k project add --repo-url` does (home, clone and all) and joins it with that member's secret;
+- found but not yet joined: it joins it with that member's secret;
+- already joined: it leaves it alone and does not spend the secret.
+
+It never prompts. Every member ends in one of four states, which the report prints: registered and
+joined, joined, already joined, or not finished. A member that does not finish (another local project
+already has its name, the clone failed, there is no push access on its repository, or the secret is
+spent or expired) is reported with its reason and the hand command that finishes it, written with
+`<secret>` standing in for that member's secret from the bundle. The remaining members still
+proceed, and the command exits non-zero when any member did not finish.
+
+Each join is the ordinary per-project join, so each member still needs push access on its own
+repository, and the minting node's daemon has to be running to vouch each join in on its next sweep.
+Nothing in `join` waits for that, so a member is joined on the teammate's node before the minting
+node has vouched it in. Both verbs are refused to dispatched sessions.
 
 ### Working a task interactively
 
@@ -2045,6 +2087,7 @@ miss in the sections above.
 | `h9k epic close --reason "<why>"` | States why the epic is done, which is required because closing without a reason is exactly the automatic close this platform never does. |
 | `h9k epic list --state open\|closed\|all` | Filters epics by their state, and shows only the open ones by default. |
 | `h9k solution close --reason "<why>"` | States why the solution is done, which is required because closing without a reason is exactly the automatic close this platform never does. |
+| `h9k solution join --invite -` | Reads the invite bundle from stdin instead of argv, the same handling `h9k project join --invite -` gives a single secret. |
 | `h9k solution add\|link --yes` | Answers the warning that a new member's repository owner or organization differs from every existing member's, which a session that cannot prompt needs to proceed. |
 | `h9k task list\|epic list --solution <name>` | Narrows the list to the member projects of one solution known on this node. |
 | `h9k task revise --objective "<sentence>"` | Replaces the objective with one outcome-phrased sentence, on a Draft. |

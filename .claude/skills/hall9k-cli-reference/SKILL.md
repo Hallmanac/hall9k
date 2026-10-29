@@ -928,6 +928,8 @@ h9k solution link <name> --project <p> [--yes]    # bring projects in; rewrites 
 h9k solution unlink <name> --project <p>          # take projects out; clears theirs and rewrites the rest; frees a project for another solution
 h9k solution rename <name> <new-name>             # an explicit human act
 h9k solution close <name> --reason "<why>"        # the only way a solution ends; final; its home is left on disk
+h9k solution invite <name>                        # mint a member invite per member this node holds and owns; prints one single-line bundle, once
+h9k solution join --invite <bundle|->             # register and join every member of a bundle this node has not joined; '-' reads stdin
 h9k task list --solution <name>                   # also: h9k epic list --solution <name>
 ```
 
@@ -976,6 +978,22 @@ or draining that member's feed) is sent to that member's live orchestrator by na
 stops and prints the member's launch line from `h9k orchestrator project <member>` for the operator to
 open in a new terminal, then continues once it is up. A solution window registers no orchestrator
 presence (it would collide with the member's own window) and never drains a member's feed.
+
+`invite` and `join` bring a teammate in to every member at once. `invite` mints one member-of-project
+invite (role member) through the same mint `h9k project invite` performs, for each member this node
+holds and in which its owner holds the owner role; a member it cannot mint for is listed with the
+refusal's reason and left out, it fails when it minted none, and it prints the result once as a
+single-line bundle (solution key and name; each member's project key, name, repository URL and
+secret) with the shown-once warning. `join --invite <bundle>` (or `-` for stdin) needs no solution or
+member project on the node: for each member it finds a local project by project key, then repository
+URL, and registers it from the bundle's name and URL like `h9k project add --repo-url` (none found),
+joins it with the secret (found, not joined), or leaves it alone without spending the secret
+(already joined). It never prompts. A member that does not finish (a local name collision, a failed
+clone, no push access on its repository, a spent or expired secret) is reported with its reason and
+the hand command that finishes it, the rest proceed, and the exit code is non-zero; each member ends
+as registered and joined, joined, already joined, or not finished. Each join is the ordinary
+per-project join: every member still needs push on its repository and the minting node's daemon must
+be running to vouch each join in on its next sweep, which nothing in `join` waits for.
 
 **A stacked pull-request edge is one explicit opt-in dependency and nothing is inferred**
 (Decisions Log #144, Brian's cohesion ruling 2026-08-28). `--stacked-on <parent>` implies the
