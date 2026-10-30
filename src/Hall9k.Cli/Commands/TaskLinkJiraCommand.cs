@@ -1,10 +1,12 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
+using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
 using JasperFx.Events;
@@ -56,6 +58,8 @@ public sealed class TaskLinkJiraCommand : Hall9kAsyncCommand<TaskLinkJiraCommand
         await using IDocumentSession session = store.LightweightSession();
 
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Task, cancellationToken);
+
+        await RefuseOnLinearProjectAsync(session, taskId, cancellationToken);
 
         JiraWorkItemProvider provider = await WorkItemConnections.JiraProviderAsync(session, cancellationToken);
         JiraIssueKey key = JiraIssueKey.Parse(settings.Key, new Uri(provider.Site));
@@ -140,6 +144,17 @@ public sealed class TaskLinkJiraCommand : Hall9kAsyncCommand<TaskLinkJiraCommand
 
         await WarnIfOffTheBoardAsync(session, task, card.Reference, cancellationToken);
         return ExitCodes.Ok;
+    }
+
+    /// <summary>The one-tracker rule: a task of a project whose tracker is Linear takes no new Jira card.</summary>
+    private static async Task RefuseOnLinearProjectAsync(
+        IQuerySession session, Guid taskId, CancellationToken cancellationToken)
+    {
+        TaskDetails details = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+        ProjectDetails project = await session.LoadAsync<ProjectDetails>(details.ProjectId, cancellationToken)
+            ?? throw new DomainNotFoundException($"Task {taskId} names a project that is not registered.");
+        ProjectTracker.RefuseOtherTracker(project.LinearTeam, project.Name, "h9k task link-jira");
     }
 
     /// <summary>

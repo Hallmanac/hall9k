@@ -3,10 +3,10 @@ using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
-using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
@@ -14,6 +14,7 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
+using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -185,7 +186,8 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "the origin's later revisions reach this copy only by adopting again. Only an issue "
             + "the source reports as open is adopted, so a closed or missing one is refused; the "
             + "state read at import is recorded as an observation of that moment, never re-checked "
-            + "afterwards")]
+            + "afterwards. Refused on a project with a Linear team bound (h9k project set --linear), "
+            + "where Linear is the one tracker")]
         public string? FromIssue { get; init; }
 
         [CommandOption("--from-jira <KEY-OR-URL>")]
@@ -200,7 +202,8 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "out of a card description — they are the readiness contract, so you supply them with "
             + "--criteria or at the prompt. Only a card whose status category is open is adopted, so a "
             + "closed or missing one is refused; the state read at import is recorded as an observation of "
-            + "that moment, never re-checked afterwards")]
+            + "that moment, never re-checked afterwards. Refused on a project with a Linear team bound "
+            + "(h9k project set --linear), where Linear is the one tracker")]
         public string? FromJira { get; init; }
 
         [CommandOption("--from-linear <IDENTIFIER-OR-URL>")]
@@ -216,8 +219,10 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "state type: backlog, unstarted, and started are open work; completed, canceled, and "
             + "duplicate are refused; triage is refused with a pointer to h9k idea add, which captures it as an idea; a "
             + "type Hall9k has no rule for is refused with the type quoted. The state read at import is "
-            + "recorded as an observation of that moment, never re-checked afterwards. Cannot be combined "
-            + "with --from-issue, --from-jira, or --from-pr")]
+            + "recorded as an observation of that moment, never re-checked afterwards. Needs Linear to be "
+            + "the project's tracker: refused on a project with no Linear team bound, naming "
+            + "h9k project set <project> --linear <TEAM>. Cannot be combined with --from-issue, "
+            + "--from-jira, or --from-pr")]
         public string? FromLinear { get; init; }
 
         [CommandOption("--primary-tracker <github|jira>")]
@@ -437,6 +442,8 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 + $"{purgeDeadline.ToLocalTime():g}, so it cannot take a new task. Cancel the purge "
                 + $"first: h9k project cancel-purge {projectDetails.Name}");
         }
+
+        RefuseAdoptionAgainstTracker(settings, projectDetails);
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
@@ -788,6 +795,29 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     {
         /// <summary>"an issue", "a card" — English, kept beside the noun it belongs to.</summary>
         public string Article => "aeiou".Contains(char.ToLowerInvariant(Noun[0])) ? "an" : "a";
+    }
+
+    /// <summary>
+    /// The one-tracker rule at the adoption door: a project with a Linear team bound takes no Jira
+    /// card and no GitHub issue, and Linear adoption needs that team bound. A pull request
+    /// (<c>--from-pr</c>) is none of those and is never refused here.
+    /// </summary>
+    internal static void RefuseAdoptionAgainstTracker(Settings settings, ProjectDetails project)
+    {
+        if (settings.FromIssue.IsNotBlank())
+        {
+            ProjectTracker.RefuseOtherTracker(project.LinearTeam, project.Name, "h9k task add --from-issue");
+        }
+
+        if (settings.FromJira.IsNotBlank())
+        {
+            ProjectTracker.RefuseOtherTracker(project.LinearTeam, project.Name, "h9k task add --from-jira");
+        }
+
+        if (settings.FromLinear.IsNotBlank())
+        {
+            ProjectTracker.RequireLinear(project.LinearTeam, project.Name, "h9k task add --from-linear");
+        }
     }
 
     /// <summary>

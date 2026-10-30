@@ -4842,6 +4842,75 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// Changing a project's tracker later stays possible, and a link already on a task is history:
+    /// a GitHub issue linked before the project bound a Linear team is still told through gh at
+    /// closeout, by its own provider, whatever the project's tracker is now.
+    /// </summary>
+    [Fact]
+    public async Task A_github_link_on_a_project_bound_to_Linear_is_still_told_by_its_own_provider()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            // An issue number no other test in this class links: the store is shared, and a sibling task
+            // on the same issue changes which gh calls the close-linked-issue rule makes.
+            externalReference: new ExternalReference(WorkItemProvider.GitHub, "o/r#4217"));
+        Guid projectId = await ProjectIdAsync(store, taskId, cts.Token);
+        await SetCloseLinkedIssueSettingsAsync(store, projectId, CloseLinkedIssueRule.Never, null, cts.Token);
+        await BindLinearTeamAsync(store, projectId, "ENG", cts.Token);
+
+        RecordingProcessRunner github = RecordingProcessRunner.Succeeding(string.Empty);
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees, github: github).PollOnceAsync(cts.Token);
+
+        github.Calls.Should().ContainSingle(
+            call => call.Arguments.Contains("comment"),
+            "the issue linked before the project moved to Linear is history, and is told as a GitHub issue");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
+    }
+
+    /// <summary>
+    /// The mirror image: a Linear link on a project with no Linear team bound (the team was cleared
+    /// after the task was linked) is treated at closeout by its own provider, which today means it
+    /// is told to neither GitHub nor Jira, and the closeout still completes.
+    /// </summary>
+    [Fact]
+    public async Task A_linear_link_on_a_project_with_no_team_is_told_to_neither_github_nor_jira()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            externalReference: new ExternalReference(WorkItemProvider.Linear, "ENG-123"));
+
+        RecordingProcessRunner github = RecordingProcessRunner.Succeeding(string.Empty);
+        RecordingJiraRequester jira = RecordingJiraRequester.RespondingTo(
+            _ => throw new InvalidOperationException("a Linear link must never be told through Jira"));
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees, github: github, jira: jira).PollOnceAsync(cts.Token);
+
+        jira.Requests.Should().BeEmpty();
+        github.Calls.Should().NotContain(
+            call => call.Arguments.Contains("comment"), "a Linear issue is not a GitHub issue to comment on");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
+    }
+
+    /// <summary>
     /// Under on-closeout, when the close write itself fails (gh rejects it, a permissions error,
     /// a transient network failure), the merge note must say so honestly rather than claim a
     /// closure that never happened — the close is attempted before the comment is composed for
@@ -6108,6 +6177,23 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             Guid.Empty,
             CloseLinkedIssue: closeLinkedIssue is { } rule ? Optional<CloseLinkedIssueRule>.Of(rule) : Optional<CloseLinkedIssueRule>.None,
             NeverCloseLabels: neverCloseLabels is { } labels ? Optional<IReadOnlyList<string>>.Of(labels) : Optional<IReadOnlyList<string>>.None));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>The project's Linear team, recorded the way the settings command records it.</summary>
+    private static async Task BindLinearTeamAsync(
+        DocumentStore store, Guid projectId, string team, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(projectId, new ProjectSettingsChanged(
+            projectId,
+            Optional<IReadOnlyList<VerifyCommand>>.None,
+            Optional<bool>.None,
+            Optional<int>.None,
+            Optional<IReadOnlyList<ContextLink>>.None,
+            Now,
+            Guid.Empty,
+            LinearTeam: Optional<LinearTeamKey>.Of(LinearTeamKey.Parse(team))));
         await session.SaveChangesAsync(cancellationToken);
     }
 

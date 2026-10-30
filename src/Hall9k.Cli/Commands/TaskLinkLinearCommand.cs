@@ -1,9 +1,12 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
+using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -59,6 +62,14 @@ public sealed class TaskLinkLinearCommand : Hall9kAsyncCommand<TaskLinkLinearCom
         await using IDocumentSession session = store.LightweightSession();
 
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Task, cancellationToken);
+
+        // Linear is the project's tracker or this door is shut: a Linear link on a project that has no
+        // team bound would never link a pull request, because the branch template carries no identifier.
+        TaskDetails details = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+        ProjectDetails project = await session.LoadAsync<ProjectDetails>(details.ProjectId, cancellationToken)
+            ?? throw new DomainNotFoundException($"Task {taskId} names a project that is not registered.");
+        ProjectTracker.RequireLinear(project.LinearTeam, project.Name, "h9k task link-linear");
 
         LinearWorkItemProvider provider = await WorkItemConnections.LinearProviderAsync(session, cancellationToken);
         LinearIssueIdentifier asked = provider.ParseIdentifier(settings.Identifier);
