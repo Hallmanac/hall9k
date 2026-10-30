@@ -1,6 +1,9 @@
 using System.Security;
 using System.Text;
+using System.Xml;
+using System.Xml.Linq;
 using Hall9k.Domain.Infrastructure.Storage;
+using Spectre.Console;
 
 namespace Hall9k.Cli.DaemonControl;
 
@@ -18,6 +21,13 @@ namespace Hall9k.Cli.DaemonControl;
 /// confines the teardown to h9kd itself, which is what stop already promises the
 /// operator ("Detached agents keep running by design — the next start adopts them").
 /// The non-autostart path never had this problem: it signals the recorded pid alone.
+///
+/// The plist carries no ProcessType. An earlier version wrote Background, which launchd
+/// applies to the job and everything it spawns: the gates and agents ran at the same low
+/// scheduling priority as backupd and a host gate that took 13 minutes began to exceed
+/// its 30-minute limit. Omitting the key gives launchd's standard band; Interactive was
+/// considered and rejected, so it must not be added. <see cref="StartAsync"/> removes the
+/// key from a plist an earlier version wrote.
 /// </summary>
 public sealed class LaunchdDaemonAutostart : IDaemonAutostart
 {
@@ -80,8 +90,30 @@ public sealed class LaunchdDaemonAutostart : IDaemonAutostart
     public async Task<bool> StartAsync(CancellationToken cancellationToken)
     {
         string uid = await UserIdAsync(cancellationToken);
-        ExecResult bootstrap = await Exec.RunAsync(
-            "/bin/launchctl", ["bootstrap", $"gui/{uid}", PlistPath], cancellationToken);
+        ProcessTypeCure cure = await CureBackgroundProcessTypeAsync(PlistPath, cancellationToken);
+        switch (cure.Outcome)
+        {
+            case ProcessTypeCureOutcome.Removed:
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[dim]Removed ProcessType Background from {PlistPath}; reloading the job so launchd drops that classification.[/]");
+                break;
+            case ProcessTypeCureOutcome.Skipped:
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[dim]Skipped removing ProcessType Background from {PlistPath} ({cure.Detail}); starting anyway, so the daemon may keep running at background priority.[/]");
+                break;
+        }
+
+        // launchd keeps the definition it loaded, so a cured file only reaches a job that
+        // is already bootstrapped (loaded and idle) through a bootout first. Exec does not
+        // throw on the nonzero exit an unloaded job gives, and DaemonLifecycle.StartAsync
+        // refuses to get here with a daemon running, so the bootout kills nothing.
+        IReadOnlyList<string[]> commands = StartCommands(uid, PlistPath, reload: cure.Outcome == ProcessTypeCureOutcome.Removed);
+        for (int index = 0; index < commands.Count - 1; index++)
+        {
+            await Exec.RunAsync("/bin/launchctl", commands[index], cancellationToken);
+        }
+
+        ExecResult bootstrap = await Exec.RunAsync("/bin/launchctl", commands[^1], cancellationToken);
         if (bootstrap.Succeeded)
         {
             return true;
@@ -93,6 +125,105 @@ public sealed class LaunchdDaemonAutostart : IDaemonAutostart
             "/bin/launchctl", ["kickstart", $"gui/{uid}/{Label}"], cancellationToken);
         return kickstart.Succeeded;
     }
+
+    /// <summary>
+    /// The launchctl invocations a start runs, in order, ending with the bootstrap whose
+    /// failure falls back to kickstart. A reload puts a bootout of the loaded job ahead of it.
+    /// </summary>
+    internal static IReadOnlyList<string[]> StartCommands(string uid, string plistPath, bool reload)
+    {
+        string[] bootstrap = ["bootstrap", $"gui/{uid}", plistPath];
+        return reload
+            ? [["bootout", $"gui/{uid}/{Label}"], bootstrap]
+            : [bootstrap];
+    }
+
+    /// <summary>
+    /// Removes a top-level ProcessType Background from the plist at <paramref name="plistPath"/>,
+    /// leaving every other key and value as it was. A plist without that exact pair is not
+    /// rewritten; one that cannot be read or rewritten is reported as skipped rather than thrown,
+    /// because a start must not cost on a repair.
+    /// </summary>
+    internal static async Task<ProcessTypeCure> CureBackgroundProcessTypeAsync(
+        string plistPath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            string text = await File.ReadAllTextAsync(plistPath, cancellationToken);
+            if (RemoveBackgroundProcessType(text) is not { } cured)
+            {
+                return new ProcessTypeCure(ProcessTypeCureOutcome.NotNeeded, string.Empty);
+            }
+
+            string temporaryPath = $"{plistPath}.tmp";
+            await File.WriteAllTextAsync(temporaryPath, cured, new UTF8Encoding(false), cancellationToken);
+            File.Move(temporaryPath, plistPath, overwrite: true);
+            return new ProcessTypeCure(ProcessTypeCureOutcome.Removed, string.Empty);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or XmlException)
+        {
+            return new ProcessTypeCure(ProcessTypeCureOutcome.Skipped, exception.Message);
+        }
+    }
+
+    /// <summary>
+    /// The plist text without its top-level ProcessType Background pair, or null when it has
+    /// none. The document is parsed so an environment variable that happens to be named
+    /// ProcessType is never mistaken for the job's own key, and the pair is then cut out of the
+    /// original text by position, so every other byte stays exactly as it was.
+    /// </summary>
+    internal static string? RemoveBackgroundProcessType(string plistText)
+    {
+        XDocument document = XDocument.Parse(plistText, LoadOptions.SetLineInfo);
+        XElement? key = document.Root?.Element("dict")?.Elements("key").FirstOrDefault(candidate => candidate.Value == "ProcessType");
+        if (key?.ElementsAfterSelf().FirstOrDefault() is not { Name.LocalName: "string" } value
+            || value.Value.Trim() != "Background")
+        {
+            return null;
+        }
+
+        int keyStart = OffsetOf(plistText, key);
+        int valueClose = plistText.IndexOf("</string>", OffsetOf(plistText, value), StringComparison.Ordinal);
+        if (!plistText.AsSpan(keyStart).StartsWith("<key") || valueClose < 0)
+        {
+            // Line endings the parser counts differently from this offset math (a bare CR);
+            // cutting at a guessed position would corrupt the file, so decline to touch it.
+            throw new XmlException("the ProcessType entry could not be located in the file text");
+        }
+
+        int valueEnd = valueClose + "</string>".Length;
+
+        // The indentation before the key goes with it, so no blank line is left behind.
+        int removeFrom = keyStart;
+        while (removeFrom > 0 && char.IsWhiteSpace(plistText[removeFrom - 1]))
+        {
+            removeFrom--;
+        }
+
+        return plistText.Remove(removeFrom, valueEnd - removeFrom);
+    }
+
+    /// <summary>The index of the '&lt;' that opens the element, from the line and column the parser recorded.</summary>
+    private static int OffsetOf(string text, XElement element)
+    {
+        IXmlLineInfo position = element;
+        int lineStart = 0;
+        for (int line = 1; line < position.LineNumber; line++)
+        {
+            lineStart = text.IndexOf('\n', lineStart) + 1;
+        }
+
+        return lineStart + position.LinePosition - 2;
+    }
+
+    internal enum ProcessTypeCureOutcome
+    {
+        NotNeeded,
+        Removed,
+        Skipped,
+    }
+
+    internal sealed record ProcessTypeCure(ProcessTypeCureOutcome Outcome, string Detail);
 
     public async Task<bool> StopAsync(CancellationToken cancellationToken)
     {
@@ -148,8 +279,6 @@ public sealed class LaunchdDaemonAutostart : IDaemonAutostart
                 <string>{log}</string>
                 <key>StandardErrorPath</key>
                 <string>{log}</string>
-                <key>ProcessType</key>
-                <string>Background</string>
             </dict>
             </plist>
 
