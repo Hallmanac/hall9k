@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
@@ -36,7 +37,13 @@ public sealed class IdeaMoveCommand : Hall9kAsyncCommand<IdeaMoveCommand.Setting
     {
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
+        return await RunAsync(session, settings, cancellationToken);
+    }
 
+    /// <summary>Testable core, on the <see cref="IdeaPromoteCommand"/> precedent.</summary>
+    internal static async Task<int> RunAsync(
+        IDocumentSession session, Settings settings, CancellationToken cancellationToken)
+    {
         IdeaAggregate idea = await IdeaIdResolver.LoadAsync(session, settings.Id, cancellationToken);
         ProjectDetails project = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
         if (project.PurgeAt is { } purgeDeadline)
@@ -50,6 +57,15 @@ public sealed class IdeaMoveCommand : Hall9kAsyncCommand<IdeaMoveCommand.Setting
                 $"Project '{project.Name}' is scheduled for permanent deletion at "
                 + $"{purgeDeadline.ToLocalTime():g}, so it cannot take this idea. Cancel the purge "
                 + $"first: h9k project cancel-purge {project.Name}");
+        }
+
+        // A link has to pass the destination project's one-tracker rule, the same check a task on that
+        // project meets, so an idea captured from a Linear issue cannot be moved to a project that
+        // tracks its work elsewhere (or the reverse).
+        if (idea.WorkItemReference is { } linkedItem)
+        {
+            ProjectTracker.RefuseLinkAgainstTracker(
+                linkedItem.Provider, project.LinearTeam, project.Name, "h9k idea move");
         }
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);

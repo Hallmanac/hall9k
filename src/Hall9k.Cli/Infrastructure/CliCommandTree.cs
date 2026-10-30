@@ -1197,16 +1197,24 @@ public static class CliCommandTree
                 + "explicit, separate act.");
             idea.AddCommand<IdeaAddCommand>("add")
                 .WithDescription(
-                    "Capture an idea: one command, one argument, no ceremony. --project is the only "
-                    + "option and it is optional — an idea may precede its project, or become one. Each "
-                    + "idea gets a discovery workspace directory for the research, files, and prototypes "
-                    + "that accumulate while you figure out what it is.")
+                    "Capture an idea: one command, one argument, no ceremony. --project is optional — an "
+                    + "idea may precede its project, or become one. Each idea gets a discovery workspace "
+                    + "directory for the research, files, and prototypes that accumulate while you figure "
+                    + "out what it is. The one exception to \"just the thought\" is a thought that already "
+                    + "lives in a tracker: --from-linear, --from-jira, or --from-issue (one of them, with "
+                    + "--project) reads the item through the importer task adoption uses, captures an idea "
+                    + "worded by its title unless you give the text, links it to the item, and writes the "
+                    + "item into the workspace as tracker-item.md. A Linear issue in Triage is the case this "
+                    + "is for: task adoption refuses it, an idea accepts it. The first task cut from the idea "
+                    + "adopts the item afresh.")
                 .WithExample("idea", "add", "\"The attention pane should teach the next command\"")
-                .WithExample("idea", "add", "\"Stacked PRs for dependency chains\"", "--project", "hall9k");
+                .WithExample("idea", "add", "\"Stacked PRs for dependency chains\"", "--project", "hall9k")
+                .WithExample("idea", "add", "--from-linear", "ENG-123", "--project", "hall9k")
+                .WithExample("idea", "add", "\"Throttle auth before launch\"", "--from-jira", "PROJ-123", "--project", "hall9k");
             idea.AddCommand<IdeaListCommand>("list")
                 .WithDescription(
                     "Browse ideas newest-first, with their age and their project (or the honest absence "
-                    + "of one). Shows what is still in discovery by default; --state all adds what was "
+                    + "of one), and the key of the tracker item an idea was captured from. Shows what is still in discovery by default; --state all adds what was "
                     + "concluded or archived. The footer teaches cutting a task, which is what the list "
                     + "is for.")
                 .WithExample("idea", "list")
@@ -1215,7 +1223,8 @@ public static class CliCommandTree
                 .WithExample("idea", "list", "--state", "all", "--all");
             idea.AddCommand<IdeaShowCommand>("show")
                 .WithDescription(
-                    "One idea: its note, its project, its discovery workspace path and what has piled up "
+                    "One idea: its note, its project, the tracker item it was captured from (as a URL "
+                    + "where this node can build one), its discovery workspace path and what has piled up "
                     + "in it, every version the note has had, the whole fan-out of tasks it has been cut "
                     + "into with each one's current state, and why it was concluded or archived.")
                 .WithExample("idea", "show", "28b19893");
@@ -1230,7 +1239,10 @@ public static class CliCommandTree
                     "Set or change the project an idea belongs to — for when capture did not know yet, "
                     + "which is most of the time. An idea with no project is honest, not incomplete; a "
                     + "project only becomes required when the first task is cut from it. This is the "
-                    + "only verb that moves an idea between projects: h9k idea assign names a person.")
+                    + "only verb that moves an idea between projects: h9k idea assign names a person. An "
+                    + "idea that carries a tracker link is moved only to a project whose tracker fits it "
+                    + "(a Linear issue needs a project with a Linear team bound, a Jira card or GitHub "
+                    + "issue is refused on one).")
                 .WithExample("idea", "move", "28b19893", "hall9k");
             idea.AddCommand<IdeaAssignCommand>("assign")
                 .WithDescription(
@@ -1261,7 +1273,9 @@ public static class CliCommandTree
                     + "the idea in the same breath. For the common case where a single idea deserved a "
                     + "single task and nothing more is coming; for a fan-out, use h9k task add --from-idea "
                     + "for each task and h9k idea conclude by hand once discovery stops producing. Needs a "
-                    + "project, supplied here or already assigned.")
+                    + "project, supplied here or already assigned. Refused, before anything is written, on "
+                    + "an idea that carries a tracker link: the cut of such an idea adopts the item and "
+                    + "promotion would not, so do the two acts by hand.")
                 .WithExample("idea", "promote", "28b19893")
                 .WithExample("idea", "promote", "28b19893", "--project", "hall9k")
                 .WithExample("idea", "promote", "28b19893", "--objective", "\"Give every idea a discovery workspace\"")
@@ -1508,6 +1522,8 @@ public static class CliCommandTree
                     "--criteria", "\"h9k project list shows one row per project\"")
                 .WithExample("task", "add", "--file", "backlog/19-model-policy.md", "--model", "claude-opus-5-5")
                 .WithExample("task", "add", "--from-idea", "28b19893", "--objective", "\"Add the project browse surface\"")
+                .WithExample("task", "add", "--from-idea", "28b19893", "--objective", "\"Add the project browse surface\"",
+                    "--unlinked")
                 .WithExample("task", "add", "--project", "hall9k", "--from-issue", "42")
                 .WithExample("task", "add", "--project", "hall9k", "--from-issue", "266", "--pre-approved")
                 .WithExample("task", "add", "--project", "hall9k", "--from-jira", "PROJ-123")

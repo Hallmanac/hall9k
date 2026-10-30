@@ -100,6 +100,7 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
         // earns its own refusal rather than "promotion needs a project" when it happens to have
         // none (independent pre-PR review, conformance lens).
         IdeaDecider.RequireCaptured(idea, "promote");
+        RefuseLinkedIdea(idea);
 
         // Promotion concludes the idea, which is the assignee's call, or the creator's when nobody
         // holds it; only the cut is open to any member (h9k task add --from-idea), so a member who
@@ -203,6 +204,27 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
         Announce(idea, taskId, destinationProjectId, project, seed, settings.Objective.IsNotBlank());
         TaskOwnerGuard.AnnounceOverride(ownerDecision, "promoted");
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// A promotion of an idea that carries a tracker link is refused before anything is written. The cut
+    /// of such an idea adopts the item afresh, with its own refusals and exits, and promotion would fold
+    /// that into a one-step act with no place to say so; it names the two acts it composes so they can be
+    /// run by hand. Adopting the link through promotion is parked until operators hit this.
+    /// </summary>
+    internal static void RefuseLinkedIdea(IdeaAggregate idea)
+    {
+        if (idea.WorkItemReference is not { } reference)
+        {
+            return;
+        }
+
+        string shortId = TaskListCommand.ShortId(idea.Id);
+        throw new DomainValidationException(
+            $"Idea {shortId} carries the tracker link {reference}, and h9k idea promote does not adopt a link, so it "
+            + "is refused rather than dropping it. Promotion is two acts, and run by hand they keep the link: "
+            + $"h9k task add --from-idea {shortId} --objective \"…\" (the cut reads the item afresh and adopts it), "
+            + $"then h9k idea conclude {shortId} --reason \"…\".");
     }
 
     /// <summary>
