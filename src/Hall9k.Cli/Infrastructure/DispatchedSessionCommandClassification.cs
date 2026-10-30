@@ -105,6 +105,7 @@ internal static class DispatchedSessionCommandClassification
             [typeof(TaskPullCommand.Settings)] = (DispatchedSessionAccess.Refused, "task pull"),
             [typeof(TaskPushToJiraCommand.Settings)] = (DispatchedSessionAccess.Refused, "task push-to-jira"),
             [typeof(TaskLinkJiraCommand.Settings)] = (DispatchedSessionAccess.Refused, "task link-jira"),
+            [typeof(TaskLinkLinearCommand.Settings)] = (DispatchedSessionAccess.Refused, "task link-linear"),
             [typeof(TaskWriteJiraCommand.Settings)] = (DispatchedSessionAccess.Allowed, "task write-jira"),
             [typeof(TaskLinkIssueCommand.Settings)] = (DispatchedSessionAccess.Refused, "task link-issue"),
             [typeof(TaskLogInteractionCommand.Settings)] = (DispatchedSessionAccess.Allowed, "task log-interaction"),
@@ -246,6 +247,7 @@ internal static class DispatchedSessionCommandClassification
 
             // ---- connection (wholesale) ----
             [typeof(ConnectionAddJiraCommand.Settings)] = (DispatchedSessionAccess.Refused, "connection add jira"),
+            [typeof(ConnectionAddLinearCommand.Settings)] = (DispatchedSessionAccess.Refused, "connection add linear"),
             [typeof(ConnectionListCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "connection list"),
 
             // ---- config (wholesale) ----

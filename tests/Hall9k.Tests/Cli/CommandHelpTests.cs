@@ -130,6 +130,41 @@ public sealed class CommandHelpTests
     }
 
     [Theory]
+    [InlineData(nameof(ConnectionAddLinearCommand.Settings.Token), "~/.hall9k/credentials")]
+    [InlineData(nameof(ConnectionAddLinearCommand.Settings.TokenEnvironmentVariable), "never copies the value")]
+    [InlineData(nameof(ConnectionAddLinearCommand.Settings.Keychain), "records the service name")]
+    public void Every_way_of_supplying_a_linear_key_says_where_it_ends_up(string property, string expected)
+    {
+        string description = typeof(ConnectionAddLinearCommand.Settings)
+            .GetProperty(property)!
+            .GetCustomAttribute<DescriptionAttribute>()!.Description;
+
+        description.Should().Contain(expected);
+    }
+
+    [Fact]
+    public void The_linear_import_teaches_its_state_rules_and_that_criteria_are_never_read_from_an_issue()
+    {
+        string description = typeof(TaskAddCommand.Settings)
+            .GetProperty(nameof(TaskAddCommand.Settings.FromLinear))!
+            .GetCustomAttribute<DescriptionAttribute>()!.Description;
+
+        description.Should().Contain("NEVER").And.Contain("--criteria")
+            .And.Contain("triage").And.Contain("h9k idea add --from-linear")
+            .And.Contain("one workspace per install");
+    }
+
+    [Fact]
+    public void The_linear_link_command_teaches_that_it_verifies_and_how_a_moved_issue_is_relinked()
+    {
+        string identifier = typeof(TaskLinkLinearCommand.Settings)
+            .GetProperty(nameof(TaskLinkLinearCommand.Settings.Identifier))!
+            .GetCustomAttribute<DescriptionAttribute>()!.Description;
+
+        identifier.Should().Contain("reads it").And.Contain("previous ones").And.Contain("different workspace");
+    }
+
+    [Theory]
     [MemberData(nameof(ProjectSelectingSettings))]
     public void Every_project_selector_describes_the_resolver_it_actually_uses(Type settings, string property)
     {

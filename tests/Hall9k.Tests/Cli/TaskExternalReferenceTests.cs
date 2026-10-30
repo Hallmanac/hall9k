@@ -76,6 +76,32 @@ public sealed class TaskExternalReferenceTests
             .And.Contain("jira:PROJ-123");
     }
 
+    private static readonly WorkItemImporter WithLinear = new(
+        new GitHubWorkItemProvider(RecordingProcessRunner.NeverInvoked()),
+        new LinearWorkItemProvider(
+            LinearAccount.Registered(
+                new Uri("https://linear.app/hall9k"), "Brian Hall", CredentialReference.EnvironmentVariable("LINEAR_KEY")),
+            FakeLinearRequester.NeverInvoked()));
+
+    [Fact]
+    public void A_linear_issue_renders_as_a_link_under_the_connections_recorded_workspace()
+    {
+        string markup = TaskShowCommand.ExternalMarkup(WithLinear, "linear:ENG-123");
+
+        markup.Should().Contain("[link=https://linear.app/hall9k/issue/ENG-123]")
+            .And.Contain("linear:ENG-123");
+    }
+
+    [Fact]
+    public void A_linear_issue_on_a_node_with_no_linear_connection_shows_its_reference_with_no_link()
+    {
+        // The workspace address lives on the connection, so a teammate's node that never registered
+        // one cannot say where the issue lives, and says nothing rather than failing or guessing.
+        string markup = TaskShowCommand.ExternalMarkup(GitHubOnly, "linear:ENG-123");
+
+        markup.Should().Be("linear:ENG-123");
+    }
+
     [Fact]
     public void A_jira_reference_that_is_not_a_card_key_is_not_dressed_up_as_one()
     {

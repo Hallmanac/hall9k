@@ -261,7 +261,7 @@ public sealed class ConnectionAddJiraCommand : Hall9kAsyncCommand<ConnectionAddJ
     /// nor a failure to remove is allowed to replace the error the caller is about to report.
     /// </para>
     /// </summary>
-    private static async Task UnwindStoredTokenAsync(CredentialReference written)
+    internal static async Task UnwindStoredTokenAsync(CredentialReference written)
     {
         try
         {
@@ -287,7 +287,7 @@ public sealed class ConnectionAddJiraCommand : Hall9kAsyncCommand<ConnectionAddJ
     /// recorded and working, and the thing a human needs from this line is to know a secret is
     /// sitting somewhere they were not told about.
     /// </summary>
-    private static void DiscardAndReport(CredentialReference superseded)
+    internal static void DiscardAndReport(CredentialReference superseded)
     {
         try
         {
@@ -421,7 +421,7 @@ public sealed class ConnectionAddJiraCommand : Hall9kAsyncCommand<ConnectionAddJ
     internal static string FileName(Uri site, string email) =>
         "jira-" + Slug($"{site.Host}-{email}");
 
-    private static string Slug(string value)
+    internal static string Slug(string value)
     {
         char[] characters =
         [
