@@ -1575,12 +1575,15 @@ through either lever, keeping the automatic cross-node recovery it had before pl
 
 GitHub gets a write path of its own, because an issue's shape (title, body, labels) is uniform
 enough for the platform to author deterministically, with no agent needed. A project's **backlog
-policy** (`h9k project set --backlog none|github-issues|jira`) decides how every published task is
+policy** (`h9k project set --backlog none|github-issues|jira|linear`) decides how every published task is
 tracked: `github-issues` has `h9k task publish` run `gh issue create` itself and record the result
-through `h9k task link-issue`, the same observation-gate pattern `link-jira` uses; `jira` makes the
-same publication request `push-to-jira` does. Either policy gates the publish itself first: a
+through `h9k task link-issue`, the same observation-gate pattern `link-jira` uses; `linear` creates
+the issue in the project's bound Linear team from the publishing install and records it through
+`h9k task link-linear`; `jira` makes the same publication request `push-to-jira` does. Every
+tracking policy gates the publish itself first: a
 draft with no linked item yet, and no publication already pending, is refused until a human or
-orchestrator links what a search of the tracker found, attests none exists with
+orchestrator links what a search of the tracker found (`h9k task link-issue`, `link-jira`, or
+`link-linear`), attests none exists with
 `h9k task publish <id> --no-existing-item`, or attests that this task should skip tracking
 altogether with `h9k task publish <id> --untracked` — for internal chores and platform tasks that
 should not pollute a team's tracker — so the platform never mints a duplicate from a search it

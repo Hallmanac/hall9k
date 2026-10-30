@@ -853,7 +853,7 @@ h9k task revise <id> --clear-interactive-mode     # the other revision Draft-onl
 h9k task revise <id> --review-stage-composition <VALUE|default>   # Draft-only, unlike the review caps below — a live change reaches only the task's next run (Decisions Log #129)
 h9k task set-review-caps <id> --max-compliance-review-cycles <N>   # a task-level review-cycle-cap override, settable at any time — even while the run is live (Decisions Log #112)
 h9k task publish <id> [--queue]                   # the readiness gate; --queue publishes and queues in one transaction, for the task's assignee or for you when it has none (no owner argument; refuses when another member is the assignee). --no-queue (alias --no-assign) skips the interactive offer to queue; --assign is refused with a pointer to --queue for one minor release (decision f951013c)
-h9k task publish <id> --no-existing-item          # required if a tracking backlog policy finds no linked item yet and has no publication already pending
+h9k task publish <id> --no-existing-item          # required if a tracking backlog policy finds no linked item yet and has no publication already pending; under linear it also creates the Linear issue after the commit, and checks the team through Linear first (refused with the task still a Draft when that fails)
 h9k task publish <id> --untracked                 # the same gate's other exit: deliberately skip tracking for this task, attested on the stream
 h9k task publish <id> --pre-approved              # the owner stops being a synchronous gate at the pull request: the daemon rebase-merges once every real gate (CI, review decision, requested reviewers, threads) reads satisfied (Decisions Log #135)
 h9k task publish <id> --pre-approved after-human-review   # the same automatic merge, held until a human reviewer has actually been requested on the pull request AND every requested reviewer has approved the current head (Decisions Log #149)
@@ -1441,16 +1441,16 @@ body, labels) is uniform enough for the platform to author deterministically, wi
 needed:
 
 ```bash
-h9k project set <project> --backlog none|github-issues|jira   # default none — today's behavior
-h9k project set <project> --backlog-routing "<TEXT>"          # free text: verbatim to the jira agent; a label list for github-issues
+h9k project set <project> --backlog none|github-issues|jira|linear   # default none — today's behavior; linear needs a Linear team bound (--linear), or bound by the same command
+h9k project set <project> --backlog-routing "<TEXT>"          # free text: verbatim to the jira agent; a label list for github-issues; ignored under linear (project set says so)
 h9k task link-issue <task> 123                                # record a GitHub issue, verified against gh first
 h9k project set <project> --primary-tracker github|jira|none  # default which tracker wins when a task adopts both (task: a task may link to both); 'none' clears it, and h9k task add --primary-tracker overrides it per task
 ```
 
-`h9k task publish` checks the policy twice. First, before publishing: a tracking policy (`jira` or
-`github-issues`) on a task that carries no linked item yet and has no publication already pending
+`h9k task publish` checks the policy twice. First, before publishing: a tracking policy (`jira`,
+`github-issues`, or `linear`) on a task that carries no linked item yet and has no publication already pending
 refuses the publish outright, naming the three ways forward — link an existing item
-(`h9k task link-jira` / `h9k task link-issue`), attest none exists and proceed with
+(`h9k task link-jira` / `h9k task link-issue` / `h9k task link-linear`), attest none exists and proceed with
 `h9k task publish <id> --no-existing-item`, or attest that this task should skip tracking
 altogether with `h9k task publish <id> --untracked`, for internal chores and platform tasks that
 should not pollute a team's tracker — so a human or orchestrator confirms no existing item covers
@@ -1469,9 +1469,30 @@ same request `push-to-jira` does (so a project with no Jira connection registere
 at publish, rather than refused — `push-to-jira` remains the manual retry once one exists);
 `github-issues` runs `gh issue create` itself, reads the created issue straight back the same way
 `--from-issue` does, and records it through `link-issue` — the platform's own creation claim gets
-the identical observation gate an agent's does. A task adopted with `--from-issue` or `--from-jira`
-already carries its reference, so the pre-publish gate never fires and publishing it creates
-nothing a second time. Closeout comments a merged pull request onto a linked GitHub issue exactly
+the identical observation gate an agent's does. A task adopted with `--from-issue`, `--from-jira`, or
+`--from-linear` already carries its reference, so the pre-publish gate never fires and publishing it
+creates nothing a second time.
+
+`linear` (accepted only with a Linear team bound, and refused to be left without one: `--linear none`
+while the policy stays linear is refused naming `h9k project set <project> --linear none --backlog none`)
+creates the issue from the publishing install itself, with no agent session and no daemon. Unlike
+`github-issues` it resolves the team through Linear **before the publish commits**: with
+`--no-existing-item`, no Linear connection on this install, a rejected key, no team bound, an unknown
+team, or Linear not answering each refuse the publish with the task still a Draft, naming `--untracked`
+as the way to publish without Linear (`--untracked` and an already linked task make no Linear call).
+After the commit, one `issueCreate` carries the team id, the team's default state as `stateId` (so a
+team with Triage on does not receive it in Triage), the objective folded to one line and cut at 255
+characters as the title, and the `github-issues` description (agent context without the
+discovery-workspace path, the criteria checklist, and the full objective when the title was cut); no
+assignee, label, project, or cycle. It is sent once, never retried, read back, and linked through the
+step `link-linear` uses, and the task record is written on every outcome. A read-back or link failure
+names `h9k task link-linear <task> <identifier>`; a definite refusal (`errors`, `success: false`, a
+4xx) names a by-hand create and then the link; an unknown outcome (timeout, lost connection, 5xx,
+unreadable answer) says the issue may exist and to search the team first. `--queue` and the
+interactive offer append the go signal only after the link, so the branch carries the identifier;
+with no issue linked the task stays published and not queued (`link-linear`, then `h9k task queue`).
+`h9k task show` says "no Linear issue is linked" for a task past Draft with neither an issue nor an
+untracked attestation. Closeout comments a merged pull request onto a linked GitHub issue exactly
 as it does a linked Jira card — the Jira card is never transitioned, and a GitHub issue is closed
 only under the configurable rule below; without one, closing is exactly as it always was: never.
 

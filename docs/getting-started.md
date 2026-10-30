@@ -66,12 +66,14 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   ```bash
   h9k project set <name> --take-policy ask
   ```
-- **`--backlog none|github-issues|jira`.** Under `github-issues` or `jira`, `h9k task publish`
+- **`--backlog none|github-issues|jira|linear`.** Under `github-issues`, `jira`, or `linear`, `h9k task publish`
   refuses a draft with no linked external item unless it is published `--no-existing-item` (mint
   one) or `--untracked` (deliberately skip tracking); leave `none` (the default) for a project
   whose work does not need an external item at all, where publish asks neither question.
-  `github-issues` writes a deterministic issue from the objective and criteria; `jira` dispatches
-  an agent-composed card through `h9k task write-jira`.
+  `github-issues` writes a deterministic issue from the objective and criteria; `linear` does the
+  same in the project's bound Linear team (`h9k project set --linear <TEAM>` first), after checking
+  the team through Linear so a missing connection refuses the publish rather than leaving it
+  unlinked; `jira` dispatches an agent-composed card through `h9k task write-jira`.
 
   ```bash
   h9k project set <name> --backlog github-issues

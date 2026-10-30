@@ -660,9 +660,10 @@ default (`h9k project set --primary-tracker github|jira`); with neither, the com
 than guessing. `h9k task link-issue`/`h9k task link-jira` still enforce one reference each — the
 dual shape is establishable only at `task add` time, never by linking a secondary onto an
 already-published task afterward. A project
-declares a backlog policy (`h9k project set --backlog none|github-issues|jira`), and every task
+declares a backlog policy (`h9k project set --backlog none|github-issues|jira|linear`), and every task
 published under one is tracked automatically: `github-issues` has the platform author the issue
-itself, deterministically, since an issue's shape is uniform; `jira` dispatches the same
+itself, deterministically, since an issue's shape is uniform; `linear` does the same in the
+project's bound Linear team, from the publishing install; `jira` dispatches the same
 agent-mediated push a human can also run by hand with `h9k task push-to-jira`, which composes what
 the card should look like in the project's own repository and submits the composed payload through
 `h9k task write-jira` — hall9k's own sole executor of every Jira write (create, update, comment),
