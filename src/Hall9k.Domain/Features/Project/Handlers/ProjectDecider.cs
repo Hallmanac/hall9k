@@ -299,7 +299,7 @@ public static class ProjectDecider
         {
             throw new DomainValidationException(
                 $"The claim gate must be {ClaimGate.Off} or {ClaimGate.TrackerAssignee} (whether a task "
-                + "linked to a Jira card or a GitHub issue may be claimed on this install only while the "
+                + "linked to a Jira card, a GitHub issue, or a Linear issue may be claimed on this install only while the "
                 + "tracker shows that item assigned to this install's own tracker identity).");
         }
 

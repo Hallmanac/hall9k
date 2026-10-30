@@ -514,6 +514,7 @@ public sealed class ProjectHomeRecipeTests : IDisposable
 
         ProjectAgentsDocument.Render(home, gated).Should()
             .Contain("- Claim gate: `tracker-assignee`")
+            .And.Contain("a Jira card, a GitHub issue, or a Linear issue")
             .And.Contain("assigned to this install's own tracker identity")
             .And.Contain("there is no override");
     }

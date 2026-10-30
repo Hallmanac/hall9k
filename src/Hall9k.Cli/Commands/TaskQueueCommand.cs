@@ -33,8 +33,8 @@ public sealed class TaskQueueCommand : Hall9kAsyncCommand<TaskQueueCommand.Setti
 
         [CommandOption("--take")]
         [Description(
-            "In a project whose claim gate is tracker-assignee, take the linked Jira card or GitHub "
-            + "issue for this install's own tracker identity as part of queueing, so one command moves "
+            "In a project whose claim gate is tracker-assignee, take the linked Jira card, GitHub "
+            + "issue, or Linear issue for this install's own tracker identity as part of queueing, so one command moves "
             + "the tracker and the board together and the gate then passes on its own. Reads the item "
             + "fresh first and writes ONLY when it shows no assignee: an item somebody else holds is "
             + "refused (exit 70) and nothing is written, and there is no flag that takes one from "

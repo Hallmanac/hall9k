@@ -665,7 +665,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             ? $"[dim]off ({OriginNote(recorded)}) — assignment "
               + "inside Hall9k is the only claim rule; make the tracker's own assignment the go signal: "
               + $"h9k project set {name} --claim-gate tracker-assignee[/]"
-            : "tracker-assignee [dim]— a task linked to a Jira card or a GitHub issue is claimed on this "
+            : "tracker-assignee [dim]— a task linked to a Jira card, a GitHub issue, or a Linear issue is claimed on this "
               + "install only while the tracker shows that item assigned to this install's own tracker "
               + "identity, so two teammates' installs cannot both run the same card (idea 64c75e43). "
               + "Satisfy it in one command with h9k task queue <id> --take, which takes an item nobody "

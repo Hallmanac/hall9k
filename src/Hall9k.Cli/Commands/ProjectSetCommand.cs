@@ -475,12 +475,12 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
 
         [CommandOption("--claim-gate <off|tracker-assignee>")]
         [Description(
-            "What has to be true on this install before a task linked to a Jira card or a GitHub issue "
+            "What has to be true on this install before a task linked to a Jira card, a GitHub issue, or a Linear issue "
             + "may be claimed here (idea 64c75e43). Default 'off', the platform's original behaviour "
             + "byte-for-byte: assignment inside Hall9k is the only claim rule. 'tracker-assignee' makes "
             + "the tracker's own assignment field the single act that hands out work — a linked task is "
             + "claimed on this install only while the tracker shows that item assigned to this install's "
-            + "own tracker identity (the Jira accountId recorded on the registered connection, or the "
+            + "own tracker identity (the Jira accountId or the Linear user id recorded on the registered connection, or the "
             + "login gh is authenticated as; never an email, never a display name, never typed), so two "
             + "teammates' installs cannot both run the same card. Every claim door re-reads the assignee "
             + "field fresh: the dispatcher, h9k task drive, and h9k task start. h9k task queue warns and "
@@ -1159,7 +1159,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         if (settings.ClaimGate is not null && ClaimGate.Parse(settings.ClaimGate) == ClaimGate.TrackerAssignee)
         {
             AnsiConsole.MarkupLine(
-                "[yellow]From now on, a task in this project linked to a Jira card or a GitHub issue is "
+                "[yellow]From now on, a task in this project linked to a Jira card, a GitHub issue, or a Linear issue is "
                 + "claimed on this install only while the tracker shows that item assigned to this "
                 + "install's own tracker identity — the tracker's assignment becomes the one act that "
                 + "hands out work, so two teammates' installs cannot both run the same card. h9k task "

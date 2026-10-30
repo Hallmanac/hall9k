@@ -202,7 +202,7 @@ public static class ProjectAgentsDocument
         // this install holds the card, and a session that does not know that reads a quiet queue
         // as a broken one.
         document.AppendLine(project.ClaimGate == ClaimGate.TrackerAssignee
-            ? "- Claim gate: `tracker-assignee` — a task linked to a Jira card or a GitHub issue is "
+            ? "- Claim gate: `tracker-assignee` — a task linked to a Jira card, a GitHub issue, or a Linear issue is "
               + "claimed on this install only while the tracker shows that item assigned to this "
               + "install's own tracker identity. The tracker's assignment is the one act that hands "
               + "out work; there is no override, and a tracker that cannot be read holds the claim."

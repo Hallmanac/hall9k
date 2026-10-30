@@ -147,7 +147,7 @@ public sealed record ProjectSettingsChanged(
     /// </summary>
     Optional<ProjectPriority> Priority = default,
     /// <summary>
-    /// What has to be true on this install before a task linked to a Jira card or a GitHub issue
+    /// What has to be true on this install before a task linked to a Jira card, a GitHub issue, or a Linear issue
     /// may be claimed here (idea 64c75e43). <see cref="Project.ClaimGate.Off"/> is both the
     /// default and the explicit "don't" — the <see cref="Project.BacklogPolicy.None"/> idiom
     /// again — and reproduces the platform's pre-setting behaviour byte-for-byte. Trailing and
