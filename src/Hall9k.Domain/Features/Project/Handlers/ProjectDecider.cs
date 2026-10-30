@@ -174,7 +174,7 @@ public static class ProjectDecider
         }
 
         // Unknown is not a value here — None is (BacklogPolicy has no separate "no opinion"
-        // level to defer to), so the closed set is exactly the three static instances, checked
+        // level to defer to), so the closed set is exactly the four static instances, checked
         // the same way CommitStyle and AgentModel are: BacklogPolicy itself is only ever compared
         // against its own statics (== / !=), never interpolated anywhere, so a policy built some
         // way other than Parse or FromInput is refused here rather than trusted, on the same
@@ -186,11 +186,13 @@ public static class ProjectDecider
             && backlogPolicy.Value is { } chosenBacklogPolicy
             && chosenBacklogPolicy != BacklogPolicy.None
             && chosenBacklogPolicy != BacklogPolicy.GitHubIssues
-            && chosenBacklogPolicy != BacklogPolicy.Jira)
+            && chosenBacklogPolicy != BacklogPolicy.Jira
+            && chosenBacklogPolicy != BacklogPolicy.Linear)
         {
             throw new DomainValidationException(
                 $"The backlog policy must be {BacklogPolicy.None}, {BacklogPolicy.GitHubIssues}, "
-                + $"or {BacklogPolicy.Jira} (where a published task's work becomes visible outside Hall9k).");
+                + $"{BacklogPolicy.Jira}, or {BacklogPolicy.Linear} (where a published task's work becomes "
+                + "visible outside Hall9k).");
         }
 
         // The BacklogPolicy idiom again: Unknown is the closed set's own "no default" value, so the
