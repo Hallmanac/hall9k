@@ -55,7 +55,7 @@ public sealed class TaskLinkLinearCommand : Hall9kAsyncCommand<TaskLinkLinearCom
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
-        using var store = CliStore.Open();
+        using DocumentStore store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
 
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Task, cancellationToken);
@@ -99,6 +99,13 @@ public sealed class TaskLinkLinearCommand : Hall9kAsyncCommand<TaskLinkLinearCom
         await TaskAddCommand.RefuseSecondAdoptionAsync(
             session, issue.Reference, new TaskAddCommand.AdoptionSite(task.ProjectId, task.EpicId),
             ownerRootFingerprint: null, cancellationToken);
+
+        // The issue may be one another task recorded under the identifier it had before it moved
+        // teams, which the check above cannot see because it matches only today's identifier. The
+        // identifier this task itself carries is what a relink replaces, so it is not counted.
+        await TaskAddCommand.RefuseSecondAdoptionUnderFormerReferencesAsync(
+            session, issue, new TaskAddCommand.AdoptionSite(task.ProjectId, task.EpicId),
+            ownerRootFingerprint: null, task.ExternalReference, cancellationToken);
 
         ExternalReference? replaced = task.ExternalReference;
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
