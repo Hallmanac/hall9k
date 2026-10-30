@@ -4645,9 +4645,9 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
     /// <summary>
     /// Independent pre-PR review, cycle 1, adversarial lens (RunLauncher.cs:1926): a row naming
-    /// another node (from a store two installs share) is still visible to this query, but only that
+    /// another node (from a store two installs share) is never read by the gate, and only that
     /// node's own ResumeStrandedPreflightsAsync can ever complete or abandon it. Deferring to it as
-    /// "still in flight" the way the same-node check does would leave this task
+    /// "still in flight" the way a same-node row is would leave this task
     /// claimed-and-requeued forever if the other node never comes back. This node falls
     /// through to a fresh dispatch of its own instead.
     /// </summary>
@@ -4691,32 +4691,24 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
-    /// A peer on an older build sends this node a safe verdict it reached for the same head. The
-    /// verdict is not applied, so the gate finds no verdict of this node's own and runs its own
-    /// pre-flight before any checkout, for an ordinary review dispatch and for a mention follow-up.
+    /// A safe verdict for the current head that names another node (a store two installs share, or
+    /// a node id since replaced) is never read by this node's gate: it dispatches a pre-flight of
+    /// its own before any checkout, for an ordinary review dispatch and for a mention follow-up.
     /// </summary>
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task A_verdict_reached_only_on_another_node_is_not_trusted_and_the_claiming_node_runs_its_own_preflight(
+    public async Task A_safe_verdict_naming_another_node_is_not_trusted_and_the_claiming_node_runs_its_own_preflight(
         bool isMentionFollowUp)
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         int number = isMentionFollowUp ? 921 : 920;
-        (Guid taskId, Guid runId, Guid projectId) = await SeedClaimedPrReviewTaskAsync(store, node, number, cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedClaimedPrReviewTaskAsync(store, node, number, cts.Token);
 
-        Guid peerNodeId = DomainId.New();
-        Guid peerPreflightId = DomainId.New();
-        EventReplicationReadResult delivered = await PeerAnswerDelivery.DeliverAsync(
-            postgres, store, node.NodeId, projectId,
-            [
-                (peerPreflightId, new PrReviewPreflightDispatched(
-                    peerPreflightId, taskId, DomainId.New(), peerNodeId, "claude-opus-5-5", string.Empty, [], Now)),
-                (peerPreflightId, new PrReviewPreflightCompleted(peerPreflightId, Safe: true, "safe", "peer verdict", Now)),
-            ], cts.Token);
-        delivered.EventsApplied.Should().Be(0, "the peer's pre-flight events are refused, not applied");
+        Guid otherNodeId = DomainId.New();
+        await SeedSafePrReviewPreflightAsync(store, taskId, otherNodeId, headRefOid: string.Empty, cts.Token);
 
         RecordingProcessRunner gh = GhSignedInAs(
             "brian", PullRequestPreflightJson.Replace("901", number.ToString(), StringComparison.Ordinal));
@@ -4741,7 +4733,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
         }
 
-        executor.Request.Should().NotBeNull("this node dispatches a pre-flight of its own instead of trusting the peer's");
+        executor.Request.Should().NotBeNull("this node dispatches a pre-flight of its own instead of trusting the other node's");
         executor.Request!.Prompt.Should().Contain(
             PrReviewPreflightVerdictParser.Marker,
             "RefusingWorktreeManager throwing on any checkout proves none was cut ahead of this node's own verdict");
@@ -4749,7 +4741,8 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         await using IQuerySession query = store.QuerySession();
         IReadOnlyList<PrReviewPreflightDetails> rows = await query.Query<PrReviewPreflightDetails>()
             .Where(preflight => preflight.TaskId == taskId).ToListAsync(cts.Token);
-        rows.Should().ContainSingle().Which.NodeId.Should().Be(node.NodeId, "the only row is the one this node dispatched");
+        rows.Should().HaveCount(2).And.ContainSingle(preflight => preflight.NodeId == node.NodeId)
+            .Which.CompletedAt.Should().BeNull("this node's own row is the fresh dispatch, not the other node's verdict");
     }
 
     /// <summary>Idea 6be68ee2, finding 1, phase two: the mention follow-up site is gated identically to the ordinary dispatch — it refuses to cut a checkout without a safe verdict.</summary>

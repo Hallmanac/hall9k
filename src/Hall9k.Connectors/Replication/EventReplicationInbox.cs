@@ -732,11 +732,7 @@ public sealed class EventReplicationInbox(
             return;
         }
 
-        IReadOnlyList<Guid> heldStreamIds = await session.Query<HeldReplicatedEventRecord>()
-            .Where(held => held.ProjectId == projectId)
-            .Select(held => held.StreamId)
-            .ToListAsync(cancellationToken);
-        int heldTailOnlyStreams = heldStreamIds.Distinct().Count();
+        int heldTailOnlyStreams = await HeldTailStreams.CountStreamsAsync(session, projectId, cancellationToken);
 
         foreach (FleetProjectReconcile record in tallied)
         {

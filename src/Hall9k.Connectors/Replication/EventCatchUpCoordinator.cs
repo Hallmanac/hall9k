@@ -441,6 +441,27 @@ public sealed class EventCatchUpCoordinator
         return true;
     }
 
+    private static async Task RefreshReconcileHeldTailCountsAsync(
+        IDocumentSession session, Guid projectId, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<FleetProjectReconcile> counted = await session.Query<FleetProjectReconcile>()
+            .Where(record => record.ProjectId == projectId && record.HeldTailOnlyStreams > 0)
+            .ToListAsync(cancellationToken);
+        if (counted.Count == 0)
+        {
+            return;
+        }
+
+        int heldTailOnlyStreams = await HeldTailStreams.CountStreamsAsync(session, projectId, cancellationToken);
+        foreach (FleetProjectReconcile record in counted)
+        {
+            record.HeldTailOnlyStreams = heldTailOnlyStreams;
+            session.Store(record);
+        }
+
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
     /// <summary>
     /// The held-tail ask: one broadcast stream request per stream this node holds only the tail of,
     /// minted by the daemon's own sweep so a freed or truncated stream completes without anybody
@@ -493,10 +514,24 @@ public sealed class EventCatchUpCoordinator
     {
         // Pre-flight events never replicate, so no peer will serve a genesis for a held one. Cleared
         // before the give-up reset below can hand each a fresh round of asks on an upgrade. One
-        // delete keyed on the type inside RecordJson, as the record has no type column.
-        session.DeleteWhere<HeldReplicatedEventRecord>(record =>
-            record.ProjectId == projectId && record.RecordJson.Contains(PreflightEventTypeMarker));
-        await session.SaveChangesAsync(cancellationToken);
+        // delete keyed on the type inside RecordJson, as the record has no type column. A fleet
+        // reconcile record stores the held-tail count as of its last answer, so the same commit
+        // corrects every such count: left alone it keeps telling h9k status that streams are held
+        // which no longer are, and a completed reconcile is never re-asked to refresh it.
+        IReadOnlyList<Guid> heldPreflightIds = await session.Query<HeldReplicatedEventRecord>()
+            .Where(record => record.ProjectId == projectId && record.RecordJson.Contains(PreflightEventTypeMarker))
+            .Select(record => record.Id)
+            .ToListAsync(cancellationToken);
+        if (heldPreflightIds.Count > 0)
+        {
+            foreach (Guid heldPreflightId in heldPreflightIds)
+            {
+                session.Delete<HeldReplicatedEventRecord>(heldPreflightId);
+            }
+
+            await session.SaveChangesAsync(cancellationToken);
+            await RefreshReconcileHeldTailCountsAsync(session, projectId, cancellationToken);
+        }
 
         // The build-version bound lift: a stream given up while this node ran an older build than
         // the one running now is reset here, before the ordinary query below ever runs, so it

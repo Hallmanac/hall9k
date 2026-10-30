@@ -62,6 +62,22 @@ public static class HeldTailStreams
             .Select(mark => mark.StreamId)];
     }
 
+    /// <summary>
+    /// How many distinct streams <paramref name="projectId"/> holds only the tail of right now,
+    /// given up or not. The figure a fleet reconcile record stores as
+    /// <see cref="FleetProjectReconcile.HeldTailOnlyStreams"/>, read here for both the inbox's
+    /// snapshot and the sweep's correction so the two can never count differently.
+    /// </summary>
+    public static async Task<int> CountStreamsAsync(
+        IQuerySession session, Guid projectId, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<Guid> streamIds = await session.Query<HeldReplicatedEventRecord>()
+            .Where(held => held.ProjectId == projectId)
+            .Select(held => held.StreamId)
+            .ToListAsync(cancellationToken);
+        return streamIds.Distinct().Count();
+    }
+
     private sealed record GivenUpMark(Guid StreamId, string? GivenUpOnBuildVersion);
 
     /// <summary>

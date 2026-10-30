@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Hall9k.Cli.Commands;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
@@ -3423,6 +3424,15 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             other.GivenUpOnBuildVersion = BuildVersion;
             other.LastCatchUpAskedAt = Now.AddHours(-1);
             session.Store(other);
+
+            // A completed reconcile whose answer landed while both streams were held: the count it
+            // stored is the second place h9k status reports held streams, and nothing re-asks a
+            // completed reconcile to refresh it.
+            FleetProjectReconcile reconcile = FleetReconcileRules.NewRecord(senderNodeId, projectId, DomainId.New(), Now);
+            FleetReconcileRules.NoteAnswerEnvelopes(reconcile, envelopes: 1, recordsApplied: 0, Now.AddMinutes(1));
+            FleetReconcileRules.NoteComplete(reconcile, envelopeCount: 1, Now.AddMinutes(2));
+            reconcile.HeldTailOnlyStreams = 2;
+            session.Store(reconcile);
             await session.SaveChangesAsync(cts.Token);
         }
 
@@ -3448,6 +3458,11 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             (await HeldTailStreams.SummarizeAsync(session, cts.Token)).Should().BeEquivalentTo(
                 new HeldTailSummary(StreamsHeldTailOnly: 0, StreamsGivenUp: 1),
                 "status no longer counts the pre-flight streams as held or given up");
+
+            FleetProjectReconcile corrected = (await session.LoadAsync<FleetProjectReconcile>(
+                EventReplicationStreamId.ForFleetReconcile(senderNodeId, projectId), cts.Token))!;
+            corrected.HeldTailOnlyStreams.Should().Be(1, "the reconcile's stored count drops the pre-flight stream too");
+            StatusCommand.FleetReconcileLine(corrected, "sample-project").Should().Contain("1 stream(s) held tail-only");
         }
     }
 
