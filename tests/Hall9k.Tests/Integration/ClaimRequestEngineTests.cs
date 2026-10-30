@@ -345,6 +345,30 @@ public sealed class ClaimRequestEngineTests : IClassFixture<PostgresFixture>, IA
     }
 
     [Fact]
+    public async Task Grant_names_linear_as_the_tracker_when_a_linear_requesters_identity_is_unknown()
+    {
+        ExternalReference reference = new(WorkItemProvider.Linear, "ENG-123");
+        (ProjectDetails project, Guid taskId, Guid myNodeId, BootstrapContext context) =
+            await SeedHeldTaskAsync(TakePolicy.Auto, ClaimGate.TrackerAssignee, reference);
+        FakeLedger ledger = new();
+        await SeedRecordAsync(ledger, taskId, new TaskRecordHolder("my-fingerprint", myNodeId, "MY-NODE", Now.AddHours(-2)));
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        (LedgerCommitter committer, LedgerSigningKey signingKey, string ownerFingerprint) =
+            await TaskRecordPublication.ResolveIdentityAsync(session, context, CancellationToken.None);
+
+        ClaimEnvelopeCodec.ClaimRequestRecord request = new(
+            taskId, DomainId.New(), DomainId.New(), "requester-fingerprint", "Picking this back up.", null);
+
+        ClaimRequestOutcome outcome = await ClaimRequestEngine.ReceiveRequestAsync(
+            _postgres.Store, session, project, taskId, request, ledger, committer, signingKey, take: null, myNodeId,
+            ownerFingerprint, Now, CancellationToken.None);
+
+        outcome.Verdict.Should().Be(ClaimRequestVerdict.Granted);
+        outcome.TrackerFailureReason.Should().Contain("Linear assignee").And.NotContain("GitHub");
+    }
+
+    [Fact]
     public async Task Receiving_a_request_for_a_task_this_node_no_longer_holds_records_nothing()
     {
         // A stale or misdirected claim request — the holder moved on since the requester sent it —
