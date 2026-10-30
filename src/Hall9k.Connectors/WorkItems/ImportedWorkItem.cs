@@ -29,6 +29,14 @@ public sealed record ImportedWorkItem(
     DateTimeOffset ObservedAt)
 {
     /// <summary>
+    /// References the source says this same item used to carry (a Linear issue keeps its previous
+    /// identifiers when it moves to another team). Empty for a source that has no such notion. They
+    /// exist so the one-item-one-live-task guard can recognise an item under a name a task recorded
+    /// before the move, rather than only under the name it answers with today.
+    /// </summary>
+    public IReadOnlyList<ExternalReference> FormerReferences { get; init; } = [];
+
+    /// <summary>
     /// <see cref="ObservedAt"/> written the one way every reader of it will see. It is formatted
     /// here rather than at each place that prints it, and with the invariant culture, because the
     /// stamp is not a display detail: it is copied into the task's stored agent context and into
