@@ -219,7 +219,8 @@ public sealed class TaskHolderClaimTests(PostgresFixture postgres) : IClassFixtu
 
     /// <summary>
     /// The release half of the mirror (criterion 5): once the lease-expiry sweep gives this node's
-    /// own ledger holder back, its tracker identity is cleared off the linked item too, and a named
+    /// own ledger holder back on a project with the claim gate off, its tracker identity is cleared
+    /// off the linked item too (a gated project keeps it, and a finished item always does), and a named
     /// outcome short of a confirmed clear — here, a Jira reference with no Jira connection
     /// registered anywhere in this database, so the read fails fast and deterministically — leaves
     /// a row for the next sweep, exactly as the claim-side mirror's own <c>TaskTrackerAssignMirrorPending</c>

@@ -158,8 +158,8 @@ public sealed class TaskAbandonCommand : Hall9kAsyncCommand<TaskAbandonCommand.S
 
     /// <summary>
     /// The tracker-assignee twin of <see cref="ReleaseLedgerHolderBestEffortAsync"/> (criterion 5,
-    /// idea 202383dc, A3b: "on every holder change the tracker assignee is set to match"): abandon
-    /// gives the ledger holder back, so this install's own tracker identity is cleared off the
+    /// idea 202383dc, A3b; the assignee follows a claim and a give-back, and a finished item keeps
+    /// it): abandon gives the ledger holder back, so this install's own tracker identity is cleared off the
     /// linked item too, best effort — a named outcome short of a confirmed clear leaves a
     /// <see cref="TaskTrackerReleaseMirrorPending"/> row for <c>DispatchEngine</c>'s own
     /// <c>SweepPendingTrackerMirrorsAsync</c> to retry, the identical row the lease-expiry release

@@ -254,8 +254,8 @@ public sealed record TrackerTake(
 }
 
 /// <summary>
-/// What one holder-release mirror concluded (idea 202383dc, A3b, criterion 5: "on every holder
-/// change the tracker assignee is set to match ... a named outcome retried next sweep") — the
+/// What one holder-release mirror concluded (idea 202383dc, A3b, criterion 5: "a named outcome
+/// retried next sweep"; the assignee follows a claim and a give-back, never a completion) — the
 /// release-side counterpart of <see cref="TrackerTake"/>. An in-process outcome, never persisted
 /// as itself (AGENTS.md: enums only for unpersisted in-process outcomes); what actually persists
 /// on a failure is the pending row <c>DispatchEngine</c> stores for the next lease sweep to retry.
@@ -660,10 +660,13 @@ public sealed class TrackerAssignmentTake
     }
 
     /// <summary>
-    /// The release half of the mirror (idea 202383dc, A3b, criterion 5: "on every holder change
-    /// the tracker assignee is set to match"): once this node's own ledger holder is given back,
-    /// best effort, its tracker identity is cleared off the linked item too — the symmetrical
-    /// write to <see cref="TakeAsync"/>'s own take. Reads through the identical
+    /// The release half of the mirror (idea 202383dc, A3b, criterion 5): once this node's own
+    /// ledger holder is given back, best effort, its tracker identity is cleared off the linked
+    /// item too — the symmetrical write to <see cref="TakeAsync"/>'s own take. Only a give-back
+    /// calls it (h9k task abandon, h9k task release, lease expiry on a project with the claim
+    /// gate off, and the rollback of an h9k task take); true completion does not, because a
+    /// finished item keeps its assignee, so on a gated project a different install's later claim
+    /// on it is held until a person reassigns it. Reads through the identical
     /// <see cref="TrackerClaimGate"/> a take reads through, so this reaches the same interception
     /// a test that intercepts the claim gate's own reads already gives <see cref="TakeAsync"/>.
     /// <para>

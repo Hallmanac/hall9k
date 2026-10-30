@@ -4760,12 +4760,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             $"The pull request for this work has merged: {PullRequestUrl}",
             "the note names the pull request and nothing else, in particular no task id");
 
-        // The release-side tracker-assignee mirror (criterion 5, idea 202383dc, A3b) reads this
-        // install's own gh login as part of releasing the ledger holder true completion gives
-        // back — the one other gh call this closeout makes, alongside the merge comment above.
-        github.Calls.Should().ContainSingle(
-            c => !c.Arguments.Contains("comment"),
-            "the tracker-release mirror's own login read is the only other gh call this closeout makes");
+        // A finished item keeps its assignee, so closeout neither reads this install's gh login
+        // nor clears it; the merge comment is the only gh call.
+        github.Calls.Should().HaveCount(1, "closeout makes no assignee read or write on a GitHub issue");
     }
 
     /// <summary>
@@ -5329,12 +5326,10 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         jira.Requests.Should().ContainSingle(
             request => request.Method == HttpMethod.Post, "the write is attempted once and never retried blind");
 
-        // The release-side tracker-assignee mirror (criterion 5, idea 202383dc, A3b) reads this
-        // install's own Jira identity as part of releasing the ledger holder true completion gives
-        // back — the one other Jira call this closeout makes, alongside the merge-comment write above.
-        jira.Requests.Should().ContainSingle(
+        // A finished item keeps its assignee, so closeout makes no Jira read of the assignee.
+        jira.Requests.Should().NotContain(
             request => request.Method == HttpMethod.Get,
-            "the tracker-release mirror's own identity read is the only other call this closeout makes");
+            "closeout makes no assignee read or write on a Jira card");
 
         await using IQuerySession query = store.QuerySession();
         (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(RunState.Completed);
@@ -5377,26 +5372,18 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             outstanding.Outcome.Should().Be(JiraWriteOutcome.PendingAuthentication);
         }
 
-        // The release-side tracker-assignee mirror (criterion 5, idea 202383dc, A3b) reads this
-        // install's own Jira identity as part of releasing the ledger holder true completion gives
-        // back — a plain read through TrackerAssignmentTake.ReleaseAsync, which deliberately never
-        // goes through JiraWriteCoordinator (that class's own doc comment), so it is not held back
-        // by the coordinator's own outstanding-write guard the way a second comment write would be.
-        // The guard below only ever forbade a write, never this mirror's own read.
         RecordingJiraRequester mustNotWrite = RecordingJiraRequester.RespondingTo(request =>
-            request.Method == HttpMethod.Get
-                ? new JiraResponse(403, """{"errorMessages":["No permission"]}""")
-                : throw new InvalidOperationException("a second write in flight would race Jira against itself"));
+            throw new InvalidOperationException(
+                "closeout makes no Jira call while the first write is outstanding: a second write would race "
+                + "Jira against itself, and a finished item keeps its assignee, so there is no read either"));
         FakeInspector inspector = new()
         {
             Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
         };
         await NewEngine(store, node, inspector, worktrees, jira: mustNotWrite).PollOnceAsync(cts.Token);
 
-        mustNotWrite.Requests.Should().ContainSingle(
-            request => request.Method == HttpMethod.Get,
-            "Jira is not written to again while the first write is still outstanding, but the tracker-release "
-            + "mirror's own read still runs");
+        mustNotWrite.Requests.Should().BeEmpty(
+            "Jira is not written to again while the first write is still outstanding, and closeout makes no assignee read");
 
         await using IQuerySession query = store.QuerySession();
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(
