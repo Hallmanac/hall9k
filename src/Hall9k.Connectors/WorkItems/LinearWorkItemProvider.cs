@@ -118,7 +118,8 @@ public sealed class LinearWorkItemProvider(
         LinearIssueIdentifier identifier, string? linkedTask, CancellationToken cancellationToken)
     {
         LinearQuery query = await QueryAsync(
-            IssueQuery, new { id = identifier.Value }, $"read {identifier.Value}", identifier.Value, cancellationToken);
+            IssueQuery, new { id = identifier.Value }, $"read {identifier.Value}", identifier.Value, cancellationToken,
+            linkedTask);
         if (query.Data is not { } data)
         {
             return new LinearIssueAttempt(null, query.Failure, query.Kind);
@@ -216,7 +217,8 @@ public sealed class LinearWorkItemProvider(
         JsonDocument? Document, JsonElement? Data, DomainException? Failure, TrackerReadFailure Kind);
 
     private async Task<LinearQuery> QueryAsync(
-        string query, object? variables, string verb, string subject, CancellationToken cancellationToken)
+        string query, object? variables, string verb, string subject, CancellationToken cancellationToken,
+        string? linkedTask = null)
     {
         string authorization;
         try
@@ -226,8 +228,17 @@ public sealed class LinearWorkItemProvider(
         catch (DomainException exception)
         {
             // The vault could not produce the key at all. Not Linear refusing it, but the same
-            // remedy (register the connection again), so it is classified with a refusal.
-            return Failed(exception, TrackerReadFailure.Credentials);
+            // remedy (register the connection again), so it is classified with a refusal. The vault
+            // was written for Jira first and names that command in its refusals, so the remedy is
+            // restated for Linear here rather than relayed: an agent following "connection add jira"
+            // would be sent to a command that needs a site and an email.
+            string restated = exception.Message.Replace(
+                "h9k connection add jira", "h9k connection add linear", StringComparison.Ordinal);
+            return Failed(
+                exception is DomainNotFoundException
+                    ? new DomainNotFoundException(restated)
+                    : new DomainValidationException(restated),
+                TrackerReadFailure.Credentials);
         }
 
         string body = variables is null
@@ -264,7 +275,7 @@ public sealed class LinearWorkItemProvider(
         {
             using (document)
             {
-                (DomainException failure, TrackerReadFailure kind) = ExplainErrors(response, errors, verb, subject);
+                (DomainException failure, TrackerReadFailure kind) = ExplainErrors(response, errors, verb, subject, linkedTask);
                 return Failed(failure, kind);
             }
         }
@@ -272,7 +283,7 @@ public sealed class LinearWorkItemProvider(
         if (response.StatusCode is < 200 or >= 300)
         {
             document?.Dispose();
-            (DomainException failure, TrackerReadFailure kind) = ExplainStatus(response, verb, subject);
+            (DomainException failure, TrackerReadFailure kind) = ExplainStatus(response, verb, subject, linkedTask);
             return Failed(failure, kind);
         }
 
@@ -317,7 +328,7 @@ public sealed class LinearWorkItemProvider(
     /// quotes Linear's own first message on one line.
     /// </summary>
     private (DomainException Failure, TrackerReadFailure Kind) ExplainErrors(
-        LinearResponse response, JsonElement errors, string verb, string subject)
+        LinearResponse response, JsonElement errors, string verb, string subject, string? linkedTask)
     {
         List<(string Message, string Code, string Type)> found = [];
         if (errors.ValueKind == JsonValueKind.Array)
@@ -354,7 +365,7 @@ public sealed class LinearWorkItemProvider(
         if (Has(error => error.Message.Contains("not found", StringComparison.OrdinalIgnoreCase)
                 || error.Code.Contains("NOT_FOUND", StringComparison.OrdinalIgnoreCase)))
         {
-            return (NotFound(subject, linkedTask: null, reported), TrackerReadFailure.Item);
+            return (NotFound(subject, linkedTask, reported), TrackerReadFailure.Item);
         }
 
         return response.StatusCode >= 500 || response.StatusCode == 0
@@ -364,7 +375,7 @@ public sealed class LinearWorkItemProvider(
 
     /// <summary>A non-2xx response with no GraphQL errors in it, classified by its status alone.</summary>
     private (DomainException Failure, TrackerReadFailure Kind) ExplainStatus(
-        LinearResponse response, string verb, string subject)
+        LinearResponse response, string verb, string subject, string? linkedTask)
     {
         string reported = Bounded(response.Body);
         return (HttpStatusCode)response.StatusCode switch
@@ -374,7 +385,7 @@ public sealed class LinearWorkItemProvider(
             HttpStatusCode.TooManyRequests =>
                 (RateLimited(response, verb), TrackerReadFailure.Outage),
             HttpStatusCode.NotFound =>
-                (NotFound(subject, linkedTask: null, reported), TrackerReadFailure.Item),
+                (NotFound(subject, linkedTask, reported), TrackerReadFailure.Item),
             >= HttpStatusCode.InternalServerError =>
                 (Unavailable(verb, response.StatusCode, reported), TrackerReadFailure.Outage),
             _ => (new DomainValidationException(
@@ -394,7 +405,7 @@ public sealed class LinearWorkItemProvider(
     private static DomainValidationException RateLimited(LinearResponse response, string verb) => new(
         $"Linear is rate-limiting this key and refused to {verb}"
         + (response.RetryAfter.IsNotBlank()
-            ? $"; its Retry-After is {RelayedText.OneLine(response.RetryAfter!)}."
+            ? $"; its Retry-After is {RelayedText.OneLine(response.RetryAfter)}."
             : "; it sent no Retry-After.")
         + " Hall9k does not retry Linear calls on its own, so wait and run the command again.");
 
@@ -445,6 +456,17 @@ public sealed class LinearWorkItemProvider(
                 select element.GetString() ?? string.Empty);
         }
 
+        List<ExternalReference> former = [];
+        foreach (string typed in previous)
+        {
+            if (LinearIssueIdentifier.TryParseBare(typed, out LinearIssueIdentifier identifier)
+                && identifier.Reference != resolved.Reference
+                && !former.Contains(identifier.Reference))
+            {
+                former.Add(identifier.Reference);
+            }
+        }
+
         Uri? url = ReadString(issue, "url") is { } text
             && Uri.TryCreate(text, UriKind.Absolute, out Uri? parsed)
             && parsed.Scheme == Uri.UriSchemeHttps
@@ -458,7 +480,10 @@ public sealed class LinearWorkItemProvider(
                 ReadString(issue, "description") is { } description && description.IsNotBlank() ? description : null,
                 MapStatus(issue),
                 url,
-                observedAt),
+                observedAt)
+            {
+                FormerReferences = former,
+            },
             previous);
     }
 

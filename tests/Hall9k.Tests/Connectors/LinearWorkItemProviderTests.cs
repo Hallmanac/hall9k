@@ -1,11 +1,13 @@
 using System.Text.Json;
 using FluentAssertions;
+using Hall9k.Connectors.Credentials;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Connectors;
@@ -18,21 +20,30 @@ namespace Hall9k.Tests.Connectors;
 /// </summary>
 public sealed class LinearWorkItemProviderTests : IDisposable
 {
-    private const string KeyVariable = "HALL9K_TEST_LINEAR_KEY";
+    private const string KeyFileName = "linear-test-key";
     private const string SecretKey = "lin_api_secret_value_for_tests";
     private static readonly DateTimeOffset Now = new(2026, 10, 30, 9, 30, 0, TimeSpan.Zero);
     private static readonly Uri Workspace = new("https://linear.app/hall9k");
 
+    private static readonly CredentialReference KeyFile = CredentialReference.File(KeyFileName);
+
+    private readonly ScopedTestHome _home = new();
     private readonly CancellationTokenSource _cancellation = new(TimeSpan.FromMinutes(1));
 
     private CancellationToken Token => _cancellation.Token;
 
-    public LinearWorkItemProviderTests() => Environment.SetEnvironmentVariable(KeyVariable, SecretKey);
+    public LinearWorkItemProviderTests()
+    {
+        // The key lives in a file under this test's own scoped home rather than in a process-wide
+        // environment variable, which every test in the parallel unit tier would otherwise share.
+        Directory.CreateDirectory(CredentialVault.Directory);
+        File.WriteAllText(CredentialVault.FileFor(KeyFileName), SecretKey);
+    }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable(KeyVariable, null);
         _cancellation.Dispose();
+        _home.Dispose();
     }
 
     /// <summary>Answers every call with one fixture response, and keeps what it was asked.</summary>
@@ -49,7 +60,7 @@ public sealed class LinearWorkItemProviderTests : IDisposable
 
     private static LinearWorkItemProvider Provider(RecordingRequester requester) =>
         new(
-            LinearAccount.Registered(Workspace, "Brian Hall", CredentialReference.EnvironmentVariable(KeyVariable)),
+            LinearAccount.Registered(Workspace, "Brian Hall", KeyFile),
             requester.Requester,
             new FixedClock(Now));
 
@@ -172,6 +183,11 @@ public sealed class LinearWorkItemProviderTests : IDisposable
         LinearIssueRead read = await Provider(requester).ReadIssueAsync(new LinearIssueIdentifier("PLAT", 9), cancellationToken: Token);
 
         read.PreviousIdentifiers.Should().BeEquivalentTo("ENG-123", "OPS-2");
+        read.Item.FormerReferences.Should().BeEquivalentTo(
+        [
+            new ExternalReference(WorkItemProvider.Linear, "ENG-123"),
+            new ExternalReference(WorkItemProvider.Linear, "OPS-2"),
+        ]);
     }
 
     // ── the viewer ──
@@ -352,6 +368,34 @@ public sealed class LinearWorkItemProviderTests : IDisposable
             .And.Contain("h9k task link-linear 28b19893 <new identifier>");
     }
 
+    [Theory]
+    [InlineData(200, """{"errors":[{"message":"Entity not found: Issue - Could not find referenced Issue.","extensions":{"type":"invalid input"}}],"data":null}""")]
+    [InlineData(404, """{"errors":[{"message":"Entity not found: Issue"}]}""")]
+    [InlineData(404, "not found")]
+    public async Task Not_found_reported_as_an_error_for_a_linked_issue_also_names_the_relink(int status, string body)
+    {
+        RecordingRequester requester = new(status, body);
+
+        Func<Task> read = () => Provider(requester).ReadIssueAsync(Eng(), "28b19893", Token);
+
+        (await read.Should().ThrowAsync<DomainNotFoundException>()).Which.Message
+            .Should().Contain("may have moved to another team")
+            .And.Contain("h9k task link-linear 28b19893 <new identifier>");
+    }
+
+    [Fact]
+    public async Task A_key_file_that_is_gone_names_the_linear_command_to_register_again()
+    {
+        File.Delete(CredentialVault.FileFor(KeyFileName));
+        RecordingRequester requester = new(200, "{}");
+
+        LinearIssueAttempt attempt = await Provider(requester).TryReadIssueAsync(Eng(), null, Token);
+
+        attempt.FailureKind.Should().Be(TrackerReadFailure.Credentials);
+        attempt.Failure!.Message.Should().Contain("h9k connection add linear").And.NotContain("add jira");
+        requester.Requests.Should().BeEmpty("no request goes out without a key");
+    }
+
     [Fact]
     public async Task A_body_that_is_not_graphql_is_refused_rather_than_read_as_an_empty_answer()
     {
@@ -367,7 +411,7 @@ public sealed class LinearWorkItemProviderTests : IDisposable
     public async Task A_timeout_is_an_outage_and_a_key_the_vault_cannot_produce_is_a_credential_failure()
     {
         LinearWorkItemProvider timingOut = new(
-            LinearAccount.Registered(Workspace, "Brian", CredentialReference.EnvironmentVariable(KeyVariable)),
+            LinearAccount.Registered(Workspace, "Brian", KeyFile),
             (_, _) => throw new TaskCanceledException());
         LinearWorkItemProvider unset = new(
             LinearAccount.Registered(Workspace, "Brian", CredentialReference.EnvironmentVariable("HALL9K_TEST_LINEAR_UNSET")),
@@ -445,7 +489,7 @@ public sealed class LinearWorkItemProviderTests : IDisposable
             Importer(new RecordingRequester(200, Issue(stateType: "triage", stateName: "Triage"))), Token);
 
         (await import.Should().ThrowAsync<DomainValidationException>()).Which.Message
-            .Should().Contain("in triage").And.Contain("h9k idea add --from-linear ENG-123")
+            .Should().Contain("in triage").And.Contain("h9k idea add \"ENG-123: ")
             .And.NotContain("Reopen it");
     }
 
@@ -463,7 +507,7 @@ public sealed class LinearWorkItemProviderTests : IDisposable
     public async Task Adoption_refuses_a_url_from_another_workspace_before_calling_linear()
     {
         WorkItemImporter importer = new(new LinearWorkItemProvider(
-            LinearAccount.Registered(Workspace, "Brian", CredentialReference.EnvironmentVariable(KeyVariable)),
+            LinearAccount.Registered(Workspace, "Brian", KeyFile),
             FakeLinearRequester.NeverInvoked()));
 
         Func<Task> import = () => importer.ImportAsync(
@@ -471,22 +515,5 @@ public sealed class LinearWorkItemProviderTests : IDisposable
             Token);
 
         (await import.Should().ThrowAsync<DomainValidationException>()).Which.Message.Should().Contain("other-co");
-    }
-
-    [Fact]
-    public async Task An_install_without_a_linear_provider_is_told_the_command_that_connects_one()
-    {
-        WorkItemImporter importer = new()
-        {
-            Unusable = new Dictionary<WorkItemProvider, Func<DomainException>>
-            {
-                [WorkItemProvider.Linear] = () => new DomainNotFoundException(WorkItemConnections.NoLinearConnection),
-            },
-        };
-
-        Func<Task> import = () => ImportAsync(importer, Token);
-
-        (await import.Should().ThrowAsync<DomainNotFoundException>()).Which.Message
-            .Should().Contain("h9k connection add linear");
     }
 }

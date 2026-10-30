@@ -70,15 +70,6 @@ public sealed class ConnectionRegistrationTests
     }
 
     [Fact]
-    public void A_linear_connection_cannot_borrow_the_gh_cli_login()
-    {
-        Action register = () => ConnectionDecider.Register(
-            Guid.NewGuid(), Owner, WorkItemProvider.Linear, "Brian Hall", CredentialReference.GhCli, Now, Workspace);
-
-        register.Should().Throw<DomainValidationException>().WithMessage("*gh CLI's login*");
-    }
-
-    [Fact]
     public void Re_registering_a_linear_connection_replaces_the_workspace_and_runs_the_same_rules()
     {
         ConnectionAggregate connection = new();

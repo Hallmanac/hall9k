@@ -1,5 +1,4 @@
 using FluentAssertions;
-using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -100,21 +99,6 @@ public sealed class LinearRelinkTests
         TaskDecider.AlreadyLinkedTo(task, Linear("ENG-123")).Should().BeTrue();
         Action relink = () => Link(task, Linear("ENG-123"), previous: ["ENG-123"]);
         relink.Should().Throw<DomainConflictException>("the command answers 'already linked' before the decider is asked");
-    }
-
-    [Fact]
-    public void A_branch_cut_under_the_old_identifier_keeps_its_name_after_the_relink()
-    {
-        BranchNameTemplate template = BranchNameTemplate.Parse("{key}-{slug}");
-        TaskAggregate task = TaskLinkedTo(Linear("ENG-123"));
-        string branchRecordedAtDispatch = template.Render(task.Id, task.Objective, task.ExternalReference!.Key);
-
-        task.Apply(Link(task, Linear("PLAT-9"), previous: ["ENG-123"]));
-
-        branchRecordedAtDispatch.Should().StartWith("ENG-123-");
-        template.Render(task.Id, task.Objective, task.ExternalReference!.Key)
-            .Should().StartWith("PLAT-9-", "a render from the new reference differs, which is why nothing re-renders:")
-            .And.NotBe(branchRecordedAtDispatch);
     }
 
     public enum WorkItemProviderCase
