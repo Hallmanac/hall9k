@@ -687,8 +687,8 @@ fails open, so it is a refusal of the ordinary routes rather than a sandbox.
 
 ### The claim gate
 
-Every teammate runs their own install against their own database, so a Jira card or a GitHub
-issue is the only record two machines share. `h9k project set <name> --claim-gate
+Every teammate runs their own install against their own database, so a Jira card, a GitHub
+issue, or a Linear issue is the only record two machines share. `h9k project set <name> --claim-gate
 off|tracker-assignee` (default `off`, the platform's original behaviour byte-for-byte) makes that
 shared record the one act that hands out work: with `tracker-assignee`, a task linked to a card
 or an issue is claimed on this install only while the tracker shows that item assigned to this
@@ -697,7 +697,9 @@ install's own tracker identity, so two teammates' installs cannot both run the s
 The identity is read from the tracker, never typed and never matched by email or display name:
 for Jira it is the `accountId` `/rest/api/2/myself` answers, captured at `h9k connection add
 jira` and recorded on the connection (a connection registered before that read it live on first
-use); for GitHub it is the login `gh` is authenticated as, read live on every check and
+use); for Linear it is the viewer's user id recorded at `h9k connection add linear` and compared
+ordinally (a connection with no id is Unreadable and names that command, and no live viewer read
+is made); for GitHub it is the login `gh` is authenticated as, read live on every check and
 deliberately never stored, so a machine that re-authenticates as somebody else stops matching
 immediately. Each check reads the item's assignee field and nothing else, so the one-time content
 snapshot a task's adoption took is untouched. A GitHub issue may carry several assignees, and

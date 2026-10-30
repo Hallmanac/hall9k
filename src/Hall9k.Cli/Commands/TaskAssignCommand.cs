@@ -44,8 +44,8 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
 
         [CommandOption("--take")]
         [Description(
-            "In a project whose claim gate is tracker-assignee, take the linked Jira card or GitHub "
-            + "issue for this install's own tracker identity as part of laying hold of the task, so one "
+            "In a project whose claim gate is tracker-assignee, take the linked Jira card, GitHub "
+            + "issue, or Linear issue for this install's own tracker identity as part of laying hold of the task, so one "
             + "command moves the tracker and the board together and the gate then passes on its own. Only "
             + "for yourself: it refuses when the task is being handed to another member. Reads "
             + "the item fresh first and writes ONLY when it shows no assignee: an item somebody "
@@ -337,7 +337,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         {
             return take
                 ? throw new DomainValidationException(
-                    "--take assigns the linked Jira card or GitHub issue to this install so this "
+                    "--take assigns the linked Jira card, GitHub issue, or Linear issue to this install so this "
                     + $"project's claim gate passes on its own, and {WhyNotGated(project, task)} There is "
                     + "nothing for a take to unlock here, and Hall9k does not write to a tracker it was "
                     + $"not asked to: run it without --take{NotGatedRemedy(project, task)}.")
@@ -394,8 +394,8 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
             ? $"project {project.Name}'s claim gate is off."
             : task.ExternalReference is { } reference
                 ? $"this task's linked item ({ExternalText.OneLine(reference.ToString())}) is not one the "
-                    + "gate applies to — only a Jira card and a GitHub issue are."
-                : "this task has no linked Jira card or GitHub issue at all.";
+                    + "gate applies to — only a Jira card, a GitHub issue, and a Linear issue are."
+                : "this task has no linked Jira card, GitHub issue, or Linear issue at all.";
 
     /// <summary>
     /// The remedy that matches the reason <see cref="WhyNotGated"/> just gave, and only that one:
@@ -408,7 +408,8 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         project.ClaimGate != ClaimGate.TrackerAssignee
             ? $", or turn the gate on with h9k project set {project.Name} --claim-gate tracker-assignee"
             : task.ExternalReference is null
-                ? ", or link the item first (h9k task link-jira <id> <KEY>, h9k task link-issue <id> <ISSUE>) "
+                ? ", or link the item first (h9k task link-jira <id> <KEY>, h9k task link-issue <id> <ISSUE>, "
+                    + "h9k task link-linear <id> <IDENTIFIER>) "
                     + "and take it then"
                 : string.Empty;
 

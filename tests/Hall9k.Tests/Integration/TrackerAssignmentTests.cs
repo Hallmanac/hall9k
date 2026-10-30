@@ -668,7 +668,7 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     /// </summary>
     [Theory]
     [InlineData(true, "claim gate is off")]
-    [InlineData(false, "no linked Jira card or GitHub issue")]
+    [InlineData(false, "no linked Jira card, GitHub issue, or Linear issue")]
     public async Task Take_refuses_where_there_is_no_gate_to_satisfy(bool gateOff, string expected)
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));

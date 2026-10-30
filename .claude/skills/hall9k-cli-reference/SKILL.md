@@ -40,7 +40,7 @@ h9k project set <name> --design-review-drive on|off   # whether the DESIGNER per
 h9k project set <name> --qa-review-drive on|off   # whether a QA-persona review of a pull request here may LAUNCH the running product and drive it through browser automation. Default OFF: the QA review reads the diff, builds its blast-radius map, and runs the project's end-to-end tests on the review worktree, and any verdict that needs the running product becomes a human walk-through it writes out step by step. 'on' lets that session start the product from the run skill on the project's ledger, on an ephemeral port it reports and tears down, drive the changed flows, and put each screenshot beside the finding it supports; the report then carries a Driven section naming the flows walked. A project with NO run skill drives nothing whatever this says, because there is nothing to launch it with. h9k project show prints the value and whether it was chosen or is the default. The designer's --design-review-drive above is the same setting with the opposite default, ON (idea b9b09779 piece 2, Decisions Log #253)
 h9k project set <name> --max-parallel-tasks <N|default>   # this project's own ceiling in TASK RUNS, enforced by the dispatcher: a ceiling never a reservation, 0 pauses the project (held even on an idle node, and nothing but a human raises it), 'default' clears it so the node ceiling alone decides; takes effect next dispatch cycle, no restart. --max-parallel is a quiet alias; the old session-denominated value it used to record is retired, not converted (Decisions Log #140)
 h9k project set <name> --priority high|normal|low|default   # which tier this project's ready work competes in for a FREE dispatch slot. Default normal, and free slots rotate: the eligible project longest unserved wins the next one; which of its own tasks takes it is decided by rank then oldest assignment, a follow-up lap past its first pull request outranking a retry or hand-back outranking a plain first claim (nothing to set — Decisions Log #188). 'high' is focus — wins every free slot over lower tiers while it has ready work and RELEASES ITSELF when its queue drains, which is the opposite of the sticky --max-parallel-tasks 0 pause. 'default' is the clearing word, restoring normal. Nothing preempts; every claim logs why that project won (Decisions Log #141)
-h9k project set <name> --claim-gate off|tracker-assignee   # a task linked to a Jira card or GitHub issue is claimed on this install only while the tracker shows that item assigned to this install's own identity; default off (Decisions Log #142)
+h9k project set <name> --claim-gate off|tracker-assignee   # a task linked to a Jira card, GitHub issue, or Linear issue is claimed on this install only while the tracker shows that item assigned to this install's own identity; default off (Decisions Log #142)
 h9k project set <name> --take-policy auto|ask   # who answers a member's cooperative claim request (h9k task take with no --force): auto (default) has the holder's own node grant on receipt when no run is live, or refuse naming the run's start time; ask parks it for the holder's own human, answered with h9k task grant/refuse (idea 202383dc, item 5)
 h9k project set <name> --take-timeout <minutes|default>   # how long a cooperative take request waits for an answer before h9k task take names --force as the way on; default 30 minutes, 'default' clears an override back to it (idea 202383dc, item 5)
 h9k project set <name> --close-linked-issue on-closeout|never|when-all-tasks-close|default   # whether true closeout closes a task's linked GitHub issue, and when; default when-all-tasks-close waits for every task linked to the same issue to close out or be abandoned, decided fresh at the last one — a task overrides it at publish/revise, --never-close-labels forces never for a labeled issue, Jira untouched (Decisions Log #154)
@@ -1482,12 +1482,14 @@ whether it is inherited or set explicitly.
 
 **A project can make the tracker's own assignment the one act that hands out work** (Decisions
 Log #142, idea 64c75e43). `h9k project set <project> --claim-gate off|tracker-assignee` — default
-`off`, today's behaviour byte-for-byte — claims a task linked to a Jira card or a GitHub issue on
+`off`, today's behaviour byte-for-byte — claims a task linked to a Jira card, a GitHub issue, or a Linear issue on
 this install only while the tracker shows that item assigned to this install's own tracker
 identity, so on a team where every teammate runs their own install against their own database,
 two installs cannot both run the same card. The identity is read from the tracker, never typed:
 the Jira `accountId` `/rest/api/2/myself` answers (captured at `h9k connection add jira`, read
-live and recorded on first use for a connection registered earlier), or the login `gh` is
+live and recorded on first use for a connection registered earlier), the Linear viewer's user id
+recorded at `h9k connection add linear` and compared ordinally (a Linear connection with no id is
+Unreadable and names that command, and the gate makes no live viewer read), or the login `gh` is
 authenticated as, read live on every check and never stored. Each check reads the assignee field
 alone, so a task's one-time content snapshot is untouched, and records `TrackerAssignmentObserved`
 when it passes. Every claim door re-checks: the dispatcher leaves a refused task Queued and logs
@@ -1509,7 +1511,8 @@ gate every door and every sweep calls stays read-only, because the dispatcher ca
 with nobody watching). In a gated project it reads the linked item fresh and, when the tracker
 shows **nobody** holds it, writes this install's own tracker identity into the assignee field (Jira
 as an `assignee`-only update through `JiraWriteExecutor`, GitHub as
-`gh issue edit --add-assignee` with the login read live), reads the
+`gh issue edit --add-assignee` with the login read live, Linear as an `issueUpdate` whose input
+carries `assigneeId` alone, so no state or label moves), reads the
 item back, records `TrackerAssignmentWritten` from that read-back, and queues — so the gate then
 passes on its own instead of the task sitting in the queue waiting for a second act. It only ever
 moves an item from unassigned to this install: one somebody else holds is refused with exit 70
@@ -1517,19 +1520,21 @@ naming the holder, nothing is written, the task is left exactly as it was, and *
 that takes an item from another person**. Already yours records the observation and proceeds; an
 unreadable tracker refuses rather than writing blind. A read-back that comes back naming somebody
 else *beside* this install is refused too, and it is the one outcome only GitHub can produce
-(`--add-assignee` adds where Jira's `PUT` replaces): two installs took the same issue in the same
+(`--add-assignee` adds where Jira's `PUT` and Linear's single-valued `assigneeId` replace): two installs took the same issue in the same
 moment, so neither may claim it, and the refusal names who else is on it and says to settle it with
 them rather than to run the command again. The write is a **field update, never a
 transition** — the item's status, labels and milestone are untouched — but a team's own board
 automation may react to an assignment, which is why the flag is explicit. Without it, an
 interactive queue offers the same take on an unassigned item (defaulting to no) and a
 non-interactive one warns and proceeds without writing anything. `--take` where there is no gate
-to satisfy (gate off, or no linked card or issue) is refused rather than quietly honoured.
+to satisfy (gate off, or no linked Jira card, GitHub issue, or Linear issue) is refused rather than quietly honoured.
 The assignee follows a claim and a give-back (`h9k task abandon`, lease expiry on a gate-off
 project, and `h9k task release` of a ledger holder, a Done task's included, clear this install's
 own identity again; releasing an interactive claim does not); a finished item keeps it, so on a
 gated project a different install's later claim on that item is held until a person reassigns it
-in the tracker.
+in the tracker. A Linear issue follows the same shape: the take overwrites the single assignee after a
+fresh read shows nobody, the release sends `assigneeId` as an explicit JSON null only when the
+fresh read shows this install's own viewer id, and both are confirmed by reading the issue back.
 
 **A team's branch convention is a project setting, not a fork of the platform** (Decisions Log
 #121). `h9k project set <project> --branch-template "<TEXT>"` names a task's branch out of three

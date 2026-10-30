@@ -34,10 +34,10 @@ public sealed record ClaimGate
     public static readonly ClaimGate Off = new("Off");
 
     /// <summary>
-    /// A task linked to a Jira card or a GitHub issue is claimed on this install only while the
+    /// A task linked to a Jira card, a GitHub issue, or a Linear issue is claimed on this install only while the
     /// tracker shows that item assigned to this install's own tracker identity — the Jira
-    /// accountId recorded on the registered connection, or the login <c>gh</c> is authenticated
-    /// as, both read from the tracker and never typed.
+    /// accountId or the Linear user id recorded on the registered connection, or the login
+    /// <c>gh</c> is authenticated as, each read from the tracker and never typed.
     /// </summary>
     public static readonly ClaimGate TrackerAssignee = new("TrackerAssignee");
 

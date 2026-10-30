@@ -135,7 +135,7 @@ public sealed class ProjectDetails
     /// </summary>
     public bool SecurityReview { get; set; } = SecurityReviewSetting.Default;
     /// <summary>
-    /// What has to be true on this install before a task linked to a Jira card or a GitHub issue
+    /// What has to be true on this install before a task linked to a Jira card, a GitHub issue, or a Linear issue
     /// may be claimed here (idea 64c75e43); Off is the platform's original behavior.
     /// </summary>
     public ClaimGate ClaimGate { get; set; } = ClaimGate.Off;

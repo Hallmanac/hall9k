@@ -935,10 +935,10 @@ review a person adopted by hand is never abandoned by the platform.
 `h9k project set <name> --claim-gate off|tracker-assignee` (default off, today's behaviour
 byte-for-byte) makes an external item's own assignment field the single act that hands out work
 on a team where every teammate runs their own install against their own database (idea 64c75e43,
-Decisions Log #142). With `tracker-assignee`, a task linked to a Jira card or a GitHub issue is
-claimed on this install only while the tracker shows that item assigned to this install's own
-tracker identity — the Jira `accountId` recorded on the registered connection, or the login `gh`
-is authenticated as, read live per check — so two installs cannot both run the same card. Each
+Decisions Log #142). With `tracker-assignee`, a task linked to a Jira card, a GitHub issue, or a Linear
+issue is claimed on this install only while the tracker shows that item assigned to this install's own
+tracker identity — the Jira `accountId` or the Linear user id recorded on the registered connection,
+or the login `gh` is authenticated as, read live per check — so two installs cannot both run the same card. Each
 check reads the assignee field and nothing else, leaving the one-time content snapshot (#60)
 alone, and records what it saw on the task's own stream.
 
