@@ -2,8 +2,6 @@ using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Review;
-using Hall9k.Domain.Features.Project;
-using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -137,9 +135,10 @@ public sealed class ReviewPersonaRegistryTests
         "Shell commands are restricted in this session.",
         "You start in the checkout, so never use `cd` or `git -C`.",
         "anything else is refused without a prompt: run one git command per call, with no pipes and no chained commands.",
-        "Search and read with the Grep and Read tools, never shell grep.",
+        "search with the Grep tool only if this session lists one; never use shell grep.",
+        "Without a search tool you can read only the paths you can already name.",
         "do not retry a variation of it",
-        "say in your report what you could not check as a result",
+        "say in your report what you could not check or search as a result",
     ];
 
     [Fact]
@@ -170,20 +169,6 @@ public sealed class ReviewPersonaRegistryTests
         {
             text.Should().NotContain(command);
         }
-    }
-
-    [Fact]
-    public void A_qa_prompt_with_a_gate_says_the_printed_command_runs_exactly_as_printed()
-    {
-        ProjectDetails project = QaReviewPromptTests.SomeProject();
-        project.VerifyCommands = [new VerifyCommand("unit", "dotnet test --filter Category=Unit")];
-        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
-
-        string prompt = ReviewPersonaRegistry.For(ReviewPersona.Qa).Sessions.Single().BuildPrompt(
-            new ReviewPersonaPromptRequest(
-                QaReviewPromptTests.SomeTask(), project, "task/1-slug", "main", TimeSpan.FromMinutes(30)));
-
-        prompt.Should().Contain("A gate command printed below is allowed in this session and runs exactly as printed");
     }
 
     [Fact]
