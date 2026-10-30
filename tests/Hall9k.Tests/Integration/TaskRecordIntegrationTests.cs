@@ -72,7 +72,7 @@ namespace Hall9k.Tests.Integration;
 /// </para>
 /// </summary>
 [Trait("Category", "RequiresDocker")]
-public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
+public sealed partial class TaskRecordIntegrationTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 7, 15, 31, 33, TimeSpan.Zero);
     private const string Repository = "Hallmanac/hall9k";

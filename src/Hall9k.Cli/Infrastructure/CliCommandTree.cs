@@ -1597,10 +1597,14 @@ public static class CliCommandTree
                     + "queue, and --no-queue (or its earlier name --no-assign) skips the question. "
                     + "Under a tracking backlog policy (h9k project set --backlog), publishing has an "
                     + "external side effect: github-issues files a GitHub issue itself, through the "
-                    + "operator's own gh credentials, and jira dispatches an agent run to author the card. "
+                    + "operator's own gh credentials, jira dispatches an agent run to author the card, and "
+                    + "linear creates the issue in the project's bound Linear team from this install, with no "
+                    + "agent session (the team is checked through Linear before the publish commits, so a "
+                    + "missing connection or an unknown team refuses it with the task still a Draft; "
+                    + "--queue then waits for the link, so the branch carries the issue's identifier). "
                     + "That policy is also a dedup gate: a draft with no linked item and no publication "
                     + "already pending is refused until you search the tracker yourself and either link "
-                    + "what you find (h9k task link-jira / h9k task link-issue), attest none exists with "
+                    + "what you find (h9k task link-jira / h9k task link-issue / h9k task link-linear), attest none exists with "
                     + "--no-existing-item, or attest that this task should skip tracking altogether with "
                     + "--untracked (for internal chores that should not pollute a team's tracker).")
                 .WithExample("task", "publish", "28b19893")
