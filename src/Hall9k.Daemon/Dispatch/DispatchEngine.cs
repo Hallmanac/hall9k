@@ -387,15 +387,16 @@ public sealed class DispatchEngine(
                 continue;
             }
 
-            // A lease expiry is a transient handback, not a conclusion, unlike the other two
-            // release sites (closeout true completion, h9k task abandon) where the task really is
-            // over: on a project whose claim gate IS the tracker assignee, clearing this install's
-            // own identity off the item here would destroy the very signal that gate reads to let
-            // this same tick's own ClaimEligibleAsync re-claim the just-requeued task automatically
-            // — crash recovery would stall until a human re-assigns the issue by hand (adversarial
-            // review, this branch's fix cycle). Skipped outright, not merely retried differently:
-            // nothing here for SweepPendingTrackerMirrorsAsync to ever pick back up either, since no
-            // pending row is written when the call is never made.
+            // A lease expiry is a transient handback, not a conclusion, unlike h9k task abandon,
+            // where the task really is over (true completion no longer mirrors a release at all: a
+            // finished item keeps its assignee): on a project whose claim gate IS the tracker
+            // assignee, clearing this install's own identity off the item here would destroy the
+            // very signal that gate reads to let this same tick's own ClaimEligibleAsync re-claim
+            // the just-requeued task automatically — crash recovery would stall until a human
+            // re-assigns the issue by hand (adversarial review, this branch's fix cycle). Skipped
+            // outright, not merely retried differently: nothing here for
+            // SweepPendingTrackerMirrorsAsync to ever pick back up either, since no pending row is
+            // written when the call is never made.
             await using IDocumentSession gateSession = store.LightweightSession();
             ProjectDetails? gateProject = await gateSession.LoadAsync<ProjectDetails>(projectId, cancellationToken);
             if (gateProject is null || gateProject.ClaimGate != ClaimGate.TrackerAssignee)
@@ -2069,7 +2070,7 @@ public sealed class DispatchEngine(
     }
 
     /// <summary>
-    /// The mirror: on every holder change, best effort, the tracker assignee is set to match this
+    /// The mirror: on every claim, best effort, the tracker assignee is set to match this
     /// node's own identity — both providers, via the exact "move an unassigned item to this
     /// install" write <c>h9k task assign --take</c> already uses, deliberately reused rather than
     /// re-authored: it already knows both providers' write-then-read-back shape, and its own
@@ -2079,13 +2080,16 @@ public sealed class DispatchEngine(
     /// configured gate (which already decided, above, whether the tracker gated this claim at
     /// all): the mirror is a write, not a gate, and applies to a linked item on every project.
     /// Never throws and never affects the claim, which has already committed by the time this
-    /// runs — but criterion 5 ("on every holder change ... a named outcome retried next sweep")
-    /// means every outcome short of a confirmed match has to leave something for a later sweep to
-    /// pick back up, not merely a log line: an exception, or a take that ran and reported a named
+    /// runs — but criterion 5 ("a named outcome retried next sweep") means every outcome short of
+    /// a confirmed match has to leave something for a later sweep to pick back up, not merely a
+    /// log line: an exception, or a take that ran and reported a named
     /// outcome short of landing (held by somebody else, an unreadable tracker, a refused or
     /// unconfirmed write), both leave a <see cref="TaskTrackerAssignMirrorPending"/> row for
     /// <see cref="SweepPendingTrackerMirrorsAsync"/> to retry (window ruling, this branch's fix
-    /// cycle).
+    /// cycle). The assignee follows a claim and a give-back (h9k task abandon, h9k task release,
+    /// and lease expiry on a project with the claim gate off), and a finished item keeps it: on a
+    /// gated project, a different install's later claim on that item is held until a person
+    /// reassigns it in the tracker.
     /// </summary>
     private async Task MirrorTrackerAssigneeBestEffortAsync(
         TaskAggregate task, ProjectDetails? project, CancellationToken cancellationToken)
@@ -2183,13 +2187,16 @@ public sealed class DispatchEngine(
     }
 
     /// <summary>
-    /// The release-side twin of <see cref="MirrorTrackerAssigneeBestEffortAsync"/> (criterion 5):
-    /// once this node gives the ledger holder back, best effort, its own tracker identity is
-    /// cleared off the linked item too, through <see cref="TrackerAssignmentTake.ReleaseAsync"/> —
-    /// the release-flavoured sibling of the take the claim side already reuses. Never throws and
-    /// never blocks the release, which has already committed locally by the time this runs; a
-    /// named outcome short of a confirmed clear leaves a <see cref="TaskTrackerReleaseMirrorPending"/>
-    /// row for <see cref="SweepPendingTrackerMirrorsAsync"/> to retry.
+    /// The release-side twin of <see cref="MirrorTrackerAssigneeBestEffortAsync"/> (criterion 5),
+    /// for a lease expiry on a project with the claim gate off (h9k task abandon and h9k task
+    /// release run the same clear from the CLI; true completion does not, because a finished item
+    /// keeps its assignee): once this node gives the ledger holder back, best effort, its own
+    /// tracker identity is cleared off the linked item too, through
+    /// <see cref="TrackerAssignmentTake.ReleaseAsync"/> — the release-flavoured sibling of the take
+    /// the claim side already reuses. Never throws and never blocks the release, which has already
+    /// committed locally by the time this runs; a named outcome short of a confirmed clear leaves a
+    /// <see cref="TaskTrackerReleaseMirrorPending"/> row for
+    /// <see cref="SweepPendingTrackerMirrorsAsync"/> to retry.
     /// </summary>
     private async Task MirrorTrackerReleaseBestEffortAsync(
         Guid taskId, Guid projectId, CancellationToken cancellationToken)
@@ -2359,8 +2366,15 @@ public sealed class DispatchEngine(
             // retry either — the row is stale, not merely premature, and this node's own next
             // release (whenever it next gives the task back) leaves a fresh row of its own if that
             // one fails.
+            //
+            // A Done task is dropped for the opposite reason: a finished item keeps its assignee, so a
+            // row left by an earlier lease expiry or by a closeout from before that rule cannot clear
+            // it. Done is read rather than the merge because a task reads Done from the moment its pull
+            // request opens, and any node can read it, including one that no longer holds the task.
+            // The accepted cost is a row h9k task release left on a Done task after a failed clear:
+            // the explicit release tries once, and a failure there is dropped here, not retried.
             TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(row.TaskId, token: cancellationToken);
-            if (task is not null && task.HolderNodeId == nodeId)
+            if (task is not null && (task.HolderNodeId == nodeId || task.State == TaskState.Done))
             {
                 session.Delete<TaskTrackerReleaseMirrorPending>(TaskTrackerReleaseMirrorPending.KeyFor(row.TaskId, node.NodeId));
                 await session.SaveChangesAsync(cancellationToken);

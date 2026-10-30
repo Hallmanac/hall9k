@@ -558,6 +558,10 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
 
         await Doorbell.RingAsync($"task-released:{taskId}", cancellationToken);
         await ReleaseLedgerHolderBestEffortAsync(store, context, task, cancellationToken);
+
+        // An explicit release is a give-back even on a Done task (the ordinary window, a pull
+        // request still open, or one closed unmerged), so it clears this install's tracker identity
+        // as it always has. Only true completion leaves a finished item's assignee alone.
         await MirrorTrackerReleaseBestEffortAsync(store, context, task, cancellationToken);
 
         AnsiConsole.MarkupLine(

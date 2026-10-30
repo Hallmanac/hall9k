@@ -3,9 +3,13 @@ namespace Hall9k.Domain.Features.Tasks.Documents;
 /// <summary>
 /// The release-side twin of <see cref="TaskTrackerAssignMirrorPending"/>: a tracker-assignee clear
 /// this node owed on giving back the ledger holder, but could not confirm landed (idea 202383dc,
-/// A3b, criterion 5). Deleted the moment a retry lands, the gate turns off, or the item no longer
-/// shows this install holding it; row keyed by task and node together (<see cref="KeyFor"/>), the
-/// identical reason <see cref="TaskHolderReleasePending"/>'s own key carries both.
+/// A3b, criterion 5). Written by a give-back only (h9k task abandon, h9k task release, and lease
+/// expiry on a project with the claim gate off), never by a completion: a finished item keeps its
+/// assignee, so the sweep drops a row whose task is Done without calling the tracker. Deleted the
+/// moment a retry lands, the gate turns off, the item no longer shows this install holding it, or
+/// the task is Done (so a failed clear from h9k task release on a Done task is not retried); row
+/// keyed by task and node together (<see cref="KeyFor"/>), the identical reason
+/// <see cref="TaskHolderReleasePending"/>'s own key carries both.
 /// </summary>
 public sealed class TaskTrackerReleaseMirrorPending
 {

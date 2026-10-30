@@ -115,18 +115,6 @@ public sealed class CloseoutEngine(
         Microsoft.Extensions.Logging.Abstractions.NullLogger<GitLedger>.Instance);
 
     /// <summary>
-    /// The tracker-release mirror's own write (criterion 5, idea 202383dc, A3b) — built on the
-    /// same injected <see cref="processRunner"/>/<see cref="jiraRequester"/> seams
-    /// <see cref="TellGitHubAsync"/> and <see cref="TellJiraAsync"/> already use, for the
-    /// identical testability reason (a recorded process/requester rather than a live,
-    /// machine-authenticated one). No project-scoped, cached runner to share here the way
-    /// <c>DispatchEngine</c>'s own <c>_trackerClaimStack</c> does: this engine reads no
-    /// tracker-assignee claim gate of its own, so there is no sibling gate instance this take
-    /// would otherwise duplicate a runner with.
-    /// </summary>
-    private readonly TrackerAssignmentTake _trackerAssignmentTake = new(processRunner, jiraRequester);
-
-    /// <summary>
     /// Who deletes a merged branch from origin, per repository, read once per sweep (Decisions Log
     /// #186). Built here rather than injected for the reason that type's own doc
     /// gives, and reachable by <c>RunLauncher</c> through
@@ -2748,26 +2736,6 @@ public sealed class CloseoutEngine(
                     + "release already committed, and the ledger write is retried on the next sweep",
                     task.Id);
             }
-
-            // The tracker-assignee twin of the release above (criterion 5, idea 202383dc, A3b):
-            // true completion gives the ledger holder back, so this install's own tracker
-            // identity is cleared off the linked item too, best effort, through the identical
-            // TrackerAssignmentTake.ReleaseAsync seam h9k task abandon and DispatchEngine's own
-            // lease-expiry release both already go through — a named outcome short of a
-            // confirmed clear leaves a TaskTrackerReleaseMirrorPending row for DispatchEngine's
-            // own SweepPendingTrackerMirrorsAsync to retry.
-            try
-            {
-                await MirrorTrackerReleaseBestEffortAsync(task.Id, project.Id, cancellationToken);
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                logger.LogWarning(
-                    exception,
-                    "Task {TaskId}: mirroring the tracker-assignee release after merge closeout failed; the "
-                    + "domain-side release already committed, and the mirror is retried on the next sweep",
-                    task.Id);
-            }
         }
 
         logger.LogInformation(
@@ -3616,87 +3584,6 @@ public sealed class CloseoutEngine(
             session.Delete<TaskHolderReleasePending>(pendingKey);
             await session.SaveChangesAsync(cancellationToken);
         }
-    }
-
-    /// <summary>
-    /// The tracker-assignee twin of <see cref="ReleaseLedgerHolderBestEffortAsync"/> (criterion 5,
-    /// idea 202383dc, A3b: "on every holder change the tracker assignee is set to match"): true
-    /// completion gives the ledger holder back, so this install's own tracker identity is cleared
-    /// off the linked item too, best effort, through <see cref="_trackerAssignmentTake"/> — the
-    /// identical <see cref="TrackerAssignmentTake.ReleaseAsync"/> seam <c>TaskAbandonCommand</c>'s
-    /// own mirror and <c>DispatchEngine</c>'s own lease-expiry release both already go through. A
-    /// named outcome short of a confirmed clear leaves a <see cref="TaskTrackerReleaseMirrorPending"/>
-    /// row for <c>DispatchEngine</c>'s own <c>SweepPendingTrackerMirrorsAsync</c> to retry — the
-    /// identical row shape and sweep every other holder-change mirror already retries through, so a
-    /// closeout-side failure here is picked back up by whichever node's dispatch loop next runs,
-    /// exactly as an abandon- or lease-expiry-side failure already is.
-    /// </summary>
-    private async Task MirrorTrackerReleaseBestEffortAsync(
-        Guid taskId, Guid projectId, CancellationToken cancellationToken)
-    {
-        await using IDocumentSession session = store.LightweightSession();
-        string pendingKey = TaskTrackerReleaseMirrorPending.KeyFor(taskId, node.NodeId);
-        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(projectId, cancellationToken);
-        if (project is null)
-        {
-            session.Delete<TaskTrackerReleaseMirrorPending>(pendingKey);
-            await session.SaveChangesAsync(cancellationToken);
-            return;
-        }
-
-        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-        if (task?.ExternalReference is null)
-        {
-            session.Delete<TaskTrackerReleaseMirrorPending>(pendingKey);
-            await session.SaveChangesAsync(cancellationToken);
-            return;
-        }
-
-        try
-        {
-            TrackerRelease release = await _trackerAssignmentTake.ReleaseAsync(
-                store, ClaimGate.TrackerAssignee, task.ExternalReference, project.RepositoryPath, cancellationToken);
-            if (!release.Succeeded)
-            {
-                await StorePendingTrackerReleaseMirrorAsync(
-                    pendingKey, taskId, projectId, release.FailureReason ?? string.Empty, cancellationToken);
-                logger.LogWarning(
-                    "Task {TaskId}: clearing the tracker assignee on release did not land — {Reason} It is "
-                    + "retried on the next sweep",
-                    taskId, release.FailureReason);
-                return;
-            }
-
-            session.Delete<TaskTrackerReleaseMirrorPending>(pendingKey);
-            await session.SaveChangesAsync(cancellationToken);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            await StorePendingTrackerReleaseMirrorAsync(pendingKey, taskId, projectId, exception.Message, cancellationToken);
-            logger.LogInformation(
-                exception,
-                "Task {TaskId}: clearing the tracker assignee on release failed; the release is unaffected and "
-                + "it is retried on the next sweep",
-                taskId);
-        }
-    }
-
-    private async Task StorePendingTrackerReleaseMirrorAsync(
-        string pendingKey, Guid taskId, Guid projectId, string reason, CancellationToken cancellationToken)
-    {
-        await using IDocumentSession session = store.LightweightSession();
-        TaskTrackerReleaseMirrorPending? existing = await session.LoadAsync<TaskTrackerReleaseMirrorPending>(pendingKey, cancellationToken);
-        session.Store(new TaskTrackerReleaseMirrorPending
-        {
-            Id = pendingKey,
-            TaskId = taskId,
-            ProjectId = projectId,
-            NodeId = node.NodeId,
-            RecordedAt = DateTimeOffset.UtcNow,
-            LastFailureReason = reason,
-            AttemptCount = (existing?.AttemptCount ?? 0) + 1,
-        });
-        await session.SaveChangesAsync(cancellationToken);
     }
 
     private async Task RecordClosedAsync(

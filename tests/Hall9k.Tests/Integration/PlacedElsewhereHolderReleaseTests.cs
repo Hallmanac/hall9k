@@ -216,6 +216,66 @@ public sealed class PlacedElsewhereHolderReleaseTests(PostgresFixture postgres) 
             TaskHolderReleasePending.KeyFor(taskId, node.NodeId), cts.Token)).Should().BeNull();
     }
 
+    [Fact]
+    public async Task A_pending_release_row_for_a_done_task_is_dropped_without_calling_the_tracker()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        NodeContext node = await NodeBootstrapSeed.NewIsolatedNodeAsync(postgres.Store, cts.Token);
+        Guid projectId = await SeedProjectAsync(cts.Token);
+        RecordingProcessRunner github = RecordingProcessRunner.Failing("the tracker must not be asked");
+
+        // Another node holds the task, so this row's node no longer holds it: only the Done check can drop it.
+        Guid taskId = await SeedPendingReleaseTaskAsync(node, projectId, PendingReleaseTask.DoneHeldByAnotherNode, cts.Token);
+        TaskAggregate seeded = await LoadTaskAsync(taskId, cts.Token);
+        seeded.State.Should().Be(TaskState.Done);
+        seeded.HolderNodeId.Should().NotBe(node.NodeId);
+
+        await NewEngine(node, new FakeLedger(), new TrackerClaimGate(github.Runner, FakeJiraRequester.NeverInvoked()))
+            .SweepExpiredLeasesAsync(DateTimeOffset.UtcNow, cts.Token);
+
+        await using IQuerySession query = postgres.Store.QuerySession();
+        (await query.LoadAsync<TaskTrackerReleaseMirrorPending>(
+            TaskTrackerReleaseMirrorPending.KeyFor(taskId, node.NodeId), cts.Token)).Should().BeNull(
+            "a finished item keeps its assignee, so a retry left from before that rule is dropped");
+        github.Calls.Should().BeEmpty("the row was dropped before any release was attempted");
+    }
+
+    [Theory]
+    [InlineData(PendingReleaseTask.Queued)]
+    [InlineData(PendingReleaseTask.Abandoned)]
+    public async Task A_pending_release_row_for_a_task_that_is_not_done_is_still_retried(PendingReleaseTask shape)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        NodeContext node = await NodeBootstrapSeed.NewIsolatedNodeAsync(postgres.Store, cts.Token);
+        Guid projectId = await SeedProjectAsync(cts.Token);
+        RecordingProcessRunner github = RecordingProcessRunner.Failing("gh could not read the issue");
+
+        Guid taskId = await SeedPendingReleaseTaskAsync(node, projectId, shape, cts.Token);
+
+        await NewEngine(node, new FakeLedger(), new TrackerClaimGate(github.Runner, FakeJiraRequester.NeverInvoked()))
+            .SweepExpiredLeasesAsync(DateTimeOffset.UtcNow, cts.Token);
+
+        github.Calls.Should().NotBeEmpty("the retry went through TrackerAssignmentTake.ReleaseAsync and read the tracker");
+        await using IQuerySession query = postgres.Store.QuerySession();
+        TaskTrackerReleaseMirrorPending? row = await query.LoadAsync<TaskTrackerReleaseMirrorPending>(
+            TaskTrackerReleaseMirrorPending.KeyFor(taskId, node.NodeId), cts.Token);
+        row.Should().NotBeNull("the unreadable tracker leaves the row for a later sweep");
+        row!.AttemptCount.Should().Be(2, "the sweep retried the row once and it failed again");
+    }
+
+    /// <summary>The state a task carrying a pending tracker-release row is seeded in.</summary>
+    public enum PendingReleaseTask
+    {
+        /// <summary>Queued with no holder: a give-back left its row behind.</summary>
+        Queued,
+
+        /// <summary>Abandoned: <c>h9k task abandon</c> left its row behind.</summary>
+        Abandoned,
+
+        /// <summary>Claimed by a node other than this one, then completed: Done, and not held here.</summary>
+        DoneHeldByAnotherNode,
+    }
+
     /// <summary>How a seeded task came to be held here and queued, claimed, or placed as it is.</summary>
     private enum HeldHere
     {
@@ -229,7 +289,7 @@ public sealed class PlacedElsewhereHolderReleaseTests(PostgresFixture postgres) 
         ClaimedByAnotherNodeThenRequeuedAndMoved,
     }
 
-    private DispatchEngine NewEngine(NodeContext node, ILedger ledger) =>
+    private DispatchEngine NewEngine(NodeContext node, ILedger ledger, TrackerClaimGate? trackerClaimGate = null) =>
         new(
             postgres.Store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
             new LaunchHoldEngine(postgres.Store, NullLogger<LaunchHoldEngine>.Instance),
@@ -239,7 +299,7 @@ public sealed class PlacedElsewhereHolderReleaseTests(PostgresFixture postgres) 
                 LeaseTimeout = TimeSpan.FromMinutes(30),
             }),
             NullLogger<DispatchEngine>.Instance,
-            trackerClaimGate: null,
+            trackerClaimGate,
             ledger);
 
     private static TaskRecordHolder HolderNamed(NodeContext node) =>
@@ -284,6 +344,52 @@ public sealed class PlacedElsewhereHolderReleaseTests(PostgresFixture postgres) 
 
         await using IDocumentSession session = postgres.Store.LightweightSession();
         session.Events.StartStream<TaskAggregate>(taskId, [.. events]);
+        await session.SaveChangesAsync(cancellationToken);
+        return taskId;
+    }
+
+    /// <summary>
+    /// Seeds a task linked to a GitHub issue in <paramref name="shape"/> plus the pending
+    /// tracker-release row a give-back would have left for it, due for a retry on the next sweep.
+    /// </summary>
+    private async Task<Guid> SeedPendingReleaseTaskAsync(
+        NodeContext node, Guid projectId, PendingReleaseTask shape, CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(
+                taskId, projectId, "Carries a pending release", ["done"], TaskType.Chore, null, null,
+                new ExternalReference(WorkItemProvider.GitHub, "o/r#7"), Now, node.OwnerId),
+            node.OwnerId, Now);
+        List<object> events = [.. lifecycle];
+
+        switch (shape)
+        {
+            case PendingReleaseTask.Abandoned:
+                events.Add(TaskDecider.Abandon(task, "Walked away from", Now, node.OwnerId));
+                break;
+
+            case PendingReleaseTask.DoneHeldByAnotherNode:
+                Guid runId = DomainId.New();
+                TaskClaimed claimed = TaskDecider.Claim(task, DomainId.New(), node.OwnerId, runId, Now);
+                task.Apply(claimed);
+                events.Add(claimed);
+                events.Add(TaskDecider.Complete(task, runId, "https://github.com/o/r/pull/9", Now));
+                break;
+        }
+
+        await using IDocumentSession session = postgres.Store.LightweightSession();
+        session.Events.StartStream<TaskAggregate>(taskId, [.. events]);
+        session.Store(new TaskTrackerReleaseMirrorPending
+        {
+            Id = TaskTrackerReleaseMirrorPending.KeyFor(taskId, node.NodeId),
+            TaskId = taskId,
+            ProjectId = projectId,
+            NodeId = node.NodeId,
+            RecordedAt = Now,
+            LastFailureReason = "the tracker could not be read",
+            AttemptCount = 1,
+        });
         await session.SaveChangesAsync(cancellationToken);
         return taskId;
     }

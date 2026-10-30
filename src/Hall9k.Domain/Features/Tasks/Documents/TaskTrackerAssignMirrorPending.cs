@@ -2,8 +2,8 @@ namespace Hall9k.Domain.Features.Tasks.Documents;
 
 /// <summary>
 /// A claim-side tracker mirror this node owed but could not confirm landed (idea 202383dc, A3b,
-/// criterion 5: "on every holder change the tracker assignee is set to match ... a named outcome
-/// retried next sweep") — the identical shape <see cref="TaskHolderReleasePending"/> already gives
+/// criterion 5: "a named outcome retried next sweep"; the assignee follows a claim and a
+/// give-back, and a finished item keeps it) — the identical shape <see cref="TaskHolderReleasePending"/> already gives
 /// the ledger holder's own release retry, mirrored for the tracker-assignee write. Deleted the
 /// moment a retry lands or the item stops being this node's to mirror (the gate turns off, the
 /// reference changes kind, or the item no longer names this install); row keyed by task and node
