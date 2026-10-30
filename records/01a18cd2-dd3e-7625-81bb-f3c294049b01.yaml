@@ -1,0 +1,31 @@
+hall9k-task-record: 1
+task-id: 01a18cd2-dd3e-7625-81bb-f3c294049b01
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#791
+objective: |-
+  A pull-request review pre-flight stays on the node that ran it: its events do not replicate, a node neither applies nor holds one from a peer, and the records already held leave the held table on their own with no catch-up traffic.
+criteria:
+  - A node that runs a pre-flight puts none of its dispatched, completed, abandoned or reclaimed events in its outbox, and a catch-up request for that stream is answered as nothing held here.
+  - |-
+    A pre-flight event of any of those four types delivered by a peer is neither applied nor held, on a node that has never seen the stream and on the node that dispatched it: that node's pre-flight document is unchanged and the held table gains no row.
+  - On a build with this fix, the first sweep of a project removes every held pre-flight record and mints no catch-up ask for one, and `h9k status` no longer counts those streams as held or given up. A held record of any other event type is untouched, with its ask count and give-up mark intact.
+  - A node claiming a pr-review task whose only verdict was reached on another node runs its own pre-flight before any checkout, for an ordinary review dispatch and for a mention follow-up.
+  - A test fails if a `ReplicationStreamFamily` value has no stream-starting event named in `AggregateGenesisEventTypes` and is not on an explicit exemption list.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/94049b01-a-pull-request-review-pre-flig
+published: 2026-10-30 13:26:03Z
+context: |-
+  Pre-flight events are classified project-scoped (`EventScopeRegistry.cs:409-416`) so that a fleet sibling reclaiming a task could read the verdict, but `PrReviewPreflightDispatched` was never added to `AggregateGenesisEventTypes.IsGenesis`, so every receiver has held them since v0.11.0 (`EventReplicationInbox.cs:1376`) and no node has ever read another node's verdict. The held-tail sweep then asks the fleet for a record it already has. Observed on one node on v0.14.0: 335 streams held in one team project, 4,155 asks, 12,994 declines, and about 1,000 fresh asks at each upgrade, because an upgrade clears every give-up (`EventCatchUpCoordinator.cs:500-522`).
+
+  This change ratifies what has shipped. Classify the four events NodeScoped, the same shape as the courier's events (`EventScopeRegistry.cs:394-396`). The outbox, `EventCatchUpResponder` and `EventReplicationInbox.ApplyAsync` (`:799`) already act on that classification, so no new check is needed and the pre-flight gate in `RunLauncher` does not change. `TaskRequeued` and `PrReviewPreflightParked` stay on the task stream and keep travelling.
+
+  Clear held pre-flight records at the top of `RequestHeldTailStreamsAsync`, ahead of the give-up reset, so the upgrade never mints the burst. `HeldReplicatedEventRecord` has no type column, so use one delete keyed on the event type inside `RecordJson` rather than reading full documents every sweep (commit 1e4c9a82c removed that cost). Nothing is lost: each origin keeps its own log and no reader needs a peer's copy.
+
+  Remove what this leaves unreachable: the pre-flight branch in `ReplicationProjectResolver`, `ReplicationStreamFamily.PrReviewPreflight`, and its `FamilyOf` arm. Rewrite the comments that say verdicts travel or that nodes share a database (`EventScopeRegistry.cs:398-422`, `RunLauncher.cs:2235-2241`).
+
+  During rollout a peer on v0.14.0 keeps sending these events; a fixed node refuses each with a warning at `:799` and holds nothing, which is expected. Tests fit the existing setup: `EventCatchUpTests` (`InMemoryMessageTransport`, `FakeLedger`) and `RunLauncherTests`. Describe this pull request as the behaviour change above.
