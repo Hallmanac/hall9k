@@ -16,7 +16,9 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// It is also how the two funnel exits (PLAN.md §3.1a, §9.2) end up on the same field:
 /// <c>--from-issue</c> adopts an item that already existed and records the reference on
 /// <see cref="TaskAdded"/>; this records the reference for an item that came into existence
-/// because of the task. Either way the task carries exactly one, for good.
+/// because of the task. Either way the task carries exactly one at a time, and it stays that one unless a Linear issue
+/// moves to another team and Linear itself lists the recorded identifier as a previous one, which is
+/// the single case a later link replaces it.
 /// </para>
 /// </summary>
 public sealed record WorkItemLinked(

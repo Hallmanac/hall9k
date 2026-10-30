@@ -3197,7 +3197,7 @@ public static class TaskDecider
     /// moves between teams, so the link on record goes stale, and the new identifier replaces it only when
     /// Linear itself lists the recorded one as a former identifier of the same issue. Every other second
     /// link is refused as it always was. A branch already recorded on a run does not change, because
-    /// nothing re-renders one from the reference.
+    /// the recorded name is the one that is pushed; a branch cut after the relink renders the new identifier.
     /// </remarks>
     public static WorkItemLinked LinkWorkItem(
         TaskAggregate task,
