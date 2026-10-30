@@ -193,31 +193,117 @@ public sealed class LaunchdDaemonAutostartTests
     }
 
     [Fact]
-    public async Task Curing_a_file_rewrites_it_and_asks_for_a_reload()
+    public async Task Curing_a_file_releases_the_job_first_and_then_rewrites_it()
     {
         string directory = Directory.CreateTempSubdirectory().FullName;
         try
         {
             string path = Path.Combine(directory, "job.plist");
-            await File.WriteAllTextAsync(
-                path,
-                LaunchdDaemonAutostart.PlistContent(Binary, Log, Environment)
-                    .Replace("</dict>\n</plist>", "    <key>ProcessType</key>\n    <string>Background</string>\n</dict>\n</plist>"),
-                CancellationToken.None);
+            await File.WriteAllTextAsync(path, WithBackground(), CancellationToken.None);
+            string? seenByRelease = null;
 
             LaunchdDaemonAutostart.ProcessTypeCure cure = await LaunchdDaemonAutostart.CureBackgroundProcessTypeAsync(
-                path, CancellationToken.None);
+                path,
+                async token =>
+                {
+                    seenByRelease = await File.ReadAllTextAsync(path, token);
+                    return LaunchdDaemonAutostart.JobRelease.Released;
+                },
+                CancellationToken.None);
 
             cure.Outcome.Should().Be(LaunchdDaemonAutostart.ProcessTypeCureOutcome.Removed);
+            seenByRelease.Should().Contain("ProcessType");
             (await File.ReadAllTextAsync(path, CancellationToken.None)).Should().NotContain("ProcessType");
             Directory.GetFiles(directory).Should().ContainSingle();
-            LaunchdDaemonAutostart.StartCommands("501", path, reload: true).Should().Equal(
-                new[]
-                {
-                    new[] { "bootout", $"gui/501/{LaunchdDaemonAutostart.Label}" },
-                    new[] { "bootstrap", "gui/501", path },
-                },
-                (left, right) => left.SequenceEqual(right));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task A_failed_bootout_leaves_the_file_for_the_next_start_to_retry()
+    {
+        string directory = Directory.CreateTempSubdirectory().FullName;
+        try
+        {
+            string path = Path.Combine(directory, "job.plist");
+            string original = WithBackground();
+            await File.WriteAllTextAsync(path, original, CancellationToken.None);
+
+            LaunchdDaemonAutostart.ProcessTypeCure cure = await LaunchdDaemonAutostart.CureBackgroundProcessTypeAsync(
+                path,
+                _ => Task.FromResult(LaunchdDaemonAutostart.JobRelease.BootoutFailed),
+                CancellationToken.None);
+
+            cure.Outcome.Should().Be(LaunchdDaemonAutostart.ProcessTypeCureOutcome.Skipped);
+            cure.Detail.Should().NotBeEmpty();
+            (await File.ReadAllTextAsync(path, CancellationToken.None)).Should().Be(original);
+            Directory.GetFiles(directory).Should().ContainSingle();
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task A_running_job_is_not_booted_out_but_the_file_is_still_cured()
+    {
+        string directory = Directory.CreateTempSubdirectory().FullName;
+        try
+        {
+            string path = Path.Combine(directory, "job.plist");
+            await File.WriteAllTextAsync(path, WithBackground(), CancellationToken.None);
+
+            LaunchdDaemonAutostart.ProcessTypeCure cure = await LaunchdDaemonAutostart.CureBackgroundProcessTypeAsync(
+                path,
+                _ => Task.FromResult(LaunchdDaemonAutostart.JobRelease.LeftRunning),
+                CancellationToken.None);
+
+            cure.Outcome.Should().Be(LaunchdDaemonAutostart.ProcessTypeCureOutcome.RemovedLeavingJobRunning);
+            (await File.ReadAllTextAsync(path, CancellationToken.None)).Should().NotContain("ProcessType");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, null, "Nothing")]
+    [InlineData(false, 4242, "Nothing")]
+    [InlineData(true, 4242, "LeaveRunning")]
+    [InlineData(true, null, "BootOut")]
+    public void Only_a_loaded_idle_job_is_booted_out(bool isLoaded, int? processId, string expected) =>
+        LaunchdDaemonAutostart.ReleaseActionFor(isLoaded, processId).ToString().Should().Be(expected);
+
+    [Fact]
+    public async Task Curing_keeps_the_restrictive_mode_and_a_symlink()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string directory = Directory.CreateTempSubdirectory().FullName;
+        try
+        {
+            string real = Path.Combine(directory, "real.plist");
+            string link = Path.Combine(directory, "job.plist");
+            await File.WriteAllTextAsync(real, WithBackground(), CancellationToken.None);
+            File.SetUnixFileMode(real, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            File.CreateSymbolicLink(link, real);
+
+            LaunchdDaemonAutostart.ProcessTypeCure cure = await LaunchdDaemonAutostart.CureBackgroundProcessTypeAsync(
+                link, _ => Task.FromResult(LaunchdDaemonAutostart.JobRelease.Released), CancellationToken.None);
+
+            cure.Outcome.Should().Be(LaunchdDaemonAutostart.ProcessTypeCureOutcome.Removed);
+            File.GetUnixFileMode(real).Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            new FileInfo(link).LinkTarget.Should().Be(real);
+            (await File.ReadAllTextAsync(real, CancellationToken.None)).Should().NotContain("ProcessType");
+            Directory.GetFiles(directory).Should().HaveCount(2);
         }
         finally
         {
@@ -228,7 +314,7 @@ public sealed class LaunchdDaemonAutostartTests
     [Theory]
     [InlineData("Interactive")]
     [InlineData("Adaptive")]
-    public async Task A_plist_without_background_is_left_untouched_and_starts_as_before(string processType)
+    public async Task A_plist_without_background_is_left_untouched_and_never_releases_the_job(string processType)
     {
         string directory = Directory.CreateTempSubdirectory().FullName;
         try
@@ -236,20 +322,18 @@ public sealed class LaunchdDaemonAutostartTests
             string path = Path.Combine(directory, "job.plist");
             string original = LaunchdDaemonAutostart.PlistContent(Binary, Log, Environment)
                 .Replace("</dict>\n</plist>", $"    <key>ProcessType</key>\n    <string>{processType}</string>\n</dict>\n</plist>");
-            await File.WriteAllTextAsync(path, original, CancellationToken.None);
 
             foreach (string text in new[] { original, LaunchdDaemonAutostart.PlistContent(Binary, Log, Environment) })
             {
                 await File.WriteAllTextAsync(path, text, CancellationToken.None);
                 LaunchdDaemonAutostart.ProcessTypeCure cure = await LaunchdDaemonAutostart.CureBackgroundProcessTypeAsync(
-                    path, CancellationToken.None);
+                    path,
+                    _ => throw new InvalidOperationException("a clean plist must not touch the loaded job"),
+                    CancellationToken.None);
 
                 cure.Outcome.Should().Be(LaunchdDaemonAutostart.ProcessTypeCureOutcome.NotNeeded);
                 (await File.ReadAllTextAsync(path, CancellationToken.None)).Should().Be(text);
             }
-
-            LaunchdDaemonAutostart.StartCommands("501", path, reload: false).Should().ContainSingle()
-                .Which.Should().Equal("bootstrap", "gui/501", path);
         }
         finally
         {
@@ -279,17 +363,34 @@ public sealed class LaunchdDaemonAutostartTests
             Binary, Log, [new KeyValuePair<string, string>("ProcessType", "Background")]));
     }
 
-    [Fact]
-    public void Windows_line_endings_are_cut_cleanly_and_bare_carriage_returns_are_declined()
+    [Theory]
+    [InlineData("\r\n")]
+    [InlineData("\r")]
+    public void Every_line_ending_the_parser_recognises_is_cut_cleanly(string lineEnding)
     {
-        string withBackground = LaunchdDaemonAutostart.PlistContent(Binary, Log, Environment)
-            .Replace("</dict>\n</plist>", "    <key>ProcessType</key>\n    <string>Background</string>\n</dict>\n</plist>");
+        string withBackground = WithBackground();
 
-        LaunchdDaemonAutostart.RemoveBackgroundProcessType(withBackground.Replace("\n", "\r\n")).Should().Be(
-            LaunchdDaemonAutostart.PlistContent(Binary, Log, Environment).Replace("\n", "\r\n"));
+        LaunchdDaemonAutostart.RemoveBackgroundProcessType(withBackground.Replace("\n", lineEnding)).Should().Be(
+            LaunchdDaemonAutostart.PlistContent(Binary, Log, Environment).Replace("\n", lineEnding));
+    }
 
-        Action bareCarriageReturns = () => LaunchdDaemonAutostart.RemoveBackgroundProcessType(withBackground.Replace("\n", "\r"));
-        bareCarriageReturns.Should().Throw<System.Xml.XmlException>();
+    [Theory]
+    [InlineData(2, true)]
+    [InlineData(4, true)]
+    [InlineData(3, false)]
+    [InlineData(4, false)]
+    public void Bare_carriage_returns_inside_a_value_never_shift_the_cut(int carriageReturns, bool processTypeLast)
+    {
+        // SecurityElement.Escape leaves a CR alone, so a recorded value can carry them.
+        string value = new('\r', carriageReturns);
+        KeyValuePair<string, string>[] environment = [new("NOTE", value)];
+        string clean = LaunchdDaemonAutostart.PlistContent(Binary, Log, environment);
+        string pair = "    <key>ProcessType</key>\n    <string>Background</string>\n";
+        string withBackground = processTypeLast
+            ? clean.Replace("</dict>\n</plist>", pair + "</dict>\n</plist>")
+            : clean.Replace("    <key>StandardOutPath</key>", pair + "    <key>StandardOutPath</key>");
+
+        LaunchdDaemonAutostart.RemoveBackgroundProcessType(withBackground).Should().Be(clean);
     }
 
     [Fact]
@@ -305,7 +406,7 @@ public sealed class LaunchdDaemonAutostartTests
             foreach (string path in new[] { missing, binary })
             {
                 LaunchdDaemonAutostart.ProcessTypeCure cure = await LaunchdDaemonAutostart.CureBackgroundProcessTypeAsync(
-                    path, CancellationToken.None);
+                    path, _ => Task.FromResult(LaunchdDaemonAutostart.JobRelease.Released), CancellationToken.None);
 
                 cure.Outcome.Should().Be(LaunchdDaemonAutostart.ProcessTypeCureOutcome.Skipped);
                 cure.Detail.Should().NotBeEmpty();
@@ -316,4 +417,8 @@ public sealed class LaunchdDaemonAutostartTests
             Directory.Delete(directory, recursive: true);
         }
     }
+
+    private static string WithBackground() =>
+        LaunchdDaemonAutostart.PlistContent(Binary, Log, Environment)
+            .Replace("</dict>\n</plist>", "    <key>ProcessType</key>\n    <string>Background</string>\n</dict>\n</plist>");
 }

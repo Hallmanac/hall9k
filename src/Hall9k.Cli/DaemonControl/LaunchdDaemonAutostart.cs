@@ -1,5 +1,6 @@
 using System.Security;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -29,13 +30,14 @@ namespace Hall9k.Cli.DaemonControl;
 /// considered and rejected, so it must not be added. <see cref="StartAsync"/> removes the
 /// key from a plist an earlier version wrote.
 /// </summary>
-public sealed class LaunchdDaemonAutostart : IDaemonAutostart
+public sealed partial class LaunchdDaemonAutostart : IDaemonAutostart
 {
     public const string Label = "com.hall9k.h9kd";
 
-    public static string PlistPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        "Library", "LaunchAgents", $"{Label}.plist");
+    private static string AgentsDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Library", "LaunchAgents");
+
+    public static string PlistPath => Path.Combine(AgentsDirectory, $"{Label}.plist");
 
     public bool IsSupported => true;
 
@@ -56,7 +58,17 @@ public sealed class LaunchdDaemonAutostart : IDaemonAutostart
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        Directory.CreateDirectory(Path.GetDirectoryName(PlistPath)!);
+        Directory.CreateDirectory(AgentsDirectory);
+
+        // The rewrite below would hide a Background ProcessType from the next start's cure
+        // while a loaded, idle job still holds it, so that job is booted out here instead.
+        if (await HasBackgroundProcessTypeAsync(PlistPath, cancellationToken)
+            && await ReleaseJobAsync(cancellationToken) == JobRelease.BootoutFailed)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]Could not boot out the loaded launchd job, so it keeps its ProcessType Background classification until the next h9k daemon stop and start.[/]");
+        }
+
         await File.WriteAllTextAsync(
             PlistPath, PlistContent(daemonBinaryPath, DaemonRuntime.LogFile, environment), cancellationToken);
         return [.. environment.Select(variable => variable.Key)];
@@ -90,12 +102,16 @@ public sealed class LaunchdDaemonAutostart : IDaemonAutostart
     public async Task<bool> StartAsync(CancellationToken cancellationToken)
     {
         string uid = await UserIdAsync(cancellationToken);
-        ProcessTypeCure cure = await CureBackgroundProcessTypeAsync(PlistPath, cancellationToken);
+        ProcessTypeCure cure = await CureBackgroundProcessTypeAsync(PlistPath, ReleaseJobAsync, cancellationToken);
         switch (cure.Outcome)
         {
             case ProcessTypeCureOutcome.Removed:
                 AnsiConsole.MarkupLineInterpolated(
-                    $"[dim]Removed ProcessType Background from {PlistPath}; reloading the job so launchd drops that classification.[/]");
+                    $"[dim]Removed ProcessType Background from {PlistPath}, so launchd no longer classifies the daemon as Background.[/]");
+                break;
+            case ProcessTypeCureOutcome.RemovedLeavingJobRunning:
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[dim]Removed ProcessType Background from {PlistPath}, but a launchd job for it is running and keeps that classification until the next h9k daemon stop and start.[/]");
                 break;
             case ProcessTypeCureOutcome.Skipped:
                 AnsiConsole.MarkupLineInterpolated(
@@ -103,17 +119,8 @@ public sealed class LaunchdDaemonAutostart : IDaemonAutostart
                 break;
         }
 
-        // launchd keeps the definition it loaded, so a cured file only reaches a job that
-        // is already bootstrapped (loaded and idle) through a bootout first. Exec does not
-        // throw on the nonzero exit an unloaded job gives, and DaemonLifecycle.StartAsync
-        // refuses to get here with a daemon running, so the bootout kills nothing.
-        IReadOnlyList<string[]> commands = StartCommands(uid, PlistPath, reload: cure.Outcome == ProcessTypeCureOutcome.Removed);
-        for (int index = 0; index < commands.Count - 1; index++)
-        {
-            await Exec.RunAsync("/bin/launchctl", commands[index], cancellationToken);
-        }
-
-        ExecResult bootstrap = await Exec.RunAsync("/bin/launchctl", commands[^1], cancellationToken);
+        ExecResult bootstrap = await Exec.RunAsync(
+            "/bin/launchctl", ["bootstrap", $"gui/{uid}", PlistPath], cancellationToken);
         if (bootstrap.Succeeded)
         {
             return true;
@@ -127,25 +134,22 @@ public sealed class LaunchdDaemonAutostart : IDaemonAutostart
     }
 
     /// <summary>
-    /// The launchctl invocations a start runs, in order, ending with the bootstrap whose
-    /// failure falls back to kickstart. A reload puts a bootout of the loaded job ahead of it.
-    /// </summary>
-    internal static IReadOnlyList<string[]> StartCommands(string uid, string plistPath, bool reload)
-    {
-        string[] bootstrap = ["bootstrap", $"gui/{uid}", plistPath];
-        return reload
-            ? [["bootout", $"gui/{uid}/{Label}"], bootstrap]
-            : [bootstrap];
-    }
-
-    /// <summary>
     /// Removes a top-level ProcessType Background from the plist at <paramref name="plistPath"/>,
     /// leaving every other key and value as it was. A plist without that exact pair is not
     /// rewritten; one that cannot be read or rewritten is reported as skipped rather than thrown,
     /// because a start must not cost on a repair.
     /// </summary>
+    /// <remarks>
+    /// launchd keeps the definition it loaded, so a cured file only reaches a job that is already
+    /// bootstrapped through a bootout. <paramref name="releaseJobAsync"/> does that before the file
+    /// is touched, and a failed bootout leaves the file as it was: the file is what marks the job
+    /// as still needing the cure, so every later start tries again instead of finding a clean
+    /// file over a job that still holds Background.
+    /// </remarks>
     internal static async Task<ProcessTypeCure> CureBackgroundProcessTypeAsync(
-        string plistPath, CancellationToken cancellationToken)
+        string plistPath,
+        Func<CancellationToken, Task<JobRelease>> releaseJobAsync,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -155,14 +159,105 @@ public sealed class LaunchdDaemonAutostart : IDaemonAutostart
                 return new ProcessTypeCure(ProcessTypeCureOutcome.NotNeeded, string.Empty);
             }
 
-            string temporaryPath = $"{plistPath}.tmp";
-            await File.WriteAllTextAsync(temporaryPath, cured, new UTF8Encoding(false), cancellationToken);
-            File.Move(temporaryPath, plistPath, overwrite: true);
-            return new ProcessTypeCure(ProcessTypeCureOutcome.Removed, string.Empty);
+            JobRelease release = await releaseJobAsync(cancellationToken);
+            if (release == JobRelease.BootoutFailed)
+            {
+                return new ProcessTypeCure(
+                    ProcessTypeCureOutcome.Skipped,
+                    "launchctl bootout of the loaded job failed, so the file is left as it is for the next start to retry");
+            }
+
+            await ReplaceFileAsync(plistPath, cured, cancellationToken);
+            return new ProcessTypeCure(
+                release == JobRelease.LeftRunning
+                    ? ProcessTypeCureOutcome.RemovedLeavingJobRunning
+                    : ProcessTypeCureOutcome.Removed,
+                string.Empty);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or XmlException)
         {
             return new ProcessTypeCure(ProcessTypeCureOutcome.Skipped, exception.Message);
+        }
+    }
+
+    /// <summary>
+    /// Makes the loaded job give up its definition when that is safe. A job with a live process
+    /// is left alone: the bootout would kill that daemon, and the plist and label belong to the
+    /// user account while the guard in DaemonLifecycle only sees the current home's pid file, so
+    /// a scratch home can reach this with the real daemon running. A job that is loaded but idle
+    /// has nothing to kill, and one that is not loaded has nothing to release.
+    /// </summary>
+    private async Task<JobRelease> ReleaseJobAsync(CancellationToken cancellationToken)
+    {
+        LaunchdJobState job = await JobStateAsync(cancellationToken);
+        return ReleaseActionFor(job.IsLoaded, job.ProcessId) switch
+        {
+            JobReleaseAction.BootOut => await StopAsync(cancellationToken)
+                ? JobRelease.Released
+                : JobRelease.BootoutFailed,
+            JobReleaseAction.LeaveRunning => JobRelease.LeftRunning,
+            _ => JobRelease.Released,
+        };
+    }
+
+    internal static JobReleaseAction ReleaseActionFor(bool isLoaded, int? processId) =>
+        (isLoaded, processId) switch
+        {
+            (false, _) => JobReleaseAction.Nothing,
+            (true, not null) => JobReleaseAction.LeaveRunning,
+            (true, null) => JobReleaseAction.BootOut,
+        };
+
+    private static async Task<bool> HasBackgroundProcessTypeAsync(string plistPath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return RemoveBackgroundProcessType(await File.ReadAllTextAsync(plistPath, cancellationToken)) is not null;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or XmlException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Writes <paramref name="content"/> over the file through a sibling temporary file and a
+    /// rename, so a crash never leaves a half-written plist. The file can carry the database
+    /// connection string, so the replacement is created with the original's permissions rather
+    /// than the default ones, a symlinked plist is rewritten at its target, and the temporary
+    /// file is removed whatever happens.
+    /// </summary>
+    private static async Task ReplaceFileAsync(string plistPath, string content, CancellationToken cancellationToken)
+    {
+        string target = new FileInfo(plistPath).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? plistPath;
+        string temporaryPath = $"{target}.tmp";
+        File.Delete(temporaryPath);
+        try
+        {
+            FileStreamOptions options = new() { Mode = FileMode.CreateNew, Access = FileAccess.Write };
+            UnixFileMode? mode = null;
+            if (!OperatingSystem.IsWindows())
+            {
+                mode = File.GetUnixFileMode(target);
+                options.UnixCreateMode = mode;
+            }
+
+            await using (FileStream stream = new(temporaryPath, options))
+            {
+                await stream.WriteAsync(new UTF8Encoding(false).GetBytes(content), cancellationToken);
+            }
+
+            if (mode is { } originalMode && !OperatingSystem.IsWindows())
+            {
+                // The create mode is subject to the umask; this puts it back exactly.
+                File.SetUnixFileMode(temporaryPath, originalMode);
+            }
+
+            File.Move(temporaryPath, target, overwrite: true);
+        }
+        finally
+        {
+            File.Delete(temporaryPath);
         }
     }
 
@@ -183,15 +278,18 @@ public sealed class LaunchdDaemonAutostart : IDaemonAutostart
         }
 
         int keyStart = OffsetOf(plistText, key);
-        int valueClose = plistText.IndexOf("</string>", OffsetOf(plistText, value), StringComparison.Ordinal);
-        if (!plistText.AsSpan(keyStart).StartsWith("<key") || valueClose < 0)
+        int valueOpen = OffsetOf(plistText, value);
+        int valueClose = valueOpen < 0
+            ? -1
+            : plistText.IndexOf("</string>", valueOpen, StringComparison.Ordinal);
+        int valueEnd = valueClose + "</string>".Length;
+
+        // Cutting at a guessed position would corrupt the file, so unless the text found at
+        // those offsets is exactly the pair that was parsed, decline to touch it.
+        if (keyStart < 0 || valueClose < 0 || !ProcessTypePair().IsMatch(plistText.AsSpan(keyStart, valueEnd - keyStart)))
         {
-            // Line endings the parser counts differently from this offset math (a bare CR);
-            // cutting at a guessed position would corrupt the file, so decline to touch it.
             throw new XmlException("the ProcessType entry could not be located in the file text");
         }
-
-        int valueEnd = valueClose + "</string>".Length;
 
         // The indentation before the key goes with it, so no blank line is left behind.
         int removeFrom = keyStart;
@@ -203,24 +301,58 @@ public sealed class LaunchdDaemonAutostart : IDaemonAutostart
         return plistText.Remove(removeFrom, valueEnd - removeFrom);
     }
 
-    /// <summary>The index of the '&lt;' that opens the element, from the line and column the parser recorded.</summary>
+    [GeneratedRegex(@"^<key>\s*ProcessType\s*</key>\s*<string>\s*Background\s*</string>$")]
+    private static partial Regex ProcessTypePair();
+
+    /// <summary>
+    /// The index of the '&lt;' that opens the element, from the line and column the parser
+    /// recorded, or -1 when the text has fewer lines than that. The parser ends a line at CRLF,
+    /// LF, or a bare CR, so this counts them the same way.
+    /// </summary>
     private static int OffsetOf(string text, XElement element)
     {
         IXmlLineInfo position = element;
         int lineStart = 0;
         for (int line = 1; line < position.LineNumber; line++)
         {
-            lineStart = text.IndexOf('\n', lineStart) + 1;
+            int lineBreak = text.AsSpan(lineStart).IndexOfAny('\r', '\n');
+            if (lineBreak < 0)
+            {
+                return -1;
+            }
+
+            lineBreak += lineStart;
+            lineStart = lineBreak + 1;
+            if (text[lineBreak] == '\r' && lineStart < text.Length && text[lineStart] == '\n')
+            {
+                lineStart++;
+            }
         }
 
-        return lineStart + position.LinePosition - 2;
+        int offset = lineStart + position.LinePosition - 2;
+        return offset >= 0 && offset < text.Length ? offset : -1;
     }
 
     internal enum ProcessTypeCureOutcome
     {
         NotNeeded,
         Removed,
+        RemovedLeavingJobRunning,
         Skipped,
+    }
+
+    internal enum JobReleaseAction
+    {
+        Nothing,
+        LeaveRunning,
+        BootOut,
+    }
+
+    internal enum JobRelease
+    {
+        Released,
+        LeftRunning,
+        BootoutFailed,
     }
 
     internal sealed record ProcessTypeCure(ProcessTypeCureOutcome Outcome, string Detail);
