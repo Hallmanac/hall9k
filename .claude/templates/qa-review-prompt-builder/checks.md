@@ -13,7 +13,7 @@ Run this project's end-to-end tests in this worktree, for real. This is the one 
 
 Scope them to the blast radius wherever the project's own test layout lets you: a directory, a suite name, a tag, a filter expression, whatever the harness gives you that maps onto the behaviours on your map. Where it gives you nothing that maps cleanly, run them in full rather than inventing a filter and reporting a narrower run as though it were the suite. Say which of the two you did.
 ===tests-gates===
-These are the verification gates this project has recorded, which is the platform's best evidence of how it is tested. Use them as the starting point rather than the whole answer: a gate named for the unit suite is not an end-to-end run, and a project can have end-to-end tests that no gate names. A gate command printed below is allowed in this session and runs exactly as printed. Wrap nothing around it: no pipe, no redirect, no `cd`, and no second command in the same call.
+These are the verification gates this project has recorded, which is the platform's best evidence of how it is tested. Use them as the starting point rather than the whole answer: a gate named for the unit suite is not an end-to-end run, and a project can have end-to-end tests that no gate names. A gate command printed below is allowed in this session, and you may extend it with arguments to scope the run, but never wrap it: no pipe, no redirect, no `cd`, and no second command in the same call.
 ===tests-gate-line===
 - `{{Name}}`: `{{Command}}`
 ===tests-gate-host-coupled-line===

@@ -61,7 +61,7 @@ Run this project's end-to-end tests in this worktree, for real. This is the one 
 
 Scope them to the blast radius wherever the project's own test layout lets you: a directory, a suite name, a tag, a filter expression, whatever the harness gives you that maps onto the behaviours on your map. Where it gives you nothing that maps cleanly, run them in full rather than inventing a filter and reporting a narrower run as though it were the suite. Say which of the two you did.
 
-These are the verification gates this project has recorded, which is the platform's best evidence of how it is tested. Use them as the starting point rather than the whole answer: a gate named for the unit suite is not an end-to-end run, and a project can have end-to-end tests that no gate names. A gate command printed below is allowed in this session and runs exactly as printed. Wrap nothing around it: no pipe, no redirect, no `cd`, and no second command in the same call.
+These are the verification gates this project has recorded, which is the platform's best evidence of how it is tested. Use them as the starting point rather than the whole answer: a gate named for the unit suite is not an end-to-end run, and a project can have end-to-end tests that no gate names. A gate command printed below is allowed in this session, and you may extend it with arguments to scope the run, but never wrap it: no pipe, no redirect, no `cd`, and no second command in the same call.
 
 - `test`: `npm run test:e2e`
 
@@ -110,7 +110,7 @@ What earns a finding here: coverage that is claimed and is not there; a behaviou
 
 ## Shell limits in this session
 
-Shell commands are restricted in this session. You start in the checkout, so never use `cd` or `git -C`. Only a short list of read-only commands is allowed, and anything else is refused without a prompt: run one git command per call, with no pipes and no chained commands. Search and read with the Grep and Read tools, never shell grep. If a command is refused, do not retry a variation of it: use what you can read, and say in your report what you could not check as a result.
+Shell commands are restricted in this session. You start in the checkout, so never use `cd` or `git -C`. Only a short list of read-only commands is allowed, and anything else is refused without a prompt: run one git command per call, with no pipes and no chained commands. Read files with the Read tool, and search with the Grep tool only if this session lists one; never use shell grep. Without a search tool you can read only the paths you can already name. If a command is refused, do not retry a variation of it: use what you can read, and say in your report what you could not check or search as a result.
 
 ## How to report each finding (the platform parses this)
 

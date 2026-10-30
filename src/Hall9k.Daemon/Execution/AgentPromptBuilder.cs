@@ -3642,8 +3642,9 @@ public static class AgentPromptBuilder
     /// <summary>
     /// What a session launched under a pr-review allow list is told about its shell before it runs
     /// anything: the list is short and read-only, a refusal is silent and final, and a search
-    /// belongs to the Grep and Read tools. Deliberately names no individual allowed command, so it
-    /// stays true as the allow list widens. Reaches every persona session through
+    /// belongs to the Grep tool only where the session lists one, since a dispatched session may
+    /// have none. Deliberately names no individual allowed command, so it stays true as the allow
+    /// list widens. Reaches every persona session through
     /// <see cref="AppendFindingContract"/> (gated on a foreign pull request, which an ordinary
     /// review pass of a project's own task is not) and the mention follow-up through its own call,
     /// since that builder shares nothing else with them.
