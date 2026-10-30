@@ -458,7 +458,8 @@ attaches to the `pr-review` task this node already holds for the pull request â€
 GitHub reviewer assignment, or created by `--from-pr` â€” and adopts the pull request itself only when
 no live task exists. The number, `owner/repo#N` shorthand or URL must name the project's own repository: a pull
 request from any other repository is refused before anything is claimed or checked out, because the
-checkout is always cut from the project's origin. It attaches to your own live task even when a teammate's replicated one is newer,
+checkout is always cut from the project's origin. The project's repository is its recorded URL, or the
+checkout's own `origin` when none is recorded, and it must be on github.com unless it is an ssh URL. It attaches to your own live task even when a teammate's replicated one is newer,
 and when every live task belongs to another owner it refuses, naming that owner the way the task
 commands do, before it attaches, claims or records anything on it. It reuses that task's read-only worktree (`--no-worktree` skips the checkout,
 for reviewing against a deployed environment) and prints a briefing to paste into a Claude Code
