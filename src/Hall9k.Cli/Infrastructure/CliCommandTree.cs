@@ -547,11 +547,14 @@ public static class CliCommandTree
                         + "--keychain; the key itself never reaches an event. An install holds one Linear "
                         + "connection, which means one Linear workspace; running it again replaces the "
                         + "connection and re-records the user and the workspace, which is how a rotated key is "
-                        + "applied. Success means only that Linear accepted the key: a key limited by "
+                        + "applied. A key from a different workspace is refused while any task carries a "
+                        + "linear: reference (the reference records no workspace, so those links would silently "
+                        + "point at another workspace) unless --change-workspace says that is intended. Success means only that Linear accepted the key: a key limited by "
                         + "permission or by team can still be refused on a later read or write. Then adopt "
                         + "issues with h9k task add --from-linear or h9k task link-linear.")
                     .WithExample("connection", "add", "linear")
-                    .WithExample("connection", "add", "linear", "--token-env", "LINEAR_API_KEY");
+                    .WithExample("connection", "add", "linear", "--token-env", "LINEAR_API_KEY")
+                    .WithExample("connection", "add", "linear", "--token-env", "LINEAR_API_KEY", "--change-workspace");
             });
             connection.AddCommand<ConnectionListCommand>("list")
                 .WithDescription(

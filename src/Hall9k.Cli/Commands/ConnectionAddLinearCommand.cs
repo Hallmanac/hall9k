@@ -3,11 +3,14 @@ using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Credentials;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
+using Marten.Linq.MatchesSql;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -53,11 +56,21 @@ public sealed class ConnectionAddLinearCommand : Hall9kAsyncCommand<ConnectionAd
             + "-a <account> -w); Hall9k records the service name and reads the secret through the "
             + "'security' tool at each call. macOS only: the reference names a store no other platform has")]
         public string? Keychain { get; init; }
+
+        [CommandOption("--change-workspace")]
+        [Description(
+            "Allow this key to move the install to a different Linear workspace than the one already "
+            + "registered. A task's linear:ENG-123 reference records no workspace, so every task that "
+            + "carries one is read and linked against whichever workspace the connection names: without "
+            + "this flag, a key from another workspace is refused while any task carries a Linear "
+            + "reference, because every one of those links would silently point at another workspace's "
+            + "issues. A rotated key for the same workspace needs no flag")]
+        public bool ChangeWorkspace { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
-        using var store = CliStore.Open();
+        using DocumentStore store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
@@ -71,6 +84,19 @@ public sealed class ConnectionAddLinearCommand : Hall9kAsyncCommand<ConnectionAd
         LinearViewer viewer = await new LinearWorkItemProvider(chosen.Account).VerifyAccessAsync(cancellationToken);
         Uri workspace = LinearAccount.WorkspaceFor(viewer.WorkspaceKey);
         string accountName = viewer.Name.IsNotBlank() ? viewer.Name : viewer.Id;
+
+        // Refused before anything is written: a task's linear: reference records no workspace, so a
+        // key from a different workspace would re-file every existing link at once.
+        int linkedTasks = existing is not null && !SameWorkspace(existing.SiteUrl, workspace)
+            ? await session.Query<TaskListItem>()
+                .Where(task => task.ExternalReference != null && task.ExternalReference.StartsWith("linear:"))
+                .Where(task => task.MatchesSql("d.data ->> 'state' <> ?", TaskState.Abandoned.Value))
+                .CountAsync(cancellationToken)
+            : 0;
+        if (WorkspaceChangeRefusal(existing?.SiteUrl, workspace, linkedTasks, settings.ChangeWorkspace) is { } refusal)
+        {
+            throw new DomainValidationException(refusal);
+        }
 
         CredentialReference credential = chosen.Reference(workspace, viewer.Id);
 
@@ -151,6 +177,28 @@ public sealed class ConnectionAddLinearCommand : Hall9kAsyncCommand<ConnectionAd
             + "[dim](adopt an open issue), or h9k task link-linear <task> <IDENTIFIER>[/]");
         return ExitCodes.Ok;
     }
+
+    private static bool SameWorkspace(Uri? recorded, Uri proven) =>
+        recorded is not null
+        && string.Equals(
+            recorded.GetLeftPart(UriPartial.Path).TrimEnd('/'),
+            proven.GetLeftPart(UriPartial.Path).TrimEnd('/'),
+            StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Why a key from <paramref name="proven"/> may not replace a connection that reads
+    /// <paramref name="recorded"/>, or null when it may: the workspace is the same, nothing carries a
+    /// Linear reference, or the human said so with <c>--change-workspace</c>.
+    /// </summary>
+    internal static string? WorkspaceChangeRefusal(Uri? recorded, Uri proven, int linkedTasks, bool confirmed) =>
+        recorded is null || SameWorkspace(recorded, proven) || linkedTasks == 0 || confirmed
+            ? null
+            : $"This install's Linear connection reads {recorded.GetLeftPart(UriPartial.Path).TrimEnd('/')}, and this key "
+              + $"reads {proven.GetLeftPart(UriPartial.Path).TrimEnd('/')}. {linkedTasks} task(s) carry a linear: reference, "
+              + "which records an identifier and no workspace, so replacing the connection would make every one of "
+              + "them point at whatever issue has that identifier in the other workspace. Use a key from "
+              + $"{recorded.GetLeftPart(UriPartial.Path).TrimEnd('/')} to rotate the key, or pass --change-workspace if "
+              + "moving the install to the new workspace is what you mean.";
 
     /// <summary>
     /// A key this command has settled on but not necessarily written down: an account that can
