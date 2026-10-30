@@ -2,6 +2,8 @@ using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Review;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -123,6 +125,65 @@ public sealed class ReviewPersonaRegistryTests
 
         prompt.Should().Contain("## You do not launch the product");
         prompt.Should().Contain("Do not offer to run the branch locally.");
+    }
+
+    /// <summary>
+    /// The shell-limits statement every reviewing session is told before it runs anything (issue
+    /// #788): a session added to the registry without it fails here rather than discovering the
+    /// restriction by being refused.
+    /// </summary>
+    internal static readonly string[] ShellLimitsStatement =
+    [
+        "Shell commands are restricted in this session.",
+        "You start in the checkout, so never use `cd` or `git -C`.",
+        "anything else is refused without a prompt: run one git command per call, with no pipes and no chained commands.",
+        "Search and read with the Grep and Read tools, never shell grep.",
+        "do not retry a variation of it",
+        "say in your report what you could not check as a result",
+    ];
+
+    [Fact]
+    public void Every_session_in_the_registry_carries_the_shell_limits_statement()
+    {
+        foreach (ReviewPersonaSession session in ReviewPersona.All.SelectMany(persona => ReviewPersonaRegistry.For(persona).Sessions))
+        {
+            string prompt = session.BuildPrompt(new ReviewPersonaPromptRequest(
+                QaReviewPromptTests.SomeTask(), QaReviewPromptTests.SomeProject(), "task/1-slug", "main",
+                TimeSpan.FromMinutes(30)));
+
+            prompt.Should().Contain("## Shell limits in this session", $"the {session.Slug} session's prompt must carry it");
+            foreach (string sentence in ShellLimitsStatement)
+            {
+                prompt.Should().Contain(sentence, $"the {session.Slug} session's prompt must carry the shell-limits statement");
+            }
+        }
+    }
+
+    [Fact]
+    public void The_shell_limits_statement_names_no_individual_allowed_command()
+    {
+        System.Text.StringBuilder statement = new();
+        AgentPromptBuilder.AppendShellLimits(statement);
+
+        string text = statement.ToString();
+        foreach (string command in new[] { "git diff", "git log", "git show", "git status", "git rev-parse", "gh pr", "gh issue" })
+        {
+            text.Should().NotContain(command);
+        }
+    }
+
+    [Fact]
+    public void A_qa_prompt_with_a_gate_says_the_printed_command_runs_exactly_as_printed()
+    {
+        ProjectDetails project = QaReviewPromptTests.SomeProject();
+        project.VerifyCommands = [new VerifyCommand("unit", "dotnet test --filter Category=Unit")];
+        project.AcceptedVerifyCommands = [.. project.VerifyCommands];
+
+        string prompt = ReviewPersonaRegistry.For(ReviewPersona.Qa).Sessions.Single().BuildPrompt(
+            new ReviewPersonaPromptRequest(
+                QaReviewPromptTests.SomeTask(), project, "task/1-slug", "main", TimeSpan.FromMinutes(30)));
+
+        prompt.Should().Contain("A gate command printed below is allowed in this session and runs exactly as printed");
     }
 
     [Fact]
