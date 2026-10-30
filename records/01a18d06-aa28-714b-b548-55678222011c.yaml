@@ -1,0 +1,31 @@
+hall9k-task-record: 1
+task-id: 01a18d06-aa28-714b-b548-55678222011c
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#793
+objective: A finished task leaves its tracker assignee in place, so a done Jira card or GitHub issue keeps showing who did the work
+criteria:
+  - |-
+    True completion no longer clears the tracker assignee on any tracker: CloseoutEngine's call to MirrorTrackerReleaseBestEffortAsync, that method, its StorePendingTrackerReleaseMirrorAsync helper, and the _trackerAssignmentTake field are removed, so a finished Jira card or GitHub issue keeps showing who it was assigned to on every route into CompleteCloseoutAsync; closeout's release of the ledger holder, its merge notice, and the close-linked-issue rule are unchanged
+  - SweepPendingTrackerMirrorsAsync drops a TaskTrackerReleaseMirrorPending row without calling the tracker when the row's task is Done, on whichever node holds the row, including a node that no longer holds the task, so a retry left from an earlier lease expiry or from a closeout before this change cannot clear the assignee of a delivered or finished task; a test pins the row gone and no release attempted
+  - |-
+    h9k task abandon and h9k task release keep clearing this install's own identity on every project, and lease expiry keeps clearing it on a project with the claim gate off, exactly as they do today: those three call sites are unchanged in the diff, and a test pins that a TaskTrackerReleaseMirrorPending row for a task that is not Done, one Queued and one Abandoned, is still retried through TrackerAssignmentTake.ReleaseAsync
+  - |-
+    Tests pin closeout making no assignee read or write for a Jira reference and for a GitHub reference: the assertions in A_merge_with_a_github_reference_comments_the_issue_and_says_nothing_to_jira, A_jira_that_refuses_the_comment_does_not_undo_the_closeout, and A_write_already_outstanding_queues_the_merge_comment_instead_of_losing_it that expect the mirror's read now expect no such call; every new test uses the existing fake tracker seams and sits in a class that runs in the test gate (not TaskHolderClaimTests, whose tests are all skipped), and no test touches GitHub or creates a branch
+  - |-
+    Every sentence that states the old rule states the new one: the assignee follows a claim and a give-back (h9k task abandon, h9k task release, and lease expiry on a gate-off project), and a finished item keeps it, so on a gated project a different install's later claim on that item is held until a person reassigns it in the tracker. This covers the sentence in docs/scope.md that releasing a task leaves the tracker assignment where it is, which is replaced; the claim gate section of docs/cli.md, which gains the rule and whose "never takes an assignment off one" is scoped to the take; the release-mirror paragraph of the hall9k-cli-reference skill; and the doc comments on TrackerAssignmentTake.ReleaseAsync, DispatchEngine's lease-expiry release and claim mirror, TaskTrackerReleaseMirrorPending, and TaskHolderClaimTests' lease-expiry test
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/8222011c-a-finished-task-leaves-its-tra
+published: 2026-10-30 14:36:50Z
+context: |-
+  Brian's ruling of 2026-10-30, made while walking the Linear claim card (07854c85): hall9k should not take a person off an item because the work finished. This narrows idea 202383dc's A3b criterion 5 ('on every holder change the tracker assignee is set to match') for true completion only. The ledger holder is still released at closeout; only the mirror onto the tracker stops. Today's clear only ever removes this install's own identity, through TrackerAssignmentTake.ReleaseAsync.
+
+  Why the sweep tests Done rather than the merge: a task reads Done from the moment its pull request opens, and the merge lives on the run. Done is deliberate. It also stops a stale row from clearing the assignee while a pull request is open, and any node can read it. The known cost is that a failed clear from h9k task release on a Done task is dropped rather than retried. The direct h9k task release call on a Done task still clears, because the open-pull-request window is its normal use and an explicit release is a give-back.
+
+  For tests, a Jira reference with no registered connection makes the release fail without any network call and leaves the pending row, so a row's AttemptCount shows whether a retry ran. PlacedElsewhereHolderReleaseTests is a live class with the right engine shape. Leave the TaskHolderClaimTests test bodies alone, since 76912727 rewrites that class.
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty): /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/5d12221a-a-linear-connector-so-a-project-whose-work-and-backlog-live/workspace
