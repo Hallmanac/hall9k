@@ -78,6 +78,23 @@ public sealed class LinearWorkItemProvider(
     private const string TeamQuery =
         "query HallTeam($key: String!) { teams(filter: { key: { eq: $key } }, first: 1) { nodes { id key name } } }";
 
+    /// <summary>
+    /// The assignee and nothing else, for the claim gate: one fresh read of the single nullable user
+    /// on the issue. The user's <c>id</c> is what is compared; <c>name</c> is only for sentences.
+    /// The issue's <c>delegate</c> field is deliberately not asked for.
+    /// </summary>
+    private const string AssigneeQuery =
+        "query HallIssueAssignee($id: String!) { issue(id: $id) { identifier assignee { id name } } }";
+
+    /// <summary>
+    /// One field, the assignee. <c>assigneeId</c> is the only member of the input, so a take or a
+    /// release touches no state, label, or any other field. The variable is nullable, so a release
+    /// sends an explicit JSON null.
+    /// </summary>
+    private const string AssignMutation =
+        "mutation HallAssign($id: String!, $assigneeId: String) "
+        + "{ issueUpdate(id: $id, input: { assigneeId: $assigneeId }) { success } }";
+
     private readonly LinearRequester requester = requester ?? LinearHttp.Requester;
     private readonly TimeProvider clock = clock ?? TimeProvider.System;
 
@@ -257,6 +274,95 @@ public sealed class LinearWorkItemProvider(
         }
     }
 
+    /// <summary>
+    /// Who Linear says holds the issue right now, or why it could not say. Linear's assignee is one
+    /// nullable user, so the answer is empty or one long, and what is compared is the user's id,
+    /// ordinally: an opaque token, never folded and never the name. An answer that is not an issue
+    /// with an assignee field the gate can trust fails rather than reading as "nobody".
+    /// <paramref name="linkedTask"/> is how the not-found sentence names the relink.
+    /// </summary>
+    public async Task<TrackerAssigneeRead> ReadAssigneeAsync(
+        LinearIssueIdentifier identifier, string? linkedTask, CancellationToken cancellationToken)
+    {
+        LinearQuery query = await QueryAsync(
+            AssigneeQuery, new { id = identifier.Value }, $"read the assignee of {identifier.Value}",
+            identifier.Value, cancellationToken, linkedTask);
+        if (query.Data is not { } data)
+        {
+            return TrackerAssigneeRead.Unreadable(query.Failure!.Message, query.Kind);
+        }
+
+        using (query.Document)
+        {
+            if (!data.TryGetProperty("issue", out JsonElement issue) || issue.ValueKind == JsonValueKind.Null)
+            {
+                return TrackerAssigneeRead.Unreadable(
+                    NotFound(identifier.Value, linkedTask).Message, TrackerReadFailure.Item);
+            }
+
+            // Both members must be present: an issue object without an assignee member is not an
+            // answer about the assignee, and reading its absence as "nobody" would let a take
+            // overwrite whoever holds it.
+            if (issue.ValueKind != JsonValueKind.Object
+                || !issue.TryGetProperty("assignee", out JsonElement assignee)
+                || assignee.ValueKind is not (JsonValueKind.Null or JsonValueKind.Object))
+            {
+                return TrackerAssigneeRead.Unreadable(
+                    NotAnIssue(identifier, "the answer carries no assignee field, so it does not say who holds it").Message,
+                    TrackerReadFailure.Item);
+            }
+
+            if (assignee.ValueKind == JsonValueKind.Null)
+            {
+                return TrackerAssigneeRead.Nobody();
+            }
+
+            return ReadString(assignee, "id") is { Length: > 0 } id
+                ? TrackerAssigneeRead.HeldBy(id, ReadString(assignee, "name"))
+                : TrackerAssigneeRead.Unreadable(
+                    NotAnIssue(identifier, "its assignee carries no user id, so it does not say who holds it").Message,
+                    TrackerReadFailure.Item);
+        }
+    }
+
+    /// <summary>
+    /// Put <paramref name="assigneeId"/> in the issue's assignee field, or clear it when null, with
+    /// <c>issueUpdate</c> and nothing else in its input. Returned rather than thrown: a refusal is
+    /// Linear's own words plus the one fact the caller needs, that the key needs write permission on
+    /// the issue's team. Accepted is not proven; the caller reads the issue back.
+    /// </summary>
+    public async Task<TrackerAssignmentWrite> SetAssigneeAsync(
+        LinearIssueIdentifier identifier, string? assigneeId, CancellationToken cancellationToken)
+    {
+        LinearQuery query = await QueryAsync(
+            AssignMutation, new { id = identifier.Value, assigneeId },
+            assigneeId is null ? $"clear the assignee of {identifier.Value}" : $"assign {identifier.Value}",
+            identifier.Value, cancellationToken);
+        if (query.Data is not { } data)
+        {
+            return TrackerAssignmentWrite.Refused(
+                query.Kind == TrackerReadFailure.Outage
+                    ? query.Failure!.Message
+                    : $"{query.Failure!.Message} {NeedsWritePermission}");
+        }
+
+        using (query.Document)
+        {
+            bool success = data.TryGetProperty("issueUpdate", out JsonElement update)
+                && update.ValueKind == JsonValueKind.Object
+                && update.TryGetProperty("success", out JsonElement flag)
+                && flag.ValueKind == JsonValueKind.True;
+            return success
+                ? TrackerAssignmentWrite.Wrote()
+                : TrackerAssignmentWrite.Refused(
+                    $"Linear answered the assignment of {identifier.Value} with success false, or with no "
+                    + $"success at all. {NeedsWritePermission}");
+        }
+    }
+
+    private const string NeedsWritePermission =
+        "The API key needs write permission on the issue's team to change its assignee.";
+
     private Uri RegisteredWorkspace() =>
         account.WorkspaceUrl
         ?? throw new DomainValidationException(
@@ -409,7 +515,7 @@ public sealed class LinearWorkItemProvider(
             || Has(error => error.Code.Equals("RATELIMITED", StringComparison.OrdinalIgnoreCase)
                 || error.Type.Contains("ratelimit", StringComparison.OrdinalIgnoreCase)))
         {
-            return (RateLimited(response, verb), TrackerReadFailure.Outage);
+            return (RateLimited(response, verb, reported), TrackerReadFailure.Outage);
         }
 
         if (response.StatusCode is 401 or 403
@@ -441,7 +547,7 @@ public sealed class LinearWorkItemProvider(
             HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden =>
                 (Rejected(verb, reported), TrackerReadFailure.Credentials),
             HttpStatusCode.TooManyRequests =>
-                (RateLimited(response, verb), TrackerReadFailure.Outage),
+                (RateLimited(response, verb, reported), TrackerReadFailure.Outage),
             HttpStatusCode.NotFound =>
                 (NotFound(subject, linkedTask, reported), TrackerReadFailure.Item),
             >= HttpStatusCode.InternalServerError =>
@@ -460,11 +566,12 @@ public sealed class LinearWorkItemProvider(
         + "usually been revoked or belongs to someone who has left the workspace, and a key limited by "
         + "permission or by team is refused this way for what it is not allowed to see.");
 
-    private static DomainValidationException RateLimited(LinearResponse response, string verb) => new(
+    private static DomainValidationException RateLimited(LinearResponse response, string verb, string reported) => new(
         $"Linear is rate-limiting this key and refused to {verb}"
         + (response.RetryAfter.IsNotBlank()
             ? $"; its Retry-After is {RelayedText.OneLine(response.RetryAfter)}."
             : "; it sent no Retry-After.")
+        + Suffix(reported)
         + " Hall9k does not retry Linear calls on its own, so wait and run the command again.");
 
     private static DomainValidationException Unavailable(string verb, int status, string reported) => new(
@@ -482,6 +589,7 @@ public sealed class LinearWorkItemProvider(
                 + "team, which gives it a new identifier: find the new identifier in Linear, then record it "
                 + $"with h9k task link-linear {linkedTask} <new identifier>. Linear answers the same way for "
                 + "an issue this key cannot see, so a key limited to other teams looks like this too."
+                + Suffix(reported ?? string.Empty)
             : $"Could not find {identifier} in {account.Workspace}: check the identifier, or confirm which team "
                 + "it was created in. Linear answers the same way for an issue that does not exist and for one "
                 + $"this key cannot see, so if the identifier is right, the key may be limited to other teams.{Suffix(reported ?? string.Empty)}");
