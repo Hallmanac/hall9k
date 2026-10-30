@@ -385,6 +385,204 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
             "--no-worktree", "the briefing tells the session there is no checkout rather than letting it hunt for one");
     }
 
+    /// <summary>
+    /// gh, scripted to answer a pull request that is not in the project's repository, and to
+    /// answer <c>gh repo view</c> separately: with <paramref name="repositoryViewUrl"/> when it
+    /// names one, as a failure when it is null (a checkout gh cannot name a repository for).
+    /// </summary>
+    private static ProcessRunner ScriptedGhWithRepositoryView(string pullRequestJson, string? repositoryViewUrl) =>
+        (_, arguments, _, _) => Task.FromResult(
+            arguments is ["repo", "view", ..]
+                ? repositoryViewUrl is null
+                    ? new ProcessResult(1, string.Empty, "no default repository")
+                    : new ProcessResult(0, $$"""{"url": "{{repositoryViewUrl}}"}""", string.Empty)
+                : new ProcessResult(0, pullRequestJson, string.Empty));
+
+    private string ForeignRepository => $"acme/elsewhere-{repository.Split('-')[^1]}";
+
+    private string ForeignPullRequestJson => PullRequestJson.Replace(repository, ForeignRepository);
+
+    /// <summary>Everything a lap would have written or cut for the project, counted so a refusal can be shown to have changed none of it.</summary>
+    private static async Task<(int Tasks, int Runs)> CountLapFootprintAsync(
+        DocumentStore store, Guid projectId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<TaskListItem> tasks = await query.Query<TaskListItem>()
+            .Where(task => task.ProjectId == projectId).ToListAsync(cancellationToken);
+        int runs = 0;
+        foreach (TaskListItem task in tasks)
+        {
+            runs += (await query.LoadAsync<TaskDetails>(task.Id, cancellationToken))!.RunIds.Count;
+        }
+
+        return (tasks.Count, runs);
+    }
+
+    [Theory]
+    [InlineData("42", false)]
+    [InlineData("{foreign}#42", false)]
+    [InlineData("https://github.com/{foreign}/pull/42", false)]
+    [InlineData("42", true)]
+    public async Task A_pull_request_from_another_repository_is_refused_before_anything_is_created(
+        string named, bool noWorktree)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        SeededProject project = await SeedProjectAsync(store, node, cts.Token);
+        FakeReviewWorktrees worktrees = NewWorktrees();
+        (int Tasks, int Runs) before = await CountLapFootprintAsync(store, project.Id, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            Func<Task> lap = () => PullRequestReviewCommand.RunAsync(
+                store, session,
+                new PullRequestReviewCommand.Settings { PullRequest = named.Replace("{foreign}", ForeignRepository), Project = project.Name, NoWorktree = noWorktree },
+                ScriptedGhWithRepositoryView(ForeignPullRequestJson, repositoryViewUrl: null), worktrees, cts.Token);
+
+            string message = (await lap.Should().ThrowAsync<DomainValidationException>()).Which.Message;
+            message.Should().Contain(ForeignRepository).And.Contain(repository);
+            message.Should().Contain($"'https://github.com/{repository}'", "the recorded URL is quoted as the source");
+            message.Should().Contain("renamed or transferred").And.Contain("h9k project add --name <name> --repo-url");
+            message.Should().Contain("registered against " + ForeignRepository);
+        }
+
+        (await CountLapFootprintAsync(store, project.Id, cts.Token)).Should().Be(before);
+        await using IQuerySession query = store.QuerySession();
+        (await query.Query<TaskListItem>().Where(item => item.ExternalReference == $"github-pr:{ForeignRepository}#42")
+            .ToListAsync(cts.Token)).Should().BeEmpty();
+        worktrees.PrReviewCheckouts.Should().BeEmpty();
+        worktrees.TrackingRefsDeleted.Should().BeEmpty();
+        worktrees.Removed.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_foreign_pull_request_is_refused_with_since_my_review_too()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        SeededProject project = await SeedProjectAsync(store, node, cts.Token);
+        FakeReviewWorktrees worktrees = NewWorktrees();
+
+        await using IDocumentSession session = store.LightweightSession();
+        Func<Task> lap = () => PullRequestReviewCommand.RunAsync(
+            store, session,
+            new PullRequestReviewCommand.Settings { PullRequest = "42", Project = project.Name, SinceMyReview = true },
+            ScriptedGhWithRepositoryView(ForeignPullRequestJson, repositoryViewUrl: null), worktrees, cts.Token);
+
+        (await lap.Should().ThrowAsync<DomainValidationException>()).Which.Message
+            .Should().Contain("registered against " + ForeignRepository, "the repository refusal comes first, not the no-live-task one");
+        worktrees.PrReviewCheckouts.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_live_task_holding_the_foreign_pull_request_is_left_untouched_by_the_refusal()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Seeded seeded = await SeedParkedPrReviewTaskAsync(store, node, findingsReport: null, ForeignRepository, cts.Token);
+        FakeReviewWorktrees worktrees = NewWorktrees();
+        long taskVersion;
+        long runVersion;
+        await using (IQuerySession before = store.QuerySession())
+        {
+            taskVersion = (await before.Events.FetchStreamStateAsync(seeded.TaskId, token: cts.Token))!.Version;
+            runVersion = (await before.Events.FetchStreamStateAsync(seeded.RunId, token: cts.Token))!.Version;
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            Func<Task> lap = () => PullRequestReviewCommand.RunAsync(
+                store, session, new PullRequestReviewCommand.Settings { PullRequest = "42", Project = seeded.ProjectName },
+                ScriptedGhWithRepositoryView(ForeignPullRequestJson, repositoryViewUrl: null), worktrees, cts.Token);
+            await lap.Should().ThrowAsync<DomainValidationException>();
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.Events.FetchStreamStateAsync(seeded.TaskId, token: cts.Token))!.Version.Should().Be(taskVersion);
+        (await query.Events.FetchStreamStateAsync(seeded.RunId, token: cts.Token))!.Version.Should().Be(runVersion);
+        (await query.Events.AggregateStreamAsync<TaskAggregate>(seeded.TaskId, token: cts.Token))!.ReviewLapOpen.Should().BeFalse();
+        worktrees.PrReviewCheckouts.Should().BeEmpty();
+        worktrees.TrackingRefsDeleted.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("https://github.com/{upper}")]
+    [InlineData("https://github.com/{repo}.git")]
+    [InlineData("ssh://git@github.com/{repo}.git")]
+    [InlineData("ssh://git@github-work/{repo}.git")]
+    public async Task A_pull_request_in_the_projects_own_repository_opens_a_lap_however_the_url_is_spelled(string template)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Uri recorded = new(template.Replace("{upper}", repository.ToUpperInvariant()).Replace("{repo}", repository));
+        SeededProject project = await SeedProjectAsync(store, node, recorded, cts.Token);
+        FakeReviewWorktrees worktrees = NewWorktrees();
+
+        await using IDocumentSession session = store.LightweightSession();
+        int result = await PullRequestReviewCommand.RunAsync(
+            store, session, new PullRequestReviewCommand.Settings { PullRequest = $"{repository}#42", Project = project.Name },
+            ScriptedGhWithRepositoryView(PullRequestJson, repositoryViewUrl: null), worktrees, cts.Token);
+
+        result.Should().Be(0);
+        worktrees.PrReviewCheckouts.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task With_no_recorded_url_the_repository_gh_observes_is_the_projects_own()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        SeededProject project = await SeedProjectAsync(store, node, repositoryUrl: null, cts.Token);
+        FakeReviewWorktrees worktrees = NewWorktrees();
+        (int Tasks, int Runs) before = await CountLapFootprintAsync(store, project.Id, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            Func<Task> lap = () => PullRequestReviewCommand.RunAsync(
+                store, session, new PullRequestReviewCommand.Settings { PullRequest = $"{ForeignRepository}#42", Project = project.Name },
+                ScriptedGhWithRepositoryView(ForeignPullRequestJson, $"https://github.com/{repository}"), worktrees, cts.Token);
+
+            string message = (await lap.Should().ThrowAsync<DomainValidationException>()).Which.Message;
+            message.Should().Contain(ForeignRepository).And.Contain(repository);
+            message.Should().Contain("gh repo view").And.Contain("gh repo set-default");
+            message.Should().NotContain("--repo-url", "no recorded URL went stale here, so a new project is not the way through");
+        }
+
+        (await CountLapFootprintAsync(store, project.Id, cts.Token)).Should().Be(before);
+        worktrees.PrReviewCheckouts.Should().BeEmpty();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            int result = await PullRequestReviewCommand.RunAsync(
+                store, session, new PullRequestReviewCommand.Settings { PullRequest = "42", Project = project.Name },
+                ScriptedGhWithRepositoryView(PullRequestJson, $"https://github.com/{repository}"), worktrees, cts.Token);
+            result.Should().Be(0, "the same repository, observed rather than recorded, opens the lap as usual");
+        }
+    }
+
+    [Fact]
+    public async Task When_neither_a_recorded_url_nor_gh_names_a_repository_the_lap_proceeds()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        SeededProject project = await SeedProjectAsync(store, node, repositoryUrl: null, cts.Token);
+        FakeReviewWorktrees worktrees = NewWorktrees();
+
+        await using IDocumentSession session = store.LightweightSession();
+        int result = await PullRequestReviewCommand.RunAsync(
+            store, session, new PullRequestReviewCommand.Settings { PullRequest = "42", Project = project.Name },
+            ScriptedGhWithRepositoryView(PullRequestJson, repositoryViewUrl: null), worktrees, cts.Token);
+
+        result.Should().Be(0, "the daemon's own guard proceeds when it cannot name a repository either");
+        worktrees.PrReviewCheckouts.Should().ContainSingle();
+    }
+
     [Fact]
     public async Task The_briefing_quotes_the_findings_report_when_the_automated_review_has_parked_one()
     {
@@ -2016,8 +2214,13 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
     /// (<see cref="A_multi_project_install_refuses_to_guess_which_repository_the_pull_request_is_in"/>
     /// is what covers that refusal).
     /// </summary>
+    private Task<SeededProject> SeedProjectAsync(
+        DocumentStore store, NodeContext node, CancellationToken cancellationToken) =>
+        SeedProjectAsync(store, node, new Uri($"https://github.com/{repository}"), cancellationToken);
+
+    /// <summary>The same project with the recorded URL spelled as the case needs it, or none at all (the shape <c>h9k project add --repo</c> leaves).</summary>
     private async Task<SeededProject> SeedProjectAsync(
-        DocumentStore store, NodeContext node, CancellationToken cancellationToken)
+        DocumentStore store, NodeContext node, Uri? repositoryUrl, CancellationToken cancellationToken)
     {
         Guid projectId = DomainId.New();
         string name = $"lap-{projectId:N}";
@@ -2025,7 +2228,7 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
         ProjectRegistered registered = ProjectDecider.Register(
             projectId, node.OwnerId, DomainId.New(), name,
             Path.Combine(Path.GetTempPath(), $"hall9k-lap-repo-{projectId:N}"),
-            new Uri($"https://github.com/{repository}"), "main", Now);
+            repositoryUrl, "main", Now);
         session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
         await session.SaveChangesAsync(cancellationToken);
         return new SeededProject(projectId, name);
@@ -2037,8 +2240,14 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
     /// writes the merged report into the run's own directory when the case under test has one —
     /// the file, not the park, is what the briefing reads.
     /// </summary>
+    private Task<Seeded> SeedParkedPrReviewTaskAsync(
+        DocumentStore store, NodeContext node, string? findingsReport, CancellationToken cancellationToken) =>
+        SeedParkedPrReviewTaskAsync(store, node, findingsReport, repository, cancellationToken);
+
+    /// <summary>The same parked task for a pull request in <paramref name="pullRequestRepository"/>, which the project's own repository need not be.</summary>
     private async Task<Seeded> SeedParkedPrReviewTaskAsync(
-        DocumentStore store, NodeContext node, string? findingsReport, CancellationToken cancellationToken)
+        DocumentStore store, NodeContext node, string? findingsReport, string pullRequestRepository,
+        CancellationToken cancellationToken)
     {
         SeededProject project = await SeedProjectAsync(store, node, cancellationToken);
         Guid taskId = DomainId.New();
@@ -2059,7 +2268,7 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
             TaskDecider.Add(
                 taskId, project.Id, "Teach the closeout monitor to read a rebase conflict",
                 ["every finding names a file and a line"], TaskType.PrReview, null, null,
-                new ExternalReference(WorkItemProvider.GitHubPullRequest, $"{repository}#42"), Now, node.OwnerId),
+                new ExternalReference(WorkItemProvider.GitHubPullRequest, $"{pullRequestRepository}#42"), Now, node.OwnerId),
             node.OwnerId, Now);
         TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
         session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
