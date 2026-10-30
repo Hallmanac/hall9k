@@ -739,8 +739,16 @@ know it is taking it from nobody. And an item that was unassigned a moment ago b
 the read-back naming somebody else *beside* you is refused as well — two installs took it in the
 same moment, so neither may claim it. That one is GitHub-only, because `--add-assignee` adds where
 Jira's write replaces, and the refusal names who else is on the issue and says to settle it with
-them: your login is on the issue too, Hall9k never takes an assignment off one, and re-running
+them: your login is on the issue too, the take never removes an assignment from one, and re-running
 would simply find it assigned to you both.
+
+The assignee follows a claim and a give-back. A claim the daemon makes writes this install's
+identity onto the linked item (the same unassigned-only write, whatever the project's gate); `h9k
+task drive` and `h9k task start` only check the gate and write nothing. `h9k task abandon`, lease
+expiry on a project whose gate is off, and `h9k task release` of a ledger holder this node still
+names clear that identity again, and only ever this install's own. Releasing an interactive claim
+leaves the assignee where it is. A finished item keeps its assignee, so on a gated project a
+different install's later claim on that item is held until a person reassigns it in the tracker.
 
 The write is a **field update and never a transition**: Jira gets an ordinary update carrying
 `assignee` and nothing else, GitHub gets `gh issue edit --add-assignee`, and neither touches the
