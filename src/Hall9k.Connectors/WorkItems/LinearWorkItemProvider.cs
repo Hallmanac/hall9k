@@ -37,8 +37,37 @@ public sealed record LinearIssueRead(ImportedWorkItem Item, IReadOnlyList<string
 /// </summary>
 public sealed record LinearIssueAttempt(LinearIssueRead? Read, DomainException? Failure, TrackerReadFailure FailureKind);
 
-/// <summary>A Linear team as the workspace answered for it: the id of the team, its key, and its name.</summary>
-public sealed record LinearTeam(string Id, string Key, string Name);
+/// <summary>
+/// A Linear team as the workspace answered for it: the id new issues are filed under, its key, and its
+/// name, and the id of the workflow state <c>Team.defaultIssueState</c> names, or null when Linear
+/// reports none. A team with Triage on files an issue created without a <c>stateId</c> into Triage, so
+/// the state a created issue is meant to land in has to be passed explicitly.
+/// </summary>
+public sealed record LinearTeam(string Id, string Key, string Name, string? DefaultIssueStateId = null);
+
+/// <summary>What <see cref="LinearWorkItemProvider.CreateIssueAsync"/> sends: the fields of one <c>issueCreate</c>.</summary>
+public sealed record LinearIssueCreateRequest(string TeamId, string? StateId, string Title, string Description);
+
+/// <summary>
+/// How a create ended, in the three classes the caller has to tell apart because they call for
+/// different remedies: <see cref="Created"/> (Linear returned an identifier), <see cref="Refused"/>
+/// (Linear definitely did not create it: a GraphQL <c>errors</c> array, <c>success: false</c>, or a 4xx
+/// response), and <see cref="Unknown"/> (a timeout, a lost connection, a 5xx, or an answer that cannot
+/// be read, so the issue may exist and a by-hand create could file a duplicate).
+/// </summary>
+public enum LinearCreateOutcome
+{
+    Created,
+    Refused,
+    Unknown,
+}
+
+/// <summary>
+/// An <c>issueCreate</c> answer, with the refusal kept rather than thrown. <see cref="Identifier"/> is
+/// set exactly when <see cref="Outcome"/> is <see cref="LinearCreateOutcome.Created"/>, and
+/// <see cref="Failure"/> exactly when it is not.
+/// </summary>
+public sealed record LinearIssueCreation(LinearCreateOutcome Outcome, LinearIssueIdentifier? Identifier, DomainException? Failure);
 
 /// <summary>
 /// Linear through its GraphQL API, on the credentials of a registered connection (PLAN.md §10). It
@@ -76,7 +105,17 @@ public sealed class LinearWorkItemProvider(
     /// <c>team(id:)</c> is not documented to take a key, so it is not used for this.
     /// </summary>
     private const string TeamQuery =
-        "query HallTeam($key: String!) { teams(filter: { key: { eq: $key } }, first: 1) { nodes { id key name } } }";
+        "query HallTeam($key: String!) { teams(filter: { key: { eq: $key } }, first: 1) "
+        + "{ nodes { id key name defaultIssueState { id } } } }";
+
+    /// <summary>
+    /// One issue created in a team. Only the identifier is read back from the payload: the created
+    /// issue is then read through <see cref="TryReadIssueAsync"/> like any other, so a link records what
+    /// Linear says rather than what the create echoed.
+    /// </summary>
+    private const string IssueCreateMutation =
+        "mutation HallIssueCreate($input: IssueCreateInput!) "
+        + "{ issueCreate(input: $input) { success issue { identifier } } }";
 
     /// <summary>
     /// The assignee and nothing else, for the claim gate: one fresh read of the single nullable user
@@ -277,7 +316,11 @@ public sealed class LinearWorkItemProvider(
                     && ReadString(node, "key") is { } answered
                     && answered.Equals(key.Value, StringComparison.OrdinalIgnoreCase))
                 {
-                    return new LinearTeam(id, answered.ToUpperInvariant(), ReadString(node, "name") ?? answered);
+                    string? defaultState = node.TryGetProperty("defaultIssueState", out JsonElement state)
+                        ? ReadString(state, "id")
+                        : null;
+                    return new LinearTeam(
+                        id, answered.ToUpperInvariant(), ReadString(node, "name") ?? answered, defaultState);
                 }
             }
 
@@ -438,6 +481,70 @@ public sealed class LinearWorkItemProvider(
         "Linear answered the list of teams with something that is not a complete page of them. That is "
         + $"usually a proxy in front of {LinearHttp.Endpoint.Host}; check this machine reaches Linear directly.");
 
+    /// <summary>
+    /// Create one issue through a single <c>issueCreate</c>, sent once: a create is not idempotent
+    /// (Linear's <c>IssueCreateInput.id</c> would make it one, and what a repeated id does is
+    /// unverified), so nothing here retries, and the caller is told whether the issue may exist.
+    /// A refusal is only what Linear definitely answered; a transport failure, a 5xx, or an answer
+    /// that does not carry an identifier is <see cref="LinearCreateOutcome.Unknown"/>. Only the fields
+    /// of <paramref name="request"/> are sent: no assignee, label, project, or cycle, and
+    /// <c>stateId</c> only when the team reported a default state.
+    /// </summary>
+    public async Task<LinearIssueCreation> CreateIssueAsync(
+        LinearIssueCreateRequest request, CancellationToken cancellationToken)
+    {
+        Dictionary<string, string> input = new() { ["teamId"] = request.TeamId };
+        if (request.StateId is { Length: > 0 } stateId)
+        {
+            input["stateId"] = stateId;
+        }
+
+        input["title"] = request.Title;
+        if (request.Description.IsNotBlank())
+        {
+            input["description"] = request.Description;
+        }
+
+        LinearQuery query = await QueryAsync(
+            IssueCreateMutation, new { input }, "create the issue", "the new issue", cancellationToken);
+        if (query.Data is not { } data)
+        {
+            return new LinearIssueCreation(
+                query.OutcomeUnknown ? LinearCreateOutcome.Unknown : LinearCreateOutcome.Refused,
+                null,
+                query.Failure);
+        }
+
+        using (query.Document)
+        {
+            if (!data.TryGetProperty("issueCreate", out JsonElement payload) || payload.ValueKind != JsonValueKind.Object)
+            {
+                return new LinearIssueCreation(
+                    LinearCreateOutcome.Unknown,
+                    null,
+                    new DomainValidationException("Linear's answer to the create carries no issueCreate payload."));
+            }
+
+            if (payload.TryGetProperty("success", out JsonElement success) && success.ValueKind == JsonValueKind.False)
+            {
+                return new LinearIssueCreation(
+                    LinearCreateOutcome.Refused,
+                    null,
+                    new DomainValidationException("Linear answered the create with success false."));
+            }
+
+            bool succeeded = success.ValueKind == JsonValueKind.True;
+            string? identifier = payload.TryGetProperty("issue", out JsonElement issue) ? ReadString(issue, "identifier") : null;
+            return succeeded && identifier is not null && LinearIssueIdentifier.TryParseBare(identifier, out LinearIssueIdentifier created)
+                ? new LinearIssueCreation(LinearCreateOutcome.Created, created, null)
+                : new LinearIssueCreation(
+                    LinearCreateOutcome.Unknown,
+                    null,
+                    new DomainValidationException(
+                        "Linear's answer to the create reports no success and no issue identifier it can be read from."));
+        }
+    }
+
     private Uri RegisteredWorkspace() =>
         account.WorkspaceUrl
         ?? throw new DomainValidationException(
@@ -452,7 +559,7 @@ public sealed class LinearWorkItemProvider(
     /// </summary>
     private sealed record LinearQuery(
         JsonDocument? Document, JsonElement? Data, DomainException? Failure, TrackerReadFailure Kind,
-        bool KeyUnavailable = false);
+        bool KeyUnavailable = false, bool OutcomeUnknown = false);
 
     private async Task<LinearQuery> QueryAsync(
         string query, object? variables, string verb, string subject, CancellationToken cancellationToken,
@@ -495,7 +602,8 @@ public sealed class LinearWorkItemProvider(
                     $"Linear did not answer within {LinearHttp.Deadline.TotalSeconds:0} seconds while trying to "
                     + $"{verb}. Check this machine can reach {LinearHttp.Endpoint.Host} (a VPN or a proxy is the "
                     + "usual reason it cannot from here but can from the browser) and try again."),
-                TrackerReadFailure.Outage);
+                TrackerReadFailure.Outage,
+                outcomeUnknown: true);
         }
         catch (HttpRequestException exception)
         {
@@ -503,7 +611,8 @@ public sealed class LinearWorkItemProvider(
                 new DomainValidationException(
                     $"Could not reach Linear to {verb}: {RelayedText.OneLine(exception.Message)}. Check that "
                     + $"this machine can reach {LinearHttp.Endpoint.Host}."),
-                TrackerReadFailure.Outage);
+                TrackerReadFailure.Outage,
+                outcomeUnknown: true);
         }
 
         JsonDocument? document = TryParse(response.Body);
@@ -515,7 +624,7 @@ public sealed class LinearWorkItemProvider(
             using (document)
             {
                 (DomainException failure, TrackerReadFailure kind) = ExplainErrors(response, errors, verb, subject, linkedTask);
-                return Failed(failure, kind);
+                return Failed(failure, kind, outcomeUnknown: response.StatusCode >= 500);
             }
         }
 
@@ -523,7 +632,7 @@ public sealed class LinearWorkItemProvider(
         {
             document?.Dispose();
             (DomainException failure, TrackerReadFailure kind) = ExplainStatus(response, verb, subject, linkedTask);
-            return Failed(failure, kind);
+            return Failed(failure, kind, outcomeUnknown: response.StatusCode is < 400 or >= 500);
         }
 
         if (document is { RootElement: { ValueKind: JsonValueKind.Object } answer }
@@ -539,11 +648,13 @@ public sealed class LinearWorkItemProvider(
                 $"{LinearHttp.Endpoint.Host} answered with something that is not a GraphQL response while trying "
                 + $"to {verb}: {Bounded(response.Body)}. That is usually a proxy or a login page in front of "
                 + "Linear."),
-            TrackerReadFailure.Item);
+            TrackerReadFailure.Item,
+            outcomeUnknown: true);
     }
 
-    private static LinearQuery Failed(DomainException failure, TrackerReadFailure kind, bool keyUnavailable = false) =>
-        new(null, null, failure, kind, keyUnavailable);
+    private static LinearQuery Failed(
+        DomainException failure, TrackerReadFailure kind, bool keyUnavailable = false, bool outcomeUnknown = false) =>
+        new(null, null, failure, kind, keyUnavailable, outcomeUnknown);
 
     private static JsonDocument? TryParse(string body)
     {
