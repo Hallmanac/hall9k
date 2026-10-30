@@ -89,51 +89,15 @@ public sealed class TaskLinkLinearCommand : Hall9kAsyncCommand<TaskLinkLinearCom
         LinearIssueRead read = await provider.ReadIssueAsync(asked, linkedTask, cancellationToken);
         ImportedWorkItem issue = read.Item;
 
-        // Fence after the read, as link-jira does: reading is a request to somebody else's service
-        // with a deadline on it, and every guard below is about the task as it is now.
-        StreamState fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
-            ?? throw new DomainNotFoundException($"No task {taskId}.");
-        TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(
-                taskId, version: fence.Version, token: cancellationToken)
-            ?? throw new DomainNotFoundException($"No task {taskId}.");
-
-        if (TaskDecider.AlreadyLinkedTo(task, issue.Reference))
-        {
-            AnsiConsole.MarkupLine(
-                $"[green]Already linked[/]: task {TaskListCommand.ShortId(taskId)} carries "
-                + $"{issue.Reference.ToString().EscapeMarkup()}. [dim]Nothing to do.[/]");
-            return ExitCodes.Ok;
-        }
-
-        // One item, one live task: the same rule --from-linear and the Jira doors enforce, applied to
-        // this door into the same field.
-        await TaskAddCommand.RefuseSecondAdoptionAsync(
-            session, issue.Reference, new TaskAddCommand.AdoptionSite(task.ProjectId, task.EpicId),
-            ownerRootFingerprint: null, cancellationToken);
-
-        // The issue may be one another task recorded under the identifier it had before it moved
-        // teams, which the check above cannot see because it matches only today's identifier. The
-        // identifier this task itself carries is what a relink replaces, so it is not counted.
-        await TaskAddCommand.RefuseSecondAdoptionUnderFormerReferencesAsync(
-            session, issue, new TaskAddCommand.AdoptionSite(task.ProjectId, task.EpicId),
-            ownerRootFingerprint: null, task.ExternalReference, cancellationToken);
-
-        ExternalReference? replaced = task.ExternalReference;
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
-        WorkItemLinked linked = TaskDecider.LinkWorkItem(
-            task,
-            issue.Reference,
-            issue.Title,
-            issue.Status.ToString(),
-            issue.ObservedAt,
-            DateTimeOffset.UtcNow,
-            context.OwnerId,
-            read.PreviousIdentifiers);
-
-        session.Events.Append(taskId, expectedVersion: fence.Version + 1, linked);
+        LinkResult result;
         try
         {
-            await session.SaveChangesAsync(cancellationToken);
+            result = await LinkAsync(session, taskId, read, context.OwnerId, cancellationToken);
+            if (result.Outcome == LinkOutcome.Linked)
+            {
+                await session.SaveChangesAsync(cancellationToken);
+            }
         }
         catch (EventStreamUnexpectedMaxEventIdException)
         {
@@ -144,6 +108,15 @@ public sealed class TaskLinkLinearCommand : Hall9kAsyncCommand<TaskLinkLinearCom
                 + "carry it.");
         }
 
+        if (result.Outcome == LinkOutcome.AlreadyLinked)
+        {
+            AnsiConsole.MarkupLine(
+                $"[green]Already linked[/]: task {TaskListCommand.ShortId(taskId)} carries "
+                + $"{issue.Reference.ToString().EscapeMarkup()}. [dim]Nothing to do.[/]");
+            return ExitCodes.Ok;
+        }
+
+        ExternalReference? replaced = result.Replaced;
         AnsiConsole.MarkupLine(
             $"[green]Linked[/] task {TaskListCommand.ShortId(taskId)} to "
             + $"{issue.Reference.ToString().EscapeMarkup()}: "
@@ -162,6 +135,67 @@ public sealed class TaskLinkLinearCommand : Hall9kAsyncCommand<TaskLinkLinearCom
         }
 
         return ExitCodes.Ok;
+    }
+
+    /// <summary>What appending the link came to, for a caller that has no terminal to print to (h9k task publish).</summary>
+    internal enum LinkOutcome
+    {
+        AlreadyLinked,
+        Linked,
+    }
+
+    /// <summary>The outcome, and the reference a relink replaced when it replaced one.</summary>
+    internal sealed record LinkResult(LinkOutcome Outcome, ExternalReference? Replaced);
+
+    /// <summary>
+    /// Fence, decide, and append the link for an issue already read, onto an open session (the caller
+    /// saves, the <see cref="TaskLinkIssueCommand.LinkAsync"/> shape), so <see cref="TaskPublishCommand"/>
+    /// links the issue it just created through the very step this command uses. It applies no
+    /// adoption-state rule: the issue exists, whatever state its team's workflow has it in. The fence is
+    /// taken here, after the read, because reading is a request to somebody else's service with a
+    /// deadline on it and every guard below is about the task as it is now.
+    /// </summary>
+    internal static async Task<LinkResult> LinkAsync(
+        IDocumentSession session, Guid taskId, LinearIssueRead read, Guid linkedByOwnerId,
+        CancellationToken cancellationToken)
+    {
+        ImportedWorkItem issue = read.Item;
+        StreamState fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+        TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, version: fence.Version, token: cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+
+        if (TaskDecider.AlreadyLinkedTo(task, issue.Reference))
+        {
+            return new LinkResult(LinkOutcome.AlreadyLinked, null);
+        }
+
+        // One item, one live task: the same rule --from-linear and the Jira doors enforce, applied to
+        // this door into the same field.
+        await TaskAddCommand.RefuseSecondAdoptionAsync(
+            session, issue.Reference, new TaskAddCommand.AdoptionSite(task.ProjectId, task.EpicId),
+            ownerRootFingerprint: null, cancellationToken);
+
+        // The issue may be one another task recorded under the identifier it had before it moved
+        // teams, which the check above cannot see because it matches only today's identifier. The
+        // identifier this task itself carries is what a relink replaces, so it is not counted.
+        await TaskAddCommand.RefuseSecondAdoptionUnderFormerReferencesAsync(
+            session, issue, new TaskAddCommand.AdoptionSite(task.ProjectId, task.EpicId),
+            ownerRootFingerprint: null, task.ExternalReference, cancellationToken);
+
+        WorkItemLinked linked = TaskDecider.LinkWorkItem(
+            task,
+            issue.Reference,
+            issue.Title,
+            issue.Status.ToString(),
+            issue.ObservedAt,
+            DateTimeOffset.UtcNow,
+            linkedByOwnerId,
+            read.PreviousIdentifiers);
+
+        session.Events.Append(taskId, expectedVersion: fence.Version + 1, linked);
+        return new LinkResult(LinkOutcome.Linked, task.ExternalReference);
     }
 
     /// <summary>
