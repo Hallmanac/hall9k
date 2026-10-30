@@ -1952,9 +1952,6 @@ public static class CliCommandTree
                 .WithExample("task", "drive", "28b19893", "--print-prompt")
                 .WithExample("task", "drive", "28b19893", "--direct-launch")
                 .WithExample("task", "drive", "28b19893", "--acknowledge-unmet-dependencies");
-            task.AddCommand<TaskWorkAliasCommand>("work")
-                .WithDescription("Renamed h9k task drive; kept for one release as a hidden alias.")
-                .IsHidden();
             task.AddCommand<TaskRegisterSessionCommand>("register-session")
                 .WithDescription(
                     "The self-registration observation gate the task anchor (h9k task drive's default) and "

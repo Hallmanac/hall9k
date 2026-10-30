@@ -171,7 +171,7 @@ classed as human, delegated, automatic, or skipped. A run is held by a person wh
 under the self-claim sentinel node and is not a deliberate headless start: neither the sentinel nor
 the task's interactive flag is the key, because `h9k task start` sets both on a headless build, so a
 start run is told apart by its recorded flag or, for a run from before the flag, by the build suffix
-on its session name, while an `h9k task work` claim records an `interactive-claim` name. On a
+on its session name, while an `h9k task drive` claim records an `interactive-claim` name. On a
 person-held run the build, or the closeout lap on a follow-up run, is human, or delegated when the run
 recorded a delegation before its session completed (a delegation records no end, so the whole phase
 reads as delegated). A gate recorded on that run before its session completed was run by hand with

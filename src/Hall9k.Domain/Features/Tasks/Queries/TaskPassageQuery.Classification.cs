@@ -20,7 +20,7 @@ public static partial class TaskPassageQuery
     /// is <see cref="TaskClaimed.InteractiveMode"/>. A deliberate headless start is told apart by the
     /// flag where it exists, and by the build role suffix <c>h9k task start</c> has recorded on every
     /// dispatch since it landed, so a run from before the flag still reads as automatic. An
-    /// <c>h9k task work</c> claim records <see cref="SessionRoleName.InteractiveClaim"/> or nothing.
+    /// <c>h9k task drive</c> claim records <see cref="SessionRoleName.InteractiveClaim"/> or nothing.
     /// </summary>
     public static bool IsHumanHeld(RunDispatched dispatched) =>
         dispatched.NodeId == Guid.Empty
