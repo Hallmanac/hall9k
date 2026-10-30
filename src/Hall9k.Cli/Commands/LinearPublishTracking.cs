@@ -260,7 +260,7 @@ internal static class LinearPublishTracking
         LinearIssueAttempt attempt;
         try
         {
-            attempt = await target.Provider.TryReadIssueAsync(created, linkedTask: null, cancellationToken);
+            attempt = await target.Provider.TryReadCreatedIssueAsync(created, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

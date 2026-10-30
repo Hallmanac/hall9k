@@ -75,9 +75,11 @@ public sealed record LinearIssueCreation(LinearCreateOutcome Outcome, LinearIssu
 /// gives the Jira provider, so every test drives it with fixture responses written from Linear's public
 /// schema and none reaches a live workspace.
 /// <para>
-/// What this class does is the import snapshot, the viewer check that proves a key at registration,
-/// the verification behind <c>h9k task link-linear</c>, and the claim gate's assignee read and write.
-/// Like Jira's, reading is configuration-agnostic: workflow states are per team and renamable, but each carries a fixed
+/// What this class does is mostly the read half: the import snapshot, the viewer check that proves a key at
+/// registration, the verification behind <c>h9k task link-linear</c>, and the claim gate's assignee read.
+/// Its writes are the claim gate's assignee write and <see cref="CreateIssueAsync"/>, a single
+/// <c>issueCreate</c> and nothing else. Like Jira's, reading is
+/// configuration-agnostic: workflow states are per team and renamable, but each carries a fixed
 /// <c>type</c>, and that type is what the mapping below reads, so any team's renames survive.
 /// </para>
 /// <para>
@@ -194,12 +196,24 @@ public sealed class LinearWorkItemProvider(
     }
 
     /// <summary>The same read with the refusal kept and classified instead of thrown.</summary>
-    public async Task<LinearIssueAttempt> TryReadIssueAsync(
-        LinearIssueIdentifier identifier, string? linkedTask, CancellationToken cancellationToken)
+    public Task<LinearIssueAttempt> TryReadIssueAsync(
+        LinearIssueIdentifier identifier, string? linkedTask, CancellationToken cancellationToken) =>
+        TryReadAsync(identifier, linkedTask, retryable: true, cancellationToken);
+
+    /// <summary>
+    /// The read of an issue this install has just created, whose failures are worded without a command
+    /// to run again: the publish that created it has already committed, so there is nothing to repeat.
+    /// </summary>
+    public Task<LinearIssueAttempt> TryReadCreatedIssueAsync(
+        LinearIssueIdentifier identifier, CancellationToken cancellationToken) =>
+        TryReadAsync(identifier, linkedTask: null, retryable: false, cancellationToken);
+
+    private async Task<LinearIssueAttempt> TryReadAsync(
+        LinearIssueIdentifier identifier, string? linkedTask, bool retryable, CancellationToken cancellationToken)
     {
         LinearQuery query = await QueryAsync(
             IssueQuery, new { id = identifier.Value }, $"read {identifier.Value}", identifier.Value, cancellationToken,
-            linkedTask);
+            linkedTask, retryable);
         if (query.Data is not { } data)
         {
             return new LinearIssueAttempt(null, query.Failure, query.Kind);
@@ -505,8 +519,11 @@ public sealed class LinearWorkItemProvider(
             input["description"] = request.Description;
         }
 
+        // Not retryable: the caller reports a failed create after the publish has committed, where
+        // "run the command again" would be refused, so no failure here is worded as a repeat.
         LinearQuery query = await QueryAsync(
-            IssueCreateMutation, new { input }, "create the issue", "the new issue", cancellationToken);
+            IssueCreateMutation, new { input }, "create the issue", "the new issue", cancellationToken,
+            retryable: false);
         if (query.Data is not { } data)
         {
             return new LinearIssueCreation(
@@ -563,7 +580,7 @@ public sealed class LinearWorkItemProvider(
 
     private async Task<LinearQuery> QueryAsync(
         string query, object? variables, string verb, string subject, CancellationToken cancellationToken,
-        string? linkedTask = null)
+        string? linkedTask = null, bool retryable = true)
     {
         string authorization;
         try
@@ -601,7 +618,8 @@ public sealed class LinearWorkItemProvider(
                 new DomainValidationException(
                     $"Linear did not answer within {LinearHttp.Deadline.TotalSeconds:0} seconds while trying to "
                     + $"{verb}. Check this machine can reach {LinearHttp.Endpoint.Host} (a VPN or a proxy is the "
-                    + "usual reason it cannot from here but can from the browser) and try again."),
+                    + "usual reason it cannot from here but can from the browser)."
+                    + (retryable ? " Try again." : string.Empty)),
                 TrackerReadFailure.Outage,
                 outcomeUnknown: true);
         }
@@ -623,15 +641,20 @@ public sealed class LinearWorkItemProvider(
         {
             using (document)
             {
-                (DomainException failure, TrackerReadFailure kind) = ExplainErrors(response, errors, verb, subject, linkedTask);
-                return Failed(failure, kind, outcomeUnknown: response.StatusCode >= 500);
+                (DomainException failure, TrackerReadFailure kind) = ExplainErrors(
+                    response, errors, verb, subject, linkedTask, retryable);
+                // Linear documents errors beside partial data, so a response that carries both may have
+                // run the mutation: only errors with nothing in data are a definite refusal.
+                return Failed(
+                    failure, kind, outcomeUnknown: response.StatusCode >= 500 || CarriesData(root));
             }
         }
 
         if (response.StatusCode is < 200 or >= 300)
         {
             document?.Dispose();
-            (DomainException failure, TrackerReadFailure kind) = ExplainStatus(response, verb, subject, linkedTask);
+            (DomainException failure, TrackerReadFailure kind) = ExplainStatus(
+                response, verb, subject, linkedTask, retryable);
             return Failed(failure, kind, outcomeUnknown: response.StatusCode is < 400 or >= 500);
         }
 
@@ -656,6 +679,12 @@ public sealed class LinearWorkItemProvider(
         DomainException failure, TrackerReadFailure kind, bool keyUnavailable = false, bool outcomeUnknown = false) =>
         new(null, null, failure, kind, keyUnavailable, outcomeUnknown);
 
+    /// <summary>Whether a response's <c>data</c> object holds any field that is not null, such as a mutation's payload.</summary>
+    private static bool CarriesData(JsonElement root) =>
+        root.TryGetProperty("data", out JsonElement data)
+        && data.ValueKind == JsonValueKind.Object
+        && data.EnumerateObject().Any(field => field.Value.ValueKind != JsonValueKind.Null);
+
     private static JsonDocument? TryParse(string body)
     {
         try
@@ -678,7 +707,8 @@ public sealed class LinearWorkItemProvider(
     /// quotes Linear's own first message on one line.
     /// </summary>
     private (DomainException Failure, TrackerReadFailure Kind) ExplainErrors(
-        LinearResponse response, JsonElement errors, string verb, string subject, string? linkedTask)
+        LinearResponse response, JsonElement errors, string verb, string subject, string? linkedTask,
+        bool retryable)
     {
         List<(string Message, string Code, string Type)> found = [];
         if (errors.ValueKind == JsonValueKind.Array)
@@ -701,7 +731,7 @@ public sealed class LinearWorkItemProvider(
             || Has(error => error.Code.Equals("RATELIMITED", StringComparison.OrdinalIgnoreCase)
                 || error.Type.Contains("ratelimit", StringComparison.OrdinalIgnoreCase)))
         {
-            return (RateLimited(response, verb, reported), TrackerReadFailure.Outage);
+            return (RateLimited(response, verb, reported, retryable), TrackerReadFailure.Outage);
         }
 
         // A server error is an outage whatever its errors array says: a gateway's "upstream not found"
@@ -709,7 +739,7 @@ public sealed class LinearWorkItemProvider(
         // the key or the issue, and the remedy for an outage is to wait.
         if (response.StatusCode >= 500)
         {
-            return (Unavailable(verb, response.StatusCode, reported), TrackerReadFailure.Outage);
+            return (Unavailable(verb, response.StatusCode, reported, retryable), TrackerReadFailure.Outage);
         }
 
         if (response.StatusCode is 401 or 403
@@ -727,13 +757,13 @@ public sealed class LinearWorkItemProvider(
         }
 
         return response.StatusCode == 0
-            ? (Unavailable(verb, response.StatusCode, reported), TrackerReadFailure.Outage)
+            ? (Unavailable(verb, response.StatusCode, reported, retryable), TrackerReadFailure.Outage)
             : (new DomainValidationException($"Linear refused to {verb}.{Suffix(reported)}"), TrackerReadFailure.Item);
     }
 
     /// <summary>A non-2xx response with no GraphQL errors in it, classified by its status alone.</summary>
     private (DomainException Failure, TrackerReadFailure Kind) ExplainStatus(
-        LinearResponse response, string verb, string subject, string? linkedTask)
+        LinearResponse response, string verb, string subject, string? linkedTask, bool retryable)
     {
         string reported = Bounded(response.Body);
         return (HttpStatusCode)response.StatusCode switch
@@ -741,11 +771,11 @@ public sealed class LinearWorkItemProvider(
             HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden =>
                 (Rejected(verb, reported), TrackerReadFailure.Credentials),
             HttpStatusCode.TooManyRequests =>
-                (RateLimited(response, verb, reported), TrackerReadFailure.Outage),
+                (RateLimited(response, verb, reported, retryable), TrackerReadFailure.Outage),
             HttpStatusCode.NotFound =>
                 (NotFound(subject, linkedTask, reported), TrackerReadFailure.Item),
             >= HttpStatusCode.InternalServerError =>
-                (Unavailable(verb, response.StatusCode, reported), TrackerReadFailure.Outage),
+                (Unavailable(verb, response.StatusCode, reported, retryable), TrackerReadFailure.Outage),
             _ => (new DomainValidationException(
                 $"Linear refused to {verb} (HTTP {response.StatusCode}).{Suffix(reported)}"), TrackerReadFailure.Item),
         };
@@ -760,17 +790,22 @@ public sealed class LinearWorkItemProvider(
         + "usually been revoked or belongs to someone who has left the workspace, and a key limited by "
         + "permission or by team is refused this way for what it is not allowed to see.");
 
-    private static DomainValidationException RateLimited(LinearResponse response, string verb, string reported) => new(
+    private static DomainValidationException RateLimited(
+        LinearResponse response, string verb, string reported, bool retryable) => new(
         $"Linear is rate-limiting this key and refused to {verb}"
         + (response.RetryAfter.IsNotBlank()
             ? $"; its Retry-After is {RelayedText.OneLine(response.RetryAfter)}."
             : "; it sent no Retry-After.")
         + Suffix(reported)
-        + " Hall9k does not retry a rate-limited Linear call within the same attempt, so wait before asking again.");
+        + (retryable
+            ? " Hall9k does not retry a rate-limited Linear call within the same attempt, so wait before asking again."
+            : " Hall9k does not retry a rate-limited Linear call on its own."));
 
-    private static DomainValidationException Unavailable(string verb, int status, string reported) => new(
+    private static DomainValidationException Unavailable(string verb, int status, string reported, bool retryable) => new(
         $"Linear failed while trying to {verb} (HTTP {status}).{Suffix(reported)} That is Linear's side rather "
-        + "than this machine's; try again once https://linearstatus.com is clear.");
+        + (retryable
+            ? "than this machine's; try again once https://linearstatus.com is clear."
+            : "than this machine's; https://linearstatus.com shows whether it is clear."));
 
     /// <summary>
     /// Linear answers the same for an issue that does not exist and one this key cannot see, so both

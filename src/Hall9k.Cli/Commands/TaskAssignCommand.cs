@@ -636,15 +636,33 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         CancellationToken cancellationToken,
         Optional<Guid?> placeOnNode = default)
     {
+        TaskAssigned assigned = await DecideAsync(
+            session, task, assignedOwner, assignedByOwnerId, cancellationToken, placeOnNode);
+        session.Events.Append(task.Id, assigned);
+        return assigned;
+    }
+
+    /// <summary>
+    /// Every refusal <see cref="AppendAsync"/> can make, and the go signal it would append, without
+    /// appending it. A caller whose go signal waits for something slower than its own commit (a publish
+    /// that creates a Linear issue) runs this first, so a task that cannot be queued is refused while
+    /// it is still a Draft.
+    /// </summary>
+    internal static async Task<TaskAssigned> DecideAsync(
+        IDocumentSession session,
+        TaskAggregate task,
+        OwnerDetails assignedOwner,
+        Guid assignedByOwnerId,
+        CancellationToken cancellationToken,
+        Optional<Guid?> placeOnNode = default)
+    {
         await RefuseArchivedProjectAsync(session, task, cancellationToken);
 
         IReadOnlyList<TaskDependency> dependencies = await TaskDependencyQuery.LoadAsync(
             session, task.BlockedBy, cancellationToken);
-        TaskAssigned assigned = TaskDecider.Assign(
+        return TaskDecider.Assign(
             task, assignedOwner.Id, dependencies, DateTimeOffset.UtcNow, assignedByOwnerId,
             assignedOwner.RootFingerprint, placeOnNode);
-        session.Events.Append(task.Id, assigned);
-        return assigned;
     }
 
     /// <summary>

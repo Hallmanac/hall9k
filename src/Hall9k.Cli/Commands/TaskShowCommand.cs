@@ -2828,11 +2828,14 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// The row for a task on a Linear-backlog project that is past Draft with no issue and no
     /// untracked attestation. It is the one place a failed create stays visible once the terminal that
     /// printed its note is closed, and it catches a publish from a node that did not know the policy:
-    /// such a task either carries an issue or says it chose not to. Null for every other task.
+    /// such a task either carries an issue or says it chose not to. Null for every other task, and for
+    /// one whose story has ended: an abandoned task cannot be linked, and a finished one is no longer
+    /// waiting on an issue.
     /// </summary>
     internal static string? UnlinkedLinearRow(TaskDetails details, ProjectDetails? project) =>
         project?.BacklogPolicy == BacklogPolicy.Linear
         && details.State != TaskState.Draft
+        && !details.State.IsTerminal
         && details.ExternalReference.IsBlank()
         && !details.UntrackedAttested
             ? "[yellow]no Linear issue is linked[/] [dim](the project tracks its backlog in Linear and this task "

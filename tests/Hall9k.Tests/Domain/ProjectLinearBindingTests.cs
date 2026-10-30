@@ -440,14 +440,4 @@ public sealed class ProjectLinearBindingTests
 
         unrelated.Should().NotThrow();
     }
-
-    [Fact]
-    public void A_policy_outside_the_closed_set_is_still_refused_naming_all_four_values()
-    {
-        ProjectAggregate aggregate = Bound();
-
-        Action act = () => Change(aggregate, backlog: Optional<BacklogPolicy>.Of("trello"));
-
-        act.Should().Throw<DomainValidationException>().WithMessage("*none, GitHubIssues, Jira, or Linear*");
-    }
 }

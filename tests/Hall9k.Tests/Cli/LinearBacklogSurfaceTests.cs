@@ -59,13 +59,10 @@ public sealed class LinearBacklogSurfaceTests
             .Should().Contain("--backlog github-issues|jira|linear");
     }
 
-    [Theory]
-    [InlineData("labels: bug", true, false)]
-    [InlineData("labels: bug", false, true)]
-    public void Project_set_says_routing_is_ignored_when_it_touched_either_setting_and_left_the_policy_linear_with_text(
-        string routing, bool touchedPolicy, bool touchedRouting)
+    [Fact]
+    public void Project_set_says_routing_is_ignored_when_it_touched_a_setting_and_left_the_policy_linear_with_text()
     {
-        string? note = ProjectSetCommand.LinearRoutingNote(touchedPolicy || touchedRouting, Project(routing));
+        string? note = ProjectSetCommand.LinearRoutingNote(true, Project("labels: bug"));
 
         note.Should().NotBeNull();
         Plain(note!).Should().Contain("--backlog-routing is ignored under the backlog policy linear")
@@ -118,6 +115,13 @@ public sealed class LinearBacklogSurfaceTests
     [Fact]
     public void Task_show_says_nothing_for_a_draft() =>
         TaskShowCommand.UnlinkedLinearRow(Task(TaskState.Draft), Project()).Should().BeNull();
+
+    [Fact]
+    public void Task_show_says_nothing_for_a_task_whose_story_has_ended()
+    {
+        TaskShowCommand.UnlinkedLinearRow(Task(TaskState.Abandoned), Project()).Should().BeNull();
+        TaskShowCommand.UnlinkedLinearRow(Task(TaskState.Done), Project()).Should().BeNull();
+    }
 
     [Fact]
     public void Task_show_says_nothing_for_a_task_that_carries_an_issue() =>
