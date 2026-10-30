@@ -508,6 +508,25 @@ public sealed class CardPublicationEngine(
             return PublicationAttempt.Refused;
         }
 
+        // A request recorded while the project still had a Jira board outlives a later move to
+        // Linear. The door that records one refuses a Linear project, and write-jira refuses the
+        // card this session would compose, so dispatching would pay for a session whose card can
+        // never be linked and then send the operator hunting for a stranded one. The same refusal
+        // JiraWriteRetryEngine gives a pending Jira create, ended here for the same reason: the
+        // guard belongs where the consequence is.
+        if (ProjectTracker.IsLinear(project.LinearTeam))
+        {
+            await CompleteAsync(
+                task.Id,
+                linkedNow: false,
+                $"Project '{project.Name}' now tracks its work in Linear (team {project.LinearTeam.Value}), "
+                + "its one tracker, so no session was dispatched and no card was put on a Jira board. "
+                + "Add the work in Linear instead, or clear the team to return the project to another "
+                + $"tracker: h9k project set {project.Name} --linear none",
+                cancellationToken: cancellationToken);
+            return PublicationAttempt.Refused;
+        }
+
         // The session reads this project's card-authoring skills, so it needs a working tree, and
         // a project with a home does not have one at its repository path: that path names the
         // bare clone inside repo/, which holds refs and objects and no files at all. repo/dev is

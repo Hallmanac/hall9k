@@ -635,6 +635,35 @@ public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// A publication request recorded while the project had a Jira board outlives the project's move
+    /// to Linear. Without the sweep's own check it dispatched a paid session to compose a card that
+    /// write-jira then refuses, and the task ended pointing the operator at a stranded card that
+    /// cannot exist (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public async Task A_pending_publication_on_a_project_since_bound_to_linear_is_refused_rather_than_dispatched()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token, linearTeam: "ENG");
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(
+            new CardPublicationSweepResult(Dispatched: 0, Linked: 0, Adopted: 0, Refused: 1),
+            "the project's one tracker is Linear, so no session was dispatched");
+        session.Spawns.Should().BeEmpty();
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.PublicationOutcome
+            .Should().Contain("Linear").And.Contain("--linear none");
+    }
+
+    /// <summary>
     /// The daemon stopping mid-publication used to strand the task for good: the dispatch is on
     /// the stream and the completion never lands, and nothing else clears that marker — the sweep
     /// skips a request whose session already ran, push-to-jira refuses while one is outstanding,
@@ -1388,7 +1417,8 @@ public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<P
         string? repositoryPath = null,
         DateTimeOffset? requestedAt = null,
         ProjectHome? homeDirectory = null,
-        bool archiveProject = false)
+        bool archiveProject = false,
+        string? linearTeam = null)
     {
         Directory.CreateDirectory(_repository);
         Environment.SetEnvironmentVariable(TokenVariable, "a-token");
@@ -1427,6 +1457,26 @@ public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<P
                 .AggregateStreamAsync<ProjectAggregate>(projectId, token: cancellationToken))!;
             archiveSession.Events.Append(projectId, ProjectDecider.Archive(project, null, Now, ownerId));
             await archiveSession.SaveChangesAsync(cancellationToken);
+        }
+
+        if (linearTeam is not null)
+        {
+            // Bound after the request was recorded: the project moves to Linear while a Jira
+            // publication request is still waiting for the sweep.
+            await using IDocumentSession linearSession = store.LightweightSession();
+            ProjectAggregate project = (await linearSession.Events
+                .AggregateStreamAsync<ProjectAggregate>(projectId, token: cancellationToken))!;
+            linearSession.Events.Append(
+                projectId,
+                ProjectDecider.ChangeSettings(
+                    project,
+                    Optional<IReadOnlyList<VerifyCommand>>.None,
+                    Optional<bool>.None,
+                    Optional<IReadOnlyList<ContextLink>>.None,
+                    Now,
+                    ownerId,
+                    linearTeam: Optional<LinearTeamKey>.Of(LinearTeamKey.Parse(linearTeam))));
+            await linearSession.SaveChangesAsync(cancellationToken);
         }
 
         return taskId;
