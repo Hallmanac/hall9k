@@ -3569,6 +3569,11 @@ public static class AgentPromptBuilder
         // reason: the scope rule below and that range have to agree about what this branch's own
         // work is, or a stacked child's reviewer tags the parent's rewritten-away delta in-scope.
         string scopeBoundary = mechanicsOverride?.ForkPointCommit ?? $"origin/{baseBranch}";
+        if (mechanicsOverride is { DiffIsForeignPullRequest: true })
+        {
+            AppendShellLimits(prompt);
+        }
+
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
@@ -3632,6 +3637,24 @@ public static class AgentPromptBuilder
         }
 
         AppendRunSkillDriftQuestion(prompt, file);
+    }
+
+    /// <summary>
+    /// What a session launched under a pr-review allow list is told about its shell before it runs
+    /// anything: the list is short and read-only, a refusal is silent and final, and a search
+    /// belongs to the Grep and Read tools. Deliberately names no individual allowed command, so it
+    /// stays true as the allow list widens. Reaches every persona session through
+    /// <see cref="AppendFindingContract"/> (gated on a foreign pull request, which an ordinary
+    /// review pass of a project's own task is not) and the mention follow-up through its own call,
+    /// since that builder shares nothing else with them.
+    /// </summary>
+    internal static void AppendShellLimits(StringBuilder prompt)
+    {
+        const string file = $"{TemplateDirectory}/shell-limits.md";
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "statement");
     }
 
     /// <summary>

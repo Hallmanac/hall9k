@@ -56,6 +56,21 @@ public sealed class MentionAnswerPromptTests
             .And.NotContain("There is no earlier findings report");
     }
 
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData(null, false)]
+    [InlineData("# Pull request review findings", false)]
+    public void Every_shape_of_the_prompt_carries_the_shell_limits_statement(string? priorReport, bool ownPullRequest)
+    {
+        string prompt = Build(priorReport, ownPullRequest);
+
+        prompt.Should().Contain("## Shell limits in this session");
+        foreach (string sentence in ReviewPersonaRegistryTests.ShellLimitsStatement)
+        {
+            prompt.Should().Contain(sentence);
+        }
+    }
+
     [Fact]
     public void Every_shape_still_quotes_the_comment_and_asks_for_the_drafted_reply()
     {

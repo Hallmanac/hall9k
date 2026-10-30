@@ -127,6 +127,7 @@ public static class MentionFollowUpPromptBuilder
         prompt.AppendLine(PromptTemplates.Load(file, "rules-heading"));
         prompt.AppendLine();
         prompt.AppendLine(PromptTemplates.Load(file, "rules-body"));
+        AgentPromptBuilder.AppendShellLimits(prompt);
 
         WorkPromptBuilder.AppendPromptAddendum(prompt, project, PromptBuilderKey.MentionFollowUp);
 
