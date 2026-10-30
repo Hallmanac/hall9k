@@ -164,8 +164,22 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "task records the idea it came from, the idea's own stream records this cut, and h9k idea "
             + "show lists every task it has fanned out to. Cutting a task never concludes or archives "
             + "the idea — discovery may keep producing, and ending it is the separate, explicit "
-            + "h9k idea conclude / h9k idea archive")]
+            + "h9k idea conclude / h9k idea archive. An idea that carries a tracker link (h9k idea add "
+            + "--from-linear) is adopted into its first cut: the item is read afresh, never from the "
+            + "workspace file, and recorded on the task; see --unlinked")]
         public string? FromIdea { get; init; }
+
+        [CommandOption("--unlinked")]
+        [Description(
+            "With --from-idea on an idea that carries a tracker link (h9k idea add --from-linear, --from-jira, "
+            + "--from-issue): cut the task with no link and no tracker read. Without it, the first cut reads the "
+            + "item afresh through the importer and adopts it, under the refusals h9k task add --from-linear "
+            + "has (an item another task holds, a project whose tracker is another one, a closed, canceled, or "
+            + "duplicate item, one not found, or no connection on this node), except that Linear's triage "
+            + "state is accepted. Every one of those refusals names this option and h9k idea conclude / "
+            + "h9k idea archive as the exits. A cut whose item a task cut from the same idea still holds is "
+            + "made unlinked on its own, without this option. Refused on an idea with no tracker link")]
+        public bool Unlinked { get; init; }
 
         [CommandOption("--from-issue <NUMBER-OR-URL>")]
         [Description(
@@ -372,6 +386,13 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 + "note still rides along as agent context automatically.");
         }
 
+        if (settings.Unlinked && settings.FromIdea.IsBlank())
+        {
+            throw new DomainValidationException(
+                "--unlinked belongs to --from-idea: it cuts a task from an idea that carries a tracker link "
+                + "without that link. A task with no source is unlinked already.");
+        }
+
         if (settings.File.IsNotBlank())
         {
             if (!System.IO.File.Exists(settings.File))
@@ -411,6 +432,13 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             // archived earns its own refusal rather than whatever unrelated validation runs next
             // (independent pre-PR review, conformance lens).
             IdeaDecider.RequireCaptured(sourceIdea, "cut a task from");
+            if (settings.Unlinked && sourceIdea.WorkItemReference is null)
+            {
+                throw new DomainValidationException(
+                    $"--unlinked has nothing to leave out: idea {TaskListCommand.ShortId(sourceIdea.Id)} carries no "
+                    + "tracker link, so a cut from it is unlinked already.");
+            }
+
             // An ordinary --from-idea cut always names its own project; falling back to the
             // idea's own only spares typing it twice when the two already agree.
             project ??= sourceIdea.ProjectId?.ToString();
@@ -583,6 +611,16 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             : await AdoptAsync(
                 store, session, projectDetails, epicId, secondaryAdoption, settings.Again, ledger, context.NodeId, ownerRootFingerprint,
                 cancellationToken);
+        // An idea that carries a tracker link is adopted into its cut, read afresh and under the same
+        // refusals as --from-linear, and judged here with everything else, before any prompt.
+        LinkedIdeaCut.Resolution? linkedCut = sourceIdea is { WorkItemReference: not null }
+            ? await LinkedIdeaCut.ResolveAsync(
+                session, ledger,
+                importerToken => WorkItemConnections.ImporterAsync(
+                    session, importerToken, processRunner: new ProjectScopedGitHubRunner(store).Runner),
+                sourceIdea, projectDetails, epicId, context.NodeId, ownerRootFingerprint, settings.Unlinked,
+                cancellationToken)
+            : null;
         // A pull request this node already reviewed, or is still following a posted review through
         // on: named rather than minted a second time (task: a pr-review task stays open while the
         // pull request's review threads are unresolved). Returned rather than thrown, and exiting
@@ -596,7 +634,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             return ExitCodes.Ok;
         }
 
-        ImportedWorkItem? imported = adopted?.Imported;
+        ImportedWorkItem? imported = adopted?.Imported ?? linkedCut?.Item;
         // Fetched to validate it (adoptable, not already spoken for) and to get its canonical
         // reference, never to seed anything: the secondary is shown and linked only (task: a task
         // may link to both a GitHub issue and a Jira card), so only the primary's own imported item
@@ -615,6 +653,23 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 : linkedContext.IsNotBlank() ? linkedContext : agentContext;
             agentContext = WorkItemContext.Compose(imported, additional);
             criteria = criteria.Count > 0 ? criteria : AskForCriteria(imported, adoption);
+        }
+        else if (sourceIdea is not null && linkedCut is not null)
+        {
+            // The context of a cut from a linked idea leads with the fresh read, and the idea's note rides
+            // after it only when a human wrote it: a note still the title seed is the item author's text,
+            // which belongs inside the fenced quote and nowhere else.
+            agentContext = LinkedIdeaCut.ComposeContext(sourceIdea, linkedCut, agentContext);
+            if (linkedCut.Item is { } linkedItem)
+            {
+                criteria = criteria.Count > 0
+                    ? criteria
+                    : AskForCriteria(
+                        linkedItem,
+                        new AdoptionSource(
+                            linkedItem.Reference.Provider, linkedItem.Reference.Reference, "--from-idea",
+                            linkedItem.Reference.Provider == WorkItemProvider.Jira ? "card" : "issue"));
+            }
         }
         else if (sourceIdea is not null)
         {
@@ -709,6 +764,22 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 $"[dim]  adopted {imported.Reference.ToString().EscapeMarkup()}, "
                 + $"{ExternalText.OneLineMarkup(imported.Status.ToString())} when read at "
                 + $"{imported.ObservedStamp}[/]");
+        }
+
+        if (imported is { Status.IsTriage: true })
+        {
+            AnsiConsole.MarkupLine($"[yellow]  {LinkedIdeaCut.TriageNotice(imported).EscapeMarkup()}[/]");
+        }
+
+        if (sourceIdea is not null && linkedCut is { Sibling: { } holdingTask })
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]  no tracker link:[/] [dim]{LinkedIdeaCut.SiblingNotice(sourceIdea, holdingTask).EscapeMarkup()}[/]");
+        }
+        else if (linkedCut is { Unlinked: true })
+        {
+            AnsiConsole.MarkupLine(
+                "[dim]  cut with no tracker link and no tracker read, as --unlinked asked[/]");
         }
 
         if (secondaryImported is not null)
@@ -806,17 +877,20 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     {
         if (settings.FromIssue.IsNotBlank())
         {
-            ProjectTracker.RefuseOtherTracker(project.LinearTeam, project.Name, "h9k task add --from-issue");
+            ProjectTracker.RefuseLinkAgainstTracker(
+                WorkItemProvider.GitHub, project.LinearTeam, project.Name, "h9k task add --from-issue");
         }
 
         if (settings.FromJira.IsNotBlank())
         {
-            ProjectTracker.RefuseOtherTracker(project.LinearTeam, project.Name, "h9k task add --from-jira");
+            ProjectTracker.RefuseLinkAgainstTracker(
+                WorkItemProvider.Jira, project.LinearTeam, project.Name, "h9k task add --from-jira");
         }
 
         if (settings.FromLinear.IsNotBlank())
         {
-            ProjectTracker.RequireLinear(project.LinearTeam, project.Name, "h9k task add --from-linear");
+            ProjectTracker.RefuseLinkAgainstTracker(
+                WorkItemProvider.Linear, project.LinearTeam, project.Name, "h9k task add --from-linear");
         }
     }
 
@@ -964,27 +1038,46 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             : await FindPrReviewHolderAsync(session, imported.Reference, ownerRootFingerprint, cancellationToken);
         if (holder is null)
         {
-            await RefuseSecondAdoptionAsync(
-                session, imported.Reference, new AdoptionSite(project.Id, epicId), ownerRootFingerprint, cancellationToken);
-            await RefuseSecondAdoptionUnderFormerReferencesAsync(
-                session, imported, new AdoptionSite(project.Id, epicId), ownerRootFingerprint, ownReference: null,
-                cancellationToken);
-            if (source.Provider != WorkItemProvider.GitHubPullRequest)
-            {
-                // The cheap check above only ever finds a task already replicated here. A record
-                // this project's ledger carries for the same reference names a task that either is
-                // replicated (report it exactly like the check above does) or is not yet (idea
-                // 202383dc, A3a's own third fork: report that instead of fabricating a copy from the
-                // record and start an events-request for the missing stream instead — idea 202383dc,
-                // M2b, task 9408d525). --from-pr is excluded: a pr-review task's own holder rules
-                // are the two checks above, and it never publishes a record this scan would ever
-                // match.
-                await RefuseIfRecordedElsewhereAsync(
-                    session, ledger, project, nodeId, ownerRootFingerprint, imported.Reference, cancellationToken);
-            }
+            await RefuseHeldItemAsync(
+                session, ledger, project, epicId, nodeId, ownerRootFingerprint, imported,
+                checkLedgerRecord: source.Provider != WorkItemProvider.GitHubPullRequest, cancellationToken);
         }
 
         return new Adoption(imported, holder);
+    }
+
+    /// <summary>
+    /// The refusals that an item already spoken for earns, in the order every door that takes an item
+    /// runs them: a live task on the item here (<see cref="RefuseSecondAdoptionAsync(IQuerySession, ExternalReference, AdoptionSite?, string?, CancellationToken)"/>),
+    /// one under a name the source says the item used to carry, and a record in this project's ledger
+    /// for a task not replicated here yet (<see cref="RefuseIfRecordedElsewhereAsync"/>). Shared by task
+    /// adoption, by an idea's capture, and by a cut from a linked idea, so none of them restates it.
+    /// <paramref name="checkLedgerRecord"/> is false for a pull request, whose holder rules are the first
+    /// two checks alone: it never publishes a record the ledger scan would match.
+    /// </summary>
+    internal static async Task RefuseHeldItemAsync(
+        IDocumentSession session, ILedger ledger, ProjectDetails project, Guid? epicId, Guid nodeId,
+        string? ownerRootFingerprint, ImportedWorkItem imported, bool checkLedgerRecord,
+        CancellationToken cancellationToken)
+    {
+        await RefuseSecondAdoptionAsync(
+            session, imported.Reference, new AdoptionSite(project.Id, epicId), ownerRootFingerprint, cancellationToken);
+        await RefuseSecondAdoptionUnderFormerReferencesAsync(
+            session, imported, new AdoptionSite(project.Id, epicId), ownerRootFingerprint, ownReference: null,
+            cancellationToken);
+        if (checkLedgerRecord)
+        {
+            // The cheap checks above only ever find a task already replicated here. A record
+            // this project's ledger carries for the same reference names a task that either is
+            // replicated (report it exactly like the check above does) or is not yet (idea
+            // 202383dc, A3a's own third fork: report that instead of fabricating a copy from the
+            // record and start an events-request for the missing stream instead — idea 202383dc,
+            // M2b, task 9408d525). --from-pr is excluded: a pr-review task's own holder rules
+            // are the two checks above, and it never publishes a record this scan would ever
+            // match.
+            await RefuseIfRecordedElsewhereAsync(
+                session, ledger, project, nodeId, ownerRootFingerprint, imported.Reference, cancellationToken);
+        }
     }
 
     /// <summary>
@@ -1282,6 +1375,42 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         CancellationToken cancellationToken)
     {
         string canonical = reference.ToString();
+        SharedIssueBar? bar = await FindBarAsync(session, reference, site, ownerRootFingerprint, cancellationToken);
+        if (bar is null)
+        {
+            return;
+        }
+
+        TaskListItem existing = bar.Holder.Task;
+        string shortId = TaskListCommand.ShortId(existing.Id);
+        string joinFirst = bar.OutsideSolutionEpic && site?.EpicId is { } epicId
+            ? $" Task {shortId} is in another member project of the same solution but outside the solution epic "
+                + $"this task is in, which is the only place two projects' tasks may share an issue: join it to the epic first "
+                + $"with h9k task revise {shortId} --epic {await SolutionEpicReferenceAsync(session, epicId, cancellationToken)} "
+                + "(revision is Draft-only; h9k task revise --help says how to get an assigned or Published task back to Draft)."
+            : string.Empty;
+        throw new DomainConflictException(
+            $"{canonical} is already adopted by task {shortId} ({ExternalText.OneLine(existing.Objective)}), "
+            + $"which is {existing.State.Value}. Adoption is selective, never mirroring (PLAN.md §3.1a), so one "
+            + $"issue is one live task: see it with h9k task show {shortId}, then {Remedy(existing.State, shortId)}"
+            + joinFirst
+            + (site?.SelfTaskId is null
+                ? string.Empty
+                : " This task holds the issue too, and it may share it only inside the solution epic it is in now, so it cannot leave."));
+    }
+
+    /// <summary>
+    /// The live task that bars a second task from <paramref name="reference"/> at <paramref name="site"/>,
+    /// or null when the item is free to take. This is the whole of what
+    /// <see cref="RefuseSecondAdoptionAsync(IQuerySession, ExternalReference, AdoptionSite?, string?, CancellationToken)"/>
+    /// decides, returned instead of thrown so a caller can ask who holds the item without being refused by
+    /// it (a cut from a linked idea tells its own sibling from anybody else's).
+    /// </summary>
+    internal static async Task<SharedIssueBar?> FindBarAsync(
+        IQuerySession session, ExternalReference reference, AdoptionSite? site, string? ownerRootFingerprint,
+        CancellationToken cancellationToken)
+    {
+        string canonical = reference.ToString();
         // The state and type are matched as SQL rather than compared in LINQ, which is how every
         // state filter in this repo is written (DispatchEngine, TaskDependencyResolver): TaskState
         // and TaskType are value objects, and Marten refuses to translate a comparison against one.
@@ -1316,34 +1445,13 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         ];
         if (holders.Count == 0)
         {
-            return;
+            return null;
         }
 
         TaskListItem existing = holders[0];
-        SharedIssueBar? bar = site is not null && reference.Provider != WorkItemProvider.GitHubPullRequest
+        return site is not null && reference.Provider != WorkItemProvider.GitHubPullRequest
             ? await SharedIssueBarAsync(session, site, holders, cancellationToken)
             : new SharedIssueBar(new SharedIssueHolder(existing, null, null), OutsideSolutionEpic: false);
-        if (bar is null)
-        {
-            return;
-        }
-
-        existing = bar.Holder.Task;
-        string shortId = TaskListCommand.ShortId(existing.Id);
-        string joinFirst = bar.OutsideSolutionEpic && site?.EpicId is { } epicId
-            ? $" Task {shortId} is in another member project of the same solution but outside the solution epic "
-                + $"this task is in, which is the only place two projects' tasks may share an issue: join it to the epic first "
-                + $"with h9k task revise {shortId} --epic {await SolutionEpicReferenceAsync(session, epicId, cancellationToken)} "
-                + "(revision is Draft-only; h9k task revise --help says how to get an assigned or Published task back to Draft)."
-            : string.Empty;
-        throw new DomainConflictException(
-            $"{canonical} is already adopted by task {shortId} ({ExternalText.OneLine(existing.Objective)}), "
-            + $"which is {existing.State.Value}. Adoption is selective, never mirroring (PLAN.md §3.1a), so one "
-            + $"issue is one live task: see it with h9k task show {shortId}, then {Remedy(existing.State, shortId)}"
-            + joinFirst
-            + (site?.SelfTaskId is null
-                ? string.Empty
-                : " This task holds the issue too, and it may share it only inside the solution epic it is in now, so it cannot leave."));
     }
 
     /// <summary>
