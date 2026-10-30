@@ -192,8 +192,8 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
     /// The Linear team bound to this project, which makes Linear its one tracker, or how to bind one.
     /// </summary>
     internal static string LinearTeamRow(ProjectDetails project) => project.LinearTeam.HasValue
-        ? $"{project.LinearTeam.Value.EscapeMarkup()} [dim]— Linear is this project's one tracker; "
-          + "new issues are filed under this team, and Jira and GitHub-issue links are refused[/]"
+        ? $"{project.LinearTeam.Value.EscapeMarkup()} [dim](Linear is this project's one tracker, "
+          + "so Jira and GitHub-issue links are refused)[/]"
         : $"[dim]none bound — bind one: h9k project set {project.Name.EscapeMarkup()} --linear ENG[/]";
 
     /// <summary>

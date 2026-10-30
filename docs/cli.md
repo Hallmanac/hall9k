@@ -1765,7 +1765,7 @@ one breath essentially always cuts `no-key-<slug>` rather than `PROJ-14-<slug>`.
 project fares better but is not exempt — `TaskPublishCommand` creates the issue inline, but the
 `gh issue create` round trip can still lose the race against the dispatch loop's five-second poll.
 A `{key}` template earns a resolved key reliably only on a task that already carries its reference
-before dispatch ever runs — adopted with `--from-issue`, `--from-jira`, or `--from-linear`, or linked
+before dispatch ever runs, adopted with `--from-issue`, `--from-jira`, or `--from-linear`, or linked
 by hand with `h9k task link-jira` / `h9k task link-issue` / `h9k task link-linear` while the task is still
 a Draft. Binding a Linear team (`h9k project set --linear`, below) sets `{key}-{slug}` for you the first
 time, on a project still on the default.
@@ -1916,7 +1916,7 @@ as `https://linear.app/<urlKey>/issue/<identifier>` from the connection's record
 `linear:<identifier>` with no link on a node that has no Linear connection.
 
 **Binding a team makes Linear the project's one tracker.** `h9k project set <project> --linear <TEAM>`
-binds the default team for new issues (the `ENG` in `ENG-123`). Before recording anything it asks the
+binds the project's Linear team (the `ENG` in `ENG-123`). Before recording anything it asks the
 install's Linear connection for a team with that key, and refuses when none is visible, saying the team
 may not exist or the key may be limited to other teams, because Linear answers both the same way.
 `--linear none` clears the binding. The binding is a team setting carried beside the Jira board key, so

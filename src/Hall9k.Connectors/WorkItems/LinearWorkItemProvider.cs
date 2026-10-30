@@ -37,7 +37,7 @@ public sealed record LinearIssueRead(ImportedWorkItem Item, IReadOnlyList<string
 /// </summary>
 public sealed record LinearIssueAttempt(LinearIssueRead? Read, DomainException? Failure, TrackerReadFailure FailureKind);
 
-/// <summary>A Linear team as the workspace answered for it: the id new issues are filed under, its key, and its name.</summary>
+/// <summary>A Linear team as the workspace answered for it: the id of the team, its key, and its name.</summary>
 public sealed record LinearTeam(string Id, string Key, string Name);
 
 /// <summary>
