@@ -22,6 +22,15 @@ public sealed record WorkItemStatus
     public static readonly WorkItemStatus Open = new("open");
     public static readonly WorkItemStatus Closed = new("closed");
 
+    /// <summary>
+    /// Linear's triage state: an issue that arrived and has not been accepted into a team's planned
+    /// work. Not open, so the adoption gate refuses it like any other non-open state, but kept apart
+    /// from <see cref="Unknown"/> and <see cref="Closed"/> because the refusal for it points
+    /// somewhere else (an idea, not a task), and a state the importer could not tell from the others
+    /// could not say so.
+    /// </summary>
+    public static readonly WorkItemStatus Triage = new("triage");
+
     /// <summary>The source said nothing about state. Renders as "unknown", never as "open".</summary>
     public static readonly WorkItemStatus Unknown = new("");
 
@@ -116,6 +125,9 @@ public sealed record WorkItemStatus
 
     /// <summary>True only when the source positively said open; Unknown is not open.</summary>
     public bool IsOpen => Value == Open.Value;
+
+    /// <summary>True when the source said the item is waiting in triage rather than planned.</summary>
+    public bool IsTriage => Value == Triage.Value;
 
     public override string ToString() =>
         SourceLabel is { } label ? $"{label} ({Mapped})" : Mapped;

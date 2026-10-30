@@ -72,6 +72,20 @@ public sealed class WorkItemImporter(params IWorkItemProvider[] providers)
         // it had no rule for exactly as it was reported — and this message is printed to a
         // terminal, where an escape sequence in one of them would repaint the refusal that is
         // quoting it. Quoting verbatim means the words, not the characters that act.
+        //
+        // Triage is told apart from the other non-open states before that generic refusal, because
+        // "reopen it" is the wrong advice for it: a triage issue has not been accepted into anyone's
+        // planned work, so it is not a task to run yet, and the door for something not yet planned is
+        // an idea.
+        if (item.Status.IsTriage)
+        {
+            throw new DomainValidationException(
+                $"{RelayedText.OneLine(item.Reference.ToString())} is in triage ({item.ObservedStamp}), which "
+                + "means it has not been accepted into planned work, and adoption is for work a source "
+                + "positively calls open. Capture it as an idea instead: h9k idea add --from-linear "
+                + $"{RelayedText.OneLine(item.Reference.Key)}");
+        }
+
         return item.Status.IsOpen
             ? item
             : throw new DomainValidationException(
