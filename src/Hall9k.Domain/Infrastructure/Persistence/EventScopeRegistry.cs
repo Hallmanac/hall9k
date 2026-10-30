@@ -504,6 +504,9 @@ public static class EventScopeRegistry
         [typeof(IdeaPromoted)] = EventScope.ProjectScoped,
         [typeof(IdeaRevised)] = EventScope.ProjectScoped,
         [typeof(IdeaTaskCut)] = EventScope.ProjectScoped,
+        // The tracker item an idea was captured from: travels with the idea at the idea's own scope,
+        // so every node that holds a copy shows the same link and judges the one-item-one-idea guard alike.
+        [typeof(IdeaWorkItemLinked)] = EventScope.ProjectScoped,
         // The idea-side half of a spike's own verdict (task: a spike is a run, not a walk) —
         // provenance of a team-visible fact, the same tier IdeaTaskCut already travels at.
         [typeof(IdeaSpikeConcluded)] = EventScope.ProjectScoped,

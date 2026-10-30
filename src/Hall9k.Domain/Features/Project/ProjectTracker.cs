@@ -40,6 +40,25 @@ public static class ProjectTracker
     }
 
     /// <summary>
+    /// The one-tracker check for a link of <paramref name="provider"/> on this project, shared by every
+    /// door that records one so none restates it: a Jira card or a GitHub issue is refused on a project
+    /// bound to Linear, and a Linear issue is refused on one that is not. Any other provider (a pull
+    /// request) is no tracker item and is never refused here.
+    /// </summary>
+    public static void RefuseLinkAgainstTracker(
+        WorkItemProvider provider, LinearTeamKey linearTeam, string projectName, string door)
+    {
+        if (provider == WorkItemProvider.Linear)
+        {
+            RequireLinear(linearTeam, projectName, door);
+        }
+        else if (provider == WorkItemProvider.GitHub || provider == WorkItemProvider.Jira)
+        {
+            RefuseOtherTracker(linearTeam, projectName, door);
+        }
+    }
+
+    /// <summary>
     /// The refusal for a Linear door on a project whose tracker is not Linear. A Linear issue links a
     /// pull request through the identifier in a branch name, and the branch template only carries one
     /// once a team is bound, so adopting Linear work on an unbound project would never link anything.

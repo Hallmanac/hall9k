@@ -45,6 +45,28 @@ public static class IdeaDecider
     }
 
     /// <summary>
+    /// The tracker item a capture carries, built beside <see cref="Capture"/> and appended in the same
+    /// transaction. Every argument is an observation the tracker made, so it is recorded as read:
+    /// <paramref name="reference"/> is the canonical reference the read returned, never the text a human
+    /// typed. A project is required first by the command, since the link has to pass that project's
+    /// tracker rule; the event itself only insists the observation names an item.
+    /// </summary>
+    public static IdeaWorkItemLinked LinkWorkItem(
+        Guid ideaId, ExternalReference reference, string observedTitle, string observedStatus,
+        DateTimeOffset observedAt, DateTimeOffset linkedAt, Guid linkedByOwnerId)
+    {
+        if (reference.Provider == WorkItemProvider.Unknown || reference.Reference.IsBlank())
+        {
+            throw new DomainValidationException(
+                "An idea's tracker link names the item the tracker answered with, as <provider>:<reference>; "
+                + "this one named nothing.");
+        }
+
+        return new IdeaWorkItemLinked(
+            ideaId, reference, observedTitle, observedStatus, observedAt, linkedAt, linkedByOwnerId);
+    }
+
+    /// <summary>
     /// Rewriting the note as discovery sharpens it. Captured-only: once concluded or archived
     /// the ending is the record, and once a draft exists h9k task revise is where its own
     /// wording changes.

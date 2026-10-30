@@ -169,6 +169,7 @@ public static class OrchestratorFeedDescription
             IdeaRevised revised => $"idea revised: {Quote(revised.Text)}",
             IdeaAssignedToProject => "an idea was assigned to this project",
             IdeaTaskCut cut => $"a task was cut from an idea: {Quote(cut.Objective)}",
+            IdeaWorkItemLinked linked => $"an idea was linked to {Field(linked.Reference.ToString(), 80)}",
             IdeaConcluded concluded => $"idea concluded: {Quote(concluded.Reason)}",
             IdeaArchived archived => $"idea archived: {Quote(archived.Reason)}",
             IdeaSpikeConcluded spike =>
