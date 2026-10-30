@@ -1831,9 +1831,10 @@ uses, and the task's record is written to the ledger on every outcome (linked, c
 failed, already linked, and `--untracked`). When the create does not end in a link, the note says
 which of three things happened. If Linear returned an identifier but the read-back or the link
 failed, it names `h9k task link-linear <task> <identifier>`. If Linear definitely refused (an
-`errors` array, `success: false`, or a 4xx), nothing was created, and it names a by-hand create and
-then the link. If the outcome is unknown (a timeout, a lost connection, a 5xx, or an answer that
-cannot be read), the issue may exist, so it says to search the team before linking or creating,
+`errors` array with nothing in `data`, `success: false`, or a 4xx), nothing was created, and it names
+a by-hand create and then the link. If the outcome is unknown (a timeout, a lost connection, a 5xx,
+an `errors` array that arrives beside a non-null `data` field, or an answer that cannot be read), the
+issue may exist, so it says to search the team before linking or creating,
 because creating by hand could file a duplicate. `h9k task show` keeps the gap visible afterwards: a
 task past Draft with no linked issue and no untracked attestation says no Linear issue is linked and
 names `h9k task link-linear`.

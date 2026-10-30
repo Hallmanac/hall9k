@@ -15,10 +15,13 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
+using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Xunit;
 
 namespace Hall9k.Tests.Integration;
@@ -410,5 +413,74 @@ public sealed partial class TaskRecordIntegrationTests
         await using IQuerySession session = store.QuerySession();
         (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!.State
             .Should().Be(TaskState.Queued);
+    }
+
+    [Fact]
+    public async Task A_publish_fenced_on_the_version_it_read_still_appends_its_go_signal_and_refuses_a_task_that_moved()
+    {
+        using ScopedTestHome home = new();
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        LinearInstall linear = await SeedLinearAsync(store, cts.Token);
+        Guid taskId = await AddTaskAsync(
+            store, linear.Install, "Fenced publish", ["It is fenced"], null, cts.Token);
+
+        await using IDocumentSession session = store.LightweightSession();
+        StreamState fence = (await session.Events.FetchStreamStateAsync(taskId, cts.Token))!;
+        TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
+            taskId, version: fence.Version, token: cts.Token))!;
+        TaskPublished published = TaskDecider.Publish(
+            task, new TaskDependencyGraph([]), Now, linear.Install.OwnerId, BacklogPolicy.Linear,
+            true, false);
+
+        // Another writer moves the stream after the read, which is what a link-linear or a second
+        // publish landing during the Linear lookup looks like.
+        await using (IDocumentSession other = store.LightweightSession())
+        {
+            other.Events.Append(taskId, TaskDecider.Publish(
+                task, new TaskDependencyGraph([]), Now, linear.Install.OwnerId, BacklogPolicy.Linear,
+                true, false));
+            await other.SaveChangesAsync(cts.Token);
+        }
+
+        session.Events.Append(taskId, expectedVersion: fence.Version + 1, published);
+        task.Apply(published);
+        await TaskAssignCommand.AppendAsync(session, task, linear.Owner, linear.Install.OwnerId, cts.Token);
+
+        Func<Task> save = () => session.SaveChangesAsync(cts.Token);
+
+        await save.Should().ThrowAsync<EventStreamUnexpectedMaxEventIdException>();
+        (await StreamAsync(store, taskId, cts.Token)).Count(type => type == typeof(TaskPublished)).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task The_queue_refusals_of_a_publish_that_creates_an_issue_land_before_the_commit()
+    {
+        using ScopedTestHome home = new();
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        LinearInstall linear = await SeedLinearAsync(store, cts.Token);
+        Guid taskId = await AddTaskAsync(
+            store, linear.Install, "Queue behind an archived project", ["It is refused"], null, cts.Token);
+        await using (IDocumentSession archive = store.LightweightSession())
+        {
+            ProjectAggregate project = (await archive.Events.AggregateStreamAsync<ProjectAggregate>(
+                linear.Install.ProjectId, token: cts.Token))!;
+            archive.Events.Append(
+                linear.Install.ProjectId, ProjectDecider.Archive(project, null, Now, linear.Install.OwnerId));
+            await archive.SaveChangesAsync(cts.Token);
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        task.Apply(TaskDecider.Publish(
+            task, new TaskDependencyGraph([]), Now, linear.Install.OwnerId, BacklogPolicy.Linear,
+            true, false));
+
+        Func<Task> decide = () => TaskAssignCommand.DecideAsync(
+            session, task, linear.Owner, linear.Install.OwnerId, cts.Token);
+
+        await decide.Should().ThrowAsync<DomainValidationException>().WithMessage("*is archived*");
+        (await StreamAsync(store, taskId, cts.Token)).Should().NotContain(typeof(TaskAssigned));
     }
 }

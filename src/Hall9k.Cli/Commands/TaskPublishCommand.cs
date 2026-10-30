@@ -14,7 +14,9 @@ using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
+using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -130,7 +132,13 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         await using IDocumentSession session = store.LightweightSession();
 
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Id, cancellationToken);
-        TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
+        // Fenced on the version this decision reads: a Linear publish waits on somebody else's service
+        // (and on a prompt) between here and the save, and a second publish or a link-linear landing in
+        // that window would otherwise commit on a stale Draft and file a second issue.
+        StreamState fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+        TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, version: fence.Version, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {taskId} names a project that is not registered.");
@@ -158,7 +166,7 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             ? await ResolveLinearTargetAsync(session, project, taskId, cancellationToken)
             : null;
 
-        session.Events.Append(taskId, published);
+        session.Events.Append(taskId, expectedVersion: fence.Version + 1, published);
         task.Apply(published);
 
         // Decide who it queues for and commit before announcing anything. Both steps can still throw
@@ -168,12 +176,34 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         OwnerDetails? queuedFor = await ChooseQueueAsync(session, task, context, settings, cancellationToken);
         // The go signal of a publish that creates a Linear issue waits for the link: dispatch cuts its
         // branch from the issue's identifier, and the dispatch poll routinely wins a race against a
-        // create that is still in flight, which would cut a no-key branch Linear never links.
-        TaskAssigned? queued = queuedFor is null || createsLinearIssue
-            ? null
-            : await TaskAssignCommand.AppendAsync(session, task, queuedFor, context.OwnerId, cancellationToken);
+        // create that is still in flight, which would cut a no-key branch Linear never links. Its
+        // refusals (an archived project, a dependency the platform does not know) still have to land
+        // before the commit, because past it there is an issue in Linear and nothing left to refuse:
+        // the decision is made here and thrown away, and made again once the link is on the stream.
+        TaskAssigned? queued = null;
+        if (queuedFor is not null)
+        {
+            if (createsLinearIssue)
+            {
+                await TaskAssignCommand.DecideAsync(session, task, queuedFor, context.OwnerId, cancellationToken);
+            }
+            else
+            {
+                queued = await TaskAssignCommand.AppendAsync(
+                    session, task, queuedFor, context.OwnerId, cancellationToken);
+            }
+        }
 
-        await session.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} changed while it was being published, so nothing was published and nothing was "
+                + "created in Linear. Check h9k task show, and publish again only if it is still a Draft.");
+        }
 
         // The objective is printed whole rather than cut to a column width. This line is the last
         // look a human gets at what they are making assignable, and for an adopted task the
@@ -580,7 +610,7 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             AnsiConsole.MarkupLine(
-                $"[yellow]  Note:[/] [dim]Task {shortId} is published and linked, but writing its task "
+                $"[yellow]  Note:[/] [dim]Task {shortId} is published, but writing its task "
                 + $"record failed: {exception.Message.EscapeMarkup()} The next h9k task revise writes it.[/]");
         }
     }

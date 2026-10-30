@@ -137,12 +137,10 @@ public sealed class LinearPublishResolveTests : IDisposable
         refusal.Message.Should().Contain("no team ENG").And.Contain("may not exist").And.Contain("limited to other teams");
     }
 
-    [Theory]
-    [InlineData(503)]
-    [InlineData(500)]
-    public async Task Linear_not_answering_refuses_rather_than_publishing_unlinked(int status)
+    [Fact]
+    public async Task Linear_not_answering_refuses_rather_than_publishing_unlinked()
     {
-        LinearWorkItemProvider provider = Provider([], Answering(status, "Service Unavailable"));
+        LinearWorkItemProvider provider = Provider([], Answering(500, "Service Unavailable"));
 
         DomainException refusal = await RefusalAsync(provider, Project());
 

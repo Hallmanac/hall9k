@@ -895,7 +895,7 @@ public sealed class ProjectDeciderTests
             Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             backlogPolicy: Optional<BacklogPolicy>.Of("trello"));
 
-        act.Should().Throw<DomainValidationException>().WithMessage("*None*GitHubIssues*Jira*");
+        act.Should().Throw<DomainValidationException>().WithMessage("*None*GitHubIssues*Jira*Linear*");
     }
 
     [Fact]

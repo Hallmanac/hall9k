@@ -133,6 +133,7 @@ public sealed class LinearIssueCreateTests : IDisposable
     [InlineData(200, """{"data":{"issueCreate":{"success":true,"issue":null}}}""")]
     [InlineData(200, """{"data":{"issueCreate":{"success":true,"issue":{"identifier":"not an identifier"}}}}""")]
     [InlineData(200, """{"data":{}}""")]
+    [InlineData(200, """{"errors":[{"message":"a later field failed"}],"data":{"issueCreate":{"success":true,"issue":{"identifier":"ENG-9"}}}}""")]
     public async Task An_outcome_that_cannot_be_read_or_that_failed_on_Linears_side_is_unknown_because_the_issue_may_exist(
         int status, string body)
     {
@@ -143,6 +144,29 @@ public sealed class LinearIssueCreateTests : IDisposable
         creation.Outcome.Should().Be(LinearCreateOutcome.Unknown);
         creation.Identifier.Should().BeNull();
         recorded.Requests.Should().ContainSingle("a create is sent once and never retried");
+    }
+
+    [Fact]
+    public async Task A_failed_create_is_never_worded_as_a_command_to_run_again_because_the_publish_has_committed()
+    {
+        Recorded[] failures =
+        [
+            Recorded.Answering(429, """{"errors":[{"message":"Rate limit exceeded","extensions":{"code":"RATELIMITED"}}]}"""),
+            Recorded.Answering(503, "Service Unavailable"),
+            new(_ => Task.FromException<LinearResponse>(new TaskCanceledException("timed out"))),
+        ];
+
+        foreach (Recorded failure in failures)
+        {
+            LinearIssueCreation creation = await Provider(failure).CreateIssueAsync(Sample(), Token);
+
+            creation.Failure!.Message.Should().NotContainEquivalentOf("again");
+
+            LinearIssueIdentifier.TryParseBare("ENG-9", out LinearIssueIdentifier created);
+            LinearIssueAttempt readBack = await Provider(failure).TryReadCreatedIssueAsync(created, Token);
+
+            readBack.Failure!.Message.Should().NotContainEquivalentOf("again");
+        }
     }
 
     [Fact]
