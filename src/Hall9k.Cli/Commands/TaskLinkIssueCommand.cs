@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
@@ -61,6 +62,7 @@ public sealed class TaskLinkIssueCommand : Hall9kAsyncCommand<TaskLinkIssueComma
             ?? throw new DomainNotFoundException($"No task {taskId}.");
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(details.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {taskId} names a project that is not registered.");
+        ProjectTracker.RefuseOtherTracker(project.LinearTeam, project.Name, "h9k task link-issue");
 
         // Read before deciding, the link-jira order: gh is asked before the task is fenced, so an
         // issue that does not resolve costs nothing and teaches something, whatever state the task

@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -94,6 +95,13 @@ public sealed class TaskWriteJiraCommand : Hall9kAsyncCommand<TaskWriteJiraComma
             ?? throw new DomainNotFoundException($"No task {taskId}.");
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(details.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {taskId} names a project that is not registered.");
+
+        // Only a create adds a card to a Linear project's tasks; updating or commenting on a card a
+        // task already carries is history staying readable, and stays possible.
+        if (operation == JiraWriteOperation.Create)
+        {
+            ProjectTracker.RefuseOtherTracker(project.LinearTeam, project.Name, "h9k task write-jira --op create");
+        }
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 

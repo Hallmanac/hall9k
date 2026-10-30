@@ -1,10 +1,12 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
+using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -46,6 +48,12 @@ public sealed class TaskPushToJiraCommand : Hall9kAsyncCommand<TaskPushToJiraCom
         await using IDocumentSession session = store.LightweightSession();
 
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Task, cancellationToken);
+
+        TaskDetails details = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+        ProjectDetails taskProject = await session.LoadAsync<ProjectDetails>(details.ProjectId, cancellationToken)
+            ?? throw new DomainNotFoundException($"Task {taskId} names a project that is not registered.");
+        ProjectTracker.RefuseOtherTracker(taskProject.LinearTeam, taskProject.Name, "h9k task push-to-jira");
 
         // A connection is required even though this command makes no Jira call, because the
         // dispatched session's prompt needs the site to compose the payload against. The write
