@@ -1,0 +1,41 @@
+hall9k-task-record: 1
+task-id: 01a1881b-5293-71eb-ad34-5ecee76868de
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#794
+objective: An install can register a Linear API key and adopt or link Linear issues the way Jira cards are adopted today
+criteria:
+  - Every Linear call goes through one injectable requester in the shape of JiraRequester, and every test drives it with fixture responses written from Linear's public schema; no test and no build session calls a live Linear workspace
+  - |-
+    h9k connection add linear takes the API key the way h9k connection add jira takes its token: prompted by default and stored in the install's own credentials directory (never inside a project, never replicated), or named with --token-env or, on macOS, --keychain; before recording anything it reads Linear's viewer and organization, refuses a rejected key with the remedy, and records the viewer's id and name and the workspace address https://linear.app/<urlKey> on the connection; the key itself never reaches an event, and ConnectionDecider requires a site on a Linear connection as it does on a Jira one
+  - A successful h9k connection add linear says that Linear accepted the key and nothing more, and states that a key limited by permission or by team can still be refused on a later read or write
+  - One Linear connection per install, which means one Linear workspace per install, and the help says so; running h9k connection add linear again replaces the connection and re-records the viewer and the workspace, exactly as Jira's does, which is how a rotated key is applied; two records left by overlapping runs are refused where they are used, by the commands that need Linear only
+  - On an install with no Linear connection, any Linear read is refused with one sentence naming h9k connection add linear, and a missing or broken Linear connection never stops a GitHub or Jira command
+  - h9k task add --from-linear <identifier or URL> and h9k task link-linear <task> <identifier or URL> read the issue through Linear's API, accept an issue from any team the key can see (no bound-team check), and record it as linear:<identifier> using the identifier Linear answered rather than the text typed; they apply the same one-item guards as the Jira doors, and a URL from a workspace other than the connection's is refused, because a stored reference records no workspace
+  - |-
+    h9k task add --from-linear maps Linear state types: backlog, unstarted, and started adopt; completed, canceled, and duplicate are refused; triage is refused with a pointer to h9k idea add --from-linear; a type Hall9k has no rule for is refused with the type quoted; h9k task link-linear applies no state gate and records the state it observed, as h9k task link-jira does, because that door records an issue that already exists
+  - |-
+    When Linear answers not found for a linked issue, the refusal says the issue may have moved to another team (which gives it a new identifier) and names h9k task link-linear <task> <new identifier> as the relink; that command replaces an existing linear: link only when Linear's answer for the new identifier lists the current one in previousIdentifiers, and every other second link is refused exactly as today; a branch already recorded on a run does not change, and tests pin the replacement and the refusal
+  - Any Linear response carrying a GraphQL errors array is a failure whatever its HTTP status, including an HTTP 200 with partial data; a 429 or RATELIMITED response is reported as an outage with its Retry-After; a rejected key, an unreadable item, and an outage are told apart so the claim gate can reuse the classification, and an error nothing recognizes quotes Linear's own message on one line
+  - h9k task show renders a Linear link as https://linear.app/<urlKey>/issue/<identifier> from the connection's recorded workspace; on a node with no Linear connection it shows linear:<identifier> with no link and does not fail
+  - The --help text, docs/cli.md, and the hall9k-cli-reference skill describe what this card adds
+dependencies: []
+epic-title: Linear connector
+epic-id: 01a1881b-278f-7669-acde-4b0d36563fc2
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/e76868de-an-install-can-register-a-line
+published: 2026-10-30 14:36:55Z
+context: |-
+  A Linear connector, so a project whose work and backlog live in Linear gets the same tracker integration hall9k gives Jira and GitHub issues.
+
+  Build notes. The shapes to follow are ConnectionAddJiraCommand, WorkItemConnections (ImporterAsync and its Unusable map), JiraWorkItemProvider (ImportAsync gated, ReadAsync not), TaskLinkJiraCommand, and JiraIssueKey.FromUrl. The viewer id goes on ConnectionTrackerIdentityObserved, the name on ExternalAccountId, and the workspace address on the existing SiteUrl, so ConnectionDecider's non-Jira site rule changes and no new event is needed. Keep Linear's triage state distinguishable from other non-open states at the importer, so the idea-link card can admit it without reworking the gate. This card alone is inert until someone registers a Linear connection.
+
+  Facts this card leans on are cited, and the unverified ones are listed, in notes/challenge-e76868de/journal.md in the project home; the discovery workspace's findings.md holds the survey.
+
+  Out of scope: team binding, the one-tracker rule, doctor, and the branch template (the card stacked on this one), claim gate and mirror (B), PR title and closing words (C), creating issues (D), reassign (E), idea links (F), any webhook, and OAuth.
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/5d12221a-a-linear-connector-so-a-project-whose-work-and-backlog-live/workspace
