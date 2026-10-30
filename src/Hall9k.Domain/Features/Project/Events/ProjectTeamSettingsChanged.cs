@@ -96,7 +96,13 @@ public sealed record ProjectTeamSettingsChanged(
     /// so a node that receives it for any one member knows the whole solution. See
     /// <see cref="ProjectSettingsChanged.Solution"/>'s own doc.
     /// </summary>
-    Optional<SolutionMembership?> Solution = default)
+    Optional<SolutionMembership?> Solution = default,
+    /// <summary>
+    /// The Linear team bound to this project, the whole of what makes Linear its one tracker. A team
+    /// field for the reason <see cref="JiraProjectKey"/> is one: every teammate's node has to read the
+    /// same binding, or the doors that refuse another tracker would refuse on one node and not another.
+    /// </summary>
+    Optional<LinearTeamKey> LinearTeam = default)
 {
     /// <summary>
     /// Builds the team companion from whatever <see cref="ProjectDecider.ChangeSettings"/> just
@@ -131,7 +137,8 @@ public sealed record ProjectTeamSettingsChanged(
             || changed.NonExecutablePaths.HasValue
             || changed.SecurityReview.HasValue
             || changed.CiPolicy.HasValue
-            || changed.Solution.HasValue;
+            || changed.Solution.HasValue
+            || changed.LinearTeam.HasValue;
 
         return anyTeamField
             ? new ProjectTeamSettingsChanged(
@@ -165,7 +172,8 @@ public sealed record ProjectTeamSettingsChanged(
                 changed.NonExecutablePaths,
                 changed.SecurityReview,
                 changed.CiPolicy,
-                changed.Solution)
+                changed.Solution,
+                changed.LinearTeam)
             : null;
     }
 }

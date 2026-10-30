@@ -95,7 +95,8 @@ public static class ProjectDecider
         Optional<ReviewMembershipPolicy> reviewRequiresMembership = default,
         Optional<bool> securityReview = default,
         Optional<CiPolicy> ciPolicy = default,
-        Optional<SolutionMembership?> solution = default)
+        Optional<SolutionMembership?> solution = default,
+        Optional<LinearTeamKey> linearTeam = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -208,6 +209,9 @@ public static class ProjectDecider
                 + "(which reference wins when h9k task add adopts both a GitHub issue and a Jira card "
                 + "and the two are not resolved by --primary-tracker there); 'none' clears the default.");
         }
+
+        // Judged on the settings this change leaves, so one command can switch trackers.
+        ProjectTracker.RefuseConflictingSettings(project, linearTeam, jiraProjectKey, backlogPolicy, primaryTracker);
 
         ReviewCapValidation.RefuseNonPositiveCap(maxComplianceReviewCycles, "--max-compliance-review-cycles");
         ReviewCapValidation.RefuseNonPositiveCap(maxAdversarialReviewCycles, "--max-adversarial-review-cycles");
@@ -513,7 +517,8 @@ public static class ProjectDecider
             ReviewRequiresMembership: reviewRequiresMembership,
             SecurityReview: securityReview,
             CiPolicy: ciPolicy,
-            Solution: solution);
+            Solution: solution,
+            LinearTeam: linearTeam);
     }
 
     /// <summary>
