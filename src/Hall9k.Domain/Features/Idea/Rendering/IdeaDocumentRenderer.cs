@@ -45,6 +45,11 @@ public static class IdeaDocumentRenderer
             document.AppendLine($"assignee: {named.ReplaceLineEndings(" ").Trim()}");
         }
 
+        if (idea.WorkItemReference.IsNotBlank())
+        {
+            document.AppendLine($"tracker-link: {idea.WorkItemReference.ReplaceLineEndings(" ").Trim()}");
+        }
+
         document.AppendLine($"revisions: {idea.Revisions}");
         if (idea.CutTaskIds.Count > 0)
         {

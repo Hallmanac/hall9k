@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Domain.Features.Idea;
@@ -33,6 +34,17 @@ public sealed class IdeaAggregate
     /// <summary>Null until an idea turns out to belong somewhere; an honest absence, not a gap.</summary>
     public Guid? ProjectId { get; private set; }
     public IdeaState State { get; private set; } = IdeaState.Unknown;
+    /// <summary>
+    /// The tracker item this idea was captured from (<see cref="IdeaWorkItemLinked"/>), or null when it
+    /// carries none. It is the item as the tracker named it when it was read, so the first task cut from
+    /// the idea reads it afresh rather than trusting this.
+    /// </summary>
+    public ExternalReference? WorkItemReference { get; private set; }
+    /// <summary>The title the tracker reported when <see cref="WorkItemReference"/> was read; what the capture's note was seeded from.</summary>
+    public string? WorkItemObservedTitle { get; private set; }
+    /// <summary>The state the tracker reported at <see cref="WorkItemObservedAt"/>, as an observation of that moment.</summary>
+    public string? WorkItemObservedStatus { get; private set; }
+    public DateTimeOffset? WorkItemObservedAt { get; private set; }
     /// <summary>How many times the note has been rewritten — the shape of the discovery so far.</summary>
     public int Revisions { get; private set; }
     /// <summary>
@@ -98,6 +110,14 @@ public sealed class IdeaAggregate
     }
 
     public void Apply(IdeaAssignedToProject @event) => ProjectId = @event.ProjectId;
+
+    public void Apply(IdeaWorkItemLinked @event)
+    {
+        WorkItemReference = @event.Reference;
+        WorkItemObservedTitle = @event.ObservedTitle;
+        WorkItemObservedStatus = @event.ObservedStatus;
+        WorkItemObservedAt = @event.ObservedAt;
+    }
 
     public void Apply(IdeaAssigneeSet @event)
     {

@@ -29,6 +29,18 @@ public sealed class IdeaDetails
     /// <summary>Mirrors <see cref="IdeaAggregate.AssigneeOwnerFingerprint"/>.</summary>
     public string? AssigneeOwnerFingerprint { get; set; }
     public IdeaState State { get; set; } = IdeaState.Unknown;
+    /// <summary>
+    /// Mirrors <see cref="IdeaAggregate.WorkItemReference"/> as its canonical string
+    /// (<c>linear:ENG-123</c>), the form the one-item-one-idea guard matches in SQL and
+    /// <c>h9k idea list</c> and <c>h9k idea show</c> render.
+    /// </summary>
+    public string? WorkItemReference { get; set; }
+    /// <summary>Mirrors <see cref="IdeaAggregate.WorkItemObservedTitle"/>.</summary>
+    public string? WorkItemObservedTitle { get; set; }
+    /// <summary>Mirrors <see cref="IdeaAggregate.WorkItemObservedStatus"/>.</summary>
+    public string? WorkItemObservedStatus { get; set; }
+    /// <summary>Mirrors <see cref="IdeaAggregate.WorkItemObservedAt"/>.</summary>
+    public DateTimeOffset? WorkItemObservedAt { get; set; }
     /// <summary>Every version the note has had, oldest first: how the thinking moved.</summary>
     public List<IdeaNote> History { get; set; } = [];
     /// <summary>
@@ -136,6 +148,14 @@ public sealed partial class IdeaDetailsProjection : SingleStreamProjection<IdeaD
 
     public void Apply(IEvent<IdeaAssignedToProject> @event, IdeaDetails view) =>
         view.ProjectId = @event.Data.ProjectId;
+
+    public void Apply(IEvent<IdeaWorkItemLinked> @event, IdeaDetails view)
+    {
+        view.WorkItemReference = @event.Data.Reference.ToString();
+        view.WorkItemObservedTitle = @event.Data.ObservedTitle;
+        view.WorkItemObservedStatus = @event.Data.ObservedStatus;
+        view.WorkItemObservedAt = @event.Data.ObservedAt;
+    }
 
     public void Apply(IEvent<IdeaAssigneeSet> @event, IdeaDetails view)
     {

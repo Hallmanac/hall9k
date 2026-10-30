@@ -54,6 +54,12 @@ public static class IdeaPaths
     public static string WorkspaceDirectory(string ideaDirectory) => Path.Combine(ideaDirectory, "workspace");
 
     /// <summary>
+    /// The one fixed name the tracker item an idea was captured from is written under, inside the
+    /// workspace, so a discovery session finds it without being told where.
+    /// </summary>
+    public const string LinkedItemFileName = "tracker-item.md";
+
+    /// <summary>
     /// Creates the workspace if it is not there and returns it. Capture calls this so the
     /// directory is real the moment the idea exists: a path that has to be created before it
     /// can be used is a path nobody drops a file into.

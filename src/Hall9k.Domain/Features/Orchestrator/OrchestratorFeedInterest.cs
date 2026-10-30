@@ -165,6 +165,7 @@ public static class OrchestratorFeedInterest
         [typeof(IdeaRevised)] = OrchestratorFeedLevel.Transitions,
         [typeof(IdeaAssignedToProject)] = OrchestratorFeedLevel.Transitions,
         [typeof(IdeaTaskCut)] = OrchestratorFeedLevel.Transitions,
+        [typeof(IdeaWorkItemLinked)] = OrchestratorFeedLevel.Transitions,
         [typeof(IdeaConcluded)] = OrchestratorFeedLevel.Transitions,
         [typeof(IdeaArchived)] = OrchestratorFeedLevel.Transitions,
         [typeof(IdeaSpikeConcluded)] = OrchestratorFeedLevel.Transitions,

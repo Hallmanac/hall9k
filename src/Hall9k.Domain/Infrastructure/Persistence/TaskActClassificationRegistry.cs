@@ -242,6 +242,8 @@ public static class TaskActClassificationRegistry
         // Cutting a task from an idea, and the daemon's spike verdict, stay open to any member.
         [typeof(IdeaSpikeConcluded)] = TaskActClassification.MemberSafe,
         [typeof(IdeaTaskCut)] = TaskActClassification.MemberSafe,
+        // Written once, in the capture's own transaction, so it is the creator's act and open like the capture.
+        [typeof(IdeaWorkItemLinked)] = TaskActClassification.MemberSafe,
         // Historical events no write produces any more, replayed only from a stream that carries one.
         [typeof(IdeaDiscarded)] = TaskActClassification.MemberSafe,
         [typeof(IdeaPrivacySet)] = TaskActClassification.MemberSafe,
