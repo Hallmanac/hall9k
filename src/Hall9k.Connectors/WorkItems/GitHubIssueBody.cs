@@ -27,9 +27,9 @@ public static class GitHubIssueBody
             sections.Add($"## Objective\n\n{RelayedText.Printable(truncatedObjective.Trim())}");
         }
 
-        if (agentContext.IsNotBlank())
+        if (WithoutWorkspacePointer(agentContext) is { Length: > 0 } context)
         {
-            sections.Add(RelayedText.Printable(agentContext.Trim()));
+            sections.Add(RelayedText.Printable(context));
         }
 
         if (acceptanceCriteria.Count > 0)
@@ -38,6 +38,30 @@ public static class GitHubIssueBody
         }
 
         return string.Join("\n\n", sections);
+    }
+
+    /// <summary>
+    /// The line a task promoted from an idea ends its agent context with, above the path of the
+    /// idea's discovery workspace on the promoting machine (<c>IdeaPromoteCommand.AgentContext</c>
+    /// writes it, so the two cannot drift). The path means nothing to an issue's reader and names a
+    /// home directory, so it never leaves the machine in an issue's body.
+    /// </summary>
+    public const string DiscoveryWorkspaceHeading =
+        "Discovery workspace (research notes, gathered files, and prototypes from before this "
+        + "was a task; may be empty):";
+
+    /// <summary>
+    /// The agent context with the discovery-workspace pointer removed: the heading line when it starts
+    /// a line, and everything after it, because the pointer is always what the context ends with.
+    /// Context with no such line is returned trimmed and otherwise untouched.
+    /// </summary>
+    private static string WithoutWorkspacePointer(string? agentContext)
+    {
+        string text = (agentContext ?? string.Empty).Trim();
+        int heading = text.LastIndexOf(DiscoveryWorkspaceHeading, StringComparison.Ordinal);
+        return heading >= 0 && (heading == 0 || text[heading - 1] == '\n')
+            ? text[..heading].TrimEnd()
+            : text;
     }
 
     /// <summary>The heading the acceptance-criteria checklist lives under.</summary>

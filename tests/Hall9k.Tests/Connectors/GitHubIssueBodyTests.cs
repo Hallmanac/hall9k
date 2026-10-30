@@ -29,6 +29,36 @@ public sealed class GitHubIssueBodyTests
     }
 
     [Fact]
+    public void Compose_drops_the_discovery_workspace_pointer_a_promoted_idea_appends_and_keeps_the_rest_of_the_context()
+    {
+        // The shape IdeaPromoteCommand.AgentContext writes: the note's context, then the heading, then a path
+        // on the promoting machine, which means nothing to an issue's reader and names a home directory.
+        string context = "Why this matters.\n\n" + GitHubIssueBody.DiscoveryWorkspaceHeading
+            + "\n/Users/someone/.hall9k/projects/x/ideas/y/workspace";
+
+        string body = GitHubIssueBody.Compose(context, ["One criterion"]);
+
+        body.Should().Be("Why this matters.\n\n## Acceptance criteria\n\n- [ ] One criterion")
+            .And.NotContain("Discovery workspace").And.NotContain("/Users/");
+    }
+
+    [Fact]
+    public void Compose_with_a_context_that_is_only_the_workspace_pointer_carries_no_context_section()
+    {
+        string context = GitHubIssueBody.DiscoveryWorkspaceHeading + "\n/Users/someone/.hall9k/ideas/y/workspace";
+
+        GitHubIssueBody.Compose(context, ["One criterion"]).Should().Be("## Acceptance criteria\n\n- [ ] One criterion");
+    }
+
+    [Fact]
+    public void Compose_keeps_a_mention_of_the_heading_that_does_not_start_a_line()
+    {
+        string context = "See the note: " + GitHubIssueBody.DiscoveryWorkspaceHeading + " is where research went.";
+
+        GitHubIssueBody.Compose(context, []).Should().Be(context);
+    }
+
+    [Fact]
     public void Compose_with_neither_half_present_is_blank()
     {
         GitHubIssueBody.Compose(null, []).Should().BeEmpty();
