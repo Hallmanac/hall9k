@@ -65,7 +65,9 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         [CommandArgument(0, "<PULL-REQUEST>")]
         [Description(
             "The pull request to review: the number (42 or #42), the owner/repo#42 shorthand, or the "
-            + "pull request URL on github.com. Read through the gh CLI from the project's repository, so "
+            + "pull request URL on github.com. It must name the project's own repository: a review lap's "
+            + "checkout is always cut from the project's origin, so a pull request from any other "
+            + "repository is refused. Read through the gh CLI from the project's repository, so "
             + "it uses your own GitHub login and no token of Hall9k's")]
         public string PullRequest { get; init; } = string.Empty;
 
@@ -138,6 +140,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         GitHubPullRequestSurface github = new(processRunner);
         PullRequestSurface pullRequest = await github.ReadAsync(
             settings.PullRequest, project.RepositoryPath, cancellationToken);
+        await RefuseForeignRepositoryAsync(project, pullRequest, processRunner, cancellationToken);
         RefuseUnreviewablePullRequest(pullRequest);
 
         ExternalReference reference = new(WorkItemProvider.GitHubPullRequest, $"{pullRequest.Repository}#{pullRequest.Number}");
@@ -201,6 +204,50 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         await Doorbell.RingAsync($"pr-review-lap:{taskId}", cancellationToken);
         PrintHandoff(taskId, worktreePath, settingsFile, guard, prompt);
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Refuses a pull request that belongs to a repository other than the project's, before
+    /// anything is claimed, recorded or checked out. The checkout is always cut from the project's
+    /// own origin (<c>refs/pull/N/head</c>), so a foreign pull request would either put another
+    /// pull request's code under this one's briefing or fail on a missing ref; under
+    /// <c>--no-worktree</c> there is no wrong checkout, but the lap would still put a review task
+    /// on the wrong project's board. Judged on what gh returned, not what was typed, because a bare
+    /// number is answered from the checkout's default repository. Owner and repo only, ignoring
+    /// case, exactly as the daemon's own guard does (<c>RunLauncher</c>), so an ssh host alias in
+    /// the recorded URL does not refuse the project's own pull requests. Proceeds when neither the
+    /// recorded URL nor <c>gh repo view</c> names a repository.
+    /// </summary>
+    private static async Task RefuseForeignRepositoryAsync(
+        ProjectDetails project, PullRequestSurface pullRequest, ProcessRunner processRunner,
+        CancellationToken cancellationToken)
+    {
+        Uri? repositoryUrl = project.RepositoryUrl
+            ?? await new GitHubWorkItemProvider(processRunner).TryObserveRepositoryHostAsync(
+                project.RepositoryPath, cancellationToken);
+        if (PullRequestUrls.RepositoryFrom(repositoryUrl) is not { } projectRepository
+            || string.Equals(projectRepository, pullRequest.Repository, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        // Without its user info: a recorded https URL can carry a token, and stderr is logged.
+        string whereItCameFrom = project.RepositoryUrl is { } recorded
+            ? $"from the recorded URL '{recorded.GetComponents(UriComponents.SchemeAndServer | UriComponents.Path, UriFormat.Unescaped)}'"
+            : $"from gh repo view in {project.RepositoryPath}";
+        string howToCorrectIt = project.RepositoryUrl is null
+            ? " If this checkout is the project's own, gh repo set-default corrects a checkout whose "
+                + "default repository is not its origin."
+            : $" If {projectRepository} was renamed or transferred to {pullRequest.Repository}, the recorded URL "
+                + "is stale and h9k project set cannot change it, so register a new project: "
+                + $"h9k project add --name <name> --repo-url https://github.com/{pullRequest.Repository}";
+
+        throw new DomainValidationException(
+            $"Pull request {pullRequest.Repository}#{pullRequest.Number} belongs to {pullRequest.Repository}, not "
+            + $"{project.Name}'s own repository ({projectRepository}, {whereItCameFrom}). A review lap's "
+            + "checkout is always cut from the project's own origin, so reviewing a pull request from "
+            + $"another repository needs a project registered against {pullRequest.Repository}."
+            + howToCorrectIt);
     }
 
     /// <summary>
