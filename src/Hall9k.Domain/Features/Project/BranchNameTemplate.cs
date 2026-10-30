@@ -27,7 +27,10 @@ namespace Hall9k.Domain.Features.Project;
 /// from Published, so nothing a dispatched task can reach edits it again.</item>
 /// <item><c>{key}</c> — the linked external item's key. <c>TaskDecider.LinkWorkItem</c> refuses a
 /// second, different link and the platform has no unlink at all, so a key present at dispatch is
-/// that task's key forever. A task carrying no reference at dispatch renders
+/// that task's key, with one exception: a Linear issue that moved to another team is given a new
+/// identifier, and <c>h9k task link-linear</c> replaces the recorded one when Linear itself lists it
+/// as a previous identifier. A branch already recorded on a run keeps the name it was cut with, and
+/// only a branch cut after such a relink renders the new identifier. A task carrying no reference at dispatch renders
 /// <see cref="NoExternalKey"/> and keeps it: the recorded branch is never re-rendered, so a link
 /// arriving mid-run changes nothing about the ref that gets pushed. This is not a rare edge —
 /// under either tracking backlog policy (<c>BacklogPolicy.Jira</c> or <c>BacklogPolicy.GitHubIssues</c>)
