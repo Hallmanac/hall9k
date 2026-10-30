@@ -213,41 +213,111 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// pull request's code under this one's briefing or fail on a missing ref; under
     /// <c>--no-worktree</c> there is no wrong checkout, but the lap would still put a review task
     /// on the wrong project's board. Judged on what gh returned, not what was typed, because a bare
-    /// number is answered from the checkout's default repository. Owner and repo only, ignoring
-    /// case, exactly as the daemon's own guard does (<c>RunLauncher</c>), so an ssh host alias in
-    /// the recorded URL does not refuse the project's own pull requests. Proceeds when neither the
-    /// recorded URL nor <c>gh repo view</c> names a repository.
+    /// number is answered from the checkout's default repository.
+    /// <para>
+    /// The project's repository is its recorded URL; a project registered with <c>--repo</c> alone
+    /// records none, so it is the checkout's own <c>origin</c> (the remote the checkout is fetched
+    /// from), and only when git cannot answer, <c>gh repo view</c>. gh is not asked first because
+    /// its default repository can be another remote (a fork's <c>upstream</c>), and a bare number
+    /// compared with the repository that answered it can never be refused.
+    /// </para>
+    /// <para>
+    /// Owner and repo ignoring case, as the daemon's own guard does (<c>RunLauncher</c>), plus the
+    /// host for an http or https URL: the pull request is always on github.com, so a project
+    /// recorded on another forge is not its home. An ssh URL skips the host, since a host alias
+    /// (<c>github-work</c>) is how one machine holds two accounts. Proceeds when no source names a
+    /// repository.
+    /// </para>
     /// </summary>
-    private static async Task RefuseForeignRepositoryAsync(
+    private static async ValueTask RefuseForeignRepositoryAsync(
         ProjectDetails project, PullRequestSurface pullRequest, ProcessRunner processRunner,
         CancellationToken cancellationToken)
     {
-        Uri? repositoryUrl = project.RepositoryUrl
-            ?? await new GitHubWorkItemProvider(processRunner).TryObserveRepositoryHostAsync(
-                project.RepositoryPath, cancellationToken);
-        if (PullRequestUrls.RepositoryFrom(repositoryUrl) is not { } projectRepository
-            || string.Equals(projectRepository, pullRequest.Repository, StringComparison.OrdinalIgnoreCase))
+        (Uri? repositoryUrl, RepositorySource source) = await ResolveProjectRepositoryAsync(
+            project, processRunner, cancellationToken);
+        if (repositoryUrl is null || PullRequestUrls.RepositoryFrom(repositoryUrl) is not { } projectRepository)
         {
             return;
         }
 
-        // Without its user info: a recorded https URL can carry a token, and stderr is logged.
-        string whereItCameFrom = project.RepositoryUrl is { } recorded
-            ? $"from the recorded URL '{recorded.GetComponents(UriComponents.SchemeAndServer | UriComponents.Path, UriFormat.Unescaped)}'"
-            : $"from gh repo view in {project.RepositoryPath}";
-        string howToCorrectIt = project.RepositoryUrl is null
-            ? " If this checkout is the project's own, gh repo set-default corrects a checkout whose "
-                + "default repository is not its origin."
-            : $" If {projectRepository} was renamed or transferred to {pullRequest.Repository}, the recorded URL "
-                + "is stale and h9k project set cannot change it, so register a new project: "
-                + $"h9k project add --name <name> --repo-url https://github.com/{pullRequest.Repository}";
+        bool hostChecked = repositoryUrl.Scheme is "http" or "https";
+        bool onGitHub = !hostChecked || GitHubPullRequestReference.IsGitHubDotCom(repositoryUrl.Host);
+        if (onGitHub && string.Equals(projectRepository, pullRequest.Repository, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        string projectRepositoryLabel = hostChecked ? $"{repositoryUrl.Host}/{projectRepository}" : projectRepository;
+        string registerAgainst = $"h9k project add --name <name> --repo-url https://github.com/{pullRequest.Repository}";
+        string howToCorrectIt = source switch
+        {
+            RepositorySource.RecordedUrl =>
+                $" If {projectRepositoryLabel} was renamed or transferred to {pullRequest.Repository}, the recorded URL "
+                + $"is stale and h9k project set cannot change it, so register a new project: {registerAgainst}",
+            RepositorySource.CheckoutOrigin => $" Register a project against {pullRequest.Repository} to review it: {registerAgainst}",
+            _ => " If this checkout is the project's own, gh repo set-default corrects a checkout whose "
+                + "default repository is not its origin.",
+        };
+        string whereItCameFrom = source switch
+        {
+            RepositorySource.RecordedUrl => $"from the recorded URL '{WithoutUserInfo(repositoryUrl)}'",
+            RepositorySource.CheckoutOrigin => $"from git remote origin '{WithoutUserInfo(repositoryUrl)}' in {project.RepositoryPath}",
+            _ => $"from gh repo view in {project.RepositoryPath}",
+        };
 
         throw new DomainValidationException(
             $"Pull request {pullRequest.Repository}#{pullRequest.Number} belongs to {pullRequest.Repository}, not "
-            + $"{project.Name}'s own repository ({projectRepository}, {whereItCameFrom}). A review lap's "
+            + $"{project.Name}'s own repository ({projectRepositoryLabel}, {whereItCameFrom}). A review lap's "
             + "checkout is always cut from the project's own origin, so reviewing a pull request from "
             + $"another repository needs a project registered against {pullRequest.Repository}."
             + howToCorrectIt);
+    }
+
+    private enum RepositorySource
+    {
+        RecordedUrl,
+        CheckoutOrigin,
+        GhDefaultRepository,
+    }
+
+    /// <summary>
+    /// The URL naming the project's repository and where it came from. The refusal quotes it
+    /// through <see cref="WithoutUserInfo"/>: a recorded or remote https URL can hold a token, and
+    /// stderr is logged.
+    /// </summary>
+    private static async ValueTask<(Uri? Url, RepositorySource Source)> ResolveProjectRepositoryAsync(
+        ProjectDetails project, ProcessRunner processRunner, CancellationToken cancellationToken)
+    {
+        if (project.RepositoryUrl is { } recorded)
+        {
+            return (recorded, RepositorySource.RecordedUrl);
+        }
+
+        return await TryReadOriginAsync(project.RepositoryPath, processRunner, cancellationToken) is { } origin
+            ? (origin, RepositorySource.CheckoutOrigin)
+            : (await new GitHubWorkItemProvider(processRunner).TryObserveRepositoryHostAsync(
+                project.RepositoryPath, cancellationToken), RepositorySource.GhDefaultRepository);
+    }
+
+    private static string WithoutUserInfo(Uri url) =>
+        url.GetComponents(UriComponents.SchemeAndServer | UriComponents.Path, UriFormat.Unescaped);
+
+    /// <summary>The checkout's <c>origin</c> as a URL, or null when git cannot name one (no origin, not a checkout, git missing).</summary>
+    private static async ValueTask<Uri?> TryReadOriginAsync(
+        string repositoryPath, ProcessRunner processRunner, CancellationToken cancellationToken)
+    {
+        try
+        {
+            ProcessResult result = await processRunner(
+                "git", ["remote", "get-url", "origin"], repositoryPath, cancellationToken);
+            return result.ExitCode == 0 && result.StandardOutput.Trim() is { Length: > 0 } origin
+                ? GitRemoteUrl.Parse(origin)
+                : null;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
