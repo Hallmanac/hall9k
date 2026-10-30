@@ -192,6 +192,11 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
     /// The solution this project belongs to, the rung above it on the ladder solution, project, epic,
     /// task. A closed solution is named as closed with its reason, since it no longer holds the project.
     /// </summary>
+    internal static string LinearTeamRow(ProjectDetails project) => project.LinearTeam.HasValue
+        ? $"{project.LinearTeam.Value.EscapeMarkup()} [dim]— Linear is this project's one tracker; "
+          + "new issues are filed under this team, and Jira and GitHub-issue links are refused[/]"
+        : $"[dim]none bound — bind one: h9k project set {project.Name.EscapeMarkup()} --linear ENG[/]";
+
     internal static string SolutionRow(ProjectDetails project) => project.Solution switch
     {
         null => "[dim]none, group it with others: h9k solution add <name> --project "
@@ -272,6 +277,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             ? $"{project.JiraProjectKey.Value.EscapeMarkup()} [dim]— new cards are filed here; a reported "
               + "card key is checked against it[/]"
             : $"[dim]none bound — bind one: h9k project set {project.Name.EscapeMarkup()} --jira PROJ[/]");
+        table.AddRow("Linear team", LinearTeamRow(project));
         table.AddRow("Backlog policy", BacklogPolicyRow(
             project, history.WasRecorded(change => change.BacklogPolicy)));
         table.AddRow("Primary tracker", PrimaryTrackerRow(

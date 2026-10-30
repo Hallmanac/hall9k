@@ -192,6 +192,11 @@ public static class ProjectAgentsDocument
         document.AppendLine(project.JiraProjectKey.HasValue
             ? $"- Jira board: `{project.JiraProjectKey.Value}`"
             : "- Jira board: none bound");
+        document.AppendLine(project.LinearTeam.HasValue
+            ? $"- Linear team: `{project.LinearTeam.Value}` — Linear is this project's one tracker, so a Jira "
+              + "card or a GitHub issue is not linked to its tasks; a Linear issue is adopted with "
+              + "`h9k task add --from-linear` or linked with `h9k task link-linear`"
+            : "- Linear team: none bound");
         // The claim gate is a fact a session working here has to know, not a preference: with it
         // on, a task linked to a card does not dispatch on this install until the tracker says
         // this install holds the card, and a session that does not know that reads a quiet queue

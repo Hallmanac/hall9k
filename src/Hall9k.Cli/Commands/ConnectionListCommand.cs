@@ -1,5 +1,6 @@
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
@@ -60,7 +61,7 @@ public sealed class ConnectionListCommand : Hall9kAsyncCommand<ConnectionListCom
         AnsiConsole.Write(table);
         AnsiConsole.MarkupLine(
             "[dim]A credential column names where the secret lives, never the secret (PLAN.md §10). "
-            + "Rotating a Jira token is h9k connection add jira again.[/]");
+            + "Rotating a Jira token is h9k connection add jira again, and a Linear key is h9k connection add linear again.[/]");
         return ExitCodes.Ok;
     }
 
@@ -68,7 +69,8 @@ public sealed class ConnectionListCommand : Hall9kAsyncCommand<ConnectionListCom
     /// How many projects route work through this connection, which is a different field per
     /// provider because the two are bound by different acts. A project's GitHub connection is the
     /// one it was registered against, recorded on the project as its connection id; its Jira
-    /// binding is the board set with <c>h9k project set --jira</c>, and nothing writes a Jira
+    /// binding is the board set with <c>h9k project set --jira</c> (and a Linear connection's is the team set
+    /// with <c>--linear</c>, counted the same way for the same reason), and nothing writes a Jira
     /// connection into the connection id at all — an install supports one Jira account
     /// (WorkItemConnections.FindJiraConnectionAsync refuses to choose between two), so a project
     /// with a board bound is a project routing its cards through this connection.
@@ -79,8 +81,11 @@ public sealed class ConnectionListCommand : Hall9kAsyncCommand<ConnectionListCom
     /// an account nobody uses and is the one question this column exists to answer.
     /// </para>
     /// </summary>
-    private static int BoundProjects(ConnectionDetails connection, IReadOnlyList<ProjectDetails> projects) =>
-        connection.Provider == WorkItemProvider.Jira
-            ? projects.Count(project => project.JiraProjectKey.HasValue)
-            : projects.Count(project => project.ConnectionId == connection.Id);
+    internal static int BoundProjects(ConnectionDetails connection, IReadOnlyList<ProjectDetails> projects) =>
+        connection.Provider switch
+        {
+            var provider when provider == WorkItemProvider.Jira => projects.Count(project => project.JiraProjectKey.HasValue),
+            var provider when provider == WorkItemProvider.Linear => projects.Count(project => ProjectTracker.IsLinear(project.LinearTeam)),
+            _ => projects.Count(project => project.ConnectionId == connection.Id),
+        };
 }
