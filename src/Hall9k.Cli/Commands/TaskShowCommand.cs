@@ -397,6 +397,10 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 $"[yellow]untracked by choice[/] [dim]— attested by {who} at {when}; no external item "
                 + "was created for it at publish[/]");
         }
+        else if (UnlinkedLinearRow(details, project) is { } unlinkedLinear)
+        {
+            header.AddRow("Backlog", unlinkedLinear);
+        }
 
         if (details.PendingPublicationProvider is { } publishingTo)
         {
@@ -2819,6 +2823,22 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             : string.Empty;
         return $"[{colour}]{details.ReviewerVerdict.Value.EscapeMarkup()}[/]{head}{findings}{note}{link}";
     }
+
+    /// <summary>
+    /// The row for a task on a Linear-backlog project that is past Draft with no issue and no
+    /// untracked attestation. It is the one place a failed create stays visible once the terminal that
+    /// printed its note is closed, and it catches a publish from a node that did not know the policy:
+    /// such a task either carries an issue or says it chose not to. Null for every other task.
+    /// </summary>
+    internal static string? UnlinkedLinearRow(TaskDetails details, ProjectDetails? project) =>
+        project?.BacklogPolicy == BacklogPolicy.Linear
+        && details.State != TaskState.Draft
+        && details.ExternalReference.IsBlank()
+        && !details.UntrackedAttested
+            ? "[yellow]no Linear issue is linked[/] [dim](the project tracks its backlog in Linear and this task "
+                + "neither carries an issue nor was published --untracked. Link one: "
+                + $"h9k task link-linear {TaskListCommand.ShortId(details.Id)} <identifier>)[/]"
+            : null;
 
     /// <summary>
     /// Whether true closeout closes this task's linked GitHub issue, and when (task: a task's
