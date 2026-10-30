@@ -65,6 +65,20 @@ public sealed class UsageErrorTests
     }
 
     /// <summary>
+    /// <c>work</c> was renamed <c>drive</c> and its alias removed, so the old spelling is an unknown
+    /// task verb like any other.
+    /// </summary>
+    [Fact]
+    public async Task The_removed_task_work_verb_is_an_unknown_command()
+    {
+        (int code, string output) = await Invoke("task", "work", "28b19893");
+
+        code.Should().Be(ExitCodes.Usage);
+        ExitCodes.Usage.Should().Be(64);
+        output.Should().Contain("Unknown command 'work'.");
+    }
+
+    /// <summary>
     /// A stray token after a good command path must not drag the explanation up to the root: the
     /// deepest prefix that names something is the most useful thing to show.
     /// </summary>

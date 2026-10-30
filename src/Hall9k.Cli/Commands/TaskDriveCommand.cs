@@ -97,7 +97,7 @@ namespace Hall9k.Cli.Commands;
 /// (<see cref="TaskClaimed.DependencyOverrideCarriedForward"/>).
 /// </para>
 /// </summary>
-public class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
+public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Settings>
 {
     public sealed class Settings : CommandSettings
     {
