@@ -48,13 +48,20 @@ public sealed record BranchNameTemplate
     /// <summary>The platform default, byte for byte the name <c>GitWorktreeManager</c> cut before templates existed.</summary>
     public static readonly BranchNameTemplate Default = new("task/{shortid}-{slug}");
 
+    /// <summary>
+    /// The template binding a Linear team sets on a project still on the default, because Linear links a
+    /// pull request to its issue through the identifier in the branch name and <see cref="Default"/>
+    /// carries none. <c>{key}</c> renders a Linear link as its identifier (ENG-123) with its case kept.
+    /// </summary>
+    public static readonly BranchNameTemplate LinearConvention = new("{key}-{slug}");
+
     /// <summary>The task's short id: the last eight characters of its UUIDv7, per <see cref="DomainId.Short"/>.</summary>
     public const string ShortIdToken = "shortid";
 
     /// <summary>The objective, lowercased and hyphenated, capped at <see cref="MaximumSlugLength"/> characters.</summary>
     public const string SlugToken = "slug";
 
-    /// <summary>The linked external item's key — a Jira key, a GitHub issue number — or <see cref="NoExternalKey"/>.</summary>
+    /// <summary>The linked external item's key — a Jira key, a GitHub issue number, a Linear identifier — or <see cref="NoExternalKey"/>.</summary>
     public const string KeyToken = "key";
 
     /// <summary>
@@ -286,7 +293,7 @@ public sealed record BranchNameTemplate
     private DomainValidationException Refuse(string rule) =>
         new($"'{Legible(Value)}' is not a usable branch-name template: {rule} "
             + $"Tokens are {{{ShortIdToken}}} (the task's short id), {{{SlugToken}}} (its objective, "
-            + $"hyphenated) and {{{KeyToken}}} (the linked Jira key or GitHub issue number, or "
+            + $"hyphenated) and {{{KeyToken}}} (the linked Jira key, Linear identifier or GitHub issue number, or "
             + $"'{NoExternalKey}' when the task carries no reference); everything else is literal. "
             + $"The platform default is \"{Default.Value}\", and 'none' restores it.");
 

@@ -356,4 +356,12 @@ public sealed record ProjectSettingsChanged(
     /// Trailing and optional so every stream written before this setting existed replays
     /// byte-for-byte unchanged.
     /// </summary>
-    Optional<SolutionMembership?> Solution = default);
+    Optional<SolutionMembership?> Solution = default,
+    /// <summary>
+    /// The Linear team this project files new issues under, and, once bound, the fact that Linear is
+    /// this project's one tracker (see <see cref="Project.ProjectTracker"/>). A team field beside
+    /// <see cref="JiraProjectKey"/>, which it mirrors: every node of the project reads the same
+    /// binding. Present-with-<see cref="LinearTeamKey.None"/> clears it. Trailing and optional so
+    /// every stream written before this setting existed replays byte-for-byte unchanged.
+    /// </summary>
+    Optional<LinearTeamKey> LinearTeam = default);

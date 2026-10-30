@@ -68,6 +68,10 @@ public sealed class ProjectDetails
     public ReviewRerequestPolicy ReviewRerequest { get; set; } = ReviewRerequestPolicy.Unknown;
     /// <summary>The Jira board this project's cards live on; None when nothing is bound (backlog 18).</summary>
     public JiraProjectKey JiraProjectKey { get; set; } = JiraProjectKey.None;
+
+    /// <summary>The Linear team bound to this project; when set, Linear is its one tracker.</summary>
+    public LinearTeamKey LinearTeam { get; set; } = LinearTeamKey.None;
+
     /// <summary>Where a published task's work becomes visible outside Hall9k; None is the platform's original behavior.</summary>
     public BacklogPolicy BacklogPolicy { get; set; } = BacklogPolicy.None;
     /// <summary>
@@ -423,6 +427,11 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
             view.JiraProjectKey = @event.Data.JiraProjectKey.Value ?? JiraProjectKey.None;
         }
 
+        if (@event.Data.LinearTeam.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.LinearTeam), @event.Data.ChangedAt))
+        {
+            view.LinearTeam = @event.Data.LinearTeam.Value ?? LinearTeamKey.None;
+        }
+
         if (@event.Data.HomeDirectory.HasValue)
         {
             view.HomeDirectory = @event.Data.HomeDirectory.Value ?? ProjectHome.None;
@@ -597,6 +606,11 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
         if (@event.Data.JiraProjectKey.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.JiraProjectKey), @event.Data.ChangedAt))
         {
             view.JiraProjectKey = @event.Data.JiraProjectKey.Value ?? JiraProjectKey.None;
+        }
+
+        if (@event.Data.LinearTeam.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.LinearTeam), @event.Data.ChangedAt))
+        {
+            view.LinearTeam = @event.Data.LinearTeam.Value ?? LinearTeamKey.None;
         }
 
         if (@event.Data.BacklogPolicy.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.BacklogPolicy), @event.Data.ChangedAt))

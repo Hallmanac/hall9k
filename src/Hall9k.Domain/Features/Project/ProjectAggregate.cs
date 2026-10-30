@@ -81,6 +81,10 @@ public sealed class ProjectAggregate
     public ReviewRerequestPolicy ReviewRerequest { get; private set; } = ReviewRerequestPolicy.Unknown;
     /// <summary>The Jira board this project's cards live on; None when nothing is bound (backlog 18).</summary>
     public JiraProjectKey JiraProjectKey { get; private set; } = JiraProjectKey.None;
+
+    /// <summary>The Linear team bound to this project; when set, Linear is its one tracker (<see cref="ProjectTracker"/>).</summary>
+    public LinearTeamKey LinearTeam { get; private set; } = LinearTeamKey.None;
+
     /// <summary>
     /// Where this project lives on disk (backlog 47): the directory holding the generated
     /// AGENTS.md, repo/, ideas/, tasks/ and skills/. None for a project registered before homes
@@ -338,6 +342,11 @@ public sealed class ProjectAggregate
             JiraProjectKey = @event.JiraProjectKey.Value ?? JiraProjectKey.None;
         }
 
+        if (@event.LinearTeam.HasValue)
+        {
+            LinearTeam = @event.LinearTeam.Value ?? LinearTeamKey.None;
+        }
+
         if (@event.HomeDirectory.HasValue)
         {
             HomeDirectory = @event.HomeDirectory.Value ?? ProjectHome.None;
@@ -505,6 +514,11 @@ public sealed class ProjectAggregate
         if (@event.JiraProjectKey.HasValue)
         {
             JiraProjectKey = @event.JiraProjectKey.Value ?? JiraProjectKey.None;
+        }
+
+        if (@event.LinearTeam.HasValue)
+        {
+            LinearTeam = @event.LinearTeam.Value ?? LinearTeamKey.None;
         }
 
         if (@event.BacklogPolicy.HasValue)
