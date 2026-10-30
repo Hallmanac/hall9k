@@ -388,15 +388,21 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
     /// <summary>
     /// gh, scripted to answer a pull request that is not in the project's repository, and to
     /// answer <c>gh repo view</c> separately: with <paramref name="repositoryViewUrl"/> when it
-    /// names one, as a failure when it is null (a checkout gh cannot name a repository for).
+    /// names one, as a failure when it is null (a checkout gh cannot name a repository for). The
+    /// checkout's own <c>git remote get-url origin</c> answers <paramref name="originUrl"/> the
+    /// same way: a failure when it is null (no origin).
     /// </summary>
-    private static ProcessRunner ScriptedGhWithRepositoryView(string pullRequestJson, string? repositoryViewUrl) =>
+    private static ProcessRunner ScriptedGhWithRepositoryView(
+        string pullRequestJson, string? repositoryViewUrl, string? originUrl = null) =>
         (_, arguments, _, _) => Task.FromResult(
-            arguments is ["repo", "view", ..]
-                ? repositoryViewUrl is null
-                    ? new ProcessResult(1, string.Empty, "no default repository")
-                    : new ProcessResult(0, $$"""{"url": "{{repositoryViewUrl}}"}""", string.Empty)
-                : new ProcessResult(0, pullRequestJson, string.Empty));
+            arguments switch
+            {
+                ["repo", "view", ..] when repositoryViewUrl is null => new ProcessResult(1, string.Empty, "no default repository"),
+                ["repo", "view", ..] => new ProcessResult(0, $$"""{"url": "{{repositoryViewUrl}}"}""", string.Empty),
+                ["remote", "get-url", "origin"] when originUrl is null => new ProcessResult(2, string.Empty, "no such remote"),
+                ["remote", "get-url", "origin"] => new ProcessResult(0, originUrl + "\n", string.Empty),
+                _ => new ProcessResult(0, pullRequestJson, string.Empty),
+            });
 
     private string ForeignRepository => $"acme/elsewhere-{repository.Split('-')[^1]}";
 
@@ -509,11 +515,16 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
     }
 
     [Theory]
-    [InlineData("https://github.com/{upper}")]
-    [InlineData("https://github.com/{repo}.git")]
-    [InlineData("ssh://git@github.com/{repo}.git")]
-    [InlineData("ssh://git@github-work/{repo}.git")]
-    public async Task A_pull_request_in_the_projects_own_repository_opens_a_lap_however_the_url_is_spelled(string template)
+    [InlineData("https://github.com/{upper}", "{repo}#42")]
+    [InlineData("https://github.com/{repo}.git", "{repo}#42")]
+    [InlineData("ssh://git@github.com/{repo}.git", "{repo}#42")]
+    [InlineData("ssh://git@github-work/{repo}.git", "{repo}#42")]
+    [InlineData("https://github.com/{repo}", "https://github.com/{repo}/pull/42")]
+    [InlineData("https://github.com/{upper}", "https://github.com/{repo}/pull/42")]
+    [InlineData("ssh://git@github-work/{repo}.git", "https://github.com/{repo}/pull/42")]
+    [InlineData("https://github.com/{repo}", "42")]
+    public async Task A_pull_request_in_the_projects_own_repository_opens_a_lap_however_the_url_and_the_pull_request_are_spelled(
+        string template, string named)
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
@@ -524,7 +535,7 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
 
         await using IDocumentSession session = store.LightweightSession();
         int result = await PullRequestReviewCommand.RunAsync(
-            store, session, new PullRequestReviewCommand.Settings { PullRequest = $"{repository}#42", Project = project.Name },
+            store, session, new PullRequestReviewCommand.Settings { PullRequest = named.Replace("{repo}", repository), Project = project.Name },
             ScriptedGhWithRepositoryView(PullRequestJson, repositoryViewUrl: null), worktrees, cts.Token);
 
         result.Should().Be(0);
@@ -563,6 +574,67 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
                 ScriptedGhWithRepositoryView(PullRequestJson, $"https://github.com/{repository}"), worktrees, cts.Token);
             result.Should().Be(0, "the same repository, observed rather than recorded, opens the lap as usual");
         }
+    }
+
+    [Fact]
+    public async Task With_no_recorded_url_the_checkouts_origin_decides_not_the_gh_default()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        SeededProject project = await SeedProjectAsync(store, node, repositoryUrl: null, cts.Token);
+        FakeReviewWorktrees worktrees = NewWorktrees();
+        (int Tasks, int Runs) before = await CountLapFootprintAsync(store, project.Id, cts.Token);
+        string originOfAFork = $"https://token@github.com/{ForeignRepository}.git";
+
+        // A fork: origin is the fork, gh's default is the upstream repository, and a bare number is
+        // answered from the upstream, so only the origin can tell the lap it is looking at a stranger.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            Func<Task> lap = () => PullRequestReviewCommand.RunAsync(
+                store, session, new PullRequestReviewCommand.Settings { PullRequest = "42", Project = project.Name },
+                ScriptedGhWithRepositoryView(PullRequestJson, $"https://github.com/{repository}", originOfAFork), worktrees, cts.Token);
+
+            string message = (await lap.Should().ThrowAsync<DomainValidationException>()).Which.Message;
+            message.Should().Contain($"git remote origin 'https://github.com/{ForeignRepository}.git'");
+            message.Should().NotContain("token", "user info in an origin URL never reaches stderr");
+        }
+
+        (await CountLapFootprintAsync(store, project.Id, cts.Token)).Should().Be(before);
+        worktrees.PrReviewCheckouts.Should().BeEmpty();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            int result = await PullRequestReviewCommand.RunAsync(
+                store, session, new PullRequestReviewCommand.Settings { PullRequest = "42", Project = project.Name },
+                ScriptedGhWithRepositoryView(PullRequestJson, $"https://github.com/{ForeignRepository}", $"git@github.com:{repository}.git"),
+                worktrees, cts.Token);
+            result.Should().Be(0, "an scp-style origin naming the pull request's repository is the project's own");
+        }
+    }
+
+    [Theory]
+    [InlineData("https://gitlab.com/{repo}")]
+    [InlineData("https://github.example.com/{repo}.git")]
+    public async Task A_project_recorded_on_another_host_is_not_the_home_of_a_github_pull_request_with_the_same_name(string template)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Uri recorded = new(template.Replace("{repo}", repository));
+        SeededProject project = await SeedProjectAsync(store, node, recorded, cts.Token);
+        FakeReviewWorktrees worktrees = NewWorktrees();
+        (int Tasks, int Runs) before = await CountLapFootprintAsync(store, project.Id, cts.Token);
+
+        await using IDocumentSession session = store.LightweightSession();
+        Func<Task> lap = () => PullRequestReviewCommand.RunAsync(
+            store, session,
+            new PullRequestReviewCommand.Settings { PullRequest = $"https://github.com/{repository}/pull/42", Project = project.Name, NoWorktree = true },
+            ScriptedGhWithRepositoryView(PullRequestJson, repositoryViewUrl: null), worktrees, cts.Token);
+
+        (await lap.Should().ThrowAsync<DomainValidationException>()).Which.Message
+            .Should().Contain($"{recorded.Host}/{repository}");
+        (await CountLapFootprintAsync(store, project.Id, cts.Token)).Should().Be(before);
     }
 
     [Fact]
