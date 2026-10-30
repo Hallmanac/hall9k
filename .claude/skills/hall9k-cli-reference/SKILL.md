@@ -210,11 +210,18 @@ assignee, best effort, through the identical unassigned-only write `h9k task que
 invoked independent of the project's own configured gate, so it runs even for a project whose gate
 is `Off`; a mirror failure is logged and never fails the claim, and leaves a
 `TaskTrackerAssignMirrorPending` row for the daemon's own lease sweep to retry rather than waiting
-on the next holder change to re-evaluate it. The release half mirrors this on the identical
-cadence: once the lease-expiry sweep gives this node's own ledger holder back, its tracker
-identity is cleared off the linked item too, and a mirror failure there leaves the matching
-`TaskTrackerReleaseMirrorPending` row for the same sweep to retry — the ledger's own release lands
-regardless, on either half's failure.
+on the next holder change to re-evaluate it. The release half covers a give-back and nothing
+else: `h9k task abandon`, lease expiry on a project with the claim gate off, and `h9k task
+release` of a ledger holder (not the release of an interactive claim) each clear this install's
+own identity off the linked item too, and a mirror failure there leaves the matching
+`TaskTrackerReleaseMirrorPending` row for the daemon's lease sweep to retry, while the ledger's own
+release lands regardless, on either half's failure. True completion clears nothing: a finished
+item keeps its assignee, and the sweep drops a pending release row without calling the tracker
+once its task is Done (a task reads Done from the moment its pull request opens, on whichever node
+holds the row). The accepted cost is that a clear which fails during `h9k task release` on a Done
+task is dropped rather than retried. So the assignee follows a claim and a give-back, and on a
+gated project a different install's later claim on a finished item is held until a person
+reassigns it in the tracker.
 
 Release — clearing the holder back to empty by the same conditional write, with a
 `TaskHolderReleased` event on the task's own stream — happens at the task's true completion (the
@@ -1509,7 +1516,11 @@ automation may react to an assignment, which is why the flag is explicit. Withou
 interactive queue offers the same take on an unassigned item (defaulting to no) and a
 non-interactive one warns and proceeds without writing anything. `--take` where there is no gate
 to satisfy (gate off, or no linked card or issue) is refused rather than quietly honoured.
-Releasing a task leaves the tracker assignment where it is.
+The assignee follows a claim and a give-back (`h9k task abandon`, lease expiry on a gate-off
+project, and `h9k task release` of a ledger holder, a Done task's included, clear this install's
+own identity again; releasing an interactive claim does not); a finished item keeps it, so on a
+gated project a different install's later claim on that item is held until a person reassigns it
+in the tracker.
 
 **A team's branch convention is a project setting, not a fork of the platform** (Decisions Log
 #121). `h9k project set <project> --branch-template "<TEXT>"` names a task's branch out of three

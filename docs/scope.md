@@ -968,7 +968,11 @@ uses, GitHub gets
 `gh issue edit --add-assignee` — so the item's status is untouched, though a team's own board
 automation may react to the assignment. Without the flag an interactive queue offers the same
 take (defaulting to no) and a non-interactive one warns and proceeds, never writing silently.
-Releasing a task leaves the tracker assignment where it is; the reverse write is not built.
+The assignee follows a claim and a give-back: `h9k task abandon`, lease expiry on a project whose
+claim gate is off, and `h9k task release` of a ledger holder clear this install's own identity off
+the item again (releasing an interactive claim does not). A finished item keeps it, so on a gated
+project a different install's later claim on that item is held until a person reassigns it in the
+tracker.
 
 ### GitHub identity and repository access
 
