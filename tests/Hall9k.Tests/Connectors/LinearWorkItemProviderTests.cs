@@ -502,7 +502,7 @@ public sealed class LinearWorkItemProviderTests : IDisposable
             Importer(new RecordingRequester(200, Issue(stateType: "triage", stateName: "Triage"))), Token);
 
         (await import.Should().ThrowAsync<DomainValidationException>()).Which.Message
-            .Should().Contain("in triage").And.Contain("h9k idea add \"ENG-123: ")
+            .Should().Contain("in triage").And.Contain("h9k idea add --from-linear ENG-123 --project <name>")
             .And.NotContain("Reopen it");
     }
 
