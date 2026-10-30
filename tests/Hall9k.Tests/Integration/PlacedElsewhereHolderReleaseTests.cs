@@ -386,7 +386,7 @@ public sealed class PlacedElsewhereHolderReleaseTests(PostgresFixture postgres) 
             TaskId = taskId,
             ProjectId = projectId,
             NodeId = node.NodeId,
-            RecordedAt = Now,
+            RecordedAt = DateTimeOffset.UnixEpoch,
             LastFailureReason = "the tracker could not be read",
             AttemptCount = 1,
         });

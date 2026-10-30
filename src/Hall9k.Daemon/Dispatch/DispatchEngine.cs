@@ -2376,6 +2376,13 @@ public sealed class DispatchEngine(
             TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(row.TaskId, token: cancellationToken);
             if (task is not null && (task.HolderNodeId == nodeId || task.State == TaskState.Done))
             {
+                if (task.State == TaskState.Done)
+                {
+                    logger.LogWarning(
+                        "Dropping the pending tracker-assignee clear for Done task {TaskId} without retrying it; unassign this install in the tracker by hand if it should go. Last failure: {FailureReason}",
+                        row.TaskId, row.LastFailureReason);
+                }
+
                 session.Delete<TaskTrackerReleaseMirrorPending>(TaskTrackerReleaseMirrorPending.KeyFor(row.TaskId, node.NodeId));
                 await session.SaveChangesAsync(cancellationToken);
                 continue;
