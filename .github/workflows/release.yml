@@ -27,7 +27,7 @@ jobs:
           # Linux rides along now (backlog 42): the tower joins the shared-database
           # future, and a third matrix line today beats a release-engineering errand
           # later.
-          - os: macos-14
+          - os: macos-15
             rid: osx-arm64
           - os: windows-latest
             rid: win-x64
