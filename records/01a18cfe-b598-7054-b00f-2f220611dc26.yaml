@@ -1,0 +1,40 @@
+hall9k-task-record: 1
+task-id: 01a18cfe-b598-7054-b00f-2f220611dc26
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#795
+objective: |-
+  A project can use Linear as its one tracker: bind a default team, refuse other trackers' links on it, and cut branches Linear links to the issue
+criteria:
+  - Every Linear call goes through the requester the stacked-on card added, and every test drives it with fixture responses written from Linear's public schema; no test and no build session calls a live Linear workspace
+  - h9k project set <project> --linear <TEAM> binds a default team for new issues after confirming through the install's Linear connection that a team with that key is visible, refusing otherwise with a message saying the team may not exist or the key may be limited to other teams; 'none' clears it; the binding is a team setting carried on ProjectTeamSettingsChanged beside JiraProjectKey, so every node of the project reads the same binding, and h9k project show and the home's AGENTS.md show it
+  - |-
+    Binding a Linear team is what makes Linear a project's one tracker: on a project with --linear set, h9k task add --from-jira or --from-issue, h9k task link-jira or link-issue, h9k task push-to-jira, and h9k task write-jira --op create are refused naming Linear as the project's tracker, and so are h9k project set --jira, --backlog github-issues or jira, and --primary-tracker; h9k project set --linear is refused while the project has a Jira board, a backlog policy of github-issues or jira, or a primary tracker, naming the setting to clear; both refusals judge the settings the command leaves, so one command can switch trackers; pull-request adoption with --from-pr is unaffected; a project with no Linear binding behaves exactly as today (the single tracker setting of idea c14bfb15 later replaces this rule without undoing it)
+  - |-
+    h9k task add --from-linear and h9k task link-linear need Linear to be the project's tracker: on a project with no Linear team bound they are refused, naming h9k project set <project> --linear <TEAM>
+  - |-
+    Changing a project's tracker later stays possible: existing task links keep their provider and remain readable and closable as history, and only new links must match the new tracker; tests pin a linear: link on a project with no Linear binding and a github: link on a project bound to Linear, each still shown by h9k task show and treated at closeout by its own provider
+  - h9k doctor probes the Linear connection when a project has a Linear team bound, distinguishing no connection, a rejected key, and a probe that could not confirm either, and a failure here does not stop the rest of the doctor run
+  - The first time h9k project set <project> --linear <TEAM> binds a team on a project whose branch template equals the default, and the same invocation passes no --branch-template, it also sets the template to {key}-{slug} in the same settings change and says so, naming --branch-template none as the undo, because Linear links a pull request through the identifier in its branch name and the default task/{shortid}-{slug} carries none; changing the team on an already bound project leaves the template alone, so the undo stays undone, and clearing the binding leaves the template alone and says so; a project with its own template that lacks {key} keeps it and gets a warning naming h9k project set <project> --branch-template "{key}-{slug}"; {key} renders a Linear link as its identifier (ENG-123) with its case kept, and an unlinked task still renders no-key
+  - h9k connection list counts the projects with a Linear team bound
+  - The --help text, docs/cli.md, and the hall9k-cli-reference skill describe what this card adds, including {key} for a Linear link
+dependencies: [01a1881b-5293-71eb-ad34-5ecee76868de]
+epic-title: Linear connector
+epic-id: 01a1881b-278f-7669-acde-4b0d36563fc2
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/0611dc26-a-project-can-use-linear-as-it
+published: 2026-10-30 14:37:00Z
+context: |-
+  A Linear connector, so a project whose work and backlog live in Linear gets the same tracker integration hall9k gives Jira and GitHub issues.
+
+  Stacked on the Linear connection and adoption card; use its requester and connection as built. Build notes. The shape to follow is JiraDoctor for the probe. Add the Linear team as a trailing Optional on ProjectSettingsChanged and ProjectTeamSettingsChanged, and copy every JiraProjectKey step (From, both aggregate Apply methods, both projection paths with TryStampTeamSetting). Keep "the project's tracker is Linear" in one predicate so idea c14bfb15 replaces one place. Look a team up with the teams query and a TeamFilter key filter; team(id:) is not documented to take a key.
+
+  Facts this card leans on are cited, and the unverified ones are listed, in notes/challenge-e76868de/journal.md in the project home; the discovery workspace's findings.md holds the survey.
+
+  Out of scope: claim gate and mirror (B), PR title and closing words (C), creating issues (D), reassign (E), idea links (F), any webhook, and OAuth.
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/5d12221a-a-linear-connector-so-a-project-whose-work-and-backlog-live/workspace
