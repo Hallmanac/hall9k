@@ -491,7 +491,10 @@ tasks, each cut needing its own objective, with provenance recorded in both dire
 idea show` listing the whole fan-out and each task's current state. `h9k idea promote` survives as
 sugar over cutting one task and concluding in the same breath. An idea reaches one of its two
 terminal states only by an explicit, separate act: `h9k idea conclude` (something came of
-discovery) or `h9k idea archive` (nothing did), each with the reason kept and nothing deleted.
+discovery) or `h9k idea archive` (nothing did), each with the reason kept and nothing deleted. An idea can also carry a
+tracker link (`h9k idea add --from-linear`, `--from-jira`, `--from-issue`): the item is read once through the
+importer task adoption uses, Linear's triage state is accepted there, the first task cut from the idea adopts
+the item afresh, and one item is one idea. The full rules are in [cli.md](cli.md).
 
 ### Decisions and lessons
 
