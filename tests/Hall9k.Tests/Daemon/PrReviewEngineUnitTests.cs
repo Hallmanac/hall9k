@@ -57,7 +57,7 @@ public sealed class PrReviewEngineUnitTests : IDisposable
         string reason = PrReviewEngine.ComposeMentionFollowUpParkReason(
             answersOwnPullRequest: true, "example-org/acme-platform#5166", "reviewer-b",
             "@Hallmanac just curious what the motivating factor is here?", "/runs/r1/mention-followup-addendum.md",
-            unwalkedReportNote: string.Empty);
+            unwalkedReportNote: string.Empty, refusedToolCalls: 0);
 
         reason.Should().Contain("example-org/acme-platform#5166: answers reviewer-b's comment on your own pull request")
             .And.Contain("just curious what the motivating factor is here?")
@@ -73,10 +73,53 @@ public sealed class PrReviewEngineUnitTests : IDisposable
     {
         string reason = PrReviewEngine.ComposeMentionFollowUpParkReason(
             answersOwnPullRequest: false, "acme/web#7", "reviewer-a", "@brian one more thing", "/runs/r1/addendum.md",
-            unwalkedReportNote: string.Empty);
+            unwalkedReportNote: string.Empty, refusedToolCalls: 0);
 
         reason.Should().StartWith("acme/web#7: reviewer-a tagged you")
             .And.Contain("Addendum: /runs/r1/addendum.md");
+    }
+
+    [Theory]
+    [InlineData(1, " 1 tool call refused. ")]
+    [InlineData(3, " 3 tool calls refused. ")]
+    public void Both_park_reasons_state_how_many_tool_calls_were_refused_right_after_the_opening_sentence(
+        int refused, string expectedSentence)
+    {
+        string followUp = PrReviewEngine.ComposeMentionFollowUpParkReason(
+            answersOwnPullRequest: false, "acme/web#7", "reviewer-a", "@brian one more thing", "/runs/r1/addendum.md",
+            unwalkedReportNote: string.Empty, refusedToolCalls: refused);
+        string findings = PrReviewEngine.ComposeFindingsParkReason(
+            string.Empty, "/runs/r1/review-1-findings.md", refused);
+
+        followUp.Should().Contain($"\"@brian one more thing\".{expectedSentence}Addendum: ");
+        findings.Should().StartWith($"Pull request review complete.{expectedSentence}Findings: ");
+    }
+
+    [Fact]
+    public void With_no_refused_tool_call_both_park_reasons_are_unchanged()
+    {
+        PrReviewEngine.ComposeMentionFollowUpParkReason(
+                answersOwnPullRequest: false, "acme/web#7", "reviewer-a", "@brian one more thing",
+                "/runs/r1/addendum.md", unwalkedReportNote: string.Empty, refusedToolCalls: 0)
+            .Should().NotContain("refused");
+        PrReviewEngine.ComposeFindingsParkReason(string.Empty, "/runs/r1/review-1-findings.md", 0)
+            .Should().StartWith("Pull request review complete. Findings: ")
+            .And.NotContain("refused");
+    }
+
+    [Fact]
+    public void The_refused_count_covers_every_denied_tool_of_every_session_in_the_run()
+    {
+        PermissionDenial Denial(string tool) => new(tool, "{}");
+        Dictionary<string, IReadOnlyList<PermissionDenial>> denials = new()
+        {
+            ["adversarial"] = [Denial("Bash"), Denial("Bash")],
+            ["conformance"] = [Denial("Write")],
+            ["qa"] = [],
+        };
+
+        PrReviewEngine.CountRefusedToolCalls(denials).Should().Be(3);
+        PrReviewEngine.CountRefusedToolCalls(new Dictionary<string, IReadOnlyList<PermissionDenial>>()).Should().Be(0);
     }
 
     [Fact]

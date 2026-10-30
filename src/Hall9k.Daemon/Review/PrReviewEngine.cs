@@ -271,7 +271,8 @@ public sealed class PrReviewEngine(
         // shaped differently from the start.
         if (aggregate.PrReviewMentionCommentId is not null)
         {
-            await DriveMentionFollowUpAsync(runId, taskId, run, task, cancellationToken);
+            await DriveMentionFollowUpAsync(
+                runId, taskId, run, task, aggregate.PrReviewPermissionDenials, cancellationToken);
             return;
         }
 
@@ -1053,7 +1054,9 @@ public sealed class PrReviewEngine(
     /// at all — the same reuse the class doc promises.
     /// </summary>
     private async Task DriveMentionFollowUpAsync(
-        Guid runId, Guid taskId, RunDetails run, TaskDetails task, CancellationToken cancellationToken)
+        Guid runId, Guid taskId, RunDetails run, TaskDetails task,
+        IReadOnlyDictionary<string, IReadOnlyList<PermissionDenial>> permissionDenials,
+        CancellationToken cancellationToken)
     {
         string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
         await EnsureMentionFollowUpResultRecordedAsync(runDirectory, cancellationToken);
@@ -1144,7 +1147,7 @@ public sealed class PrReviewEngine(
             runId,
             ComposeMentionFollowUpParkReason(
                 task.AnswersMentionOnly, pullRequestName, answeredMention?.CommentAuthorLogin ?? "someone",
-                firstCommentLine, addendumPath, unwalkedReportNote),
+                firstCommentLine, addendumPath, unwalkedReportNote, CountRefusedToolCalls(permissionDenials)),
             DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
 
@@ -1178,7 +1181,7 @@ public sealed class PrReviewEngine(
     /// </summary>
     internal static string ComposeMentionFollowUpParkReason(
         bool answersOwnPullRequest, string pullRequestName, string commentAuthorLogin, string firstCommentLine,
-        string addendumPath, string unwalkedReportNote)
+        string addendumPath, string unwalkedReportNote, int refusedToolCalls)
     {
         string opening = answersOwnPullRequest
             ? $"{pullRequestName}: answers {commentAuthorLogin}'s comment on your own pull request"
@@ -1186,12 +1189,47 @@ public sealed class PrReviewEngine(
         string addendumLabel = answersOwnPullRequest ? "Drafted reply and analysis" : "Addendum";
         return opening
             + (firstCommentLine.IsNotBlank() ? $" — \"{firstCommentLine}\"" : string.Empty)
-            + $". {addendumLabel}: {addendumPath}."
+            + "."
+            + DescribeRefusedToolCalls(refusedToolCalls)
+            + $" {addendumLabel}: {addendumPath}."
             + unwalkedReportNote
             + " Walk it with walk-pr-review-findings — show the drafted reply, "
             + "take any edits, and post it only on the owner's explicit go — then resolve with "
             + "h9k review resolve --merge-ready.";
     }
+
+    /// <summary>
+    /// Every tool call any session of the run had refused, which is the number <c>h9k task show</c>
+    /// lists under "Denied tools" (both read <c>PrReviewPermissionDenials</c>, and the count covers
+    /// every denied tool, not only shell commands).
+    /// </summary>
+    internal static int CountRefusedToolCalls(
+        IReadOnlyDictionary<string, IReadOnlyList<PermissionDenial>> permissionDenials) =>
+        permissionDenials.Values.Sum(denials => denials.Count);
+
+    /// <summary>
+    /// The park reason's sentence saying how many tool calls were refused, with its leading space so
+    /// it lands straight after the reason's opening sentence; empty when none were, which leaves
+    /// the reason exactly as it was. Said in the reason because a reader deciding how far to trust
+    /// a report should not have to open it to learn that coverage was cut.
+    /// </summary>
+    internal static string DescribeRefusedToolCalls(int refusedToolCalls) =>
+        refusedToolCalls switch
+        {
+            <= 0 => string.Empty,
+            1 => " 1 tool call refused.",
+            _ => $" {refusedToolCalls} tool calls refused.",
+        };
+
+    /// <summary>
+    /// The needs-you line a pr-review findings report parks with, which the board and <c>h9k task show</c>
+    /// read. The refused-tool-call count follows the opening sentence so it survives a quick read.
+    /// </summary>
+    internal static string ComposeFindingsParkReason(string mentionPrefix, string reportPath, int refusedToolCalls) =>
+        $"{mentionPrefix}Pull request review complete."
+        + DescribeRefusedToolCalls(refusedToolCalls)
+        + $" Findings: {reportPath}. Walk them, direct each one, "
+        + "then resolve with h9k review resolve --merge-ready — nothing was posted to the pull request.";
 
     private async Task ComposeReportAndParkAsync(
         Guid runId, Guid taskId, string runDirectory, int leaseGeneration, string worktreePath, string branch,
@@ -1320,8 +1358,7 @@ public sealed class PrReviewEngine(
 
         session.Events.Append(runId, new ReviewParked(
             runId,
-            $"{mentionPrefix}Pull request review complete. Findings: {reportPath}. Walk them, direct each one, "
-            + "then resolve with h9k review resolve --merge-ready — nothing was posted to the pull request.",
+            ComposeFindingsParkReason(mentionPrefix, reportPath, CountRefusedToolCalls(permissionDenials)),
             DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation("Run {RunId}: pr-review findings report ready and parked for the human — {Path}", runId, reportPath);
