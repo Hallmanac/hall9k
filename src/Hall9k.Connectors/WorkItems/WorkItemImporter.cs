@@ -82,8 +82,8 @@ public sealed class WorkItemImporter(params IWorkItemProvider[] providers)
             throw new DomainValidationException(
                 $"{RelayedText.OneLine(item.Reference.ToString())} is in triage ({item.ObservedStamp}), which "
                 + "means it has not been accepted into planned work, and adoption is for work a source "
-                + "positively calls open. Capture it as an idea instead: h9k idea add "
-                + $"\"{RelayedText.OneLine(item.Reference.Key)}: <what the issue asks for>\"");
+                + "positively calls open. Capture it as an idea instead, which keeps the link: h9k idea add "
+                + $"--from-linear {RelayedText.OneLine(item.Reference.Key)} --project <name>");
         }
 
         return item.Status.IsOpen
@@ -94,6 +94,29 @@ public sealed class WorkItemImporter(params IWorkItemProvider[] providers)
                 + $"({item.ObservedStamp}), and adoption is for "
                 + "work a source positively calls open. Reopen it and import again, or write the "
                 + "task directly: h9k task add --project <name> --objective \"…\"");
+    }
+
+    /// <summary>
+    /// The read an idea is captured from, and the one a task cut from a linked idea adopts through:
+    /// the states <see cref="ImportAsync"/> accepts plus Linear's triage, because an issue in Triage
+    /// has not been accepted into planned work yet and an idea is exactly where such a thing belongs.
+    /// A closed, canceled, duplicate, or unmapped state is refused with the state named, followed by
+    /// <paramref name="remedy"/>: what to do about it differs between a capture and a cut, so each caller
+    /// states its own (a cut states none and appends its exits to the whole refusal).
+    /// </summary>
+    public async Task<ImportedWorkItem> ImportForIdeaAsync(
+        WorkItemImportRequest request, string? remedy, CancellationToken cancellationToken)
+    {
+        IWorkItemProvider provider = Find(request.Provider) ?? throw Unavailable(request.Provider);
+
+        ImportedWorkItem item = await provider.ImportAsync(request, cancellationToken);
+        return item.Status.IsOpen || item.Status.IsTriage
+            ? item
+            : throw new DomainValidationException(
+                $"{RelayedText.OneLine(item.Reference.ToString())} was not open when Hall9k read it: "
+                + $"the source said '{RelayedText.OneLine(item.Status.ToString())}' ({item.ObservedStamp}), "
+                + "and an idea is captured from work a source positively calls open or, for Linear, in triage."
+                + (remedy.IsBlank() ? string.Empty : $" {remedy}"));
     }
 
     /// <summary>
