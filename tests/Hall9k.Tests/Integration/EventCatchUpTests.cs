@@ -3371,6 +3371,89 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         }
     }
 
+    /// <summary>
+    /// Pre-flight records an older build already holds leave the held table on the first sweep of
+    /// their project, before the upgrade's own give-up reset can hand them a fresh round of asks;
+    /// a held record of any other type keeps its ask count and its give-up mark.
+    /// </summary>
+    [Fact]
+    public async Task The_first_sweep_removes_held_preflight_records_and_asks_about_none_of_them()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid myNodeId = DomainId.New();
+        Guid senderNodeId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid preflightId = DomainId.New();
+        Guid otherStreamId = DomainId.New();
+        EventCatchUpCoordinator coordinator = new();
+        TimeSpan settleWindow = TimeSpan.FromSeconds(45);
+        TimeSpan cooldown = TimeSpan.FromMinutes(5);
+        const string olderBuild = "0.10.27";
+
+        await using DocumentStore store = OpenStore("event_catchup_held_preflight_cleared");
+
+        object[] preflightEvents =
+        [
+            new PrReviewPreflightDispatched(preflightId, taskId, DomainId.New(), senderNodeId, "m", "h", [], Now),
+            new PrReviewPreflightCompleted(preflightId, Safe: true, "safe", "ok", Now),
+            new PrReviewPreflightAbandoned(preflightId, Now),
+            new PrReviewPreflightReclaimed(preflightId, DomainId.New(), Now),
+        ];
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            long sequence = 7000;
+            foreach (object preflightEvent in preflightEvents)
+            {
+                HeldReplicatedEventRecord held = HeldRecord(preflightId, projectId, senderNodeId, ++sequence, Now);
+                held.RecordJson = EventReplicationCodec.EncodeRecord(
+                    ForeignRecord(preflightId, preflightEvent, senderNodeId, sequence, DomainId.New()));
+                // The upgrade case: given up on an older build, which the reset below would re-open.
+                held.CatchUpGivenUp = true;
+                held.CatchUpAttempts = EventCatchUpCoordinator.MaxHeldTailAttempts;
+                held.GivenUpOnBuildVersion = olderBuild;
+                session.Store(held);
+            }
+
+            HeldReplicatedEventRecord other = HeldRecord(otherStreamId, projectId, senderNodeId, 7100, Now);
+            other.RecordJson = EncodeForeign(otherStreamId, new TaskPublished(otherStreamId, Now, DomainId.New()), senderNodeId, 7100);
+            other.CatchUpGivenUp = true;
+            other.CatchUpAttempts = EventCatchUpCoordinator.MaxHeldTailAttempts;
+            other.GivenUpOnBuildVersion = BuildVersion;
+            other.LastCatchUpAskedAt = Now.AddHours(-1);
+            session.Store(other);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            HeldTailSweepResult sweep = await coordinator.RequestHeldTailStreamsAsync(
+                session, projectId, myNodeId, "owner-fingerprint", BuildVersion, settleWindow, cooldown,
+                EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, Now.AddMinutes(10), cts.Token);
+            sweep.AsksMinted.Should().Be(0, "a held pre-flight record is not asked about, even on a newer build");
+        }
+
+        await using (IQuerySession session = store.QuerySession())
+        {
+            (await session.Query<EventCatchUpRequest>().CountAsync(cts.Token)).Should().Be(0);
+
+            IReadOnlyList<HeldReplicatedEventRecord> remaining = await session.Query<HeldReplicatedEventRecord>().ToListAsync(cts.Token);
+            remaining.Should().ContainSingle().Which.StreamId.Should().Be(otherStreamId);
+            HeldReplicatedEventRecord kept = remaining[0];
+            kept.CatchUpAttempts.Should().Be(EventCatchUpCoordinator.MaxHeldTailAttempts);
+            kept.CatchUpGivenUp.Should().BeTrue();
+            kept.GivenUpOnBuildVersion.Should().Be(BuildVersion);
+
+            (await HeldTailStreams.SummarizeAsync(session, cts.Token)).Should().BeEquivalentTo(
+                new HeldTailSummary(StreamsHeldTailOnly: 0, StreamsGivenUp: 1),
+                "status no longer counts the pre-flight streams as held or given up");
+        }
+    }
+
+    private static string EncodeForeign(Guid streamId, object @event, Guid originNodeId, long originSequence) =>
+        EventReplicationCodec.EncodeRecord(ForeignRecord(streamId, @event, originNodeId, originSequence, DomainId.New()));
+
     /// <summary>A tail event held for want of its stream's genesis — the shape
     /// <c>EventReplicationInbox.ApplyAsync</c> persists when a run's events arrive without the
     /// <c>RunDispatched</c> that started the stream.</summary>

@@ -1,6 +1,7 @@
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.PrReviewPreflight;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Infrastructure;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -16,6 +17,12 @@ namespace Hall9k.Connectors.Replication;
 /// </summary>
 public sealed class EventCatchUpCoordinator
 {
+    /// <summary>The wire record's own event type name key, up to the namespace every pre-flight event
+    /// shares (<see cref="EventReplicationCodec"/> serializes camelCase), so a held record of any
+    /// type in that namespace matches and no other type does.</summary>
+    private static readonly string PreflightEventTypeMarker =
+        $"\"eventTypeName\":\"{typeof(PrReviewPreflightDispatched).Namespace}.";
+
     /// <summary>
     /// Ranks <paramref name="knownNodeIds"/> into the order idea 202383dc rules: the voucher first,
     /// then owner-role members, then any other member, most recently moved outbox first within a
@@ -484,6 +491,13 @@ public sealed class EventCatchUpCoordinator
         string currentBuildVersion, TimeSpan settleWindow, TimeSpan reMintCooldown, int maxAsksPerSweep,
         DateTimeOffset now, CancellationToken cancellationToken)
     {
+        // Pre-flight events never replicate, so no peer will serve a genesis for a held one. Cleared
+        // before the give-up reset below can hand each a fresh round of asks on an upgrade. One
+        // delete keyed on the type inside RecordJson, as the record has no type column.
+        session.DeleteWhere<HeldReplicatedEventRecord>(record =>
+            record.ProjectId == projectId && record.RecordJson.Contains(PreflightEventTypeMarker));
+        await session.SaveChangesAsync(cancellationToken);
+
         // The build-version bound lift: a stream given up while this node ran an older build than
         // the one running now is reset here, before the ordinary query below ever runs, so it
         // earns three fresh asks under the newer build rather than standing on a verdict this
