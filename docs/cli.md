@@ -70,6 +70,41 @@ each with its own required `--reason`. `h9k idea list` shows twenty rows, newest
 still deciding where they belong, which says nothing about who holds an idea: the Assigned column
 appears whenever a listed idea has an assignee.
 
+**An idea can carry a tracker link.** `h9k idea add --from-linear <identifier-or-url> --project <name>` (or
+`--from-jira <key-or-url>`, or `--from-issue <number-or-url>`) reads the item through the same importer task
+adoption uses and captures an idea whose text is the item's title folded to one line, with closing keywords
+defused as the task objective seed does. The text argument is optional there and, when you give it, wins;
+two `--from-*` options together are refused. A Linear issue in Triage is the case this exists for: adoption
+refuses `triage`, and an idea accepts it, along with the states adoption accepts. A completed, canceled, or
+duplicate Linear issue, a closed GitHub issue, and a done Jira card are refused with the state named. A linked
+idea needs a project at capture, and the link must pass the same one-tracker check a task on that project meets
+(a Jira card or GitHub issue is refused on a project bound to Linear, and a Linear issue on one that is not);
+`h9k idea move` applies the same check to a linked idea. The link is recorded on the idea's stream, in the same
+transaction as the capture, as `<provider>:<reference>` with the title, state, and time observed, and the
+item's title, description, URL, and state are written to `tracker-item.md` in the idea's workspace under the
+non-instruction framing an adopted task's context carries. `h9k idea show` renders the link as the item's web
+URL, or as the bare reference where this node's importer cannot build one, and `h9k idea list` shows its key.
+
+One item is one idea: a second idea from an item another idea in discovery on this node carries is refused,
+naming that idea, and an item a task holds is refused naming the task, by the guards task adoption runs.
+Concluding or archiving an idea releases its item.
+
+The first cut from a linked idea (`h9k task add --from-idea <id> --objective "…"`) reads the item afresh
+through the importer, never from the workspace file, and adopts it under the refusals `--from-linear` has,
+except that an issue still in Triage adopts; the output says so, and that Hall9k does not move it. The task
+records the reference the read returned. Its context leads with the fresh read, quoted, followed by the
+discovery workspace pointer and any `--context`; a note that is still the title seed is left out, because text
+the item's author wrote appears only inside the quote. A cut refused because the item is closed, canceled,
+duplicate, or not found, is held by a task not cut from this idea, cannot be read for want of a connection, or
+fails the one-tracker check names the cause and two exits: `h9k task add --from-idea <id> --objective "…"
+--unlinked`, which cuts a task with no link and no tracker read (refused on an idea with no link), and `h9k
+idea conclude` or `h9k idea archive`. A not-found refusal also names `h9k task link-linear <new task> <new
+identifier>` as the step after `--unlinked`. A cut whose item a task cut from the same idea still holds reads
+no tracker and is created unlinked, so it works after the item has closed; the output and the new task's
+context name the holding task and the route that carries the item to it: carry the item in that task's context,
+publish the new one with `--untracked`, and group the tasks under an epic with `h9k epic add`.
+`h9k idea promote` is refused on a linked idea before anything is written, naming the two acts it composes.
+
 Where an idea belongs and who holds it are two different facts, and two different verbs.
 `h9k idea move <id> <project>` sets or changes the project and is the only verb that does. `h9k idea assign
 <id> [<member>]` lays hold of an idea, visibly to your fleet or the team, before any task exists: with no
@@ -1950,7 +1985,7 @@ than the connection's is refused, because a stored reference records no workspac
 guards apply: an issue another live task carries is refused, including one that task recorded under an
 identifier the issue had before it moved teams (Linear lists those as previous identifiers). `--from-linear` maps Linear's state types:
 `backlog`, `unstarted`, and `started` adopt; `completed`, `canceled`, and `duplicate` are refused; `triage`
-is refused with a pointer to `h9k idea add "ENG-123: <what the issue asks for>"`; a type Hall9k has no rule for is refused with the
+is refused with a pointer to `h9k idea add --from-linear ENG-123 --project <name>`, which captures it as an idea and keeps the link; a type Hall9k has no rule for is refused with the
 type quoted. `link-linear` applies no state gate and records the state it observed, as `link-jira` does,
 because it records an issue that already exists.
 

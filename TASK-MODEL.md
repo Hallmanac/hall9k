@@ -1504,6 +1504,9 @@ public sealed record IdeaAssigneeSet(          // a member lays hold of an idea,
 public sealed record IdeaAssigneeCleared(Guid Id, string? Reason, DateTimeOffset ClearedAt, Guid ClearedByOwnerId);
 public sealed record IdeaTaskCut(               // repeatable: one per cut, never terminal
     Guid Id, Guid TaskId, string Objective, DateTimeOffset CutAt, Guid CutByOwnerId);
+public sealed record IdeaWorkItemLinked(        // the tracker item an idea was captured from, written in the capture's
+    Guid Id, ExternalReference Reference,       // own transaction; WorkItemLinked's fields, but never WorkItemLinked itself
+    string ObservedTitle, string ObservedStatus, DateTimeOffset ObservedAt, DateTimeOffset LinkedAt, Guid LinkedByOwnerId);
 public sealed record IdeaConcluded(Guid Id, string Reason, DateTimeOffset ConcludedAt, Guid ConcludedByOwnerId);
 public sealed record IdeaArchived(Guid Id, string Reason, DateTimeOffset ArchivedAt, Guid ArchivedByOwnerId);
 

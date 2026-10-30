@@ -686,13 +686,15 @@ concludes it.
 ```bash
 h9k idea add "<text>"                             # capture: one command, one argument
 h9k idea add "<text>" --project <name>            # --project is optional, at capture and after
+h9k idea add --from-linear ENG-123 --project <name>   # capture a tracker item as an idea (also --from-jira, --from-issue); text defaults to the title, triage accepted; links it, needs a project
 h9k idea list                                     # what is still in discovery, newest first
 h9k idea show <id>                                # note, project, workspace path, history, fan-out, outcome
 h9k idea revise <id> "<text>"                     # rewrite the note; every version stays on the stream
 h9k idea move <id> <project>                       # set or change where it belongs (the only verb that moves an idea)
 h9k idea assign <id> [<member>]                    # lay hold of an idea (you, or the member named) before any task exists; names a person, never a project
 h9k idea unassign <id>                             # let go of it; nobody holds it afterwards, so its creator decides it
-h9k task add --from-idea <id> --objective "<…>"   # cut a draft task from it; repeatable, needs a project
+h9k task add --from-idea <id> --objective "<…>"   # cut a draft task from it; repeatable, needs a project; a linked idea's cut adopts the item afresh
+h9k task add --from-idea <id> --objective "<…>" --unlinked   # cut from a linked idea with no link and no tracker read
 h9k idea promote <id> [--project <name>]          # sugar: cuts one task (note's first sentence) and concludes
 h9k idea conclude <id> --reason "<what came of it>"  # terminal: discovery produced something
 h9k idea archive <id> --reason "<why>"            # terminal: discovery produced nothing; never deleted
@@ -700,6 +702,17 @@ h9k idea set-private <id> on|off                  # idea 8c5993c5: pre-8c5993c5 
 h9k idea scope <id> private|fleet|team            # idea 8c5993c5: set this idea's own replication scope directly; refused only if already at that scope, or already team and asked narrower (team is one-way)
 h9k idea share <id>                               # idea 8c5993c5: sugar for scope team; idempotent no-op once already team
 ```
+
+**A linked idea.** `h9k idea add --from-linear|--from-jira|--from-issue` reads the item through the importer task
+adoption uses and records `<provider>:<reference>` on the idea (event `IdeaWorkItemLinked`, never `WorkItemLinked`) in
+the capture's transaction, with `tracker-item.md` in the workspace holding the quoted item. It needs `--project` and
+the project's one-tracker check; `h9k idea move` re-applies that check. Linear triage is accepted here and refused
+on the task doors. One item is one idea (a second idea from an item another captured idea carries is refused, naming
+it; an item a task holds is refused naming the task; concluding or archiving releases it). `h9k idea promote` is
+refused on a linked idea. The first `h9k task add --from-idea` cut reads the item afresh and adopts it; every refusal
+of it (closed, canceled, duplicate, not found, held by a task not cut from this idea, no connection, wrong tracker)
+names `--unlinked` and `h9k idea conclude` / `h9k idea archive`; a cut whose item a sibling cut from the same idea
+holds is created unlinked and names the sibling and the epic route (`--untracked`, `h9k epic add`).
 
 **Who holds an idea, and who decides it** (card D of idea 8d0b724b, decisions ca1f0313 and b8aa9007).
 `h9k idea assign` names a person and `h9k idea move` names a project; they are different facts. Capturing
@@ -838,7 +851,7 @@ h9k task add --project <name> --objective "…"     # creates a Draft (identity,
 h9k task add --from-idea <id> --objective "…"     # cut a draft from an idea (backlog 31); repeatable, falls back to the idea's own project
 h9k task add --project <name> --from-issue 42     # adopt a GitHub issue (number, owner/repo#42, or URL)
 h9k task add --project <name> --from-jira PROJ-1  # adopt a Jira card (key or URL)
-h9k task add --project <name> --from-linear ENG-123  # adopt a Linear issue (identifier or URL): backlog/unstarted/started adopt, completed/canceled/duplicate are refused, triage points at h9k idea add "ENG-123: <what it asks for>"
+h9k task add --project <name> --from-linear ENG-123  # adopt a Linear issue (identifier or URL): backlog/unstarted/started adopt, completed/canceled/duplicate are refused, triage points at h9k idea add --from-linear ENG-123 --project <name>
 h9k task add --project <name> --from-issue 42 --from-jira PROJ-1 --primary-tracker jira   # link both trackers to one task (task: a task may link to both); the primary does every job, the other is shown and linked only. --primary-tracker overrides the project's own default and is required when neither says which wins
 h9k task add --project <name> --from-pr 42        # adopt a pull request to review (always pr-review)
 h9k task add --project <name> --type spike --kind research --objective "…" --exit-criterion "…"   # a spike answers one stated question: --kind is research|experiment|prototype (decides gates and the branch's own fate), --exit-criterion is what its one review pass judges the findings and branch against, and --max-turns/--max-tokens/--max-wall-clock are its own optional budget on the build session alone — no pull request, ever
