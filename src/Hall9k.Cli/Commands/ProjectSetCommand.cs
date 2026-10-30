@@ -3,6 +3,7 @@ using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Connectors.Verification;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project;
@@ -259,8 +260,30 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "rather than refusing it, because the project's own routing rules are allowed to know "
             + "better than this binding does. 'none' clears the binding; a project with none still "
             + "publishes, and the agent is left to work out from the project's own skills where the "
-            + "card belongs")]
+            + "card belongs. Refused on a project with a Linear team bound (--linear), since Linear is "
+            + "then its one tracker; clear the team in the same command to switch")]
         public string? JiraProjectKey { get; init; }
+
+        [CommandOption("--linear <TEAM>")]
+        [Description(
+            "Bind this project to a Linear team by its key, the ENG in ENG-123, and make Linear the "
+            + "project's one tracker. Hall9k confirms through the install's Linear connection "
+            + "(h9k connection add linear) that a team with that key is visible before recording "
+            + "anything; if it is not, the team may not exist or the key may be limited to other teams. "
+            + "The binding is a team setting, so every node of the project reads it. Once set, h9k task "
+            + "add --from-jira/--from-issue, h9k task link-jira/link-issue, h9k task push-to-jira, and "
+            + "h9k task write-jira --op create are refused, as are --jira, --backlog github-issues or "
+            + "jira, and --primary-tracker here, and h9k task add --from-linear and h9k task link-linear "
+            + "become available (a pull request is still adopted with --from-pr). Refused while the "
+            + "project has a Jira board, a backlog policy of github-issues or jira, or a primary tracker; "
+            + "both rules judge the settings the command leaves, so one command can switch trackers "
+            + "(--linear ENG --jira none, or --linear none --jira PROJ). Linear links a pull request to "
+            + "its issue through the identifier in the branch name, so the first time this binds a team "
+            + "on a project still on the default branch template, and with no --branch-template in the "
+            + "same command, the template becomes {key}-{slug} and the command says so; "
+            + "--branch-template none is the undo, and changing or clearing the team later leaves the "
+            + "template alone. 'none' clears the binding")]
+        public string? Linear { get; init; }
 
         [CommandOption("--backlog <POLICY>")]
         [Description(
@@ -269,7 +292,8 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "deterministically — title from the objective, body from the criteria and agent context), "
             + "or 'jira' (dispatches the same agent-mediated push h9k task push-to-jira already does, "
             + "just automatically at publish). A task adopted with --from-issue or --from-jira already "
-            + "carries its reference, so publishing it creates nothing a second time.")]
+            + "carries its reference, so publishing it creates nothing a second time. 'github-issues' "
+            + "and 'jira' are refused on a project with a Linear team bound (--linear).")]
         public string? Backlog { get; init; }
 
         [CommandOption("--primary-tracker <github|jira|none>")]
@@ -280,7 +304,8 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "closeout close, and every tracker write, and the other becomes the secondary — shown "
             + "and linked only, gating and writing nothing. Overridable per task with h9k task add "
             + "--primary-tracker; a task adopting both with neither this default nor the override set "
-            + "is refused, since nothing would say which reference wins. 'none' clears the default")]
+            + "is refused, since nothing would say which reference wins. 'none' clears the default. "
+            + "Refused on a project with a Linear team bound (--linear), where Linear is the one tracker")]
         public string? PrimaryTracker { get; init; }
 
         [CommandOption("--backlog-routing <TEXT>")]
@@ -296,9 +321,12 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             "The name this project's task branches are cut under, so a team's branch convention is "
             + "a project setting rather than a fork of the platform. Tokens: {shortid} (the task's "
             + "short id), {slug} (its objective, lowercased and hyphenated, capped at 30 "
-            + "characters) and {key} (the linked Jira key or GitHub issue number, or 'no-key' when "
-            + "the task carries no linked item — a branch never claims a card that was never "
-            + "filed); everything else is literal, so \"{key}-{slug}\" cuts PROJ-14-add-rate-limiting. "
+            + "characters) and {key} (the linked Jira key, Linear identifier (ENG-123, case kept), or "
+            + "GitHub issue number, or 'no-key' when the task carries no linked item — a branch never "
+            + "claims a card that was never filed); everything else is literal, so \"{key}-{slug}\" "
+            + "cuts PROJ-14-add-rate-limiting. Binding a Linear team (--linear) sets {key}-{slug} for "
+            + "you on a project still on the default, because Linear links a pull request through the "
+            + "identifier in its branch name. "
             + "Every token is fixed at dispatch and the rendered name is recorded on the run, "
             + "because the pull request is pushed from that recorded name much later — renaming a "
             + "live run's branch is what breaks the push. The template is rendered and checked as a "
@@ -750,6 +778,21 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
 
         DateTimeOffset changedAt = DateTimeOffset.UtcNow;
 
+        // 'none' clears the binding, mapped here beside the option that documents it for the reason
+        // --jira's is: LinearTeamKey.Parse would take the word for a (legal) team key.
+        Optional<LinearTeamKey> linearTeam = settings.Linear is { } linearWord
+            ? Optional<LinearTeamKey>.Of(ClearingWord(linearWord) ? LinearTeamKey.None : LinearTeamKey.Parse(linearWord))
+            : Optional<LinearTeamKey>.None;
+        LinearTeamKey boundTeam = linearTeam is { HasValue: true, Value: { } bound } ? bound : LinearTeamKey.None;
+
+        // Linear links a pull request through the identifier in its branch name, and the default
+        // template carries none. So the first binding on a project still on the default sets the
+        // convention that does, in the same settings change, unless this command names a template of
+        // its own. "First" means the project had no team before: changing the team on a bound project
+        // leaves the template alone, so an operator's --branch-template none stays undone.
+        bool setsLinearConvention = SetsLinearConvention(
+            project.LinearTeam, boundTeam, settings.BranchTemplate, details.BranchNameTemplate);
+
         // Every syntactic refusal ProjectDecider.ChangeSettings itself can raise (a bad --model, an
         // invalid --commit-style, a review-stage-composition missing its acknowledgment...) is
         // cheap and synchronous — it costs nothing to discover before the expensive validation
@@ -835,7 +878,9 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 ? Optional<BranchNameTemplate>.Of(ClearingWord(branchTemplate)
                     ? BranchNameTemplate.Default
                     : BranchNameTemplate.Parse(branchTemplate))
-                : Optional<BranchNameTemplate>.None,
+                : setsLinearConvention
+                    ? Optional<BranchNameTemplate>.Of(BranchNameTemplate.LinearConvention)
+                    : Optional<BranchNameTemplate>.None,
             // Blank/"default" clearing and the recognized-value parse both happen inside the
             // decider (ReviewStageCompositionValidation.VetInput), so the raw input rides through
             // unchanged here — the same "the decider is the one place that enforces the closed
@@ -919,9 +964,17 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             // SecurityReviewSetting rather than through a value nobody can type.
             securityReview: settings.SecurityReview is { } securityReview
                 ? Optional<bool>.Of(SecurityReviewSetting.ParseOnOff(securityReview, "--security-review"))
-                : Optional<bool>.None);
+                : Optional<bool>.None,
+            linearTeam: linearTeam);
 
         ProjectSettingsChanged changed = BuildChangedEvent(acceptedBrokenGateValue: false);
+
+        // After every refusal the decider can give without a network call (the one-tracker rule
+        // among them) and before anything is recorded: a team nobody can see is not bound.
+        LinearTeam? confirmedTeam = boundTeam.HasValue
+            ? await ConfirmLinearTeamAsync(
+                await WorkItemConnections.LinearProviderAsync(session, cancellationToken), boundTeam, cancellationToken)
+            : null;
 
         if (verifyCommands is { HasValue: true, Value: { } gatesToValidate })
         {
@@ -1001,6 +1054,14 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         await Doorbell.RingAsync($"project-changed:{details.Id}", cancellationToken);
 
         AnsiConsole.MarkupLine($"[green]Project '{details.Name.EscapeMarkup()}' settings updated.[/]");
+
+        foreach (string line in LinearBindingNotes(
+            details.Name, project.LinearTeam, boundTeam, confirmedTeam, setsLinearConvention,
+            clearedTeam: settings.Linear is not null && !boundTeam.HasValue && project.LinearTeam.HasValue,
+            details.BranchNameTemplate))
+        {
+            AnsiConsole.MarkupLine(line);
+        }
 
         if (settings.DiscoverRunSkill)
         {
@@ -1172,6 +1233,15 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 + "or linked by hand with h9k task link-jira/link-issue while still a Draft.");
         }
 
+        // A template of the project's own that cannot carry a Linear identifier means Linear never
+        // links its pull requests. Said when this invocation touched either setting, so an unrelated
+        // h9k project set does not repeat it.
+        if ((boundTeam.HasValue || settings.BranchTemplate is not null)
+            && LinearTemplateWarning(updated) is { } templateWarning)
+        {
+            AnsiConsole.MarkupLine(templateWarning);
+        }
+
         if (updated.HomeDirectory.HasValue && Directory.Exists(updated.HomeDirectory.Value))
         {
             List<ProjectHomeStep> homeSteps = [ProjectAgentsDocument.Write(updated.HomeDirectory.Value, updated)];
@@ -1214,6 +1284,86 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         }
 
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Whether this binding also sets the branch template to <c>{key}-{slug}</c>: only the first time
+    /// a team is bound (the project had none), only on a project still on the default template, and
+    /// only when the same command passes no <c>--branch-template</c> of its own. Changing the team on
+    /// a bound project never sets it, so an operator's <c>--branch-template none</c> stays undone.
+    /// </summary>
+    internal static bool SetsLinearConvention(
+        LinearTeamKey previousTeam, LinearTeamKey boundTeam, string? branchTemplateOption, BranchNameTemplate current) =>
+        boundTeam.HasValue
+        && !previousTeam.HasValue
+        && branchTemplateOption is null
+        && current == BranchNameTemplate.Default;
+
+    /// <summary>
+    /// Confirms through the install's Linear connection that a team with this key is visible, and
+    /// refuses otherwise. The refusal says both things Linear's answer can mean, because it answers
+    /// the same way for a team that does not exist and for one a team-limited key may not see.
+    /// </summary>
+    internal static async Task<LinearTeam> ConfirmLinearTeamAsync(
+        LinearWorkItemProvider provider, LinearTeamKey team, CancellationToken cancellationToken) =>
+        await provider.FindTeamAsync(team, cancellationToken)
+            ?? throw new DomainNotFoundException(
+                $"Linear shows no team with the key {team.Value} to this install's connection in "
+                + $"{provider.Workspace}, so nothing was bound. The team may not exist, or the key may be "
+                + "limited to other teams: check the key (the ENG in ENG-123) in Linear, and that the API "
+                + "key registered with h9k connection add linear can see that team.");
+
+    /// <summary>
+    /// The warning for a Linear project whose own branch template has no <c>{key}</c>, or null when
+    /// there is nothing to warn about. The default template is not warned about: a project on it that
+    /// chose <c>--branch-template none</c> after binding made that choice on purpose.
+    /// </summary>
+    internal static string? LinearTemplateWarning(ProjectDetails project) =>
+        ProjectTracker.IsLinear(project.LinearTeam)
+        && project.BranchNameTemplate != BranchNameTemplate.Default
+        && !project.BranchNameTemplate.UsesToken(BranchNameTemplate.KeyToken)
+            ? $"[yellow]'{project.BranchNameTemplate.Value.EscapeMarkup()}' has no {{key}}, and Linear links a "
+              + "pull request to its issue through the identifier in the branch name, so this project's "
+              + "pull requests will not be linked. To cut branches Linear can follow: "
+              + $"h9k project set {project.Name.EscapeMarkup()} --branch-template \"{{key}}-{{slug}}\"[/]"
+            : null;
+
+    /// <summary>
+    /// What a Linear binding change says out loud: the team confirmed, the branch template it set (and
+    /// the undo), or, when the binding was cleared, that the template was left alone.
+    /// </summary>
+    internal static IReadOnlyList<string> LinearBindingNotes(
+        string projectName, LinearTeamKey previousTeam, LinearTeamKey boundTeam, LinearTeam? confirmedTeam,
+        bool setsConvention, bool clearedTeam, BranchNameTemplate templateBefore)
+    {
+        List<string> notes = [];
+        string name = projectName.EscapeMarkup();
+        if (confirmedTeam is not null)
+        {
+            notes.Add(
+                $"[green]Linear is now {name}'s one tracker[/]: team {confirmedTeam.Key.EscapeMarkup()} "
+                + $"({ExternalText.OneLineMarkup(confirmedTeam.Name)}) was confirmed through the Linear connection.");
+        }
+
+        if (setsConvention)
+        {
+            notes.Add(
+                $"[green]Branch template set to {BranchNameTemplate.LinearConvention.Value.EscapeMarkup()}[/] "
+                + "(it was the default): Linear links a pull request to its issue through the identifier in the "
+                + "branch name, and the default task/{shortid}-{slug} carries none. To undo it: "
+                + $"h9k project set {name} --branch-template none");
+        }
+
+        if (clearedTeam)
+        {
+            notes.Add(
+                $"[yellow]The branch template is unchanged[/] ({templateBefore.Value.EscapeMarkup()}): clearing "
+                + $"the Linear team ({previousTeam.Value.EscapeMarkup()}) does not touch it. To restore the "
+                + $"default: h9k project set {name} --branch-template none. Links already on tasks keep "
+                + "their provider and stay readable.");
+        }
+
+        return notes;
     }
 
     /// <summary>
