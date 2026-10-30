@@ -34,6 +34,9 @@ public sealed record LinearIssueRead(ImportedWorkItem Item, IReadOnlyList<string
 /// </summary>
 public sealed record LinearIssueAttempt(LinearIssueRead? Read, DomainException? Failure, TrackerReadFailure FailureKind);
 
+/// <summary>A Linear team as the workspace answered for it: the id new issues are filed under, its key, and its name.</summary>
+public sealed record LinearTeam(string Id, string Key, string Name);
+
 /// <summary>
 /// Linear through its GraphQL API, on the credentials of a registered connection (PLAN.md §10). It
 /// speaks to Linear through one <see cref="LinearRequester"/>, the shape <see cref="JiraRequester"/>
@@ -64,6 +67,13 @@ public sealed class LinearWorkItemProvider(
     private const string IssueQuery =
         "query HallIssue($id: String!) { issue(id: $id) { identifier title description url "
         + "previousIdentifiers state { name type } } }";
+
+    /// <summary>
+    /// A team looked up by its key through the <c>teams</c> query and a <c>TeamFilter</c> key filter:
+    /// <c>team(id:)</c> is not documented to take a key, so it is not used for this.
+    /// </summary>
+    private const string TeamQuery =
+        "query HallTeam($key: String!) { teams(filter: { key: { eq: $key } }, first: 1) { nodes { id key name } } }";
 
     private readonly LinearRequester requester = requester ?? LinearHttp.Requester;
     private readonly TimeProvider clock = clock ?? TimeProvider.System;
@@ -198,6 +208,49 @@ public sealed class LinearWorkItemProvider(
 
             return new LinearViewerRead(
                 new LinearViewer(id, ReadString(viewer, "name") ?? id, workspaceKey), null, TrackerReadFailure.None);
+        }
+    }
+
+    /// <summary>
+    /// The team with this key, as this connection's key can see it, or null when none is visible.
+    /// Null cannot tell a team that does not exist from one a team-limited key is not allowed to
+    /// see, because Linear answers the same way for both, so a caller refusing on null says both.
+    /// A failure to reach Linear or a rejected key is thrown, never mistaken for an absent team.
+    /// </summary>
+    public async Task<LinearTeam?> FindTeamAsync(LinearTeamKey key, CancellationToken cancellationToken)
+    {
+        LinearQuery query = await QueryAsync(
+            TeamQuery, new { key = key.Value }, $"look up the team {key.Value}", key.Value, cancellationToken);
+        if (query.Data is not { } data)
+        {
+            throw query.Failure!;
+        }
+
+        using (query.Document)
+        {
+            if (!data.TryGetProperty("teams", out JsonElement teams)
+                || teams.ValueKind != JsonValueKind.Object
+                || !teams.TryGetProperty("nodes", out JsonElement nodes)
+                || nodes.ValueKind != JsonValueKind.Array)
+            {
+                throw new DomainValidationException(
+                    "Linear answered the team lookup with something that is not a list of teams. That is "
+                    + $"usually a proxy in front of {LinearHttp.Endpoint.Host}; check this machine reaches Linear directly.");
+            }
+
+            // The filter is an exact match, but a node is accepted only when it says it is the team
+            // that was asked for, so an answer that ignored the filter cannot bind the wrong team.
+            foreach (JsonElement node in nodes.EnumerateArray())
+            {
+                if (ReadString(node, "id") is { } id
+                    && ReadString(node, "key") is { } answered
+                    && answered.Equals(key.Value, StringComparison.OrdinalIgnoreCase))
+                {
+                    return new LinearTeam(id, answered.ToUpperInvariant(), ReadString(node, "name") ?? answered);
+                }
+            }
+
+            return null;
         }
     }
 
