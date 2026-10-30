@@ -830,7 +830,7 @@ h9k task add --project <name> --objective "…"     # creates a Draft (identity,
 h9k task add --from-idea <id> --objective "…"     # cut a draft from an idea (backlog 31); repeatable, falls back to the idea's own project
 h9k task add --project <name> --from-issue 42     # adopt a GitHub issue (number, owner/repo#42, or URL)
 h9k task add --project <name> --from-jira PROJ-1  # adopt a Jira card (key or URL)
-h9k task add --project <name> --from-linear ENG-123  # adopt a Linear issue (identifier or URL): backlog/unstarted/started adopt, completed/canceled/duplicate are refused, triage points at h9k idea add --from-linear
+h9k task add --project <name> --from-linear ENG-123  # adopt a Linear issue (identifier or URL): backlog/unstarted/started adopt, completed/canceled/duplicate are refused, triage points at h9k idea add "ENG-123: <what it asks for>"
 h9k task add --project <name> --from-issue 42 --from-jira PROJ-1 --primary-tracker jira   # link both trackers to one task (task: a task may link to both); the primary does every job, the other is shown and linked only. --primary-tracker overrides the project's own default and is required when neither says which wins
 h9k task add --project <name> --from-pr 42        # adopt a pull request to review (always pr-review)
 h9k task add --project <name> --type spike --kind research --objective "…" --exit-criterion "…"   # a spike answers one stated question: --kind is research|experiment|prototype (decides gates and the branch's own fate), --exit-criterion is what its one review pass judges the findings and branch against, and --max-turns/--max-tokens/--max-wall-clock are its own optional budget on the build session alone — no pull request, ever
@@ -1332,7 +1332,7 @@ h9k task link-linear <task> <new identifier>       # relink after Linear moved t
 
 `connection add linear` reads Linear's viewer and organization before recording anything, refuses a
 rejected key, and records the viewer's id and name and `https://linear.app/<urlKey>` on the connection;
-registering again replaces the connection (a rotated key). Success means Linear accepted the key and
+registering again replaces the connection (a rotated key; a key from a different workspace is refused while any task carries a `linear:` reference unless `--change-workspace` is passed). Success means Linear accepted the key and
 nothing more: a key limited by permission or by team can still be refused later. Every Linear call goes
 through one injectable `LinearRequester`; a GraphQL `errors` array is a failure whatever the HTTP status,
 a 429 or `RATELIMITED` answer is an outage with its `Retry-After`, and a URL from another workspace is

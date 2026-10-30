@@ -82,8 +82,8 @@ public sealed class WorkItemImporter(params IWorkItemProvider[] providers)
             throw new DomainValidationException(
                 $"{RelayedText.OneLine(item.Reference.ToString())} is in triage ({item.ObservedStamp}), which "
                 + "means it has not been accepted into planned work, and adoption is for work a source "
-                + "positively calls open. Capture it as an idea instead: h9k idea add --from-linear "
-                + $"{RelayedText.OneLine(item.Reference.Key)}");
+                + "positively calls open. Capture it as an idea instead: h9k idea add "
+                + $"\"{RelayedText.OneLine(item.Reference.Key)}: <what the issue asks for>\"");
         }
 
         return item.Status.IsOpen
