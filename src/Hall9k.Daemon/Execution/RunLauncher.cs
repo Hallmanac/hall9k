@@ -2193,8 +2193,10 @@ public sealed class RunLauncher(
         Guid runId, int leaseGeneration, bool isMentionFollowUp, CancellationToken cancellationToken,
         int attempt = 0)
     {
+        // Only this node's own rows count: a verdict reached on another node (a store shared by two
+        // installs, or one left by a node id since replaced) never vouches for a checkout cut here.
         PrReviewPreflightDetails? latest = await session.Query<PrReviewPreflightDetails>()
-            .Where(preflight => preflight.TaskId == task.Id)
+            .Where(preflight => preflight.TaskId == task.Id && preflight.NodeId == nodeId)
             .OrderByDescending(preflight => preflight.DispatchedAt)
             .FirstOrDefaultAsync(cancellationToken);
 
@@ -2222,8 +2224,7 @@ public sealed class RunLauncher(
                 task, project, facts, nodeId, runId, leaseGeneration, isMentionFollowUp, cancellationToken);
             return false;
         }
-        else if (latest is { CompletedAt: null, AbandonedAt: null } inFlight && inFlight.HeadRefOid == facts.HeadRefOid
-            && inFlight.NodeId == nodeId)
+        else if (latest is { CompletedAt: null, AbandonedAt: null } inFlight && inFlight.HeadRefOid == facts.HeadRefOid)
         {
             // Already dispatched for this exact head and not abandoned — its own monitor (or,
             // after a restart, the adoption sweep) completes or abandons it and releases this
@@ -2232,13 +2233,12 @@ public sealed class RunLauncher(
             // task claimed-and-requeued forever with no pre-flight ever running again (independent
             // pre-PR review, cycle 1, both lenses).
             //
-            // Scoped to a row THIS node dispatched: pre-flight events never replicate, so the rows
-            // read here are this node's own, and ResumeStrandedPreflightsAsync only ever reattaches
-            // or abandons a row whose NodeId names this node. A row naming another node (a store
-            // shared by two installs, or one left by a node id since replaced) can never complete
-            // or abandon on its own if that node is gone for good, so deferring to it as "in
-            // flight" would leave the task claimed-and-requeued forever. It falls through to a
-            // fresh dispatch on this node instead.
+            // The query above reads only rows THIS node dispatched: pre-flight events never
+            // replicate, and ResumeStrandedPreflightsAsync only ever reattaches or abandons a row
+            // whose NodeId names this node. A row naming another node (a store shared by two
+            // installs, or one left by a node id since replaced) can never complete or abandon on
+            // its own if that node is gone for good, so deferring to it as "in flight" would leave
+            // the task claimed-and-requeued forever. It is never read, so this node dispatches its own.
             //
             // The row's own DispatchingRunId can still name an earlier, superseded claim: a
             // restart long enough to expire this task's lease leaves the detached pre-flight
