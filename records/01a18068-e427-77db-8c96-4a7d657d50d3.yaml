@@ -1,0 +1,29 @@
+hall9k-task-record: 1
+task-id: 01a18068-e427-77db-8c96-4a7d657d50d3
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#789
+objective: Remove the hidden h9k task work alias, so h9k task drive is the only spelling of the verb.
+criteria:
+  - |-
+    `h9k task work` is no longer registered: `h9k task work 28b19893` exits 64 and prints `Unknown command 'work'.`, exactly as any unknown task verb does, and a test proves this through the shipped command tree.
+  - |-
+    `TaskWorkAliasCommand`, its stderr notice, and the tests that exist only for the alias are gone, and `TaskDriveCommand` is sealed again like its sibling commands.
+  - |-
+    The proofs the alias's test file holds for `drive` survive: tests still show that `h9k task drive` binds `TaskDriveCommand.Settings`, that `h9k task --help` lists `drive`, and that a dispatched session is refused `h9k task drive` with the run id in the message. `TaskDriveCommand.Settings` stays `Refused` in `DispatchedSessionCommandClassification`, and the drive tests outside the alias's test file are unchanged and pass.
+  - |-
+    `git grep -l -P "task work\b"` on the branch finds exactly two historical files, `backlog/52-hall9k-cutover.md` and `src/Hall9k.Domain/Features/Decision/Legacy/v0-decisions-log.md`; the PR lists the result.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/657d50d3-remove-the-hidden-h9k-task-wor
+published: 2026-10-30 12:36:22Z
+context: |-
+  Progressive automation: a user drives a task's lifecycle phase by phase from manual to full auto through h9k task drive (renamed from h9k task work), with a task-scoped session, a deterministic h9k task next, skip to PR as a recorded manual override, analysis-only closeout while a human drives, iterating on a task already at the PR stage, and a per-task record of which phases ran by hand. Seven cards, 0 to 6.
+
+  The alias was added by PR #773; read that diff first. It is three pieces: the registration at `src/Hall9k.Cli/Infrastructure/CliCommandTree.cs:1955`, `src/Hall9k.Cli/Commands/TaskWorkAliasCommand.cs`, and the alias cases in `tests/Hall9k.Tests/Cli/TaskWorkAliasCommandTests.cs`. There is no alias-specific refusal: the row at `DispatchedSessionCommandClassification.cs:115` is shared with drive and stays. `DispatchedSessionTreeTests` only checks that a row exists, so the `drive` row of `A_dispatched_session_is_refused_either_name_the_same_way` is the only proof that drive is refused; keep it, in a file named for drive. Three live mentions still need fixing: `.claude/skills/hall9k-cli-reference/SKILL.md:63`, `docs/scope.md:174`, and `src/Hall9k.Domain/Features/Tasks/Queries/TaskPassageQuery.Classification.cs:23`. The `work` prompt-builder key (`PromptBuilderKey.Work` and its mentions in the docs and the skill) is a stored key rather than this verb and stays, as do test names such as `_by_task_work`.
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/6e6d0200-progressive-automation-a-user-drives-a-task-s-lifecycle-phas/workspace
