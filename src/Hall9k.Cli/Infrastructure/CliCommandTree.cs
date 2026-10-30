@@ -536,6 +536,22 @@ public static class CliCommandTree
                         "--email", "you@example.com")
                     .WithExample("connection", "add", "jira", "--site", "https://your-org.atlassian.net",
                         "--email", "you@example.com", "--token-env", "JIRA_API_TOKEN");
+                add.AddCommand<ConnectionAddLinearCommand>("linear")
+                    .WithDescription(
+                        "Register the Linear workspace Hall9k reads issues through, with a personal API key. "
+                        + "Before anything is recorded Hall9k reads Linear's viewer and organization with the "
+                        + "key, refuses one Linear rejects, and records the user's id and name and the workspace "
+                        + "address (https://linear.app/<workspace>) on the connection. The key is prompted for "
+                        + "by default and stored under ~/.hall9k/credentials readable by you alone (never "
+                        + "inside a project, never replicated), or named with --token-env or, on macOS, "
+                        + "--keychain; the key itself never reaches an event. An install holds one Linear "
+                        + "connection, which means one Linear workspace; running it again replaces the "
+                        + "connection and re-records the user and the workspace, which is how a rotated key is "
+                        + "applied. Success means only that Linear accepted the key: a key limited by "
+                        + "permission or by team can still be refused on a later read or write. Then adopt "
+                        + "issues with h9k task add --from-linear or h9k task link-linear.")
+                    .WithExample("connection", "add", "linear")
+                    .WithExample("connection", "add", "linear", "--token-env", "LINEAR_API_KEY");
             });
             connection.AddCommand<ConnectionListCommand>("list")
                 .WithDescription(
@@ -1481,6 +1497,7 @@ public static class CliCommandTree
                 .WithExample("task", "add", "--project", "hall9k", "--from-issue", "42")
                 .WithExample("task", "add", "--project", "hall9k", "--from-issue", "266", "--pre-approved")
                 .WithExample("task", "add", "--project", "hall9k", "--from-jira", "PROJ-123")
+                .WithExample("task", "add", "--project", "hall9k", "--from-linear", "ENG-123")
                 .WithExample("task", "add", "--project", "hall9k",
                     "--from-pr", "https://github.com/Hallmanac/hall9k/pull/42")
                 .WithExample("task", "add", "--project", "hall9k",
@@ -1802,6 +1819,20 @@ public static class CliCommandTree
                     + "for a card a human made by hand.")
                 .WithExample("task", "link-jira", "28b19893", "PROJ-123")
                 .WithExample("task", "link-jira", "28b19893", "https://your-org.atlassian.net/browse/PROJ-123");
+            task.AddCommand<TaskLinkLinearCommand>("link-linear")
+                .WithDescription(
+                    "Record the Linear issue this task belongs to, verified first. The identifier or URL you "
+                    + "pass is read through the registered connection and what gets recorded is the "
+                    + "identifier Linear answers with, never the claim, so one that does not resolve writes "
+                    + "nothing and tells you why. An issue from any team the key can see is accepted, in any "
+                    + "state, and the state observed is recorded; a URL from a different workspace than the "
+                    + "registered one is refused. A task carries one external item, so a second link is "
+                    + "refused, with one exception: after Linear moves an issue to another team it has a new "
+                    + "identifier, and passing the new one here replaces the recorded link when Linear lists "
+                    + "the recorded identifier among the issue's previous ones. A branch already cut for the "
+                    + "task keeps its name.")
+                .WithExample("task", "link-linear", "28b19893", "ENG-123")
+                .WithExample("task", "link-linear", "28b19893", "https://linear.app/your-workspace/issue/ENG-123");
             task.AddCommand<TaskWriteJiraCommand>("write-jira")
                 .WithDescription(
                     "Submit a composed Jira create, update, or comment for hall9k to execute (the write "

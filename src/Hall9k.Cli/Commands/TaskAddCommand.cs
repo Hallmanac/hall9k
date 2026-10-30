@@ -203,6 +203,23 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "that moment, never re-checked afterwards")]
         public string? FromJira { get; init; }
 
+        [CommandOption("--from-linear <IDENTIFIER-OR-URL>")]
+        [Description(
+            "Adopt an existing Linear issue (PLAN.md §3.1a): the identifier (ENG-123) or the issue's URL. "
+            + "Read through the registered Linear connection (h9k connection add linear), which holds one "
+            + "workspace per install; an issue from any team the key can see is accepted, and a URL from "
+            + "another workspace is refused because a stored reference records no workspace. The title "
+            + "seeds the objective and the description becomes agent context; the identifier Linear answers "
+            + "with is recorded as the task's external reference (linear:ENG-123) and rendered as a link by "
+            + "h9k task show. Acceptance criteria are NEVER read out of an issue description: they are the "
+            + "readiness contract, so you supply them with --criteria or at the prompt. Adopted by Linear "
+            + "state type: backlog, unstarted, and started are open work; completed, canceled, and "
+            + "duplicate are refused; triage is refused with a pointer to h9k idea add --from-linear; a "
+            + "type Hall9k has no rule for is refused with the type quoted. The state read at import is "
+            + "recorded as an observation of that moment, never re-checked afterwards. Cannot be combined "
+            + "with --from-issue, --from-jira, or --from-pr")]
+        public string? FromLinear { get; init; }
+
         [CommandOption("--primary-tracker <github|jira>")]
         [Description(
             "With --from-issue and --from-jira given together (task: a task may link to both a GitHub "
@@ -797,6 +814,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             {
                 new AdoptionSource(WorkItemProvider.GitHub, settings.FromIssue ?? string.Empty, "--from-issue", "issue"),
                 new AdoptionSource(WorkItemProvider.Jira, settings.FromJira ?? string.Empty, "--from-jira", "card"),
+                new AdoptionSource(WorkItemProvider.Linear, settings.FromLinear ?? string.Empty, "--from-linear", "issue"),
                 new AdoptionSource(WorkItemProvider.GitHubPullRequest, settings.FromPr ?? string.Empty, "--from-pr", "pull request"),
             }.Where(source => source.Reference.IsNotBlank()),
         ];
@@ -810,8 +828,9 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             _ => throw new DomainValidationException(
                 $"{string.Join(" and ", named.Select(source => source.Option))} each adopt a different "
                 + "item. --from-issue and --from-jira together link both trackers to one task (task: a "
-                + "task may link to both a GitHub issue and a Jira card); any other combination needs "
-                + "one, and the second task can be written separately if both pieces of work are real."),
+                + "task may link to both a GitHub issue and a Jira card); any other combination, "
+                + "--from-linear included, needs one, and the second task can be written separately if "
+                + "both pieces of work are real."),
         };
     }
 
