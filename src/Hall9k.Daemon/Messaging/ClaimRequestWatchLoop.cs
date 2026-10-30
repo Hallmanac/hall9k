@@ -343,7 +343,7 @@ public sealed class ClaimRequestWatchLoop(
 
     /// <summary>
     /// idea 6be68ee2, trust-ledger finding 13: unless <paramref name="externalReferenceProvider"/>
-    /// already names a Jira item, <paramref name="request"/>'s own carried
+    /// already names a Jira or a Linear item, <paramref name="request"/>'s own carried
     /// <see cref="ClaimEnvelopeCodec.ClaimRequestRecord.RequesterTrackerIdentity"/> is replaced with
     /// <paramref name="fromNodeId"/>'s own declared GitHub login from <paramref name="chain"/>'s
     /// <see cref="TrustChain.NodeDeclarations"/> (the 37749bc6 declaration) — null when that node
@@ -354,7 +354,7 @@ public sealed class ClaimRequestWatchLoop(
     /// own <see cref="ClaimGate"/> or on whether an external reference exists yet — both can still
     /// change before the eventual grant, and <c>ClaimRequestEngine.GrantTrackerAssigneeBestEffortAsync</c>
     /// only ever reads this value once both are resolved at grant time, so replacing it unconditionally
-    /// here (short of a confirmed Jira item, whose declaration carries no Jira identity at all) costs
+    /// here (short of a confirmed Jira or Linear item, whose declaration carries no such identity at all) costs
     /// nothing for an ungated or not-yet-linked task and closes the gap a request-time-only gate would
     /// leave open (independent pre-PR review, cycle 1, conformance and adversarial lenses, both
     /// medium). Pure and side-effect-free, the same reason <see cref="IsRequesterOwnerVerified"/> is
@@ -364,7 +364,7 @@ public sealed class ClaimRequestWatchLoop(
         WorkItemProvider? externalReferenceProvider, TrustChain chain,
         ClaimEnvelopeCodec.ClaimRequestRecord request, Guid fromNodeId)
     {
-        if (externalReferenceProvider == WorkItemProvider.Jira)
+        if (externalReferenceProvider == WorkItemProvider.Jira || externalReferenceProvider == WorkItemProvider.Linear)
         {
             return (request, false);
         }

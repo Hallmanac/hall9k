@@ -11,7 +11,7 @@ namespace Hall9k.Connectors.WorkItems;
 
 /// <summary>
 /// The read behind a project's <c>tracker-assignee</c> claim gate (idea 64c75e43): every teammate
-/// runs their own install against their own database, so the Jira card or the GitHub issue is the
+/// runs their own install against their own database, so the Jira card, the GitHub issue or the Linear issue is the
 /// only record the machines share — and this makes the tracker's own assignment field the single
 /// act that hands out work. A task linked to a gated item is claimed on this install only while
 /// the tracker shows that item assigned to this install's own tracker identity, so two teammates'
@@ -46,13 +46,26 @@ namespace Hall9k.Connectors.WorkItems;
 /// </para>
 /// </summary>
 public sealed class TrackerClaimGate(
-    ProcessRunner? processRunner = null, JiraRequester? requester = null, CredentialVault? vault = null)
+    ProcessRunner? processRunner = null,
+    JiraRequester? requester = null,
+    CredentialVault? vault = null,
+    LinearRequester? linearRequester = null)
 {
     private readonly ProcessRunner processRunner = processRunner ?? ExternalProcess.Runner;
 
     /// <summary>
-    /// Whether this task's reference is one the gate applies to at all. Only the two backlog item
-    /// kinds are gated: a Jira card and a GitHub issue. A task with no reference, one whose
+    /// The Linear transport this gate reads through, null for the real one. Exposed to the
+    /// <see cref="TrackerAssignmentTake"/> built over this gate, so the take's writes and the gate's
+    /// reads reach the one recorded double a test injects rather than two unrelated transports.
+    /// </summary>
+    internal LinearRequester? LinearTransport => linearRequester;
+
+    /// <summary>The credential vault this gate resolves Linear keys through, null for the default.</summary>
+    internal CredentialVault? Vault => vault;
+
+    /// <summary>
+    /// Whether this task's reference is one the gate applies to at all. Only the backlog item
+    /// kinds are gated: a Jira card, a GitHub issue, and a Linear issue. A task with no reference, one whose
     /// publisher deliberately opted out of tracking (<c>h9k task publish --untracked</c>, which
     /// leaves no reference behind either), and a pr-review task — whose reference is a
     /// <see cref="WorkItemProvider.GitHubPullRequest"/> — all claim exactly as they did before this
@@ -65,7 +78,9 @@ public sealed class TrackerClaimGate(
     public static bool Gates(ClaimGate gate, ExternalReference? reference) =>
         gate == ClaimGate.TrackerAssignee
         && reference is { } item
-        && (item.Provider == WorkItemProvider.Jira || item.Provider == WorkItemProvider.GitHub);
+        && (item.Provider == WorkItemProvider.Jira
+            || item.Provider == WorkItemProvider.GitHub
+            || item.Provider == WorkItemProvider.Linear);
 
     /// <summary>
     /// One fresh read, at the moment of the check — never a cached answer, because the whole
@@ -94,8 +109,13 @@ public sealed class TrackerClaimGate(
         }
 
         ExternalReference item = reference!;
-        return item.Provider == WorkItemProvider.Jira
-            ? await CheckJiraAsync(store, item, cancellationToken)
+        if (item.Provider == WorkItemProvider.Jira)
+        {
+            return await CheckJiraAsync(store, item, cancellationToken);
+        }
+
+        return item.Provider == WorkItemProvider.Linear
+            ? await CheckLinearAsync(store, item, cancellationToken)
             : await CheckGitHubAsync(item, workingDirectory, cancellationToken);
     }
 
@@ -209,6 +229,72 @@ public sealed class TrackerClaimGate(
         return Conclude(
             reference, itemKey, itemUrl, identity, read, observedAt,
             unreadableLever: Lever(read.Failure, RenewJiraToken(connection)));
+    }
+
+    /// <summary>
+    /// Linear: the identity is the viewer's user <c>id</c> that <c>h9k connection add linear</c>
+    /// recorded on the connection, compared ordinally against the assignee's <c>id</c> and never
+    /// against a name or an email. A connection that carries no id answers Unreadable and says how to
+    /// record one; there is no live viewer read here, so a gate that runs on a cadence never spends a
+    /// Linear call on learning who it is. Linear's assignee is one nullable user, and its separate
+    /// <c>delegate</c> field is neither read nor written.
+    /// </summary>
+    private async Task<TrackerClaimDecision> CheckLinearAsync(
+        IDocumentStore store, ExternalReference reference, CancellationToken cancellationToken)
+    {
+        DateTimeOffset observedAt = DateTimeOffset.UtcNow;
+        string itemKey = reference.Reference;
+
+        ConnectionDetails? connection;
+        LinearWorkItemProvider provider;
+        try
+        {
+            await using IQuerySession query = store.QuerySession();
+            connection = await WorkItemConnections.FindLinearConnectionAsync(query, cancellationToken);
+            if (connection is null)
+            {
+                return Unreadable(
+                    reference, itemKey, null, WorkItemConnections.NoLinearConnection,
+                    authenticationRefusal: false, RestoreTheLinearConnection, observedAt);
+            }
+
+            provider = new LinearWorkItemProvider(
+                WorkItemConnections.LinearAccountFor(connection, vault), linearRequester);
+        }
+        catch (DomainException exception)
+        {
+            // Two Linear connections with nothing saying which, or one with no workspace recorded:
+            // this install's own configuration rather than Linear refusing anything.
+            return Unreadable(
+                reference, itemKey, null, exception.Message,
+                authenticationRefusal: false, RestoreTheLinearConnection, observedAt);
+        }
+
+        Uri? itemUrl = provider.WebUrl(reference);
+
+        if (!LinearIssueIdentifier.TryParseBare(itemKey, out LinearIssueIdentifier identifier))
+        {
+            return Unreadable(
+                reference, itemKey, itemUrl,
+                $"'{Text.RelayedText.OneLine(reference.ToString())}' does not read as a Linear issue "
+                + "identifier, so there is no issue whose assignee could be read.",
+                authenticationRefusal: false, RelinkTheLinearIssue, observedAt);
+        }
+
+        if (connection.TrackerAccountId.IsBlank())
+        {
+            return Unreadable(
+                reference, itemKey, itemUrl,
+                "the registered Linear connection records no user id for its key, so there is nothing "
+                + "to compare the issue's assignee against.",
+                authenticationRefusal: false, RecordTheLinearViewer, observedAt);
+        }
+
+        string identity = connection.TrackerAccountId;
+        TrackerAssigneeRead read = await provider.ReadAssigneeAsync(identifier, RelinkPlaceholder, cancellationToken);
+        return Conclude(
+            reference, itemKey, itemUrl, identity, read, observedAt,
+            unreadableLever: LinearLever(read.Failure));
     }
 
     /// <summary>
@@ -352,6 +438,19 @@ public sealed class TrackerClaimGate(
             : $"Assign {item} to yourself in the tracker and the claim proceeds on its own: {itemUrl}";
     }
 
+    /// <summary>
+    /// What ends a Linear hold. Unlike the shared sentence for an answered item, it does not say
+    /// nothing on this install can end the hold: a Linear issue that moved to another team answers
+    /// not-found under its old identifier and is relinked from here, and the other answers carry
+    /// Linear's own words, which the line above it quotes.
+    /// </summary>
+    private static string LinearLever(TrackerReadFailure failure) => failure switch
+    {
+        TrackerReadFailure.Credentials => RenewTheLinearKey,
+        TrackerReadFailure.Item => TheLinearIssueAnswered,
+        _ => WaitOutTheOutage,
+    };
+
     private static string RenewJiraToken(ConnectionDetails connection) =>
         "The hold ends when the credentials work again — renew the token and register the connection "
         + $"again: h9k connection add jira --site {connection.SiteUrl?.GetLeftPart(UriPartial.Authority) ?? "https://your-org.atlassian.net"} "
@@ -361,6 +460,29 @@ public sealed class TrackerClaimGate(
         "Nothing on this install can end the hold — the reference recorded on this task is not one "
         + "this platform can read as a key, so relink it: h9k task link-jira <id> <KEY> (or "
         + "h9k task link-issue for a GitHub issue).";
+
+    private const string RelinkPlaceholder = "<id>";
+
+    private const string RelinkTheLinearIssue =
+        "Nothing on this install can end the hold: the reference recorded on this task is not one this "
+        + "platform can read as a Linear issue identifier, so relink it: h9k task link-linear <id> <identifier>.";
+
+    private const string RestoreTheLinearConnection =
+        "The hold ends when this install can reach Linear again: restore the connection "
+        + "(h9k connection list to see what is registered, h9k connection add linear to fix it).";
+
+    private const string RecordTheLinearViewer =
+        "The hold ends when the connection records the user the key belongs to: register it again with "
+        + "h9k connection add linear, which reads and records that id.";
+
+    private const string RenewTheLinearKey =
+        "The hold ends when the key works again: create a personal API key in Linear and register the "
+        + "connection again with h9k connection add linear.";
+
+    private const string TheLinearIssueAnswered =
+        "Linear answered rather than failing, and it will answer the same way on every retry, so the hold "
+        + "ends at Linear: its own words above say what to fix. If the issue moved to another team it has a "
+        + "new identifier, and the task is relinked with h9k task link-linear <id> <new identifier>.";
 
     private const string RestoreTheConnection =
         "The hold ends when this install can reach the tracker again — restore the connection "

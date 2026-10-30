@@ -334,7 +334,12 @@ public static class ClaimRequestEngine
             return null;
         }
 
-        string tracker = task.ExternalReference.Provider == WorkItemProvider.Jira ? "Jira" : "GitHub";
+        string tracker = task.ExternalReference.Provider switch
+        {
+            _ when task.ExternalReference.Provider == WorkItemProvider.Jira => "Jira",
+            _ when task.ExternalReference.Provider == WorkItemProvider.Linear => "Linear",
+            _ => "GitHub",
+        };
 
         if (requesterTrackerIdentity.IsBlank())
         {
