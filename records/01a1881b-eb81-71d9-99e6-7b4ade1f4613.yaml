@@ -1,0 +1,41 @@
+hall9k-task-record: 1
+task-id: 01a1881b-eb81-71d9-99e6-7b4ade1f4613
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#798
+objective: Publishing a task on a Linear-tracked project can create its Linear issue, using the same link, create, or untracked choice Jira and GitHub issues use
+criteria:
+  - h9k project set <project> --backlog linear is accepted only when the project has a Linear team bound or the same command binds one, and is refused otherwise naming h9k project set <project> --linear <TEAM>; BacklogPolicy gains Linear, its parse error names all four values, and the decider's closed set admits it
+  - |-
+    h9k project set judges the resulting pair: clearing the team with --linear none while the policy stays linear is refused naming h9k project set <project> --linear none --backlog none; refusing a github-issues or jira policy on a Linear-bound project is the base card's rule and is not repeated here
+  - |-
+    With the policy linear, h9k task publish on a draft that carries no linked issue and has no publication pending refuses before publishing with the three existing choices: link one with h9k task link-linear, attest none exists with --no-existing-item, or skip tracking with --untracked; the refusal names Linear and the link-linear command
+  - With the policy linear, h9k task publish --no-existing-item on a task that will create an issue resolves the team through Linear before the publish commits; no Linear connection on this install, a rejected key, no team bound, an unknown team, or Linear not answering each refuses with a non-zero exit, leaves the task a Draft, and names the remedy and --untracked as the way to publish without Linear; --untracked and an already linked task make no Linear call
+  - After the publish commits, the publishing install creates the issue itself, with no agent session and no daemon involvement, through one issueCreate carrying the resolved team's id, the team's defaultIssueState as stateId (omitted only when Linear reports none), the title, and the description, so a team with Triage on does not receive the issue in Triage; no assignee, label, Linear project, or cycle is set
+  - |-
+    The title is the objective folded to one line and cut to 255 characters, and the description is GitHubIssueBody.Compose's output: the agent context without the discovery-workspace pointer IdeaPromoteCommand appends, the acceptance-criteria checklist, and the full objective when the title was cut
+  - |-
+    The created issue is read back and linked through the internal link step h9k task link-linear uses, which applies no adoption-state rule, and under the policy linear the task record is written to the ledger on every outcome: linked, create failed, link failed, already linked, and --untracked
+  - Under the policy linear, on a publish that creates an issue, the go signal from --queue or the interactive offer is appended only after the link attempt, so dispatch never cuts a branch before the key exists; when no issue was linked the task stays published and not queued, and the output names how to link it and then h9k task queue <task>
+  - Publishing with --untracked publishes with no Linear issue, records the choice on TaskPublished as it does for Jira and GitHub, and the note names Linear; a task adopted or linked earlier publishes without creating anything
+  - |-
+    Publish never files a second issue for one task: a task that already carries a reference or a pending publication creates nothing, and the create is sent once and never retried by the platform; a read-back or link failure after Linear returned an identifier names h9k task link-linear <task> <identifier>; a definite refusal (a GraphQL errors array, success false, or a 4xx response) names a by-hand create and then the link; an unknown outcome (a timeout, a lost connection, a 5xx, or an unreadable answer) says the issue may exist and names searching the team before linking or creating
+  - The --backlog-routing setting is ignored under the linear policy, and h9k project set says so whenever a command touching --backlog or --backlog-routing leaves the project with the policy linear and routing text set
+  - h9k project show renders the linear policy as its own row rather than as none; h9k task show on a task past Draft under the policy linear, with no linked issue and no untracked attestation, says no Linear issue is linked and names h9k task link-linear; the help text for --backlog, --no-existing-item, and --queue and the backlog section of docs/cli.md describe the linear policy
+  - Every Linear call in these tests runs against recorded responses; a test pins the exact issueCreate request for a sample task, stateId and the absence of assigneeId included; the tracking step takes its Linear client and its ILedger as parameters, so the outcome tests for the record, the go signal, and the create failures run on FakeLedger and the existing Postgres fixture, with no git ledger write, no GitHub call, and no new container
+dependencies: [01a18cfe-b598-7054-b00f-2f220611dc26]
+epic-title: Linear connector
+epic-id: 01a1881b-278f-7669-acde-4b0d36563fc2
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/de1f4613-publishing-a-task-on-a-linear
+published: 2026-10-30 14:37:16Z
+context: |-
+  A Linear connector, so a project whose work and backlog live in Linear gets the same tracker integration hall9k gives Jira and GitHub issues
+
+  The challenge verdict is notes/challenge-de1f4613/journal.md in the project home; it holds the file:line evidence and the Linear sources behind each criterion. Facts the build leans on: a team with Triage on sends an issueCreate with no stateId to Triage (linear.app/developers/graphql), which is why criterion 5 passes Team.defaultIssueState; teamId is an id, not a key, and teams(filter: { key: { eq: ... } }) resolves a key (public schema); Team, IssueCreateInput, and IssuePayload are in packages/sdk/src/schema.graphql in the linear/linear repository. Unverified, so check them against the public schema or docs and never a live workspace: whether stateId is honoured on a Triage-on team, Linear's title limit, and what a repeated client-supplied issue id does. Parked: h9k task publish --linear-team (trigger: an operator has to create an issue by hand in a non-default team twice; until then, create it in Linear and use h9k task link-linear); Linear labels from --backlog-routing (trigger: the team wants hall9k-created issues labelled); regenerating the description's checklist on task revise (trigger: a teammate reads criteria from the Linear issue rather than the card); a client-supplied issue id for idempotency (trigger: a duplicate is actually observed).
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/5d12221a-a-linear-connector-so-a-project-whose-work-and-backlog-live/workspace
