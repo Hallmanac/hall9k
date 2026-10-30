@@ -1,6 +1,7 @@
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
@@ -164,6 +165,29 @@ public sealed class JiraWriteRetryEngine(
                     logger.LogDebug(
                         "Task {TaskId} has a Jira write pending but its project is archived; leaving it "
                         + "pending until the project is reactivated", task.Id);
+                    continue;
+                }
+
+                // A create recorded before the project moved to Linear would link a Jira card to a task
+                // of a project whose one tracker is Linear, which every CLI door already refuses. Only a
+                // create is ended: a pending update or comment targets a card the task already carries,
+                // which stays readable and writable as history.
+                if (ProjectTracker.IsLinear(project.LinearTeam) && task.PendingJiraWriteOperation == JiraWriteOperation.Create)
+                {
+                    JiraWriteAttemptResult? refused = await JiraWriteCoordinator.RefusePendingCreateAsync(
+                        session, task.Id,
+                        $"{project.Name} now tracks its work in Linear (team {project.LinearTeam.Value}), its one "
+                        + "tracker, so this Jira create was not run and no card was filed. Add the work in Linear "
+                        + "instead, or clear the team to return the project to another tracker: "
+                        + $"h9k project set {project.Name} --linear none",
+                        cancellationToken);
+                    if (refused is not null)
+                    {
+                        logger.LogWarning(
+                            "Task {TaskId}: the pending Jira create was ended unrun because project {Project} "
+                            + "now tracks its work in Linear", task.Id, project.Name);
+                    }
+
                     continue;
                 }
 

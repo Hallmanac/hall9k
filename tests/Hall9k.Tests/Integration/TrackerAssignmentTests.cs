@@ -11,6 +11,7 @@ using Hall9k.Daemon.JiraWrites;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -1896,6 +1897,41 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     }
 
     /// <summary>
+    /// The one-tracker rule has to hold for a create already recorded when the project moved to Linear:
+    /// the sweep ends it unrun and clears the marker, since retrying it would link a Jira card to a task
+    /// of a project every CLI door refuses a Jira card for.
+    /// </summary>
+    [Fact]
+    public async Task A_stuck_create_on_a_project_since_bound_to_Linear_is_ended_unrun_rather_than_retried()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = await SeedTaskAsync(store, externalReference: null, node.OwnerId, cts.Token, linearTeam: "ENG");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            JiraWriteAttemptResult submitted = await JiraWriteCoordinator.SubmitAsync(
+                session, taskId, JiraWriteOperation.Create, issueKey: null,
+                new JiraWritePayload("Dev Task", new Dictionary<string, string> { ["summary"] = "File it" }, null),
+                JiraProjectKey.Parse("PROJ"), DomainId.New(), Executor(AuthRejected()), cts.Token);
+            submitted.Outcome.Should().Be(JiraWriteOutcome.PendingAuthentication);
+        }
+
+        RecordingJiraRequester mustNotRun = RecordingJiraRequester.RespondingTo(
+            _ => throw new InvalidOperationException("a create on a Linear project must never reach Jira"));
+        JiraWriteRetryEngine engine = new(store, node, mustNotRun.Requester, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
+
+        JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(new JiraWriteRetrySweepResult(Retried: 0, Succeeded: 0));
+        TaskAggregate? ended = await LoadAsync(store, taskId, cts.Token);
+        ended!.PendingJiraWriteId.Should().BeNull("the refused create is ended, not left to retry every sweep");
+        ended.ExternalReference.Should().BeNull("no Jira card was linked");
+    }
+
+    /// <summary>
     /// All three of <see cref="JiraWriteRetryEngine.PollOnceAsync"/>'s own candidate queries fence
     /// on <c>TaskDetails.AssignedOwnerId == ownerId</c> (independent pre-PR review, cycle 5,
     /// conformance lens), but every other test in this class runs its task through
@@ -2567,7 +2603,7 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     /// </summary>
     private static async Task<Guid> SeedTaskAsync(
         IDocumentStore store, ExternalReference? externalReference, Guid ownerId, CancellationToken cancellationToken,
-        bool archiveProject = false)
+        bool archiveProject = false, string? linearTeam = null)
     {
         Guid projectId = DomainId.New();
         Guid taskId = DomainId.New();
@@ -2585,6 +2621,21 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
         session.Events.StartStream<TaskAggregate>(taskId, TaskSeed.Dispatchable(added, ownerId, JiraWriteNow));
 
         await session.SaveChangesAsync(cancellationToken);
+
+        if (linearTeam is not null)
+        {
+            await using IDocumentSession bindSession = store.LightweightSession();
+            bindSession.Events.Append(projectId, new ProjectSettingsChanged(
+                projectId,
+                Optional<IReadOnlyList<VerifyCommand>>.None,
+                Optional<bool>.None,
+                Optional<int>.None,
+                Optional<IReadOnlyList<ContextLink>>.None,
+                JiraWriteNow,
+                ownerId,
+                LinearTeam: Optional<LinearTeamKey>.Of(LinearTeamKey.Parse(linearTeam))));
+            await bindSession.SaveChangesAsync(cancellationToken);
+        }
 
         if (archiveProject)
         {

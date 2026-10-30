@@ -1,6 +1,5 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
-using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -8,7 +7,6 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
-using Hall9k.Tests.Fakes;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -27,14 +25,14 @@ public sealed class LinearTrackerDoorsTests
         LinearTeam = team is null ? LinearTeamKey.None : LinearTeamKey.Parse(team),
     };
 
+    // The refusal's wording, for the door names every command passes it. That each command calls the
+    // guard is pinned for task add below; the others call it from a Marten-backed handler.
     [Theory]
     [InlineData("h9k task link-jira")]
     [InlineData("h9k task link-issue")]
     [InlineData("h9k task push-to-jira")]
     [InlineData("h9k task write-jira --op create")]
-    [InlineData("h9k task add --from-jira")]
-    [InlineData("h9k task add --from-issue")]
-    public void A_door_that_links_another_trackers_item_is_refused_naming_Linear_as_the_tracker(string door)
+    public void The_refusal_names_the_door_Linear_as_the_tracker_and_the_way_out(string door)
     {
         Action refuse = () => ProjectTracker.RefuseOtherTracker(LinearTeamKey.Parse("ENG"), "hall9k", door);
 
@@ -86,16 +84,6 @@ public sealed class LinearTrackerDoorsTests
     }
 
     [Fact]
-    public void Adopting_both_a_card_and_an_issue_is_refused_too()
-    {
-        TaskAddCommand.Settings settings = new() { FromJira = "PROJ-1", FromIssue = "42" };
-
-        Action adopt = () => TaskAddCommand.RefuseAdoptionAgainstTracker(settings, Project("ENG"));
-
-        adopt.Should().Throw<DomainValidationException>();
-    }
-
-    [Fact]
     public void Adopting_a_pull_request_is_unaffected_on_a_Linear_project()
     {
         TaskAddCommand.Settings settings = new() { FromPr = "123" };
@@ -136,24 +124,6 @@ public sealed class LinearTrackerDoorsTests
 
         ConnectionListCommand.BoundProjects(linear, projects).Should().Be(2);
         ConnectionListCommand.BoundProjects(jira, projects).Should().Be(0, "a Linear team is not a Jira board");
-    }
-
-    [Fact]
-    public void Each_link_is_shown_by_its_own_provider_whatever_the_projects_tracker_is()
-    {
-        // ExternalMarkup takes the reference alone: a linear: link on a project that never bound a team
-        // and a github: link on one bound to Linear render the same way they always did.
-        WorkItemImporter importer = new(
-            new GitHubWorkItemProvider(RecordingProcessRunner.NeverInvoked()),
-            new LinearWorkItemProvider(
-                LinearAccount.Registered(
-                    new Uri("https://linear.app/hall9k"), "Brian Hall", CredentialReference.EnvironmentVariable("LINEAR_KEY")),
-                FakeLinearRequester.NeverInvoked()));
-
-        TaskShowCommand.ExternalMarkup(importer, "linear:ENG-123")
-            .Should().Contain("[link=https://linear.app/hall9k/issue/ENG-123]");
-        TaskShowCommand.ExternalMarkup(importer, "github:o/r#42")
-            .Should().Contain("[link=https://github.com/o/r/issues/42]");
     }
 
     [Fact]

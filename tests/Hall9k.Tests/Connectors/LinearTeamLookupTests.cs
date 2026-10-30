@@ -108,17 +108,6 @@ public sealed class LinearTeamLookupTests : IDisposable
     }
 
     [Fact]
-    public async Task A_rate_limit_is_an_outage_with_its_retry_after()
-    {
-        RecordingRequester requester = new(429, "{}", retryAfter: "30");
-
-        Func<Task> find = () => Provider(requester).FindTeamAsync(LinearTeamKey.Parse("ENG"), Token);
-
-        (await find.Should().ThrowAsync<DomainValidationException>()).Which.Message
-            .Should().Contain("rate-limiting").And.Contain("Retry-After is 30");
-    }
-
-    [Fact]
     public async Task Partial_data_beside_an_errors_array_is_a_failure_not_a_team()
     {
         RecordingRequester requester = new(

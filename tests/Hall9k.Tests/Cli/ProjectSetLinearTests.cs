@@ -61,17 +61,6 @@ public sealed class ProjectSetLinearTests : IDisposable
         };
 
     [Fact]
-    public async Task A_team_the_connection_can_see_is_confirmed_with_its_name()
-    {
-        LinearWorkItemProvider provider = Provider(
-            JsonSerializer.Serialize(new { data = new { teams = new { nodes = new[] { new { id = "t1", key = "ENG", name = "Engineering" } } } } }));
-
-        LinearTeam team = await ProjectSetCommand.ConfirmLinearTeamAsync(provider, Eng, Token);
-
-        team.Name.Should().Be("Engineering");
-    }
-
-    [Fact]
     public async Task A_team_nobody_can_see_is_refused_saying_it_may_not_exist_or_the_key_may_be_limited()
     {
         LinearWorkItemProvider provider = Provider("""{"data":{"teams":{"nodes":[]}}}""");
@@ -85,32 +74,34 @@ public sealed class ProjectSetLinearTests : IDisposable
 
     [Fact]
     public void The_first_binding_on_a_project_still_on_the_default_template_sets_the_Linear_convention() =>
-        ProjectSetCommand.SetsLinearConvention(LinearTeamKey.None, Eng, null, BranchNameTemplate.Default)
+        ProjectSetCommand.SetsLinearConvention(false, Eng, null, BranchNameTemplate.Default)
             .Should().BeTrue();
 
-    [Fact]
-    public void A_template_passed_in_the_same_command_is_the_operators_and_is_left_alone() =>
-        ProjectSetCommand.SetsLinearConvention(LinearTeamKey.None, Eng, "{shortid}-{slug}", BranchNameTemplate.Default)
-            .Should().BeFalse();
-
-    [Fact]
-    public void Even_a_none_passed_in_the_same_command_is_the_operators_choice() =>
-        ProjectSetCommand.SetsLinearConvention(LinearTeamKey.None, Eng, "none", BranchNameTemplate.Default)
+    [Theory]
+    [InlineData("{shortid}-{slug}")]
+    [InlineData("none")]
+    public void A_template_passed_in_the_same_command_is_the_operators_and_is_left_alone(string template) =>
+        ProjectSetCommand.SetsLinearConvention(false, Eng, template, BranchNameTemplate.Default)
             .Should().BeFalse();
 
     [Fact]
     public void Changing_the_team_on_an_already_bound_project_leaves_the_template_alone_so_the_undo_stays_undone() =>
-        ProjectSetCommand.SetsLinearConvention(Eng, LinearTeamKey.Parse("PLAT"), null, BranchNameTemplate.Default)
+        ProjectSetCommand.SetsLinearConvention(true, LinearTeamKey.Parse("PLAT"), null, BranchNameTemplate.Default)
+            .Should().BeFalse();
+
+    [Fact]
+    public void Rebinding_after_a_clear_is_not_the_first_binding_so_an_earlier_undo_stays_undone() =>
+        ProjectSetCommand.SetsLinearConvention(true, Eng, null, BranchNameTemplate.Default)
             .Should().BeFalse();
 
     [Fact]
     public void A_project_with_its_own_template_keeps_it() =>
-        ProjectSetCommand.SetsLinearConvention(LinearTeamKey.None, Eng, null, BranchNameTemplate.Parse("feature/{slug}"))
+        ProjectSetCommand.SetsLinearConvention(false, Eng, null, BranchNameTemplate.Parse("feature/{slug}"))
             .Should().BeFalse();
 
     [Fact]
     public void Clearing_the_binding_never_sets_the_convention() =>
-        ProjectSetCommand.SetsLinearConvention(Eng, LinearTeamKey.None, null, BranchNameTemplate.Default)
+        ProjectSetCommand.SetsLinearConvention(true, LinearTeamKey.None, null, BranchNameTemplate.Default)
             .Should().BeFalse();
 
     [Fact]

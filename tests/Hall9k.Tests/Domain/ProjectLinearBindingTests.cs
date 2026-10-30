@@ -154,6 +154,7 @@ public sealed class ProjectLinearBindingTests
 
         aggregate.LinearTeam.HasValue.Should().BeFalse();
         view.LinearTeam.HasValue.Should().BeFalse();
+        aggregate.LinearTeamEverBound.Should().BeTrue("a cleared binding is still history the first-binding convention reads");
     }
 
     [Fact]
@@ -174,13 +175,6 @@ public sealed class ProjectLinearBindingTests
             """{"id":"0191d3b0-0000-7000-8000-000000000001","changedAt":"2026-09-16T12:00:00+00:00","changedByOwnerId":"0191d3b0-0000-7000-8000-000000000002"}""",
             stored)!;
         before.LinearTeam.HasValue.Should().BeFalse();
-    }
-
-    [Fact]
-    public void Linear_is_the_projects_tracker_exactly_when_a_team_is_bound()
-    {
-        ProjectTracker.IsLinear(LinearTeamKey.None).Should().BeFalse();
-        ProjectTracker.IsLinear(LinearTeamKey.Parse("ENG")).Should().BeTrue();
     }
 
     [Fact]

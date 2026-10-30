@@ -86,6 +86,13 @@ public sealed class ProjectAggregate
     public LinearTeamKey LinearTeam { get; private set; } = LinearTeamKey.None;
 
     /// <summary>
+    /// Whether a Linear team was ever bound to this project, even if it has since been cleared. It is what
+    /// lets the first binding set the branch convention once, so an operator's later undo stays undone
+    /// through a clear and a rebind.
+    /// </summary>
+    public bool LinearTeamEverBound { get; private set; }
+
+    /// <summary>
     /// Where this project lives on disk (backlog 47): the directory holding the generated
     /// AGENTS.md, repo/, ideas/, tasks/ and skills/. None for a project registered before homes
     /// existed, or one whose home has not been created on this machine — h9k project init is
@@ -345,6 +352,7 @@ public sealed class ProjectAggregate
         if (@event.LinearTeam.HasValue)
         {
             LinearTeam = @event.LinearTeam.Value ?? LinearTeamKey.None;
+            LinearTeamEverBound |= LinearTeam.HasValue;
         }
 
         if (@event.HomeDirectory.HasValue)
@@ -519,6 +527,7 @@ public sealed class ProjectAggregate
         if (@event.LinearTeam.HasValue)
         {
             LinearTeam = @event.LinearTeam.Value ?? LinearTeamKey.None;
+            LinearTeamEverBound |= LinearTeam.HasValue;
         }
 
         if (@event.BacklogPolicy.HasValue)
