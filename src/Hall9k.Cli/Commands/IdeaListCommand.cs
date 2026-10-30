@@ -136,12 +136,15 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
         // The column appears only when somebody holds one of the rows shown, so a list of ideas nobody
         // has laid hold of reads exactly as it always did.
         bool showAssignee = rows.Any(row => row.Assignee is not null);
+        // Likewise the key of a tracker item an idea was captured from, so a list of unlinked ideas is unchanged.
+        bool showLink = rows.Any(row => row.LinkKey is not null);
         int text = TaskStatusRow.ObjectiveWidth(consoleWidth, bordered: true,
         [
             ["Id", .. rows.Select(row => row.IdMarkup)],
             .. showState ? (string[][])[["State", .. rows.Select(row => row.StateMarkup)]] : [],
             .. scoped ? (string[][])[] : [["Project", .. rows.Select(row => row.ProjectMarkup)]],
             .. showAssignee ? (string[][])[["Assigned", .. rows.Select(row => row.AssigneeMarkup)]] : [],
+            .. showLink ? (string[][])[["Linked", .. rows.Select(row => row.LinkMarkup)]] : [],
             ["Captured", .. ages],
         ]);
 
@@ -162,6 +165,11 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
             table.AddColumn(new TableColumn("Assigned").NoWrap());
         }
 
+        if (showLink)
+        {
+            table.AddColumn(new TableColumn("Linked").NoWrap());
+        }
+
         table.AddColumn("Idea");
         table.AddColumn(new TableColumn("Captured").NoWrap());
 
@@ -173,6 +181,7 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
                 .. showState ? (string[])[row.StateMarkup] : [],
                 .. scoped ? (string[])[] : [row.ProjectMarkup],
                 .. showAssignee ? (string[])[row.AssigneeMarkup] : [],
+                .. showLink ? (string[])[row.LinkMarkup] : [],
                 row.TextMarkup(text),
                 ages[index],
             ]);

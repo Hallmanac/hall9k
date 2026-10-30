@@ -3,6 +3,7 @@ using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Trust;
 using Spectre.Console;
 
@@ -30,7 +31,9 @@ internal sealed record IdeaRow(
     /// </summary>
     bool PartialHistoryHeld = false,
     /// <summary>Who has laid hold of the idea, as a one-line label, or null when nobody has (see <see cref="AssigneeLabel"/>).</summary>
-    string? Assignee = null)
+    string? Assignee = null,
+    /// <summary>The key of the tracker item the idea was captured from (ENG-123, PROJ-1, 42), or null when it carries none.</summary>
+    string? LinkKey = null)
 {
     public static IdeaRow Compose(
         IdeaDetails idea, IReadOnlyDictionary<Guid, ProjectDetails> projects, string? assignee = null) =>
@@ -43,7 +46,17 @@ internal sealed record IdeaRow(
             idea.State,
             idea.CapturedAt,
             IsPartialHistoryHeld(idea),
-            assignee);
+            assignee,
+            LinkKeyOf(idea));
+
+    /// <summary>
+    /// The linked item's key as the people who filed it say it out loud, folded to one line: the reference
+    /// is the tracker's own text, and this prints into a terminal.
+    /// </summary>
+    internal static string? LinkKeyOf(IdeaDetails idea) =>
+        idea.WorkItemReference.IsBlank()
+            ? null
+            : ExternalText.OneLine(ExternalReference.Parse(idea.WorkItemReference).Key);
 
     /// <summary>
     /// The label of whoever holds <paramref name="idea"/>, or null when nobody does
@@ -62,6 +75,8 @@ internal sealed record IdeaRow(
         idea.State == IdeaState.Unknown || idea.CapturedAt == default;
 
     public string IdMarkup => $"[dim]{TaskListCommand.ShortId(Id)}[/]";
+
+    public string LinkMarkup => LinkKey is null ? "[dim]-[/]" : LinkKey.EscapeMarkup();
 
     public string AssigneeMarkup => Assignee is null ? "[dim]-[/]" : Assignee.EscapeMarkup();
 

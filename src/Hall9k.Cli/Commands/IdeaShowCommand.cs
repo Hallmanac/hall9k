@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Text;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
@@ -49,6 +50,11 @@ public sealed class IdeaShowCommand : Hall9kAsyncCommand<IdeaShowCommand.Setting
             + $"[dim]({TaskStatusComposer.RelativeAge(DateTimeOffset.UtcNow - idea.CapturedAt)})[/]");
         header.AddRow("Captured by", await OwnerMarkupAsync(session, idea.OwnerId, cancellationToken));
         header.AddRow("Assigned to", await AssigneeMarkupAsync(session, idea, cancellationToken));
+        if (idea.WorkItemReference.IsNotBlank())
+        {
+            header.AddRow("Linked to", await LinkMarkupAsync(session, idea, cancellationToken));
+        }
+
         header.AddRow("Workspace", WorkspaceMarkup(idea));
         AnsiConsole.Write(header);
 
@@ -198,6 +204,28 @@ public sealed class IdeaShowCommand : Hall9kAsyncCommand<IdeaShowCommand.Setting
             1 => $"{path.EscapeMarkup()} [dim](1 file)[/]",
             int count => $"{path.EscapeMarkup()} [dim]({count} files)[/]",
         };
+    }
+
+    /// <summary>
+    /// The tracker item the idea was captured from, as the item's web URL where this node's importer can
+    /// place it and as the bare reference where it cannot (a Linear reference on a node with no Linear
+    /// connection records no workspace to build an address from). The trailing note is the honest part:
+    /// the item was read once at capture and has not been looked at since.
+    /// </summary>
+    internal static async Task<string> LinkMarkupAsync(
+        IQuerySession session, IdeaDetails idea, CancellationToken cancellationToken)
+    {
+        WorkItemImporter importer = await WorkItemConnections.ImporterAsync(session, cancellationToken);
+        return LinkMarkup(idea, importer.WebUrl(idea.WorkItemReference));
+    }
+
+    internal static string LinkMarkup(IdeaDetails idea, Uri? url)
+    {
+        string label = ExternalText.OneLineMarkup(url?.ToString() ?? idea.WorkItemReference ?? string.Empty);
+        string observed = idea.WorkItemObservedStatus.IsNotBlank() && idea.WorkItemObservedAt is { } at
+            ? $"{ExternalText.OneLineMarkup(idea.WorkItemObservedStatus)} when read at {at.UtcDateTime:yyyy-MM-dd HH:mm:ss}Z; "
+            : string.Empty;
+        return $"{label} [dim]({observed}read once; never re-checked)[/]";
     }
 
     private static async Task<string> ProjectMarkupAsync(
