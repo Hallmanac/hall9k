@@ -2232,13 +2232,13 @@ public sealed class RunLauncher(
             // task claimed-and-requeued forever with no pre-flight ever running again (independent
             // pre-PR review, cycle 1, both lenses).
             //
-            // Scoped to a row THIS node dispatched (independent pre-PR review, cycle 1, adversarial
-            // lens): RunSupervisor.ResumeStrandedPreflightsAsync only ever reattaches or abandons a
-            // row whose own NodeId names this node, so a row another node dispatched (visible here
-            // only because every node shares one database) can never complete or abandon on its own
-            // if that other node is gone for good. Deferring to it as "in flight" the way the check
-            // above used to left the task claimed-and-requeued forever behind a row nothing left
-            // running will ever finish — falling through to a fresh dispatch on this node instead.
+            // Scoped to a row THIS node dispatched: pre-flight events never replicate, so the rows
+            // read here are this node's own, and ResumeStrandedPreflightsAsync only ever reattaches
+            // or abandons a row whose NodeId names this node. A row naming another node (a store
+            // shared by two installs, or one left by a node id since replaced) can never complete
+            // or abandon on its own if that node is gone for good, so deferring to it as "in
+            // flight" would leave the task claimed-and-requeued forever. It falls through to a
+            // fresh dispatch on this node instead.
             //
             // The row's own DispatchingRunId can still name an earlier, superseded claim: a
             // restart long enough to expire this task's lease leaves the detached pre-flight

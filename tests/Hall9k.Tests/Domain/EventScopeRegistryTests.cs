@@ -1,5 +1,6 @@
 using System.Reflection;
 using FluentAssertions;
+using Hall9k.Domain.Features.PrReviewPreflight;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Xunit;
@@ -155,6 +156,19 @@ public sealed class EventScopeRegistryTests
     {
         EventScopeRegistry.ClassificationOf(typeof(RunRecordReconstructed)).Should().Be(EventScope.ProjectScoped);
     }
+
+    /// <summary>
+    /// A pre-flight is a fact about the node that ran it, read back by that node's own launch gate.
+    /// None of its events replicates, so a peer's copy is neither applied nor held.
+    /// </summary>
+    [Theory]
+    [InlineData(typeof(PrReviewPreflightDispatched))]
+    [InlineData(typeof(PrReviewPreflightCompleted))]
+    [InlineData(typeof(PrReviewPreflightAbandoned))]
+    [InlineData(typeof(PrReviewPreflightReclaimed))]
+    [InlineData(typeof(PrReviewPreflightProcessStarted))]
+    public void Pre_flight_events_stay_node_scoped(Type eventType) =>
+        EventScopeRegistry.ClassificationOf(eventType).Should().Be(EventScope.NodeScoped);
 
     [Fact]
     public void An_unclassified_type_throws_with_the_type_name_named()

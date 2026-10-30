@@ -3054,13 +3054,12 @@ public sealed class EventReplicationInbox(
     /// refused on this ground, the same "fail open on the enhancement, never regress the guard's own
     /// prior coverage" choice <see cref="ReplicationOwnership.Family"/>'s own doc makes.
     /// </summary>
-    private static ReplicationStreamFamily FamilyOf(Type eventType) => eventType.Namespace switch
+    internal static ReplicationStreamFamily FamilyOf(Type eventType) => eventType.Namespace switch
     {
         { } ns when ns.StartsWith("Hall9k.Domain.Features.Tasks", StringComparison.Ordinal) => ReplicationStreamFamily.Task,
         { } ns when ns.StartsWith("Hall9k.Domain.Features.Idea", StringComparison.Ordinal) => ReplicationStreamFamily.Idea,
         { } ns when ns.StartsWith("Hall9k.Domain.Features.Epic", StringComparison.Ordinal) => ReplicationStreamFamily.Epic,
         { } ns when ns.StartsWith("Hall9k.Domain.Features.Run", StringComparison.Ordinal) => ReplicationStreamFamily.Run,
-        { } ns when ns.StartsWith("Hall9k.Domain.Features.PrReviewPreflight", StringComparison.Ordinal) => ReplicationStreamFamily.PrReviewPreflight,
         { } ns when ns.StartsWith("Hall9k.Domain.Features.Decision", StringComparison.Ordinal) => ReplicationStreamFamily.Decision,
         { } ns when ns.StartsWith("Hall9k.Domain.Features.Learning", StringComparison.Ordinal) => ReplicationStreamFamily.Learning,
         { } ns when ns.StartsWith("Hall9k.Domain.Features.Project", StringComparison.Ordinal) => ReplicationStreamFamily.Project,

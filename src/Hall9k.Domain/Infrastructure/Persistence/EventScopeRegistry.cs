@@ -395,31 +395,14 @@ public static class EventScopeRegistry
         [typeof(CourierRunCompleted)] = EventScope.NodeScoped,
         [typeof(CourierTokensRecorded)] = EventScope.NodeScoped,
 
-        // Hall9k.Domain.Features.PrReviewPreflight — idea 6be68ee2, finding 1, phase one: unlike
-        // the courier above, a pre-flight's own verdict is a fact about a project-scoped task any
-        // fleet node may reclaim once its lease is released (RequeueReason.PrReviewPreflightSafe/
-        // PrReviewPreflightRetry/PrReviewPreflightSafeMentionFollowUp) — the node that dispatched
-        // the pre-flight and the node that next claims the task are not guaranteed to be the same
-        // one, so this travels rather than staying node-local the way a courier's own delivery
-        // does. Resolved by ReplicationProjectResolver's own PrReviewPreflightDetails branch (the
-        // stream is keyed by the pre-flight's own id, not the task's, so it needs a dedicated
-        // lookup by TaskId the way Run's own branch resolves by task rather than by itself);
-        // without that branch these three never actually reached an outbox, whatever this
-        // classification said (independent pre-PR review, cycle 1, both lenses).
-        [typeof(PrReviewPreflightDispatched)] = EventScope.ProjectScoped,
-        [typeof(PrReviewPreflightCompleted)] = EventScope.ProjectScoped,
-        [typeof(PrReviewPreflightAbandoned)] = EventScope.ProjectScoped,
-        // A reclaim retargets DispatchingRunId to the run that now holds the task's live claim
-        // (independent pre-PR review, cycle 7, conformance lens) — the same fleet-any-node reason
-        // the three events above travel: the node completing or abandoning this pre-flight is not
-        // guaranteed to be the node that reclaimed the task.
-        [typeof(PrReviewPreflightReclaimed)] = EventScope.ProjectScoped,
-        // A pid-and-start-time liveness marker with the identical shape Decisions Log #192
-        // classifies node-scoped by mechanics rather than by the stream it sits on
-        // (RunProcessStarted, WorkItemPublicationSessionStarted): meaningless read from another
-        // node, and never needed there — a fleet node that reclaims this task after a safe verdict
-        // reads the verdict alone, never which pid ran it (independent pre-PR review, cycle 1,
-        // adversarial lens).
+        // Hall9k.Domain.Features.PrReviewPreflight — idea 6be68ee2: a verdict is read back only by
+        // the gate on the node that ran the pre-flight. These were once project-scoped, but
+        // PrReviewPreflightDispatched was never a genesis, so every receiver held them and none
+        // ever read a peer's verdict; a node that claims the task runs its own pre-flight.
+        [typeof(PrReviewPreflightDispatched)] = EventScope.NodeScoped,
+        [typeof(PrReviewPreflightCompleted)] = EventScope.NodeScoped,
+        [typeof(PrReviewPreflightAbandoned)] = EventScope.NodeScoped,
+        [typeof(PrReviewPreflightReclaimed)] = EventScope.NodeScoped,
         [typeof(PrReviewPreflightProcessStarted)] = EventScope.NodeScoped,
 
         // Hall9k.Domain.Features.Message — idea 202383dc, M1a: messages are ephemeral, ruled

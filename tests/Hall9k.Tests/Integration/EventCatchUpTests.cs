@@ -6,6 +6,7 @@ using Hall9k.Connectors.Replication;
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.PrReviewPreflight;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Replication;
@@ -3171,6 +3172,202 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             HeldReplicatedEventRecord held = (await session.Query<HeldReplicatedEventRecord>()
                 .FirstOrDefaultAsync(cts.Token))!;
             held.CatchUpAttempts.Should().Be(0, "an attempt is only ever recorded for an ask actually made");
+        }
+    }
+
+    /// <summary>
+    /// A pull-request review pre-flight stays on the node that ran it. Its five events never reach
+    /// the outbox, a catch-up request naming the pre-flight's stream is answered as nothing held
+    /// here, and the task stream that records its outcome still travels.
+    /// </summary>
+    [Fact]
+    public async Task A_preflights_events_are_neither_flushed_nor_served_by_a_catch_up_answer()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid requesterNodeId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid completedPreflightId = DomainId.New();
+        Guid abandonedPreflightId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, Environment.MachineName, "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await EventReplicationOutbox.EnsureSwitchedOnAsync(session, nodeA, Now, cts.Token);
+        }
+
+        Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream(
+                completedPreflightId,
+                new PrReviewPreflightDispatched(
+                    completedPreflightId, taskId, DomainId.New(), nodeA, "claude-opus-5-5", "head-1", [], Now.AddSeconds(2)));
+            session.Events.Append(completedPreflightId, new PrReviewPreflightReclaimed(completedPreflightId, DomainId.New(), Now.AddSeconds(3)));
+            session.Events.Append(
+                completedPreflightId,
+                new PrReviewPreflightProcessStarted(completedPreflightId, 4242, Now.AddSeconds(3)));
+            session.Events.Append(
+                completedPreflightId, new PrReviewPreflightCompleted(completedPreflightId, Safe: true, "safe", "ok", Now.AddSeconds(4)));
+            session.Events.StartStream(
+                abandonedPreflightId,
+                new PrReviewPreflightDispatched(
+                    abandonedPreflightId, taskId, DomainId.New(), nodeA, "claude-opus-5-5", "head-2", [], Now.AddSeconds(5)));
+            session.Events.Append(abandonedPreflightId, new PrReviewPreflightAbandoned(abandonedPreflightId, Now.AddSeconds(6)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(7), cts.Token);
+        }
+
+        await using (IQuerySession read = _postgres.Store.QuerySession())
+        {
+            IReadOnlyList<MessageDetails> flushed = await read.Query<MessageDetails>()
+                .Where(message => message.ProjectId == projectId && message.Kind == MessageKind.Events.Value
+                    && message.To == MessageAudience.Project.Value)
+                .ToListAsync(cts.Token);
+            List<EventReplicationCodec.ReplicatedEventRecord> queued =
+                [.. flushed.SelectMany(message => EventReplicationCodec.DecodeBatch(message.Body!)!)];
+
+            queued.Should().Contain(record => record.StreamId == taskId, "the task stream the pre-flight sits behind still travels");
+            queued.Should().NotContain(
+                record => record.StreamId == completedPreflightId || record.StreamId == abandonedPreflightId,
+                "none of a pre-flight's own events is put in the outbox");
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            int envelopes = await responder.AnswerAsync(
+                session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
+                new EventReplicationCodec.EventsRequestRecord(
+                    DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, completedPreflightId),
+                Now.AddSeconds(8), trustChain: TrustChain.Empty, cts.Token);
+            envelopes.Should().Be(0, "a request for a pre-flight's stream finds nothing to serve");
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IQuerySession read = _postgres.Store.QuerySession())
+        {
+            (await read.Query<MessageDetails>()
+                .Where(message => message.ProjectId == projectId && message.Kind == MessageKind.EventsUnavailable.Value
+                    && message.To == MessageAudience.Node(requesterNodeId).Value)
+                .CountAsync(cts.Token))
+                .Should().Be(1, "the requester is told nothing is held here, so its ask closes on the decline");
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await responder.AnswerAsync(
+                session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
+                new EventReplicationCodec.EventsRequestRecord(DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, taskId),
+                Now.AddSeconds(9), trustChain: TrustChain.Empty, cts.Token);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IQuerySession read = _postgres.Store.QuerySession())
+        {
+            IReadOnlyList<MessageDetails> answers = await read.Query<MessageDetails>()
+                .Where(message => message.ProjectId == projectId && message.Kind == MessageKind.Events.Value
+                    && message.To == MessageAudience.Node(requesterNodeId).Value)
+                .ToListAsync(cts.Token);
+            List<EventReplicationCodec.ReplicatedEventRecord> served =
+                [.. answers.SelectMany(message => EventReplicationCodec.DecodeBatch(message.Body!)!)];
+            served.Should().Contain(record => record.StreamId == taskId);
+            served.Should().NotContain(
+                record => record.StreamId == completedPreflightId || record.StreamId == abandonedPreflightId,
+                "a task's stream answer carries its run streams and never its pre-flights'");
+        }
+    }
+
+    /// <summary>
+    /// A peer still on a build that ships pre-flight events keeps sending them. A fixed node
+    /// refuses each one: on a node that has never seen the stream nothing starts and nothing is
+    /// held, and on the node that dispatched the pre-flight its own document is left exactly as it
+    /// was. A task event in the same answer still applies, so the refusals are not the whole
+    /// delivery failing.
+    /// </summary>
+    [Fact]
+    public async Task A_preflight_event_delivered_by_a_peer_is_neither_applied_nor_held()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid ownerId = DomainId.New();
+        Guid peerProjectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid completedPreflightId = DomainId.New();
+        Guid abandonedPreflightId = DomainId.New();
+        Guid peerNodeId = DomainId.New();
+
+        TaskAdded added = TaskDecider.Add(
+            taskId, peerProjectId, "Review it", ["it is reviewed"], TaskType.PrReview, null, null, null, Now, ownerId);
+        List<(Guid StreamId, object Event)> answer =
+        [
+            (taskId, added),
+            (completedPreflightId, new PrReviewPreflightDispatched(
+                completedPreflightId, taskId, DomainId.New(), peerNodeId, "claude-opus-5-5", "head-1", [], Now)),
+            (completedPreflightId, new PrReviewPreflightReclaimed(completedPreflightId, DomainId.New(), Now)),
+            (completedPreflightId, new PrReviewPreflightCompleted(completedPreflightId, Safe: true, "safe", "ok", Now)),
+            (abandonedPreflightId, new PrReviewPreflightDispatched(
+                abandonedPreflightId, taskId, DomainId.New(), peerNodeId, "claude-opus-5-5", "head-2", [], Now)),
+            (abandonedPreflightId, new PrReviewPreflightAbandoned(abandonedPreflightId, Now)),
+        ];
+
+        // A node that has never seen either pre-flight stream.
+        Guid neverSeenNodeId = DomainId.New();
+        Guid neverSeenProjectId = DomainId.New();
+        await using DocumentStore neverSeen = OpenStore("event_catchup_preflight_never_seen");
+        EventReplicationReadResult first = await PeerAnswerDelivery.DeliverAsync(
+            _postgres, neverSeen, neverSeenNodeId, neverSeenProjectId, answer, cts.Token);
+        first.EventsApplied.Should().Be(1, "only the task event applies; every pre-flight event is refused");
+
+        await using (IQuerySession session = neverSeen.QuerySession())
+        {
+            (await session.Query<PrReviewPreflightDetails>().CountAsync(cts.Token)).Should().Be(0);
+            (await session.Events.FetchStreamAsync(completedPreflightId, token: cts.Token)).Should().BeEmpty();
+            (await session.Events.FetchStreamAsync(abandonedPreflightId, token: cts.Token)).Should().BeEmpty();
+            (await session.Query<HeldReplicatedEventRecord>().CountAsync(cts.Token)).Should().Be(0, "a refused event is not held");
+        }
+
+        // The node that dispatched them: the peer's copies change nothing on its own documents.
+        Guid dispatchingNodeId = DomainId.New();
+        Guid dispatchingProjectId = DomainId.New();
+        await using DocumentStore dispatching = OpenStore("event_catchup_preflight_dispatching");
+        await using (IDocumentSession session = dispatching.LightweightSession())
+        {
+            session.Events.StartStream(
+                completedPreflightId,
+                new PrReviewPreflightDispatched(
+                    completedPreflightId, taskId, DomainId.New(), dispatchingNodeId, "claude-opus-5-5", "head-1", [], Now));
+            session.Events.StartStream(
+                abandonedPreflightId,
+                new PrReviewPreflightDispatched(
+                    abandonedPreflightId, taskId, DomainId.New(), dispatchingNodeId, "claude-opus-5-5", "head-2", [], Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        EventReplicationReadResult second = await PeerAnswerDelivery.DeliverAsync(
+            _postgres, dispatching, dispatchingNodeId, dispatchingProjectId, answer, cts.Token);
+        second.EventsApplied.Should().Be(1);
+
+        await using (IQuerySession session = dispatching.QuerySession())
+        {
+            PrReviewPreflightDetails completed = (await session.LoadAsync<PrReviewPreflightDetails>(completedPreflightId, cts.Token))!;
+            completed.CompletedAt.Should().BeNull("the peer's verdict is not applied over the node's own pre-flight");
+            completed.NodeId.Should().Be(dispatchingNodeId);
+            PrReviewPreflightDetails abandoned = (await session.LoadAsync<PrReviewPreflightDetails>(abandonedPreflightId, cts.Token))!;
+            abandoned.AbandonedAt.Should().BeNull();
+            (await session.Events.FetchStreamAsync(completedPreflightId, token: cts.Token)).Should().HaveCount(1);
+            (await session.Events.FetchStreamAsync(abandonedPreflightId, token: cts.Token)).Should().HaveCount(1);
+            (await session.Query<HeldReplicatedEventRecord>().CountAsync(cts.Token)).Should().Be(0);
         }
     }
 
