@@ -3172,11 +3172,33 @@ public static class TaskDecider
     }
 
     /// <summary>
+    /// Whether <paramref name="proposed"/> is the issue <paramref name="existing"/> names, under a new
+    /// identifier, on the tracker's own word: both are Linear references and the tracker listed the
+    /// recorded identifier among the proposed issue's previous ones.
+    /// </summary>
+    private static bool IsSameLinearIssueMoved(
+        ExternalReference existing, ExternalReference proposed, IReadOnlyList<string>? previousIdentifiers) =>
+        existing.Provider == WorkItemProvider.Linear
+        && proposed.Provider == WorkItemProvider.Linear
+        && existing != proposed
+        && previousIdentifiers is not null
+        && previousIdentifiers.Any(previous => previous.Equals(existing.Reference, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
     /// Record the external item this task is linked to, from what the platform observed rather
     /// than from what anybody claimed (backlog 18). The caller reads the item through the
     /// registered connection first and passes what came back; this decides only whether the task
     /// is in a position to accept it.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="previousIdentifiers"/> is what the tracker answered for <paramref name="reference"/>
+    /// as the identifiers that issue used to carry. It is the one proof under which a task that already
+    /// carries a <c>linear:</c> link may be linked again: Linear gives an issue a new identifier when it
+    /// moves between teams, so the link on record goes stale, and the new identifier replaces it only when
+    /// Linear itself lists the recorded one as a former identifier of the same issue. Every other second
+    /// link is refused as it always was. A branch already recorded on a run does not change, because
+    /// nothing re-renders one from the reference.
+    /// </remarks>
     public static WorkItemLinked LinkWorkItem(
         TaskAggregate task,
         ExternalReference reference,
@@ -3184,7 +3206,8 @@ public static class TaskDecider
         string observedStatus,
         DateTimeOffset observedAt,
         DateTimeOffset linkedAt,
-        Guid linkedByOwnerId)
+        Guid linkedByOwnerId,
+        IReadOnlyList<string>? previousIdentifiers = null)
     {
         if (reference.Provider == WorkItemProvider.Unknown || reference.Reference.IsBlank())
         {
@@ -3202,7 +3225,7 @@ public static class TaskDecider
         // The already-linked case is a conflict rather than an overwrite, and the reference the
         // task carries is quoted so the human (or agent) can see which of the two is wrong. The
         // identical-reference case never reaches here: AlreadyLinkedTo answers it first.
-        if (task.ExternalReference is { } existing)
+        if (task.ExternalReference is { } existing && !IsSameLinearIssueMoved(existing, reference, previousIdentifiers))
         {
             throw new DomainConflictException(
                 $"Task {task.Id} is already linked to {existing}, and a task carries one external item "

@@ -13,6 +13,7 @@ public sealed record WorkItemProvider
 {
     public static readonly WorkItemProvider GitHub = new("github");
     public static readonly WorkItemProvider Jira = new("jira");
+    public static readonly WorkItemProvider Linear = new("linear");
     /// <summary>A GitHub pull request under review (a pr-review task's target), never a backlog item.</summary>
     public static readonly WorkItemProvider GitHubPullRequest = new("github-pr");
 

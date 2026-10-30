@@ -52,34 +52,43 @@ public static class ConnectionDecider
         }
 
         // Jira accounts live at a tenant of their own and nothing can be read without knowing
-        // which; GitHub has exactly one home, so the field stays null there rather than being
-        // filled in with the obvious answer. The rule is stated per provider deliberately: a
-        // site required of every connection would put "https://github.com" on record as an
-        // observation nobody made.
-        if (provider == WorkItemProvider.Jira && siteUrl is null)
+        // which; Linear's live in a workspace whose address (https://linear.app/<urlKey>) is the
+        // one thing a reference cannot be turned into a link without. GitHub has exactly one home,
+        // so the field stays null there rather than being filled in with the obvious answer. The
+        // rule is stated per provider deliberately: a site required of every connection would put
+        // "https://github.com" on record as an observation nobody made.
+        if (HasSite(provider) && siteUrl is null)
         {
             throw new DomainValidationException(
-                "A Jira connection requires the site it authenticates against, "
-                + "for example https://your-org.atlassian.net.");
+                provider == WorkItemProvider.Linear
+                    ? "A Linear connection requires the workspace address it authenticates against, "
+                      + "for example https://linear.app/your-workspace."
+                    : "A Jira connection requires the site it authenticates against, "
+                      + "for example https://your-org.atlassian.net.");
         }
 
         // The rule runs both ways, because half of it would let the stream say what the other
         // half forbids: a GitHub connection carrying https://github.com records a tenant nobody
         // chose and makes a null SiteUrl mean "not filled in" instead of "there is one home".
-        // Written as "every provider but Jira", so a provider that genuinely has tenants of its
-        // own is refused here the first time somebody adds one, and the decision to let it carry
-        // a site gets made in this method rather than discovered on the stream afterwards.
-        if (provider != WorkItemProvider.Jira && siteUrl is not null)
+        // Written as "every provider but the ones that have a site", so a provider that genuinely
+        // has tenants of its own is refused here the first time somebody adds one, and the decision
+        // to let it carry a site gets made in this method rather than discovered on the stream
+        // afterwards.
+        if (!HasSite(provider) && siteUrl is not null)
         {
             throw new DomainValidationException(
                 $"A '{provider.Value}' connection has one home, so it records no site, and this one was "
-                + $"given {siteUrl}. Register it without a site; the field is Jira's, where an account "
-                + "lives at a tenant of its own.");
+                + $"given {siteUrl}. Register it without a site; the field is Jira's and Linear's, where "
+                + "an account lives at a tenant or workspace of its own.");
         }
 
         return new ConnectionRegistered(
             id, ownerId, provider, externalAccountId, credentialReference, registeredAt, siteUrl);
     }
+
+    /// <summary>Whether a provider's accounts live somewhere of their own that the connection must record.</summary>
+    private static bool HasSite(WorkItemProvider provider) =>
+        provider == WorkItemProvider.Jira || provider == WorkItemProvider.Linear;
 
     /// <summary>
     /// The same connection with new details. It runs the identical rules rather than a relaxed
