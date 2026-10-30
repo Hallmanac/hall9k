@@ -50,3 +50,7 @@ context: |-
   Parked: reading attachmentsForURL after open and repairing a stray link with an Ignore line (trigger: the first observed wrong move, or a report of a parser change). A person runs the revised live check in that report before a Linear-tracked project relies on this guard; if the inserted word links, the Ignore line becomes the mechanism. Keeping key-shaped tokens out of the branch slug (trigger: a branch link moves an issue the task does not own; build notes in notes/challenge-1f3e070c-r2/journal.md).
 
   Out of scope: commit messages. Linear acts on magic words in commits only with its commit-linking toggle on, this workspace has it off (ruling 1), and hall9k does not author them. The objective seed and the daemon's draft objectives are unchanged for the same reason; the guard at pull request open covers them wherever they reach a pull request. Parked, with triggers, in notes/challenge-1f3e070c/journal.md: a non-closing word on a task's own issue, and commit messages.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-10-30 23:47:56Z
