@@ -29,6 +29,13 @@ public sealed record BacklogPolicy
     /// <summary>Publishing requests the agent-mediated Jira push, exactly as a manual push-to-jira would.</summary>
     public static readonly BacklogPolicy Jira = new("Jira");
 
+    /// <summary>
+    /// Publishing creates the issue in the project's bound Linear team and links it, from the
+    /// publishing install itself. Meaningful only with a Linear team bound, which
+    /// <see cref="ProjectTracker.RefuseConflictingSettings"/> holds from both directions.
+    /// </summary>
+    public static readonly BacklogPolicy Linear = new("Linear");
+
     public string Value { get; }
 
     private BacklogPolicy(string value) => Value = value;
@@ -48,6 +55,7 @@ public sealed record BacklogPolicy
     {
         "githubissues" or "github-issues" or "github" => GitHubIssues,
         "jira" => Jira,
+        "linear" => Linear,
         _ => None,
     };
 
@@ -65,7 +73,7 @@ public sealed record BacklogPolicy
             : FromInput(trimmed) is { } parsed && parsed != None
                 ? parsed
                 : throw new DomainValidationException(
-                    $"'{RelayedPolicy(trimmed)}' is not a backlog policy. Use none, github-issues, or jira.");
+                    $"'{RelayedPolicy(trimmed)}' is not a backlog policy. Use none, github-issues, jira, or linear.");
     }
 
     /// <summary>

@@ -282,7 +282,8 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "on a project still on the default branch template, and with no --branch-template in the "
             + "same command, the template becomes {key}-{slug} and the command says so; "
             + "--branch-template none is the undo, and changing or clearing the team later leaves the "
-            + "template alone. 'none' clears the binding")]
+            + "template alone. 'none' clears the binding, and is refused while the backlog policy is "
+            + "still linear (--linear none --backlog none clears both)")]
         public string? Linear { get; init; }
 
         [CommandOption("--backlog <POLICY>")]
@@ -290,10 +291,13 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             "Where a published task's work becomes visible outside Hall9k: 'none' (default — the "
             + "platform's original behavior), 'github-issues' (the platform authors the issue itself, "
             + "deterministically — title from the objective, body from the criteria and agent context), "
-            + "or 'jira' (dispatches the same agent-mediated push h9k task push-to-jira already does, "
-            + "just automatically at publish). A task adopted with --from-issue or --from-jira already "
-            + "carries its reference, so publishing it creates nothing a second time. 'github-issues' "
-            + "and 'jira' are refused on a project with a Linear team bound (--linear).")]
+            + "'jira' (dispatches the same agent-mediated push h9k task push-to-jira already does, "
+            + "just automatically at publish), or 'linear' (the publishing install creates the issue in "
+            + "the project's bound Linear team and links it, with no agent session; accepted only with a "
+            + "Linear team bound (--linear), or bound by the same command, and --backlog-routing is "
+            + "ignored under it). A task adopted with --from-issue, --from-jira, or --from-linear "
+            + "already carries its reference, so publishing it creates nothing a second time. "
+            + "'github-issues' and 'jira' are refused on a project with a Linear team bound (--linear)")]
         public string? Backlog { get; init; }
 
         [CommandOption("--primary-tracker <github|jira|none>")]
@@ -313,7 +317,8 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             "Free-text routing guidance for the backlog policy above (epic-first, initiative-first, "
             + "which labels to apply): handed verbatim to the authoring agent for 'jira'; for "
             + "'github-issues' it is read only as a comma-separated label list, since a deterministic "
-            + "author cannot follow prose. Blank clears it.")]
+            + "author cannot follow prose; ignored under 'linear', which sets no labels (this command "
+            + "says so when the project has the policy and routing text both). Blank clears it.")]
         public string? BacklogRouting { get; init; }
 
         [CommandOption("--branch-template <TEXT>")]
@@ -1235,6 +1240,13 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 + "or linked by hand with h9k task link-jira/link-issue while still a Draft.");
         }
 
+        // Said when this invocation touched either setting, so setting the text first and the policy
+        // later is caught as well as the reverse, and an unrelated h9k project set stays quiet.
+        if (LinearRoutingNote(settings.Backlog is not null || settings.BacklogRouting is not null, updated) is { } routingNote)
+        {
+            AnsiConsole.MarkupLine(routingNote);
+        }
+
         // A template of the project's own that cannot carry a Linear identifier means Linear never
         // links its pull requests. Said when this invocation touched either setting, so an unrelated
         // h9k project set does not repeat it.
@@ -1315,6 +1327,18 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 + $"{provider.Workspace}, so nothing was bound. The team may not exist, or the key may be "
                 + "limited to other teams: check the key (the ENG in ENG-123) in Linear, and that the API "
                 + "key registered with h9k connection add linear can see that team.");
+
+    /// <summary>
+    /// The note for routing text that does nothing: it is read by the Jira agent and as a GitHub label
+    /// list, and issues Hall9k creates in Linear carry no labels. Null unless the command touched the
+    /// policy or the text and left the project with both.
+    /// </summary>
+    internal static string? LinearRoutingNote(bool touchedPolicyOrRouting, ProjectDetails updated) =>
+        touchedPolicyOrRouting && updated.BacklogPolicy == BacklogPolicy.Linear && updated.BacklogRoutingGuidance.IsNotBlank()
+            ? "[yellow]--backlog-routing is ignored under the backlog policy linear:[/] [dim]issues Hall9k "
+                + "creates in Linear carry no labels, so the routing text on this project does nothing. "
+                + $"Clear it with h9k project set {updated.Name.EscapeMarkup()} --backlog-routing \"\".[/]"
+            : null;
 
     /// <summary>
     /// The warning for a Linear project whose own branch template has no <c>{key}</c>, or null when

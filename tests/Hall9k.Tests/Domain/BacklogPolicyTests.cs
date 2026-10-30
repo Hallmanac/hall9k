@@ -36,13 +36,20 @@ public sealed class BacklogPolicyTests
     public void Parse_reads_blank_or_none_as_none(string? value) =>
         BacklogPolicy.Parse(value).Should().Be(BacklogPolicy.None);
 
+    [Theory]
+    [InlineData("linear")]
+    [InlineData("Linear")]
+    [InlineData(" LINEAR ")]
+    public void Parse_reads_linear(string value) =>
+        BacklogPolicy.Parse(value).Should().Be(BacklogPolicy.Linear);
+
     [Fact]
     public void Parse_refuses_anything_outside_the_vocabulary()
     {
         Action act = () => BacklogPolicy.Parse("trello");
 
         act.Should().Throw<DomainValidationException>()
-            .WithMessage("*none, github-issues, or jira*");
+            .WithMessage("*none, github-issues, jira, or linear*");
     }
 
     [Fact]

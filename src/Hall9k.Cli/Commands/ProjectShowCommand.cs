@@ -801,8 +801,18 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
                 + $"push-to-jira does[/]{routing}";
         }
 
+        if (project.BacklogPolicy == BacklogPolicy.Linear)
+        {
+            // Routing text is shown as the dead letter it is under this policy, not as guidance.
+            string ignoredRouting = project.BacklogRoutingGuidance.IsNotBlank()
+                ? $" [dim](routing ignored: {project.BacklogRoutingGuidance.EscapeMarkup()})[/]"
+                : string.Empty;
+            return "linear [dim](publishing creates the issue in the project's Linear team from this "
+                + $"install and links it, verified read-back included)[/]{ignoredRouting}";
+        }
+
         return $"[dim]none ({OriginNote(recorded)}) — publishing tracks nothing externally; set one: "
-            + $"h9k project set {project.Name.EscapeMarkup()} --backlog github-issues|jira[/]{routing}";
+            + $"h9k project set {project.Name.EscapeMarkup()} --backlog github-issues|jira|linear[/]{routing}";
     }
 
     /// <summary>

@@ -55,6 +55,33 @@ public static class ProjectTracker
     }
 
     /// <summary>
+    /// The backlog policy <c>linear</c> files issues into the bound team, so it cannot stand on a
+    /// project with none. Judged when this command touches either half of the pair: setting the
+    /// policy with no team bound is refused naming the command that binds one, and clearing the team
+    /// while the policy stays linear is refused naming the command that clears both. An unrelated
+    /// change never trips over a pair a teammate's node left behind (team settings replicate per
+    /// field), and a publish survives such a pair through its own pre-commit check.
+    /// </summary>
+    private static void RefuseLinearPolicyWithoutTeam(
+        ProjectAggregate project, Optional<LinearTeamKey> linearTeam, Optional<BacklogPolicy> backlogPolicy)
+    {
+        BacklogPolicy policyAfter = backlogPolicy.HasValue ? backlogPolicy.Value ?? BacklogPolicy.None : project.BacklogPolicy;
+        if (policyAfter != BacklogPolicy.Linear || !(linearTeam.HasValue || backlogPolicy.HasValue))
+        {
+            return;
+        }
+
+        throw new DomainValidationException(
+            linearTeam.HasValue
+                ? $"--linear none is refused while {project.Name} would still have the backlog policy linear: "
+                    + "that policy files each published task's issue in the bound Linear team, and there would "
+                    + $"be none. Clear both together: h9k project set {project.Name} --linear none --backlog none"
+                : $"--backlog linear is refused: {project.Name} has no Linear team bound, and the policy files "
+                    + "each published task's issue in that team. Bind one first, or in the same command: "
+                    + $"h9k project set {project.Name} --linear <TEAM>");
+    }
+
+    /// <summary>
     /// Judges the settings a <c>project set</c> command leaves behind, not the ones it started from,
     /// so one command can switch trackers (<c>--linear none --jira PROJ</c>, or the reverse).
     /// Binding a team is refused while the project would still have a Jira board, a backlog policy
@@ -73,6 +100,7 @@ public static class ProjectTracker
         LinearTeamKey teamAfter = linearTeam.HasValue ? linearTeam.Value ?? LinearTeamKey.None : project.LinearTeam;
         if (!IsLinear(teamAfter))
         {
+            RefuseLinearPolicyWithoutTeam(project, linearTeam, backlogPolicy);
             return;
         }
 

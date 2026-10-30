@@ -360,4 +360,94 @@ public sealed class ProjectLinearBindingTests
 
         unrelated.Should().NotThrow();
     }
+
+    // The linear backlog policy is the Linear half of a pair with the bound team: it files each
+    // published task's issue in that team, so neither half stands without the other.
+
+    [Fact]
+    public void The_linear_policy_is_refused_on_a_project_with_no_team_bound_naming_the_command_that_binds_one()
+    {
+        (ProjectAggregate aggregate, _, _) = Registered();
+
+        Action act = () => Change(aggregate, backlog: Optional<BacklogPolicy>.Of(BacklogPolicy.Linear));
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*--backlog linear is refused*")
+            .WithMessage("*h9k project set hall9k --linear <TEAM>*");
+    }
+
+    [Fact]
+    public void The_linear_policy_is_accepted_when_a_team_is_already_bound()
+    {
+        ProjectAggregate aggregate = Bound();
+
+        ProjectSettingsChanged changed = Change(aggregate, backlog: Optional<BacklogPolicy>.Of(BacklogPolicy.Linear));
+
+        changed.BacklogPolicy.Value.Should().Be(BacklogPolicy.Linear, "the decider's closed set admits it");
+    }
+
+    [Fact]
+    public void The_linear_policy_is_accepted_when_the_same_command_binds_the_team()
+    {
+        (ProjectAggregate aggregate, _, _) = Registered();
+
+        Action act = () => Change(aggregate, Team("ENG"), backlog: Optional<BacklogPolicy>.Of(BacklogPolicy.Linear));
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Clearing_the_team_while_the_policy_stays_linear_is_refused_naming_the_command_that_clears_both()
+    {
+        ProjectAggregate aggregate = Bound();
+        aggregate.Apply(Change(aggregate, backlog: Optional<BacklogPolicy>.Of(BacklogPolicy.Linear)));
+
+        Action act = () => Change(aggregate, Optional<LinearTeamKey>.Of(LinearTeamKey.None));
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*h9k project set hall9k --linear none --backlog none*");
+    }
+
+    [Fact]
+    public void Clearing_the_team_and_the_policy_in_one_command_is_accepted()
+    {
+        ProjectAggregate aggregate = Bound();
+        aggregate.Apply(Change(aggregate, backlog: Optional<BacklogPolicy>.Of(BacklogPolicy.Linear)));
+
+        Action act = () => Change(
+            aggregate, Optional<LinearTeamKey>.Of(LinearTeamKey.None), backlog: Optional<BacklogPolicy>.Of(BacklogPolicy.None));
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Changing_an_unrelated_setting_is_not_refused_over_a_pair_a_teammates_node_left_behind()
+    {
+        // Team settings replicate per field, so a policy of linear can arrive on a node whose team was
+        // cleared. Only a command touching one half of the pair is judged; the publish has its own check.
+        (ProjectAggregate aggregate, _, _) = Registered();
+        aggregate.Apply(ProjectTeamSettingsChanged.From(
+            Change(Bound(), backlog: Optional<BacklogPolicy>.Of(BacklogPolicy.Linear)))!);
+        aggregate.LinearTeam.HasValue.Should().BeFalse();
+
+        Action unrelated = () => ProjectDecider.ChangeSettings(
+            aggregate,
+            Optional<IReadOnlyList<VerifyCommand>>.None,
+            Optional<bool>.Of(true),
+            Optional<IReadOnlyList<ContextLink>>.None,
+            Now,
+            Owner);
+
+        unrelated.Should().NotThrow();
+    }
+
+    [Fact]
+    public void A_policy_outside_the_closed_set_is_still_refused_naming_all_four_values()
+    {
+        ProjectAggregate aggregate = Bound();
+
+        Action act = () => Change(aggregate, backlog: Optional<BacklogPolicy>.Of("trello"));
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*none, GitHubIssues, Jira, or Linear*");
+    }
 }
