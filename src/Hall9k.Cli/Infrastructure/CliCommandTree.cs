@@ -188,7 +188,10 @@ public static class CliCommandTree
                     "Change project settings: verify gates, skip-permissions, links, this project's own "
                     + "run ceiling (--max-parallel-tasks; 0 pauses the project), the dispatch tier free "
                     + "slots are shared by (--priority; high is a self-releasing focus, unlike the pause), "
-                    + "commit style, agent model, review re-requests, the Jira board, the backlog "
+                    + "commit style, agent model, review re-requests, the Jira board, the Linear team "
+                    + "(--linear binds one and makes Linear the project's one tracker, so the other "
+                    + "trackers' links are refused and the branch template becomes {key}-{slug} the "
+                    + "first time), the backlog "
                     + "policy that tracks every published task (none, github-issues, jira) and its "
                     + "routing guidance, the branch-name template task branches are cut under, "
                     + "whether a pull request assigned to this install's own GitHub login auto-starts "
@@ -208,6 +211,9 @@ public static class CliCommandTree
                 .WithExample("project", "set", "hall9k", "--orchestrator-model", "sonnet")
                 .WithExample("project", "set", "hall9k", "--rerequest-review", "on")
                 .WithExample("project", "set", "hall9k", "--jira", "PROJ")
+                .WithExample("project", "set", "hall9k", "--linear", "ENG")
+                .WithExample("project", "set", "hall9k", "--linear", "none")
+                .WithExample("project", "set", "hall9k", "--linear", "ENG", "--jira", "none")
                 .WithExample("project", "set", "hall9k", "--backlog", "github-issues")
                 .WithExample("project", "set", "hall9k", "--branch-template", "{key}-{slug}")
                 .WithExample("project", "set", "hall9k", "--auto-pr-review", "first")
@@ -784,7 +790,10 @@ public static class CliCommandTree
                 + "remediates non-interactively, for a script or a dispatched agent; --no-configure "
                 + "withholds the one remediation that guesses, recording no connection string where "
                 + "none resolves (Decisions Log #118), and skips the live release check, which the "
-                + "restart hand-off has no use for while the daemon is down.")
+                + "restart hand-off has no use for while the daemon is down. When a project tracks "
+                + "its backlog in Jira, or has a Linear team bound, it also probes that connection, "
+                + "telling no connection, a rejected key, and a probe that could not confirm either "
+                + "apart; a failure there does not stop the rest of the run.")
             .WithExample("doctor")
             .WithExample("doctor", "--yes")
             .WithExample("doctor", "--yes", "--no-configure");
@@ -1483,7 +1492,9 @@ public static class CliCommandTree
             task.AddCommand<TaskAddCommand>("add")
                 .WithDescription(
                     "Create a draft (flags, --file task.md, --from-idea to cut it from an idea's "
-                    + "discovery, --from-issue to adopt a GitHub issue, --from-pr to adopt a pull "
+                    + "discovery, --from-issue to adopt a GitHub issue, --from-linear to adopt a Linear "
+                    + "issue (only on a project with a Linear team bound, where --from-issue and "
+                    + "--from-jira are refused in turn), --from-pr to adopt a pull "
                     + "request to review — a pr-review task, read-only until you direct otherwise — or "
                     + "--type spike with --kind and --exit-criterion for a bounded, budgeted spike that "
                     + "answers one stated question and never opens a pull request). "
@@ -1811,7 +1822,8 @@ public static class CliCommandTree
                     + "h9k task write-jira, which is the sole executor — hall9k validates it, executes it "
                     + "against the Jira Cloud REST API, and reads the card back before recording anything. "
                     + "Needs a registered Jira connection; the project's bound board "
-                    + "(h9k project set --jira) tells the agent where to file it.")
+                    + "(h9k project set --jira) tells the agent where to file it. Refused on a project "
+                    + "with a Linear team bound (h9k project set --linear), where Linear is the one tracker.")
                 .WithExample("task", "push-to-jira", "28b19893");
             task.AddCommand<TaskLinkJiraCommand>("link-jira")
                 .WithDescription(
@@ -1819,7 +1831,8 @@ public static class CliCommandTree
                     + "through the registered connection and what gets recorded is the response, never the "
                     + "claim — so a key that does not resolve writes nothing and tells you why, which is what "
                     + "makes this safe for an agent to call at the end of a push-to-jira run. Works the same "
-                    + "for a card a human made by hand.")
+                    + "for a card a human made by hand. Refused on a project with a Linear team bound "
+                    + "(h9k project set --linear), where Linear is the one tracker.")
                 .WithExample("task", "link-jira", "28b19893", "PROJ-123")
                 .WithExample("task", "link-jira", "28b19893", "https://your-org.atlassian.net/browse/PROJ-123");
             task.AddCommand<TaskLinkLinearCommand>("link-linear")
@@ -1833,7 +1846,8 @@ public static class CliCommandTree
                     + "refused, with one exception: after Linear moves an issue to another team it has a new "
                     + "identifier, and passing the new one here replaces the recorded link when Linear lists "
                     + "the recorded identifier among the issue's previous ones. A branch already cut for the "
-                    + "task keeps its name.")
+                    + "task keeps its name. Needs Linear to be the project's tracker: refused on a project "
+                    + "with no Linear team bound, naming h9k project set <project> --linear <TEAM>.")
                 .WithExample("task", "link-linear", "28b19893", "ENG-123")
                 .WithExample("task", "link-linear", "28b19893", "https://linear.app/your-workspace/issue/ENG-123");
             task.AddCommand<TaskWriteJiraCommand>("write-jira")
@@ -1845,7 +1859,9 @@ public static class CliCommandTree
                     + "key. A "
                     + "transition or a close is refused whatever the payload says. Used by the agent "
                     + "h9k task push-to-jira dispatches to create the card, and equally usable by hand for "
-                    + "an update or a comment on a task's own linked item.")
+                    + "an update or a comment on a task's own linked item. A create is refused on a "
+                    + "project with a Linear team bound (h9k project set --linear), where Linear is the "
+                    + "one tracker; an update or a comment on a card a task already carries still works.")
                 .WithExample("task", "write-jira", "28b19893", "--op", "create", "--file", "card.json")
                 .WithExample("task", "write-jira", "28b19893", "--op", "comment", "--file", "note.json");
             task.AddCommand<TaskLinkIssueCommand>("link-issue")
@@ -1854,7 +1870,8 @@ public static class CliCommandTree
                     + "read back through gh and what gets recorded is the response, never the claim — so an "
                     + "issue that does not resolve writes nothing and tells you why. Used automatically when "
                     + "a project's backlog policy is github-issues (h9k project set --backlog), and equally "
-                    + "usable to link an issue you made by hand.")
+                    + "usable to link an issue you made by hand. Refused on a project with a Linear team "
+                    + "bound (h9k project set --linear), where Linear is the one tracker.")
                 .WithExample("task", "link-issue", "28b19893", "42")
                 .WithExample("task", "link-issue", "28b19893", "https://github.com/owner/repo/issues/42");
             task.AddCommand<TaskLogInteractionCommand>("log-interaction")
