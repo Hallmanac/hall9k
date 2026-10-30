@@ -219,7 +219,7 @@ acknowledges a value that removes a load-bearing guarantee (Decisions Log #129, 
 [operations.md](operations.md#daemon-operating-settings).
 
 `h9k task add` also adopts existing external work: `--from-issue 42` (or `owner/repo#42`, or a
-URL), `--from-jira PROJ-1` (or a URL), and `--from-pr` (a pull request number, `owner/repo#42`, or
+URL), `--from-jira PROJ-1` (or a URL), `--from-linear ENG-123` (or a URL), and `--from-pr` (a pull request number, `owner/repo#42`, or
 a URL) — the last of which adopts a pull request to review rather than build, always as a
 `pr-review` task (§ below). Adoption is a one-time snapshot: the title seeds the objective, the
 description becomes agent context, and the state read at import is recorded as an observation of
@@ -1238,7 +1238,7 @@ Failed task, and `--pr` records where the work landed.
 ### Projects, owners, connections
 
 `h9k project add | init | join | assign-key | list | show | set | remove | cancel-purge | reactivate | rename | invite | pull | reconcile | members | member remove | prompt-addendum | run-skill` ·
-`h9k owner show | set | promote` · `h9k node invite | vouch | revoke` · `h9k connection add jira | list`
+`h9k owner show | set | promote` · `h9k node invite | vouch | revoke` · `h9k connection add jira | linear | list`
 
 `project add` registers a project **and creates its home directory**; `project init` is the same
 recipe for a project that has none yet, and the repair path for one that is incomplete. `project
@@ -1852,6 +1852,52 @@ keychain item you already created and is macOS only. `h9k task write-jira --op c
 says what a Jira write does, and a transition or a close is refused whatever is passed; `--issue
 <key>` names the item to update or comment on, is optional when the task already carries a linked
 item, and takes precedence over it when both are present.
+
+### Linear
+
+`h9k connection add linear` · `h9k task add --from-linear` · `h9k task link-linear`
+
+`h9k connection add linear` registers the Linear workspace Hall9k reads issues through. The API key is
+prompted for by default and stored under `~/.hall9k/credentials` readable by you alone (never inside a
+project, never replicated), or named with `--token-env <variable>` (the name is recorded, the value is
+never copied, and `h9kd` only sees a variable that was exported before `h9k daemon start`) or, on macOS,
+`--keychain <service>`; `--token <key>` stores it the same way as the prompt does and lands in your shell
+history. Before anything is recorded Hall9k reads Linear's `viewer` and `organization` with the key,
+refuses one Linear rejects (with the remedy), and records the viewer's id and name and the workspace
+address `https://linear.app/<urlKey>` on the connection. The key itself never reaches an event.
+
+**An install holds one Linear connection, which means one Linear workspace per install.** Running the
+command again replaces the connection and re-records the viewer and the workspace, which is how a rotated
+key is applied. If two records are ever left by overlapping runs, the commands that need Linear refuse
+and say so, while GitHub and Jira commands carry on. On an install with no Linear connection, any Linear
+read is refused with a sentence naming `h9k connection add linear`.
+
+A successful registration says only that Linear accepted the key. A key limited by permission or by team
+can still be refused on a later read or write, and Hall9k cannot see those limits when it registers it.
+
+`h9k task add --from-linear <identifier-or-url>` adopts an issue and `h9k task link-linear <task>
+<identifier-or-url>` records one on an existing task. Both read the issue through Linear's API, accept
+an issue from any team the key can see, and record `linear:<identifier>` using the identifier Linear
+answered with, so `eng-123`, `ENG-123`, and the issue URL give one reference. A URL from another workspace
+than the connection's is refused, because a stored reference records no workspace. The usual one-item
+guards apply: an issue another live task carries is refused. `--from-linear` maps Linear's state types:
+`backlog`, `unstarted`, and `started` adopt; `completed`, `canceled`, and `duplicate` are refused; `triage`
+is refused with a pointer to `h9k idea add --from-linear`; a type Hall9k has no rule for is refused with the
+type quoted. `link-linear` applies no state gate and records the state it observed, as `link-jira` does,
+because it records an issue that already exists.
+
+Moving an issue to another team gives it a new identifier. When Linear answers not found for a linked
+issue, the refusal says so and names `h9k task link-linear <task> <new identifier>`. That command replaces
+an existing `linear:` link only when Linear's answer for the new identifier lists the current one among the
+issue's previous identifiers; every other second link is refused as it is for Jira and GitHub. A branch
+already recorded on a run keeps its name.
+
+Every Linear failure is classified so a later gate can reuse it: a GraphQL `errors` array is a failure
+whatever the HTTP status (including a 200 with partial data), a 429 or `RATELIMITED` answer is an outage
+that reports Linear's `Retry-After`, a rejected key, an unreadable issue, and an outage are told apart, and
+an error nothing recognizes quotes Linear's own message on one line. `h9k task show` renders a Linear link
+as `https://linear.app/<urlKey>/issue/<identifier>` from the connection's recorded workspace, and shows
+`linear:<identifier>` with no link on a node that has no Linear connection.
 
 ### Install and the daemon
 
