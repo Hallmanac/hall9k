@@ -1,4 +1,3 @@
-using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Cli.ProjectHomes;
@@ -87,11 +86,6 @@ public sealed class ProjectSetLinearTests : IDisposable
     [Fact]
     public void Changing_the_team_on_an_already_bound_project_leaves_the_template_alone_so_the_undo_stays_undone() =>
         ProjectSetCommand.SetsLinearConvention(true, LinearTeamKey.Parse("PLAT"), null, BranchNameTemplate.Default)
-            .Should().BeFalse();
-
-    [Fact]
-    public void Rebinding_after_a_clear_is_not_the_first_binding_so_an_earlier_undo_stays_undone() =>
-        ProjectSetCommand.SetsLinearConvention(true, Eng, null, BranchNameTemplate.Default)
             .Should().BeFalse();
 
     [Fact]

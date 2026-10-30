@@ -193,7 +193,7 @@ public static class ProjectAgentsDocument
             ? $"- Jira board: `{project.JiraProjectKey.Value}`"
             : "- Jira board: none bound");
         document.AppendLine(project.LinearTeam.HasValue
-            ? $"- Linear team: `{project.LinearTeam.Value}` — Linear is this project's one tracker, so a Jira "
+            ? $"- Linear team: `{project.LinearTeam.Value}`: Linear is this project's one tracker, so a Jira "
               + "card or a GitHub issue is not linked to its tasks; a Linear issue is adopted with "
               + "`h9k task add --from-linear` or linked with `h9k task link-linear`"
             : "- Linear team: none bound");

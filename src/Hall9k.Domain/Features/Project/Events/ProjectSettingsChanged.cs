@@ -358,7 +358,7 @@ public sealed record ProjectSettingsChanged(
     /// </summary>
     Optional<SolutionMembership?> Solution = default,
     /// <summary>
-    /// The Linear team this project files new issues under, and, once bound, the fact that Linear is
+    /// The Linear team bound to this project, and, once bound, the fact that Linear is
     /// this project's one tracker (see <see cref="Project.ProjectTracker"/>). A team field beside
     /// <see cref="JiraProjectKey"/>, which it mirrors: every node of the project reads the same
     /// binding. Present-with-<see cref="LinearTeamKey.None"/> clears it. Trailing and optional so

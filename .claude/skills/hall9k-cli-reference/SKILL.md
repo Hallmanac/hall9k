@@ -1535,7 +1535,7 @@ in the tracker.
 #121). `h9k project set <project> --branch-template "<TEXT>"` names a task's branch out of three
 tokens — `{shortid}` (the task's short id), `{slug}` (its objective, hyphenated, capped at 30
 characters) and `{key}` (the linked Jira key, Linear identifier, or GitHub issue number; a Linear link
-renders as `ENG-123` with its case kept) — with everything else
+renders as `ENG-123` with its case kept), with everything else
 literal, so `--branch-template "{key}-{slug}"` cuts `PROJ-14-add-rate-limiting`. The default is
 `task/{shortid}-{slug}`, exactly what the platform cut before the setting existed, so a project
 that sets nothing sees no change at all; `none` restores it. Two rules make it safe rather than
