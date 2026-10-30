@@ -462,7 +462,7 @@ public static class TaskDecider
         }
 
         // --untracked only means something where there is tracking to skip, and a policy that is
-        // neither Jira nor GitHubIssues — none, or a persisted value this build's closed set no
+        // none of Jira, GitHubIssues, and Linear — none, or a persisted value this build's closed set no
         // longer recognizes (the same "reads as no tracking" convention needsExistingItemCheck
         // uses below) — is the case where there is categorically none: the flag has nothing to
         // attest, so it is refused rather than silently ignored — unlike a defensively-passed
@@ -473,7 +473,7 @@ public static class TaskDecider
         // for it regardless of the attestation, while a publication already pending is refused,
         // just below, because that session mints a card whether or not this flag is honored, and
         // a silent clamp there would let it override the operator's choice without a word.
-        if (untracked && policy != BacklogPolicy.Jira && policy != BacklogPolicy.GitHubIssues)
+        if (untracked && !TracksExternally(policy))
         {
             string policyDescription = policy == BacklogPolicy.None
                 ? "policy none"
@@ -504,15 +504,16 @@ public static class TaskDecider
         // Draft) is already a session on its way to minting the card this gate exists to avoid
         // duplicating — TrackInBacklogAsync already recognises and skips this exact state, so the
         // gate must too, or the only way through is an attestation that is factually wrong.
-        bool needsExistingItemCheck = (policy == BacklogPolicy.Jira || policy == BacklogPolicy.GitHubIssues)
+        bool needsExistingItemCheck = TracksExternally(policy)
             && task.ExternalReference is null
             && task.PendingPublicationProvider is null;
         if (needsExistingItemCheck && !noExistingItemAttested && !untracked)
         {
-            string tracker = policy == BacklogPolicy.Jira ? "Jira" : "GitHub issues";
-            string linkCommand = policy == BacklogPolicy.Jira
-                ? $"h9k task link-jira {task.Id} <key>"
-                : $"h9k task link-issue {task.Id} <issue>";
+            (string tracker, string linkCommand) = policy == BacklogPolicy.Jira
+                ? ("Jira", $"h9k task link-jira {task.Id} <key>")
+                : policy == BacklogPolicy.Linear
+                    ? ("Linear", $"h9k task link-linear {task.Id} <identifier>")
+                    : ("GitHub issues", $"h9k task link-issue {task.Id} <issue>");
 
             throw new DomainBusinessRuleException(
                 $"This project tracks its backlog in {tracker}, and task {task.Id} carries no linked "
@@ -556,6 +557,13 @@ public static class TaskDecider
             task.Id, publishedAt, publishedByOwnerId, noExistingItemRecorded, untrackedRecorded,
             preApprovalRecorded.LegacyPreApproved, preApprovalRecorded, closeLinkedIssueForEvent);
     }
+
+    /// <summary>
+    /// Whether a backlog policy has publishing create or request an external item: every policy but
+    /// none and one this build does not recognize, which reads as no tracking.
+    /// </summary>
+    private static bool TracksExternally(BacklogPolicy policy) =>
+        policy == BacklogPolicy.Jira || policy == BacklogPolicy.GitHubIssues || policy == BacklogPolicy.Linear;
 
     /// <summary>
     /// Maps a caller's pre-approval input onto the closed three-valued vocabulary, refusing

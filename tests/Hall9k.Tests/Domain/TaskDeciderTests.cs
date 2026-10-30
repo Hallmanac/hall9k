@@ -286,6 +286,53 @@ public sealed class TaskDeciderTests
             .WithMessage($"*h9k task publish {task.Id} --untracked*");
     }
 
+    [Fact]
+    public void Publish_under_a_linear_backlog_policy_refuses_an_unlinked_draft_with_the_three_choices()
+    {
+        TaskAggregate task = DraftTask();
+
+        Action act = () => TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now, Owner, BacklogPolicy.Linear);
+
+        act.Should().Throw<DomainBusinessRuleException>()
+            .WithMessage("*Linear*")
+            .WithMessage($"*h9k task link-linear {task.Id}*")
+            .WithMessage($"*h9k task publish {task.Id} --no-existing-item*")
+            .WithMessage($"*h9k task publish {task.Id} --untracked*");
+    }
+
+    [Fact]
+    public void Publish_under_a_linear_backlog_policy_records_the_attestation_that_will_create_an_issue()
+    {
+        TaskPublished published = TaskDecider.Publish(
+            DraftTask(), TaskDependencyGraph.Empty, Now, Owner, BacklogPolicy.Linear, noExistingItemAttested: true);
+
+        published.NoExistingItemAttested.Should().BeTrue();
+        published.UntrackedAttested.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Publish_under_a_linear_backlog_policy_records_untracked_as_it_does_for_jira_and_github()
+    {
+        TaskPublished published = TaskDecider.Publish(
+            DraftTask(), TaskDependencyGraph.Empty, Now, Owner, BacklogPolicy.Linear, untracked: true);
+
+        published.UntrackedAttested.Should().BeTrue();
+        published.NoExistingItemAttested.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Publish_under_a_linear_backlog_policy_asks_nothing_of_a_task_that_already_carries_an_issue()
+    {
+        TaskAggregate task = DraftTask();
+        task.Apply(TaskDecider.LinkWorkItem(
+            task, new ExternalReference(WorkItemProvider.Linear, "ENG-12"), "Existing", "Backlog", Now, Now, Owner));
+
+        TaskPublished published = TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, Now, Owner, BacklogPolicy.Linear, noExistingItemAttested: true);
+
+        published.NoExistingItemAttested.Should().BeFalse("nothing is created for a task that is already linked, so nothing is attested");
+    }
+
     /// <summary>
     /// Backlog: a task can be published deliberately untracked under a tracking backlog policy.
     /// The third way forward the refusal above names — --untracked skips creating or linking any

@@ -40,7 +40,11 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             + "transaction, for the task's assignee, or for you when it has none (you then become its "
             + "assignee). It takes no owner argument, and it refuses when another member is the "
             + "assignee, naming them and their hand-off (h9k task assign <id> <member>). This is the "
-            + "same explicit TaskAssigned event h9k task queue appends, never a silent one")]
+            + "same explicit TaskAssigned event h9k task queue appends, never a silent one. The one "
+            + "exception is a publish that creates a Linear issue (backlog policy linear): the go signal "
+            + "is appended only after the issue is linked, so dispatch never cuts a branch before its "
+            + "identifier exists, and when no issue was linked the task stays published and not queued "
+            + "(h9k task link-linear, then h9k task queue)")]
         public bool Queue { get; init; }
 
         [CommandOption("--assign [OWNER]")]
@@ -61,9 +65,13 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         [Description(
             "The dedup attestation: you (or an orchestrator session) searched the project's tracker and "
             + "found no open item covering this objective. Required only when the project's backlog policy "
-            + "is jira or github-issues and this draft carries no linked item yet — the platform never "
-            + "searches the tracker itself, so publish refuses to guess and parks on this flag or a link "
-            + "(h9k task link-jira / h9k task link-issue) instead. Recorded on the task stream with who "
+            + "is jira, github-issues, or linear and this draft carries no linked item yet — the platform "
+            + "never searches the tracker itself, so publish refuses to guess and parks on this flag or a "
+            + "link (h9k task link-jira / h9k task link-issue / h9k task link-linear) instead. Under linear "
+            + "it also has this install create the issue after the publish commits, and checks the "
+            + "project's team through Linear first: no Linear connection, a rejected key, no team bound, an "
+            + "unknown team, or Linear not answering refuses the publish with the task still a Draft, and "
+            + "--untracked is the way to publish without Linear. Recorded on the task stream with who "
             + "attested it and when")]
         public bool NoExistingItem { get; init; }
 
@@ -140,6 +148,16 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             settings.CloseLinkedIssue is { } closeLinkedIssue
                 ? Optional<string?>.Of(closeLinkedIssue)
                 : Optional<string?>.None);
+
+        // A Linear project's publish that will create an issue needs the team's id and default state
+        // from Linear, and asks for them here rather than after the commit: past the save there is
+        // nothing left to refuse, and the publishing install is the one that creates the issue. A
+        // throw leaves the task a Draft, exactly as the checks below do.
+        bool createsLinearIssue = project.BacklogPolicy == BacklogPolicy.Linear && published.NoExistingItemAttested;
+        LinearPublishTarget? linearTarget = createsLinearIssue
+            ? await ResolveLinearTargetAsync(session, project, taskId, cancellationToken)
+            : null;
+
         session.Events.Append(taskId, published);
         task.Apply(published);
 
@@ -148,7 +166,10 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         // a Draft. Announcing the publish first would tell a human (or an agent reading the message to
         // self-correct) about a state change the failed transaction never made.
         OwnerDetails? queuedFor = await ChooseQueueAsync(session, task, context, settings, cancellationToken);
-        TaskAssigned? queued = queuedFor is null
+        // The go signal of a publish that creates a Linear issue waits for the link: dispatch cuts its
+        // branch from the issue's identifier, and the dispatch poll routinely wins a race against a
+        // create that is still in flight, which would cut a no-key branch Linear never links.
+        TaskAssigned? queued = queuedFor is null || createsLinearIssue
             ? null
             : await TaskAssignCommand.AppendAsync(session, task, queuedFor, context.OwnerId, cancellationToken);
 
@@ -184,7 +205,17 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         // seeing on the stream, and a task with a reference already has neither. A task published
         // --untracked declined tracking deliberately, on the stream, at the gate itself — creating
         // an item here anyway would contradict the attestation that just landed.
-        if (published.UntrackedAttested)
+        LinearTrackingResult? linearTracking = null;
+        if (project.BacklogPolicy == BacklogPolicy.Linear)
+        {
+            // Every outcome writes the record, which is why this arm does not share the branches below.
+            // The go signal of a publish that creates an issue is appended in there, after the link.
+            linearTracking = await LinearPublishTracking.TrackAsync(
+                store, taskId, task, published, project, context, linearTarget,
+                createsLinearIssue ? queuedFor : null, NewLedger(), cancellationToken);
+            queued = linearTracking.Queued ?? queued;
+        }
+        else if (published.UntrackedAttested)
         {
             string tracker = project.BacklogPolicy == BacklogPolicy.Jira ? "Jira" : "GitHub issues";
             AnsiConsole.MarkupLine(
@@ -207,7 +238,13 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             // tasks this install maintains a record for — a policy that tracks nothing, or a task
             // that is a mirror of another install's, writes nothing.
             await WriteRecordAsync(
-                store, taskId, shortId, project, context, criteriaChanged: false, cancellationToken);
+                store, taskId, shortId, project, context, criteriaChanged: false, NewLedger(), cancellationToken);
+        }
+
+        if (linearTracking is { QueueDeferred: true, Queued: null })
+        {
+            // Already said, with the way to link the issue and then queue the task.
+            return ExitCodes.Ok;
         }
 
         if (queuedFor is null || queued is null)
@@ -260,6 +297,27 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         }
 
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// The Linear connection and team a publish that creates an issue needs, resolved before it
+    /// commits. A connection this install cannot use (more than one registered, say) refuses the same
+    /// way a missing one does.
+    /// </summary>
+    private static async Task<LinearPublishTarget> ResolveLinearTargetAsync(
+        IDocumentSession session, ProjectDetails project, Guid taskId, CancellationToken cancellationToken)
+    {
+        LinearWorkItemProvider? provider;
+        try
+        {
+            provider = await WorkItemConnections.TryLinearProviderAsync(session, cancellationToken);
+        }
+        catch (DomainException exception)
+        {
+            throw LinearPublishTracking.Refusal(TaskListCommand.ShortId(taskId), exception.Message);
+        }
+
+        return await LinearPublishTracking.ResolveAsync(provider, project, taskId, cancellationToken);
     }
 
     /// <summary>
@@ -452,8 +510,11 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         // The record goes in after the link, never as part of the create body: the branch name it
         // carries renders through the project's branch template, whose {key} token is this very
         // issue's number (TaskRecordPublication's own doc has the fuller argument).
-        await WriteRecordAsync(store, taskId, shortId, project, context, criteriaChanged: false, cancellationToken);
+        await WriteRecordAsync(
+            store, taskId, shortId, project, context, criteriaChanged: false, NewLedger(), cancellationToken);
     }
+
+    private static ILedger NewLedger() => new GitLedger(new ConsoleWorktreeLogger<GitLedger>());
 
     /// <summary>
     /// Write the task's record into the ledger, so every node that shares this project can adopt
@@ -468,13 +529,14 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
     /// through its own gh round trip instead of piggy-backing on the record's.
     /// </para>
     /// </summary>
-    private static async Task WriteRecordAsync(
+    internal static async Task WriteRecordAsync(
         DocumentStore store,
         Guid taskId,
         string shortId,
         ProjectDetails project,
         BootstrapContext context,
         bool criteriaChanged,
+        ILedger ledger,
         CancellationToken cancellationToken)
     {
         await using IQuerySession session = store.QuerySession();
@@ -494,7 +556,7 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
                 await TaskRecordPublication.ResolveIdentityAsync(session, context, cancellationToken);
             TaskRecordPublication.WriteOutcome outcome = await TaskRecordPublication.WriteAsync(
                 session, task, project, context.NodeId, node?.MachineName ?? Environment.MachineName,
-                ownerFingerprint, DateTimeOffset.UtcNow, new GitLedger(new ConsoleWorktreeLogger<GitLedger>()),
+                ownerFingerprint, DateTimeOffset.UtcNow, ledger,
                 committer, signingKey, cancellationToken);
             if (outcome == TaskRecordPublication.WriteOutcome.Written)
             {
