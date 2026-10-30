@@ -214,7 +214,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "h9k task show. Acceptance criteria are NEVER read out of an issue description: they are the "
             + "readiness contract, so you supply them with --criteria or at the prompt. Adopted by Linear "
             + "state type: backlog, unstarted, and started are open work; completed, canceled, and "
-            + "duplicate are refused; triage is refused with a pointer to h9k idea add --from-linear; a "
+            + "duplicate are refused; triage is refused with a pointer to h9k idea add, which captures it as an idea; a "
             + "type Hall9k has no rule for is refused with the type quoted. The state read at import is "
             + "recorded as an observation of that moment, never re-checked afterwards. Cannot be combined "
             + "with --from-issue, --from-jira, or --from-pr")]
@@ -936,6 +936,9 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         {
             await RefuseSecondAdoptionAsync(
                 session, imported.Reference, new AdoptionSite(project.Id, epicId), ownerRootFingerprint, cancellationToken);
+            await RefuseSecondAdoptionUnderFormerReferencesAsync(
+                session, imported, new AdoptionSite(project.Id, epicId), ownerRootFingerprint, ownReference: null,
+                cancellationToken);
             if (source.Provider != WorkItemProvider.GitHubPullRequest)
             {
                 // The cheap check above only ever finds a task already replicated here. A record
@@ -1311,6 +1314,33 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + (site?.SelfTaskId is null
                 ? string.Empty
                 : " This task holds the issue too, and it may share it only inside the solution epic it is in now, so it cannot leave."));
+    }
+
+    /// <summary>
+    /// The same guard, asked once for each name the source says <paramref name="item"/> used to carry.
+    /// An item that moved (a Linear issue changing team gets a new identifier) is still one item, so a
+    /// live task that recorded it under the old name holds it as much as one using the new name, and
+    /// asking only about the name the source answers with today lets a second task adopt it.
+    /// <paramref name="ownReference"/> is the reference the task being linked already carries, which is
+    /// the very thing a relink replaces and so does not count as another task's hold.
+    /// </summary>
+    internal static async Task RefuseSecondAdoptionUnderFormerReferencesAsync(
+        IQuerySession session, ImportedWorkItem item, AdoptionSite? site, string? ownerRootFingerprint,
+        ExternalReference? ownReference, CancellationToken cancellationToken)
+    {
+        foreach (ExternalReference former in item.FormerReferences.Where(former => former != ownReference))
+        {
+            try
+            {
+                await RefuseSecondAdoptionAsync(session, former, site, ownerRootFingerprint, cancellationToken);
+            }
+            catch (DomainConflictException conflict)
+            {
+                throw new DomainConflictException(
+                    $"{item.Reference} is the issue Linear used to call {former}, so it is held already. "
+                    + conflict.Message);
+            }
+        }
     }
 
     /// <summary>The first live holder that bars the new task under <see cref="SharedIssueRule"/>, or null when the issue may be shared.</summary>
