@@ -1,0 +1,39 @@
+hall9k-task-record: 1
+task-id: 01a1881b-a597-7689-bb60-19a7c74503a2
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#799
+objective: An idea can carry a tracker link, so a Linear issue in Triage enters hall9k as an idea in discovery, and the first task cut from it inherits the link
+criteria:
+  - h9k idea add --from-linear <identifier or URL>, --from-jira <key or URL>, or --from-issue <number or URL> reads the item through the same importer task adoption uses, captures an idea whose text is the item's title folded to one line with closing words defused (TaskAddCommand.ObjectiveSeed's rule), and records the link on the idea's stream in the same transaction as the capture, as a new idea event carrying the <provider>:<reference> the read returned with the observed title, state, and time (the fields WorkItemLinked records on a task; WorkItemLinked itself is never written to an idea stream)
+  - The capture also writes a fixed-name file into the idea's workspace holding WorkItemContext.Compose's output for the item, so its title, description, URL, and observed state reach a discovery session as quoted source material under the non-instruction framing
+  - The text argument is optional with a --from flag and defaults to the title; when given it wins; two --from flags together are refused
+  - Idea adoption accepts the states task adoption accepts plus Linear's triage; completed, canceled, and duplicate Linear issues, closed GitHub issues, and done Jira cards are refused with the state named
+  - An idea with a tracker link needs a project at capture (--project, or the refusal names it), and the link must pass the same one-tracker check A applies to a task on that project, shared rather than copied, both at capture and on h9k idea move, which is refused the same way
+  - |-
+    One item, one idea: a second idea from an item another Captured idea on this node carries is refused naming that idea, and an item a task holds is refused naming the task through the two guards task adoption runs (RefuseSecondAdoptionAsync and RefuseIfRecordedElsewhereAsync); concluding or archiving an idea releases its item with no further act
+  - h9k idea show renders the link as the item's web URL, or the bare reference where this node's importer has no URL for it; h9k idea list shows its key; the link event replicates at the idea's own scope, classified ProjectScoped in EventScopeRegistry and MemberSafe in TaskActClassificationRegistry
+  - h9k task add --from-idea on a linked idea whose item no task holds reads the item afresh through the importer, never from the workspace file, and adopts it with the refusals h9k task add --from-<tracker> has (RefuseSecondAdoptionAsync with this cut's project and epic as the site, RefuseIfRecordedElsewhereAsync, and the one-tracker check) and the state rule of criterion 4, so an issue still in Triage adopts, A's triage refusal stays on the plain task doors, and the output says the issue is still in Triage and that hall9k does not move it; the reference the read returned is recorded on TaskAdded, as --from-<tracker> records it; the cut still needs its own --objective
+  - The agent context of a cut from a linked idea keeps the discovery workspace pointer and any --context, and a linked cut leads with WorkItemContext.Compose's output for the fresh read; text the item's author wrote appears only inside that fence, so a note that is still the title seed is left out of the context on every cut from a linked idea, and a note a human revised rides along as it does today
+  - |-
+    A cut from a linked idea that is refused because the item is closed, canceled, duplicate, or not found, is held by a task not cut from this idea, cannot be read for want of a connection on this node, or fails the one-tracker check names that cause and two exits: h9k task add --from-idea <idea> --objective "…" --unlinked, which cuts the task with no tracker read and no link, and h9k idea conclude or h9k idea archive; a not-found refusal also names h9k task link-linear <new task> <new identifier> as the step after --unlinked; --unlinked on an idea with no link is refused
+  - |-
+    A cut whose item a task cut from the same idea still holds (any state but Abandoned, as the guard reads it), checked on the idea's stored reference before any tracker read, reads no tracker and is created unlinked rather than refused, so it works after the item has closed; the output and the new task's agent context both name the holding task and the epic route: carry the item in the sibling's context, publish it --untracked, and group the tasks under an epic with h9k epic add; a cut the solution-epic exception admits adopts as criterion 8 says
+  - h9k idea promote on a linked idea is refused before anything is written, naming the two acts it composes (h9k task add --from-idea <idea> --objective "…" and h9k idea conclude <idea> --reason "…"); an idea with no link promotes as it does today
+  - Every tracker call in these tests runs against recorded responses or a fake gh runner, no test touches GitHub or creates a branch, and the capture and cut rules are pinned through a testable core with an importer seam, on the IdeaPromoteCommand.RunAsync precedent
+dependencies: [01a18cfe-b598-7054-b00f-2f220611dc26]
+epic-title: Linear connector
+epic-id: 01a1881b-278f-7669-acde-4b0d36563fc2
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/c74503a2-an-idea-can-carry-a-tracker-li
+published: 2026-10-30 14:37:20Z
+context: |-
+  A Linear connector, so a project whose work and backlog live in Linear gets the same tracker integration hall9k gives Jira and GitHub issues
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/5d12221a-a-linear-connector-so-a-project-whose-work-and-backlog-live/workspace
+
+  Notes for the build. The new event is IdeaWorkItemLinked in Hall9k.Domain.Features.Idea, with WorkItemLinked's fields; do not reuse WorkItemLinked, because the task projections apply it and would vivify a task document on the idea's id. PartialReplicatedStreamRules and AggregateGenesisEventTypes need no change. IdeaDetails needs the reference for the guard, h9k idea show, and h9k idea list. An older node skips the event without stalling, so it holds the idea without the link; that is accepted. Whether Linear's issue(id:) resolves an identifier after a team move is unverified, so the cut handles both a returned new identifier and not found. Whether Linear's pull request automation moves an issue still in Triage is unverified, because the page could not be read, so the output makes no promise about it. Parked: h9k epic link-linear (trigger: a person reads the issue off the epic, or epics are mirrored to Linear projects); h9k idea promote adopting the link (trigger: operators hit its refusal); a task-side refusal on an item a live idea carries (trigger: an operator adopts around a live idea and loses the provenance); importing the item's comments (A's park).
