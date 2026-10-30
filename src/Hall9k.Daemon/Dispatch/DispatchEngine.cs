@@ -1708,7 +1708,7 @@ public sealed class DispatchEngine(
         }
 
         // The project's claim gate, ahead of TaskDecider.Claim (idea 64c75e43): a task linked to
-        // a Jira card or a GitHub issue is claimed here only while the tracker shows that item
+        // a Jira card, a GitHub issue, or a Linear issue is claimed here only while the tracker shows that item
         // assigned to this install's own tracker identity. A refusal simply returns — the task
         // stays Queued, exactly as the ceiling's and the spend budget's own turned-away tasks do,
         // and nothing about this task's run history records the wait.

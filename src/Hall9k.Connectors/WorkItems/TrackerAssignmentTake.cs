@@ -325,14 +325,19 @@ public sealed class TrackerAssignmentTake
     private readonly TrackerClaimGate claimGate;
     private readonly JiraRequester? requester;
     private readonly CredentialVault? vault;
+    private readonly LinearRequester? linearRequester;
 
     public TrackerAssignmentTake(
-        ProcessRunner? processRunner = null, JiraRequester? requester = null, CredentialVault? vault = null)
+        ProcessRunner? processRunner = null,
+        JiraRequester? requester = null,
+        CredentialVault? vault = null,
+        LinearRequester? linearRequester = null)
     {
         this.processRunner = processRunner ?? ExternalProcess.Runner;
         this.requester = requester;
         this.vault = vault;
-        claimGate = new TrackerClaimGate(this.processRunner, requester, vault);
+        this.linearRequester = linearRequester;
+        claimGate = new TrackerClaimGate(this.processRunner, requester, vault, linearRequester);
     }
 
     /// <summary>
@@ -344,11 +349,23 @@ public sealed class TrackerAssignmentTake
     /// default. <paramref name="processRunner"/> still backs this take's own GitHub write
     /// (<see cref="TakeGitHubAsync"/>'s <c>gh issue edit --add-assignee</c>), which the gate
     /// itself never runs.
+    /// <para>
+    /// The Linear transport and vault default to the shared gate's own, so a gate built over a
+    /// recorded Linear double (the dispatcher's mirror tests inject exactly that) makes this take's
+    /// writes reach the same double; the optional parameters override that for a caller that wants
+    /// the take on its own.
+    /// </para>
     /// </summary>
-    public TrackerAssignmentTake(TrackerClaimGate claimGate, ProcessRunner processRunner)
+    public TrackerAssignmentTake(
+        TrackerClaimGate claimGate,
+        ProcessRunner processRunner,
+        LinearRequester? linearRequester = null,
+        CredentialVault? vault = null)
     {
         this.claimGate = claimGate;
         this.processRunner = processRunner;
+        this.linearRequester = linearRequester ?? claimGate.LinearTransport;
+        this.vault = vault ?? claimGate.Vault;
     }
 
     /// <summary>
@@ -407,9 +424,14 @@ public sealed class TrackerAssignmentTake
                 + "state: report it with the command you ran.");
         }
 
-        return item.Provider == WorkItemProvider.Jira
-            ? await TakeJiraAsync(store, item, identity, decision, cancellationToken)
-            : await TakeGitHubAsync(item, identity, decision, workingDirectory, cancellationToken);
+        return item.Provider switch
+        {
+            _ when item.Provider == WorkItemProvider.Jira =>
+                await TakeJiraAsync(store, item, identity, decision, cancellationToken),
+            _ when item.Provider == WorkItemProvider.Linear =>
+                await TakeLinearAsync(store, item, identity, decision, cancellationToken),
+            _ => await TakeGitHubAsync(item, identity, decision, workingDirectory, cancellationToken),
+        };
     }
 
     /// <summary>
@@ -474,9 +496,14 @@ public sealed class TrackerAssignmentTake
                 + "item was asked about, so it wrote nothing rather than guess.");
         }
 
-        return item.Provider == WorkItemProvider.Jira
-            ? await TakeJiraAsync(store, item, granteeIdentity, decision, cancellationToken)
-            : await GrantGitHubAsync(item, granteeIdentity, decision, workingDirectory, cancellationToken);
+        return item.Provider switch
+        {
+            _ when item.Provider == WorkItemProvider.Jira =>
+                await TakeJiraAsync(store, item, granteeIdentity, decision, cancellationToken),
+            _ when item.Provider == WorkItemProvider.Linear =>
+                await TakeLinearAsync(store, item, granteeIdentity, decision, cancellationToken),
+            _ => await GrantGitHubAsync(item, granteeIdentity, decision, workingDirectory, cancellationToken),
+        };
     }
 
     /// <summary>
@@ -635,6 +662,71 @@ public sealed class TrackerAssignmentTake
     }
 
     /// <summary>
+    /// Linear: <c>issueUpdate</c> with <c>assigneeId</c> as the only member of its input, so no state,
+    /// label, or other field moves. The assignee is one nullable user, so the write overwrites whoever
+    /// was there, as Jira's does and GitHub's add-assignee does not: a take that raced another install
+    /// ends with one user on the issue, and the read-back that follows shows which, so
+    /// <see cref="TrackerTakeVerdict.Contested"/> cannot arise here. The read-back compares the
+    /// assignee's user id with the one written, ordinally, and is what the recorded event is composed
+    /// from. The same method serves the cooperative grant, where the id written is the grantee's.
+    /// </summary>
+    private async Task<TrackerTake> TakeLinearAsync(
+        IDocumentStore store,
+        ExternalReference item,
+        string identity,
+        TrackerClaimDecision decision,
+        CancellationToken cancellationToken)
+    {
+        if (!LinearIssueIdentifier.TryParseBare(item.Reference, out LinearIssueIdentifier identifier))
+        {
+            return TrackerTake.WriteRefused(
+                decision,
+                $"'{Text.RelayedText.OneLine(item.ToString())}' does not read as a Linear issue identifier, "
+                + "so there is no issue whose assignee could be written.");
+        }
+
+        (LinearWorkItemProvider? provider, string refusal) = await LinearProviderAsync(store, cancellationToken);
+        if (provider is null)
+        {
+            return TrackerTake.WriteRefused(decision, refusal);
+        }
+
+        TrackerAssignmentWrite write = await provider.SetAssigneeAsync(identifier, identity, cancellationToken);
+        if (write.Error is { } error)
+        {
+            return TrackerTake.WriteRefused(decision, error);
+        }
+
+        TrackerAssigneeRead read = await provider.ReadAssigneeAsync(identifier, RelinkPlaceholder, cancellationToken);
+        return Confirm(decision, read, identity, DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>
+    /// The Linear provider over the registered connection, or the sentence that says why there is
+    /// none. The refusal is empty exactly when a provider is returned.
+    /// </summary>
+    private async Task<(LinearWorkItemProvider? Provider, string Refusal)> LinearProviderAsync(
+        IDocumentStore store, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IQuerySession query = store.QuerySession();
+            return await WorkItemConnections.TryLinearProviderAsync(query, cancellationToken, vault, linearRequester)
+                is { } provider
+                    ? (provider, string.Empty)
+                    : (null, WorkItemConnections.NoLinearConnection);
+        }
+        catch (DomainException exception)
+        {
+            // Two Linear connections with nothing saying which, or one with no workspace recorded:
+            // this install's own configuration, answered by the refusal WorkItemConnections wrote.
+            return (null, exception.Message);
+        }
+    }
+
+    private const string RelinkPlaceholder = "<id>";
+
+    /// <summary>
     /// GitHub: <c>gh issue edit --add-assignee</c> with the login read live on this very check —
     /// never a stored one, for the reason <see cref="TrackerClaimGate"/>'s own GitHub path
     /// documents, and here with a sharper edge: a stale login would put somebody else's name on the
@@ -710,9 +802,14 @@ public sealed class TrackerAssignmentTake
                 + "which item or which identity to clear, so it wrote nothing.");
         }
 
-        return item.Provider == WorkItemProvider.Jira
-            ? await ClearJiraAsync(store, item, identity, decision, cancellationToken)
-            : await ClearGitHubAsync(item, identity, workingDirectory, cancellationToken);
+        return item.Provider switch
+        {
+            _ when item.Provider == WorkItemProvider.Jira =>
+                await ClearJiraAsync(store, item, identity, decision, cancellationToken),
+            _ when item.Provider == WorkItemProvider.Linear =>
+                await ClearLinearAsync(store, item, identity, cancellationToken),
+            _ => await ClearGitHubAsync(item, identity, workingDirectory, cancellationToken),
+        };
     }
 
     /// <summary>
@@ -785,6 +882,38 @@ public sealed class TrackerAssignmentTake
         }
 
         TrackerAssigneeRead read = await provider.ReadAssigneeAsync(key, cancellationToken);
+        return ConfirmCleared(read, identity);
+    }
+
+    /// <summary>
+    /// Linear: <c>assigneeId</c> sent as an explicit JSON null through the same mutation
+    /// <see cref="TakeLinearAsync"/> writes with, then read back. Linear's schema says null clears
+    /// "where supported", so the read-back, not the null, is what proves the clear: a read-back that
+    /// still shows this install is a failure and is retried.
+    /// </summary>
+    private async Task<TrackerRelease> ClearLinearAsync(
+        IDocumentStore store, ExternalReference item, string identity, CancellationToken cancellationToken)
+    {
+        if (!LinearIssueIdentifier.TryParseBare(item.Reference, out LinearIssueIdentifier identifier))
+        {
+            return TrackerRelease.Failed(
+                $"'{Text.RelayedText.OneLine(item.ToString())}' does not read as a Linear issue identifier, "
+                + "so there is no issue whose assignee could be cleared.");
+        }
+
+        (LinearWorkItemProvider? provider, string refusal) = await LinearProviderAsync(store, cancellationToken);
+        if (provider is null)
+        {
+            return TrackerRelease.Failed(refusal);
+        }
+
+        TrackerAssignmentWrite write = await provider.SetAssigneeAsync(identifier, null, cancellationToken);
+        if (write.Error is { } error)
+        {
+            return TrackerRelease.Failed(error);
+        }
+
+        TrackerAssigneeRead read = await provider.ReadAssigneeAsync(identifier, RelinkPlaceholder, cancellationToken);
         return ConfirmCleared(read, identity);
     }
 

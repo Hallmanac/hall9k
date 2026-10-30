@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Connectors.WorkItems;
 
@@ -40,8 +41,8 @@ public enum TrackerClaimVerdict
 /// </para>
 /// </summary>
 /// <param name="Verdict">What the read concluded.</param>
-/// <param name="Provider">Whose item is gating the claim: <c>jira</c> or <c>github</c>.</param>
-/// <param name="ItemKey">The item as the people who filed it say it out loud: <c>PROJ-123</c>, or <c>owner/repo#42</c>.</param>
+/// <param name="Provider">Whose item is gating the claim: <c>jira</c>, <c>github</c>, or <c>linear</c>.</param>
+/// <param name="ItemKey">The item as the people who filed it say it out loud: <c>PROJ-123</c>, <c>owner/repo#42</c>, or <c>ENG-123</c>.</param>
 /// <param name="ItemUrl">The card or issue in a browser, so the lever is one click; null when the reference could not be turned into one.</param>
 /// <param name="Identity">This install's own tracker identity, as the tracker reported it; null when that read itself failed.</param>
 /// <param name="Holder">Who the tracker says holds the item, as a human reads it; null when nobody does, or when nothing could be read.</param>
@@ -84,7 +85,12 @@ public sealed record TrackerClaimDecision(
     /// spellings of "Jira" across the doors of a single feature is exactly the drift this class
     /// exists to prevent.
     /// </summary>
-    public string Tracker => Provider == "jira" ? "Jira" : "GitHub";
+    public string Tracker => Provider switch
+    {
+        _ when Provider == WorkItemProvider.Jira.Value => "Jira",
+        _ when Provider == WorkItemProvider.Linear.Value => "Linear",
+        _ => "GitHub",
+    };
 
     /// <summary>
     /// The item as it is spoken in a sentence bound for a terminal. <see cref="ItemKey"/> itself
