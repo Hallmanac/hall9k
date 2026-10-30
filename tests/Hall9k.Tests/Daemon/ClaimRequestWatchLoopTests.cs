@@ -197,6 +197,22 @@ public sealed class ClaimRequestWatchLoopApplyDeclaredTrackerIdentityTests
     }
 
     [Fact]
+    public void A_linear_linked_request_keeps_its_carried_user_id_even_when_a_github_login_is_declared()
+    {
+        // As for Jira, the declaration carries no Linear identity, so replacing the carried user id
+        // with a GitHub login would hand the grant a value Linear's assignee field cannot take.
+        TrustChain chain = ChainDeclaring("alice");
+        ClaimEnvelopeCodec.ClaimRequestRecord request = RequestCarrying("11111111-aaaa-4bbb-8ccc-000000000001");
+
+        (ClaimEnvelopeCodec.ClaimRequestRecord effective, bool replaced) = ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity(
+            WorkItemProvider.Linear, chain, request, FromNodeId);
+
+        effective.Should().BeSameAs(request);
+        effective.RequesterTrackerIdentity.Should().Be("11111111-aaaa-4bbb-8ccc-000000000001");
+        replaced.Should().BeFalse();
+    }
+
+    [Fact]
     public void An_ungated_project_still_has_its_carried_identity_replaced()
     {
         // independent pre-PR review, cycle 1, both lenses, medium: the project's own ClaimGate can
