@@ -1315,7 +1315,7 @@ than never; it logs what it destroyed in numbers.
 
 `project set` is where the verification gates, the agent model, parallelism, commit style,
 context links, skip-permissions, the Jira board binding, the backlog policy (`--backlog
-none|github-issues|jira`) and its routing guidance, the review re-request policy, the
+none|github-issues|jira|linear`) and its routing guidance, the review re-request policy, the
 project-level review-cycle-cap overrides, the review stage composition (`--review-stage-composition`,
 below), the branch-name template (`--branch-template`,
 [below](#branch-naming)), the auto-pr-review speed (`--auto-pr-review
@@ -1761,8 +1761,9 @@ those two moments is the same failure a hand-renamed branch caused on the Window
 carrying no linked item renders `{key}` as `no-key`, saying that nothing was observed rather than
 eliding the segment or inventing a card number.
 
-That fallback is not a narrow edge case: under either tracking backlog policy (`--backlog jira` or
-`--backlog github-issues`) it is the ordinary outcome for a task the platform itself publishes and
+That fallback is not a narrow edge case: under either of the two older tracking backlog policies
+(`--backlog jira` or `--backlog github-issues`; `--backlog linear` defers its go signal until the
+issue is linked, so it does not have this problem) it is the ordinary outcome for a task the platform itself publishes and
 dispatches. A `jira` card is minted minutes later by a separately dispatched session, well after
 dispatch has already rendered and recorded the branch name, so a task published and queued in
 one breath essentially always cuts `no-key-<slug>` rather than `PROJ-14-<slug>`. A `github-issues`
@@ -1776,13 +1777,14 @@ time, on a project still on the default.
 
 ### Backlog tracking
 
-`h9k project set --backlog none|github-issues|jira` · `h9k project set --backlog-routing "<TEXT>"` ·
-`h9k task link-issue <task> <issue>`
+`h9k project set --backlog none|github-issues|jira|linear` · `h9k project set --backlog-routing "<TEXT>"` ·
+`h9k task link-issue <task> <issue>` · `h9k task link-linear <task> <identifier>`
 
 Every published task is tracked in the project's backlog automatically, per this setting — but
 `h9k task publish` checks the policy before it ever creates anything: a draft that carries no
 linked item yet, and has no publication already pending, is refused (exit code 70) until a human
-or orchestrator links an existing item (`h9k task link-issue` / `h9k task link-jira`), attests
+or orchestrator links an existing item (`h9k task link-issue` / `h9k task link-jira` /
+`h9k task link-linear`), attests
 none exists and proceeds with `h9k task publish <id> --no-existing-item`, or attests that this
 task should skip tracking altogether with `h9k task publish <id> --untracked` — for internal
 chores and platform tasks that should not pollute a team's tracker — so a duplicate is never
@@ -1802,8 +1804,48 @@ The issue itself carries no record at all; only its acceptance-criteria checklis
 and only when a revision actually replaces the criteria, leaving the rest of a human's own edits to
 the issue's prose alone. `--backlog-routing`
 is read as a comma-separated label list under `github-issues`. `jira` is agent-mediated (below);
-`none` is today's default, unchanged behavior. A task adopted with `--from-issue`/`--from-jira`
-already carries its reference, so the gate never fires for it.
+`none` is today's default, unchanged behavior. A task adopted with `--from-issue`/`--from-jira`/
+`--from-linear` already carries its reference, so the gate never fires for it.
+
+`linear` creates the issue in the project's bound Linear team, and is accepted only with a team
+bound (`h9k project set <project> --linear <TEAM>`), or bound by the same command; clearing the
+team while the policy stays `linear` is refused, naming `h9k project set <project> --linear none
+--backlog none`. Like `github-issues` it is deterministic, and it is created by the publishing
+install itself, with no agent session and no daemon involved. It differs in one way that matters:
+the team is resolved through Linear **before the publish commits**. `h9k task publish
+--no-existing-item` on a task that will create an issue asks Linear for the team's id and its default
+workflow state first, and no Linear connection on this install, a rejected key, no team bound, an
+unknown team, or Linear not answering each refuse the publish with a non-zero exit, leaving the task
+a Draft and naming `--untracked` as the way to publish without Linear. `--untracked` and a task that
+already carries an issue make no Linear call at all.
+
+After the publish commits, one `issueCreate` carries the team's id, the team's default state as its
+`stateId` (omitted only when Linear reports none, so a team with Triage on does not receive the issue
+in Triage), the objective folded to one line and cut at 255 characters as the title, and the same
+description `github-issues` writes: the agent context, the acceptance criteria as a checklist, and
+the full objective when the title was cut. The discovery-workspace path a task promoted from an idea
+carries is left out of it. No assignee, label, project, or cycle is set, which is also why
+`--backlog-routing` is ignored under `linear` and `h9k project set` says so. The create is sent once
+and never retried; the issue is then read back and linked through the step `h9k task link-linear`
+uses, and the task's record is written to the ledger on every outcome (linked, create failed, link
+failed, already linked, and `--untracked`). When the create does not end in a link, the note says
+which of three things happened. If Linear returned an identifier but the read-back or the link
+failed, it names `h9k task link-linear <task> <identifier>`. If Linear definitely refused (an
+`errors` array, `success: false`, or a 4xx), nothing was created, and it names a by-hand create and
+then the link. If the outcome is unknown (a timeout, a lost connection, a 5xx, or an answer that
+cannot be read), the issue may exist, so it says to search the team before linking or creating,
+because creating by hand could file a duplicate. `h9k task show` keeps the gap visible afterwards: a
+task past Draft with no linked issue and no untracked attestation says no Linear issue is linked and
+names `h9k task link-linear`.
+
+`--queue`, and the interactive offer to queue, are the one place the "one transaction" promise gives
+way. On a publish that creates a Linear issue the go signal is appended only after the link attempt,
+because dispatch cuts its branch from the issue's identifier and the dispatch poll routinely wins a
+race against a create still in flight, which would cut `no-key-<slug>` and leave Linear nothing to
+link the pull request by. When no issue was linked the task stays published and not queued, and the
+output names `h9k task link-linear <task> <identifier>` and then `h9k task queue <task>`. A crash
+between the two leaves a published, unqueued task, which is safe and visible. A publish that creates
+nothing (`--untracked`, or a task linked earlier) still queues in the publish transaction as usual.
 
 ### Closing a linked issue
 
