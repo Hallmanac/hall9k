@@ -896,6 +896,111 @@ public sealed class StoreBackedRecordTests(PostgresFixture postgres) : IClassFix
             .And.Contain("h9k connection add jira --site");
     }
 
+    private static readonly Uri LinearWorkspace = new("https://linear.app/hall9k");
+
+    [Fact]
+    public async Task An_ambiguous_linear_connection_refuses_linear_and_leaves_github_and_jira_alone()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        await ClearConnectionsAsync(store, cts.Token);
+        await RegisterAsync(store, "alice@corp.com", Site, cts.Token);
+        await RegisterLinearAsync(store, "Alice", LinearWorkspace, cts.Token);
+        await RegisterLinearAsync(store, "Bob", LinearWorkspace, cts.Token);
+
+        await using IQuerySession session = store.QuerySession();
+        WorkItemImporter importer = await ImporterAsync(session, cts.Token);
+
+        importer.WebUrl(GitHubIssue).Should().NotBeNull("a Linear misconfiguration must not stop a GitHub command");
+        importer.WebUrl("jira:PROJ-123").Should().Be(
+            new Uri("https://hall9k.atlassian.net/browse/PROJ-123"), "nor a Jira command");
+
+        Func<Task> linear = () => ImportAsync(importer, WorkItemProvider.Linear, cts.Token);
+
+        (await linear.Should().ThrowAsync<DomainConflictException>()).Which.Message
+            .Should().Contain("2 Linear connections are registered")
+            .And.Contain("Alice").And.Contain("Bob")
+            .And.NotContain("Known sources");
+    }
+
+    [Fact]
+    public async Task A_linear_connection_with_no_workspace_refuses_linear_and_leaves_the_others_alone()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        await ClearConnectionsAsync(store, cts.Token);
+        await RegisterLinearAsync(store, "Alice", workspace: null, cts.Token);
+
+        await using IQuerySession session = store.QuerySession();
+        WorkItemImporter importer = await ImporterAsync(session, cts.Token);
+
+        importer.WebUrl(GitHubIssue).Should().NotBeNull();
+        importer.WebUrl("linear:ENG-123").Should().BeNull("a link built on a missing workspace is worse than no link");
+
+        Func<Task> linear = () => ImportAsync(importer, WorkItemProvider.Linear, cts.Token);
+
+        (await linear.Should().ThrowAsync<DomainValidationException>()).Which.Message
+            .Should().Contain("no workspace address recorded").And.Contain("h9k connection add linear");
+    }
+
+    [Fact]
+    public async Task An_install_with_no_linear_connection_is_told_the_command_that_connects_one()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        await ClearConnectionsAsync(store, cts.Token);
+
+        await using IQuerySession session = store.QuerySession();
+        WorkItemImporter importer = await ImporterAsync(session, cts.Token);
+
+        importer.WebUrl(GitHubIssue).Should().NotBeNull();
+        importer.WebUrl("linear:ENG-123").Should().BeNull("with no connection there is no workspace to link under");
+
+        Func<Task> linear = () => ImportAsync(importer, WorkItemProvider.Linear, cts.Token);
+
+        (await linear.Should().ThrowAsync<DomainNotFoundException>()).Which.Message
+            .Should().Be(WorkItemConnections.NoLinearConnection).And.Contain("h9k connection add linear");
+    }
+
+    [Fact]
+    public async Task A_registered_linear_connection_adopts_through_the_one_requester_and_links_under_its_workspace()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        await ClearConnectionsAsync(store, cts.Token);
+        const string keyVariable = "HALL9K_TEST_STORE_BACKED_LINEAR_KEY";
+        await RegisterLinearAsync(store, "Alice", LinearWorkspace, cts.Token, keyVariable);
+        List<LinearRequest> asked = [];
+        LinearRequester fixture = (request, _) =>
+        {
+            asked.Add(request);
+            return Task.FromResult(new LinearResponse(200, """
+            {"data":{"issue":{"identifier":"ENG-123","title":"Add rate limiting","description":null,
+              "url":"https://linear.app/hall9k/issue/ENG-123/add-rate-limiting","previousIdentifiers":[],
+              "state":{"name":"Todo","type":"unstarted"}}}}
+            """));
+        };
+
+        await using IQuerySession session = store.QuerySession();
+        WorkItemImporter importer = await WorkItemConnections.ImporterAsync(
+            session, cts.Token, FakeJiraRequester.NeverInvoked(), linearRequester: fixture);
+        Environment.SetEnvironmentVariable(keyVariable, "a-key-for-this-test");
+        ImportedWorkItem item;
+        try
+        {
+            item = await importer.ImportAsync(
+                new WorkItemImportRequest(WorkItemProvider.Linear, "eng-123", Path.GetTempPath()), cts.Token);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(keyVariable, null);
+        }
+
+        item.Reference.ToString().Should().Be("linear:ENG-123");
+        asked.Should().ContainSingle().Which.Authorization.Should().Be("a-key-for-this-test");
+        importer.WebUrl("linear:ENG-123").Should().Be(new Uri("https://linear.app/hall9k/issue/ENG-123"));
+    }
+
     /// <summary>
     /// The importer this install would build, with the Jira half's request seam pinned to a
     /// requester that throws if it is ever actually invoked. Every test here reaches Jira only
@@ -925,7 +1030,8 @@ public sealed class StoreBackedRecordTests(PostgresFixture postgres) : IClassFix
     /// </summary>
     private static Task<WorkItemImporter> ImporterAsync(
         IQuerySession session, CancellationToken cancellationToken) =>
-        WorkItemConnections.ImporterAsync(session, cancellationToken, FakeJiraRequester.NeverInvoked());
+        WorkItemConnections.ImporterAsync(
+            session, cancellationToken, FakeJiraRequester.NeverInvoked(), linearRequester: FakeLinearRequester.NeverInvoked());
 
     private static Task<ImportedWorkItem> ImportAsync(
         WorkItemImporter importer, WorkItemProvider provider, CancellationToken cancellationToken) =>
@@ -950,6 +1056,24 @@ public sealed class StoreBackedRecordTests(PostgresFixture postgres) : IClassFix
             CredentialReference.EnvironmentVariable("JIRA_API_TOKEN"),
             ConnectionsNow,
             site));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>A Linear registration, appended as the event so a workspace-less one can be written too.</summary>
+    private static async Task RegisterLinearAsync(
+        DocumentStore store, string viewerName, Uri? workspace, CancellationToken cancellationToken,
+        string keyVariable = "LINEAR_API_KEY")
+    {
+        Guid connectionId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream<ConnectionAggregate>(connectionId, new ConnectionRegistered(
+            connectionId,
+            DomainId.New(),
+            WorkItemProvider.Linear,
+            viewerName,
+            CredentialReference.EnvironmentVariable(keyVariable),
+            ConnectionsNow,
+            workspace));
         await session.SaveChangesAsync(cancellationToken);
     }
 

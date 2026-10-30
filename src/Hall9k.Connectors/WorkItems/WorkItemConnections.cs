@@ -34,6 +34,15 @@ public static class WorkItemConnections
         + "https://your-org.atlassian.net --email you@example.com";
 
     /// <summary>
+    /// What every surface says when Linear is asked for on an install that has not connected it, one
+    /// string for the same reason <see cref="NoJiraConnection"/> is: the adoption path and the link
+    /// path fail on the same missing connection and should read the same sentence.
+    /// </summary>
+    public const string NoLinearConnection =
+        "No Linear connection is registered on this install, and Hall9k holds no Linear credentials "
+        + "of its own (PLAN.md §10). Register one: h9k connection add linear";
+
+    /// <summary>
     /// The importer for this install: the GitHub provider always, and the Jira provider when a
     /// Jira connection is registered and usable. Without one, Jira is carried as an unusable
     /// source rather than left out silently, so importing a card on a machine that has not
@@ -59,32 +68,51 @@ public static class WorkItemConnections
     /// </summary>
     public static async Task<WorkItemImporter> ImporterAsync(
         IQuerySession session, CancellationToken cancellationToken, JiraRequester? requester = null,
-        ProcessRunner? processRunner = null)
+        ProcessRunner? processRunner = null, LinearRequester? linearRequester = null)
     {
-        JiraWorkItemProvider? jira;
-        Func<DomainException> refusal = () => new DomainNotFoundException(NoJiraConnection);
+        List<IWorkItemProvider> providers =
+            [new GitHubWorkItemProvider(processRunner), new GitHubPullRequestProvider(processRunner)];
+        Dictionary<WorkItemProvider, Func<DomainException>> unusable = [];
+
+        // Each tracker is resolved on its own, and a failure of one is carried as that tracker's
+        // refusal rather than escaping: a Linear connection that cannot be resolved must not stop a
+        // GitHub or Jira command, any more than a Jira one may stop a Linear command.
         try
         {
-            jira = await TryJiraProviderAsync(session, cancellationToken, requester: requester);
+            if (await TryJiraProviderAsync(session, cancellationToken, requester: requester) is { } jira)
+            {
+                providers.Add(jira);
+            }
+            else
+            {
+                unusable[WorkItemProvider.Jira] = () => new DomainNotFoundException(NoJiraConnection);
+            }
         }
         catch (DomainException exception)
         {
             // Ambiguous (two connections, nothing saying which) or unusable (a connection with no
             // site recorded). Both are answers to "which Jira", and both are this install's
             // problem to fix; neither is an answer to "where does github:owner/repo#42 live".
-            jira = null;
-            refusal = () => Rebuild(exception);
+            unusable[WorkItemProvider.Jira] = () => Rebuild(exception);
         }
 
-        return jira is null
-            ? new WorkItemImporter(new GitHubWorkItemProvider(processRunner), new GitHubPullRequestProvider(processRunner))
+        try
+        {
+            if (await TryLinearProviderAsync(session, cancellationToken, requester: linearRequester) is { } linear)
             {
-                Unusable = new Dictionary<WorkItemProvider, Func<DomainException>>
-                {
-                    [WorkItemProvider.Jira] = refusal,
-                },
+                providers.Add(linear);
             }
-            : new WorkItemImporter(new GitHubWorkItemProvider(processRunner), new GitHubPullRequestProvider(processRunner), jira);
+            else
+            {
+                unusable[WorkItemProvider.Linear] = () => new DomainNotFoundException(NoLinearConnection);
+            }
+        }
+        catch (DomainException exception)
+        {
+            unusable[WorkItemProvider.Linear] = () => Rebuild(exception);
+        }
+
+        return new WorkItemImporter([.. providers]) { Unusable = unusable };
     }
 
     /// <summary>
@@ -188,6 +216,79 @@ public static class WorkItemConnections
                 + "only the commands that need Jira are affected in the meantime."),
         };
     }
+
+    /// <summary>The Linear provider, or null when this install has no Linear connection registered.</summary>
+    public static async Task<LinearWorkItemProvider?> TryLinearProviderAsync(
+        IQuerySession session,
+        CancellationToken cancellationToken,
+        CredentialVault? vault = null,
+        LinearRequester? requester = null)
+    {
+        ConnectionDetails? connection = await FindLinearConnectionAsync(session, cancellationToken);
+        return connection is null ? null : new LinearWorkItemProvider(LinearAccountFor(connection, vault), requester);
+    }
+
+    /// <summary>
+    /// The Linear provider, or a refusal that says how to get one. Used by the commands whose whole
+    /// purpose is Linear, where "no connection registered" is the answer the human needs rather than
+    /// a null to fall through.
+    /// </summary>
+    public static async Task<LinearWorkItemProvider> LinearProviderAsync(
+        IQuerySession session,
+        CancellationToken cancellationToken,
+        CredentialVault? vault = null,
+        LinearRequester? requester = null)
+    {
+        ConnectionDetails connection = await FindLinearConnectionAsync(session, cancellationToken)
+            ?? throw new DomainNotFoundException(NoLinearConnection);
+
+        return new LinearWorkItemProvider(LinearAccountFor(connection, vault), requester);
+    }
+
+    /// <summary>
+    /// The Linear connection, refusing rather than choosing when there is more than one. An install
+    /// holds one Linear workspace for the reason it holds one Jira account: nothing says which of two
+    /// a given project uses. Registering again replaces the connection, so two can only be left by
+    /// overlapping <c>h9k connection add linear</c> runs, and only the commands that need Linear are
+    /// affected.
+    /// </summary>
+    public static async Task<ConnectionDetails?> FindLinearConnectionAsync(
+        IQuerySession session, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<ConnectionDetails> connections = await session.Query<ConnectionDetails>()
+            .Where(connection => connection.MatchesSql("d.data ->> 'provider' = ?", WorkItemProvider.Linear.Value))
+            .OrderBy(connection => connection.RegisteredAt)
+            .ToListAsync(cancellationToken);
+
+        return connections.Count switch
+        {
+            0 => null,
+            1 => connections[0],
+            _ => throw new DomainConflictException(
+                $"{connections.Count} Linear connections are registered and nothing says which one to use, so "
+                + "Hall9k will not pick: "
+                + string.Join(", ", connections.Select(Describe))
+                + ". An install holds one Linear workspace. Registering again replaces the connection Hall9k "
+                + "finds rather than adding one, so two can only come of two 'h9k connection add linear' runs "
+                + "overlapping; h9k connection list shows both. There is no remove command yet, so which one "
+                + "survives is a decision about the connection record rather than a retry; only the commands "
+                + "that need Linear are affected in the meantime."),
+        };
+    }
+
+    /// <summary>
+    /// A Linear connection as an account: the workspace address and viewer name its events recorded and
+    /// the credential reference. A connection with no workspace recorded cannot be used, and says so
+    /// rather than producing links against nothing.
+    /// </summary>
+    public static LinearAccount LinearAccountFor(ConnectionDetails connection, CredentialVault? vault = null) =>
+        connection.SiteUrl is { } workspace
+            ? LinearAccount.Registered(
+                workspace, connection.ExternalAccountId, CredentialReference.Parse(connection.CredentialReference), vault)
+            : throw new DomainValidationException(
+                $"The registered Linear connection ({Describe(connection)}) has no workspace address recorded, "
+                + "so there is nothing to check an issue URL against. Register it again: "
+                + "h9k connection add linear");
 
     /// <summary>A connection as a read provider — see <see cref="Account"/> for the shared construction.</summary>
     private static JiraWorkItemProvider Build(
