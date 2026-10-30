@@ -1868,7 +1868,10 @@ address `https://linear.app/<urlKey>` on the connection. The key itself never re
 
 **An install holds one Linear connection, which means one Linear workspace per install.** Running the
 command again replaces the connection and re-records the viewer and the workspace, which is how a rotated
-key is applied. If two records are ever left by overlapping runs, the commands that need Linear refuse
+key is applied. A key from a different workspace than the registered one is refused while any task
+carries a `linear:` reference (the reference records no workspace, so every link would silently point
+at the other workspace's issues) unless `--change-workspace` says the move is intended; a rotated key for
+the same workspace needs no flag. If two records are ever left by overlapping runs, the commands that need Linear refuse
 and say so, while GitHub and Jira commands carry on. On an install with no Linear connection, any Linear
 read is refused with a sentence naming `h9k connection add linear`.
 
@@ -1880,9 +1883,10 @@ can still be refused on a later read or write, and Hall9k cannot see those limit
 an issue from any team the key can see, and record `linear:<identifier>` using the identifier Linear
 answered with, so `eng-123`, `ENG-123`, and the issue URL give one reference. A URL from another workspace
 than the connection's is refused, because a stored reference records no workspace. The usual one-item
-guards apply: an issue another live task carries is refused. `--from-linear` maps Linear's state types:
+guards apply: an issue another live task carries is refused, including one that task recorded under an
+identifier the issue had before it moved teams (Linear lists those as previous identifiers). `--from-linear` maps Linear's state types:
 `backlog`, `unstarted`, and `started` adopt; `completed`, `canceled`, and `duplicate` are refused; `triage`
-is refused with a pointer to `h9k idea add --from-linear`; a type Hall9k has no rule for is refused with the
+is refused with a pointer to `h9k idea add "ENG-123: <what the issue asks for>"`; a type Hall9k has no rule for is refused with the
 type quoted. `link-linear` applies no state gate and records the state it observed, as `link-jira` does,
 because it records an issue that already exists.
 

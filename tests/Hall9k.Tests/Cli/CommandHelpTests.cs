@@ -150,7 +150,7 @@ public sealed class CommandHelpTests
             .GetCustomAttribute<DescriptionAttribute>()!.Description;
 
         description.Should().Contain("NEVER").And.Contain("--criteria")
-            .And.Contain("triage").And.Contain("h9k idea add --from-linear")
+            .And.Contain("triage").And.Contain("h9k idea add")
             .And.Contain("one workspace per install");
     }
 
