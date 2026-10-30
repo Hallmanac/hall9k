@@ -1,0 +1,49 @@
+hall9k-task-record: 1
+task-id: 01a1881c-08d6-711f-9733-4b79c75fb837
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#800
+objective: When a claim is held because a teammate holds the tracker assignment, an operator at a terminal can confirm a reassignment, hall9k moves the item to the operator's own tracker identity, and the claim gate then passes
+criteria:
+  - In a project with --claim-gate tracker-assignee, when an attended h9k task queue (with or without --take) or h9k task assign --take reads the linked item assigned to another person, it names every current holder as the tracker shows them, with each name escaped for the console, and asks whether to reassign the item to the operator, defaulting to no; h9k task assign without --take still reads no tracker and offers nothing
+  - |-
+    On no, nothing is written: a run with --take refuses with exit 70 and leaves the task unchanged, and h9k task queue without --take warns and queues, both as they do today
+  - |-
+    A task already Queued or Blocked for this operator reaches the same offer through an attended h9k task queue <id>: on yes it stays in the queue with its rank and placement, and neither TaskAssigned nor TaskUnassigned is appended; every other h9k task queue on a queued task, and every unattended one, gets today's already-queued refusal unchanged
+  - On yes, a new write path, separate from TrackerAssignmentTake.TakeAsync, reads the item fresh; only if the same holders are there, compared by identity with the tracker's own comparison, it writes the operator's own tracker identity, reads it back, and the door proceeds as a successful take does; TakeAsync itself keeps refusing a held item, so the dispatcher's claim and mirror sweeps and h9k task take --force never reassign
+  - A fresh read that shows anything else writes nothing, exits 70, leaves the task unchanged, and says who holds the item now
+  - Attended means stdin, stdout, and stderr are all terminals (Capabilities.Interactive) and none of HALL9K_DISPATCHED_RUN_ID, HALL9K_DETACHED_SESSION, or CLAUDE_PID is set; a test pins each variable through an injected environment reader; an unattended run, a dispatched session, and an orchestrator session get no reassign offer, and an unattended --take on a held item refuses exactly as today; a project with the claim gate off is untouched
+  - |-
+    No reassignment is offered when TaskAggregate.HolderNodeId names a node other than this one: the door behaves as an unattended run does, and its line also names that node and points at the cooperative take, h9k task take <id> --reason "<why>"; a test pins this with a task whose holder was never released
+  - The reassignment is recorded on the task's stream as its own event, in place of TrackerAssignmentWritten, carrying every replaced holder (identity and name as the tracker showed them, never an email), the operator's identity and name from the read-back, the reference, and when it was read back; the event is registered ProjectScoped and MemberSafe, and h9k task show renders it with the names as relayed text
+  - |-
+    It works for every gated tracker: Linear and Jira overwrite the single assignee, and GitHub makes one gh issue edit call carrying --add-assignee for the operator and --remove-assignee for every holder, pinned by a test over the generated arguments, so a write that fails leaves the holders where they were; a read-back showing the operator alone passes, one showing the operator and anybody else refuses as Contested, one not showing the operator refuses as Unconfirmed, neither records the event, and both say in their own sentence that the previous holders may be gone from the item; a refused write quotes the tracker's own words, exits 70, and leaves the task unchanged
+  - TrackerClaimDecision's HeldByOther RefusalLine and ReasonLine say that h9k task queue at a terminal offers to reassign the item, so h9k status, h9k task show, and the h9k task drive and h9k task start refusals all point at the door; drive and start make no offer themselves
+  - The item's state, labels, and other fields are untouched; the write is an assignee field update only
+  - |-
+    No sentence says that no flag takes an item from another person, and each says that an interactive confirm at h9k task queue or h9k task assign --take can and that nothing unattended does: the --take help on both commands (which also stops naming only Jira and GitHub), the --claim-gate help on h9k project set, TrackerTake.RefusalLine for HeldByOther, docs/cli.md, docs/scope.md, the CLI reference skill, and the doc comments that state the old rule
+  - Every tracker call in these tests runs against recorded responses, and the offer, its decline, and its acceptance, with and without --take and on a Queued task, are pinned through the existing TakeOffer seam without a console
+dependencies: [01a1881b-9fb6-72fb-bf76-bfbf07854c85]
+epic-title: Linear connector
+epic-id: 01a1881b-278f-7669-acde-4b0d36563fc2
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/c75fb837-when-a-claim-is-held-because-a
+published: 2026-10-30 14:37:25Z
+context: |-
+  A Linear connector, so a project whose work and backlog live in Linear gets the same tracker integration hall9k gives Jira and GitHub issues
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/5d12221a-a-linear-connector-so-a-project-whose-work-and-backlog-live/workspace
+
+  The challenge verdict in the project home's notes/challenge-c75fb837/journal.md holds the file and line evidence behind each criterion, including the full list of sentences that state the old rule. Ruling 4 of 2026-10-29 in the workspace journal.md is why this card changes the "never takes an item from another person" clause of Decisions Log #143, for gated projects and attended runs only.
+
+  The replaced person's identity and name travel on a ProjectScoped event, signed and not encrypted, to every project member. That is deliberate: the ruling asks for who was replaced.
+
+  The attended check catches Claude Code sessions and every session hall9k spawns. Another vendor's CLI whose shell tool holds a pty is not caught until that vendor has an environment marker; say so in the pull request.
+
+  Parked, do not build here: an offer at h9k task drive and h9k task start; h9k task take --force reassigning after a confirm (trigger: an absent holder's node never clears the item); the event in the orchestrator feed.
+
+  Unverified, and no criterion leans on them: whether every Jira install lets a member reassign, and whether a restricted Linear key or a guest may. A refusal is quoted either way.
