@@ -654,7 +654,9 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
     /// tracker identity is cleared off the linked item too, best effort — a named outcome short of
     /// a confirmed clear leaves a <see cref="TaskTrackerReleaseMirrorPending"/> row for
     /// <c>DispatchEngine</c>'s own <c>SweepPendingTrackerMirrorsAsync</c> to retry, the identical
-    /// row every other holder-change mirror already retries through.
+    /// row every other holder-change mirror already retries through. A Done task is the exception:
+    /// the sweep drops a Done task's row without calling the tracker (a finished item keeps its
+    /// assignee), so no row is stored and the operator is told to unassign it by hand.
     /// </summary>
     private static async Task MirrorTrackerReleaseBestEffortAsync(
         Marten.DocumentStore store, BootstrapContext context, TaskAggregate task, CancellationToken cancellationToken)
@@ -678,6 +680,12 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
                 store, ClaimGate.TrackerAssignee, task.ExternalReference, project.RepositoryPath, cancellationToken);
             if (!release.Succeeded)
             {
+                if (task.State == TaskState.Done)
+                {
+                    ReportUnretriedTrackerClear(task, release.FailureReason);
+                    return;
+                }
+
                 await StorePendingTrackerReleaseMirrorAsync(
                     store, task, context, release.FailureReason ?? string.Empty, cancellationToken);
                 AnsiConsole.MarkupLineInterpolated(
@@ -686,9 +694,19 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
+            if (task.State == TaskState.Done)
+            {
+                ReportUnretriedTrackerClear(task, exception.Message);
+                return;
+            }
+
             await StorePendingTrackerReleaseMirrorAsync(store, task, context, exception.Message, cancellationToken);
         }
     }
+
+    private static void ReportUnretriedTrackerClear(TaskAggregate task, string? failureReason) =>
+        AnsiConsole.MarkupLineInterpolated(
+            $"[yellow]Clearing task {task.Id}'s tracker assignee failed and is not retried, because the task is Done and the dispatch sweep leaves a finished item's assignee alone; unassign this install in the tracker by hand if it should go. ({failureReason})[/]");
 
     private static async Task StorePendingTrackerReleaseMirrorAsync(
         Marten.DocumentStore store,

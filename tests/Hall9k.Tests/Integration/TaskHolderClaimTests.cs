@@ -268,13 +268,14 @@ public sealed class TaskHolderClaimTests(PostgresFixture postgres) : IClassFixtu
     }
 
     /// <summary>
-    /// A lease expiry is a transient handback, never a conclusion — unlike true completion or
-    /// h9k task abandon, where the task really is over. On a project whose claim gate IS the
-    /// tracker assignee, clearing this install's own identity off the item at lease expiry would
-    /// destroy the very signal that gate reads to decide the very next claim, stalling crash
-    /// recovery until a human re-assigns the issue by hand (adversarial review, this branch's fix
-    /// cycle). The release mirror is skipped outright on that one path; the ledger holder itself is
-    /// still given back exactly as it is everywhere else.
+    /// A lease expiry is a transient handback, never a conclusion: the task goes back to the
+    /// queue for the next claim. On a project whose claim gate IS the tracker assignee, clearing
+    /// this install's own identity off the item at lease expiry would destroy the very signal that
+    /// gate reads to decide the very next claim, stalling crash recovery until a human re-assigns
+    /// the issue by hand (adversarial review, this branch's fix cycle). The release mirror is
+    /// skipped outright on that path; the ledger holder itself is still given back exactly as it
+    /// is everywhere else. (True completion no longer mirrors a release at all, so a finished item
+    /// keeps its assignee.)
     /// </summary>
     [Fact(Skip = "Skipped 2026-09-18: this class failed one to three tests in four of five full-suite runs since #467 merged (an empty claim for the test's own task); task 76912727 rewrites it against injected seams and removes this skip")]
     public async Task A_lease_expiry_release_never_clears_the_tracker_assignee_on_a_tracker_assignee_gated_project()
