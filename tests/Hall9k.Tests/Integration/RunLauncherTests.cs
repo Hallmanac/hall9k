@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Connectors.Replication;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
@@ -4643,11 +4644,11 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
-    /// Independent pre-PR review, cycle 1, adversarial lens (RunLauncher.cs:1926): every node
-    /// shares one database, so a row another node dispatched is still visible to this query —
-    /// but only that node's own ResumeStrandedPreflightsAsync can ever complete or abandon it.
-    /// Deferring to it as "still in flight" the way the same-node check does would leave this
-    /// task claimed-and-requeued forever if the other node never comes back. This node falls
+    /// Independent pre-PR review, cycle 1, adversarial lens (RunLauncher.cs:1926): a row naming
+    /// another node (from a store two installs share) is still visible to this query, but only that
+    /// node's own ResumeStrandedPreflightsAsync can ever complete or abandon it. Deferring to it as
+    /// "still in flight" the way the same-node check does would leave this task
+    /// claimed-and-requeued forever if the other node never comes back. This node falls
     /// through to a fresh dispatch of its own instead.
     /// </summary>
     [Fact]
@@ -4687,6 +4688,68 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         other.DispatchingRunId.Should().Be(
             runId, "the other node's own row is left untouched — reclaiming it here would only be this node "
             + "racing to retarget a row it can never itself complete or abandon");
+    }
+
+    /// <summary>
+    /// A peer on an older build sends this node a safe verdict it reached for the same head. The
+    /// verdict is not applied, so the gate finds no verdict of this node's own and runs its own
+    /// pre-flight before any checkout, for an ordinary review dispatch and for a mention follow-up.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_verdict_reached_only_on_another_node_is_not_trusted_and_the_claiming_node_runs_its_own_preflight(
+        bool isMentionFollowUp)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        int number = isMentionFollowUp ? 921 : 920;
+        (Guid taskId, Guid runId, Guid projectId) = await SeedClaimedPrReviewTaskAsync(store, node, number, cts.Token);
+
+        Guid peerNodeId = DomainId.New();
+        Guid peerPreflightId = DomainId.New();
+        EventReplicationReadResult delivered = await PeerAnswerDelivery.DeliverAsync(
+            postgres, store, node.NodeId, projectId,
+            [
+                (peerPreflightId, new PrReviewPreflightDispatched(
+                    peerPreflightId, taskId, DomainId.New(), peerNodeId, "claude-opus-5-5", string.Empty, [], Now)),
+                (peerPreflightId, new PrReviewPreflightCompleted(peerPreflightId, Safe: true, "safe", "peer verdict", Now)),
+            ], cts.Token);
+        delivered.EventsApplied.Should().Be(0, "the peer's pre-flight events are refused, not applied");
+
+        RecordingProcessRunner gh = GhSignedInAs(
+            "brian", PullRequestPreflightJson.Replace("901", number.ToString(), StringComparison.Ordinal));
+        CapturingExecutor executor = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, new RefusingWorktreeManager(), executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, new RefusingWorktreeManager()), NewPullRequestOpener(store), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        if (isMentionFollowUp)
+        {
+            PullRequestMentionComment comment = new(
+                "IC_1", "reviewer-a", "@brian one more thing",
+                $"https://github.com/acme/web/pull/{number}#issuecomment-IC_1", Now);
+            await launcher.LaunchPrReviewMentionFollowUpAsync(
+                taskId, runId, node.NodeId, node.OwnerId, 1, node.NodeId, comment, priorReviewRunId: null,
+                knownOwnLogin: null, cts.Token);
+        }
+        else
+        {
+            await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+        }
+
+        executor.Request.Should().NotBeNull("this node dispatches a pre-flight of its own instead of trusting the peer's");
+        executor.Request!.Prompt.Should().Contain(
+            PrReviewPreflightVerdictParser.Marker,
+            "RefusingWorktreeManager throwing on any checkout proves none was cut ahead of this node's own verdict");
+
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<PrReviewPreflightDetails> rows = await query.Query<PrReviewPreflightDetails>()
+            .Where(preflight => preflight.TaskId == taskId).ToListAsync(cts.Token);
+        rows.Should().ContainSingle().Which.NodeId.Should().Be(node.NodeId, "the only row is the one this node dispatched");
     }
 
     /// <summary>Idea 6be68ee2, finding 1, phase two: the mention follow-up site is gated identically to the ordinary dispatch — it refuses to cut a checkout without a safe verdict.</summary>
