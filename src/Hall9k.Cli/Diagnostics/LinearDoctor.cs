@@ -18,10 +18,10 @@ internal enum LinearProbeOutcome
     /// <summary>This install has no Linear connection at all.</summary>
     NoConnection,
 
-    /// <summary>Linear refused the key, or the credential could not be produced.</summary>
+    /// <summary>Linear refused the key.</summary>
     Rejected,
 
-    /// <summary>The probe could not confirm either: an outage, a rate limit, two connections, a proxy.</summary>
+    /// <summary>The probe could not confirm either: an outage, a rate limit, two connections, a proxy, a key this machine cannot read.</summary>
     Unconfirmed,
 }
 
@@ -120,6 +120,10 @@ internal static class LinearDoctor
         return read switch
         {
             { Viewer: not null } => new LinearProbe(LinearProbeOutcome.Accepted, string.Empty),
+            // The vault could not produce the key (an unset environment variable, a missing file), so
+            // Linear was never asked: neither known to work nor known to be rejected.
+            { KeyUnavailable: true } =>
+                new LinearProbe(LinearProbeOutcome.Unconfirmed, RelayedText.OneLine(read.Failure?.Message ?? string.Empty)),
             { FailureKind: TrackerReadFailure.Credentials } =>
                 new LinearProbe(LinearProbeOutcome.Rejected, RelayedText.OneLine(read.Failure?.Message ?? string.Empty)),
             _ => new LinearProbe(LinearProbeOutcome.Unconfirmed, RelayedText.OneLine(read.Failure?.Message ?? string.Empty)),

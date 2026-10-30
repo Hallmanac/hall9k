@@ -19,8 +19,11 @@ public sealed record LinearViewer(string Id, string Name, string WorkspaceKey);
 /// The viewer read with its refusal kept rather than thrown: exactly one of <see cref="Viewer"/> and
 /// <see cref="Failure"/> is set, and <see cref="FailureKind"/> says what could end a hold that rests
 /// on it, in the same three classes <see cref="TrackerReadFailure"/> gives Jira and GitHub.
+/// <see cref="KeyUnavailable"/> is set when the vault could not produce the key, so Linear was never
+/// asked: <see cref="TrackerReadFailure.Credentials"/> alone cannot tell that from Linear refusing it.
 /// </summary>
-public sealed record LinearViewerRead(LinearViewer? Viewer, DomainException? Failure, TrackerReadFailure FailureKind);
+public sealed record LinearViewerRead(
+    LinearViewer? Viewer, DomainException? Failure, TrackerReadFailure FailureKind, bool KeyUnavailable = false);
 
 /// <summary>
 /// One issue as itself, with the identifiers Linear says it used to carry. <see cref="PreviousIdentifiers"/>
@@ -184,7 +187,7 @@ public sealed class LinearWorkItemProvider(
         LinearQuery query = await QueryAsync(ViewerQuery, null, "sign in", "the viewer", cancellationToken);
         if (query.Data is not { } data)
         {
-            return new LinearViewerRead(null, query.Failure, query.Kind);
+            return new LinearViewerRead(null, query.Failure, query.Kind, query.KeyUnavailable);
         }
 
         using (query.Document)
@@ -221,9 +224,9 @@ public sealed class LinearWorkItemProvider(
     {
         LinearQuery query = await QueryAsync(
             TeamQuery, new { key = key.Value }, $"look up the team {key.Value}", key.Value, cancellationToken);
-        if (query.Data is not { } data)
+        if (query is not { Data: { } data })
         {
-            throw query.Failure!;
+            throw query.Failure ?? throw new InvalidOperationException("A Linear query without data carries its failure.");
         }
 
         using (query.Document)
@@ -267,7 +270,8 @@ public sealed class LinearWorkItemProvider(
     /// object. The document is handed back undisposed because <c>Data</c> points into it.
     /// </summary>
     private sealed record LinearQuery(
-        JsonDocument? Document, JsonElement? Data, DomainException? Failure, TrackerReadFailure Kind);
+        JsonDocument? Document, JsonElement? Data, DomainException? Failure, TrackerReadFailure Kind,
+        bool KeyUnavailable = false);
 
     private async Task<LinearQuery> QueryAsync(
         string query, object? variables, string verb, string subject, CancellationToken cancellationToken,
@@ -291,7 +295,8 @@ public sealed class LinearWorkItemProvider(
                 exception is DomainNotFoundException
                     ? new DomainNotFoundException(restated)
                     : new DomainValidationException(restated),
-                TrackerReadFailure.Credentials);
+                TrackerReadFailure.Credentials,
+                keyUnavailable: true);
         }
 
         string body = variables is null
@@ -356,8 +361,8 @@ public sealed class LinearWorkItemProvider(
             TrackerReadFailure.Item);
     }
 
-    private static LinearQuery Failed(DomainException failure, TrackerReadFailure kind) =>
-        new(null, null, failure, kind);
+    private static LinearQuery Failed(DomainException failure, TrackerReadFailure kind, bool keyUnavailable = false) =>
+        new(null, null, failure, kind, keyUnavailable);
 
     private static JsonDocument? TryParse(string body)
     {

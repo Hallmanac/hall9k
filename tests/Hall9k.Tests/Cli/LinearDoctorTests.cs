@@ -73,12 +73,12 @@ public sealed class LinearDoctorTests : IDisposable
     }
 
     [Fact]
-    public async Task A_credential_that_cannot_be_read_is_a_rejection_naming_the_registration_command()
+    public async Task A_credential_that_cannot_be_read_is_unconfirmed_because_Linear_was_never_asked()
     {
         LinearProbe probe = await LinearDoctor.ProbeAsync(
             Open(Answer(200, "{}"), keyFile: "a-key-file-nobody-wrote"), Token);
 
-        probe.Outcome.Should().Be(LinearProbeOutcome.Rejected);
+        probe.Outcome.Should().Be(LinearProbeOutcome.Unconfirmed);
         probe.Detail.Should().Contain("h9k connection add linear");
     }
 

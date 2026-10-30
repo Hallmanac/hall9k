@@ -189,14 +189,17 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
     }
 
     /// <summary>
-    /// The solution this project belongs to, the rung above it on the ladder solution, project, epic,
-    /// task. A closed solution is named as closed with its reason, since it no longer holds the project.
+    /// The Linear team bound to this project, which makes Linear its one tracker, or how to bind one.
     /// </summary>
     internal static string LinearTeamRow(ProjectDetails project) => project.LinearTeam.HasValue
         ? $"{project.LinearTeam.Value.EscapeMarkup()} [dim]— Linear is this project's one tracker; "
           + "new issues are filed under this team, and Jira and GitHub-issue links are refused[/]"
         : $"[dim]none bound — bind one: h9k project set {project.Name.EscapeMarkup()} --linear ENG[/]";
 
+    /// <summary>
+    /// The solution this project belongs to, the rung above it on the ladder solution, project, epic,
+    /// task. A closed solution is named as closed with its reason, since it no longer holds the project.
+    /// </summary>
     internal static string SolutionRow(ProjectDetails project) => project.Solution switch
     {
         null => "[dim]none, group it with others: h9k solution add <name> --project "

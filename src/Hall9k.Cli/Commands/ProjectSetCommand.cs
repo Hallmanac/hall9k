@@ -788,10 +788,11 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         // Linear links a pull request through the identifier in its branch name, and the default
         // template carries none. So the first binding on a project still on the default sets the
         // convention that does, in the same settings change, unless this command names a template of
-        // its own. "First" means the project had no team before: changing the team on a bound project
-        // leaves the template alone, so an operator's --branch-template none stays undone.
+        // its own. "First" means no team was ever bound: changing the team on a bound project, or
+        // rebinding after a clear, leaves the template alone, so an operator's --branch-template none
+        // stays undone.
         bool setsLinearConvention = SetsLinearConvention(
-            project.LinearTeam, boundTeam, settings.BranchTemplate, details.BranchNameTemplate);
+            project.LinearTeamEverBound, boundTeam, settings.BranchTemplate, details.BranchNameTemplate);
 
         // Every syntactic refusal ProjectDecider.ChangeSettings itself can raise (a bad --model, an
         // invalid --commit-style, a review-stage-composition missing its acknowledgment...) is
@@ -1057,7 +1058,8 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
 
         foreach (string line in LinearBindingNotes(
             details.Name, project.LinearTeam, boundTeam, confirmedTeam, setsLinearConvention,
-            clearedTeam: settings.Linear is not null && !boundTeam.HasValue && project.LinearTeam.HasValue,
+            clearedTeam: settings.Linear is not null && !boundTeam.HasValue && project.LinearTeam.HasValue
+                && settings.BranchTemplate is null,
             details.BranchNameTemplate))
         {
             AnsiConsole.MarkupLine(line);
@@ -1288,14 +1290,15 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
 
     /// <summary>
     /// Whether this binding also sets the branch template to <c>{key}-{slug}</c>: only the first time
-    /// a team is bound (the project had none), only on a project still on the default template, and
-    /// only when the same command passes no <c>--branch-template</c> of its own. Changing the team on
-    /// a bound project never sets it, so an operator's <c>--branch-template none</c> stays undone.
+    /// a team is bound (none was ever bound, even one since cleared), only on a project still on the
+    /// default template, and only when the same command passes no <c>--branch-template</c> of its own.
+    /// Changing the team on a bound project, or rebinding after a clear, never sets it, so an
+    /// operator's <c>--branch-template none</c> stays undone.
     /// </summary>
     internal static bool SetsLinearConvention(
-        LinearTeamKey previousTeam, LinearTeamKey boundTeam, string? branchTemplateOption, BranchNameTemplate current) =>
+        bool teamEverBound, LinearTeamKey boundTeam, string? branchTemplateOption, BranchNameTemplate current) =>
         boundTeam.HasValue
-        && !previousTeam.HasValue
+        && !teamEverBound
         && branchTemplateOption is null
         && current == BranchNameTemplate.Default;
 

@@ -44,6 +44,8 @@ public sealed class TaskExternalReferenceTests
     {
         string markup = TaskShowCommand.ExternalMarkup(GitHubOnly, "github:Hallmanac/hall9k#42");
 
+        // ExternalMarkup takes the reference alone, so a github: link on a project bound to Linear
+        // renders exactly as it does on any other: each link is shown by its own provider.
         markup.Should().Contain("[link=https://github.com/Hallmanac/hall9k/issues/42]")
             .And.Contain("github:Hallmanac/hall9k#42");
     }
@@ -88,6 +90,8 @@ public sealed class TaskExternalReferenceTests
     {
         string markup = TaskShowCommand.ExternalMarkup(WithLinear, "linear:ENG-123");
 
+        // Likewise independent of the project's tracker: a linear: link on a project that never bound a
+        // team renders the same way.
         markup.Should().Contain("[link=https://linear.app/hall9k/issue/ENG-123]")
             .And.Contain("linear:ENG-123");
     }

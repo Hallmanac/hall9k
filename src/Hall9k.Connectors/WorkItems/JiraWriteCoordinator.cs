@@ -203,6 +203,21 @@ public static class JiraWriteCoordinator
     }
 
     /// <summary>
+    /// Ends a pending <em>create</em> without running it, recording <paramref name="reason"/> as a plain
+    /// failure so the marker clears and the sweep stops retrying it. Used when the project became one
+    /// whose tracker is not Jira after the create was recorded: the retry would link a card the
+    /// project's tracker refuses at every other door. Returns null when the task has no pending create.
+    /// </summary>
+    public static async Task<JiraWriteAttemptResult?> RefusePendingCreateAsync(
+        IDocumentSession session, Guid taskId, string reason, CancellationToken cancellationToken)
+    {
+        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
+        return task is { PendingJiraWriteId: { } writeId } && task.PendingJiraWriteOperation == JiraWriteOperation.Create
+            ? await RecordFailureWithGraceAsync(session, taskId, writeId, reason, isAuthFailure: false, cancellationToken)
+            : null;
+    }
+
+    /// <summary>
     /// Confirms, with the same read-back discipline every other outcome on this stream gets, that
     /// the card another route linked while this create sat pending still exists, rather than
     /// recording the linked reference verbatim: <see cref="JiraWriteSucceeded.IssueKey"/>'s own
