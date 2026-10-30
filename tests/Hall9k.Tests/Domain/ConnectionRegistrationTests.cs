@@ -45,6 +45,58 @@ public sealed class ConnectionRegistrationTests
         register.Should().Throw<DomainValidationException>().WithMessage("*requires the site*");
     }
 
+    private static readonly Uri Workspace = new("https://linear.app/hall9k");
+
+    [Fact]
+    public void A_linear_connection_records_the_workspace_address_the_viewer_and_where_the_key_lives()
+    {
+        ConnectionRegistered registered = ConnectionDecider.Register(
+            Guid.NewGuid(), Owner, WorkItemProvider.Linear, "Brian Hall",
+            CredentialReference.File("linear-hall9k-u1"), Now, Workspace);
+
+        registered.SiteUrl.Should().Be(Workspace);
+        registered.ExternalAccountId.Should().Be("Brian Hall");
+        registered.CredentialReference.ToString().Should().Be("file:linear-hall9k-u1");
+    }
+
+    [Fact]
+    public void A_linear_connection_without_a_workspace_address_is_refused_as_a_jira_one_without_a_site_is()
+    {
+        Action register = () => ConnectionDecider.Register(
+            Guid.NewGuid(), Owner, WorkItemProvider.Linear, "Brian Hall",
+            CredentialReference.File("linear-hall9k-u1"), Now, siteUrl: null);
+
+        register.Should().Throw<DomainValidationException>().WithMessage("*requires the workspace address*");
+    }
+
+    [Fact]
+    public void A_linear_connection_cannot_borrow_the_gh_cli_login()
+    {
+        Action register = () => ConnectionDecider.Register(
+            Guid.NewGuid(), Owner, WorkItemProvider.Linear, "Brian Hall", CredentialReference.GhCli, Now, Workspace);
+
+        register.Should().Throw<DomainValidationException>().WithMessage("*gh CLI's login*");
+    }
+
+    [Fact]
+    public void Re_registering_a_linear_connection_replaces_the_workspace_and_runs_the_same_rules()
+    {
+        ConnectionAggregate connection = new();
+        connection.Apply(ConnectionDecider.Register(
+            Guid.NewGuid(), Owner, WorkItemProvider.Linear, "Brian Hall",
+            CredentialReference.File("linear-hall9k-u1"), Now, Workspace));
+
+        connection.Apply(ConnectionDecider.Reregister(
+            connection, "Someone Else", CredentialReference.EnvironmentVariable("LINEAR_API_KEY"),
+            Now.AddDays(1), new Uri("https://linear.app/other")));
+        Action withoutWorkspace = () => ConnectionDecider.Reregister(
+            connection, "Someone Else", CredentialReference.EnvironmentVariable("LINEAR_API_KEY"), Now, siteUrl: null);
+
+        connection.SiteUrl.Should().Be(new Uri("https://linear.app/other"));
+        connection.ExternalAccountId.Should().Be("Someone Else");
+        withoutWorkspace.Should().Throw<DomainValidationException>();
+    }
+
     [Fact]
     public void A_github_connection_carries_no_site_and_that_is_a_fact_rather_than_a_gap()
     {
