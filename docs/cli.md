@@ -1739,8 +1739,9 @@ hand-written skill reads the same way as a composed one.
 
 A team's branch convention is a project setting rather than a fork of the platform. The template
 names a task's branch out of three tokens: `{shortid}` (the task's short id), `{slug}` (its
-objective, lowercased and hyphenated, capped at 30 characters) and `{key}` (the linked Jira key or
-GitHub issue number). Everything else is literal, so `--branch-template "{key}-{slug}"` cuts
+objective, lowercased and hyphenated, capped at 30 characters) and `{key}` (the linked Jira key,
+Linear identifier, or GitHub issue number). A Linear link renders as its identifier with the case kept,
+`ENG-123`. Everything else is literal, so `--branch-template "{key}-{slug}"` cuts
 `PROJ-14-add-rate-limiting` on a task adopted from PROJ-14. The default is `task/{shortid}-{slug}`,
 which is exactly the name the platform cut before the setting existed, so a project that sets
 nothing sees no change at all; `none` restores it.
@@ -1764,8 +1765,10 @@ one breath essentially always cuts `no-key-<slug>` rather than `PROJ-14-<slug>`.
 project fares better but is not exempt — `TaskPublishCommand` creates the issue inline, but the
 `gh issue create` round trip can still lose the race against the dispatch loop's five-second poll.
 A `{key}` template earns a resolved key reliably only on a task that already carries its reference
-before dispatch ever runs — adopted with `--from-issue` or `--from-jira`, or linked by hand with
-`h9k task link-jira` / `h9k task link-issue` while the task is still a Draft.
+before dispatch ever runs — adopted with `--from-issue`, `--from-jira`, or `--from-linear`, or linked
+by hand with `h9k task link-jira` / `h9k task link-issue` / `h9k task link-linear` while the task is still
+a Draft. Binding a Linear team (`h9k project set --linear`, below) sets `{key}-{slug}` for you the first
+time, on a project still on the default.
 
 ### Backlog tracking
 
@@ -1863,7 +1866,8 @@ item, and takes precedence over it when both are present.
 
 ### Linear
 
-`h9k connection add linear` · `h9k task add --from-linear` · `h9k task link-linear`
+`h9k connection add linear` · `h9k task add --from-linear` · `h9k task link-linear` ·
+`h9k project set <project> --linear <TEAM>`
 
 `h9k connection add linear` registers the Linear workspace Hall9k reads issues through. The API key is
 prompted for by default and stored under `~/.hall9k/credentials` readable by you alone (never inside a
@@ -1910,6 +1914,40 @@ that reports Linear's `Retry-After`, a rejected key, an unreadable issue, and an
 an error nothing recognizes quotes Linear's own message on one line. `h9k task show` renders a Linear link
 as `https://linear.app/<urlKey>/issue/<identifier>` from the connection's recorded workspace, and shows
 `linear:<identifier>` with no link on a node that has no Linear connection.
+
+**Binding a team makes Linear the project's one tracker.** `h9k project set <project> --linear <TEAM>`
+binds the default team for new issues (the `ENG` in `ENG-123`). Before recording anything it asks the
+install's Linear connection for a team with that key, and refuses when none is visible, saying the team
+may not exist or the key may be limited to other teams, because Linear answers both the same way.
+`--linear none` clears the binding. The binding is a team setting carried beside the Jira board key, so
+every node of the project reads the same one, and `h9k project show` and the home's `AGENTS.md` show it.
+`h9k connection list` counts the projects with a team bound, and `h9k doctor` probes the connection when
+a project has one, telling no connection, a rejected key, and a probe that could not confirm either
+apart; a failure there does not stop the rest of the doctor run.
+
+On a project with a team bound, `h9k task add --from-jira` and `--from-issue`, `h9k task link-jira` and
+`link-issue`, `h9k task push-to-jira`, and `h9k task write-jira --op create` are refused naming Linear as the
+project's tracker, and so are `h9k project set --jira`, `--backlog github-issues` or `jira`, and
+`--primary-tracker`. `--linear` is itself refused while the project has a Jira board, a backlog policy of
+`github-issues` or `jira`, or a primary tracker, naming the setting to clear. Both rules judge the
+settings the command leaves, so one command switches trackers (`--linear ENG --jira none --backlog none`,
+or `--linear none --jira PROJ`). Adopting a pull request with `--from-pr` is unaffected, and a project with
+no team bound behaves as it always has. In the other direction `h9k task add --from-linear` and `h9k task
+link-linear` need the team bound and are refused otherwise, naming `h9k project set <project> --linear
+<TEAM>`.
+
+Changing the tracker later stays possible. A task's existing links keep their provider and stay readable
+and closable as history (`h9k task show` renders each and closeout treats each by its own provider); only
+a new link has to match the tracker.
+
+Linear links a pull request to its issue through the identifier in the branch name, and the default
+`task/{shortid}-{slug}` carries none. So the first time `--linear` binds a team on a project still on the
+default template, with no `--branch-template` in the same command, it also sets the template to
+`{key}-{slug}` and says so. `--branch-template none` is the undo; changing the team on an already bound
+project leaves the template alone, and clearing the binding leaves it alone and says so. A project with
+its own template that has no `{key}` keeps it and gets a warning naming
+`h9k project set <project> --branch-template "{key}-{slug}"`. `{key}` renders a Linear link as its
+identifier with the case kept (`ENG-123-add-rate-limiting`); an unlinked task still renders `no-key`.
 
 ### Install and the daemon
 

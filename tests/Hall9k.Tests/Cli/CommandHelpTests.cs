@@ -164,6 +164,55 @@ public sealed class CommandHelpTests
         identifier.Should().Contain("reads it").And.Contain("previous ones").And.Contain("different workspace");
     }
 
+    [Fact]
+    public void The_team_binding_teaches_what_binding_does_how_it_is_undone_and_what_it_refuses()
+    {
+        string description = typeof(ProjectSetCommand.Settings)
+            .GetProperty(nameof(ProjectSetCommand.Settings.Linear))!
+            .GetCustomAttribute<DescriptionAttribute>()!.Description;
+
+        description.Should().Contain("one tracker").And.Contain("limited to other teams")
+            .And.Contain("{key}-{slug}").And.Contain("--branch-template none").And.Contain("--from-pr")
+            .And.Contain("'none' clears the binding").And.Contain("--linear none --jira PROJ");
+    }
+
+    [Theory]
+    [InlineData(nameof(ProjectSetCommand.Settings.JiraProjectKey))]
+    [InlineData(nameof(ProjectSetCommand.Settings.Backlog))]
+    [InlineData(nameof(ProjectSetCommand.Settings.PrimaryTracker))]
+    public void The_settings_the_Linear_binding_shuts_say_so(string property)
+    {
+        string description = typeof(ProjectSetCommand.Settings)
+            .GetProperty(property)!
+            .GetCustomAttribute<DescriptionAttribute>()!.Description;
+
+        description.Should().Contain("--linear");
+    }
+
+    [Fact]
+    public void The_branch_template_help_says_what_key_renders_for_a_Linear_link()
+    {
+        string description = typeof(ProjectSetCommand.Settings)
+            .GetProperty(nameof(ProjectSetCommand.Settings.BranchTemplate))!
+            .GetCustomAttribute<DescriptionAttribute>()!.Description;
+
+        description.Should().Contain("Linear identifier (ENG-123, case kept)");
+    }
+
+    [Fact]
+    public void The_linear_adoption_door_says_it_needs_a_bound_team_and_the_others_say_they_are_shut_by_one()
+    {
+        static string Describe(Type settings, string property) =>
+            settings.GetProperty(property)!.GetCustomAttribute<DescriptionAttribute>()!.Description;
+
+        Describe(typeof(TaskAddCommand.Settings), nameof(TaskAddCommand.Settings.FromLinear))
+            .Should().Contain("h9k project set <project> --linear <TEAM>");
+        Describe(typeof(TaskAddCommand.Settings), nameof(TaskAddCommand.Settings.FromJira))
+            .Should().Contain("h9k project set --linear");
+        Describe(typeof(TaskAddCommand.Settings), nameof(TaskAddCommand.Settings.FromIssue))
+            .Should().Contain("h9k project set --linear");
+    }
+
     [Theory]
     [MemberData(nameof(ProjectSelectingSettings))]
     public void Every_project_selector_describes_the_resolver_it_actually_uses(Type settings, string property)

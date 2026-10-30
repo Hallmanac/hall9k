@@ -32,7 +32,8 @@ h9k project reactivate <name>   # undo h9k project remove: the project and its t
 h9k project rename <name> <NEW-NAME>   # change a project's name only; the id, home directory, repository, and every task/run/idea are untouched (Decisions Log #182)
 h9k project pull <name> --since <global-sequence|all>   # ask this project's other members for history no automatic mechanism will ever fetch: a bound read on the ANSWERING node's own global sequence, or 'all' for everything it holds. For the established node the bootstrap can never help (it gates on no applied history at all) and a gap-fill never reaches; --since is required. Queues one project-wide events-request and returns, touching no git and no network; the daemon's next sweep sends it. Served from below the answering node's replication switch-on point, because an explicit ask is the opt-in that lifts it; a private task or idea is never served however far back the pull reaches (task a56cf16e, Decisions Log #236)
 h9k project reconcile <name>   # ask every node of THIS OWNER's own fleet for everything it holds of this project, one node-addressed ask each, carrying the same explicit bound project pull --since all does. The daemon's sweep already asks each fleet sibling once per project on its own and re-asks once inside the outbox squash window, so this is the lever for a reconcile h9k status reports stalled, or for running the exchange again now. Reads this project's ledger chain live to learn the fleet (the same read project members does); everything after that is local, and the daemon's next sweep sends the asks (task 252bc5cf, Decisions Log #262)
-h9k project set <name> --branch-template "{key}-{slug}"   # the team's branch convention; 'none' restores task/{shortid}-{slug} (Decisions Log #121)
+h9k project set <name> --branch-template "{key}-{slug}"   # the team's branch convention; 'none' restores task/{shortid}-{slug} (Decisions Log #121); {key} is the linked Jira key, Linear identifier (ENG-123, case kept) or GitHub issue number
+h9k project set <name> --linear <TEAM|none>   # bind a Linear team (the ENG in ENG-123), confirmed through the install's Linear connection first, and make Linear the project's ONE tracker: --from-jira/--from-issue, link-jira/link-issue, push-to-jira and write-jira --op create are refused, and so are --jira, --backlog github-issues|jira and --primary-tracker; --linear itself is refused while a Jira board, one of those backlog policies, or a primary tracker is set. Both judge the settings the command leaves, so one command can switch trackers. The first binding on a project still on the default branch template also sets {key}-{slug} (Linear links a pull request through the identifier in the branch name); --branch-template none undoes it, and changing or clearing the team leaves the template alone. A team setting, so every node reads it
 h9k project set <name> --review-stage-composition <VALUE|default>   # which pre-PR review stages a run gets: full-pipeline (default), adversarial-only, conformance-only, skip-final-pass, none — also settable at node (h9k config set) and task (h9k task add/revise), task > project > node > default, frozen at each run's own dispatch; a value that removes a guarantee needs --accept-reduced-review (Decisions Log #129)
 h9k project set <name> --auto-pr-review off|normal|first|now   # a GitHub reviewer assignment to this install's own login auto-starts a pr-review task. Default NORMAL for every project, new and existing; 'off' is an explicit opt-out. No request older than the project's own cutoff ever starts on its own (no backfill), every request is recorded and shown either way, and the state is printed at daemon start, in h9k status and in h9k project show (Decisions Log #34's amendment, #133, #161)
 h9k project set <name> --design-review-drive on|off   # whether the DESIGNER persona's review may stand this project's product up and drive it through browser automation, or reads the diff and the design files alone (idea b9b09779 piece 3, Decisions Log #249). Default ON, and h9k project show prints it with its origin (explicit or default) exactly as it does auto-pr-review, for the same Decisions Log #161 reason: with a default of on, a stored 'off' a reader could take for the platform's own initial state is how a setting goes unnoticed. Driving ALSO needs a run skill on this project's ledger — with none there is nothing that says how to stand the product up, so the review is static whatever this setting says, and the report names which of the two reasons applied. The QA persona's own --qa-review-drive below is the same setting with the opposite default, OFF
@@ -1337,6 +1338,14 @@ h9k task link-linear <task> ENG-123                # record a pre-existing issue
 h9k task link-linear <task> <new identifier>       # relink after Linear moved the issue to another team (only when Linear lists the recorded identifier as a previous one)
 ```
 
+Linear is a project's one tracker once a team is bound with `h9k project set <name> --linear <TEAM>`:
+`--from-linear` and `link-linear` are refused on a project with no team bound (naming that command), and
+the Jira and GitHub-issue doors are refused on one with a team bound (naming Linear as the project's
+tracker; `--from-pr` is unaffected). Links already on tasks keep their provider and stay readable and
+closable as history, and only new links must match the tracker. `h9k doctor` probes the connection for a
+project with a team bound (no connection, a rejected key, or a probe that could not confirm either) and
+`h9k connection list` counts the bound projects.
+
 `connection add linear` reads Linear's viewer and organization before recording anything, refuses a
 rejected key, and records the viewer's id and name and `https://linear.app/<urlKey>` on the connection;
 registering again replaces the connection (a rotated key; a key from a different workspace is refused while any task carries a `linear:` reference unless `--change-workspace` is passed). Success means Linear accepted the key and
@@ -1525,7 +1534,8 @@ in the tracker.
 **A team's branch convention is a project setting, not a fork of the platform** (Decisions Log
 #121). `h9k project set <project> --branch-template "<TEXT>"` names a task's branch out of three
 tokens — `{shortid}` (the task's short id), `{slug}` (its objective, hyphenated, capped at 30
-characters) and `{key}` (the linked Jira key or GitHub issue number) — with everything else
+characters) and `{key}` (the linked Jira key, Linear identifier, or GitHub issue number; a Linear link
+renders as `ENG-123` with its case kept) — with everything else
 literal, so `--branch-template "{key}-{slug}"` cuts `PROJ-14-add-rate-limiting`. The default is
 `task/{shortid}-{slug}`, exactly what the platform cut before the setting existed, so a project
 that sets nothing sees no change at all; `none` restores it. Two rules make it safe rather than
