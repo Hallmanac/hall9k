@@ -3,6 +3,7 @@ using System.Text;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Trust;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
@@ -227,9 +228,7 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
             agentContext.AppendLine(context).AppendLine();
         }
 
-        agentContext.AppendLine(
-            "Discovery workspace (research notes, gathered files, and prototypes from before this "
-            + "was a task; may be empty):");
+        agentContext.AppendLine(GitHubIssueBody.DiscoveryWorkspaceHeading);
         agentContext.Append(WorkspaceDescription(idea));
         return agentContext.ToString();
     }
