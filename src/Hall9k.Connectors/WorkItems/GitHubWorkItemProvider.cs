@@ -552,9 +552,9 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
     /// Put one login on an issue and take every named holder off it in a single call: the write
     /// behind a confirmed reassignment (<see cref="TrackerAssignmentTake.ReassignAsync"/>). One
     /// <c>gh issue edit</c> carries <c>--add-assignee</c> and a <c>--remove-assignee</c> for each
-    /// holder, and gh computes the final set and sends one update, so the write either lands whole or
-    /// not at all: a refusal leaves the holders where they were, which two calls (remove, then add)
-    /// could not promise. Writes what it is told to write; whether it is warranted is the caller's.
+    /// holder, and gh computes the final set and sends one update, so this install never leaves the item
+    /// half-changed by itself, which two calls (remove, then add) could not promise. A failed call is not
+    /// followed by a read, so what it says about who holds the item now is only that it does not know. Writes what it is told to write; whether it is warranted is the caller's.
     /// </summary>
     public async Task<TrackerAssignmentWrite> ReplaceAssigneesAsync(
         ExternalReference reference,
@@ -587,12 +587,13 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
         return result.ExitCode == 0
             ? TrackerAssignmentWrite.Wrote()
             : TrackerAssignmentWrite.Refused(
-                $"gh could not reassign {Item(repository, number)} to {RelayedText.OneLine(login)}, and the "
-                + $"current holders were left on it. gh reported: "
-                + $"{RelayedText.Truncate(RelayedText.OneLine(result.StandardError).Trim(), 400)}. GitHub only "
-                + "accepts an assignee who can be assigned on that repository, a collaborator or a member "
-                + "of an organisation team with access to it, so check that the account 'gh auth status' "
-                + "reports is one, and ask whoever owns the repository if it is not.");
+                $"gh could not reassign {Item(repository, number)} to {RelayedText.OneLine(login)}. gh reported: "
+                + $"{RelayedText.Truncate(RelayedText.OneLine(result.StandardError).Trim(), 400)}. No read "
+                + "followed the failed write, so who holds the item now is not known: "
+                + $"'gh issue view {number} --repo {RelayedText.OneLine(repository)} --json assignees' says. "
+                + "GitHub only accepts an assignee who can be assigned on that repository, a collaborator or "
+                + "a member of an organisation team with access to it, so check that the account 'gh auth "
+                + "status' reports is one, and ask whoever owns the repository if it is not.");
     }
 
     /// <summary>The single <c>gh issue edit</c> argument list of <see cref="ReplaceAssigneesAsync"/>, kept separate so a test can pin exactly what leaves the process.</summary>

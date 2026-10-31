@@ -96,7 +96,8 @@ public sealed class TaskQueueCommand : Hall9kAsyncCommand<TaskQueueCommand.Setti
         // about a queued task, and every unattended run, still reaches the already-queued refusal below.
         TrackerClaimCheck.ReassignDoor? reassign = TaskAssignCommand.ReassignDoorFor(task, context.NodeId);
         if (task.State.IsAssigned
-            && task.AssignedOwnerId == context.OwnerId
+            && TaskDecider.IsGrantedToThisOwner(
+                task.AssignedOwnerId, task.AssignedOwnerFingerprint, context.OwnerId, actor.RootFingerprint)
             && reassign is { } queuedDoor
             && await ReassignQueuedAsync(store, session, task, queuedDoor, cancellationToken))
         {
@@ -133,8 +134,8 @@ public sealed class TaskQueueCommand : Hall9kAsyncCommand<TaskQueueCommand.Setti
     /// True when it did, in which case the command is finished: the task stays in the queue with its
     /// rank and placement, no <see cref="TaskAssigned"/> or <see cref="TaskUnassigned"/> is appended,
     /// and the dispatcher claims it at its next gate read. False when nothing was offered (no gate, no
-    /// held item, another node holds the task) or the operator said no, and the caller carries on to the
-    /// already-queued refusal. A refused write throws, exit 70, with the task unchanged.
+    /// held item, another node holds the task, an archived project) or the operator said no, and the caller
+    /// carries on to the already-queued refusal. A refused write throws, exit 70, with the task unchanged.
     /// </summary>
     private static async Task<bool> ReassignQueuedAsync(
         IDocumentStore store,
@@ -144,6 +145,7 @@ public sealed class TaskQueueCommand : Hall9kAsyncCommand<TaskQueueCommand.Setti
         CancellationToken cancellationToken)
     {
         if (await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken) is not { } project
+            || project.IsArchived
             || !TrackerClaimGate.Gates(project.ClaimGate, task.ExternalReference))
         {
             return false;
@@ -157,9 +159,13 @@ public sealed class TaskQueueCommand : Hall9kAsyncCommand<TaskQueueCommand.Setti
         }
 
         AnsiConsole.MarkupLine($"[green]{taken.TookLine.EscapeMarkup()}[/]");
+        string shortId = TaskListCommand.ShortId(task.Id);
         AnsiConsole.MarkupLine(
-            $"[dim]Task {TaskListCommand.ShortId(task.Id)} stays queued with its rank and placement; the "
-            + "dispatcher claims it at its next read of the gate.[/]");
+            task.State == TaskState.Blocked
+                ? $"[dim]Task {shortId} stays blocked with its rank and placement; the gate no longer holds it, but "
+                    + "it is claimed only once its dependencies have closed out.[/]"
+                : $"[dim]Task {shortId} stays queued with its rank and placement; the dispatcher claims it at "
+                    + "its next read of the gate.[/]");
         return true;
     }
 

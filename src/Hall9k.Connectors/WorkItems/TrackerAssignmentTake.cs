@@ -130,8 +130,8 @@ public sealed record TrackerTake(
 
     /// <summary>
     /// Why the take refused, in the voice every other claim-gate door refuses in — and, for the
-    /// two cases where a human might reach for one, that no flag takes an item off another person:
-    /// only an operator's confirm at a terminal does. Empty on a verdict that did not refuse.
+    /// held case a human might reach for a lever on, that only an operator's confirm at a terminal
+    /// moves an item off another person. Empty on a verdict that did not refuse.
     /// <para>
     /// The held case deliberately does not reuse <see cref="TrackerClaimDecision.RefusalLine"/>:
     /// that sentence's lever is "assign the item to yourself", which is exactly what this command
@@ -146,7 +146,7 @@ public sealed record TrackerTake(
             + "written and this task is unchanged. --take by itself only ever moves an item from "
             + $"unassigned to this install{IdentityClause}. An item somebody else holds changes hands "
             + "only when an operator at a terminal confirms it, which h9k task queue and h9k task assign "
-            + "--take offer and ask first; no flag does it, and nothing unattended does."
+            + "--take offer and ask first, and nothing unattended does."
             + $"{Decision.HeldElsewhereClause} Otherwise ask them to unassign themselves, or take a "
             + "different task; the moment the tracker shows it unassigned, --take can have it.",
         TrackerTakeVerdict.Unreadable =>
@@ -258,9 +258,15 @@ public sealed record TrackerTake(
     private static string Describe(IReadOnlyList<TrackerAssignee> holders) =>
         string.Join(", ", holders.Select(holder => holder.Described));
 
+    /// <summary>Whoever else the read shows on an item that also names this install, which the verdict alone does not carry.</summary>
+    private IReadOnlyList<TrackerAssignee> OthersBesideThisInstall =>
+        [.. Decision.Holders.Where(holder => !string.Equals(holder.Identity, Decision.Identity, Decision.HolderComparison))];
+
     /// <summary>What the item showed on the fresh read a reassignment was refused over.</summary>
     private string NowShowing => Decision.Verdict switch
     {
+        TrackerClaimVerdict.Assigned when OthersBesideThisInstall is { Count: > 0 } others =>
+            $"it assigned to this install and also to {Describe(others)}",
         TrackerClaimVerdict.Assigned => "it assigned to this install",
         TrackerClaimVerdict.HeldByOther => $"it assigned to {Decision.Holder}",
         _ => "it assigned to nobody",
@@ -377,8 +383,8 @@ public sealed record TrackerRelease(bool Succeeded, string? FailureReason, bool 
 /// </para>
 /// <para>
 /// <b><see cref="TakeAsync"/> only ever moves an item from unassigned to this install.</b> An item
-/// somebody else holds is refused and nothing is written, and no flag changes that: the one way an
-/// item leaves another person is <see cref="ReassignAsync"/>, which an operator at a terminal
+/// somebody else holds is refused and nothing is written, and that is all it ever does: the one way
+/// an item leaves another person is <see cref="ReassignAsync"/>, which an operator at a terminal
 /// confirms first and which no unattended path reaches. That is also what narrows the race the idea
 /// names, because a take never overwrites a held item. What is left of
 /// that race after the refusal is the window between the read and the write, and the read-back is

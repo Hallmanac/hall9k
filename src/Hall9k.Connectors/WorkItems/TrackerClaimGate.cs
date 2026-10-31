@@ -358,7 +358,11 @@ public sealed class TrackerClaimGate(
         {
             return new TrackerClaimDecision(
                 TrackerClaimVerdict.Assigned, reference.Provider.Value, itemKey, itemUrl, identity,
-                match.Described, null, false, null, observedAt, match);
+                match.Described, null, false, null, observedAt, match)
+            {
+                Holders = read.Assignees,
+                HolderComparison = read.IdentityComparison,
+            };
         }
 
         return new TrackerClaimDecision(

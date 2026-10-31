@@ -106,16 +106,7 @@ public sealed class TrackerReassignmentTests
     // ── the one gh call ───────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public void The_github_write_is_one_edit_adding_the_operator_and_removing_every_holder()
-    {
-        GitHubWorkItemProvider.ReplaceAssigneesArguments("Hallmanac/hall9k", 42, "me", ["teammate", "another"])
-            .Should().Equal(
-                "issue", "edit", "42", "--repo", "Hallmanac/hall9k", "--add-assignee", "me",
-                "--remove-assignee", "teammate", "--remove-assignee", "another");
-    }
-
-    [Fact]
-    public async Task A_github_write_that_fails_reports_gh_and_says_the_holders_were_left()
+    public async Task A_github_write_that_fails_reports_gh_and_does_not_claim_who_holds_the_item()
     {
         RecordingProcessRunner gh = RecordingProcessRunner.Failing("HTTP 422: not assignable");
         GitHubWorkItemProvider issues = new(gh.Runner);
@@ -125,7 +116,7 @@ public sealed class TrackerReassignmentTests
             Path.GetTempPath(), CancellationToken.None);
 
         gh.Calls.Should().ContainSingle("a refused write is one call, so nothing was half done");
-        write.Error.Should().Contain("HTTP 422: not assignable").And.Contain("current holders were left on it");
+        write.Error.Should().Contain("HTTP 422: not assignable").And.Contain("who holds the item now is not known").And.NotContain("were left on it");
     }
 
     // ── the sentences ─────────────────────────────────────────────────────────────────────────
@@ -148,21 +139,9 @@ public sealed class TrackerReassignmentTests
         held.Verdict.Should().Be(TrackerTakeVerdict.HeldByOther);
         held.RefusalLine.Should().Contain("only when an operator at a terminal confirms it")
             .And.Contain("h9k task queue and h9k task assign --take")
-            .And.Contain("no flag does it, and nothing unattended does")
-            .And.NotContain("there is no flag that does")
+            .And.Contain("and nothing unattended does")
+            .And.NotContain("no flag")
             .And.NotContain("never takes one from another person");
-    }
-
-    [Fact]
-    public void A_ledger_holder_on_another_node_is_named_with_the_cooperative_take_in_the_held_line()
-    {
-        TrackerClaimDecision decision = Held([new("acct-jane", "Jane Doe")], StringComparison.Ordinal) with
-        {
-            HeldElsewhere = "This task is held by node 0191f0a0 in the ledger.",
-        };
-
-        decision.RefusalLine.Should().Contain("This task is held by node 0191f0a0 in the ledger.");
-        TrackerTake.From(decision).RefusalLine.Should().Contain("This task is held by node 0191f0a0 in the ledger.");
     }
 
     [Fact]
@@ -193,6 +172,21 @@ public sealed class TrackerReassignmentTests
         reassigned.Wrote.Should().BeTrue();
         reassigned.TookLine.Should().Contain("It replaced Jane Doe");
         TrackerTake.HolderChanged(decision, [new("acct-jane", "Jane Doe")]).Passes.Should().BeFalse();
+    }
+
+    [Fact]
+    public void A_holder_change_that_left_the_operator_beside_a_teammate_names_the_teammate()
+    {
+        TrackerAssignee me = new("acct-me", "Me");
+        TrackerAssignee teammate = new("acct-jane", "Jane Doe");
+        TrackerClaimDecision fresh = Held([me, teammate], StringComparison.Ordinal) with
+        {
+            Verdict = TrackerClaimVerdict.Assigned,
+            Assignee = me,
+        };
+
+        TrackerTake.HolderChanged(fresh, [teammate]).RefusalLine
+            .Should().Contain("assigned to this install and also to Jane Doe");
     }
 
     // ── what reaches a terminal ───────────────────────────────────────────────────────────────

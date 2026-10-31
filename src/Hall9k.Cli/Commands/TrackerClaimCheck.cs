@@ -395,7 +395,8 @@ internal static class TrackerClaimCheck
     /// nothing was offered or the operator declined, and the caller refuses the queueing as it always did
     /// for a task already in the queue.
     /// <para>
-    /// Reads the gate first and offers only on a held item whose ledger holder, if any, is this node.
+    /// Reads the gate first and offers only on a held item whose ledger holder, if any, is this node;
+    /// on a held item another node holds it prints the sentence naming that node on stderr instead.
     /// Best-effort about that read, like <see cref="OfferOrTakeAsync"/>: a tracker that cannot be read
     /// degrades to today's refusal rather than a new failure.
     /// </para>
@@ -424,7 +425,21 @@ internal static class TrackerClaimCheck
             return null;
         }
 
-        return decision.Verdict == TrackerClaimVerdict.HeldByOther && !door.HeldByAnotherNode && door.Offer(decision)
+        if (decision.Verdict != TrackerClaimVerdict.HeldByOther)
+        {
+            return null;
+        }
+
+        // Another node holding a queued task (a requeue does not clear the ledger holder) is the case
+        // the cooperative take exists for, so the operator is told which node and how to ask it before
+        // the caller's own already-queued refusal follows.
+        if (door.HeldByAnotherNode)
+        {
+            await Console.Error.WriteLineAsync($"  {HeldElsewhere(door, taskId)}");
+            return null;
+        }
+
+        return door.Offer(decision)
             ? await ReassignOrRefuseAsync(store, taskId, project, externalReference, taker, decision, cancellationToken)
             : null;
     }

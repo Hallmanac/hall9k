@@ -774,7 +774,7 @@ By itself it only ever moves an item from unassigned to you. An item somebody el
 (exit 70) naming the holder, nothing is written, and the task is left exactly as it was, with one
 exception: at a terminal, `h9k task queue` (with or without `--take`) and `h9k task assign --take`
 name every holder as the tracker shows them and ask whether to reassign the item to you, defaulting
-to no. No flag takes an item from another person, and nothing unattended does. "At a terminal"
+to no. Only that interactive confirm takes an item from another person, and nothing unattended does. "At a terminal"
 means stdin, stdout and stderr are all terminals and none of `HALL9K_DISPATCHED_RUN_ID`,
 `HALL9K_DETACHED_SESSION` or `CLAUDE_PID` is set, so a dispatched session, a contractor and an
 orchestrator's shell are never asked. On a no, `--take` refuses as above and a plain queue warns and
@@ -784,7 +784,8 @@ already queued for you reaches the same offer through `h9k task queue <id>` and 
 with its rank and placement. When the ledger says another node holds the task, nothing is offered and
 the line points at the cooperative take, `h9k task take <id> --reason "<why>"`. Jira and Linear
 overwrite their one assignee; GitHub makes a single `gh issue edit` that adds you and removes every
-holder, so a refused write leaves them where they were. An item already assigned to you writes
+holder, so this install never leaves the item half-changed by itself; a refused write names the
+`gh issue view` that says who holds it now, because nothing reads the item after a failed write. An item already assigned to you writes
 nothing and simply records what it saw. A tracker that cannot be read refuses too: a take that cannot see who holds an item cannot
 know it is taking it from nobody. And an item that was unassigned a moment ago but comes back from
 the read-back naming somebody else *beside* you is refused as well — two installs took it in the

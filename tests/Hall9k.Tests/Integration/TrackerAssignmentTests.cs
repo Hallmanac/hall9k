@@ -241,8 +241,8 @@ public sealed partial class TrackerAssignmentTests : IClassFixture<PostgresFixtu
     /// <summary>
     /// The refusal the idea's own race question turns on: an item somebody else holds is never
     /// overwritten. Nothing is written, the task is left exactly as it was — not assigned, not
-    /// queued — and the sentence names the holder and says outright that no flag exists that would
-    /// have taken it.
+    /// queued — and the sentence names the holder and says that only an operator's confirm at a
+    /// terminal could have taken it.
     /// </summary>
     [Theory]
     [InlineData("jira")]
@@ -262,8 +262,8 @@ public sealed partial class TrackerAssignmentTests : IClassFixture<PostgresFixtu
 
         refusal.Message.Should().Contain(provider == "jira" ? "someone-else" : "teammate");
         refusal.Message.Should().Contain("only when an operator at a terminal confirms it");
-        refusal.Message.Should().Contain("no flag does it, and nothing unattended does");
-        refusal.Message.Should().NotContain("no flag that does", "the old rule said nothing could take an item from a person");
+        refusal.Message.Should().Contain("and nothing unattended does");
+        refusal.Message.Should().NotContain("no flag", "the rule is no longer that nothing takes an item from a person");
         tracker.Writes.Should().BeEmpty("nothing is written to an item somebody else holds");
         tracker.GhCalls.Should().NotContain(arguments => arguments.Contains("edit"));
 

@@ -18,7 +18,7 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// <para>
 /// It carries third parties' names, which no other task-stream record does, and it is
 /// project-scoped, so it travels signed and not encrypted to every member of the project. That is
-/// the point of it: the ruling that allows a reassignment asks for who was replaced.
+/// the point of it: a reassignment takes an item off other people, so the record has to say who.
 /// </para>
 /// </summary>
 public sealed record TrackerAssignmentReassigned(

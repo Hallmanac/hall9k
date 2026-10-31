@@ -69,8 +69,9 @@ public sealed record TrackerClaimDecision(
 {
     /// <summary>
     /// Every person the tracker showed holding the item, as it spelt them, on a
-    /// <see cref="TrackerClaimVerdict.HeldByOther"/> read; empty on every other verdict and on a
-    /// decision rebuilt from a published hold, which carries only the rendered <see cref="Holder"/>.
+    /// <see cref="TrackerClaimVerdict.HeldByOther"/> or <see cref="TrackerClaimVerdict.Assigned"/> read
+    /// (the latter includes this install, and whoever else shares the item); empty on every other verdict
+    /// and on a decision rebuilt from a published hold, which carries only the rendered <see cref="Holder"/>.
     /// A reassignment is offered and later checked against this list, never against that string.
     /// </summary>
     public IReadOnlyList<TrackerAssignee> Holders { get; init; } = [];
