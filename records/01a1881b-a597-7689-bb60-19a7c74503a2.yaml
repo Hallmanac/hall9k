@@ -37,7 +37,3 @@ context: |-
   /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/5d12221a-a-linear-connector-so-a-project-whose-work-and-backlog-live/workspace
 
   Notes for the build. The new event is IdeaWorkItemLinked in Hall9k.Domain.Features.Idea, with WorkItemLinked's fields; do not reuse WorkItemLinked, because the task projections apply it and would vivify a task document on the idea's id. PartialReplicatedStreamRules and AggregateGenesisEventTypes need no change. IdeaDetails needs the reference for the guard, h9k idea show, and h9k idea list. An older node skips the event without stalling, so it holds the idea without the link; that is accepted. Whether Linear's issue(id:) resolves an identifier after a team move is unverified, so the cut handles both a returned new identifier and not found. Whether Linear's pull request automation moves an issue still in Triage is unverified, because the page could not be read, so the output makes no promise about it. Parked: h9k epic link-linear (trigger: a person reads the issue off the epic, or epics are mirrored to Linear projects); h9k idea promote adopting the link (trigger: operators hit its refusal); a task-side refusal on an item a live idea carries (trigger: an operator adopts around a live idea and loses the provenance); importing the item's comments (A's park).
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-10-31 04:17:46Z
