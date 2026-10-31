@@ -961,17 +961,24 @@ minutes.
 two-place act (Decisions Log #143): in a gated project it reads the linked item fresh and, when
 the tracker shows nobody holds it, writes this install's own tracker identity into the assignee
 field, reads the item back, records `TrackerAssignmentWritten` from that read-back, and queues —
-so the gate then passes on its own. It only ever moves an item from unassigned to you: one
-somebody else holds is refused (exit 70) naming the holder with nothing written and the task
-untouched, and there is deliberately no flag that takes an item from another person. Already yours
-records the observation and proceeds. A read-back that names somebody else beside this install is
+so the gate then passes on its own. By itself it only ever moves an item from unassigned to you:
+one somebody else holds is refused (exit 70) naming the holder with nothing written and the task
+untouched, unless an operator at a terminal confirms a reassignment (`h9k task queue`, with or
+without `--take`, or `h9k task assign --take`, asks and defaults to no; a task already queued for
+you reaches the same offer through `h9k task queue <id>`). That interactive confirm is the only way
+an item leaves another person: no flag does it, and nothing unattended does, which includes a
+dispatched session, an orchestrator, the dispatcher's sweeps and `h9k task take --force`. A yes
+reads the item again, writes only over the holders the operator was shown, reads it back, and
+records `TrackerAssignmentReassigned` (project-scoped, so the replaced people's names reach every
+member) in place of `TrackerAssignmentWritten`. Already yours records the observation and proceeds. A read-back that names somebody else beside this install is
 refused too — two installs took the item in the same moment, which only GitHub can produce, since
 `--add-assignee` adds where Jira's write replaces. The write is a field update and never a
 transition — Jira gets an `assignee`-only update through the same executor every other Jira write
 uses, GitHub gets
 `gh issue edit --add-assignee` — so the item's status is untouched, though a team's own board
 automation may react to the assignment. Without the flag an interactive queue offers the same
-take (defaulting to no) and a non-interactive one warns and proceeds, never writing silently.
+take on an unassigned item and the reassignment on a held one (each defaulting to no), and a
+non-interactive one warns and proceeds, never writing silently.
 The assignee follows a claim and a give-back: `h9k task abandon`, lease expiry on a project whose
 claim gate is off, and `h9k task release` of a ledger holder clear this install's own identity off
 the item again (releasing an interactive claim does not). A finished item keeps it, so on a gated
@@ -1709,8 +1716,9 @@ executor refuses a transition or a close regardless of what was composed, becaus
 merge means is a team's workflow rather than a fact about software. The one write the platform
 initiates entirely on its own is a comment on the card when the task's pull request merges. The
 claim gate's own `--take` on `h9k task queue` and `h9k task assign` (#143) writes one field — the assignee, on an item nobody
-holds, on a human's explicit say-so — and no status, which is exactly why it does not breach this:
-who is holding a card is not which state it is in.
+holds (or, after a confirm at a terminal, one somebody else holds), on a human's explicit say-so — and no status, which is exactly why it does not breach this:
+who is holding a card is not which state it is in. (On an item somebody else holds, the same
+write happens only after an operator at a terminal confirms it.)
 
 **Never guess at an unobserved fact.** Audit fields, history, and identifiers record what was
 actually observed, and the unobserved is represented as explicitly unknown. A quiet pull request

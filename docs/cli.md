@@ -770,11 +770,22 @@ passes on its own and stops being what keeps the task in the queue. (It is the g
 holding the task, not a promise the task runs now: a task with unmet dependencies still waits on
 those, and the queue line above the take's own says so.)
 
-It only ever moves an item from unassigned to you. An item somebody else holds is refused (exit
-70) naming the holder, nothing is written, the task is left exactly as it was, and there is
-deliberately no flag that takes an item from another person — ask them to unassign themselves, or
-take a different task. An item already assigned to you writes nothing and simply records what it
-saw. A tracker that cannot be read refuses too: a take that cannot see who holds an item cannot
+By itself it only ever moves an item from unassigned to you. An item somebody else holds is refused
+(exit 70) naming the holder, nothing is written, and the task is left exactly as it was, with one
+exception: at a terminal, `h9k task queue` (with or without `--take`) and `h9k task assign --take`
+name every holder as the tracker shows them and ask whether to reassign the item to you, defaulting
+to no. No flag takes an item from another person, and nothing unattended does. "At a terminal"
+means stdin, stdout and stderr are all terminals and none of `HALL9K_DISPATCHED_RUN_ID`,
+`HALL9K_DETACHED_SESSION` or `CLAUDE_PID` is set, so a dispatched session, a contractor and an
+orchestrator's shell are never asked. On a no, `--take` refuses as above and a plain queue warns and
+queues. On a yes the item is read again and written only if the same holders are still on it; then it
+is read back, and `TrackerAssignmentReassigned` records who was replaced and who holds it now. A task
+already queued for you reaches the same offer through `h9k task queue <id>` and stays in the queue
+with its rank and placement. When the ledger says another node holds the task, nothing is offered and
+the line points at the cooperative take, `h9k task take <id> --reason "<why>"`. Jira and Linear
+overwrite their one assignee; GitHub makes a single `gh issue edit` that adds you and removes every
+holder, so a refused write leaves them where they were. An item already assigned to you writes
+nothing and simply records what it saw. A tracker that cannot be read refuses too: a take that cannot see who holds an item cannot
 know it is taking it from nobody. And an item that was unassigned a moment ago but comes back from
 the read-back naming somebody else *beside* you is refused as well — two installs took it in the
 same moment, so neither may claim it. That one is GitHub-only, because `--add-assignee` adds where
