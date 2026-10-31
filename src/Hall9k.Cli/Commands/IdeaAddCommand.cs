@@ -7,7 +7,6 @@ using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
-using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
