@@ -3,6 +3,7 @@ using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -33,16 +34,21 @@ public sealed class TaskQueueCommand : Hall9kAsyncCommand<TaskQueueCommand.Setti
 
         [CommandOption("--take")]
         [Description(
-            "In a project whose claim gate is tracker-assignee, take the linked Jira card, GitHub "
-            + "issue, or Linear issue for this install's own tracker identity as part of queueing, so one command moves "
-            + "the tracker and the board together and the gate then passes on its own. Reads the item "
-            + "fresh first and writes ONLY when it shows no assignee: an item somebody else holds is "
-            + "refused (exit 70) and nothing is written, and there is no flag that takes one from "
-            + "another person. Already yours records the observation and proceeds. The write is a FIELD "
+            "In a project whose claim gate is tracker-assignee, take the linked tracker item (a Jira "
+            + "card, a GitHub issue, or a Linear issue) for this install's own tracker identity as part "
+            + "of queueing, so one command moves the tracker and the board together and the gate then "
+            + "passes on its own. Reads the item fresh first and writes by itself ONLY when it shows no "
+            + "assignee. An item somebody else holds is refused (exit 70) with nothing written, unless "
+            + "you are at a terminal: then it names every holder and asks whether to reassign the item "
+            + "to you, defaulting to no. Only that interactive confirm takes an item from another "
+            + "person, and nothing unattended does (a dispatched session, an orchestrator, a piped or "
+            + "scripted run). Already yours records the observation and proceeds. The write is a FIELD "
             + "UPDATE and never a transition, but a team's own automation (a Jira board rule, a GitHub "
             + "workflow) may react to an assignment. Without this flag an interactive run offers the "
-            + "same take on an unassigned item, and a non-interactive one warns and proceeds without "
-            + "writing anything")]
+            + "same take on an unassigned item and the same reassignment on a held one (declining it "
+            + "warns and queues anyway), and a non-interactive one warns and proceeds without writing "
+            + "anything. On a task that is already queued for you, an interactive run offers the "
+            + "reassignment too and leaves the task in the queue")]
         public bool Take { get; init; }
 
         [CommandOption("--node [NODE]")]
@@ -85,6 +91,18 @@ public sealed class TaskQueueCommand : Hall9kAsyncCommand<TaskQueueCommand.Setti
                 + $"runs: h9k task assign {queuedId} --node [NODE]. To take it out of the queue: h9k task dequeue {queuedId}.");
         }
 
+        // The one door onto a task that is already queued: at a terminal, for the operator it is queued
+        // for, a held tracker item can be reassigned without queueing anything again. Everything else
+        // about a queued task, and every unattended run, still reaches the already-queued refusal below.
+        TrackerClaimCheck.ReassignDoor? reassign = TaskAssignCommand.ReassignDoorFor(task, context.NodeId);
+        if (task.State.IsAssigned
+            && task.AssignedOwnerId == context.OwnerId
+            && reassign is { } queuedDoor
+            && await ReassignQueuedAsync(store, session, task, queuedDoor, cancellationToken))
+        {
+            return ExitCodes.Ok;
+        }
+
         Optional<Guid?> placement = await TaskAssignCommand.ResolvePlacementAsync(
             session, settings.Node, actor.RootFingerprint, ownerIsThisInstall: true, task.ProjectId, context.NodeId,
             new GitLedgerChainReader(), cancellationToken);
@@ -98,7 +116,8 @@ public sealed class TaskQueueCommand : Hall9kAsyncCommand<TaskQueueCommand.Setti
         // the commit, because the tracker is the go signal and a task waiting in the queue is the design
         // (Decisions Log #142, #143).
         (TrackerTake? take, TrackerClaimDecision? decision) = await TaskAssignCommand.TakeBeforeAssigningAsync(
-            store, session, task, settings.Take, trackerAssignmentTake: null, TaskAssignCommand.Offer(), cancellationToken);
+            store, session, task, settings.Take, trackerAssignmentTake: null, TaskAssignCommand.Offer(), reassign,
+            cancellationToken);
 
         await session.SaveChangesAsync(cancellationToken);
         await Doorbell.RingAsync($"task-assigned:{taskId}", cancellationToken);
@@ -107,6 +126,41 @@ public sealed class TaskQueueCommand : Hall9kAsyncCommand<TaskQueueCommand.Setti
             queued, actor, session, cancellationToken, task.StackedOnTaskId, StackedParentDeclaration.From(task));
         await TaskAssignCommand.ReportTrackerAsync(store, session, task, take, decision, cancellationToken);
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Offers to reassign a held tracker item on a task that is already queued, and does it on a yes.
+    /// True when it did, in which case the command is finished: the task stays in the queue with its
+    /// rank and placement, no <see cref="TaskAssigned"/> or <see cref="TaskUnassigned"/> is appended,
+    /// and the dispatcher claims it at its next gate read. False when nothing was offered (no gate, no
+    /// held item, another node holds the task) or the operator said no, and the caller carries on to the
+    /// already-queued refusal. A refused write throws, exit 70, with the task unchanged.
+    /// </summary>
+    private static async Task<bool> ReassignQueuedAsync(
+        IDocumentStore store,
+        IQuerySession session,
+        TaskAggregate task,
+        TrackerClaimCheck.ReassignDoor door,
+        CancellationToken cancellationToken)
+    {
+        if (await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken) is not { } project
+            || !TrackerClaimGate.Gates(project.ClaimGate, task.ExternalReference))
+        {
+            return false;
+        }
+
+        if (await TrackerClaimCheck.OfferReassignOnQueuedAsync(
+                store, task.Id, project, task.ExternalReference?.ToString(), null, door, cancellationToken)
+            is not { } taken)
+        {
+            return false;
+        }
+
+        AnsiConsole.MarkupLine($"[green]{taken.TookLine.EscapeMarkup()}[/]");
+        AnsiConsole.MarkupLine(
+            $"[dim]Task {TaskListCommand.ShortId(task.Id)} stays queued with its rank and placement; the "
+            + "dispatcher claims it at its next read of the gate.[/]");
+        return true;
     }
 
     /// <summary>

@@ -212,6 +212,11 @@ internal static class TrackerClaimCheck
     /// </para>
     /// </summary>
     /// <param name="take">The taker itself, or null for the real one — the same seam idiom <see cref="ForTaskAsync"/>'s own <c>gate</c> parameter documents.</param>
+    /// <param name="reassign">
+    /// The reassignment offer for an item somebody else holds, or null when nobody attended is there to
+    /// answer it, which is every unattended run and every caller that never reassigns (the cooperative
+    /// take). Null refuses a held item exactly as it always did.
+    /// </param>
     /// <returns>The take, for the caller to announce once its own assignment has landed.</returns>
     public static async Task<TrackerTake> TakeOrRefuseAsync(
         IDocumentStore store,
@@ -219,14 +224,29 @@ internal static class TrackerClaimCheck
         ProjectDetails project,
         string? externalReference,
         TrackerAssignmentTake? take,
+        ReassignDoor? reassign,
         CancellationToken cancellationToken)
     {
-        TrackerTake taken = await (take ?? new TrackerAssignmentTake(new ProjectScopedGitHubRunner(store).Runner)).TakeAsync(
+        TrackerAssignmentTake taker = take ?? new TrackerAssignmentTake(new ProjectScopedGitHubRunner(store).Runner);
+        TrackerTake taken = await taker.TakeAsync(
             store,
             project.ClaimGate,
             Reference(externalReference),
             project.RepositoryPath,
             cancellationToken);
+
+        // A held item is the one verdict a terminal can overrule: the operator is shown who holds it
+        // and asked. Declining, or any run with nobody to ask, leaves the refusal below untouched.
+        if (taken.Verdict == TrackerTakeVerdict.HeldByOther && reassign is { } door)
+        {
+            taken = door.HeldByAnotherNode
+                ? taken with { Decision = taken.Decision with { HeldElsewhere = HeldElsewhere(door, taskId) } }
+                : door.Offer(taken.Decision)
+                    ? await taker.ReassignAsync(
+                        store, project.ClaimGate, Reference(externalReference), project.RepositoryPath,
+                        taken.Decision.Holders, cancellationToken)
+                    : taken;
+        }
 
         if (!taken.Passes)
         {
@@ -236,6 +256,29 @@ internal static class TrackerClaimCheck
         await RecordAsync(store, taskId, externalReference, taken, cancellationToken);
         return taken;
     }
+
+    /// <summary>
+    /// What an attended door needs to offer a reassignment: the question itself, and the ledger facts
+    /// that decide whether it may be asked at all. A <see cref="TakeOffer"/> is the same seam the take
+    /// offer uses, so a test answers it without a console.
+    /// </summary>
+    /// <param name="Offer">Asks the human at the terminal, shown who holds the item.</param>
+    /// <param name="ThisNodeId">This install's node.</param>
+    /// <param name="HolderNodeId">The node the task's ledger holder names, null when it names none.</param>
+    internal sealed record ReassignDoor(TakeOffer Offer, Guid ThisNodeId, Guid? HolderNodeId)
+    {
+        /// <summary>
+        /// A task whose ledger holder is another node is somebody's work in progress, and moving the
+        /// tracker item under it would be the one thing the cooperative take exists to ask first.
+        /// </summary>
+        public bool HeldByAnotherNode => HolderNodeId is { } holder && holder != ThisNodeId;
+    }
+
+    /// <summary>The sentence a held item's refusal gains when the ledger says another node holds the task, so no reassignment is offered.</summary>
+    private static string HeldElsewhere(ReassignDoor door, Guid taskId) =>
+        $"This task is held by node {TaskListCommand.ShortId(door.HolderNodeId ?? Guid.Empty)} in the ledger, so no "
+        + "reassignment is offered here: ask that node to give it up with "
+        + $"h9k task take {TaskListCommand.ShortId(taskId)} --reason \"<why>\".";
 
     /// <summary>
     /// Whether the human at the terminal wants the linked item taken. A delegate rather than a
@@ -255,12 +298,12 @@ internal static class TrackerClaimCheck
     /// the point: the platform never writes to somebody's tracker without being told to, and an
     /// unattended process cannot be told.
     /// <para>
-    /// A declined offer, an item somebody else holds, and a tracker that could not be read all
-    /// return their own read for the caller to warn with after the assignment lands, so the answer
-    /// is read once and spoken once. An accepted offer goes through
-    /// <see cref="TakeOrRefuseAsync"/>'s own path — including its refusal: the human said take it,
-    /// and if it could not be taken, leaving the task untouched is the honest outcome rather than
-    /// assigning it with a warning they did not ask for.
+    /// A declined offer, an item somebody else holds when no reassignment is offered for it, and a
+    /// tracker that could not be read all return their own read for the caller to warn with after the
+    /// assignment lands, so the answer is read once and spoken once. An accepted offer goes through
+    /// <see cref="TakeOrRefuseAsync"/>'s own path, or for a held item through the reassignment,
+    /// including its refusal: the human said take it, and if it could not be taken, leaving the task
+    /// untouched is the honest outcome rather than assigning it with a warning they did not ask for.
     /// </para>
     /// <para>
     /// Best-effort about the read: a tracker that hangs or a connector that throws must not fail an
@@ -270,6 +313,7 @@ internal static class TrackerClaimCheck
     /// not a failure to get one.
     /// </para>
     /// </summary>
+    /// <param name="reassign">The reassignment offer for a held item, or null when nobody attended is there to answer it.</param>
     public static async Task<(TrackerTake? Take, TrackerClaimDecision? Decision)> OfferOrTakeAsync(
         IDocumentStore store,
         Guid taskId,
@@ -277,6 +321,7 @@ internal static class TrackerClaimCheck
         string? externalReference,
         TrackerAssignmentTake? take,
         TakeOffer offer,
+        ReassignDoor? reassign,
         CancellationToken cancellationToken)
     {
         TrackerAssignmentTake taker = take ?? new TrackerAssignmentTake(new ProjectScopedGitHubRunner(store).Runner);
@@ -298,21 +343,100 @@ internal static class TrackerClaimCheck
             return (null, null);
         }
 
-        // Only an item the tracker shows assigned to nobody is offered. One somebody else holds is
-        // not an offer this platform has the right to make — there is no flag that takes an item
-        // from another person — and an unreadable tracker cannot say whether it would be taking one
-        // from anybody at all, so both fall through to the warning the door has always printed.
+        // An item the tracker shows assigned to nobody is offered as a take. One somebody else holds is
+        // offered as a reassignment, but only to a door with an attended human behind it and only when
+        // the ledger does not say another node holds the task; every other door, and an unreadable
+        // tracker, fall through to the warning the door has always printed.
+        if (decision.Verdict == TrackerClaimVerdict.HeldByOther && reassign is { } door)
+        {
+            return door.HeldByAnotherNode
+                ? (null, decision with { HeldElsewhere = HeldElsewhere(door, taskId) })
+                : door.Offer(decision)
+                    ? (await ReassignOrRefuseAsync(store, taskId, project, externalReference, taker, decision, cancellationToken), null)
+                    : (null, decision);
+        }
+
         return decision.Verdict == TrackerClaimVerdict.Unassigned && offer(decision)
-            ? (await TakeOrRefuseAsync(store, taskId, project, externalReference, taker, cancellationToken), null)
+            ? (await TakeOrRefuseAsync(store, taskId, project, externalReference, taker, reassign: null, cancellationToken), null)
             : (null, decision);
     }
 
     /// <summary>
+    /// The reassignment the operator confirmed, written and recorded, or refused with the tracker's own
+    /// words and the task left as it was. The refusal is a <see cref="DomainBusinessRuleException"/>,
+    /// exit 70, like every other claim-gate refusal: the command line was fine, and what refused is a
+    /// standing rule about who may hold this item.
+    /// </summary>
+    private static async Task<TrackerTake> ReassignOrRefuseAsync(
+        IDocumentStore store,
+        Guid taskId,
+        ProjectDetails project,
+        string? externalReference,
+        TrackerAssignmentTake taker,
+        TrackerClaimDecision held,
+        CancellationToken cancellationToken)
+    {
+        TrackerTake taken = await taker.ReassignAsync(
+            store, project.ClaimGate, Reference(externalReference), project.RepositoryPath, held.Holders,
+            cancellationToken);
+        if (!taken.Passes)
+        {
+            throw new DomainBusinessRuleException(taken.RefusalLine);
+        }
+
+        await RecordAsync(store, taskId, externalReference, taken, cancellationToken);
+        return taken;
+    }
+
+    /// <summary>
+    /// The offer on a task that is already queued for this operator: the one place an item somebody
+    /// else holds can be reassigned without the task being assigned again, so it keeps its rank and its
+    /// placement and neither <c>TaskAssigned</c> nor <c>TaskUnassigned</c> is appended. Null means
+    /// nothing was offered or the operator declined, and the caller refuses the queueing as it always did
+    /// for a task already in the queue.
+    /// <para>
+    /// Reads the gate first and offers only on a held item whose ledger holder, if any, is this node.
+    /// Best-effort about that read, like <see cref="OfferOrTakeAsync"/>: a tracker that cannot be read
+    /// degrades to today's refusal rather than a new failure.
+    /// </para>
+    /// </summary>
+    public static async Task<TrackerTake?> OfferReassignOnQueuedAsync(
+        IDocumentStore store,
+        Guid taskId,
+        ProjectDetails project,
+        string? externalReference,
+        TrackerAssignmentTake? take,
+        ReassignDoor door,
+        CancellationToken cancellationToken)
+    {
+        TrackerAssignmentTake taker = take ?? new TrackerAssignmentTake(new ProjectScopedGitHubRunner(store).Runner);
+        TrackerClaimDecision decision;
+        try
+        {
+            decision = await taker.ReadAsync(
+                store, project.ClaimGate, Reference(externalReference), project.RepositoryPath, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            await Console.Error.WriteLineAsync(
+                "  This project's claim gate could not be read to offer reassigning the item, so the "
+                + $"queueing is refused as it would be without the offer: {exception.Message}");
+            return null;
+        }
+
+        return decision.Verdict == TrackerClaimVerdict.HeldByOther && !door.HeldByAnotherNode && door.Offer(decision)
+            ? await ReassignOrRefuseAsync(store, taskId, project, externalReference, taker, decision, cancellationToken)
+            : null;
+    }
+
+    /// <summary>
     /// What a take actually observed, on the task's own stream: the write this install made
-    /// (<see cref="TrackerAssignmentWritten"/>) or the assignment it merely found already there
-    /// (<see cref="TrackerAssignmentObserved"/>). Two events rather than one, because a stream that
-    /// spelt them the same could not answer "who put this person on the card" at all — and neither
-    /// is recorded for a verdict that observed nothing (AGENTS.md, never guess at unobserved facts).
+    /// (<see cref="TrackerAssignmentWritten"/>), the write that replaced other people
+    /// (<see cref="TrackerAssignmentReassigned"/>, in place of the first for that write), or the
+    /// assignment it merely found already there (<see cref="TrackerAssignmentObserved"/>). Separate
+    /// events, because a stream that spelt them the same could not answer "who put this person on the
+    /// card" at all — and none is recorded for a verdict that observed nothing (AGENTS.md, never guess
+    /// at unobserved facts).
     /// <para>
     /// Best-effort, for the reason <see cref="TakeOrRefuseAsync"/>'s own summary gives: this runs
     /// after the tracker write has already landed and before the assignment commits, so throwing
@@ -335,11 +459,21 @@ internal static class TrackerClaimCheck
             return;
         }
 
-        object recorded = taken.Wrote
-            ? new TrackerAssignmentWritten(
-                taskId, externalReference ?? string.Empty, assignee.Identity, assignee.Name, taken.ObservedAt)
-            : new TrackerAssignmentObserved(
-                taskId, externalReference ?? string.Empty, assignee.Identity, assignee.Name, taken.ObservedAt);
+        string reference = externalReference ?? string.Empty;
+        object recorded = taken.Verdict switch
+        {
+            TrackerTakeVerdict.Reassigned => new TrackerAssignmentReassigned(
+                taskId,
+                reference,
+                [.. taken.Replaced.Select(replaced => new ReplacedTrackerAssignee(replaced.Identity, replaced.Name))],
+                assignee.Identity,
+                assignee.Name,
+                taken.ObservedAt),
+            TrackerTakeVerdict.Taken => new TrackerAssignmentWritten(
+                taskId, reference, assignee.Identity, assignee.Name, taken.ObservedAt),
+            _ => new TrackerAssignmentObserved(
+                taskId, reference, assignee.Identity, assignee.Name, taken.ObservedAt),
+        };
 
         try
         {

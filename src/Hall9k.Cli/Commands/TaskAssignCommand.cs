@@ -44,17 +44,20 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
 
         [CommandOption("--take")]
         [Description(
-            "In a project whose claim gate is tracker-assignee, take the linked Jira card, GitHub "
-            + "issue, or Linear issue for this install's own tracker identity as part of laying hold of the task, so one "
-            + "command moves the tracker and the board together and the gate then passes on its own. Only "
-            + "for yourself: it refuses when the task is being handed to another member. Reads "
-            + "the item fresh first and writes ONLY when it shows no assignee: an item somebody "
-            + "else holds is refused (exit 70) and nothing is written, and there is no flag that "
-            + "takes one from another person. Already yours records the observation and proceeds. "
-            + "The write is a FIELD UPDATE and never a transition — the item's status is not "
-            + "touched — but be aware that a team's own automation (a Jira board rule, a GitHub "
-            + "workflow) may react to an assignment. Assign never offers it on its own; h9k task queue "
-            + "does, because the claim gate is read when a task is queued")]
+            "In a project whose claim gate is tracker-assignee, take the linked tracker item (a Jira "
+            + "card, a GitHub issue, or a Linear issue) for this install's own tracker identity as part "
+            + "of laying hold of the task, so one command moves the tracker and the board together and "
+            + "the gate then passes on its own. Only for yourself: it refuses when the task is being "
+            + "handed to another member. Reads the item fresh first and writes by itself ONLY when it "
+            + "shows no assignee. An item somebody else holds is refused (exit 70) with nothing written, "
+            + "unless you are at a terminal: then it names every holder and asks whether to reassign the "
+            + "item to you, defaulting to no. Only that interactive confirm takes an item from another "
+            + "person, and nothing unattended does (a dispatched session, an orchestrator, a piped or "
+            + "scripted run). Already yours records the observation and proceeds. The write is a FIELD "
+            + "UPDATE and never a transition, the item's status is not touched, but be aware that a "
+            + "team's own automation (a Jira board rule, a GitHub workflow) may react to an assignment. "
+            + "Assign never offers it on its own; h9k task queue does, because the claim gate is read "
+            + "when a task is queued")]
         public bool Take { get; init; }
 
         [CommandOption("--node [NODE]")]
@@ -187,7 +190,8 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         // had: it is the only part of this command that can refuse, and it throws before anything is saved.
         (TrackerTake? take, TrackerClaimDecision? decision) = settings.Take
             ? await TakeBeforeAssigningAsync(
-                store, session, task, take: true, trackerAssignmentTake: null, offer: null, cancellationToken)
+                store, session, task, take: true, trackerAssignmentTake: null, offer: null,
+                ReassignDoorFor(task, context.NodeId), cancellationToken)
             : (null, null);
         await session.SaveChangesAsync(cancellationToken);
 
@@ -313,6 +317,11 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
     /// terminal is the one place that owns it, and so a test can pin the offer, its acceptance and
     /// its decline without a console.
     /// </param>
+    /// <param name="reassign">
+    /// Whether to reassign an item somebody else holds, asked of an attended human, and what the ledger
+    /// says about the task's holder. Null for every unattended run, which is what makes a held item
+    /// refuse (<c>--take</c>) or warn (the offer) exactly as it did before a terminal could overrule it.
+    /// </param>
     internal static async Task<(TrackerTake? Take, TrackerClaimDecision? Decision)> TakeBeforeAssigningAsync(
         IDocumentStore store,
         IQuerySession session,
@@ -320,6 +329,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         bool take,
         TrackerAssignmentTake? trackerAssignmentTake,
         TrackerClaimCheck.TakeOffer? offer,
+        TrackerClaimCheck.ReassignDoor? reassign,
         CancellationToken cancellationToken)
     {
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
@@ -348,7 +358,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         {
             return (
                 await TrackerClaimCheck.TakeOrRefuseAsync(
-                    store, task.Id, project, task.ExternalReference?.ToString(), trackerAssignmentTake,
+                    store, task.Id, project, task.ExternalReference?.ToString(), trackerAssignmentTake, reassign,
                     cancellationToken),
                 null);
         }
@@ -356,7 +366,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         return offer is null
             ? (null, null)
             : await TrackerClaimCheck.OfferOrTakeAsync(
-                store, task.Id, project, task.ExternalReference?.ToString(), trackerAssignmentTake, offer,
+                store, task.Id, project, task.ExternalReference?.ToString(), trackerAssignmentTake, offer, reassign,
                 cancellationToken);
     }
 
@@ -380,6 +390,37 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
                 + "claim gate passes and stops holding the task?",
                 defaultValue: false)
             : null;
+
+    /// <summary>
+    /// The reassignment offer as an attended human answers it, or null when the run is not one: the
+    /// terminal check and the environment markers of a session some other process started both sit
+    /// behind <see cref="AttendedSession.IsAttended"/>, which is what keeps a dispatched session, a
+    /// detached contractor and an orchestrator from ever being asked. The one place this command
+    /// consults the console about a reassignment.
+    /// </summary>
+    internal static TrackerClaimCheck.ReassignDoor? ReassignDoorFor(TaskAggregate task, Guid thisNodeId) =>
+        ReassignDoorFor(
+            task, thisNodeId, AnsiConsole.Profile.Capabilities.Interactive, Environment.GetEnvironmentVariable);
+
+    /// <summary>The same decision with the terminal and the environment injected, so each marker can be pinned without touching the process's own.</summary>
+    internal static TrackerClaimCheck.ReassignDoor? ReassignDoorFor(
+        TaskAggregate task, Guid thisNodeId, bool interactive, Func<string, string?> environmentVariable) =>
+        AttendedSession.IsAttended(interactive, environmentVariable)
+            ? new TrackerClaimCheck.ReassignDoor(ConfirmReassignment, thisNodeId, task.HolderNodeId)
+            : null;
+
+    /// <summary>
+    /// Names every person holding the item, as the tracker shows them, and asks whether to replace them
+    /// with this install's own identity. Defaults to no: moving an item off other people is never what a
+    /// bare Enter should do. Each name is relayed text and is escaped before it reaches the console.
+    /// </summary>
+    private static bool ConfirmReassignment(TrackerClaimDecision decision) =>
+        AnsiConsole.Confirm(
+            $"{decision.Tracker.EscapeMarkup()} shows {decision.Item.EscapeMarkup()} assigned to "
+            + $"{string.Join(", ", decision.Holders.Select(holder => holder.Described.EscapeMarkup()))}. "
+            + $"Reassign it to you on {decision.Tracker.EscapeMarkup()} now, replacing them, so this "
+            + "project's claim gate passes and stops holding the task?",
+            defaultValue: false);
 
     /// <summary>
     /// Which half of the gate's own applicability rule turned <c>--take</c> down, so the refusal
