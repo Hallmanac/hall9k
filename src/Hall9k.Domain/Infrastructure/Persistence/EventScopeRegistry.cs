@@ -123,6 +123,7 @@ public static class EventScopeRegistry
         [typeof(TaskSessionCapOverridden)] = EventScope.ProjectScoped,
         [typeof(TaskUnassigned)] = EventScope.ProjectScoped,
         [typeof(TrackerAssignmentObserved)] = EventScope.ProjectScoped,
+        [typeof(TrackerAssignmentReassigned)] = EventScope.ProjectScoped,
         [typeof(TrackerAssignmentWritten)] = EventScope.ProjectScoped,
         [typeof(WorkItemLinked)] = EventScope.ProjectScoped,
         [typeof(WorkItemPublicationCompleted)] = EventScope.ProjectScoped,

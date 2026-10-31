@@ -213,6 +213,7 @@ public static class TaskActClassificationRegistry
         [typeof(TaskUnassigned)] = TaskActClassification.Conditional,
 
         [typeof(TrackerAssignmentObserved)] = TaskActClassification.MemberSafe,
+        [typeof(TrackerAssignmentReassigned)] = TaskActClassification.MemberSafe,
         [typeof(TrackerAssignmentWritten)] = TaskActClassification.MemberSafe,
         [typeof(WorkItemLinked)] = TaskActClassification.MemberSafe,
         [typeof(WorkItemPublicationCompleted)] = TaskActClassification.MemberSafe,
