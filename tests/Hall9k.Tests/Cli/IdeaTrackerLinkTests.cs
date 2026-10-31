@@ -213,6 +213,7 @@ public sealed class IdeaTrackerLinkTests
 
         context.Should().StartWith("Imported from linear:ENG-123.");
         context.Should().Contain("Discovery workspace");
+        context.Should().Contain(LinkedIdeaCut.WorkspaceNameNotice, "the slug of the item's title in the path sits outside the fence");
         context.Should().Contain("Mind the cache layer.");
         context.Should().Contain(WorkItemContext.Compose(fresh).Split("\n\n")[^1], "the quote is the fresh read's, fenced");
         WorkItemContext.CarriesQuotedDescription(context).Should().BeTrue();
@@ -242,7 +243,7 @@ public sealed class IdeaTrackerLinkTests
         string plain = LinkedIdeaCut.ComposeContext(
             idea, new LinkedIdeaCut.Resolution(null, null), "ctx", BacklogPolicy.None);
 
-        plain.Should().Contain("ctx").And.Contain("Discovery workspace");
+        plain.Should().Contain("ctx").And.Contain("Discovery workspace").And.Contain(LinkedIdeaCut.WorkspaceNameNotice);
         WorkItemContext.CarriesQuotedDescription(plain).Should().BeFalse();
         plain.Should().NotContain("Add rate limiting", "the seed note is the item author's text and has no fence here");
         plain.Should().Contain("tracker-item.md").And.Contain("linear:ENG-123").And.Contain("source material")

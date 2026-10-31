@@ -479,6 +479,21 @@ public sealed class IdeaTrackerLinkCommandTests : IClassFixture<PostgresFixture>
     }
 
     [Fact]
+    public async Task A_sibling_is_found_under_the_reference_the_read_returned_when_the_source_reports_no_former_references()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid ideaId = await CaptureAsync(LinearProvider(Linear(WorkItemStatus.Open)), _linear, null, cts.Token);
+        Guid siblingId = await StartSiblingAsync(
+            ideaId, new ExternalReference(WorkItemProvider.Linear, "PLAT-7"), cts.Token);
+        FakeProvider moved = LinearProvider(Linear(WorkItemStatus.Open, "PLAT-7"));
+
+        LinkedIdeaCut.Resolution cut = await CutAsync(ideaId, () => new WorkItemImporter(moved), false, cts.Token);
+
+        cut.Item.Should().BeNull("the item moved and the old identifier still resolves, as with a Jira card, so the read lists no former one");
+        cut.Sibling!.Id.Should().Be(siblingId);
+    }
+
+    [Fact]
     public async Task A_cut_task_holding_an_unrelated_item_is_not_the_sibling_so_the_item_is_adopted()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
