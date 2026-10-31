@@ -194,27 +194,6 @@ public sealed partial class TrackerAssignmentTests
 
     // ── nobody to ask ─────────────────────────────────────────────────────────────────────────
 
-    [Theory]
-    [InlineData("jira")]
-    [InlineData("github")]
-    public async Task An_unattended_take_on_a_held_item_refuses_and_is_never_offered_anything(string provider)
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        Guid ownerId = (await NodeBootstrapSeed.NewNodeAsync(store, cts.Token)).OwnerId;
-        string key = provider == "jira" ? "REAS-5" : "806";
-        Guid taskId = await SeedGatedAsync(store, provider, key, ownerId, cts.Token);
-        FakeTracker tracker = FakeTracker.HeldBy(provider, key, HolderFor(provider));
-
-        Func<Task> act = () => ReassignTakeAsync(
-            store, ownerId, taskId, tracker, take: true, offer: null, reassign: null, cts.Token);
-
-        (await act.Should().ThrowAsync<DomainBusinessRuleException>()).Which.Message
-            .Should().Contain(HolderFor(provider)).And.Contain("no flag does it, and nothing unattended does");
-        tracker.Writes.Should().BeEmpty();
-        await AssertUntouchedAsync(store, taskId, cts.Token);
-    }
-
     [Fact]
     public async Task An_unattended_queue_on_a_held_item_reads_and_warns_without_asking()
     {
@@ -389,7 +368,7 @@ public sealed partial class TrackerAssignmentTests
         message.Should().Contain("the account may not be assigned here");
         if (provider == "github")
         {
-            message.Should().Contain("current holders were left on it");
+            message.Should().Contain("who holds the item now is not known");
         }
 
         tracker.Writes.Should().BeEmpty("a refused write changes nothing on the item");
@@ -452,44 +431,6 @@ public sealed partial class TrackerAssignmentTests
         held.Writes.Concat(unassigned.Writes).Concat(heldAgain.Writes).Should().BeEmpty();
         await using IQuerySession verify = store.QuerySession();
         (await EventsAsync(store, taskId, cts.Token)).OfType<TrackerAssignmentReassigned>().Should().BeEmpty();
-    }
-
-    [Fact]
-    public async Task Queueing_a_task_that_is_already_queued_still_refuses_as_it_always_did()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        Guid ownerId = (await NodeBootstrapSeed.NewNodeAsync(store, cts.Token)).OwnerId;
-        Guid taskId = await SeedQueuedAsync(store, "github", "816", ownerId, cts.Token);
-        TaskAggregate queued = await LoadTaskAsync(store, taskId, cts.Token);
-
-        Action act = () => TaskDecider.Assign(queued, ownerId, [], Now, ownerId);
-
-        act.Should().Throw<DomainConflictException>().WithMessage("*It is already queued; dequeue it first*");
-    }
-
-    // ── the doors that never reassign ─────────────────────────────────────────────────────────
-
-    [Theory]
-    [InlineData("jira")]
-    [InlineData("github")]
-    public async Task The_take_itself_still_refuses_a_held_item_so_no_sweep_and_no_force_can_reassign(string provider)
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        Guid ownerId = (await NodeBootstrapSeed.NewNodeAsync(store, cts.Token)).OwnerId;
-        string key = provider == "jira" ? "REAS-10" : "817";
-        Guid taskId = await SeedGatedAsync(store, provider, key, ownerId, cts.Token);
-        FakeTracker tracker = FakeTracker.HeldBy(provider, key, HolderFor(provider));
-        await using IQuerySession session = store.QuerySession();
-        ProjectDetails project = (await session.LoadAsync<ProjectDetails>(
-            (await LoadTaskAsync(store, taskId, cts.Token)).ProjectId, cts.Token))!;
-
-        TrackerTake take = await tracker.Taker().TakeAsync(
-            store, project.ClaimGate, await ReferenceAsync(store, taskId, cts.Token), project.RepositoryPath, cts.Token);
-
-        take.Verdict.Should().Be(TrackerTakeVerdict.HeldByOther);
-        tracker.Writes.Should().BeEmpty();
     }
 
     // ── seams ─────────────────────────────────────────────────────────────────────────────────

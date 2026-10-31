@@ -468,8 +468,8 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         CancellationToken cancellationToken)
     {
         // A take has already had the whole conversation with the tracker, so nothing else here
-        // speaks. Its line is checked rather than assumed non-empty: only Taken and AlreadyMine
-        // have a sentence, and a take that passed with neither — NotGated, which cannot reach here
+        // speaks. Its line is checked rather than assumed non-empty: only Taken, Reassigned and
+        // AlreadyMine have a sentence, and a take that passed with none — NotGated, which cannot reach here
         // through this door — must not print a bare green blank line if it ever does
         // (self-review, this session).
         if (take is { } taken)

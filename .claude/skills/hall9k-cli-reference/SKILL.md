@@ -1570,8 +1570,8 @@ item back, records `TrackerAssignmentWritten` from that read-back, and queues â€
 passes on its own instead of the task sitting in the queue waiting for a second act. It only ever
 moves an item from unassigned to this install: one somebody else holds is refused with exit 70
 naming the holder, nothing is written, and the task is left exactly as it was, unless an operator
-at a terminal confirms a reassignment. **No flag takes an item from another person, and nothing
-unattended does; an interactive confirm at `h9k task queue` or `h9k task assign --take` can.** At a
+at a terminal confirms a reassignment. **Only an interactive confirm at `h9k task queue` or
+`h9k task assign --take` takes an item from another person, and nothing unattended does.** At a
 terminal (stdin, stdout and stderr all terminals, and none of `HALL9K_DISPATCHED_RUN_ID`,
 `HALL9K_DETACHED_SESSION` or `CLAUDE_PID` set) those doors name every holder as the tracker shows
 them and ask, defaulting to no; a no refuses (`--take`) or warns and queues (plain queue) as before,

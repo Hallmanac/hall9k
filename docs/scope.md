@@ -966,7 +966,7 @@ one somebody else holds is refused (exit 70) naming the holder with nothing writ
 untouched, unless an operator at a terminal confirms a reassignment (`h9k task queue`, with or
 without `--take`, or `h9k task assign --take`, asks and defaults to no; a task already queued for
 you reaches the same offer through `h9k task queue <id>`). That interactive confirm is the only way
-an item leaves another person: no flag does it, and nothing unattended does, which includes a
+an item leaves another person, and nothing unattended does, which includes a
 dispatched session, an orchestrator, the dispatcher's sweeps and `h9k task take --force`. A yes
 reads the item again, writes only over the holders the operator was shown, reads it back, and
 records `TrackerAssignmentReassigned` (project-scoped, so the replaced people's names reach every
