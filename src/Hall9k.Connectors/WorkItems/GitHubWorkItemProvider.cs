@@ -481,7 +481,8 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
     /// <para>
     /// Whether taking it is <em>allowed</em> is checked by the caller and not here: this method
     /// writes what it is told to write, and <see cref="TrackerAssignmentTake"/> is the one place
-    /// that refuses to take an item somebody else holds. What comes back is a sentence rather than
+    /// that decides whether to take an item somebody else holds, which <c>TakeAsync</c> never does and
+    /// <c>ReassignAsync</c> does only after a human confirmed it. What comes back is a sentence rather than
     /// an exception, for the reason <see cref="ReadAssigneesAsync"/>'s own doc gives — a take has
     /// several outcomes and a caller composing one refusal out of them needs the tracker's words,
     /// not a stack unwind.
@@ -546,6 +547,62 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
                 + "of an organisation team with access to it — so check that the account 'gh auth status' "
                 + "reports is one, and ask whoever owns the repository if it is not.");
     }
+
+    /// <summary>
+    /// Put one login on an issue and take every named holder off it in a single call: the write
+    /// behind a confirmed reassignment (<see cref="TrackerAssignmentTake.ReassignAsync"/>). One
+    /// <c>gh issue edit</c> carries <c>--add-assignee</c> and a <c>--remove-assignee</c> for each
+    /// holder, and gh computes the final set and sends one update, so the write either lands whole or
+    /// not at all: a refusal leaves the holders where they were, which two calls (remove, then add)
+    /// could not promise. Writes what it is told to write; whether it is warranted is the caller's.
+    /// </summary>
+    public async Task<TrackerAssignmentWrite> ReplaceAssigneesAsync(
+        ExternalReference reference,
+        string login,
+        IReadOnlyList<string> holders,
+        string workingDirectory,
+        CancellationToken cancellationToken)
+    {
+        if (!TryParseCanonical(reference.Reference, out string repository, out int number))
+        {
+            return TrackerAssignmentWrite.Refused(
+                $"'{RelayedText.OneLine(reference.ToString())}' does not read as a github owner/repo#number "
+                + "reference, so there is no issue whose assignee could be written.");
+        }
+
+        ProcessResult result;
+        try
+        {
+            result = await RunGhAsync(
+                ReplaceAssigneesArguments(repository, number, login, holders),
+                workingDirectory, cancellationToken,
+                onStoppedAnswering: exception =>
+                    GhStoppedAnsweringOnAssign(exception, workingDirectory, repository, number, login));
+        }
+        catch (DomainException exception)
+        {
+            return TrackerAssignmentWrite.Refused(exception.Message);
+        }
+
+        return result.ExitCode == 0
+            ? TrackerAssignmentWrite.Wrote()
+            : TrackerAssignmentWrite.Refused(
+                $"gh could not reassign {Item(repository, number)} to {RelayedText.OneLine(login)}, and the "
+                + $"current holders were left on it. gh reported: "
+                + $"{RelayedText.Truncate(RelayedText.OneLine(result.StandardError).Trim(), 400)}. GitHub only "
+                + "accepts an assignee who can be assigned on that repository, a collaborator or a member "
+                + "of an organisation team with access to it, so check that the account 'gh auth status' "
+                + "reports is one, and ask whoever owns the repository if it is not.");
+    }
+
+    /// <summary>The single <c>gh issue edit</c> argument list of <see cref="ReplaceAssigneesAsync"/>, kept separate so a test can pin exactly what leaves the process.</summary>
+    internal static IReadOnlyList<string> ReplaceAssigneesArguments(
+        string repository, int number, string login, IReadOnlyList<string> holders) =>
+    [
+        "issue", "edit", number.ToString(CultureInfo.InvariantCulture),
+        "--repo", repository, "--add-assignee", login,
+        .. holders.SelectMany(holder => new[] { "--remove-assignee", holder }),
+    ];
 
     /// <summary>
     /// The assign-flavoured sibling of <see cref="GhStoppedAnswering"/>: an assignment is a write,

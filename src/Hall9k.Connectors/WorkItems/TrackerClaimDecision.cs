@@ -67,6 +67,35 @@ public sealed record TrackerClaimDecision(
     DateTimeOffset ObservedAt,
     TrackerAssignee? Assignee = null)
 {
+    /// <summary>
+    /// Every person the tracker showed holding the item, as it spelt them, on a
+    /// <see cref="TrackerClaimVerdict.HeldByOther"/> read; empty on every other verdict and on a
+    /// decision rebuilt from a published hold, which carries only the rendered <see cref="Holder"/>.
+    /// A reassignment is offered and later checked against this list, never against that string.
+    /// </summary>
+    public IReadOnlyList<TrackerAssignee> Holders { get; init; } = [];
+
+    /// <summary>How the provider that produced <see cref="Holders"/> compares one identity with another, so a later read is matched the way the gate itself matched.</summary>
+    public StringComparison HolderComparison { get; init; } = StringComparison.Ordinal;
+
+    /// <summary>
+    /// A sentence a door adds to a held item's refusal when it knows something the read does not: the
+    /// ledger says another node holds this task, so no reassignment is offered here. Null otherwise.
+    /// </summary>
+    public string? HeldElsewhere { get; init; }
+
+    /// <summary>
+    /// Whether <paramref name="expected"/> are exactly the people this read shows holding the item,
+    /// matched by identity with the comparison the provider itself uses and never by the name a
+    /// person is rendered with. A reassignment writes only over holders the operator was shown.
+    /// </summary>
+    public bool HoldersAre(IReadOnlyList<TrackerAssignee> expected) =>
+        Verdict == TrackerClaimVerdict.HeldByOther
+        && expected.Count > 0
+        && Holders.Count == expected.Count
+        && expected.All(shown => Holders.Any(holder =>
+            string.Equals(holder.Identity, shown.Identity, HolderComparison)));
+
     /// <summary>Nothing was checked, because nothing needed checking — the gate is off, or the task carries no gated item.</summary>
     public static TrackerClaimDecision NotGated { get; } = new(
         TrackerClaimVerdict.NotGated, string.Empty, string.Empty, null, null, null, null, false, null,
@@ -115,8 +144,9 @@ public sealed record TrackerClaimDecision(
         TrackerClaimVerdict.HeldByOther =>
             $"{Tracker} shows {Item} assigned to {Holder}, not to this install{IdentityClause}. This "
             + "project's claim gate is tracker-assignee, so the tracker's own assignment is the one act "
-            + "that hands out work here — nothing on this install claims the task while somebody else "
-            + $"holds the item. {Lever}",
+            + "that hands out work here, and nothing unattended claims the task while somebody else "
+            + "holds the item. h9k task queue, run at a terminal, offers to reassign the item to you "
+            + $"and asks first.{HeldElsewhereClause} {Lever}",
         TrackerClaimVerdict.Unassigned =>
             $"{Tracker} shows {Item} assigned to nobody. This project's claim gate is tracker-assignee, "
             + "so the tracker's own assignment is the one act that hands out work here — nothing on this "
@@ -137,7 +167,8 @@ public sealed record TrackerClaimDecision(
     public string ReasonLine => Verdict switch
     {
         TrackerClaimVerdict.HeldByOther =>
-            $"waiting for {Tracker} to show {Item} assigned to you — {Holder} holds it",
+            $"waiting for {Tracker} to show {Item} assigned to you — {Holder} holds it; h9k task queue "
+            + "at a terminal offers to reassign it to you",
         TrackerClaimVerdict.Unassigned =>
             $"waiting for {Tracker} to show {Item} assigned to you — nobody holds it",
         TrackerClaimVerdict.Unreadable =>
@@ -155,6 +186,9 @@ public sealed record TrackerClaimDecision(
     /// </summary>
     internal string IdentityClause =>
         Identity is { Length: > 0 } identity ? $" ({TrackerAssignee.Rendered(identity)})" : string.Empty;
+
+    /// <summary>The door's own sentence about a held item, with the space that separates it from the one before it; empty when there is none.</summary>
+    internal string HeldElsewhereClause => HeldElsewhere is { Length: > 0 } clause ? $" {clause}" : string.Empty;
 
     /// <summary>This check as the measurement the daemon publishes for the CLI surfaces to read.</summary>
     public TrackerClaimHold ToHold(Guid taskId, Guid nodeId, string machineName) => new()

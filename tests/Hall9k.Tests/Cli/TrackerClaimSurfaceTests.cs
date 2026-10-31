@@ -30,7 +30,8 @@ public sealed class TrackerClaimSurfaceTests
         decision.Passes.Should().BeFalse();
         decision.Holds.Should().BeTrue();
         decision.ReasonLine.Should().Be(
-            "waiting for Jira to show PROJ-14 assigned to you — Jane Doe holds it");
+            "waiting for Jira to show PROJ-14 assigned to you — Jane Doe holds it; "
+            + "h9k task queue at a terminal offers to reassign it to you");
         decision.RefusalLine.Should()
             .Contain("Jira shows PROJ-14 assigned to Jane Doe")
             .And.Contain("(5b10)", "the identity compared against is stated, since it is not a name anyone typed")
@@ -222,7 +223,8 @@ public sealed class TrackerClaimSurfaceTests
 
         held.WaitingForTracker.Should().BeTrue();
         held.Facts.Should().HaveCount(2);
-        held.Facts[1].Should().Be("waiting for Jira to show PROJ-14 assigned to you — Jane Doe holds it");
+        held.Facts[1].Should().Be("waiting for Jira to show PROJ-14 assigned to you — Jane Doe holds it; "
+            + "h9k task queue at a terminal offers to reassign it to you");
     }
 
     /// <summary>

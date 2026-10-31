@@ -30,12 +30,13 @@ namespace Hall9k.Connectors.WorkItems;
 /// content snapshot an adoption took is untouched (Decisions Log #60).
 /// </para>
 /// <para>
-/// The one write this feature does make — <c>h9k task queue --take</c>, which puts this install's
-/// own identity in an <em>unassigned</em> item's assignee field so the gate then passes on its own
-/// (Decisions Log #143) — lives in <see cref="TrackerAssignmentTake"/> and calls this class for its
-/// read. That separation is load-bearing rather than tidiness: the dispatcher calls the method
-/// below on a cadence with nobody watching, so a gate that could write would mean an unattended
-/// sweep assigning cards. Add a tracker, or a door, and the read belongs here; a write never does.
+/// The writes this feature makes live in <see cref="TrackerAssignmentTake"/> and call this class for
+/// their read: <c>h9k task queue --take</c>, which puts this install's own identity in an
+/// <em>unassigned</em> item's assignee field so the gate then passes on its own (Decisions Log #143),
+/// and the reassignment an operator at a terminal confirms over an item somebody else holds. That
+/// separation is load-bearing rather than tidiness: the dispatcher calls the method below on a
+/// cadence with nobody watching, so a gate that could write would mean an unattended sweep
+/// assigning cards. Add a tracker, or a door, and the read belongs here; a write never does.
 /// </para>
 /// <para>
 /// <b>Fails closed.</b> A tracker that cannot be read holds the claim rather than releasing it: a
@@ -370,7 +371,11 @@ public sealed class TrackerClaimGate(
             null,
             false,
             AssignYourself(itemKey, itemUrl),
-            observedAt);
+            observedAt)
+        {
+            Holders = read.Assignees,
+            HolderComparison = read.IdentityComparison,
+        };
     }
 
     private static TrackerClaimDecision Unreadable(
