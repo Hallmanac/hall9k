@@ -460,6 +460,13 @@ public sealed class TaskDetails
     public string? TakenOverByOwnerRootFingerprint { get; set; }
     /// <summary>See <see cref="TaskAggregate.TakenOverAt"/>'s own doc.</summary>
     public DateTimeOffset? TakenOverAt { get; set; }
+    /// <summary>
+    /// Every time an operator at a terminal confirmed taking the linked tracker item from the people
+    /// who held it, oldest first (<see cref="TrackerAssignmentReassigned"/>), for <c>h9k task show</c>
+    /// to name who was replaced. The names are the tracker's own words and are relayed text wherever
+    /// they are printed.
+    /// </summary>
+    public List<TrackerAssignmentReassigned> TrackerReassignments { get; set; } = [];
     /// <summary>See <see cref="TaskAggregate.PendingTakeRequestedByNodeId"/>'s own doc — mirrored for <c>h9k task show</c> and <c>h9k status</c> (idea 202383dc, item 5).</summary>
     public Guid? PendingTakeRequestedByNodeId { get; set; }
     /// <summary>See <see cref="TaskAggregate.PendingTakeRequestedByOwnerId"/>'s own doc.</summary>
@@ -1202,6 +1209,10 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.HandoffNoteReceivedFromNodeId = ReplicatedSender.Of(@event);
         view.HandoffNoteOriginNodeId = ReplicatedSender.OriginOf(@event);
     }
+
+    /// <summary>Appends to <see cref="TaskDetails.TrackerReassignments"/>; the task aggregate itself has nothing to change, since no rule reads a tracker reassignment.</summary>
+    public void Apply(IEvent<TrackerAssignmentReassigned> @event, TaskDetails view) =>
+        view.TrackerReassignments.Add(@event.Data);
 
     /// <summary>Mirrors <see cref="TaskAggregate.Apply(Events.TaskHolderTakenOver)"/> — see <see cref="TaskDetails.TakenOverFromNodeId"/>'s own doc.</summary>
     public void Apply(IEvent<TaskHolderTakenOver> @event, TaskDetails view)
