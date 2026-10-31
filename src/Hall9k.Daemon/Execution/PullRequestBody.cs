@@ -34,17 +34,22 @@ internal static class PullRequestBody
     /// bidirectional controls is a list that drifts out of agreement with the first.
     /// </para>
     /// <para>
-    /// A Jira key the task carries is forced onto the front of whichever title wins, once
-    /// (<see cref="WithExternalKey"/>). The daemon knows the key with certainty, every repo rule
+    /// A Jira key or a Linear identifier the task carries is forced onto the front of whichever
+    /// title wins, once (<see cref="WithExternalKey"/>). The daemon knows the key with certainty, every repo rule
     /// that says anything about a title says the key belongs in it, and an agent that forgot it is
     /// cheaper to correct here than to catch on review. A GitHub issue number is never prefixed:
     /// the body's work-item line already cross-references it, and a bare <c>#42</c> in a squash
     /// subject is an issue link the platform never meant to make.
     /// </para>
     /// </summary>
-    public static string Title(TaskDetails task, PrSummaryParser.PrSummary? prSummary)
+    public static string Title(TaskDetails task, PrSummaryParser.PrSummary? prSummary, LinearTextScope? linear = null)
     {
-        string? key = JiraKey(task.ExternalReference);
+        string? key = ExternalKey(task.ExternalReference);
+        if (linear is not null)
+        {
+            return LinearTitle(task, prSummary, key, linear);
+        }
+
         string? authored = prSummary?.Title is { } written && OneLine(written) is { Length: > 0 } folded
             ? folded
             : null;
@@ -56,6 +61,49 @@ internal static class PullRequestBody
             ? CutAtWordBoundary(WithExternalKey(authored, key), MaxTitleLength)
             : CutAtWordBoundary(WithExternalKey(OneLine(task.Objective), key), SubjectTitleLength);
     }
+
+    /// <summary>
+    /// The title on a Linear-tracked project: the same choice and the same bounds, with the Linear
+    /// guard in the one place that works. In order: fold to a printable line, drop every identifier
+    /// of another issue (a bare identifier in a title links the pull request with no magic word),
+    /// insert the neutral word where a linking word would still reach one, run GitHub's closing-keyword
+    /// rule, place the task's key, cut. The drop comes before the key because dropping after it
+    /// would double a key, and before the GitHub rule because <c>Fixes DES-5 #12</c> only reads as a
+    /// live <c>Fixes #12</c> once the identifier between them is gone.
+    /// <para>
+    /// A title left with no words after the drop is not a title: an authored one falls back to the
+    /// objective, as a blank one does, and an objective left with no words is the task's own
+    /// identifier alone, or <c>Untitled change</c> on a task with none.
+    /// </para>
+    /// </summary>
+    private static string LinearTitle(
+        TaskDetails task, PrSummaryParser.PrSummary? prSummary, string? key, LinearTextScope linear)
+    {
+        string? authored = prSummary?.Title is { } written && LinearOneLine(written, linear) is { } folded && HasWords(folded)
+            ? folded
+            : null;
+        if (authored is not null)
+        {
+            return CutAtWordBoundary(WithExternalKey(authored, key), MaxTitleLength);
+        }
+
+        string objective = LinearOneLine(task.Objective, linear);
+        return HasWords(objective)
+            ? CutAtWordBoundary(WithExternalKey(objective, key), SubjectTitleLength)
+            : key ?? "Untitled change";
+    }
+
+    private static string LinearOneLine(string text, LinearTextScope linear)
+    {
+        string folded = RelayedText.OneLine(text).Trim();
+        string dropped = linear.TeamKeys is { } teamKeys
+            ? RelayedText.WithoutOtherLinearIdentifiers(folded, linear.OwnIdentifier, teamKeys)
+            : folded;
+        return WithoutClosingKeywords(
+            RelayedText.WithoutLinearMagicWords(dropped, linear.OwnIdentifier, linear.TeamKeys));
+    }
+
+    private static bool HasWords(string text) => text.Any(char.IsLetterOrDigit);
 
     /// <summary>
     /// How long a fallback title is allowed to be. 72 because the title is a squash-merge commit
@@ -100,11 +148,13 @@ internal static class PullRequestBody
         && (title.Length == key.Length || !char.IsLetterOrDigit(title[key.Length]));
 
     /// <summary>
-    /// The Jira key this task's reference carries, or null for every other kind of reference and
-    /// for no reference at all. <see cref="ExternalReference.Key"/> answers for both providers;
-    /// only Jira's answer is a token people say out loud and put at the front of a title.
+    /// The key this task's reference carries that belongs on the front of a title: a Jira key or a
+    /// Linear identifier, null for every other kind of reference and for no reference at all.
+    /// <see cref="ExternalReference.Key"/> answers for every provider; only these two are tokens
+    /// people say out loud and put at the front of a title, and for a Linear issue the identifier
+    /// is also what links the pull request to it.
     /// </summary>
-    private static string? JiraKey(string? externalReference)
+    private static string? ExternalKey(string? externalReference)
     {
         if (externalReference.IsBlank())
         {
@@ -112,7 +162,10 @@ internal static class PullRequestBody
         }
 
         ExternalReference reference = ExternalReference.Parse(externalReference);
-        return reference.Provider == WorkItemProvider.Jira && reference.Key.IsNotBlank() ? reference.Key : null;
+        return (reference.Provider == WorkItemProvider.Jira || reference.Provider == WorkItemProvider.Linear)
+            && reference.Key.IsNotBlank()
+                ? reference.Key
+                : null;
     }
 
     /// <summary>
@@ -265,7 +318,19 @@ internal static class PullRequestBody
     /// </summary>
     public static string Build(
         RunDetails run, TaskDetails task, string? agentSummary, Uri? sourceUrl,
-        PrSummaryParser.PrSummary? prSummary = null)
+        PrSummaryParser.PrSummary? prSummary = null, LinearTextScope? linear = null)
+    {
+        string composed = Compose(task, agentSummary, sourceUrl, prSummary);
+
+        // After composition, not inside it: the bound on the authored body is measured before
+        // defusal on purpose (BoundedBlock), and the neutral word this inserts would move it.
+        return linear is null
+            ? composed
+            : RelayedText.WithoutLinearMagicWords(composed, linear.OwnIdentifier, linear.TeamKeys);
+    }
+
+    private static string Compose(
+        TaskDetails task, string? agentSummary, Uri? sourceUrl, PrSummaryParser.PrSummary? prSummary)
     {
         // Blankness is judged AFTER the work-item line is stripped, not before: a session whose
         // whole body was the one line the platform writes for it has, in fact, composed nothing,
