@@ -30,6 +30,8 @@ public sealed class RelayedTextLinearTests
     [InlineData("closes DES-5 DES-6", null, "closes ticket DES-5 DES-6")]
     [InlineData("Resolves:DES-5", null, "Resolves:ticket DES-5")]
     [InlineData("Fixes \t : \t DES-5", null, "Fixes \t : \t ticket DES-5")]
+    [InlineData("Fixes\u00A0DES-5", null, "Fixes\u00A0ticket DES-5")]
+    [InlineData("Fixes ENG-123,\u2003DES-5", "ENG-123", "Fixes ENG-123,\u2003ticket DES-5")]
     public void A_linking_word_directly_before_another_issue_gets_the_neutral_word(
         string text, string? own, string expected) =>
         Guard(text, own).Should().Be(expected);

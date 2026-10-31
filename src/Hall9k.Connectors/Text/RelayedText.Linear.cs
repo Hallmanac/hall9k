@@ -33,9 +33,9 @@ public static partial class RelayedText
     private static readonly Regex MarkdownLinkAt = new(
         @"\G\[(?<text>[^\]\n]*)\]\((?<destination>[^)\n]*)\)", RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
-    /// <summary>What may join the targets of one run: commas, spaces, tabs, <c>&amp;</c>, and the word <c>and</c>.</summary>
+    /// <summary>What may join the targets of one run: commas, whitespace on the line, <c>&amp;</c>, and the word <c>and</c>.</summary>
     private static readonly Regex RunSeparator = new(
-        @"\G(?:[ \t,&]|(?<![A-Za-z0-9_])and(?![A-Za-z0-9_]))+",
+        @"\G(?:" + LinearMagicWords.LineSpace + @"|[,&]|(?<![A-Za-z0-9_])and(?![A-Za-z0-9_]))+",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     /// <summary>The form that asks Linear to create an issue in a team, matched in upper case only.</summary>
@@ -78,7 +78,7 @@ public static partial class RelayedText
     /// run that follows a linking word and names an identifier it must not reach, and every
     /// <c>{TEAM}-NEW</c> token losing its hyphen so it cannot create an issue.
     /// <para>
-    /// A linking word counts, in any case, when only spaces, tabs, or colons separate it on the same
+    /// A linking word counts, in any case, when only whitespace or colons separate it on the same
     /// line from a run of targets. A target is an identifier, a Linear issue URL with or without its
     /// slug, or a markdown link to either, and a run is one target or several joined by commas,
     /// whitespace, <c>and</c>, or <c>&amp;</c>. When any target in the run is another issue's, the
