@@ -35,7 +35,3 @@ context: |-
   Stacked on A (e76868de): use A's provider, connection finder, and recorded-response client as A built them; this card pins behavior, not a client type. The client must be reachable through both TrackerAssignmentTake constructors, including the two-argument one DispatchEngine uses, or a mirror test cannot use a recorded double. Read the viewer id from where A records it (the Jira path uses ConnectionTrackerIdentityObserved and ConnectionDetails.TrackerAccountId).
 
   Linear facts this card rests on. Stated by Linear: the assignee is a single nullable user on Issue; issueUpdate takes the identifier; a limited request answers 429 with RATELIMITED; errors arrive in an errors array, possibly on a 200. Not stated by Linear, so do not assert them in comments or sentences: that assigneeId null unassigns (the schema says null clears "where supported", and a third-party CLI reports it works); which status a rejected key gets; how not-found is reported; and whether a plain assignment or unassignment ever moves workflow state (the docs are silent, and documented automations run from state to assignee). Fixtures for those cases are assumptions, so the code classifies by the rule in the criteria rather than by one invented code.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-10-31 00:58:09Z
