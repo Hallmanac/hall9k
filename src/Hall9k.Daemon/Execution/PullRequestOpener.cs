@@ -1,8 +1,10 @@
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.ValueObjects;
 using System.Diagnostics;
 using System.Text.Json;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon.Closeout;
@@ -35,7 +37,8 @@ public sealed class PullRequestOpener(
     IDocumentStore store,
     ILogger<PullRequestOpener> logger,
     IPullRequestInspector? inspector = null,
-    ProcessRunner? processRunner = null)
+    ProcessRunner? processRunner = null,
+    LinearRequester? linearRequester = null)
 {
     private readonly ProcessRunner processRunner = processRunner ?? ExternalProcess.Runner;
 
@@ -166,8 +169,7 @@ public sealed class PullRequestOpener(
                 : adopted is { } found
                     ? (found.Url, found.Number)
                     : openBase is not null
-                        ? await CreatePullRequestAsync(
-                            run, task, openBase, project.RepositoryPath, project.WritingConventions, cancellationToken)
+                        ? await CreatePullRequestAsync(run, task, openBase, project, cancellationToken)
                         : (null, 0);
 
             // The run's own already-recorded fact stands when this open resolves no fresh base of
@@ -424,6 +426,50 @@ public sealed class PullRequestOpener(
                 task.ExternalReference);
             return null;
         }
+    }
+
+    /// <summary>
+    /// What the Linear guard needs for this task's pull request text, or null when the pull request
+    /// is not a Linear one and so is composed exactly as it always was, with no Linear call. A pull
+    /// request is a Linear one when its project has a Linear team bound
+    /// (<see cref="ProjectTracker.IsLinear"/>, the one predicate for that) or the task's own reference
+    /// is a Linear issue, which a project since moved off Linear can still carry.
+    /// <para>
+    /// Only the delegate to read the team keys is made here, not the read: the composer runs it when
+    /// the text holds a key-shaped token other than the task's own, so a pull request that names
+    /// only its own issue makes no call. Like <see cref="SourceUrlAsync"/>, a failure costs the
+    /// guard's precision and never the pull request.
+    /// </para>
+    /// </summary>
+    internal static LinearTextScopeSource? LinearTextFor(
+        TaskDetails task, Domain.Features.Project.Projections.ProjectDetails project,
+        Func<CancellationToken, Task<IReadOnlySet<string>?>> readTeamKeysAsync)
+    {
+        ExternalReference reference = ExternalReference.Parse(task.ExternalReference);
+        bool linearReference = reference.Provider == WorkItemProvider.Linear;
+        if (!linearReference && !ProjectTracker.IsLinear(project.LinearTeam))
+        {
+            return null;
+        }
+
+        string? own = linearReference && LinearIssueIdentifier.TryParseBare(reference.Reference, out LinearIssueIdentifier identifier)
+            ? identifier.Value
+            : null;
+        return new LinearTextScopeSource(own, readTeamKeysAsync);
+    }
+
+    internal async Task<IReadOnlySet<string>?> ReadLinearTeamKeysAsync(CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlySet<string>? keys = await LinearTeamKeys.TryReadAsync(query, cancellationToken, linearRequester);
+        if (keys is null)
+        {
+            logger.LogWarning(
+                "Could not read Linear's team keys; the pull request text is guarded by shape and a title "
+                + "naming another Linear issue is left as written");
+        }
+
+        return keys;
     }
 
     /// <summary>
@@ -691,12 +737,13 @@ public sealed class PullRequestOpener(
     }
 
     private async Task<(string Url, int Number)> CreatePullRequestAsync(
-        RunDetails run, TaskDetails task, string baseBranch, string repositoryPath, WritingConventions conventions,
+        RunDetails run, TaskDetails task, string baseBranch, Domain.Features.Project.Projections.ProjectDetails project,
         CancellationToken cancellationToken)
     {
+        string repositoryPath = project.RepositoryPath;
         IReadOnlyList<string> arguments = await CreateArgumentsAsync(
             logger, run, task, TryReadAgentSummary(run), await SourceUrlAsync(task, cancellationToken), baseBranch,
-            conventions, cancellationToken);
+            project.WritingConventions, LinearTextFor(task, project, ReadLinearTeamKeysAsync), cancellationToken);
         // The project's own repository path, not run.WorktreePath: ProjectScopedGitHubRunner (the
         // daemon's shared ProcessRunner) only pins a gh call to a project's account when the
         // working directory it is given equals that project's registered RepositoryPath exactly —
@@ -746,7 +793,7 @@ public sealed class PullRequestOpener(
     /// </summary>
     internal static async Task<IReadOnlyList<string>> CreateArgumentsAsync(
         ILogger logger, RunDetails run, TaskDetails task, string? agentSummary, Uri? sourceUrl, string baseBranch,
-        WritingConventions conventions, CancellationToken cancellationToken)
+        WritingConventions conventions, LinearTextScopeSource? linear, CancellationToken cancellationToken)
     {
         string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
         // What the build session composed for itself, when it composed one — vetted against the
@@ -764,18 +811,44 @@ public sealed class PullRequestOpener(
                 Vetted(logger, run.Id, read.Body, conventions, "the pull request body") ?? string.Empty);
         string? vettedAgentSummary = Vetted(
             logger, run.Id, agentSummary, conventions, "the session's closing summary");
+        LinearTextScope? scope = await LinearScopeAsync(
+            linear, run, task, vettedAgentSummary, sourceUrl, prSummary, cancellationToken);
         string bodyFile = Path.Combine(runDirectory, "pr-body.md");
         await File.WriteAllTextAsync(
-            bodyFile, PullRequestBody.Build(run, task, vettedAgentSummary, sourceUrl, prSummary), cancellationToken);
+            bodyFile, PullRequestBody.Build(run, task, vettedAgentSummary, sourceUrl, prSummary, scope), cancellationToken);
 
         return
         [
             "pr", "create",
-            "--title", PullRequestBody.Title(task, prSummary),
+            "--title", PullRequestBody.Title(task, prSummary, scope),
             "--body-file", bodyFile,
             "--base", baseBranch,
             "--head", run.Branch,
         ];
+    }
+
+    /// <summary>
+    /// The scope the Linear guard composes with, or null off a Linear project. The team keys are read
+    /// once, and only when the text as it would otherwise go out holds a key-shaped token other than
+    /// the task's own: <c>Fix SHA-256 hashing</c> triggers the read and then stays as written, since
+    /// SHA is no team's key, while a pull request that names only its own issue makes no call at all.
+    /// A failed read leaves null keys, which the guard answers by matching shapes.
+    /// </summary>
+    private static async Task<LinearTextScope?> LinearScopeAsync(
+        LinearTextScopeSource? linear, RunDetails run, TaskDetails task, string? agentSummary, Uri? sourceUrl,
+        PrSummaryParser.PrSummary? prSummary, CancellationToken cancellationToken)
+    {
+        if (linear is null)
+        {
+            return null;
+        }
+
+        string unguarded = PullRequestBody.Title(task, prSummary) + "\n"
+            + PullRequestBody.Build(run, task, agentSummary, sourceUrl, prSummary);
+        IReadOnlySet<string>? keys = RelayedText.HasLinearKeyShape(unguarded, linear.OwnIdentifier)
+            ? await linear.ReadTeamKeysAsync(cancellationToken)
+            : null;
+        return new LinearTextScope(linear.OwnIdentifier, keys);
     }
 
     /// <summary>

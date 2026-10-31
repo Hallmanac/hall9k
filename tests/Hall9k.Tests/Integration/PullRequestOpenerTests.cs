@@ -1262,7 +1262,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
 
         IReadOnlyList<string> arguments = await PullRequestOpener.CreateArgumentsAsync(
             NullLogger.Instance, ComposingRun(runDirectory), ComposingTask(), "run narration", sourceUrl: null,
-            "main", WritingConventions.Default, CancellationToken.None);
+            "main", WritingConventions.Default, linear: null, CancellationToken.None);
 
         arguments.Should().Equal(
             "pr", "create",
@@ -1289,7 +1289,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
 
         IReadOnlyList<string> arguments = await PullRequestOpener.CreateArgumentsAsync(
             NullLogger.Instance, ComposingRun(runDirectory), ComposingTask(), "run narration", sourceUrl: null,
-            "main", WritingConventions.Default, CancellationToken.None);
+            "main", WritingConventions.Default, linear: null, CancellationToken.None);
 
         File.Exists(RunPaths.PrSummaryFile(runDirectory)).Should().BeFalse("no session composed one");
         arguments.Should().ContainInOrder(
