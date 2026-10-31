@@ -2829,13 +2829,13 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// untracked attestation. It is the one place a failed create stays visible once the terminal that
     /// printed its note is closed, and it catches a publish from a node that did not know the policy:
     /// such a task either carries an issue or says it chose not to. Null for every other task, and for
-    /// one whose story has ended: an abandoned task cannot be linked, and a finished one is no longer
-    /// waiting on an issue.
+    /// an abandoned one, which cannot be linked. A Done task still shows the row: a task whose create
+    /// failed can be queued anyway and finish, and the link remedy still works on it.
     /// </summary>
     internal static string? UnlinkedLinearRow(TaskDetails details, ProjectDetails? project) =>
         project?.BacklogPolicy == BacklogPolicy.Linear
         && details.State != TaskState.Draft
-        && !details.State.IsTerminal
+        && details.State != TaskState.Abandoned
         && details.ExternalReference.IsBlank()
         && !details.UntrackedAttested
             ? "[yellow]no Linear issue is linked[/] [dim](the project tracks its backlog in Linear and this task "

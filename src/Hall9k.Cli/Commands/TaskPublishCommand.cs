@@ -200,9 +200,12 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         }
         catch (EventStreamUnexpectedMaxEventIdException)
         {
+            string nothingCreated = project.BacklogPolicy == BacklogPolicy.Linear
+                ? " and nothing was created in Linear"
+                : string.Empty;
             throw new DomainConflictException(
-                $"Task {taskId} changed while it was being published, so nothing was published and nothing was "
-                + "created in Linear. Check h9k task show, and publish again only if it is still a Draft.");
+                $"Task {taskId} changed while it was being published, so nothing was published{nothingCreated}. "
+                + "Check h9k task show, and publish again only if it is still a Draft.");
         }
 
         // The objective is printed whole rather than cut to a column width. This line is the last
@@ -269,6 +272,13 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             // that is a mirror of another install's, writes nothing.
             await WriteRecordAsync(
                 store, taskId, shortId, project, context, criteriaChanged: false, NewLedger(), cancellationToken);
+        }
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            // Ctrl-C landed after the commit. The publish stands and the notes above already said what
+            // it left undone, so the rest of this command's output is skipped and the exit says it was cut short.
+            return ExitCodes.Error;
         }
 
         if (linearTracking is { QueueDeferred: true, Queued: null })
@@ -544,7 +554,7 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             store, taskId, shortId, project, context, criteriaChanged: false, NewLedger(), cancellationToken);
     }
 
-    private static ILedger NewLedger() => new GitLedger(new ConsoleWorktreeLogger<GitLedger>());
+    internal static ILedger NewLedger() => new GitLedger(new ConsoleWorktreeLogger<GitLedger>());
 
     /// <summary>
     /// Write the task's record into the ledger, so every node that shares this project can adopt

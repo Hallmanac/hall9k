@@ -92,6 +92,19 @@ public sealed partial class TaskRecordIntegrationTests
                 ? new LinearResponse(status, body)
                 : new LinearResponse(200, Issue(identifier)));
 
+        /// <summary>The first call of <paramref name="kind"/> cancels <paramref name="source"/> and throws, as Ctrl-C during the wait does.</summary>
+        public static RecordedLinear CancellingAt(string kind, CancellationTokenSource source) =>
+            new((asked, identifier) =>
+            {
+                if (asked == kind)
+                {
+                    source.Cancel();
+                    throw new OperationCanceledException(source.Token);
+                }
+
+                return new LinearResponse(200, asked == "create" ? Created(identifier) : Issue(identifier));
+            });
+
         /// <summary>The create succeeds and the read-back is answered with <paramref name="body"/>.</summary>
         public static RecordedLinear CreatingButFailingToReadBack(string body) =>
             new((kind, identifier) => kind == "create"
@@ -169,7 +182,8 @@ public sealed partial class TaskRecordIntegrationTests
             ExternalReference? alreadyLinked = null,
             ExternalReference? heldByAnotherTask = null,
             string? objective = null,
-            string? agentContext = null)
+            string? agentContext = null,
+            CancellationToken? trackWith = null)
     {
         LinearInstall seeded = await SeedLinearAsync(store, cancellationToken);
         if (heldByAnotherTask is not null)
@@ -192,7 +206,7 @@ public sealed partial class TaskRecordIntegrationTests
             store, taskId, task, published, project, seeded.Context,
             published.NoExistingItemAttested ? target : null,
             queue && published.NoExistingItemAttested ? seeded.Owner : null,
-            ledger, cancellationToken);
+            ledger, trackWith ?? cancellationToken);
         return (result, ledger, capture.Text, taskId, seeded);
     }
 
@@ -316,6 +330,48 @@ public sealed partial class TaskRecordIntegrationTests
     }
 
     [Fact]
+    public async Task Ctrl_C_during_the_create_still_reports_the_unknown_outcome_and_writes_the_record()
+    {
+        using ScopedTestHome home = new();
+        WriteLinearKey();
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using CancellationTokenSource ctrlC = new();
+        DocumentStore store = postgres.Store;
+        RecordedLinear linear = RecordedLinear.CancellingAt("create", ctrlC);
+
+        (LinearTrackingResult result, FakeLedger ledger, string output, Guid taskId, _) =
+            await TrackAsync(store, linear, cts.Token, queue: true, trackWith: ctrlC.Token);
+
+        result.Linked.Should().BeFalse();
+        result.Queued.Should().BeNull();
+        output.Should().Contain("may exist").And.Contain("cancelled")
+            .And.Contain($"h9k task link-linear {ShortId(taskId)} <identifier>")
+            .And.Contain($"h9k task queue {ShortId(taskId)}");
+        RecordIn(ledger, taskId);
+        (await StreamAsync(store, taskId, cts.Token)).Should().NotContain(typeof(TaskAssigned));
+    }
+
+    [Fact]
+    public async Task Ctrl_C_during_the_read_back_names_the_identifier_it_would_otherwise_lose()
+    {
+        using ScopedTestHome home = new();
+        WriteLinearKey();
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using CancellationTokenSource ctrlC = new();
+        DocumentStore store = postgres.Store;
+        RecordedLinear linear = RecordedLinear.CancellingAt("read", ctrlC);
+
+        (LinearTrackingResult result, FakeLedger ledger, string output, Guid taskId, _) =
+            await TrackAsync(store, linear, cts.Token, trackWith: ctrlC.Token);
+
+        result.Linked.Should().BeFalse();
+        linear.CreateBodies.Should().ContainSingle();
+        output.Should().Contain($"Created {linear.Identifier}")
+            .And.Contain($"h9k task link-linear {ShortId(taskId)} {linear.Identifier}");
+        RecordIn(ledger, taskId).ExternalReference.Should().BeNull();
+    }
+
+    [Fact]
     public async Task A_read_back_failure_after_Linear_returned_an_identifier_names_link_linear_with_it()
     {
         using ScopedTestHome home = new();
@@ -416,7 +472,7 @@ public sealed partial class TaskRecordIntegrationTests
     }
 
     [Fact]
-    public async Task A_publish_fenced_on_the_version_it_read_still_appends_its_go_signal_and_refuses_a_task_that_moved()
+    public async Task A_publish_fenced_on_the_version_it_read_is_refused_once_the_task_moved()
     {
         using ScopedTestHome home = new();
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
