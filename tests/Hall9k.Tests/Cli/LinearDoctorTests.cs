@@ -3,8 +3,12 @@ using Hall9k.Cli.Diagnostics;
 using Hall9k.Connectors.Credentials;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Tests.TestSupport;
+using Spectre.Console;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -111,5 +115,48 @@ public sealed class LinearDoctorTests : IDisposable
 
         probe.Outcome.Should().Be(LinearProbeOutcome.Unconfirmed);
         probe.Detail.Should().Contain("2 Linear connections");
+    }
+
+    private static ProjectDetails Project(string name, BranchNameTemplate template) => new()
+    {
+        Id = DomainId.New(),
+        Name = name,
+        BranchNameTemplate = template,
+    };
+
+    [Theory]
+    [InlineData("task/{shortid}-{slug}")]
+    [InlineData("feature/{slug}")]
+    public void A_Linear_project_whose_branch_template_has_no_key_is_warned_with_the_command_that_fixes_it(string template)
+    {
+        IReadOnlyList<string> warnings = LinearDoctor.BranchTemplateWarnings(
+            [Project("hall9k", BranchNameTemplate.Parse(template))]);
+
+        string warning = warnings.Should().ContainSingle().Subject;
+        warning.Should().Contain("hall9k").And.Contain(template).And.Contain("no {key}")
+            .And.Contain("h9k project set hall9k --branch-template \"{key}-{slug}\"");
+        Action render = () => _ = new Markup(warning);
+        render.Should().NotThrow("the warning is printed as console markup");
+    }
+
+    [Fact]
+    public void The_default_template_is_warned_about_too_which_covers_a_template_cleared_after_the_bind()
+    {
+        // --branch-template none stores the default, and the warning given at bind time cannot see a
+        // change made after it; the doctor reads the project as it stands.
+        LinearDoctor.BranchTemplateWarnings([Project("hall9k", BranchNameTemplate.Default)]).Should().ContainSingle();
+    }
+
+    [Fact]
+    public void A_template_that_carries_the_key_is_not_warned_about_and_each_project_is_judged_on_its_own()
+    {
+        IReadOnlyList<string> warnings = LinearDoctor.BranchTemplateWarnings(
+        [
+            Project("keyed", BranchNameTemplate.Parse("{key}-{slug}")),
+            Project("unkeyed", BranchNameTemplate.Default),
+            Project("prefixed", BranchNameTemplate.Parse("feature/{key}-{slug}")),
+        ]);
+
+        warnings.Should().ContainSingle().Which.Should().Contain("unkeyed");
     }
 }
