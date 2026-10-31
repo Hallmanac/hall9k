@@ -1953,6 +1953,44 @@ its own template that has no `{key}` keeps it and gets a warning naming
 `h9k project set <project> --branch-template "{key}-{slug}"`. `{key}` renders a Linear link as its
 identifier with the case kept (`ENG-123-add-rate-limiting`); an unlinked task still renders `no-key`.
 
+**What a pull request says on a Linear-tracked project.** A project is Linear-tracked when it has a team
+bound, and a task whose own reference is a Linear issue is treated the same way. Hall9k writes no
+magic word for the task's own issue: the title opens with the identifier (`ENG-123: Add rate limiting`,
+placed once, and an authored title that already starts with it is kept as written), the body's work-item
+line is `Work item: [ENG-123](<issue URL>)` (or `Work item: linear:ENG-123` when no URL can be resolved),
+and the branch name carries the identifier. Linear links a pull request from a bare identifier in its title
+or branch name, so Hall9k relies on those two. `h9k doctor` therefore warns, with no network call, when a
+Linear-tracked project's branch template carries no `{key}`, including after `--branch-template none`.
+
+Linear also acts on its own magic words (`closes`, `fixes`, `resolves`, `completes`, `implements`,
+`linear issue`, `ref`, `refs`, `references`, `part of`, `contributes to`, `toward`, `towards`, `updates`,
+and `skip` and `ignore`, which unlink) in front of an identifier, in a pull request's title or description,
+and it reads them inside code spans and fenced blocks too. So the title and body Hall9k composes pass
+through a guard that works on the raw text. When a linking word is followed, after only spaces, tabs, or
+colons on the same line, by an identifier of any issue but the task's own (a bare identifier, a Linear
+issue URL with or without its slug, or a markdown link to either, alone or in a list joined by commas,
+`and`, or `&`), the guard inserts the neutral word `ticket` directly before the first such target:
+`Fixes ENG-123, DES-5` on task ENG-123 reads `Fixes ENG-123, ticket DES-5`. `skip` and `ignore` get the
+same treatment before any identifier, the task's own included. `relates to` and `related to` are left
+alone, since Linear documents them as changing no status. In a title, every identifier but the task's own
+is dropped with whatever only framed it (`[DES-5] Fix login` becomes `ENG-123: Fix login`), because a bare
+identifier in a title links with no magic word; `ENG-NEW` loses its hyphen in both, since it asks Linear to
+create an issue.
+
+An identifier counts only when its team key is one the install's Linear connection can see, so `Fix SHA-256
+hashing` stays as written. The keys are read once, across every page of teams, and only when the text
+holds a key-shaped token other than the task's own, so a pull request that names only its own issue makes
+no Linear call and a project that is not Linear-tracked makes none at all. When there is no connection, a
+page fails, or the read times out, opening the pull request carries on: the guard matches by shape and
+the title is not rewritten. `h9k task add --from-pr` and the auto-review path find a Linear identifier in
+a pull request's title or body the same way (against the visible team keys, not only the project's
+default team), and a Linear identifier wins over a GitHub closing reference in the same text. Closeout
+posts nothing to a Linear issue and moves no Linear state. Accepted limits: a key limited by team cannot
+see every team, so an identifier from a team it cannot see is not guarded, and a Linear URL or markdown
+link with no word before it is not guarded either. Whether the inserted word fully stops Linear linking is
+unverified; it follows the matcher Linear publishes, and a person should run the live check before relying
+on it.
+
 ### Install and the daemon
 
 `h9k install` · `h9k update` · `h9k uninstall [--purge-data]` · `h9k daemon start | stop | status` ·
