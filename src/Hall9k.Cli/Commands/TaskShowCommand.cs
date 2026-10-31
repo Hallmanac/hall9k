@@ -13,6 +13,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Run.Queries;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Features.Trust;
@@ -584,6 +585,12 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             {
                 AnsiConsole.MarkupLine($"  [dim]Reason: {details.TakenOverReason.EscapeMarkup()}[/]");
             }
+        }
+
+        foreach (TrackerAssignmentReassigned reassigned in details.TrackerReassignments)
+        {
+            AnsiConsole.MarkupLine($"\n[bold]Tracker item reassigned[/] [dim](confirmed at a terminal)[/]");
+            AnsiConsole.MarkupLine(ReassignmentMarkup(reassigned));
         }
 
         if (details.PendingTakeRequestedAt is { } pendingAt)
@@ -2960,6 +2967,20 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 + $"{TaskListCommand.ShortId(details.Id)} on[/]",
             null => "[dim]not observed — no closeout sweep has read this pull request's reviewers yet[/]",
         };
+    }
+
+    /// <summary>
+    /// The line that says who a reassignment replaced and who holds the item now. The names are the
+    /// tracker's own words about other people, so they are relayed text: each is made one safe line
+    /// (<see cref="TrackerAssignee.Described"/>) and the whole is escaped before the markup reads it.
+    /// </summary>
+    internal static string ReassignmentMarkup(TrackerAssignmentReassigned reassigned)
+    {
+        string replaced = string.Join(
+            ", ", reassigned.ReplacedHolders.Select(holder => new TrackerAssignee(holder.Identity, holder.Name).Described));
+        string now = new TrackerAssignee(reassigned.AssigneeIdentity, reassigned.AssigneeName).Described;
+        return $"  [yellow]{ExternalText.OneLine(reassigned.Reference).EscapeMarkup()}: from {replaced.EscapeMarkup()} "
+            + $"to {now.EscapeMarkup()}, read back at {reassigned.ObservedAt.ToLocalTime():g}[/]";
     }
 
     /// <summary>

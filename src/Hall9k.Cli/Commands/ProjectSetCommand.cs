@@ -492,8 +492,10 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "queues anyway, since the tracker stays the go signal and the task simply waits in the "
             + "queue — or takes the item outright with h9k task queue --take, which writes this "
             + "install's own identity into an item NOBODY holds so the gate then passes on its own, one "
-            + "command moving the tracker and the board together (an item somebody else holds is refused; "
-            + "no flag takes one from another person). A task with no linked item, an untracked one, and "
+            + "command moving the tracker and the board together. An item somebody else holds is refused "
+            + "(exit 70), except that at a terminal h9k task queue and h9k task assign --take name every "
+            + "holder and ask whether to reassign the item to you: only that interactive confirm takes "
+            + "an item from another person, and nothing unattended does. A task with no linked item, an untracked one, and "
             + "a pr-review task are untouched (a pull request's own assignment is already "
             + "auto-pr-review's signal). The gate itself never writes to the tracker and there is no "
             + "override flag; a tracker that cannot be read holds the claim rather than releasing it")]

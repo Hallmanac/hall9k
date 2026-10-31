@@ -82,7 +82,7 @@ namespace Hall9k.Tests.Integration;
 /// </para>
 /// </summary>
 [Trait("Category", "RequiresDocker")]
-public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDisposable
+public sealed partial class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDisposable
 {
     private readonly PostgresFixture postgres;
 
@@ -741,7 +741,7 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
         TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
             taskId, token: cancellationToken))!;
         (TrackerTake? taken, TrackerClaimDecision? decision) = await TaskAssignCommand.TakeBeforeAssigningAsync(
-            store, session, task, take, tracker.Taker(), offer, cancellationToken);
+            store, session, task, take, tracker.Taker(), offer, reassign: null, cancellationToken);
         return (taken, decision);
     }
 
@@ -762,7 +762,7 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
         await TaskAssignCommand.AppendAsync(session, task, owner, ownerId, cancellationToken);
 
         (TrackerTake? taken, TrackerClaimDecision? _) = await TaskAssignCommand.TakeBeforeAssigningAsync(
-            store, session, task, take, tracker.Taker(), offer, cancellationToken);
+            store, session, task, take, tracker.Taker(), offer, reassign: null, cancellationToken);
 
         await session.SaveChangesAsync(cancellationToken);
         return taken;
@@ -907,6 +907,10 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
         private readonly bool existenceReadBackFails;
 
         private string? holder;
+
+        /// <summary>Further GitHub assignees beyond <see cref="holder"/>: an issue may carry several.</summary>
+        private readonly List<string> alsoHeldBy = [];
+
         private bool contenderArrived;
 
         private FakeTracker(
@@ -938,8 +942,29 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
             bool existenceReadBackFails = false) =>
             new(provider, key, null, refuseWrite, unreadable: false, writeIsInvisible, contender, existenceReadBackFails);
 
-        public static FakeTracker HeldBy(string provider, string key, string holder) =>
-            new(provider, key, holder, null, false, false, null, false);
+        public static FakeTracker HeldBy(string provider, string key, string holder, params string[] alsoHeldBy)
+        {
+            FakeTracker tracker = new(provider, key, holder, null, false, false, null, false);
+            tracker.alsoHeldBy.AddRange(alsoHeldBy);
+            return tracker;
+        }
+
+        /// <summary>An item somebody else holds, with the write behaving badly in one of the ways <see cref="Unassigned"/> can make it.</summary>
+        public static FakeTracker HeldByWith(
+            string provider,
+            string key,
+            string holder,
+            string? refuseWrite = null,
+            bool writeIsInvisible = false,
+            string? contender = null) =>
+            new(provider, key, holder, refuseWrite, false, writeIsInvisible, contender, false);
+
+        /// <summary>Somebody else takes the item between two reads, which is the whole of what a stale offer has to survive.</summary>
+        public void ChangeHolderTo(string newHolder)
+        {
+            holder = newHolder;
+            alsoHeldBy.Clear();
+        }
 
         public static FakeTracker Unreadable(string provider, string key) =>
             new(provider, key, null, null, true, false, null, false);
@@ -983,7 +1008,22 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
                 }
 
                 Writes.Add(string.Join(" ", arguments));
-                if (!writeIsInvisible)
+                if (!writeIsInvisible && arguments.Contains("--add-assignee") && arguments.Contains("--remove-assignee"))
+                {
+                    // One call adds a login and removes each named one: the set that is left is the
+                    // final set, which is what gh itself computes.
+                    string added = arguments[arguments.ToList().IndexOf("--add-assignee") + 1];
+                    List<string> removed = [.. arguments
+                        .Select((argument, index) => (argument, index))
+                        .Where(pair => pair.argument == "--remove-assignee")
+                        .Select(pair => arguments[pair.index + 1])];
+                    List<string> remaining = [.. AllHolders().Where(login =>
+                        !removed.Contains(login, StringComparer.OrdinalIgnoreCase))];
+                    holder = added;
+                    alsoHeldBy.Clear();
+                    alsoHeldBy.AddRange(remaining);
+                }
+                else if (!writeIsInvisible)
                 {
                     holder = arguments[^1];
                 }
@@ -999,14 +1039,12 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
                 : new ProcessResult(0, AssigneesJson(), string.Empty);
         }
 
+        private List<string> AllHolders() => [.. holder is { } login ? new[] { login } : [], .. alsoHeldBy];
+
         /// <summary>Who the issue carries right now, in gh's own <c>--json assignees</c> shape.</summary>
         private string AssigneesJson()
         {
-            List<string> logins = [];
-            if (holder is { } login)
-            {
-                logins.Add(login);
-            }
+            List<string> logins = AllHolders();
 
             if (contenderArrived && contender is { } other)
             {

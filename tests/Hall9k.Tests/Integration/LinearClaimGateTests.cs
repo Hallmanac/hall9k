@@ -320,7 +320,7 @@ public sealed class LinearClaimGateTests : IClassFixture<PostgresFixture>, IDisp
             OwnerDetails owner = (await session.LoadAsync<OwnerDetails>(node.OwnerId, cts.Token))!;
             await TaskAssignCommand.AppendAsync(session, task, owner, node.OwnerId, cts.Token);
             (TrackerTake? taken, _) = await TaskAssignCommand.TakeBeforeAssigningAsync(
-                postgres.Store, session, task, take: true, Taker(tracker), offer: null, cts.Token);
+                postgres.Store, session, task, take: true, Taker(tracker), offer: null, reassign: null, cts.Token);
             await session.SaveChangesAsync(cts.Token);
             taken!.Verdict.Should().Be(TrackerTakeVerdict.Taken);
         }
@@ -617,6 +617,165 @@ public sealed class LinearClaimGateTests : IClassFixture<PostgresFixture>, IDisp
         tracker.AssigneeId.Should().Be(RecordingLinearTracker.ViewerId, "the retry wrote the issue");
         await using IQuerySession after = postgres.Store.QuerySession();
         (await after.LoadAsync<TaskTrackerAssignMirrorPending>(key, cts.Token)).Should().BeNull();
+    }
+
+    // ── reassigning an issue somebody else holds ──────────────────────────────────────────────
+
+    private static readonly Guid ThisNode = new("0191f0a0-0000-7000-8000-00000000a001");
+
+    [Fact]
+    public async Task A_confirmed_reassignment_overwrites_the_single_assignee_and_records_who_was_replaced()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(postgres.Store, cts.Token);
+        await EnsureConnectionAsync(cts.Token);
+        RecordingLinearTracker tracker = RecordingLinearTracker.HeldBy(
+            RecordingLinearTracker.OtherId, RecordingLinearTracker.OtherName);
+        Guid taskId = await SeedTaskAsync(
+            await SeedProjectAsync(ClaimGate.TrackerAssignee, cts.Token), node.OwnerId, dispatchable: false, cts.Token);
+        List<TrackerClaimDecision> asked = [];
+
+        TrackerTake? taken = await ReassignThroughTheAssignDoorAsync(
+            taskId, node.OwnerId, tracker, take: true,
+            decision =>
+            {
+                asked.Add(decision);
+                return true;
+            },
+            cts.Token);
+
+        asked.Should().ContainSingle().Which.Holders.Should().ContainSingle().Which.Identity
+            .Should().Be(RecordingLinearTracker.OtherId);
+        taken!.Verdict.Should().Be(TrackerTakeVerdict.Reassigned);
+        tracker.Requests.Select(request => request.IsWrite).Should().Equal(
+            [false, false, true, false], "the take's read, the reassignment's fresh read, one write, and a read back");
+        RecordedLinearRequest write = tracker.Writes.Single();
+        write.Variables.EnumerateObject().Select(property => property.Name).Should().BeEquivalentTo(["id", "assigneeId"]);
+        write.Variables.GetProperty("assigneeId").GetString().Should().Be(RecordingLinearTracker.ViewerId);
+        write.Query.Should().NotContainAny("stateId", "labelIds", "delegate", "priority", "title");
+
+        List<object> events = await EventsAsync(taskId, cts.Token);
+        TrackerAssignmentReassigned reassigned = events.OfType<TrackerAssignmentReassigned>().Should().ContainSingle().Subject;
+        reassigned.ReplacedHolders.Should().ContainSingle().Which
+            .Should().Be(new ReplacedTrackerAssignee(RecordingLinearTracker.OtherId, RecordingLinearTracker.OtherName));
+        reassigned.AssigneeIdentity.Should().Be(RecordingLinearTracker.ViewerId);
+        events.OfType<TrackerAssignmentWritten>().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_holder_who_changed_after_the_offer_is_not_written_over_on_linear()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(postgres.Store, cts.Token);
+        await EnsureConnectionAsync(cts.Token);
+        RecordingLinearTracker tracker = RecordingLinearTracker.HeldBy(
+            RecordingLinearTracker.OtherId, RecordingLinearTracker.OtherName);
+        Guid taskId = await SeedTaskAsync(
+            await SeedProjectAsync(ClaimGate.TrackerAssignee, cts.Token), node.OwnerId, dispatchable: false, cts.Token);
+
+        Func<Task> act = () => ReassignThroughTheAssignDoorAsync(
+            taskId, node.OwnerId, tracker, take: true,
+            _ =>
+            {
+                tracker.AssigneeId = "a-newer-user-id";
+                tracker.AssigneeName = "Newer User";
+                return true;
+            },
+            cts.Token);
+
+        (await act.Should().ThrowAsync<Hall9k.Domain.Shared.Exceptions.DomainBusinessRuleException>()).Which.Message
+            .Should().Contain("Newer User").And.Contain(RecordingLinearTracker.OtherName).And.Contain("nothing was written");
+        tracker.Writes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_refused_linear_write_quotes_linears_words_and_leaves_the_holder_and_the_task()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(postgres.Store, cts.Token);
+        await EnsureConnectionAsync(cts.Token);
+        RecordingLinearTracker tracker = RecordingLinearTracker.HeldBy(
+            RecordingLinearTracker.OtherId, RecordingLinearTracker.OtherName);
+        tracker.Override = request => request.IsWrite
+            ? RecordingLinearTracker.Errors("You do not have permission to update this issue")
+            : null;
+        Guid taskId = await SeedTaskAsync(
+            await SeedProjectAsync(ClaimGate.TrackerAssignee, cts.Token), node.OwnerId, dispatchable: false, cts.Token);
+
+        Func<Task> act = () => ReassignThroughTheAssignDoorAsync(
+            taskId, node.OwnerId, tracker, take: true, _ => true, cts.Token);
+
+        string message = (await act.Should().ThrowAsync<Hall9k.Domain.Shared.Exceptions.DomainBusinessRuleException>())
+            .Which.Message;
+        message.Should().Contain("You do not have permission to update this issue").And.Contain("write permission");
+        tracker.AssigneeId.Should().Be(RecordingLinearTracker.OtherId);
+        (await EventsAsync(taskId, cts.Token))
+            .Where(@event => @event is TrackerAssignmentReassigned or TrackerAssignmentWritten or TaskAssigned)
+            .Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_linear_write_the_read_back_does_not_show_is_unconfirmed_and_says_the_holder_may_be_gone()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(postgres.Store, cts.Token);
+        await EnsureConnectionAsync(cts.Token);
+        RecordingLinearTracker tracker = RecordingLinearTracker.HeldBy(
+            RecordingLinearTracker.OtherId, RecordingLinearTracker.OtherName);
+        tracker.WriteLands = false;
+        Guid taskId = await SeedTaskAsync(
+            await SeedProjectAsync(ClaimGate.TrackerAssignee, cts.Token), node.OwnerId, dispatchable: false, cts.Token);
+
+        Func<Task> act = () => ReassignThroughTheAssignDoorAsync(
+            taskId, node.OwnerId, tracker, take: true, _ => true, cts.Token);
+
+        (await act.Should().ThrowAsync<Hall9k.Domain.Shared.Exceptions.DomainBusinessRuleException>()).Which.Message
+            .Should().Contain("may be gone from the item");
+        (await EventsAsync(taskId, cts.Token)).OfType<TrackerAssignmentReassigned>().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_queued_linear_task_keeps_its_place_when_the_reassignment_is_confirmed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(postgres.Store, cts.Token);
+        await EnsureConnectionAsync(cts.Token);
+        RecordingLinearTracker tracker = RecordingLinearTracker.HeldBy(
+            RecordingLinearTracker.OtherId, RecordingLinearTracker.OtherName);
+        Guid projectId = await SeedProjectAsync(ClaimGate.TrackerAssignee, cts.Token);
+        Guid taskId = await SeedTaskAsync(projectId, node.OwnerId, dispatchable: true, cts.Token);
+        int before = (await EventsAsync(taskId, cts.Token)).Count;
+        await using IQuerySession query = postgres.Store.QuerySession();
+        ProjectDetails project = (await query.LoadAsync<ProjectDetails>(projectId, cts.Token))!;
+
+        TrackerTake? taken = await TrackerClaimCheck.OfferReassignOnQueuedAsync(
+            postgres.Store, taskId, project, Issue.ToString(), Taker(tracker),
+            new TrackerClaimCheck.ReassignDoor(_ => true, ThisNode, null), cts.Token);
+
+        taken!.Verdict.Should().Be(TrackerTakeVerdict.Reassigned);
+        List<object> events = await EventsAsync(taskId, cts.Token);
+        events.Should().HaveCount(before + 1);
+        events[^1].Should().BeOfType<TrackerAssignmentReassigned>();
+        events.OfType<TaskUnassigned>().Should().BeEmpty();
+    }
+
+    private async Task<TrackerTake?> ReassignThroughTheAssignDoorAsync(
+        Guid taskId,
+        Guid ownerId,
+        RecordingLinearTracker tracker,
+        bool take,
+        TrackerClaimCheck.TakeOffer offer,
+        CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = postgres.Store.LightweightSession();
+        TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!;
+        OwnerDetails owner = (await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken))!;
+        await TaskAssignCommand.AppendAsync(session, task, owner, ownerId, cancellationToken);
+        (TrackerTake? taken, _) = await TaskAssignCommand.TakeBeforeAssigningAsync(
+            postgres.Store, session, task, take, Taker(tracker), offer: null,
+            new TrackerClaimCheck.ReassignDoor(offer, ThisNode, task.HolderNodeId), cancellationToken);
+        await session.SaveChangesAsync(cancellationToken);
+        return taken;
     }
 
     // ── seams and seeding ─────────────────────────────────────────────────────────────────────

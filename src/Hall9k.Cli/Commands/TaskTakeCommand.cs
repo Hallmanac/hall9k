@@ -155,7 +155,7 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
         // the same taker (adversarial pre-PR review, cycle 1).
         TrackerAssignmentTake tracker = take ?? new TrackerAssignmentTake(new ProjectScopedGitHubRunner(store).Runner);
         TrackerTake trackerTake = await TrackerClaimCheck.TakeOrRefuseAsync(
-            store, taskId, project, task.ExternalReference?.ToString(), tracker, cancellationToken);
+            store, taskId, project, task.ExternalReference?.ToString(), tracker, reassign: null, cancellationToken);
 
         TaskRecordHolder candidate = new(ownerFingerprint, context.NodeId, myNode?.MachineName ?? Environment.MachineName, now);
 

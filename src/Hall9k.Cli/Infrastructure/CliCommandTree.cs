@@ -1644,8 +1644,10 @@ public static class CliCommandTree
                     + "--reason, both required together. In a project whose claim gate is tracker-assignee "
                     + "(h9k project set --claim-gate), --take also takes the linked Jira card, GitHub issue, or Linear issue "
                     + "for this install's own tracker identity when the tracker shows nobody holds it, for a "
-                    + "task you hold yourself — an item somebody else holds is refused and nothing is written, "
-                    + "and nothing here ever transitions the item, though a team's own board automation may "
+                    + "task you hold yourself. An item somebody else holds is refused with nothing written, unless "
+                    + "you are at a terminal and confirm reassigning it to you when asked: only that interactive "
+                    + "confirm takes an item from another person, and nothing unattended does. Nothing here "
+                    + "ever transitions the item, though a team's own board automation may "
                     + "react to the assignment. Against a task that is already queued, --node alone changes "
                     + "where it runs (placement); placing a task that is not queued yet is h9k task queue --node.")
                 .WithExample("task", "assign", "28b19893")
@@ -1666,8 +1668,11 @@ public static class CliCommandTree
                     + "set --claim-gate), --take also takes the linked Jira card, GitHub issue, or Linear issue for this "
                     + "install's own tracker identity when the tracker shows nobody holds it, so one command "
                     + "moves the tracker and the board together and the gate passes on its own; an interactive "
-                    + "run offers the same take, and a non-interactive one warns and proceeds. h9k task dequeue "
-                    + "takes a queued task back out of the queue and keeps its assignee.")
+                    + "run offers the same take, and a non-interactive one warns and proceeds. An item somebody "
+                    + "else holds is reassigned to you only when you confirm it at a terminal (the offer names "
+                    + "every holder and defaults to no), also on a task that is already queued for you, which "
+                    + "stays in the queue. h9k task dequeue takes a queued task back out of the queue and keeps "
+                    + "its assignee.")
                 .WithExample("task", "queue", "28b19893")
                 .WithExample("task", "queue", "28b19893", "--take")
                 .WithExample("task", "queue", "28b19893", "--node", "a1b2c3d4")
