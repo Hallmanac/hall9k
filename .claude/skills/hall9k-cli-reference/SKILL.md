@@ -1348,6 +1348,21 @@ closable as history, and only new links must match the tracker. `h9k doctor` pro
 project with a team bound (no connection, a rejected key, or a probe that could not confirm either) and
 `h9k connection list` counts the bound projects.
 
+On a Linear-tracked project (a team bound, or a task whose own reference is a Linear issue) the pull
+request opens with `<identifier>: <title>` (once; an authored title already starting with it is kept),
+a work-item line `Work item: [ENG-123](<url>)` (unlinked `linear:ENG-123` when no URL resolves), and
+no magic word for the task's own issue, since Linear links through the title and branch name. The
+composed title and body pass through a raw-text guard (`RelayedText.WithoutLinearMagicWords`) that puts
+the neutral word `ticket` before any other issue's identifier that follows one of Linear's linking
+words (`Fixes ENG-1, DES-5` on task ENG-1 becomes `Fixes ENG-1, ticket DES-5`; `skip`/`ignore` get it
+before the task's own too), drops other identifiers from the title, and turns `ENG-NEW` into `ENG NEW`.
+It counts an identifier only when its team key is one the install's connection can see, read once across
+every page and only when the text holds a key-shaped token other than the task's own (`LinearTeamKeys`;
+no connection, a failed page, or a timeout means the guard matches by shape and the title rule is
+skipped, never a failed pull request). The adopted-pull-request scan (`--from-pr`, auto-pr-review) reads
+the same keys to find a Linear identifier in a title or body. `h9k doctor` warns, with no network call,
+when a Linear-tracked project's branch template has no `{key}`. Closeout adds nothing for Linear.
+
 `connection add linear` reads Linear's viewer and organization before recording anything, refuses a
 rejected key, and records the viewer's id and name and `https://linear.app/<urlKey>` on the connection;
 registering again replaces the connection (a rotated key; a key from a different workspace is refused while any task carries a `linear:` reference unless `--change-workspace` is passed). Success means Linear accepted the key and
