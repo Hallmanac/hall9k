@@ -95,6 +95,17 @@ public sealed class LinearWorkItemProvider(
         "mutation HallAssign($id: String!, $assigneeId: String) "
         + "{ issueUpdate(id: $id, input: { assigneeId: $assigneeId }) { success } }";
 
+    /// <summary>
+    /// One page of every team's key. 250 is the largest page Linear's connections allow, and the
+    /// cursor pair is the standard connection shape (<c>pageInfo.hasNextPage</c>, <c>endCursor</c>).
+    /// </summary>
+    private const string TeamKeysQuery =
+        "query HallTeamKeys($after: String) { teams(first: 250, after: $after) "
+        + "{ nodes { key } pageInfo { hasNextPage endCursor } } }";
+
+    /// <summary>A bound on the pages one read follows, so an answer that never ends the list cannot loop forever.</summary>
+    private const int MaxTeamKeyPages = 40;
+
     private readonly LinearRequester requester = requester ?? LinearHttp.Requester;
     private readonly TimeProvider clock = clock ?? TimeProvider.System;
 
@@ -368,6 +379,64 @@ public sealed class LinearWorkItemProvider(
 
     private const string NeedsWritePermission =
         "Changing an assignee needs an API key with write permission on the issue's team.";
+
+    /// <summary>
+    /// Every team key this connection's key can see, read across every page of the <c>teams</c>
+    /// connection (upper case, compared without regard to case). A partial list is never returned:
+    /// a page that fails, an answer that is not a page of teams, a page that says there is more
+    /// without a cursor to fetch it, and a list that runs past <see cref="MaxTeamKeyPages"/> pages are
+    /// all thrown, because a caller deciding whether a token is a team's identifier would take a
+    /// missing key for a key that does not exist.
+    /// </summary>
+    public async Task<IReadOnlySet<string>> ListTeamKeysAsync(CancellationToken cancellationToken)
+    {
+        HashSet<string> keys = new(StringComparer.OrdinalIgnoreCase);
+        string? cursor = null;
+        for (int page = 0; page < MaxTeamKeyPages; page++)
+        {
+            LinearQuery query = await QueryAsync(
+                TeamKeysQuery, new { after = cursor }, "list the teams", "the teams", cancellationToken);
+            if (query is not { Data: { } data })
+            {
+                throw query.Failure ?? throw new InvalidOperationException("A Linear query without data carries its failure.");
+            }
+
+            using (query.Document)
+            {
+                if (!data.TryGetProperty("teams", out JsonElement teams)
+                    || teams.ValueKind != JsonValueKind.Object
+                    || !teams.TryGetProperty("nodes", out JsonElement nodes)
+                    || nodes.ValueKind != JsonValueKind.Array
+                    || !teams.TryGetProperty("pageInfo", out JsonElement pageInfo)
+                    || pageInfo.ValueKind != JsonValueKind.Object
+                    || !pageInfo.TryGetProperty("hasNextPage", out JsonElement hasNext)
+                    || hasNext.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                {
+                    throw NotAPageOfTeams();
+                }
+
+                foreach (JsonElement node in nodes.EnumerateArray())
+                {
+                    keys.Add((ReadString(node, "key") ?? throw NotAPageOfTeams()).ToUpperInvariant());
+                }
+
+                if (hasNext.ValueKind == JsonValueKind.False)
+                {
+                    return keys;
+                }
+
+                string? next = ReadString(pageInfo, "endCursor");
+                cursor = next.IsNotBlank() && next != cursor ? next : throw NotAPageOfTeams();
+            }
+        }
+
+        throw new DomainValidationException(
+            $"Linear's list of teams ran past {MaxTeamKeyPages} pages, so it was not read to the end.");
+    }
+
+    private static DomainValidationException NotAPageOfTeams() => new(
+        "Linear answered the list of teams with something that is not a complete page of them. That is "
+        + $"usually a proxy in front of {LinearHttp.Endpoint.Host}; check this machine reaches Linear directly.");
 
     private Uri RegisteredWorkspace() =>
         account.WorkspaceUrl
