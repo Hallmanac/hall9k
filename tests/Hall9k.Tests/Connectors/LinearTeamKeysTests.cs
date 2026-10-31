@@ -78,7 +78,7 @@ public sealed class LinearTeamKeysTests : IDisposable
             ["c2"] = Ok(Page(false, null, "PLAT")),
         });
 
-        IReadOnlySet<string> keys = await LinearTeamKeys.TryReadAsync(Provider(teams.Requester), Token)
+        IReadOnlySet<string> keys = await LinearTeamKeys.TryReadAsync(Provider(teams.Requester), cancellationToken: Token)
             ?? throw new InvalidOperationException("the read was expected to succeed");
 
         keys.Should().BeEquivalentTo("ENG", "DES", "OPS", "PLAT");
@@ -95,7 +95,7 @@ public sealed class LinearTeamKeysTests : IDisposable
             ["c1"] = new LinearResponse(500, "upstream down"),
         });
 
-        (await LinearTeamKeys.TryReadAsync(Provider(teams.Requester), Token)).Should().BeNull();
+        (await LinearTeamKeys.TryReadAsync(Provider(teams.Requester), cancellationToken: Token)).Should().BeNull();
     }
 
     [Theory]
@@ -109,7 +109,7 @@ public sealed class LinearTeamKeysTests : IDisposable
     {
         LinearRequester requester = (_, _) => Task.FromResult(new LinearResponse(status, body));
 
-        (await LinearTeamKeys.TryReadAsync(Provider(requester), Token)).Should().BeNull();
+        (await LinearTeamKeys.TryReadAsync(Provider(requester), cancellationToken: Token)).Should().BeNull();
     }
 
     [Fact]
@@ -118,7 +118,7 @@ public sealed class LinearTeamKeysTests : IDisposable
         int calls = 0;
         LinearRequester requester = (_, _) => Task.FromResult(Ok(Page(true, $"cursor-{calls++}", "ENG")));
 
-        (await LinearTeamKeys.TryReadAsync(Provider(requester), Token)).Should().BeNull();
+        (await LinearTeamKeys.TryReadAsync(Provider(requester), cancellationToken: Token)).Should().BeNull();
         calls.Should().BeLessThanOrEqualTo(40);
     }
 
@@ -127,13 +127,13 @@ public sealed class LinearTeamKeysTests : IDisposable
     {
         LinearRequester requester = (_, _) => Task.FromResult(Ok(Page(true, "same", "ENG")));
 
-        (await LinearTeamKeys.TryReadAsync(Provider(requester), Token)).Should().BeNull();
+        (await LinearTeamKeys.TryReadAsync(Provider(requester), cancellationToken: Token)).Should().BeNull();
     }
 
     [Fact]
     public async Task No_connection_is_a_failed_read_and_asks_Linear_nothing()
     {
-        (await LinearTeamKeys.TryReadAsync((LinearWorkItemProvider?)null, Token)).Should().BeNull();
+        (await LinearTeamKeys.TryReadAsync((LinearWorkItemProvider?)null, cancellationToken: Token)).Should().BeNull();
     }
 
     [Fact]
@@ -146,7 +146,7 @@ public sealed class LinearTeamKeysTests : IDisposable
         };
 
         IReadOnlySet<string>? keys = await LinearTeamKeys.TryReadAsync(
-            Provider(requester), Token, deadline: TimeSpan.FromMilliseconds(50));
+            Provider(requester), deadline: TimeSpan.FromMilliseconds(50), cancellationToken: Token);
 
         keys.Should().BeNull();
     }
@@ -162,7 +162,7 @@ public sealed class LinearTeamKeysTests : IDisposable
             return Ok(Page(false, null, "ENG"));
         };
 
-        Func<Task> read = () => LinearTeamKeys.TryReadAsync(Provider(requester), caller.Token);
+        Func<Task> read = () => LinearTeamKeys.TryReadAsync(Provider(requester), cancellationToken: caller.Token);
 
         await read.Should().ThrowAsync<OperationCanceledException>();
     }
@@ -174,7 +174,7 @@ public sealed class LinearTeamKeysTests : IDisposable
             LinearAccount.Registered(Workspace, "Brian Hall", CredentialReference.File("no-such-key-file")),
             FakeNeverCalled);
 
-        (await LinearTeamKeys.TryReadAsync(provider, Token)).Should().BeNull();
+        (await LinearTeamKeys.TryReadAsync(provider, cancellationToken: Token)).Should().BeNull();
     }
 
     private static Task<LinearResponse> FakeNeverCalled(LinearRequest request, CancellationToken cancellationToken) =>
@@ -191,7 +191,7 @@ public sealed class LinearTeamKeysTests : IDisposable
             return teams.Requester(request, cancellation);
         };
 
-        await LinearTeamKeys.TryReadAsync(Provider(recording), Token);
+        await LinearTeamKeys.TryReadAsync(Provider(recording), cancellationToken: Token);
 
         LinearRequest request = seen.Should().ContainSingle().Subject;
         using JsonDocument body = JsonDocument.Parse(request.JsonBody);

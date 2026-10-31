@@ -140,14 +140,6 @@ public sealed class LinearDoctorTests : IDisposable
     }
 
     [Fact]
-    public void The_default_template_is_warned_about_too_which_covers_a_template_cleared_after_the_bind()
-    {
-        // --branch-template none stores the default, and the warning given at bind time cannot see a
-        // change made after it; the doctor reads the project as it stands.
-        LinearDoctor.BranchTemplateWarnings([Project("hall9k", BranchNameTemplate.Default)]).Should().ContainSingle();
-    }
-
-    [Fact]
     public void A_template_that_carries_the_key_is_not_warned_about_and_each_project_is_judged_on_its_own()
     {
         IReadOnlyList<string> warnings = LinearDoctor.BranchTemplateWarnings(

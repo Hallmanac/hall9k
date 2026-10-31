@@ -64,7 +64,7 @@ public static class LinkedWorkItemImport
         if (ProjectTracker.IsLinear(project.LinearTeam) && RelayedText.HasLinearKeyShape(haystack, ownIdentifier: null))
         {
             LinearWorkItemProvider? provider = await LinearTeamKeys.TryProviderAsync(session, linearRequester, cancellationToken);
-            IReadOnlySet<string>? teamKeys = await LinearTeamKeys.TryReadAsync(provider, cancellationToken);
+            IReadOnlySet<string>? teamKeys = await LinearTeamKeys.TryReadAsync(provider, cancellationToken: cancellationToken);
             if (provider is null || teamKeys is null)
             {
                 return null;

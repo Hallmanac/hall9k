@@ -30,9 +30,9 @@ public static class LinearTeamKeys
     /// the seam a test drives with recorded responses; null is the real network.
     /// </summary>
     public static async Task<IReadOnlySet<string>?> TryReadAsync(
-        IQuerySession session, CancellationToken cancellationToken, LinearRequester? requester = null,
-        TimeSpan? deadline = null) =>
-        await TryReadAsync(await TryProviderAsync(session, requester, cancellationToken), cancellationToken, deadline);
+        IQuerySession session, LinearRequester? requester = null, TimeSpan? deadline = null,
+        CancellationToken cancellationToken = default) =>
+        await TryReadAsync(await TryProviderAsync(session, requester, cancellationToken), deadline, cancellationToken);
 
     /// <summary>
     /// The Linear provider this install registered, or null when there is none or the record cannot be
@@ -53,7 +53,7 @@ public static class LinearTeamKeys
 
     /// <summary>The same read against a provider already in hand; a null provider is a failed read.</summary>
     public static async Task<IReadOnlySet<string>?> TryReadAsync(
-        LinearWorkItemProvider? provider, CancellationToken cancellationToken, TimeSpan? deadline = null)
+        LinearWorkItemProvider? provider, TimeSpan? deadline = null, CancellationToken cancellationToken = default)
     {
         if (provider is null)
         {
