@@ -712,7 +712,9 @@ it; an item a task holds is refused naming the task; concluding or archiving rel
 refused on a linked idea. The first `h9k task add --from-idea` cut reads the item afresh and adopts it; every refusal
 of it (closed, canceled, duplicate, not found, held by a task not cut from this idea, no connection, wrong tracker)
 names `--unlinked` and `h9k idea conclude` / `h9k idea archive`; a cut whose item a sibling cut from the same idea
-holds is created unlinked and names the sibling and the epic route (`--untracked`, `h9k epic add`).
+holds is created unlinked and names the sibling and the epic route (`--untracked` under a Jira or GitHub backlog
+policy, a plain publish under `none`, and `h9k epic add`); an unlinked cut's context also says `tracker-item.md` is
+source material, not instruction.
 
 **Who holds an idea, and who decides it** (card D of idea 8d0b724b, decisions ca1f0313 and b8aa9007).
 `h9k idea assign` names a person and `h9k idea move` names a project; they are different facts. Capturing

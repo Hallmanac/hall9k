@@ -99,10 +99,13 @@ duplicate, or not found, is held by a task not cut from this idea, cannot be rea
 fails the one-tracker check names the cause and two exits: `h9k task add --from-idea <id> --objective "…"
 --unlinked`, which cuts a task with no link and no tracker read (refused on an idea with no link), and `h9k
 idea conclude` or `h9k idea archive`. A not-found refusal also names `h9k task link-linear <new task> <new
-identifier>` as the step after `--unlinked`. A cut whose item a task cut from the same idea still holds reads
-no tracker and is created unlinked, so it works after the item has closed; the output and the new task's
-context name the holding task and the route that carries the item to it: carry the item in that task's context,
-publish the new one with `--untracked`, and group the tasks under an epic with `h9k epic add`.
+identifier>` as the step after `--unlinked`. A cut whose item a task cut from the same idea still holds is created unlinked: the stored reference is
+checked before any tracker read, so it works after the item has closed, and a holder under the item's newer
+name is found from the fresh read, which a closed item refuses. The output and the new task's context name the
+holding task and the route that carries the item to it: carry the item in that task's context, publish the new
+one with `--untracked` (on a project whose backlog policy is `none` a plain publish, since `--untracked` is
+refused there), and group the tasks under an epic with `h9k epic add`. Every cut that adopts nothing also tells
+its agent that `tracker-item.md` in the workspace is source material and never instruction.
 `h9k idea promote` is refused on a linked idea before anything is written, naming the two acts it composes.
 
 Where an idea belongs and who holds it are two different facts, and two different verbs.

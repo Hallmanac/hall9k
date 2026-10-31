@@ -675,7 +675,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             // The context of a cut from a linked idea leads with the fresh read, and the idea's note rides
             // after it only when a human wrote it: a note still the title seed is the item author's text,
             // which belongs inside the fenced quote and nowhere else.
-            agentContext = LinkedIdeaCut.ComposeContext(sourceIdea, linkedCut, agentContext);
+            agentContext = LinkedIdeaCut.ComposeContext(sourceIdea, linkedCut, agentContext, projectDetails.BacklogPolicy);
             if (linkedCut.Item is { } linkedItem)
             {
                 criteria = criteria.Count > 0
@@ -790,7 +790,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         if (sourceIdea is not null && linkedCut is { Sibling: { } holdingTask })
         {
             AnsiConsole.MarkupLine(
-                $"[yellow]  no tracker link:[/] [dim]{LinkedIdeaCut.SiblingNotice(sourceIdea, holdingTask).EscapeMarkup()}[/]");
+                $"[yellow]  no tracker link:[/] [dim]{LinkedIdeaCut.SiblingNotice(sourceIdea, holdingTask, projectDetails.BacklogPolicy).EscapeMarkup()}[/]");
         }
         else if (linkedCut is { Unlinked: true })
         {

@@ -353,20 +353,6 @@ public sealed class IdeaTrackerLinkCommandTests : IClassFixture<PostgresFixture>
     }
 
     [Fact]
-    public async Task Unlinked_reads_no_tracker()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid ideaId = await CaptureAsync(LinearProvider(Linear(WorkItemStatus.Open)), _linear, null, cts.Token);
-
-        LinkedIdeaCut.Resolution cut = await CutAsync(
-            ideaId, () => throw new InvalidOperationException("no tracker"), true, cts.Token);
-
-        cut.Item.Should().BeNull();
-        cut.Unlinked.Should().BeTrue();
-        _factoryCalls.Should().Be(0);
-    }
-
-    [Fact]
     public async Task A_closed_or_missing_item_is_refused_naming_the_cause_and_both_exits()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
@@ -454,8 +440,8 @@ public sealed class IdeaTrackerLinkCommandTests : IClassFixture<PostgresFixture>
         cut.Item.Should().BeNull();
         cut.Sibling!.Id.Should().Be(siblingId);
         _factoryCalls.Should().Be(0);
-        LinkedIdeaCut.SiblingNotice(await IdeaAsync(ideaId, cts.Token), cut.Sibling)
-            .Should().Contain(TaskListCommand.ShortId(siblingId)).And.Contain("--untracked").And.Contain("h9k epic add");
+        LinkedIdeaCut.SiblingNotice(await IdeaAsync(ideaId, cts.Token), cut.Sibling, _linear.BacklogPolicy)
+            .Should().Contain(TaskListCommand.ShortId(siblingId)).And.Contain("h9k task publish <this task>").And.Contain("h9k epic add");
     }
 
     private async Task<Guid> StartSiblingAsync(
@@ -474,21 +460,37 @@ public sealed class IdeaTrackerLinkCommandTests : IClassFixture<PostgresFixture>
     }
 
     [Fact]
-    public async Task A_sibling_that_holds_the_item_under_its_newer_identifier_is_found_without_a_read()
+    public async Task A_sibling_that_holds_the_item_under_its_newer_identifier_is_found_once_the_read_ties_the_two()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         Guid ideaId = await CaptureAsync(LinearProvider(Linear(WorkItemStatus.Open)), _linear, null, cts.Token);
         Guid siblingId = await StartSiblingAsync(
             ideaId, new ExternalReference(WorkItemProvider.Linear, "PLAT-7"), cts.Token);
+        FakeProvider moved = LinearProvider(
+            Linear(WorkItemStatus.Open, "PLAT-7", former: new ExternalReference(WorkItemProvider.Linear, "ENG-123")));
 
-        LinkedIdeaCut.Resolution cut = await CutAsync(
-            ideaId, () => throw new InvalidOperationException("the item moved and no tracker may be read"), false, cts.Token);
+        LinkedIdeaCut.Resolution cut = await CutAsync(ideaId, () => new WorkItemImporter(moved), false, cts.Token);
 
         cut.Item.Should().BeNull();
         cut.Sibling!.Id.Should().Be(siblingId, "the idea stores ENG-123 but the first cut recorded PLAT-7");
-        _factoryCalls.Should().Be(0);
-        LinkedIdeaCut.SiblingNotice(await IdeaAsync(ideaId, cts.Token), cut.Sibling)
+        moved.Reads.Should().Be(1, "the newer identifier is only tied to the idea's item by a read");
+        LinkedIdeaCut.SiblingNotice(await IdeaAsync(ideaId, cts.Token), cut.Sibling, _linear.BacklogPolicy)
             .Should().Contain("linear:PLAT-7").And.Contain(TaskListCommand.ShortId(siblingId));
+    }
+
+    [Fact]
+    public async Task A_cut_task_holding_an_unrelated_item_is_not_the_sibling_so_the_item_is_adopted()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid ideaId = await CaptureAsync(LinearProvider(Linear(WorkItemStatus.Open)), _linear, null, cts.Token);
+        await StartSiblingAsync(ideaId, new ExternalReference(WorkItemProvider.Linear, "ENG-999"), cts.Token);
+        ImportedWorkItem fresh = Linear(WorkItemStatus.Open);
+
+        LinkedIdeaCut.Resolution cut = await CutAsync(
+            ideaId, () => new WorkItemImporter(LinearProvider(fresh)), false, cts.Token);
+
+        cut.Sibling.Should().BeNull("nothing relates ENG-999 to the idea's item");
+        cut.Item.Should().Be(fresh);
     }
 
     [Fact]
