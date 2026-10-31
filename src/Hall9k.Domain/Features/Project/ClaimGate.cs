@@ -7,7 +7,7 @@ namespace Hall9k.Domain.Features.Project;
 /// <summary>
 /// What has to be true, on this install, before a task linked to an external item may be
 /// claimed here (idea 64c75e43). Every teammate runs their own install against their own
-/// database, so the Jira card or the GitHub issue is the only record the two machines share —
+/// database, so the Jira card, the GitHub issue or the Linear issue is the only record the two machines share —
 /// and <see cref="TrackerAssignee"/> makes the tracker's own assignment field the single act
 /// that hands out work: a linked task is claimed here only while the tracker shows that item
 /// assigned to this install's own tracker identity, so two teammates' installs cannot both run

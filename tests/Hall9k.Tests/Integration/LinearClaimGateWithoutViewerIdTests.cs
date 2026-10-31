@@ -1,5 +1,4 @@
 using FluentAssertions;
-using Hall9k.Connectors.Credentials;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Project;

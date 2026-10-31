@@ -293,6 +293,19 @@ public sealed class LinearWorkItemProviderTests : IDisposable
     }
 
     [Theory]
+    [InlineData(503, "{\"errors\":[{\"message\":\"Upstream not found\"}]}")]
+    [InlineData(500, "{\"errors\":[{\"message\":\"Boom\",\"extensions\":{\"code\":\"AUTHENTICATION_ERROR\"}}]}")]
+    public async Task A_server_error_is_an_outage_whatever_its_errors_array_says(int status, string body)
+    {
+        RecordingRequester requester = new(status, body);
+
+        LinearIssueAttempt attempt = await Provider(requester).TryReadIssueAsync(Eng(), null, Token);
+
+        attempt.FailureKind.Should().Be(TrackerReadFailure.Outage);
+        attempt.Failure!.Message.Should().Contain($"HTTP {status}");
+    }
+
+    [Theory]
     [InlineData(401, "{}")]
     [InlineData(403, "{}")]
     [InlineData(200, "{\"errors\":[{\"message\":\"Authentication required\",\"extensions\":{\"type\":\"authentication error\",\"code\":\"AUTHENTICATION_ERROR\"}}]}")]

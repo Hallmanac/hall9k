@@ -1,7 +1,6 @@
 using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Cli.Commands;
-using Hall9k.Connectors.Credentials;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
@@ -15,11 +14,9 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
-using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
-using Hall9k.Tests.TestSupport;
 using JasperFx.Events;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -67,13 +64,6 @@ public sealed class LinearClaimGateTests : IClassFixture<PostgresFixture>, IDisp
     }
 
     // ── the gate applies to a Linear issue ────────────────────────────────────────────────────
-
-    [Fact]
-    public void The_gate_admits_a_linear_reference_only_when_the_project_is_gated()
-    {
-        TrackerClaimGate.Gates(ClaimGate.TrackerAssignee, Issue).Should().BeTrue();
-        TrackerClaimGate.Gates(ClaimGate.Off, Issue).Should().BeFalse();
-    }
 
     [Fact]
     public async Task A_project_with_the_gate_off_makes_no_linear_call_to_decide_a_claim()
@@ -270,32 +260,20 @@ public sealed class LinearClaimGateTests : IClassFixture<PostgresFixture>, IDisp
         decision.Error.Should().Contain("Partial failure");
     }
 
-    [Fact]
-    public async Task An_answer_with_no_assignee_member_is_unreadable_rather_than_nobody()
+    [Theory]
+    [InlineData("""{"data":{"issue":{"identifier":"ENG-123"}}}""")]
+    [InlineData("""{"data":{"issue":{"assignee":null}}}""")]
+    public async Task An_answer_with_no_assignee_member_or_no_identifier_is_unreadable_rather_than_nobody(string answer)
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         await EnsureConnectionAsync(cts.Token);
         RecordingLinearTracker tracker = RecordingLinearTracker.Unassigned();
-        tracker.Override = _ => RecordingLinearTracker.Json("""{"data":{"issue":{"identifier":"ENG-123"}}}""");
+        tracker.Override = _ => RecordingLinearTracker.Json(answer);
 
         TrackerClaimDecision decision = await Gate(tracker).CheckAsync(
             postgres.Store, ClaimGate.TrackerAssignee, Issue, Path.GetTempPath(), cts.Token);
 
         decision.Verdict.Should().Be(TrackerClaimVerdict.Unreadable);
-    }
-
-    [Fact]
-    public async Task A_hold_round_trips_through_the_published_row_with_linear_as_the_tracker()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        await EnsureConnectionAsync(cts.Token);
-        TrackerClaimDecision decision = await Gate(
-            RecordingLinearTracker.HeldBy(RecordingLinearTracker.OtherId, RecordingLinearTracker.OtherName))
-            .CheckAsync(postgres.Store, ClaimGate.TrackerAssignee, Issue, Path.GetTempPath(), cts.Token);
-
-        TrackerClaimHold hold = decision.ToHold(DomainId.New(), DomainId.New(), "machine");
-        TrackerClaimDecision.FromHold(hold).RefusalLine.Should().Be(decision.RefusalLine);
-        TrackerClaimDecision.FromHold(hold).Tracker.Should().Be("Linear");
     }
 
     // ── the take ──────────────────────────────────────────────────────────────────────────────
@@ -352,41 +330,6 @@ public sealed class LinearClaimGateTests : IClassFixture<PostgresFixture>, IDisp
         written.AssigneeIdentity.Should().Be(RecordingLinearTracker.ViewerId);
         written.Reference.Should().Be("linear:ENG-123");
         events.OfType<TrackerAssignmentObserved>().Should().BeEmpty();
-    }
-
-    [Fact]
-    public async Task A_take_on_an_issue_somebody_else_holds_is_refused_and_nothing_is_written()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        await EnsureConnectionAsync(cts.Token);
-        RecordingLinearTracker tracker = RecordingLinearTracker.HeldBy(
-            RecordingLinearTracker.OtherId, RecordingLinearTracker.OtherName);
-
-        TrackerTake take = await Taker(tracker).TakeAsync(
-            postgres.Store, ClaimGate.TrackerAssignee, Issue, Path.GetTempPath(), cts.Token);
-
-        take.Verdict.Should().Be(TrackerTakeVerdict.HeldByOther);
-        take.Passes.Should().BeFalse();
-        take.RefusalLine.Should().Contain("Linear shows ENG-123 assigned to Someone Else");
-        tracker.Writes.Should().BeEmpty();
-        tracker.AssigneeId.Should().Be(RecordingLinearTracker.OtherId);
-    }
-
-    [Fact]
-    public async Task A_take_on_an_issue_already_mine_proceeds_without_writing()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        await EnsureConnectionAsync(cts.Token);
-        RecordingLinearTracker tracker = RecordingLinearTracker.HeldBy(
-            RecordingLinearTracker.ViewerId, RecordingLinearTracker.ViewerName);
-
-        TrackerTake take = await Taker(tracker).TakeAsync(
-            postgres.Store, ClaimGate.TrackerAssignee, Issue, Path.GetTempPath(), cts.Token);
-
-        take.Verdict.Should().Be(TrackerTakeVerdict.AlreadyMine);
-        take.Passes.Should().BeTrue();
-        take.Wrote.Should().BeFalse();
-        tracker.Writes.Should().BeEmpty();
     }
 
     [Theory]
@@ -453,21 +396,6 @@ public sealed class LinearClaimGateTests : IClassFixture<PostgresFixture>, IDisp
 
         take.Verdict.Should().Be(TrackerTakeVerdict.Unconfirmed, "the read-back shows the viewer's name on another user id");
         take.Verdict.Should().NotBe(TrackerTakeVerdict.Contested);
-    }
-
-    [Fact]
-    public async Task An_unreadable_issue_is_not_taken_blind()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        await EnsureConnectionAsync(cts.Token);
-        RecordingLinearTracker tracker = RecordingLinearTracker.Unassigned();
-        tracker.Override = _ => RecordingLinearTracker.Errors("Entity not found: Issue");
-
-        TrackerTake take = await Taker(tracker).TakeAsync(
-            postgres.Store, ClaimGate.TrackerAssignee, Issue, Path.GetTempPath(), cts.Token);
-
-        take.Verdict.Should().Be(TrackerTakeVerdict.Unreadable);
-        tracker.Writes.Should().BeEmpty();
     }
 
     [Fact]

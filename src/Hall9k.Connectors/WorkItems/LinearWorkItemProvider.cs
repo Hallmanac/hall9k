@@ -9,7 +9,7 @@ namespace Hall9k.Connectors.WorkItems;
 
 /// <summary>
 /// Who a Linear API key belongs to and which workspace it reads, as Linear's <c>viewer</c> and
-/// <c>organization</c> answered: the user's <see cref="Id"/> (what a later claim gate compares an
+/// <c>organization</c> answered: the user's <see cref="Id"/> (what the claim gate compares an
 /// assignee against), the <see cref="Name"/> a human reads, and the workspace's
 /// <see cref="WorkspaceKey"/> (its <c>urlKey</c>, the slug in every Linear address).
 /// </summary>
@@ -32,7 +32,7 @@ public sealed record LinearViewerRead(
 public sealed record LinearIssueRead(ImportedWorkItem Item, IReadOnlyList<string> PreviousIdentifiers);
 
 /// <summary>
-/// An issue read with its refusal kept rather than thrown, for a caller (a claim gate, later) that
+/// An issue read with its refusal kept rather than thrown, for a caller (the claim gate) that
 /// has to tell a key to renew from an issue to look at from an outage to wait out.
 /// </summary>
 public sealed record LinearIssueAttempt(LinearIssueRead? Read, DomainException? Failure, TrackerReadFailure FailureKind);
@@ -46,9 +46,9 @@ public sealed record LinearTeam(string Id, string Key, string Name);
 /// gives the Jira provider, so every test drives it with fixture responses written from Linear's public
 /// schema and none reaches a live workspace.
 /// <para>
-/// What this class does is the read half: the import snapshot, the viewer check that proves a key at
-/// registration, and the verification behind <c>h9k task link-linear</c>. Like Jira's, reading is
-/// configuration-agnostic: workflow states are per team and renamable, but each carries a fixed
+/// What this class does is the import snapshot, the viewer check that proves a key at registration,
+/// the verification behind <c>h9k task link-linear</c>, and the claim gate's assignee read and write.
+/// Like Jira's, reading is configuration-agnostic: workflow states are per team and renamable, but each carries a fixed
 /// <c>type</c>, and that type is what the mapping below reads, so any team's renames survive.
 /// </para>
 /// <para>
@@ -300,15 +300,17 @@ public sealed class LinearWorkItemProvider(
                     NotFound(identifier.Value, linkedTask).Message, TrackerReadFailure.Item);
             }
 
-            // Both members must be present: an issue object without an assignee member is not an
-            // answer about the assignee, and reading its absence as "nobody" would let a take
+            // Both members must be present: an issue object without an identifier does not establish
+            // which issue it answers for (the same rule as Map), and one without an assignee member is
+            // not an answer about the assignee. Reading either absence as "nobody" would let a take
             // overwrite whoever holds it.
             if (issue.ValueKind != JsonValueKind.Object
+                || ReadString(issue, "identifier") is not { Length: > 0 }
                 || !issue.TryGetProperty("assignee", out JsonElement assignee)
                 || assignee.ValueKind is not (JsonValueKind.Null or JsonValueKind.Object))
             {
                 return TrackerAssigneeRead.Unreadable(
-                    NotAnIssue(identifier, "the answer carries no assignee field, so it does not say who holds it").Message,
+                    NotAnIssue(identifier, "the answer carries no identifier or no assignee field, so it does not say who holds it").Message,
                     TrackerReadFailure.Item);
             }
 
@@ -328,8 +330,9 @@ public sealed class LinearWorkItemProvider(
     /// <summary>
     /// Put <paramref name="assigneeId"/> in the issue's assignee field, or clear it when null, with
     /// <c>issueUpdate</c> and nothing else in its input. Returned rather than thrown: a refusal is
-    /// Linear's own words plus the one fact the caller needs, that the key needs write permission on
-    /// the issue's team. Accepted is not proven; the caller reads the issue back.
+    /// Linear's own words, plus the fact that a write needs a key with write permission on the issue's
+    /// team, except where the failure was an outage, a missing issue or an unavailable key. Accepted
+    /// is not proven; the caller reads the issue back.
     /// </summary>
     public async Task<TrackerAssignmentWrite> SetAssigneeAsync(
         LinearIssueIdentifier identifier, string? assigneeId, CancellationToken cancellationToken)
@@ -340,8 +343,11 @@ public sealed class LinearWorkItemProvider(
             identifier.Value, cancellationToken);
         if (query.Data is not { } data)
         {
+            // The permission sentence states what a write needs, so it is left off where Linear's answer
+            // had nothing to do with the key's permissions: an outage, an issue Linear could not find,
+            // and a vault that could not produce the key at all.
             return TrackerAssignmentWrite.Refused(
-                query.Kind == TrackerReadFailure.Outage
+                query.Kind == TrackerReadFailure.Outage || query.KeyUnavailable || query.Failure is DomainNotFoundException
                     ? query.Failure!.Message
                     : $"{query.Failure!.Message} {NeedsWritePermission}");
         }
@@ -361,7 +367,7 @@ public sealed class LinearWorkItemProvider(
     }
 
     private const string NeedsWritePermission =
-        "The API key needs write permission on the issue's team to change its assignee.";
+        "Changing an assignee needs an API key with write permission on the issue's team.";
 
     private Uri RegisteredWorkspace() =>
         account.WorkspaceUrl
@@ -518,6 +524,14 @@ public sealed class LinearWorkItemProvider(
             return (RateLimited(response, verb, reported), TrackerReadFailure.Outage);
         }
 
+        // A server error is an outage whatever its errors array says: a gateway's "upstream not found"
+        // or an authentication code on a 5xx describes the failure, not an answer from Linear about
+        // the key or the issue, and the remedy for an outage is to wait.
+        if (response.StatusCode >= 500)
+        {
+            return (Unavailable(verb, response.StatusCode, reported), TrackerReadFailure.Outage);
+        }
+
         if (response.StatusCode is 401 or 403
             || Has(error => error.Code.Contains("AUTHENTICATION", StringComparison.OrdinalIgnoreCase)
                 || error.Type.Contains("authentication", StringComparison.OrdinalIgnoreCase)
@@ -532,7 +546,7 @@ public sealed class LinearWorkItemProvider(
             return (NotFound(subject, linkedTask, reported), TrackerReadFailure.Item);
         }
 
-        return response.StatusCode >= 500 || response.StatusCode == 0
+        return response.StatusCode == 0
             ? (Unavailable(verb, response.StatusCode, reported), TrackerReadFailure.Outage)
             : (new DomainValidationException($"Linear refused to {verb}.{Suffix(reported)}"), TrackerReadFailure.Item);
     }
@@ -572,7 +586,7 @@ public sealed class LinearWorkItemProvider(
             ? $"; its Retry-After is {RelayedText.OneLine(response.RetryAfter)}."
             : "; it sent no Retry-After.")
         + Suffix(reported)
-        + " Hall9k does not retry Linear calls on its own, so wait and run the command again.");
+        + " Hall9k does not retry a rate-limited Linear call within the same attempt, so wait before asking again.");
 
     private static DomainValidationException Unavailable(string verb, int status, string reported) => new(
         $"Linear failed while trying to {verb} (HTTP {status}).{Suffix(reported)} That is Linear's side rather "
