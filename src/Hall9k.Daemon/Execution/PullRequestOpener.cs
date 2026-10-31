@@ -461,7 +461,7 @@ public sealed class PullRequestOpener(
     internal async Task<IReadOnlySet<string>?> ReadLinearTeamKeysAsync(CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
-        IReadOnlySet<string>? keys = await LinearTeamKeys.TryReadAsync(query, cancellationToken, linearRequester);
+        IReadOnlySet<string>? keys = await LinearTeamKeys.TryReadAsync(query, linearRequester, cancellationToken: cancellationToken);
         if (keys is null)
         {
             logger.LogWarning(
@@ -843,12 +843,25 @@ public sealed class PullRequestOpener(
             return null;
         }
 
-        string unguarded = PullRequestBody.Title(task, prSummary) + "\n"
-            + PullRequestBody.Build(run, task, agentSummary, sourceUrl, prSummary);
-        IReadOnlySet<string>? keys = RelayedText.HasLinearKeyShape(unguarded, linear.OwnIdentifier)
+        IReadOnlySet<string>? keys = NeedsTeamKeys(run, task, agentSummary, sourceUrl, prSummary, linear.OwnIdentifier)
             ? await linear.ReadTeamKeysAsync(cancellationToken)
             : null;
         return new LinearTextScope(linear.OwnIdentifier, keys);
+    }
+
+    /// <summary>
+    /// Whether any text the pull request could carry holds a key-shaped token other than the task's
+    /// own, which is the only case the team keys are worth a call for. The objective is part of that
+    /// text because the Linear title falls back to it whenever the authored title is left with no
+    /// words, which the non-Linear title composed here would have kept as it was written.
+    /// </summary>
+    internal static bool NeedsTeamKeys(
+        RunDetails run, TaskDetails task, string? agentSummary, Uri? sourceUrl,
+        PrSummaryParser.PrSummary? prSummary, string? ownIdentifier)
+    {
+        string unguarded = PullRequestBody.Title(task, prSummary) + "\n" + task.Objective + "\n"
+            + PullRequestBody.Build(run, task, agentSummary, sourceUrl, prSummary);
+        return RelayedText.HasLinearKeyShape(unguarded, ownIdentifier);
     }
 
     /// <summary>

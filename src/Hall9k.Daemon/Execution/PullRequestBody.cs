@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Run.Projections;
@@ -72,16 +73,17 @@ internal static class PullRequestBody
     /// live <c>Fixes #12</c> once the identifier between them is gone.
     /// <para>
     /// A title left with no words after the drop is not a title: an authored one falls back to the
-    /// objective, as a blank one does, and an objective left with no words is the task's own
+    /// objective, as a blank one does (and so does one the drop reduced to the task's own identifier), and an objective left with no words is the task's own
     /// identifier alone, or <c>Untitled change</c> on a task with none.
     /// </para>
     /// </summary>
     private static string LinearTitle(
         TaskDetails task, PrSummaryParser.PrSummary? prSummary, string? key, LinearTextScope linear)
     {
-        string? authored = prSummary?.Title is { } written && LinearOneLine(written, linear) is { } folded && HasWords(folded)
-            ? folded
-            : null;
+        string? authored = prSummary?.Title is { } written && LinearOneLine(written, linear) is { } folded
+            && HasTitleWords(folded, RelayedText.OneLine(written).Trim(), linear)
+                ? folded
+                : null;
         if (authored is not null)
         {
             return CutAtWordBoundary(WithExternalKey(authored, key), MaxTitleLength);
@@ -104,6 +106,19 @@ internal static class PullRequestBody
     }
 
     private static bool HasWords(string text) => text.Any(char.IsLetterOrDigit);
+
+    /// <summary>
+    /// Whether a guarded authored title still says something. A title the guard left as it found it
+    /// is kept as written, the task's own identifier alone included. One the guard changed has to
+    /// hold words beyond that identifier: <c>ENG-123: DES-5</c> comes out of the drop as just
+    /// <c>ENG-123</c>, which is the key the title would be given anyway and says nothing about the change.
+    /// </summary>
+    private static bool HasTitleWords(string guarded, string unguarded, LinearTextScope linear) =>
+        HasWords(guarded)
+        && (string.Equals(guarded, unguarded, StringComparison.Ordinal)
+            || linear.OwnIdentifier is not { Length: > 0 } own
+            || HasWords(Regex.Replace(
+                guarded, $"(?<![A-Za-z0-9]){Regex.Escape(own)}(?![A-Za-z0-9])", string.Empty, RegexOptions.IgnoreCase)));
 
     /// <summary>
     /// How long a fallback title is allowed to be. 72 because the title is a squash-merge commit
