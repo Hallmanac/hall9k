@@ -1569,8 +1569,19 @@ carries `assigneeId` alone, so no state or label moves), reads the
 item back, records `TrackerAssignmentWritten` from that read-back, and queues — so the gate then
 passes on its own instead of the task sitting in the queue waiting for a second act. It only ever
 moves an item from unassigned to this install: one somebody else holds is refused with exit 70
-naming the holder, nothing is written, the task is left exactly as it was, and **there is no flag
-that takes an item from another person**. Already yours records the observation and proceeds; an
+naming the holder, nothing is written, and the task is left exactly as it was, unless an operator
+at a terminal confirms a reassignment. **No flag takes an item from another person, and nothing
+unattended does; an interactive confirm at `h9k task queue` or `h9k task assign --take` can.** At a
+terminal (stdin, stdout and stderr all terminals, and none of `HALL9K_DISPATCHED_RUN_ID`,
+`HALL9K_DETACHED_SESSION` or `CLAUDE_PID` set) those doors name every holder as the tracker shows
+them and ask, defaulting to no; a no refuses (`--take`) or warns and queues (plain queue) as before,
+and a task already queued for you reaches the same offer through `h9k task queue <id>` without
+losing its rank. A yes reads the item again, writes only if the same holders are still on it (GitHub
+as one `gh issue edit` that adds you and removes them), reads it back, and records
+`TrackerAssignmentReassigned` in place of `TrackerAssignmentWritten`. If the ledger says another node
+holds the task nothing is offered and the line points at `h9k task take <id> --reason "<why>"`.
+`h9k task drive` and `h9k task start` offer nothing; their refusal points at `h9k task queue`.
+Already yours records the observation and proceeds; an
 unreadable tracker refuses rather than writing blind. A read-back that comes back naming somebody
 else *beside* this install is refused too, and it is the one outcome only GitHub can produce
 (`--add-assignee` adds where Jira's `PUT` and Linear's single-valued `assigneeId` replace): two installs took the same issue in the same
@@ -1578,7 +1589,8 @@ moment, so neither may claim it, and the refusal names who else is on it and say
 them rather than to run the command again. The write is a **field update, never a
 transition** — the item's status, labels and milestone are untouched — but a team's own board
 automation may react to an assignment, which is why the flag is explicit. Without it, an
-interactive queue offers the same take on an unassigned item (defaulting to no) and a
+interactive queue offers the same take on an unassigned item and the reassignment on a held one
+(each defaulting to no) and a
 non-interactive one warns and proceeds without writing anything. `--take` where there is no gate
 to satisfy (gate off, or no linked Jira card, GitHub issue, or Linear issue) is refused rather than quietly honoured.
 The assignee follows a claim and a give-back (`h9k task abandon`, lease expiry on a gate-off
