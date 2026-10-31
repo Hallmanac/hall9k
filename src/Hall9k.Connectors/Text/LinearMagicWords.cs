@@ -33,15 +33,20 @@ internal static class LinearMagicWords
     /// <summary>Words that unlink a pull request from an issue, which is a state change of its own, so they are guarded before any identifier, the task's own included.</summary>
     public static readonly IReadOnlyList<string> Unlinking = ["skip", "ignore"];
 
+    /// <summary>One whitespace character that is not a line break, which is what <c>\s</c> is on a single line.</summary>
+    public const string LineSpace = @"[^\S\r\n]";
+
     /// <summary>
-    /// A linking word and the run of spaces, tabs, and colons Linear lets sit between it and an
-    /// identifier. The <c>unlinking</c> group is set when the word is one of <see cref="Unlinking"/>.
-    /// Case is ignored, as Linear's own matcher ignores it.
+    /// A linking word and the run of colons and whitespace on its line that Linear lets sit between it
+    /// and an identifier. Linear's published pattern says <c>[\s:]+</c>, so the whitespace is every
+    /// Unicode space (a non-breaking space pasted from a rich-text source included) and not only the
+    /// space and the tab; a line break is left out because the matcher reads one line at a time.
+    /// The <c>unlinking</c> group is set when the word is one of <see cref="Unlinking"/>. Case is ignored, as Linear's own matcher ignores it.
     /// </summary>
     public static readonly Regex LinkingWord = new(
-        @"(?<![A-Za-z0-9_])(?:(?<unlinking>" + Alternation(Unlinking) + ")|" + Alternation([.. Closing, .. NonClosing]) + @")[ \t:]+",
+        @"(?<![A-Za-z0-9_])(?:(?<unlinking>" + Alternation(Unlinking) + ")|" + Alternation([.. Closing, .. NonClosing]) + @")(?:" + LineSpace + "|:)+",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     private static string Alternation(IEnumerable<string> words) =>
-        string.Join('|', words.Select(word => Regex.Escape(word).Replace("\\ ", @"[ \t]+", StringComparison.Ordinal)));
+        string.Join('|', words.Select(word => Regex.Escape(word).Replace("\\ ", LineSpace + "+", StringComparison.Ordinal)));
 }

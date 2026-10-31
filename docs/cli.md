@@ -1966,8 +1966,8 @@ Linear also acts on its own magic words (`closes`, `fixes`, `resolves`, `complet
 `linear issue`, `ref`, `refs`, `references`, `part of`, `contributes to`, `toward`, `towards`, `updates`,
 and `skip` and `ignore`, which unlink) in front of an identifier, in a pull request's title or description,
 and it reads them inside code spans and fenced blocks too. So the title and body Hall9k composes pass
-through a guard that works on the raw text. When a linking word is followed, after only spaces, tabs, or
-colons on the same line, by an identifier of any issue but the task's own (a bare identifier, a Linear
+through a guard that works on the raw text. When a linking word is followed, after only whitespace or
+colons on the same line (a non-breaking space counts, as it does to Linear), by an identifier of any issue but the task's own (a bare identifier, a Linear
 issue URL with or without its slug, or a markdown link to either, alone or in a list joined by commas,
 `and`, or `&`), the guard inserts the neutral word `ticket` directly before the first such target:
 `Fixes ENG-123, DES-5` on task ENG-123 reads `Fixes ENG-123, ticket DES-5`. `skip` and `ignore` get the
