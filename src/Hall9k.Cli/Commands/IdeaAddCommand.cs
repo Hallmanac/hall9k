@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Ledger;
-using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Owner;
