@@ -336,9 +336,9 @@ tracker credentials are local to their own install). This carried identity is ne
 by the granting node for a GitHub-gated project: `ClaimRequestWatchLoop.ApplyDeclaredTrackerIdentity`
 replaces it with the requester's own node's declared GitHub login (`node.yaml`'s own declaration,
 read through the ledger's trust chain) before the request is ever recorded, since the carried value
-is otherwise self-declared and unverified — a Jira-linked task is the one exception, since the
-declaration carries no Jira identity and the carried accountId is what the granting node actually
-has to go on (idea 6be68ee2, trust-ledger finding 13). Queues only, the `h9k message send`
+is otherwise self-declared and unverified — a Jira- or Linear-linked task is the exception, since
+the declaration carries no Jira or Linear identity and the carried accountId or user id is what the
+granting node actually has to go on (idea 6be68ee2, trust-ledger finding 13). Queues only, the `h9k message send`
 convention — the daemon's own message sweep is what actually sends it. The project's own
 `take-policy` setting (`h9k project set --take-policy
 <auto|ask>`, default `auto`) decides how the holder's node answers, through
@@ -1328,8 +1328,10 @@ h9k task write-jira <task> --op create --file <payload.json>  # hall9k executes 
 h9k task link-jira <task> PROJ-123                # record a pre-existing card, verified against Jira first
 ```
 
-Linear (`--from-linear`, `h9k task link-linear`) is connected as a **read** credential only on this
-surface; it follows the same observation-gate pattern as Jira. One Linear workspace per install:
+Linear (`--from-linear`, `h9k task link-linear`) follows the same observation-gate pattern as Jira. Its
+key needs **write** permission on a team's issues as well as read: the take, a release, a grant and the
+daemon's assignee mirror write `issueUpdate` through it, so a read-only key is refused on every take and
+leaves a retrying mirror row after every claim. One Linear workspace per install:
 
 ```bash
 h9k connection add linear                          # prompts for the API key; or --token-env <VAR> / (macOS) --keychain <SERVICE>

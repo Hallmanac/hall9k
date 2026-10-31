@@ -109,14 +109,12 @@ public sealed class TrackerClaimGate(
         }
 
         ExternalReference item = reference!;
-        if (item.Provider == WorkItemProvider.Jira)
+        return item.Provider switch
         {
-            return await CheckJiraAsync(store, item, cancellationToken);
-        }
-
-        return item.Provider == WorkItemProvider.Linear
-            ? await CheckLinearAsync(store, item, cancellationToken)
-            : await CheckGitHubAsync(item, workingDirectory, cancellationToken);
+            _ when item.Provider == WorkItemProvider.Jira => await CheckJiraAsync(store, item, cancellationToken),
+            _ when item.Provider == WorkItemProvider.Linear => await CheckLinearAsync(store, item, cancellationToken),
+            _ => await CheckGitHubAsync(item, workingDirectory, cancellationToken),
+        };
     }
 
     /// <summary>

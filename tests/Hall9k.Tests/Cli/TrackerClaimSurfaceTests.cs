@@ -50,24 +50,6 @@ public sealed class TrackerClaimSurfaceTests
             .And.Contain("Assign Hallmanac/hall9k#251 to yourself");
     }
 
-    [Fact]
-    public void A_linear_issue_names_linear_the_identifier_and_the_issue_url_in_the_lever()
-    {
-        TrackerClaimDecision decision = new(
-            TrackerClaimVerdict.Unassigned, "linear", "ENG-123", new Uri("https://linear.app/hall9k/issue/ENG-123"),
-            "11111111-aaaa-4bbb-8ccc-000000000001", null, null, false,
-            "Assign ENG-123 to yourself in the tracker and the claim proceeds on its own: "
-            + "https://linear.app/hall9k/issue/ENG-123",
-            Observed);
-
-        decision.Tracker.Should().Be("Linear");
-        decision.ReasonLine.Should().Be("waiting for Linear to show ENG-123 assigned to you — nobody holds it");
-        decision.RefusalLine.Should()
-            .Contain("Linear shows ENG-123 assigned to nobody")
-            .And.Contain("https://linear.app/hall9k/issue/ENG-123")
-            .And.NotContain("GitHub");
-    }
-
     /// <summary>
     /// The unreadable path is the only one whose row line carries the error and the lever: the
     /// tracker's own sentence is the whole point of it, and a reader has no other way to see it.

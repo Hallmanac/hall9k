@@ -217,7 +217,7 @@ public sealed class ClaimRequestWatchLoop(
         // node's own declared login from its node.yaml (the 37749bc6 declaration, TrustChain
         // .NodeDeclarations) before TaskTakeRequested is ever appended, so both the auto-grant below
         // and the manual h9k task grant path (which reads the stored PendingTakeRequesterTrackerIdentity)
-        // see the declared value. Replaced whenever the task is not already known to be Jira-linked —
+        // see the declared value. Replaced whenever the task is not already known to be Jira- or Linear-linked —
         // never gated on the project's own ClaimGate or on whether the task is linked to a GitHub item
         // yet, because both can change between this request landing and the eventual grant (a later
         // --claim-gate change, or a later link), and GrantTrackerAssigneeBestEffortAsync re-reads both
@@ -225,9 +225,9 @@ public sealed class ClaimRequestWatchLoop(
         // a stale unreplaced value survive to that later grant (independent pre-PR review, cycle 1,
         // conformance and adversarial lenses, both medium). Substituting costs nothing for an
         // ungated or unlinked task: GrantTrackerAssigneeBestEffortAsync only ever reads this value once
-        // ClaimGate and ExternalReference are both non-null at grant time anyway. A Jira-linked request
-        // is untouched: the declaration carries no Jira identity, and the carried accountId is already
-        // recorded on TaskTakeRequested as an audit fact.
+        // ClaimGate and ExternalReference are both non-null at grant time anyway. A Jira- or Linear-linked
+        // request is untouched: the declaration carries no Jira or Linear identity, and the carried
+        // accountId or user id is already recorded on TaskTakeRequested as an audit fact.
         TaskDetails? taskForGate = await session.LoadAsync<TaskDetails>(request.TaskId, cancellationToken);
         WorkItemProvider? externalReferenceProvider = taskForGate?.ExternalReference is { } rawReference
             ? ExternalReference.Parse(rawReference).Provider

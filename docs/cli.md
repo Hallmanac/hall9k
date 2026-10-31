@@ -740,7 +740,7 @@ saw. A tracker that cannot be read refuses too: a take that cannot see who holds
 know it is taking it from nobody. And an item that was unassigned a moment ago but comes back from
 the read-back naming somebody else *beside* you is refused as well — two installs took it in the
 same moment, so neither may claim it. That one is GitHub-only, because `--add-assignee` adds where
-Jira's write replaces, and the refusal names who else is on the issue and says to settle it with
+Jira's write and Linear's single-valued `assigneeId` replace, and the refusal names who else is on the issue and says to settle it with
 them: your login is on the issue too, the take never removes an assignment from one, and re-running
 would simply find it assigned to you both.
 
@@ -753,7 +753,9 @@ leaves the assignee where it is. A finished item keeps its assignee, so on a gat
 different install's later claim on that item is held until a person reassigns it in the tracker.
 
 The write is a **field update and never a transition**: Jira gets an ordinary update carrying
-`assignee` and nothing else, GitHub gets `gh issue edit --add-assignee`, and neither touches the
+`assignee` and nothing else, Linear gets an `issueUpdate` whose input carries `assigneeId` alone (a
+release sends an explicit null, and the key needs write permission on the issue's team), GitHub gets
+`gh issue edit --add-assignee`, and none of them touches the
 item's status, labels or milestone — which state an item belongs in is your team's workflow. Be
 aware, though, that your own board automation may react to an assignment; that is the one
 consequence Hall9k cannot see. On GitHub, only a login that can be assigned on that repository — a
@@ -1910,7 +1912,7 @@ an existing `linear:` link only when Linear's answer for the new identifier list
 issue's previous identifiers; every other second link is refused as it is for Jira and GitHub. A branch
 already recorded on a run keeps its name.
 
-Every Linear failure is classified so a later gate can reuse it: a GraphQL `errors` array is a failure
+Every Linear failure is classified, and the claim gate acts on that class: a GraphQL `errors` array is a failure
 whatever the HTTP status (including a 200 with partial data), a 429 or `RATELIMITED` answer is an outage
 that reports Linear's `Retry-After`, a rejected key, an unreadable issue, and an outage are told apart, and
 an error nothing recognizes quotes Linear's own message on one line. `h9k task show` renders a Linear link
