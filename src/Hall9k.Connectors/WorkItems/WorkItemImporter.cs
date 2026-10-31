@@ -115,7 +115,7 @@ public sealed class WorkItemImporter(params IWorkItemProvider[] providers)
             : throw new DomainValidationException(
                 $"{RelayedText.OneLine(item.Reference.ToString())} was not open when Hall9k read it: "
                 + $"the source said '{RelayedText.OneLine(item.Status.ToString())}' ({item.ObservedStamp}), "
-                + "and an idea is captured from work a source positively calls open or, for Linear, in triage."
+                + "and an idea, or a task cut from one, takes the link only from work a source positively calls open or, for Linear, in triage."
                 + (remedy.IsBlank() ? string.Empty : $" {remedy}"));
     }
 
