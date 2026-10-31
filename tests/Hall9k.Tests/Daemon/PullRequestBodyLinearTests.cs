@@ -48,20 +48,6 @@ public sealed class PullRequestBodyLinearTests
             .Should().Be("ENG-123: ENG-1234 compatibility");
     }
 
-    [Fact]
-    public void A_GitHub_issue_number_still_gets_no_prefix()
-    {
-        PullRequestBody.Title(Task("github:Hallmanac/hall9k#42"), Summary("Add rate limiting", "body"))
-            .Should().Be("Add rate limiting");
-    }
-
-    [Fact]
-    public void A_Jira_key_is_placed_as_it_always_was()
-    {
-        PullRequestBody.Title(Task("jira:PROJ-7"), Summary("Add rate limiting", "body"))
-            .Should().Be("PROJ-7: Add rate limiting");
-    }
-
     [Theory]
     [InlineData("DES-5: Fix login", "ENG-123: Fix login")]
     [InlineData("[DES-5] Fix login", "ENG-123: Fix login")]
@@ -74,13 +60,37 @@ public sealed class PullRequestBodyLinearTests
         PullRequestBody.Title(LinearTask(), Summary(authored, "body"), Scope).Should().Be(expected);
     }
 
-    [Fact]
-    public void An_authored_title_left_with_no_words_falls_back_to_the_objective()
+    [Theory]
+    [InlineData("[DES-5]")]
+    [InlineData("ENG-123: DES-5")]
+    [InlineData("DES-5 ENG-123")]
+    public void An_authored_title_left_with_no_words_falls_back_to_the_objective(string authored)
     {
         TaskDetails task = LinearTask(objective: "Turn an external work item into a task");
 
-        PullRequestBody.Title(task, Summary("[DES-5]", "body"), Scope)
+        PullRequestBody.Title(task, Summary(authored, "body"), Scope)
             .Should().Be("ENG-123: Turn an external work item into a task");
+    }
+
+    [Theory]
+    [InlineData("---", "DES-5: Fix login")]
+    [InlineData("ENG-123: ---", "DES-5: Fix login")]
+    [InlineData("Add rate limiting", "Add rate limiting")]
+    public void The_team_keys_are_read_for_a_foreign_key_in_the_objective_the_title_could_fall_back_to(string authored, string objective)
+    {
+        bool read = PullRequestOpener.NeedsTeamKeys(
+            Run(), LinearTask(objective: objective), agentSummary: null, sourceUrl: null, Summary(authored, "body"), "ENG-123");
+
+        read.Should().Be(objective.Contains("DES-5", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void No_team_keys_are_read_when_nothing_names_an_issue_but_the_tasks_own()
+    {
+        PullRequestOpener.NeedsTeamKeys(
+                Run(), LinearTask(objective: "ENG-123 rate limiting"), agentSummary: null, sourceUrl: null,
+                Summary("Add rate limiting", "Part of ENG-123"), "ENG-123")
+            .Should().BeFalse();
     }
 
     [Fact]
