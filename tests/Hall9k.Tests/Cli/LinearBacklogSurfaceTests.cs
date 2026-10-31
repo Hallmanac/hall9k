@@ -117,11 +117,12 @@ public sealed class LinearBacklogSurfaceTests
         TaskShowCommand.UnlinkedLinearRow(Task(TaskState.Draft), Project()).Should().BeNull();
 
     [Fact]
-    public void Task_show_says_nothing_for_a_task_whose_story_has_ended()
-    {
+    public void Task_show_says_nothing_for_an_abandoned_task_because_it_cannot_be_linked() =>
         TaskShowCommand.UnlinkedLinearRow(Task(TaskState.Abandoned), Project()).Should().BeNull();
-        TaskShowCommand.UnlinkedLinearRow(Task(TaskState.Done), Project()).Should().BeNull();
-    }
+
+    [Fact]
+    public void Task_show_still_says_no_Linear_issue_is_linked_for_a_done_task_because_a_link_is_still_accepted() =>
+        TaskShowCommand.UnlinkedLinearRow(Task(TaskState.Done), Project()).Should().NotBeNull();
 
     [Fact]
     public void Task_show_says_nothing_for_a_task_that_carries_an_issue() =>

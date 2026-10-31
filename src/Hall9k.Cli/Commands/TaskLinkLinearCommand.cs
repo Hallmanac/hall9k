@@ -108,17 +108,25 @@ public sealed class TaskLinkLinearCommand : Hall9kAsyncCommand<TaskLinkLinearCom
                 + "carry it.");
         }
 
+        // The record is refreshed on either outcome: a failed Linear create at publish leaves a record
+        // with no reference (and a no-key branch), and this command is the remedy that publish names, so
+        // a teammate adopting by the issue's identifier finds the task rather than minting a second one.
+        // The write is idempotent, so an already linked task whose record is current writes nothing.
+        string shortId = TaskListCommand.ShortId(taskId);
         if (result.Outcome == LinkOutcome.AlreadyLinked)
         {
             AnsiConsole.MarkupLine(
-                $"[green]Already linked[/]: task {TaskListCommand.ShortId(taskId)} carries "
+                $"[green]Already linked[/]: task {shortId} carries "
                 + $"{issue.Reference.ToString().EscapeMarkup()}. [dim]Nothing to do.[/]");
+            await TaskPublishCommand.WriteRecordAsync(
+                store, taskId, shortId, project, context, criteriaChanged: false,
+                TaskPublishCommand.NewLedger(), cancellationToken);
             return ExitCodes.Ok;
         }
 
         ExternalReference? replaced = result.Replaced;
         AnsiConsole.MarkupLine(
-            $"[green]Linked[/] task {TaskListCommand.ShortId(taskId)} to "
+            $"[green]Linked[/] task {shortId} to "
             + $"{issue.Reference.ToString().EscapeMarkup()}: "
             + $"{ExternalText.OneLineMarkup(issue.Title)}");
         if (replaced is not null)
@@ -134,6 +142,9 @@ public sealed class TaskLinkLinearCommand : Hall9kAsyncCommand<TaskLinkLinearCom
             AnsiConsole.MarkupLine($"[dim]  {url.ToString().EscapeMarkup()}[/]");
         }
 
+        await TaskPublishCommand.WriteRecordAsync(
+            store, taskId, shortId, project, context, criteriaChanged: false,
+            TaskPublishCommand.NewLedger(), cancellationToken);
         return ExitCodes.Ok;
     }
 

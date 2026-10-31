@@ -192,7 +192,7 @@ public static class CliCommandTree
                     + "(--linear binds one and makes Linear the project's one tracker, so the other "
                     + "trackers' links are refused and the branch template becomes {key}-{slug} the "
                     + "first time), the backlog "
-                    + "policy that tracks every published task (none, github-issues, jira) and its "
+                    + "policy that tracks every published task (none, github-issues, jira, linear) and its "
                     + "routing guidance, the branch-name template task branches are cut under, "
                     + "whether a pull request assigned to this install's own GitHub login auto-starts "
                     + "a pr-review task and at what speed, the claim gate that makes a linked card's "

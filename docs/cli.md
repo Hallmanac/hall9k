@@ -1836,8 +1836,13 @@ a by-hand create and then the link. If the outcome is unknown (a timeout, a lost
 an `errors` array that arrives beside a non-null `data` field, or an answer that cannot be read), the
 issue may exist, so it says to search the team before linking or creating,
 because creating by hand could file a duplicate. `h9k task show` keeps the gap visible afterwards: a
-task past Draft with no linked issue and no untracked attestation says no Linear issue is linked and
-names `h9k task link-linear`.
+task past Draft (an abandoned one excepted, because it cannot be linked) with no linked issue and no
+untracked attestation says no Linear issue is linked and names `h9k task link-linear`. That command
+also refreshes the task's ledger record once the link is on the stream, so the record a failed create
+left without a reference carries the issue and another node adopting it by its identifier finds the
+task. Everything after the publish commits is owed to the operator even when they press Ctrl-C: a create
+or read-back cut short is reported as an unknown outcome with the same remedy, the record is still
+written, a `--queue` that did not happen is said so, and the command exits non-zero.
 
 `--queue`, and the interactive offer to queue, are the one place the "one transaction" promise gives
 way. On a publish that creates a Linear issue the go signal is appended only after the link attempt,

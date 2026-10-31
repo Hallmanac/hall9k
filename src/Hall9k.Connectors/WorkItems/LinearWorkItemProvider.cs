@@ -51,9 +51,10 @@ public sealed record LinearIssueCreateRequest(string TeamId, string? StateId, st
 /// <summary>
 /// How a create ended, in the three classes the caller has to tell apart because they call for
 /// different remedies: <see cref="Created"/> (Linear returned an identifier), <see cref="Refused"/>
-/// (Linear definitely did not create it: a GraphQL <c>errors</c> array, <c>success: false</c>, or a 4xx
-/// response), and <see cref="Unknown"/> (a timeout, a lost connection, a 5xx, or an answer that cannot
-/// be read, so the issue may exist and a by-hand create could file a duplicate).
+/// (Linear definitely did not create it: a GraphQL <c>errors</c> array with nothing in <c>data</c>,
+/// <c>success: false</c>, or a 4xx response), and <see cref="Unknown"/> (a timeout, a lost connection, a
+/// 5xx, errors beside non-null <c>data</c>, or an answer that cannot be read, so the issue may exist and
+/// a by-hand create could file a duplicate).
 /// </summary>
 public enum LinearCreateOutcome
 {

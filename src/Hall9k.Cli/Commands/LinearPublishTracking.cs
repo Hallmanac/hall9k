@@ -46,6 +46,11 @@ internal static class LinearPublishTracking
     /// <summary>Longer titles are cut here. Linear's own limit is not stated in its documentation, so this is the safe side of GitHub's 256.</summary>
     private const int TitleMaxLength = 255;
 
+    /// <summary>How long the record write after a committed publish may take. It is detached from Ctrl-C (see <see cref="TrackAsync"/>), so it needs a bound of its own.</summary>
+    private static readonly TimeSpan RecordWriteBudget = TimeSpan.FromMinutes(1);
+
+    private const string CancelledWhileWaiting = "the command was cancelled while it waited for Linear";
+
     /// <summary>
     /// Resolve the project's team through Linear, or refuse the publish before it commits. Called only
     /// when the publish will create an issue; a publish with <c>--untracked</c>, or for a task that
@@ -100,6 +105,13 @@ internal static class LinearPublishTracking
     /// publish that creates nothing (an untracked task, an already linked one) is not deferred: the
     /// caller appends its go signal in the publish transaction, so <paramref name="queueFor"/> is
     /// passed only for one that creates.
+    /// <para>
+    /// Every step here is past the commit, so a cancelled <paramref name="cancellationToken"/> (Ctrl-C)
+    /// ends the wait on Linear but never skips the report: a create cut short is worded as the unknown
+    /// outcome it is, the task record is still written (without one the claim has no holder lock to
+    /// take), and the go signal is reported as not queued. The record write runs on a token of its own
+    /// with a bound, for that reason; a second Ctrl-C still ends the process.
+    /// </para>
     /// </summary>
     internal static async Task<LinearTrackingResult> TrackAsync(
         DocumentStore store,
@@ -149,8 +161,7 @@ internal static class LinearPublishTracking
         // issue's identifier. And it goes in on every outcome, an untracked task and a failed create
         // included: a task with no tracker item gets a record too (Brian, 2026-09-13), and without
         // one its claim has no holder lock to take.
-        await TaskPublishCommand.WriteRecordAsync(
-            store, taskId, shortId, project, context, criteriaChanged: false, ledger, cancellationToken);
+        await WriteRecordPastCancellationAsync(store, taskId, shortId, project, context, ledger);
 
         if (queueFor is null)
         {
@@ -173,9 +184,33 @@ internal static class LinearPublishTracking
     }
 
     /// <summary>
+    /// The task record, written on a token that Ctrl-C does not cancel. The publish has committed, and a
+    /// task with no record has no holder lock to take at claim, so the record is part of the commit and
+    /// not of the wait on Linear. A write that outruns <see cref="RecordWriteBudget"/> is reported.
+    /// </summary>
+    private static async Task WriteRecordPastCancellationAsync(
+        DocumentStore store, Guid taskId, string shortId, ProjectDetails project, BootstrapContext context,
+        ILedger ledger)
+    {
+        using CancellationTokenSource budget = new(RecordWriteBudget);
+        try
+        {
+            await TaskPublishCommand.WriteRecordAsync(
+                store, taskId, shortId, project, context, criteriaChanged: false, ledger, budget.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]  Note:[/] [dim]Task {shortId} is published, but writing its task record did not "
+                + "finish in time. h9k task link-linear writes it once an issue is linked.[/]");
+        }
+    }
+
+    /// <summary>
     /// The go signal, appended once the link is on the stream. Its own transaction, on a re-read task:
     /// the publish already committed without it, and the aggregate the caller holds predates the link.
-    /// A failure is reported and leaves the task published and not queued, which is safe and visible.
+    /// A failure is reported and leaves the task published and not queued, which is safe and visible; a
+    /// cancellation is one, because the publish has committed and the report is owed whatever stopped it.
     /// </summary>
     private static async Task<TaskAssigned?> QueueAfterLinkAsync(
         DocumentStore store,
@@ -195,7 +230,7 @@ internal static class LinearPublishTracking
             await session.SaveChangesAsync(cancellationToken);
             return assigned;
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception)
         {
             AnsiConsole.MarkupLine(
                 $"[yellow]  Note:[/] [dim]Task {shortId} is published and linked, but queueing it failed: "
@@ -231,14 +266,15 @@ internal static class LinearPublishTracking
                     GitHubIssueBody.Compose(task.AgentContext, task.AcceptanceCriteria, truncatedObjective)),
                 cancellationToken);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception)
         {
-            // Nothing in the provider is expected to throw past its own classification, but if it does
-            // the request may already have left, so this is the unknown outcome and never the refused one.
+            // Nothing in the provider is expected to throw past its own classification, but a cancelled
+            // wait does (the publish has committed, so Ctrl-C ends the wait and not the report). Either
+            // way the request may already have left, so this is the unknown outcome and never the refused one.
             creation = new LinearIssueCreation(
                 LinearCreateOutcome.Unknown,
                 null,
-                new DomainValidationException(exception.Message));
+                new DomainValidationException(ThrownReason(exception)));
         }
 
         if (creation.Outcome != LinearCreateOutcome.Created || creation.Identifier is not { } created)
@@ -262,9 +298,9 @@ internal static class LinearPublishTracking
         {
             attempt = await target.Provider.TryReadCreatedIssueAsync(created, cancellationToken);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception)
         {
-            attempt = new LinearIssueAttempt(null, new DomainValidationException(exception.Message), TrackerReadFailure.Item);
+            attempt = new LinearIssueAttempt(null, new DomainValidationException(ThrownReason(exception)), TrackerReadFailure.Item);
         }
 
         if (attempt.Read is not { } read)
@@ -286,11 +322,11 @@ internal static class LinearPublishTracking
                 await session.SaveChangesAsync(cancellationToken);
             }
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception)
         {
             AnsiConsole.MarkupLine(
                 $"[yellow]  Note:[/] [dim]Created {identifier.EscapeMarkup()} in Linear but could not link it: "
-                + $"{ExternalText.OneLineMarkup(exception.Message)} Link it by hand:[/] {byHand}");
+                + $"{ExternalText.OneLineMarkup(ThrownReason(exception))} Link it by hand:[/] {byHand}");
             return false;
         }
 
@@ -305,4 +341,8 @@ internal static class LinearPublishTracking
 
         return true;
     }
+
+    /// <summary>What a step past the commit threw, in words: a cancellation says what stopped it rather than quoting the framework.</summary>
+    private static string ThrownReason(Exception exception) =>
+        exception is OperationCanceledException ? $"{CancelledWhileWaiting}." : exception.Message;
 }
