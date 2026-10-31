@@ -57,6 +57,13 @@ internal static class LinearDoctor
         string names = string.Join(", ", linearProjects.Select(project => project.Name));
         AnsiConsole.MarkupLine("[bold]Linear[/]");
 
+        // Before the probe, and apart from it: this reads only the projects already loaded, so it
+        // needs no network and is not lost to a failure of the connection check below.
+        foreach (string warning in BranchTemplateWarnings(linearProjects))
+        {
+            AnsiConsole.MarkupLine(warning);
+        }
+
         LinearProbe probe = await ProbeAsync(
             async () => await WorkItemConnections.TryLinearProviderAsync(session, cancellationToken), cancellationToken);
         switch (probe.Outcome)
@@ -90,6 +97,24 @@ internal static class LinearDoctor
                 break;
         }
     }
+
+    /// <summary>
+    /// One warning for each Linear-tracked project whose branch template carries no <c>{key}</c>
+    /// token. Hall9k writes no magic word into a pull request for the task's own issue, so Linear
+    /// links the pull request through the identifier in the branch name, and the default template
+    /// (<c>task/{shortid}-{slug}</c>) carries none. Unlike the warning <c>h9k project set</c> gives at
+    /// bind time, this one sees a template changed afterwards, <c>--branch-template none</c> included.
+    /// It reads the project's settings alone and makes no network call.
+    /// </summary>
+    internal static IReadOnlyList<string> BranchTemplateWarnings(IEnumerable<ProjectDetails> linearProjects) =>
+        [.. linearProjects
+            .Where(project => !project.BranchNameTemplate.UsesToken(BranchNameTemplate.KeyToken))
+            .Select(project =>
+                $"[yellow]  {project.Name.EscapeMarkup()}'s branch template '{project.BranchNameTemplate.Value.EscapeMarkup()}' "
+                + "has no {key}[/], and Linear links a pull request to its issue through the identifier in the "
+                + "branch name, because Hall9k writes no magic word for the task's own issue. Branches cut from "
+                + "this template will not be linked. To cut branches Linear can follow: "
+                + $"[bold]h9k project set {project.Name.EscapeMarkup()} --branch-template \"{{key}}-{{slug}}\"[/]")];
 
     /// <summary>
     /// The probe itself, apart from the printing and the store so it can be driven with a fixture requester. Never
