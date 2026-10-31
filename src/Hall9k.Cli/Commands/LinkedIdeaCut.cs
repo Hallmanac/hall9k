@@ -20,8 +20,8 @@ namespace Hall9k.Cli.Commands;
 /// the workspace file, under every refusal <c>h9k task add --from-linear</c> has plus the idea-side state
 /// rule that lets Linear's triage through. It is created unlinked at the human's word
 /// (<c>--unlinked</c>), reading no tracker. Or it is created unlinked because a task cut from the same
-/// idea already holds the item, which is checked on the idea's stored reference before any tracker read so
-/// that it works after the item has closed.
+/// idea already holds the item, which is checked on the stored reference and on the references the idea's
+/// cut tasks carry, before any tracker read, so that it works after the item has closed or moved.
 /// </para>
 /// <para>
 /// Every refusal of the first outcome names its cause and the two exits that stay open: a task cut with no
@@ -53,15 +53,16 @@ internal static class LinkedIdeaCut
             return new Resolution(null, null);
         }
 
-        // A task cut from this idea that still holds the item is asked about on the stored reference,
-        // before any tracker read, so a cut works after the item has closed or moved. "Holds" is the
-        // adoption guard's own reading (any state but Abandoned, and the solution-epic exception), so a
-        // cut that exception admits is not one that gets here and adopts as usual below.
-        SharedIssueBar? bar = await TaskAddCommand.FindBarAsync(
-            session, stored, new TaskAddCommand.AdoptionSite(project.Id, epicId), ownerRootFingerprint, cancellationToken);
-        if (bar is not null && idea.CutTaskIds.Contains(bar.Holder.Task.Id))
+        // A task cut from this idea that still holds the item is found before any tracker read, so a cut
+        // works after the item has closed or moved. "Holds" is the adoption guard's own reading (any state
+        // but Abandoned, and the solution-epic exception), so a cut that exception admits is not one that
+        // gets here and adopts as usual below.
+        TaskListItem? sibling = await FindSiblingAsync(
+            session, idea, stored, new TaskAddCommand.AdoptionSite(project.Id, epicId), ownerRootFingerprint,
+            cancellationToken);
+        if (sibling is not null)
         {
-            return new Resolution(null, bar.Holder.Task);
+            return new Resolution(null, sibling);
         }
 
         string ideaShortId = TaskListCommand.ShortId(idea.Id);
@@ -109,6 +110,40 @@ internal static class LinkedIdeaCut
         }
 
         return new Resolution(item, null);
+    }
+
+    /// <summary>
+    /// The task cut from <paramref name="idea"/> that holds its item, or null when none does. The idea's
+    /// stored reference is only what capture saw: the first cut records the reference its fresh read
+    /// returned, which differs once the item has moved teams or been renamed, and
+    /// <c>h9k task link-linear</c> can re-point a cut task afterwards. So the guard is asked about the
+    /// stored reference and also about every reference a cut task of the same provider carries, and a
+    /// holder counts only when it is one of the idea's own cuts; anybody else's hold is left for the
+    /// adoption refusals to name.
+    /// </summary>
+    private static async Task<TaskListItem?> FindSiblingAsync(
+        IDocumentSession session, IdeaAggregate idea, ExternalReference stored, TaskAddCommand.AdoptionSite site,
+        string? ownerRootFingerprint, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<TaskListItem> cuts = idea.CutTaskIds.Count == 0
+            ? []
+            : await session.LoadManyAsync<TaskListItem>(cancellationToken, idea.CutTaskIds);
+        IEnumerable<ExternalReference> carried = cuts
+            .Where(cut => cut.ExternalReference.IsNotBlank())
+            .Select(cut => ExternalReference.Parse(cut.ExternalReference!))
+            .Where(reference => reference.Provider == stored.Provider);
+
+        foreach (ExternalReference reference in new[] { stored }.Concat(carried).Distinct())
+        {
+            SharedIssueBar? bar = await TaskAddCommand.FindBarAsync(
+                session, reference, site, ownerRootFingerprint, cancellationToken);
+            if (bar is not null && idea.CutTaskIds.Contains(bar.Holder.Task.Id))
+            {
+                return bar.Holder.Task;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -191,7 +226,7 @@ internal static class LinkedIdeaCut
     internal static string SiblingNotice(IdeaAggregate idea, TaskListItem sibling)
     {
         string shortId = TaskListCommand.ShortId(sibling.Id);
-        return $"This task carries no tracker link. {idea.WorkItemReference} is held by task {shortId} "
+        return $"This task carries no tracker link. {sibling.ExternalReference ?? idea.WorkItemReference?.ToString()} is held by task {shortId} "
             + $"({ExternalText.OneLine(sibling.Objective)}), which was cut from the same idea, and one item is one live task. "
             + $"To get the item to this task: carry it in task {shortId}'s context, publish this task with --untracked "
             + "(h9k task publish <this task> --untracked), and group the tasks under an epic with h9k epic add.";

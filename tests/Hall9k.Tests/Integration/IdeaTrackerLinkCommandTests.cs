@@ -2,10 +2,13 @@ using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Identity;
+using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
@@ -311,7 +314,7 @@ public sealed class IdeaTrackerLinkCommandTests : IClassFixture<PostgresFixture>
 
     private async Task<LinkedIdeaCut.Resolution> CutAsync(
         Guid ideaId, Func<WorkItemImporter> importer, bool unlinked, CancellationToken cancellationToken,
-        ProjectDetails? project = null)
+        ProjectDetails? project = null, Guid? epicId = null)
     {
         int calls = 0;
         IdeaAggregate idea = await IdeaAsync(ideaId, cancellationToken);
@@ -323,7 +326,7 @@ public sealed class IdeaTrackerLinkCommandTests : IClassFixture<PostgresFixture>
                 calls++;
                 return Task.FromResult(importer());
             },
-            idea, project ?? _linear, epicId: null, _me.NodeId, ownerRootFingerprint: null, unlinked, cancellationToken);
+            idea, project ?? _linear, epicId, _me.NodeId, ownerRootFingerprint: null, unlinked, cancellationToken);
         _factoryCalls = calls;
         return resolution;
     }
@@ -453,5 +456,223 @@ public sealed class IdeaTrackerLinkCommandTests : IClassFixture<PostgresFixture>
         _factoryCalls.Should().Be(0);
         LinkedIdeaCut.SiblingNotice(await IdeaAsync(ideaId, cts.Token), cut.Sibling)
             .Should().Contain(TaskListCommand.ShortId(siblingId)).And.Contain("--untracked").And.Contain("h9k epic add");
+    }
+
+    private async Task<Guid> StartSiblingAsync(
+        Guid ideaId, ExternalReference? reference, CancellationToken cancellationToken)
+    {
+        Guid siblingId = DomainId.New();
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        IdeaAggregate idea = await IdeaAsync(ideaId, cancellationToken);
+        TaskAdded added = TaskDecider.Add(
+            siblingId, _linear.Id, "Build the limiter", ["429 past the limit"], TaskType.Feature, null, null,
+            reference, Now, _me.OwnerId, sourceIdeaId: ideaId);
+        session.Events.StartStream<TaskAggregate>(siblingId, added);
+        session.Events.Append(ideaId, IdeaDecider.CutTask(idea, siblingId, added.Objective, Now, _me.OwnerId));
+        await session.SaveChangesAsync(cancellationToken);
+        return siblingId;
+    }
+
+    [Fact]
+    public async Task A_sibling_that_holds_the_item_under_its_newer_identifier_is_found_without_a_read()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid ideaId = await CaptureAsync(LinearProvider(Linear(WorkItemStatus.Open)), _linear, null, cts.Token);
+        Guid siblingId = await StartSiblingAsync(
+            ideaId, new ExternalReference(WorkItemProvider.Linear, "PLAT-7"), cts.Token);
+
+        LinkedIdeaCut.Resolution cut = await CutAsync(
+            ideaId, () => throw new InvalidOperationException("the item moved and no tracker may be read"), false, cts.Token);
+
+        cut.Item.Should().BeNull();
+        cut.Sibling!.Id.Should().Be(siblingId, "the idea stores ENG-123 but the first cut recorded PLAT-7");
+        _factoryCalls.Should().Be(0);
+        LinkedIdeaCut.SiblingNotice(await IdeaAsync(ideaId, cts.Token), cut.Sibling)
+            .Should().Contain("linear:PLAT-7").And.Contain(TaskListCommand.ShortId(siblingId));
+    }
+
+    [Fact]
+    public async Task A_solution_epic_lets_a_cut_share_the_item_with_another_member_projects_task()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        SolutionMembership storefront = SolutionDecider.Create(
+            SolutionDecider.NewKey(), "storefront",
+            [
+                new SolutionMember("01JAAAAAAAAAAAAAAAAAAAAAAA", "shop-api", new Uri("https://github.com/acme/shop-api.git")),
+                new SolutionMember("01JBBBBBBBBBBBBBBBBBBBBBBB", "shop-web", new Uri("https://github.com/acme/shop-web.git")),
+            ]);
+        ProjectDetails api = NewProject("shop-api", LinearTeamKey.Parse("ENG"));
+        api.ProjectKey = "01JAAAAAAAAAAAAAAAAAAAAAAA";
+        api.Solution = storefront;
+        ProjectDetails web = NewProject("shop-web", LinearTeamKey.Parse("WEB"));
+        web.ProjectKey = "01JBBBBBBBBBBBBBBBBBBBBBBB";
+        web.Solution = storefront;
+        IReadOnlyList<EpicAdded> copies = SolutionEpicDecider.Add(
+            storefront.Key, "Cart", [api.Id, web.Id], DomainId.New, Now, _me.OwnerId);
+        EpicDetails apiEpic = EpicCopy(copies[0]);
+        EpicDetails webEpic = EpicCopy(copies[1]);
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Store(api, web);
+            session.Store(apiEpic, webEpic);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid ideaId = await CaptureAsync(LinearProvider(Linear(WorkItemStatus.Open)), api, null, cts.Token);
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<TaskAggregate>(
+                DomainId.New(),
+                TaskDecider.Add(
+                    DomainId.New(), web.Id, "The storefront half", ["done"], TaskType.Feature, null, null,
+                    new ExternalReference(WorkItemProvider.Linear, "ENG-123"), Now, _me.OwnerId, epicId: webEpic.Id));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ImportedWorkItem fresh = Linear(WorkItemStatus.Open);
+
+        LinkedIdeaCut.Resolution inTheEpic = await CutAsync(
+            ideaId, () => new WorkItemImporter(LinearProvider(fresh)), false, cts.Token, api, apiEpic.Id);
+        Func<Task> outsideIt = () => CutAsync(
+            ideaId, () => new WorkItemImporter(LinearProvider(fresh)), false, cts.Token, api);
+
+        inTheEpic.Item.Should().Be(fresh, "the other member project's task is in the same solution epic");
+        await outsideIt.Should().ThrowAsync<DomainConflictException>();
+    }
+
+    private static EpicDetails EpicCopy(EpicAdded added) =>
+        new EpicDetailsProjection().Create(new FakeEvent<EpicAdded>(added));
+
+    [Fact]
+    public async Task A_cut_naming_a_task_the_ledger_records_but_the_reference_field_misses_is_refused_at_capture_and_at_a_cut()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid ideaId = await CaptureAsync(LinearProvider(Linear(WorkItemStatus.Open)), _linear, null, cts.Token);
+        // Two tasks the reference field cannot find: one the ledger names for the idea's item, one for the
+        // item a fresh capture would read. Neither carries a reference locally.
+        (Guid Task, string Key)[] published = [(DomainId.New(), "ENG-123"), (DomainId.New(), "ENG-124")];
+        foreach ((Guid taskId, string key) in published)
+        {
+            await using IDocumentSession session = _postgres.Store.LightweightSession();
+            session.Events.StartStream<TaskAggregate>(
+                taskId,
+                TaskDecider.Add(
+                    taskId, _linear.Id, "Published from another node", ["done"], TaskType.Feature, null, null,
+                    null, Now, _me.OwnerId));
+            await session.SaveChangesAsync(cts.Token);
+            TaskRecord record = new(
+                taskId, "hall9k", "feature", "Published from another node", ["done"], null, null, PreApprovalMode.Off,
+                null, [], null, null, TaskRecordCaps.None, "abc123fingerprint",
+                new TaskOrigin(DomainId.New(), "OTHER-NODE", DomainId.New(), "task/other", Now), null)
+            {
+                ExternalReference = new ExternalReference(WorkItemProvider.Linear, key),
+            };
+            await _ledger.WriteAsync(
+                new LedgerWriteRequest(
+                    _linear.RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId),
+                    record.ToYaml(), null, "seed", new LedgerCommitter("Ledger Test", "ledger-test@hall9k.local"),
+                    new LedgerSigningKey("/fake/signing-key-never-read-by-fakeledger")),
+                cts.Token);
+        }
+
+        Func<Task> cut = () => CutAsync(
+            ideaId, () => new WorkItemImporter(LinearProvider(Linear(WorkItemStatus.Open))), false, cts.Token);
+        Func<Task> capture = () => CaptureAsync(
+            LinearProvider(Linear(WorkItemStatus.Open, identifier: "ENG-124")), _linear, null, cts.Token);
+
+        (await cut.Should().ThrowAsync<DomainConflictException>()).Which.Message
+            .Should().Contain("its own ledger record").And.Contain(TaskListCommand.ShortId(published[0].Task))
+            .And.Contain("--unlinked");
+        (await capture.Should().ThrowAsync<DomainConflictException>()).Which.Message
+            .Should().Contain("its own ledger record").And.Contain(TaskListCommand.ShortId(published[1].Task));
+        (await IdeaCountAsync(cts.Token)).Should().Be(1);
+    }
+
+    private TaskAddCommand.Settings CutSettings(Guid ideaId, bool unlinked) => new()
+    {
+        FromIdea = TaskListCommand.ShortId(ideaId),
+        Project = _linear.Name,
+        Objective = "Build the limiter",
+        Criteria = ["429 past the limit"],
+        Unlinked = unlinked,
+    };
+
+    private async Task<(TaskAggregate Task, IdeaAggregate Idea)> RunCutAsync(
+        Guid ideaId, bool unlinked, Func<WorkItemImporter> importer, CancellationToken cancellationToken)
+    {
+        await TaskAddCommand.RunAsync(
+            _postgres.Store, CutSettings(ideaId, unlinked), _ledger,
+            _ =>
+            {
+                _factoryCalls++;
+                return Task.FromResult(importer());
+            },
+            cancellationToken);
+        IdeaAggregate idea = await IdeaAsync(ideaId, cancellationToken);
+        await using IQuerySession query = _postgres.Store.QuerySession();
+        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(
+            idea.CutTaskIds[^1], token: cancellationToken))!;
+        return (task, idea);
+    }
+
+    [Fact]
+    public async Task A_linked_cut_records_the_fresh_reference_the_source_idea_and_the_cut_on_the_ideas_stream()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid ideaId = await CaptureAsync(
+            LinearProvider(Linear(WorkItemStatus.Triage.As("Triage"))), _linear, null, cts.Token);
+        ImportedWorkItem fresh = Linear(WorkItemStatus.Triage.As("Triage"), identifier: "PLAT-7");
+        _factoryCalls = 0;
+
+        (TaskAggregate task, IdeaAggregate idea) = await RunCutAsync(
+            ideaId, false, () => new WorkItemImporter(LinearProvider(fresh)), cts.Token);
+
+        task.ExternalReference.Should().Be(fresh.Reference);
+        task.SourceIdeaId.Should().Be(ideaId);
+        idea.CutTaskIds.Should().ContainSingle().Which.Should().Be(task.Id);
+        idea.WorkItemReference.Should().Be(new ExternalReference(WorkItemProvider.Linear, "ENG-123"), "nothing rewrites the idea's link");
+        _factoryCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task An_unlinked_cut_records_no_reference_and_reads_no_tracker()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid ideaId = await CaptureAsync(LinearProvider(Linear(WorkItemStatus.Open)), _linear, null, cts.Token);
+        _factoryCalls = 0;
+
+        (TaskAggregate task, IdeaAggregate idea) = await RunCutAsync(
+            ideaId, true, () => throw new InvalidOperationException("no tracker"), cts.Token);
+
+        task.ExternalReference.Should().BeNull();
+        task.SourceIdeaId.Should().Be(ideaId);
+        idea.CutTaskIds.Should().ContainSingle().Which.Should().Be(task.Id);
+        _factoryCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Unlinked_is_refused_without_an_idea_and_on_an_idea_with_no_link()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await IdeaAddCommand.RunAsync(
+                session, new IdeaAddCommand.Settings { Text = "a plain thought", Project = _linear.Name },
+                importer: null, _ledger, cts.Token);
+        }
+
+        await using IQuerySession query = _postgres.Store.QuerySession();
+        Guid plain = (await query.Query<IdeaDetails>().ToListAsync(cts.Token)).Single().Id;
+        Func<Task> noIdea = () => TaskAddCommand.RunAsync(
+            _postgres.Store, new TaskAddCommand.Settings { Project = _linear.Name, Objective = "x", Unlinked = true },
+            _ledger, _ => throw new InvalidOperationException("no tracker"), cts.Token);
+        Func<Task> noLink = () => TaskAddCommand.RunAsync(
+            _postgres.Store, CutSettings(plain, true), _ledger,
+            _ => throw new InvalidOperationException("no tracker"), cts.Token);
+
+        (await noIdea.Should().ThrowAsync<DomainValidationException>()).Which.Message
+            .Should().Contain("--unlinked belongs to --from-idea");
+        (await noLink.Should().ThrowAsync<DomainValidationException>()).Which.Message
+            .Should().Contain("nothing to leave out");
     }
 }
