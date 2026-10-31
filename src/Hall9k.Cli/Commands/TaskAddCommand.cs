@@ -336,6 +336,27 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
+        using var store = CliStore.Open();
+        return await RunAsync(
+            store, settings, new GitLedger(new ConsoleWorktreeLogger<GitLedger>()),
+            async importerToken =>
+            {
+                await using IQuerySession query = store.QuerySession();
+                return await WorkItemConnections.ImporterAsync(
+                    query, importerToken, processRunner: new ProjectScopedGitHubRunner(store).Runner);
+            },
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Testable core, on the <see cref="IdeaPromoteCommand"/> precedent: the ledger and the importer a cut
+    /// from a linked idea reads through are the seams, so the cut's rules are pinned against recorded
+    /// responses with no tracker call. The importer is a factory, called only when a tracker is read.
+    /// </summary>
+    internal static async Task<int> RunAsync(
+        IDocumentStore store, Settings settings, ILedger ledger,
+        Func<CancellationToken, Task<WorkItemImporter>> linkedIdeaImporter, CancellationToken cancellationToken)
+    {
         if (settings.AcceptReducedReview && settings.ReviewStageComposition is null)
         {
             throw new DomainValidationException(
@@ -414,7 +435,6 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             stackedOnPullRequest ??= file.StackedOnPullRequest;
         }
 
-        using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
 
         // Unfenced, like every other ordinary idea mutation (h9k idea move, h9k idea revise):
@@ -591,7 +611,6 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 projectDetails.PrimaryTracker);
         }
 
-        ILedger ledger = new GitLedger(new ConsoleWorktreeLogger<GitLedger>());
         // Resolved once for both adoptions below: the events-request a missing stream's own
         // refusal starts (idea 202383dc, M2b, task 9408d525) needs this node's own identity to
         // queue an envelope under, exactly like h9k message send resolves it.
@@ -615,10 +634,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         // refusals as --from-linear, and judged here with everything else, before any prompt.
         LinkedIdeaCut.Resolution? linkedCut = sourceIdea is { WorkItemReference: not null }
             ? await LinkedIdeaCut.ResolveAsync(
-                session, ledger,
-                importerToken => WorkItemConnections.ImporterAsync(
-                    session, importerToken, processRunner: new ProjectScopedGitHubRunner(store).Runner),
-                sourceIdea, projectDetails, epicId, context.NodeId, ownerRootFingerprint, settings.Unlinked,
+                session, ledger, linkedIdeaImporter, sourceIdea, projectDetails, epicId, context.NodeId, ownerRootFingerprint, settings.Unlinked,
                 cancellationToken)
             : null;
         // A pull request this node already reviewed, or is still following a posted review through
