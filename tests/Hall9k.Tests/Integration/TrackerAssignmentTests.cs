@@ -261,8 +261,9 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
         DomainBusinessRuleException refusal = (await take.Should().ThrowAsync<DomainBusinessRuleException>()).Which;
 
         refusal.Message.Should().Contain(provider == "jira" ? "someone-else" : "teammate");
-        refusal.Message.Should().Contain("never takes one from another person");
-        refusal.Message.Should().Contain("there is no flag that does");
+        refusal.Message.Should().Contain("only when an operator at a terminal confirms it");
+        refusal.Message.Should().Contain("no flag does it, and nothing unattended does");
+        refusal.Message.Should().NotContain("no flag that does", "the old rule said nothing could take an item from a person");
         tracker.Writes.Should().BeEmpty("nothing is written to an item somebody else holds");
         tracker.GhCalls.Should().NotContain(arguments => arguments.Contains("edit"));
 

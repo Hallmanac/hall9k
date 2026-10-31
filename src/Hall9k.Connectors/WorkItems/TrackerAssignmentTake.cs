@@ -34,7 +34,8 @@ public sealed record TrackerAssignmentWrite(string? Error)
 /// Decisions Log #143). An in-process outcome, never persisted as itself (AGENTS.md: enums only
 /// for unpersisted in-process outcomes) — what lands in Postgres is
 /// <see cref="Domain.Features.Tasks.Events.TrackerAssignmentWritten"/> for
-/// <see cref="Taken"/> and <see cref="Domain.Features.Tasks.Events.TrackerAssignmentObserved"/>
+/// <see cref="Taken"/>, <see cref="Domain.Features.Tasks.Events.TrackerAssignmentReassigned"/> for
+/// <see cref="Reassigned"/>, and <see cref="Domain.Features.Tasks.Events.TrackerAssignmentObserved"/>
 /// for <see cref="AlreadyMine"/>.
 /// </summary>
 public enum TrackerTakeVerdict
@@ -48,8 +49,21 @@ public enum TrackerTakeVerdict
     /// <summary>The tracker already showed the item assigned to this install, so nothing was written.</summary>
     AlreadyMine,
 
-    /// <summary>Somebody else holds the item. Nothing was written, and no flag exists that would have.</summary>
+    /// <summary>Somebody else holds the item. Nothing was written: only an operator's confirmation at a terminal moves an item off another person (<see cref="TrackerAssignmentTake.ReassignAsync"/>), and nothing unattended does.</summary>
     HeldByOther,
+
+    /// <summary>
+    /// An operator confirmed it, this install wrote its own identity over the people the tracker
+    /// showed holding the item, and the read-back showed this install holding it alone. What lands in
+    /// Postgres is <see cref="Domain.Features.Tasks.Events.TrackerAssignmentReassigned"/>.
+    /// </summary>
+    Reassigned,
+
+    /// <summary>
+    /// A reassignment was confirmed, but the fresh read it rested on showed the item held by anybody
+    /// other than the people the operator was shown, so nothing was written.
+    /// </summary>
+    HolderChanged,
 
     /// <summary>The tracker could not be read, so nothing was written: a take that cannot see who holds an item cannot know it is taking it from nobody.</summary>
     Unreadable,
@@ -101,15 +115,23 @@ public sealed record TrackerTake(
 {
     /// <summary>Whether the assignment may proceed. Only a take that ended with the item in this install's hands passes.</summary>
     public bool Passes => Verdict
-        is TrackerTakeVerdict.NotGated or TrackerTakeVerdict.Taken or TrackerTakeVerdict.AlreadyMine;
+        is TrackerTakeVerdict.NotGated or TrackerTakeVerdict.Taken or TrackerTakeVerdict.Reassigned
+            or TrackerTakeVerdict.AlreadyMine;
 
     /// <summary>Whether the tracker was actually written to, which is what decides which event the task's stream carries.</summary>
-    public bool Wrote => Verdict == TrackerTakeVerdict.Taken;
+    public bool Wrote => Verdict is TrackerTakeVerdict.Taken or TrackerTakeVerdict.Reassigned;
+
+    /// <summary>
+    /// The people a reassignment replaced, as the operator was shown them; empty on every take that
+    /// was not one. It is also what tells a refusal's sentence it is speaking about a reassignment:
+    /// the previous holders may be gone from the item, which no take of an unassigned item can say.
+    /// </summary>
+    public IReadOnlyList<TrackerAssignee> Replaced { get; init; } = [];
 
     /// <summary>
     /// Why the take refused, in the voice every other claim-gate door refuses in — and, for the
-    /// two cases where a human might reach for one, that no flag exists that would have taken the
-    /// item anyway. Empty on a verdict that did not refuse.
+    /// two cases where a human might reach for one, that no flag takes an item off another person:
+    /// only an operator's confirm at a terminal does. Empty on a verdict that did not refuse.
     /// <para>
     /// The held case deliberately does not reuse <see cref="TrackerClaimDecision.RefusalLine"/>:
     /// that sentence's lever is "assign the item to yourself", which is exactly what this command
@@ -121,10 +143,12 @@ public sealed record TrackerTake(
     {
         TrackerTakeVerdict.HeldByOther =>
             $"{Decision.Tracker} shows {Decision.Item} assigned to {Decision.Holder}, so nothing was "
-            + $"written and this task is unchanged. --take only ever moves an item from unassigned to "
-            + $"this install{IdentityClause}, and never takes one from another person — there is no flag "
-            + "that does. Ask them to unassign themselves, or take a different task; the moment the "
-            + "tracker shows it unassigned, --take can have it.",
+            + "written and this task is unchanged. --take by itself only ever moves an item from "
+            + $"unassigned to this install{IdentityClause}. An item somebody else holds changes hands "
+            + "only when an operator at a terminal confirms it, which h9k task queue and h9k task assign "
+            + "--take offer and ask first; no flag does it, and nothing unattended does."
+            + $"{Decision.HeldElsewhereClause} Otherwise ask them to unassign themselves, or take a "
+            + "different task; the moment the tracker shows it unassigned, --take can have it.",
         TrackerTakeVerdict.Unreadable =>
             $"{Decision.Tracker} could not be read, so nothing was written and this task is unchanged: a "
             + "take that cannot see who holds an item cannot know it is taking it from nobody. "
@@ -138,12 +162,30 @@ public sealed record TrackerTake(
         TrackerTakeVerdict.WriteRefused =>
             $"{Decision.Item} could not be assigned to this install{IdentityClause}, so this task is "
             + $"unchanged: {Error}",
+        TrackerTakeVerdict.Unconfirmed when Replaced.Count > 0 =>
+            $"{Decision.Tracker} accepted the reassignment of {Decision.Item} to this install"
+            + $"{IdentityClause}, but reading the item back afterwards did not show it holding, so "
+            + $"nothing was recorded and this task is unchanged. {Decision.Tracker} answered: {Error} "
+            + $"The previous holders ({Describe(Replaced)}) may be gone from the item, so look at it "
+            + "before anything else. If the reassignment did land, run the same command again: the "
+            + "next run sees the item as already yours and simply proceeds.",
         TrackerTakeVerdict.Unconfirmed =>
             $"{Decision.Tracker} accepted the assignment of {Decision.Item} to this install"
             + $"{IdentityClause}, but reading the item back afterwards did not show it holding, so "
             + "nothing was recorded and this task is unchanged — the write may well have landed. "
             + $"{Decision.Tracker} answered: {Error} Look at the item, and run the same command again: "
             + "if the assignment did land, the next run sees it as already yours and simply proceeds.",
+        // Says the previous holders may be gone, and not that a take never removes an assignment:
+        // a reassignment is exactly the write that does. Like the unassigned case below, it does not
+        // end with "run it again", because the item may now carry both of you.
+        TrackerTakeVerdict.Contested when Replaced.Count > 0 =>
+            $"{Decision.Tracker} showed {Decision.Item} assigned to {Describe(Replaced)}, so this "
+            + $"install replaced them with its own identity{IdentityClause}, and reading the item "
+            + $"straight back afterwards showed {Error} on it as well. Somebody was put there between "
+            + "those two reads by something this install cannot see, so nothing was recorded and this "
+            + "task is unchanged. The previous holders may be gone from the item, and an item assigned "
+            + "to several people passes this gate for every one of them, so running this again would "
+            + $"claim it. Settle with them in {Decision.Tracker} who is doing the work first.",
         // Deliberately does not end with "run it again", the way Unconfirmed above does: the item
         // now carries two assignments, an item assigned to several people passes the gate for each
         // of them (Decisions Log #142), so a second run would read AlreadyMine and claim — which is
@@ -155,13 +197,18 @@ public sealed record TrackerTake(
             + "something this install cannot see — another install taking the same item in the same "
             + "moment above all — so nothing was recorded and this task is unchanged: a take that "
             + "cannot say it took an item from nobody does not claim it. This install's own assignment "
-            + "is still on the item, because nothing here ever takes an assignment off one, so settle "
-            + "with them who is doing the work and have whoever is not unassign themselves in "
+            + "is still on the item, because a take of an unassigned item never removes an assignment, "
+            + "so settle with them who is doing the work and have whoever is not unassign themselves in "
             + $"{Decision.Tracker}. Do not simply run this again without looking: {Decision.Tracker} "
             + "now shows the item assigned to both of you, and an item assigned to several people "
             + "passes this gate for every one of them, so the next run would claim it. If the name "
             + "above is your own board's automation rather than a person, running it again is the way "
             + "through — knowing which it is, is the part only you can do.",
+        TrackerTakeVerdict.HolderChanged =>
+            $"{Decision.Tracker} showed {Decision.Item} assigned to {Describe(Replaced)} when you were "
+            + $"asked, but reading it again before writing shows {NowShowing}, so nothing was written and "
+            + "this task is unchanged. Look at the item, and run the same command again if you still "
+            + "want it reassigned.",
         _ => string.Empty,
     };
 
@@ -184,6 +231,10 @@ public sealed record TrackerTake(
             $"{Decision.Tracker} now shows {Decision.Item} assigned to {ObservedHolder} — read back "
             + "after the write, not assumed. This project's claim gate is tracker-assignee, so it "
             + "passes on its own from here and no longer holds this task.",
+        TrackerTakeVerdict.Reassigned =>
+            $"{Decision.Tracker} now shows {Decision.Item} assigned to {ObservedHolder}, read back "
+            + $"after the write, not assumed. It replaced {Describe(Replaced)}. This project's claim "
+            + "gate is tracker-assignee, so it passes on its own from here and no longer holds this task.",
         TrackerTakeVerdict.AlreadyMine =>
             $"{Decision.Tracker} already showed {Decision.Item} assigned to {ObservedHolder}, so nothing was "
             + "written. This project's claim gate is tracker-assignee, so it passes on its own and does "
@@ -202,6 +253,18 @@ public sealed record TrackerTake(
         Assignee?.Described ?? (Decision.Identity is { Length: > 0 } identity
             ? TrackerAssignee.Rendered(identity)
             : "this install");
+
+    /// <summary>Every holder as the tracker showed them, each one a person's name relayed as one safe line.</summary>
+    private static string Describe(IReadOnlyList<TrackerAssignee> holders) =>
+        string.Join(", ", holders.Select(holder => holder.Described));
+
+    /// <summary>What the item showed on the fresh read a reassignment was refused over.</summary>
+    private string NowShowing => Decision.Verdict switch
+    {
+        TrackerClaimVerdict.Assigned => "it assigned to this install",
+        TrackerClaimVerdict.HeldByOther => $"it assigned to {Decision.Holder}",
+        _ => "it assigned to nobody",
+    };
 
     /// <summary>
     /// Who this install is, named only when the tracker actually said — borrowed from the read this
@@ -234,6 +297,22 @@ public sealed record TrackerTake(
     internal static TrackerTake Taken(
         TrackerClaimDecision decision, TrackerAssignee assignee, DateTimeOffset observedAt) =>
         new(TrackerTakeVerdict.Taken, decision, assignee, observedAt, null);
+
+    /// <summary>
+    /// This take, read as the reassignment it was: a take that wrote becomes
+    /// <see cref="TrackerTakeVerdict.Reassigned"/>, and any other outcome keeps its verdict and
+    /// remembers who was replaced, so a refusal can say the previous holders may be gone.
+    /// </summary>
+    internal TrackerTake AsReassignmentOf(IReadOnlyList<TrackerAssignee> replaced) =>
+        this with
+        {
+            Verdict = Verdict == TrackerTakeVerdict.Taken ? TrackerTakeVerdict.Reassigned : Verdict,
+            Replaced = replaced,
+        };
+
+    /// <summary>The fresh read before a reassignment's write showed something other than the people the operator was shown.</summary>
+    internal static TrackerTake HolderChanged(TrackerClaimDecision fresh, IReadOnlyList<TrackerAssignee> shown) =>
+        new(TrackerTakeVerdict.HolderChanged, fresh, null, fresh.ObservedAt, null) { Replaced = shown };
 
     internal static TrackerTake WriteRefused(TrackerClaimDecision decision, string error) =>
         new(TrackerTakeVerdict.WriteRefused, decision, null, decision.ObservedAt, error);
@@ -297,9 +376,11 @@ public sealed record TrackerRelease(bool Succeeded, string? FailureReason, bool 
 /// this class calls that one for the read rather than reading the tracker a second way.
 /// </para>
 /// <para>
-/// <b>It only ever moves an item from unassigned to this install.</b> An item somebody else holds
-/// is refused and nothing is written; there is no flag that takes one from another person, which is
-/// also what narrows the race the idea names — a held item is never overwritten. What is left of
+/// <b><see cref="TakeAsync"/> only ever moves an item from unassigned to this install.</b> An item
+/// somebody else holds is refused and nothing is written, and no flag changes that: the one way an
+/// item leaves another person is <see cref="ReassignAsync"/>, which an operator at a terminal
+/// confirms first and which no unattended path reaches. That is also what narrows the race the idea
+/// names, because a take never overwrites a held item. What is left of
 /// that race after the refusal is the window between the read and the write, and the read-back is
 /// what closes it: an item that was unassigned a moment ago and now names somebody else beside this
 /// install is two installs taking it at once, refused rather than claimed
@@ -432,6 +513,89 @@ public sealed class TrackerAssignmentTake
                 await TakeLinearAsync(store, item, identity, decision, cancellationToken),
             _ => await TakeGitHubAsync(item, identity, decision, workingDirectory, cancellationToken),
         };
+    }
+
+    /// <summary>
+    /// Move an item from the people an operator was shown holding it to this install's own tracker
+    /// identity, after the operator confirmed it at a terminal. A write path of its own, separate from
+    /// <see cref="TakeAsync"/> on purpose: that method keeps refusing a held item, and the dispatcher's
+    /// claim and mirror sweeps and <c>h9k task take --force</c> all reach the tracker through it, so
+    /// none of them can ever reassign.
+    /// <para>
+    /// Reads the item fresh and writes only if it still shows exactly <paramref name="shown"/> holding
+    /// it, compared by identity the way the gate itself compares; any other answer writes nothing and
+    /// says what the item shows now. Then writes this install's identity, reads the item back, and
+    /// concludes through <see cref="Confirm"/>, so the event a caller records is composed from the
+    /// read-back and nothing else. Linear and Jira overwrite their single assignee; GitHub makes one
+    /// <c>gh issue edit</c> that adds this login and removes every holder.
+    /// </para>
+    /// </summary>
+    /// <param name="shown">The holders the operator was shown and said yes about.</param>
+    public async Task<TrackerTake> ReassignAsync(
+        IDocumentStore store,
+        ClaimGate gate,
+        ExternalReference? reference,
+        string workingDirectory,
+        IReadOnlyList<TrackerAssignee> shown,
+        CancellationToken cancellationToken)
+    {
+        TrackerClaimDecision decision = await claimGate.CheckAsync(
+            store, gate, reference, workingDirectory, cancellationToken);
+
+        if (decision.Verdict is TrackerClaimVerdict.Unreadable or TrackerClaimVerdict.NotGated)
+        {
+            return TrackerTake.From(decision);
+        }
+
+        if (!decision.HoldersAre(shown))
+        {
+            return TrackerTake.HolderChanged(decision, shown);
+        }
+
+        if (reference is not { } item || decision.Identity is not { } identity)
+        {
+            return TrackerTake.WriteRefused(
+                decision,
+                "the tracker answered that somebody else holds the item, but this install could not tell "
+                + "which item was asked about or which identity to write, so it wrote nothing rather "
+                + "than guess. Nothing on this install ends that on its own: it is a defect, not a "
+                + "state, so report it with the command you ran.");
+        }
+
+        TrackerTake written = item.Provider switch
+        {
+            _ when item.Provider == WorkItemProvider.Jira =>
+                await TakeJiraAsync(store, item, identity, decision, cancellationToken),
+            _ when item.Provider == WorkItemProvider.Linear =>
+                await TakeLinearAsync(store, item, identity, decision, cancellationToken),
+            _ => await ReassignGitHubAsync(item, identity, decision, workingDirectory, cancellationToken),
+        };
+        return written.AsReassignmentOf(shown);
+    }
+
+    /// <summary>
+    /// GitHub's half of <see cref="ReassignAsync"/>: one call carries the add and every removal, so
+    /// the tracker applies it whole or not at all. Two calls would leave the holders removed and
+    /// nobody on the item whenever the second failed.
+    /// </summary>
+    private async Task<TrackerTake> ReassignGitHubAsync(
+        ExternalReference item,
+        string identity,
+        TrackerClaimDecision decision,
+        string workingDirectory,
+        CancellationToken cancellationToken)
+    {
+        GitHubWorkItemProvider issues = new(processRunner);
+        TrackerAssignmentWrite write = await issues.ReplaceAssigneesAsync(
+            item, identity, [.. decision.Holders.Select(holder => holder.Identity)], workingDirectory,
+            cancellationToken);
+        if (write.Error is { } error)
+        {
+            return TrackerTake.WriteRefused(decision, error);
+        }
+
+        TrackerAssigneeRead read = await issues.ReadAssigneesAsync(item, workingDirectory, cancellationToken);
+        return Confirm(decision, read, identity, DateTimeOffset.UtcNow);
     }
 
     /// <summary>
