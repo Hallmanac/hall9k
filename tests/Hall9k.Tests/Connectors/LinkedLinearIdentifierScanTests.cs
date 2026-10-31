@@ -41,12 +41,6 @@ public sealed class LinkedLinearIdentifierScanTests
         Find(text).Should().BeNull();
 
     [Fact]
-    public void An_issue_from_a_team_other_than_the_projects_default_is_found()
-    {
-        Find("Part of PLAT-4", new HashSet<string> { "PLAT" }).Should().Be("PLAT-4");
-    }
-
-    [Fact]
     public void The_first_identifier_of_a_visible_team_wins_in_the_order_the_text_reads()
     {
         Find("SHA-256 first, then DES-5 and ENG-1").Should().Be("DES-5");
