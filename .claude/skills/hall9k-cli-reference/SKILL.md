@@ -143,7 +143,8 @@ line: the live window's session name, CLI, process id and age, or "none live" wi
 shutdown or loss time. The feed courier that acts on it, spawning only while a window is up
 (idea 89471598, piece 3), delivers the project's own undrained feed items to that window and
 exits — a short-lived session on its own model role (`h9k config set --model-courier <model>`,
-floored at `claude-sonnet-5-5` rather than the platform default), batched behind a per-project wait
+floored at `claude-sonnet-5-5` rather than the platform default; the lesson picker runs on the courier's
+model and effort too, so `--model-courier` and `--effort-courier` move both), batched behind a per-project wait
 (`h9k project set <name> --courier-max-wait <seconds>`) that an urgent item bypasses.
 
 **The same bare repo also carries a hidden ledger** (Decisions Log #189, idea
@@ -832,6 +833,7 @@ section's own recording verb spells the `--task` out for exactly this reason.
 ```bash
 h9k config set --lesson-prompt-max-lessons 15         # how many lessons any one prompt carries
 h9k config set --lesson-prompt-max-characters 4000    # and how many characters of lesson text
+h9k config set --lesson-picker shadow                 # off | shadow (default) | on: a one-turn, no-tools session picks the lessons a task's prompts carry, once; shadow records without changing any prompt
 h9k learn "<merged claim>" --distilled-from <id> --distilled-from <id>   # record a merge, citing its sources
 h9k learn distill [--project <name>|--owner]          # author the research spike DRAFT that merges a scope's lessons
 ```

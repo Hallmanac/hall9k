@@ -122,7 +122,12 @@ prose.
   unchanged, since it must read the same on every node holding the same records, so the prompt tells
   a session to lean only on the lessons its own section names by id. The two caps (`h9k config set --lesson-prompt-max-lessons` and
   `--lesson-prompt-max-characters`) bound what a prompt pays for; retiring a lesson or running
-  `h9k learn distill` is what shrinks the inventory itself.
+  `h9k learn distill` is what shrinks the inventory itself. Which lessons fill that bound can be chosen
+  per task rather than by date: a small one-turn session with no tools (`h9k config set
+  --lesson-picker`, default `shadow`) reads the task and the lessons this node may put in a prompt,
+  answers with ids, and the daemon records the pick once on the task. In `shadow` the pick is recorded
+  and every prompt stays as it was; in `on` the picked set goes into the build, follow-up and fix
+  prompts and the conformance review, while the adversarial review keeps the newest lessons.
 - **The run skill** is the project's own answer to "how do I stand this up locally", written down
   once so that a review session, `h9k task run-local`, or an orchestrator on any member's machine
   never has to guess. It lives on the ledger too (`refs/hall9k/ledger/run-skill`) and always has the
@@ -1517,7 +1522,9 @@ role's. It is its own role in the model-by-role policy (`h9k config set --model-
 own field ships blank exactly like every other role's ("ask the platform default"),
 but its *resolution* is the one deliberate exception — a blank courier bottoms out at
 `claude-sonnet-5-5`, cheap by construction, rather than falling all the way through to the platform
-default the way every other role's blank does.
+default the way every other role's blank does. The lesson picker, the small session that chooses
+which lessons a task's prompts carry, has no role of its own and resolves its model and effort exactly as the courier
+does, so `--model-courier` and `--effort-courier` move it too.
 
 Depth: [PLAN.md §16](../PLAN.md), Decisions Log #245.
 

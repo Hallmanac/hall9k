@@ -563,6 +563,20 @@ carrying, names both caps, and names `h9k learn list`. A lesson is never cut par
 will not fit whole is held back whole and counted. Both caps are read from the config file at
 every prompt composition, so a change is in force for the next dispatch with no daemon restart.
 
+The lesson picker chooses which lessons a task's prompts carry, instead of only the newest ones. A
+small session (one turn, no tools, on the courier's model and effort) reads the task and every lesson
+this node may put in a prompt, once, before the task's first build, and answers with lesson ids. The
+daemon reads the answer as ids only, drops an id that names no offered lesson or repeats one, holds
+the picked set to the same two caps, and records the pick on the task (`h9k task show` prints it). It
+is gated by `h9k config set --lesson-picker`: `off` runs nothing, `shadow` (the default) runs and
+records the pick while every prompt stays byte-identical to the one composed with the setting off, and
+`on` puts the picked set into the build, follow-up, fix, rebase and gate-repair prompts and the
+conformance review pass, with the section saying its lessons were chosen for this task and how many
+eligible lessons it does not carry. The adversarial and Verify review passes keep newest-first. Any
+failure falls back to newest-first and records why. `h9k task start`, `h9k task delegate` and
+`h9k task drive` never spawn a picker; they compose with a recorded pick under the same rules, or
+newest-first when there is none. A spike or a pull-request review never runs the picker.
+
 Provenance decides what is injected, not just what is displayed. Three marks: recorded with no
 run named, recorded by an agent run on this node, and recorded by an agent run on another
 node. The first says only what was observed, which is that nothing named a run: a person at a
@@ -1445,7 +1459,7 @@ address the orchestrator's own registered session through Claude Code's cross-se
 delivery, so a failed send leaves the cursor exactly where it was for the next attempt. It runs as
 a run with no task, its own model role (`h9k config set --model-courier`, `claude-sonnet-5-5` by
 default — cheap by construction, unlike every other role's blank shipped opinion), counted in
-`h9k status`'s spend line the same as any other role's.
+`h9k status`'s spend line the same as any other role's. The lesson picker (`h9k config set --lesson-picker`) runs on the courier's model and effort for the same project and node, so `--model-courier` and `--effort-courier` move it too.
 
 ### The macOS signal fence
 
