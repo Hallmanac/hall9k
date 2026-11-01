@@ -1181,7 +1181,7 @@ rule and the project's writing conventions still decide the shape, and the voice
 the prose. They also declare zero or more review personas from the fixed set engineer, QA,
 designer — `h9k owner set --persona <name>` (repeatable), cleared with `--clear-personas` — which
 decide how a pull request assigned to them is reviewed: one review session per persona on the
-pr-review task's single worktree, reported in one report sectioned in that fixed order. Declaring
+pr-review task's single checkout, reported in one report sectioned in that fixed order. Declaring
 none reads as the engineer's review, which is what every member gets today. A fourth persona,
 Security, is never declared this way at all — it reviews every pr-review task by default,
 gated only by the project's own `--security-review on|off` setting, and its section joins the

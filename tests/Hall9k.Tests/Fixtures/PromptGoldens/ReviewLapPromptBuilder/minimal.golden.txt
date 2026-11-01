@@ -16,7 +16,7 @@ Adds the conflict read and the dispute park behind it.
 
 ## Surfaces touched
 
-gh reported no file list for this pull request, so the blast radius below could not be computed. GitHub's own totals for it are +120/-18, with no file count reported either. Read the diff directly (`git diff` in the worktree, if you have one) rather than treating this absence as a small change.
+gh reported no file list for this pull request, so the blast radius below could not be computed. GitHub's own totals for it are +120/-18, with no file count reported either. Read the diff directly (`git diff` in the checkout, if you have one) rather than treating this absence as a small change.
 
 ## What CI ran
 

@@ -181,7 +181,7 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
         // identical Guid.Empty sentinel an attended interactive claim uses, so task.IsInteractiveClaim
         // reads true for it too — without this, that already-Claimed state routes straight into
         // ReenterAsync, which carries no pr-review refusal of its own, and h9k task deliver would
-        // then push its read-only detached refs/pull/<n>/head worktree into PrReviewEngine.DriveAsync
+        // then push its read-only detached refs/pull/<n>/head checkout into PrReviewEngine.DriveAsync
         // with no PrReviewBaseRefName and no adversarial report (independent pre-PR review, cycle 1,
         // conformance lens).
         if (task.Type == TaskType.PrReview)

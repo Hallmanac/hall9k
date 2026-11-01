@@ -1067,13 +1067,16 @@ from the old one, because code is cheap. Commands and the full list of outcomes 
 Everything above reviews a run's own diff. A **`pr-review` task** does the same job for a pull
 request somebody else wrote, whether GitHub requested your review or you adopted it with
 `h9k task add --from-pr`: a read-only session in a detached checkout of the pull request's head
-reviews it and parks a findings report for you to walk. Nothing is posted to the pull request
+reviews it and parks a findings report for you to walk. That checkout is a standalone clone, a
+repository of its own that borrows the project's objects and holds its remote-tracking refs and tags
+but has no remote, so the session can run read-only git (`git show`, `git grep`, `git blame`,
+`git ls-files`) against any revision of any file. Nothing is posted to the pull request
 without your explicit go, and never under any login but your own.
 
 **A persona is the lens the review is read through.** Each member declares the personas they hold
 with `h9k owner set --persona engineer|qa|designer` (repeatable, and `--clear-personas` declares
 none). A pull request assigned to that member still mints one pr-review task, and the task runs one
-review session per declared persona on its single worktree and branch, reported in one findings
+review session per declared persona on its single checkout, reported in one findings
 report with a section per persona. Declaring none is the ordinary case and reads as the engineer's
 review, which is the code, logic, and functionality review that existed before personas did. The set
 is fixed, because each persona maps to its own prompt and criteria in the platform's registry.

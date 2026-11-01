@@ -1368,7 +1368,7 @@ start, ends in error or with no result, runs past that bound, answers with anyth
 no id standing never delays or fails the build: it dispatches on newest-first and the record says why.
 
 The pull-request review pre-flight (idea 6be68ee2, finding 1, phase one) has the identical
-floor-not-default shape. Before any pr-review dispatch cuts a worktree, this node now runs a short,
+floor-not-default shape. Before any pr-review dispatch cuts a checkout, this node now runs a short,
 no-checkout security lap that reads the pull request's own changed-file list and diff hunks through
 `gh` and judges whether it is safe to let the ordinary review persona plan check the pull request's
 code out at all, an extra Opus session ahead of every pr-review, not a narrower knob under
