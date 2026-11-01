@@ -934,6 +934,63 @@ public sealed class ConfigSetCommandTests
     }
 
     [Theory]
+    [InlineData("off")]
+    [InlineData("shadow")]
+    [InlineData("on")]
+    [InlineData(" ON ")]
+    public void A_lesson_picker_of_off_shadow_or_on_validates_and_is_written_normalized(string requested)
+    {
+        ConfigSetCommand.Settings settings = new() { LessonPicker = requested };
+        OperatingSettings operating = new();
+        List<string> changed = [];
+
+        ConfigSetCommand.Validate(settings);
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.LessonPicker.Should().Be(requested.Trim().ToLowerInvariant());
+        changed.Should().ContainSingle().Which.Should().Be($"lesson-picker = {operating.LessonPicker}");
+    }
+
+    [Theory]
+    [InlineData("sometimes")]
+    [InlineData("")]
+    [InlineData("true")]
+    public void A_lesson_picker_that_is_none_of_the_three_words_is_refused_naming_all_three(string requested)
+    {
+        ConfigSetCommand.Settings settings = new() { LessonPicker = requested };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*--lesson-picker*\"off\"*\"shadow\"*\"on\"*");
+    }
+
+    [Theory]
+    [InlineData(null, "shadow (default)")]
+    [InlineData("on", "on (config file)")]
+    [InlineData("off", "off (config file)")]
+    [InlineData("sometimes", "shadow (config file value 'sometimes' is not off, shadow or on, so shadow applies)")]
+    public void Config_show_prints_the_picker_in_force_and_where_it_came_from(string? configured, string expected)
+    {
+        ConfigShowCommand.LessonPickerDisplay(new OperatingSettings { LessonPicker = configured })
+            .Should().Be(expected);
+    }
+
+    [Fact]
+    public void The_courier_flags_say_they_also_move_the_lesson_picker()
+    {
+        string[] described =
+        [
+            .. typeof(ConfigSetCommand.Settings).GetProperties()
+                .Where(property => property.Name is nameof(ConfigSetCommand.Settings.ModelCourier)
+                    or nameof(ConfigSetCommand.Settings.EffortCourier))
+                .Select(property => ((System.ComponentModel.DescriptionAttribute)Attribute.GetCustomAttribute(
+                    property, typeof(System.ComponentModel.DescriptionAttribute))!).Description),
+        ];
+
+        described.Should().HaveCount(2).And.OnlyContain(text => text.Contains("lesson picker", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Theory]
     [InlineData("cleared")]
     [InlineData("all")]
     [InlineData(" ALL ")]

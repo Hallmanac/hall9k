@@ -918,7 +918,9 @@ public static class CliCommandTree
                     + "the file on every render, so a new value is in force immediately, with no daemon restart "
                     + "and no environment variable to outrank it. --release-channel behaves the same way: "
                     + "h9k update reads it fresh from the file at each run, and so does "
-                    + "--release-check-interval-hours, which the daemon's release check reads after every check.")
+                    + "--release-check-interval-hours, which the daemon's release check reads after every check. "
+                    + "--lesson-picker (off, shadow or on; shadow is the default) is read fresh at every prompt "
+                    + "composition too, so the next prompt a task composes follows it.")
                 .WithExample("config", "set", "--max-concurrent-task-runs", "2")
                 .WithExample("config", "set", "--session-cap-per-run", "1")
                 .WithExample("config", "set", "--orchestrator-model", "sonnet")
@@ -932,6 +934,7 @@ public static class CliCommandTree
                 .WithExample("config", "set", "--interactive-claim-stale-after-days", "5")
                 .WithExample("config", "set", "--release-channel", "all")
                 .WithExample("config", "set", "--release-check-interval-hours", "1")
+                .WithExample("config", "set", "--lesson-picker", "on")
                 .WithExample("config", "set", "--spend-budget", "5000000", "--spend-period", "week")
                 .WithExample("config", "set", "--session-containment", "false")
                 .WithExample("config", "set", "--review-stage-composition", "skip-final-pass", "--accept-reduced-review");
