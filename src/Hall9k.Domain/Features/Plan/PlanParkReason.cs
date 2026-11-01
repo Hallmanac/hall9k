@@ -22,13 +22,13 @@ public sealed record PlanParkReason
 
     public static readonly PlanParkReason VerdictNotApplied = new(
         "VerdictNotApplied",
-        "the session told to apply or answer the challenge verdict changed nothing",
+        "the session told to apply the challenge verdict changed nothing",
         "apply the verdict by hand with h9k task revise, or h9k plan resume to run the session again");
 
     public static readonly PlanParkReason DraftChanged = new(
         "DraftChanged",
-        "the draft was changed after the refinement session was dispatched, so its revision was not applied",
-        "h9k plan resume runs the session again on the draft as it is now");
+        "the draft was changed after the session or challenge that last read it, so a revision was not applied or a verdict no longer describes it",
+        "h9k plan resume runs the step again on the draft as it is now: a refinement session, or a new challenge");
 
     public static readonly PlanParkReason RevisionRefused = new(
         "RevisionRefused",
@@ -42,7 +42,7 @@ public sealed record PlanParkReason
 
     public static readonly PlanParkReason ChallengeFailed = new(
         "ChallengeFailed",
-        "the challenge ended with no verdict",
+        "the challenge ended with no verdict, or was refused before it ran (the daemon log says why)",
         "h9k plan resume requests it again");
 
     public static readonly PlanParkReason PublishRefused = new(

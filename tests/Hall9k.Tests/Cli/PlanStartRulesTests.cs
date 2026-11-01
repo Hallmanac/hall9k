@@ -204,7 +204,7 @@ public sealed class PlanStartRulesTests
         ProjectDetails project = Project(BacklogPolicy.FromInput(policy));
 
         Action bare = () => Decide([Draft()], project);
-        bare.Should().Throw<DomainBusinessRuleException>().WithMessage("*carries no linked item*--no-existing-item*--untracked*");
+        bare.Should().Throw<DomainBusinessRuleException>().WithMessage("*carries no linked item*Start the plan anyway with the attestation*--no-existing-item*--untracked*");
 
         Decide([Draft(linked: true)], project).NoExistingItemAttested.Should().BeFalse("a linked draft needs none");
         Decide([Draft()], project, noExisting: true).NoExistingItemAttested.Should().BeTrue();

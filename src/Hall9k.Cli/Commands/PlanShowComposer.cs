@@ -60,6 +60,13 @@ internal static class PlanShowComposer
             lines.AddRange(DraftLines(plan, draft, tasks.GetValueOrDefault(draft.DraftId), roundCap));
         }
 
+        if (plan.IsLive && plan.Drafts.Any(draft => draft.Round > 0))
+        {
+            lines.Add(
+                $"  [dim]The cap in \"round N of M\" is the default of {roundCap} plus any rounds a resume granted; the daemon's "
+                + "Hall9k__PlanRoundCap, if it was set, overrides it, and this command cannot read the daemon's options.[/]");
+        }
+
         lines.AddRange(TrackerGapLines(plan, project, tasks));
         if (plan.IsLive && plan.IsParked)
         {
@@ -99,12 +106,9 @@ internal static class PlanShowComposer
             yield return "      a challenge is requested or running; h9k task show says when its verdict lands";
         }
 
-        if (draft.LatestSessionId is { } latest && !draft.IsClosed)
+        if (draft.LatestSessionId is { } latest)
         {
-            string report = draft.Outcome.IsChallenge
-                ? RunPaths.ChallengeReportFile(latest)
-                : RunPaths.RefinementReportFile(latest);
-            yield return $"      latest report: {report}";
+            yield return $"      latest report: {ReportFile(draft, latest)}";
         }
 
         if (draft.IsParked)
@@ -117,6 +121,12 @@ internal static class PlanShowComposer
             }
         }
     }
+
+    /// <summary>The report of the draft's latest session: a challenge's or a refinement session's, as the record says which it was.</summary>
+    private static string ReportFile(PlanDraftState draft, Guid session) =>
+        draft.LatestReportIsChallenge
+            ? RunPaths.ChallengeReportFile(session)
+            : RunPaths.RefinementReportFile(session);
 
     /// <summary>Where the prose behind a park is, since the record holds none of it: the report, the child command's output, or the journal.</summary>
     private static IEnumerable<string> WhereToRead(PlanDetails plan, PlanDraftState draft)
@@ -137,9 +147,7 @@ internal static class PlanShowComposer
             yield return RunPaths.PlanReviseOutputFile(plan.Id, session);
         }
 
-        yield return draft.Outcome.IsChallenge
-            ? RunPaths.ChallengeReportFile(session)
-            : RunPaths.RefinementReportFile(session);
+        yield return ReportFile(draft, session);
         if (draft.ParkReason == PlanParkReason.Question)
         {
             yield return "the draft's journal.md, where the session wrote the question";

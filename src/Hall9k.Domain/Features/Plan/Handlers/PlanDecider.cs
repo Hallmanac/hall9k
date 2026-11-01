@@ -110,7 +110,9 @@ public static class PlanDecider
 
     /// <summary>
     /// What a refinement session's report led to, once its revision (if any) was applied. A session that asked a
-    /// question parks the plan; one told to apply or answer a verdict that changed nothing parks it too.
+    /// question parks the plan; one told to apply a verdict that changed nothing parks it too. A session told to answer a
+    /// do not publish verdict goes on to a new challenge even when it changed nothing, because it may have answered in the
+    /// journal that a must is wrong, and a new challenge reads the journal; the round cap bounds the loop.
     /// </summary>
     public static IReadOnlyList<object> AfterRefinement(
         PlanAggregate plan, PlanDraftState draft, RefinementPurpose purpose, RefinementOutcome outcome, Guid sessionId, DateTimeOffset now)
@@ -126,11 +128,6 @@ public static class PlanDecider
             return changed
                 ? [Moved(plan, draft, PlanPhase.Challenge, draft.Round, PlanOutcome.Applied, RefinementPurpose.Unknown, ready: true, sessionId, now)]
                 : [Park(plan, draft.DraftId, PlanParkReason.VerdictNotApplied, sessionId, now)];
-        }
-
-        if (purpose == RefinementPurpose.AnswerVerdict && !changed)
-        {
-            return [Park(plan, draft.DraftId, PlanParkReason.VerdictNotApplied, sessionId, now)];
         }
 
         PlanOutcome outcomeToRecord = changed
@@ -151,10 +148,14 @@ public static class PlanDecider
     /// <summary>
     /// What a challenge's recorded outcome led to. A failure parks. A verdict of publish as written makes the draft
     /// ready; publish as revised sends it to one session that applies the changes; do not publish sends it to a session
-    /// that answers the verdict, or parks the plan when this was the last round the cap allows.
+    /// that answers the verdict, or parks the plan when this was the last round the cap allows. A verdict that would end
+    /// the loop (publish as written or as revised) on a draft a person revised while the challenge ran, or after it landed,
+    /// judged text that is no longer the draft: the plan parks as draft changed, and a resume challenges the draft as it
+    /// stands.
     /// </summary>
     public static IReadOnlyList<object> AfterChallenge(
-        PlanAggregate plan, PlanDraftState draft, DraftChallengeRecorded recorded, int roundCap, DateTimeOffset now)
+        PlanAggregate plan, PlanDraftState draft, DraftChallengeRecorded recorded, int roundCap, DateTimeOffset now,
+        bool draftChangedSinceJudged = false)
     {
         if (!recorded.IsVerdict)
         {
@@ -162,6 +163,15 @@ public static class PlanDecider
         }
 
         PlanOutcome outcome = PlanOutcome.FromVerdict(recorded.Verdict);
+        if (draftChangedSinceJudged && (outcome == PlanOutcome.PublishAsWritten || outcome == PlanOutcome.PublishAsRevised))
+        {
+            return
+            [
+                Moved(plan, draft, PlanPhase.Challenge, draft.Round, outcome, RefinementPurpose.Unknown, ready: false, recorded.SessionId, now),
+                Park(plan, draft.DraftId, PlanParkReason.DraftChanged, null, now),
+            ];
+        }
+
         if (outcome == PlanOutcome.PublishAsWritten)
         {
             return [Moved(plan, draft, PlanPhase.Challenge, draft.Round, outcome, RefinementPurpose.Unknown, ready: true, recorded.SessionId, now)];
@@ -180,6 +190,17 @@ public static class PlanDecider
             ]
             : [Moved(plan, draft, PlanPhase.Refinement, draft.Round, outcome, RefinementPurpose.AnswerVerdict, ready: false, recorded.SessionId, now)];
     }
+
+    /// <summary>
+    /// A draft that is ready was revised after the plan declared it so, which no challenge or session has read. It is no
+    /// longer ready: the plan parks on it as draft changed, and a resume sends it back to a challenge of the text as it
+    /// now stands instead of publishing it unjudged.
+    /// </summary>
+    public static IReadOnlyList<object> ParkReadyDraftChanged(PlanAggregate plan, PlanDraftState draft, DateTimeOffset now) =>
+    [
+        Moved(plan, draft, PlanPhase.Challenge, draft.Round, draft.Outcome, RefinementPurpose.Unknown, ready: false, null, now),
+        Park(plan, draft.DraftId, PlanParkReason.DraftChanged, null, now),
+    ];
 
     /// <summary>The move a granted round makes: the draft goes back to refinement to answer the verdict that exhausted the last one.</summary>
     public static PlanDraftMoved StartNextRound(PlanAggregate plan, PlanDraftState draft, DateTimeOffset now) =>

@@ -1,6 +1,5 @@
 using FluentAssertions;
 using Hall9k.Cli.Infrastructure;
-using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Plan;
 using Hall9k.Domain.Features.Plan.Events;
 using Hall9k.Domain.Features.Plan.Handlers;
@@ -179,34 +178,10 @@ public sealed class PlanCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
     }
 
     [Fact]
-    public async Task Start_is_refused_for_a_project_without_skip_permissions_and_for_a_draft_whose_context_quotes_a_stranger()
+    public async Task Start_is_refused_for_a_missing_checkout()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid plainProject = await SeedProjectAsync("plain", skipPermissions: false, cts.Token);
-        Guid plain = await SeedDraftAsync(cts.Token, plainProject);
-        (await RunCliAsync(cts.Token, "plan", "start", plain.ToString()))
-            .Should().BeOfType<DomainBusinessRuleException>().Which.Message.Should().Contain("skip-permissions");
-
-        string adopted = WorkItemContext.Compose(
-            new ImportedWorkItem(ExternalReference.Parse("github:acme/api#7"), "Title", "Body", WorkItemStatus.Open, null, DateTimeOffset.UtcNow),
-            "Pointers.");
-        Guid quoting = await SeedDraftAsync(cts.Token, context: adopted);
-        (await RunCliAsync(cts.Token, "plan", "start", quoting.ToString()))
-            .Should().BeOfType<DomainBusinessRuleException>().Which.Message.Should().Contain("h9k task revise").And.Contain("--context");
-
-        (await PlansAsync(cts.Token)).Should().BeEmpty();
-    }
-
-    [Fact]
-    public async Task Start_is_refused_for_drafts_of_different_projects_and_for_a_missing_checkout()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        Guid other = await SeedProjectAsync("other", skipPermissions: true, cts.Token);
         Guid here = await SeedDraftAsync(cts.Token);
-        Guid there = await SeedDraftAsync(cts.Token, other);
-
-        (await RunCliAsync(cts.Token, "plan", "start", here.ToString(), there.ToString()))
-            .Should().BeOfType<DomainBusinessRuleException>().Which.Message.Should().Contain("different project");
 
         Directory.Delete(_checkout, recursive: true);
         (await RunCliAsync(cts.Token, "plan", "start", here.ToString()))

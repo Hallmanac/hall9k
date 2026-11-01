@@ -133,7 +133,7 @@ public static class OrchestratorFeedDescription
             PlanParked parked => PlanParkLine(parked),
             PlanPublished published => PlanPublishedLine(published),
             PlanCancelled cancelled =>
-                $"plan {DomainId.Short(cancelled.Id)} ended cancelled; its drafts that were not abandoned are Drafts again",
+                $"plan {DomainId.Short(cancelled.Id)} ended cancelled; its drafts that were neither published nor abandoned are Drafts again",
             // A claim a person made by hand (h9k task drive, h9k task start) carries Guid.Empty as its
             // node id — the sentinel TaskAggregate.IsInteractiveClaim reads, deliberately naming no
             // node at all — so these two arms come first: shortening that sentinel would print
@@ -362,7 +362,7 @@ public static class OrchestratorFeedDescription
     /// one by itself past the publish, so a person hears it here rather than from a missing card.
     /// </summary>
     private static string PlanPublishedLine(PlanPublished published) =>
-        $"plan {DomainId.Short(published.Id)} ended: every draft is published; assigning and queueing stay yours"
+        $"plan {DomainId.Short(published.Id)} ended: each draft is published or was abandoned; assigning and queueing stay yours"
         + (published.WithoutTrackerItem.Count == 0
             ? string.Empty
             : $"; no tracker item exists or is on its way for {string.Join(", ", published.WithoutTrackerItem.Select(DomainId.Short))}");

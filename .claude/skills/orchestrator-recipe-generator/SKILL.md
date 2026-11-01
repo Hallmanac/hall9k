@@ -592,7 +592,7 @@ challenge, and publish it (see *Plans* below).
    recipe instead of the anchor, naming the model and effort explicitly so neither is ever left to
    inherit from `recipes/settings.json`:
 
-       cd "<this project's working directory>" && claude --strict-mcp-config --setting-sources project --settings recipes/settings.json --dangerously-skip-permissions --model '<exact model id>' --effort <level> -n '<name>' --session-id <uuid> -p --append-system-prompt-file recipes/<idea-discovery.md|task-refinement.md> "<opening message naming the subject and its hand-off journal path>"
+       cd "<this project's working directory>" && claude --strict-mcp-config --setting-sources project --settings recipes/settings.json --dangerously-skip-permissions --model '<exact model id>' --effort <level> -n '<name>' --session-id <uuid> -p --append-system-prompt-file recipes/idea-discovery.md "<opening message naming the subject and its hand-off journal path>"
 
    This is a **stated exception** to *never write a launch line into a recipe* above, not a second
    rule: the orchestrator window's own launch line is a platform setting because the platform
@@ -887,12 +887,12 @@ own heading, and writes no launch line or model for the work a plan does:
 
 ## The scoped session recipes' contract
 
-`recipes/idea-discovery.md` and `recipes/task-refinement.md` are shorter, single-purpose recipes
-launched by the project orchestrator, never spawning further scoped sessions of their own.
-`recipes/task-refinement.md` stays for refinement with the operator in the terminal (a person
-walking a draft with a session they are in); the headless refinement of a draft is a plan's, run by
-the daemon from a template that carries the same house rules, and this recipe is not its source.
-Both:
+`recipes/idea-discovery.md` and `recipes/task-refinement.md` are shorter, single-purpose recipes,
+never spawning further scoped sessions of their own. `recipes/idea-discovery.md` is launched by the
+project orchestrator. `recipes/task-refinement.md` is for refinement with the operator in the
+terminal (a person walking a draft with a session they are in) and is never launched headless by the
+orchestrator; the headless refinement of a draft is a plan's, run by the daemon from a template that
+carries the same house rules, and this recipe is not its source. Both:
 
 - State what the session is for in one paragraph (discovery answers "what is this, and does it
   become a task, an epic, several tasks, a ruling, or nothing"; refinement answers "how does this

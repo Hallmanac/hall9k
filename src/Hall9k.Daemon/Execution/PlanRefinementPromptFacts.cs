@@ -26,7 +26,7 @@ public sealed record PriorVerdictFacts(ChallengeVerdict Verdict, int MustCount, 
 /// <param name="IdeaWorkspace">The idea's workspace directory when the draft came from an idea and it exists, else null.</param>
 /// <param name="Journal">The draft's <c>journal.md</c> when it exists, else null.</param>
 /// <param name="JournalToWrite">Where the journal is written: its existing path, or the one in the draft's directory, or null when the draft has no directory on this node.</param>
-/// <param name="PriorVerdict">The verdict a later session answers, or null for a first one.</param>
+/// <param name="PriorVerdict">The latest challenge verdict on the draft, or null when it has never been challenged.</param>
 public sealed record PlanRefinementPromptFacts(
     RefinementPurpose Purpose,
     string? ProjectHome,
