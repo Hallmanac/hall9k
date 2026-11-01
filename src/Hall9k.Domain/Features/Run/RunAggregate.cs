@@ -906,6 +906,64 @@ public sealed class RunAggregate
     public bool ParkedIsInteractiveGate { get; private set; }
 
     /// <summary>
+    /// Whether the park just recorded is the task's human gate (<c>h9k task add --human-gate</c>), the
+    /// one stop after automated review has settled and before the pull request opens. Always true
+    /// together with <see cref="ParkedIsInteractiveGate"/>, which is why every interactive lever
+    /// applies to it; this is what says which boundary it is. The gate keeps its own answer facts
+    /// (<see cref="HumanGateAnswer"/>) rather than reusing <see cref="InteractiveGateCleared"/>, which
+    /// any earlier proceed, resolve, or skip also sets.
+    /// </summary>
+    public bool ParkedIsHumanGate { get; private set; }
+
+    /// <summary>
+    /// Whether the park just recorded sits at the boundary between a settled review and the pull request
+    /// opening: the task's human gate, or interactive mode's own gates-to-pull-request park. Both are held
+    /// to the same rules there (the tip is recorded, a proceed is checked against it, and a hand fix is
+    /// accepted), because both leave the owner's commits and edits unread otherwise.
+    /// </summary>
+    public bool ParkedAtPullRequestBoundary => ParkedIsInteractiveGate && ParkedFromReviewPhase == ReviewPhase.MergeReady;
+
+    /// <summary>
+    /// Whether the park that last held the run at the pull-request boundary was the task's human gate
+    /// rather than interactive mode's own park, so a re-park after a moved tip is the same kind of park
+    /// the owner was already answering (and offers the same choices).
+    /// </summary>
+    public bool PullRequestBoundaryParkedAsHumanGate { get; private set; }
+
+    /// <summary>
+    /// The branch tip the pull-request boundary held the run at, which is the tip automated review read. Set by a
+    /// park there (the human gate's or interactive mode's), cleared again by a fix dispatch or a hand fix (the branch is then being reviewed anew
+    /// and the next gate park records a fresh tip). Null when no gate park has happened since, or when the
+    /// tip could not be read at the park.
+    /// </summary>
+    public string? HumanGateTipSha { get; private set; }
+
+    /// <summary>
+    /// How the human gate has been answered on this run (<see cref="HumanGateAnswer"/>), or
+    /// <see cref="HumanGateAnswer.None"/>. Only an answer at this boundary sets it, so an earlier
+    /// <c>resolve --merge-ready</c> at some other park leaves the gate standing. Reset by a fix dispatch or
+    /// a hand fix, because the branch is then reviewed again and stops at the gate once more.
+    /// </summary>
+    public HumanGateAnswer HumanGateAnswer { get; private set; } = HumanGateAnswer.None;
+
+    /// <summary>When the human gate was answered, and by whom (task show names who approved and when).</summary>
+    public DateTimeOffset? HumanGateAnsweredAt { get; private set; }
+
+    /// <summary>See <see cref="HumanGateAnsweredAt"/>; null for a skip, which is not a person at the gate.</summary>
+    public Guid? HumanGateAnsweredByOwnerId { get; private set; }
+
+    /// <summary>
+    /// Withdraws the gate's answer and who gave it: a fix, a redirect, or a fresh gate park means the stop
+    /// stands again, and <c>h9k task show</c> must never say it is approved while it does.
+    /// </summary>
+    private void ClearHumanGateAnswer()
+    {
+        HumanGateAnswer = HumanGateAnswer.None;
+        HumanGateAnsweredAt = null;
+        HumanGateAnsweredByOwnerId = null;
+    }
+
+    /// <summary>
     /// Whether the park that produced the CURRENT <see cref="PendingHumanFindings"/> was
     /// interactive mode's own routine boundary gate rather than a disputed finding or a cap/budget
     /// park — captured once, at the exact moment <see cref="Apply(Events.ReviewParkResolved)"/>
@@ -1330,6 +1388,11 @@ public sealed class RunAggregate
         ReviewPhase = ReviewPhase.MergeReady;
         InteractiveGateCleared = true;
         ParkedIsInteractiveGate = false;
+        ParkedIsHumanGate = false;
+        // The owner's recorded override answers the human gate too: nothing is left to hold, and the
+        // tip is not compared because skipping is a deliberate decision to open the pull request as it
+        // stands. Left unset by who, since a skip names its own owner on the skip record.
+        HumanGateAnswer = HumanGateAnswer.Skipped;
         ParkedNeedsFixesOffersNoProgress = false;
         ParkedDisagreements = [];
         ParkedOnReviewDisagreement = false;
@@ -1366,6 +1429,10 @@ public sealed class RunAggregate
         // it bought actually dispatches (task: interactive mode becomes a recorded property of
         // the task).
         InteractiveGateCleared = false;
+        // A fix session reworks the branch, so the next settled review stops at the human gate
+        // again and records a fresh tip; the earlier answer and tip are spent.
+        HumanGateTipSha = null;
+        ClearHumanGateAnswer();
         // Always true already except the one path that needs it stated: a fix session
         // dispatched to redispatch over a budget park (backlog 40) left State at BudgetParked,
         // and nothing else in this event's normal firing would move it off that.
@@ -1443,6 +1510,24 @@ public sealed class RunAggregate
     public void Apply(ReviewHumanFixApplied @event)
     {
         HumanFixRounds++;
+        bool fixedAtHumanGate = ParkedAtPullRequestBoundary;
+        ParkedIsHumanGate = false;
+        HumanGateTipSha = null;
+        ClearHumanGateAnswer();
+        if (fixedAtHumanGate)
+        {
+            // The same reopening a --needs-fixes at this park gives (see Apply(ReviewParkResolved)):
+            // review had settled, so a verdict, a budget base and the final-pass count all still describe
+            // a finished loop, and the next review pass must read the person's commits as it reads a fix
+            // session's whether or not a human ended the loop earlier.
+            LastReviewVerdict = ReviewVerdict.NeedsFixes;
+            _humanEndedTheLoop = false;
+            ReviewBudgetBaseCycle = ReviewCycle;
+            FinalFullPassRounds = 0;
+            RebaseRecoveryRounds = 0;
+            SettlingGateRepairRounds = 0;
+        }
+
         // Consumed on the same terms Apply(ReviewFixCompleted) consumes them: the human answered
         // the boundary these findings were parked at, so they must not ride into whatever the loop
         // dispatches next as though nobody had acted on them.
@@ -1596,6 +1681,26 @@ public sealed class RunAggregate
         ParkedFromReviewPhase = ReviewPhase;
         ParkedNeedsFixesOffersNoProgress = @event.NeedsFixesOffersNoProgress;
         ParkedIsInteractiveGate = @event.IsInteractiveGate;
+        ParkedIsHumanGate = @event.IsHumanGate;
+        if (@event.IsHumanGate)
+        {
+            // The gate is always the boundary between a settled review and the pull request, even
+            // when the park was recorded from Settling (a merge-ready resolve over uncommitted work
+            // is sent back here before its gates run): proceed restores this phase and the levers
+            // name this boundary.
+            ParkedFromReviewPhase = ReviewPhase.MergeReady;
+        }
+
+        if (ParkedAtPullRequestBoundary)
+        {
+            // A fresh park at this boundary records the tip it holds and withdraws any earlier answer,
+            // and a human-ended loop that this park refuses to honour.
+            PullRequestBoundaryParkedAsHumanGate = @event.IsHumanGate;
+            HumanGateTipSha = @event.HumanGateTipSha;
+            ClearHumanGateAnswer();
+            _humanEndedTheLoop = false;
+        }
+
         ReviewPhase = ReviewPhase.Parked;
         State = RunState.ReviewParked;
     }
@@ -1610,6 +1715,7 @@ public sealed class RunAggregate
     /// </summary>
     public void Apply(ReviewBoundaryApproved @event)
     {
+        bool approvedAtPullRequestBoundary = ParkedAtPullRequestBoundary;
         ReviewPhase = ParkedFromReviewPhase;
         // UnderReview, not ParkedFromState, matching RunDetailsProjection.Apply(ReviewBoundaryApproved)
         // and every other resume-the-loop transition below (ReviewParkResolved, ReviewFixDispatched):
@@ -1622,10 +1728,22 @@ public sealed class RunAggregate
         InteractiveGateCleared = true;
         ParkedIsInteractiveGate = false;
         ParkedNeedsFixesOffersNoProgress = false;
+        if (approvedAtPullRequestBoundary)
+        {
+            // The approval is an answer at the pull-request boundary, recorded so the daemon can check the
+            // branch is still where the park found it before the pull request opens.
+            HumanGateAnswer = HumanGateAnswer.Proceeded;
+            HumanGateAnsweredAt = @event.ApprovedAt;
+            HumanGateAnsweredByOwnerId = @event.ApprovedByOwnerId;
+        }
+
+        ParkedIsHumanGate = false;
     }
 
     public void Apply(ReviewParkResolved @event)
     {
+        bool resolvedAtHumanGate = ParkedAtPullRequestBoundary;
+        ParkedIsHumanGate = false;
         if (ParkedFromReviewPhase == ReviewPhase.RebaseRecoveryDisputed)
         {
             // A disputed pre-final-pass rebase conflict (task: a run rebases its branch onto the
@@ -1701,6 +1819,14 @@ public sealed class RunAggregate
             // (log #63) rather than borrowing the word Clean.
             _humanEndedTheLoop = true;
             ReviewPhase = ReviewPhase.Settling;
+            if (resolvedAtHumanGate)
+            {
+                // An answer at the human gate that owns the moved tip: the gates run over whatever
+                // the branch now holds and the settlement is recorded as Settled, not Clean.
+                HumanGateAnswer = HumanGateAnswer.ResolvedMergeReady;
+                HumanGateAnsweredAt = @event.ResolvedAt;
+                HumanGateAnsweredByOwnerId = @event.ResolvedByOwnerId;
+            }
             // The same fresh-grant reset the NeedsFixes branch below gives itself, kept for the
             // same discipline even though it no longer guards the scenario it was written for
             // (independent pre-PR review, cycle 5): ReviewEngine.ReviewPhase.Settling's own settle
@@ -1731,6 +1857,15 @@ public sealed class RunAggregate
             LastReviewVerdict = ReviewVerdict.NeedsFixes;
             ReviewPhase = ReviewPhase.FixNeeded;
             PendingHumanFindings = @event.Reason;
+            // A human's redirect reopens review of whatever the fix produces, however the loop was
+            // ended before: nothing clears this today, and without it the settle short-circuit takes
+            // the earlier merge-ready as its answer and the fix reaches the pull request unread.
+            _humanEndedTheLoop = false;
+            if (resolvedAtHumanGate)
+            {
+                HumanGateTipSha = null;
+                ClearHumanGateAnswer();
+            }
             // Captured from ParkedIsInteractiveGate here, before it is reset to false a few lines
             // below, and paired with PendingHumanFindings for the rest of its lifecycle: see
             // PendingHumanFindingsFromInteractiveGate's own doc for why reading a shared,

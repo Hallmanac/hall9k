@@ -30,11 +30,17 @@ public sealed record LocalLaunchStopReason
     public static readonly LocalLaunchStopReason ProcessGone = new("process-gone");
 
     /// <summary>Not one of the four — an unparsed or unrecognized value off an old event.</summary>
+    /// <summary>
+    /// The run left its human gate (an approval, a change, or an override) while a launch was still up, so
+    /// the gates and sessions about to start in that worktree must not share it with a running product.
+    /// </summary>
+    public static readonly LocalLaunchStopReason LeftTheHumanGate = new("left-the-human-gate");
+
     public static readonly LocalLaunchStopReason Unknown = new(string.Empty);
 
     /// <summary>Every real reason, for a help line that names them all.</summary>
     public static readonly IReadOnlyList<LocalLaunchStopReason> All =
-        [Requested, TaskClosedOut, WorktreeRemoved, ProcessGone];
+        [Requested, TaskClosedOut, WorktreeRemoved, ProcessGone, LeftTheHumanGate];
 
     public string Value { get; }
 
@@ -51,6 +57,7 @@ public sealed record LocalLaunchStopReason
         this == Requested ? "you asked for it to stop"
         : this == TaskClosedOut ? "the task it belongs to closed out"
         : this == WorktreeRemoved ? "the worktree it was standing in was removed"
+        : this == LeftTheHumanGate ? "the run left its human gate, and the gates and sessions that follow need the worktree to themselves"
         : this == ProcessGone ? "its process was already gone when the platform next looked"
         : "the reason was not recorded";
 

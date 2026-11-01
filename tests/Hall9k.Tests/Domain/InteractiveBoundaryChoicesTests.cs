@@ -33,6 +33,38 @@ public sealed class InteractiveBoundaryChoicesTests
     }
 
     [Fact]
+    public void A_human_gate_park_gets_the_gates_choices_whatever_phase_it_was_recorded_from()
+    {
+        InteractiveBoundaryChoices.LeversFor(ReviewPhase.MergeReady, parkedIsHumanGate: true)
+            .Should().Be(InteractiveBoundaryLevers.HumanGate);
+        InteractiveBoundaryChoices.LeversFor(ReviewPhase.Settling, parkedIsHumanGate: true)
+            .Should().Be(InteractiveBoundaryLevers.HumanGate);
+        InteractiveBoundaryChoices.LeversFor(ReviewPhase.MergeReady, parkedIsHumanGate: false)
+            .Should().Be(InteractiveBoundaryLevers.GatesToPullRequest, "interactive mode's own boundary is unchanged");
+    }
+
+    [Fact]
+    public void The_human_gate_offers_brief_proceed_both_change_routes_merge_ready_and_the_discard_pair_and_never_names_interactive_mode()
+    {
+        string lines = string.Join('\n', InteractiveBoundaryChoices.Lines(InteractiveBoundaryLevers.HumanGate, TaskId));
+        string park = InteractiveBoundaryChoices.ParkText(InteractiveBoundaryLevers.HumanGate, TaskId);
+
+        foreach (string surface in new[] { lines, park })
+        {
+            surface.Should().Contain($"h9k review brief {TaskId}")
+                .And.Contain($"h9k review proceed {TaskId}")
+                .And.Contain($"h9k review resolve {TaskId} --needs-fixes")
+                .And.Contain($"h9k review fixed {TaskId}")
+                .And.Contain($"h9k review resolve {TaskId} --merge-ready --reason")
+                .And.Contain($"h9k task abandon {TaskId}")
+                .And.Contain($"h9k task add --evolved-from {TaskId}")
+                .And.NotContain("clear-interactive-mode")
+                .And.NotContainEquivalentOf("interactive mode is on")
+                .And.NotContain("skip-to-pr", "review has settled, so there is nothing left to skip");
+        }
+    }
+
+    [Fact]
     public void The_verdict_to_fix_park_text_counts_its_five_choices()
     {
         InteractiveBoundaryChoices.ParkText(InteractiveBoundaryLevers.ReviewVerdictToFix, TaskId)

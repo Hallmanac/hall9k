@@ -27,4 +27,12 @@ public enum InteractiveBoundaryLevers
     /// option, never the default).
     /// </summary>
     GatesToPullRequest,
+
+    /// <summary>
+    /// The task's human gate (<c>h9k task add --human-gate</c>): the one stop after automated review has
+    /// settled and before the pull request opens. Its choices differ from <see cref="GatesToPullRequest"/>
+    /// on purpose: it adds the briefing and the by-hand fix, offers the discard outcome, and never names
+    /// interactive mode, which a gated task may not have on at all.
+    /// </summary>
+    HumanGate,
 }

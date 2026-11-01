@@ -236,6 +236,7 @@ public sealed class ReviewEngine(
 
         try
         {
+            await EndLocalLaunchLeavingHumanGateAsync(context, cancellationToken);
             return await DriveAsync(context, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -248,6 +249,42 @@ public sealed class ReviewEngine(
             await FailAsync(runId, taskId, $"Review loop failed: {exception.Message}", cancellationToken);
             return false;
         }
+    }
+
+    /// <summary>
+    /// A product stood up for a person to walk at the human gate (<c>h9k task run-local</c>) must not
+    /// still be running when the run leaves it, because the gates, a fix session, or a review pass are
+    /// about to start in that same worktree. The launch sweep ticks every 20 seconds and knows nothing
+    /// of run state, so the stop belongs here, in the loop's re-entry and ahead of everything the loop
+    /// does: it ends the launch's processes and records why before the gate, the fix session, or the
+    /// pull request opener touches the worktree. Applies only to a run that has a human gate on the
+    /// record, so a launch on any other run is left to the sweep's own rules.
+    /// </summary>
+    private async Task EndLocalLaunchLeavingHumanGateAsync(ReviewContext context, CancellationToken cancellationToken)
+    {
+        if (context.Run.LocalLaunch is not { Live: true } launch)
+        {
+            return;
+        }
+
+        RunAggregate run = await LoadRunAsync(context.RunId, cancellationToken);
+        bool gateOnTheRecord = context.Task.HumanGate || run.HumanGateTipSha is not null
+            || run.HumanGateAnswer != HumanGateAnswer.None;
+        if (!gateOnTheRecord || run.ReviewPhase == ReviewPhase.Parked || run.State == RunState.ReviewParked)
+        {
+            return;
+        }
+
+        IReadOnlyList<int> ended = LocalLaunchProcesses.EndAll(launch);
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(
+            context.RunId,
+            new LocalLaunchStopped(
+                context.RunId, launch.LaunchId, LocalLaunchStopReason.LeftTheHumanGate, ended, DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Run {RunId}: the run left its human gate, so the local launch of task {TaskId} was stopped ({Count} process tree(s) ended)",
+            context.RunId, context.TaskId, ended.Count);
     }
 
     private async Task<bool> DriveAsync(ReviewContext context, CancellationToken cancellationToken)
@@ -451,6 +488,15 @@ public sealed class ReviewEngine(
                     break;
 
                 case ReviewPhase.Settling:
+                    // A merge-ready resolve at the human gate runs the gates over whatever the branch now
+                    // holds, and the gates would fail or spend a recovery session over uncommitted work.
+                    // Sent back to the gate before any of that, with nothing committed on the person's behalf.
+                    if (run.HumanGateAnswer == HumanGateAnswer.ResolvedMergeReady
+                        && !await RefuseHumanGateOverUncommittedWorkAsync(context, run, cancellationToken))
+                    {
+                        return false;
+                    }
+
                     // Nothing may reach the remote on scoped green alone (task: a fix cycle's
                     // verification gate): the tip about to settle needs a full-scope gate run
                     // since whatever fix's own — possibly scoped — reverify last ran it, whether
@@ -839,6 +885,14 @@ public sealed class ReviewEngine(
                     // (h9k task revise --clear-interactive-mode). Naming it here is all that was
                     // missing — interactive mode stays the default, and this is offered as the
                     // option it is.
+                    // The task's human gate comes first and is its own stop, not interactive mode's:
+                    // when the task has both, this park is the single stop at this boundary, because
+                    // the answer that releases it also clears the interactive gate checked just below.
+                    if (!await EnsureHumanGateAsync(context, run, cancellationToken))
+                    {
+                        return false;
+                    }
+
                     if (!await EnsureInteractiveProceedAsync(
                         context, run, "review is merge-ready and the pull request is ready to open",
                         InteractiveBoundaryLevers.GatesToPullRequest, cancellationToken))
@@ -7330,6 +7384,7 @@ public sealed class ReviewEngine(
     internal async Task ParkAsync(
         Guid runId, Guid taskId, string reason, bool needsFixesOffersNoProgress = false,
         bool isInteractiveGate = false, IReadOnlyList<object>? precedingEvents = null,
+        bool isHumanGate = false, string? humanGateTipSha = null,
         CancellationToken cancellationToken = default)
     {
         await using IDocumentSession session = store.LightweightSession();
@@ -7375,9 +7430,115 @@ public sealed class ReviewEngine(
 
         session.Events.Append(
             runId,
-            new ReviewParked(runId, reason, DateTimeOffset.UtcNow, needsFixesOffersNoProgress, isInteractiveGate));
+            new ReviewParked(
+                runId, reason, DateTimeOffset.UtcNow, needsFixesOffersNoProgress, isInteractiveGate,
+                isHumanGate, humanGateTipSha));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogWarning("Run {RunId}: review parked for the human — {Reason}", runId, reason);
+    }
+
+    /// <summary>
+    /// The task's human gate (<c>h9k task add --human-gate</c>): the one stop after automated review has
+    /// settled and before the pull request opens. Returns true when the pull request may open.
+    /// <para>
+    /// Whether the gate applies is read fresh from the task, the way interactive mode's flag is, so a
+    /// <c>h9k task revise --clear-human-gate</c> made while the run was still in review lets it through,
+    /// while one made at the park does not release the park: only an answer given at the boundary does
+    /// (<see cref="RunAggregate.HumanGateAnswer"/>), however review ended, including a
+    /// <c>h9k review resolve --merge-ready</c> at an earlier park. A follow-up run on a task whose pull
+    /// request is already open never stops here, since there is no boundary left to hold. The park pushes
+    /// nothing and opens nothing, and records the branch tip it held (the one automated review read).
+    /// </para>
+    /// <para>
+    /// Interactive mode's own gates-to-pull-request park is held to the same rule (it records the tip too),
+    /// because the hole this closes is the same: commits made at that park used to reach the pull request
+    /// unread.
+    /// </para>
+    /// <para>
+    /// A bare proceed approves that tip, so it is checked here, in the daemon, because the proceed may have
+    /// been typed on a machine that holds no worktree: a branch that moved, or a worktree with uncommitted
+    /// work, parks at the same boundary again instead of opening a pull request over commits nothing has
+    /// read. The decision itself is the pure <see cref="HumanGateFinding.Decide"/>.
+    /// </para>
+    /// </summary>
+    private async Task<bool> EnsureHumanGateAsync(
+        ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
+    {
+        switch (run.HumanGateAnswer)
+        {
+            case HumanGateAnswer.Skipped:
+                return true;
+            case HumanGateAnswer.Proceeded:
+            case HumanGateAnswer.ResolvedMergeReady:
+                HumanGateFinding finding = await ObserveHumanGateAsync(
+                    context, run, requireUnchangedTip: run.HumanGateAnswer == HumanGateAnswer.Proceeded,
+                    cancellationToken);
+                if (finding.IsClear)
+                {
+                    return true;
+                }
+
+                await ParkAsync(
+                    context.RunId, context.TaskId, finding.ReparkReason(context.TaskId),
+                    isInteractiveGate: true, isHumanGate: run.PullRequestBoundaryParkedAsHumanGate,
+                    humanGateTipSha: run.HumanGateTipSha, cancellationToken: cancellationToken);
+                return false;
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails? task = await query.LoadAsync<TaskDetails>(context.TaskId, cancellationToken);
+        if (task is not { HumanGate: true } || task.PullRequestUrl.IsNotBlank())
+        {
+            return true;
+        }
+
+        string? tip = await BranchObservation.ReadBranchTipAsync(
+            gitProcessRunner, context.Run.WorktreePath, context.Run.Branch, cancellationToken);
+        await ParkAsync(
+            context.RunId, context.TaskId, HumanGateParkReason(context.TaskId, SettlementLabel(run), tip),
+            isInteractiveGate: true, isHumanGate: true, humanGateTipSha: tip,
+            cancellationToken: cancellationToken);
+        return false;
+    }
+
+    /// <summary>The reason recorded when the gate holds a settled run: what is waiting, then the shared choices.</summary>
+    private static string HumanGateParkReason(Guid taskId, string settlement, string? tip) =>
+        $"This task has a human gate: automated review has settled ({settlement}) and the pull request has not "
+        + "been opened, pushed, or created anywhere. "
+        + (tip is null ? string.Empty : $"The branch stands at {tip[..Math.Min(12, tip.Length)]}. ")
+        + InteractiveBoundaryChoices.ParkText(InteractiveBoundaryLevers.HumanGate, taskId);
+
+    /// <summary>
+    /// A merge-ready resolve at the human gate meeting uncommitted work: the run parks at the gate again with
+    /// a reason naming what was found, and nothing is committed or opened. False when it parked.
+    /// </summary>
+    private async Task<bool> RefuseHumanGateOverUncommittedWorkAsync(
+        ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
+    {
+        HumanGateFinding finding = await ObserveHumanGateAsync(context, run, requireUnchangedTip: false, cancellationToken);
+        if (finding.IsClear)
+        {
+            return true;
+        }
+
+        await ParkAsync(
+            context.RunId, context.TaskId, finding.ReparkReason(context.TaskId),
+            isInteractiveGate: true, isHumanGate: run.PullRequestBoundaryParkedAsHumanGate,
+            humanGateTipSha: run.HumanGateTipSha, cancellationToken: cancellationToken);
+        return false;
+    }
+
+    /// <summary>Reads the branch and the worktree and hands the facts to the pure decision.</summary>
+    private async Task<HumanGateFinding> ObserveHumanGateAsync(
+        ReviewContext context, RunAggregate run, bool requireUnchangedTip, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<string>? uncommitted = await BranchObservation.ListBlockingUncommittedAsync(
+            gitProcessRunner, context.Run.WorktreePath, cancellationToken);
+        string? observedTip = requireUnchangedTip
+            ? await BranchObservation.ReadBranchTipAsync(
+                gitProcessRunner, context.Run.WorktreePath, context.Run.Branch, cancellationToken)
+            : null;
+        return HumanGateFinding.Decide(run.HumanGateTipSha, observedTip, uncommitted, requireUnchangedTip);
     }
 
     /// <summary>
@@ -7423,11 +7584,17 @@ public sealed class ReviewEngine(
             return true;
         }
 
+        // The boundary before the pull request opens records the branch tip it holds, exactly as the
+        // human gate does, so a proceed is checked against what review read (EnsureHumanGateAsync).
+        string? boundaryTip = levers == InteractiveBoundaryLevers.GatesToPullRequest
+            ? await BranchObservation.ReadBranchTipAsync(
+                gitProcessRunner, context.Run.WorktreePath, context.Run.Branch, cancellationToken)
+            : null;
         await ParkAsync(
             context.RunId, context.TaskId,
             $"Interactive mode is on for this task: {boundaryDescription}. " +
             InteractiveBoundaryChoices.ParkText(levers, context.TaskId),
-            isInteractiveGate: true, cancellationToken: cancellationToken);
+            isInteractiveGate: true, humanGateTipSha: boundaryTip, cancellationToken: cancellationToken);
         return false;
     }
 

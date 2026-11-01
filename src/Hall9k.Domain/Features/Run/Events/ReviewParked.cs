@@ -29,9 +29,26 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// only <c>h9k review resolve</c>. <see cref="RunAggregate.ParkedIsInteractiveGate"/> is what
 /// <c>ReviewProceedCommand</c> checks before accepting a bare proceed.
 /// </param>
+/// <param name="IsHumanGate">
+/// Whether this park is the task's human gate (<c>h9k task add --human-gate</c>): the one stop a gated
+/// task takes after automated review has settled and before its GitHub pull request opens. Always
+/// recorded together with <see cref="IsInteractiveGate"/> true, so every existing lever
+/// (<c>h9k review proceed</c>, <c>resolve</c>, <c>fixed</c>) applies to it, while this flag says which
+/// boundary the park is; it is not <see cref="RunAggregate.InteractiveGateCleared"/>'s business, which any
+/// earlier answer also sets. False on every event written before the gate existed.
+/// </param>
+/// <param name="HumanGateTipSha">
+/// The branch tip the human gate holds the run at, which is the tip automated review read: what
+/// <c>h9k review proceed</c> and <c>h9k review fixed</c> compare the branch against so that commits made
+/// during the park reach a pull request only after something has read them. A re-park for a tip that moved
+/// repeats the original tip rather than the moved one. Null when it could not be read, which is then
+/// treated as moved, never as unchanged; also null on every park that is not the human gate.
+/// </param>
 public sealed record ReviewParked(
     Guid Id,
     string Reason,
     DateTimeOffset ParkedAt,
     bool NeedsFixesOffersNoProgress = false,
-    bool IsInteractiveGate = false);
+    bool IsInteractiveGate = false,
+    bool IsHumanGate = false,
+    string? HumanGateTipSha = null);
