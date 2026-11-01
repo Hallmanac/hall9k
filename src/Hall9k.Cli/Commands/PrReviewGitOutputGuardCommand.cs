@@ -11,9 +11,10 @@ namespace Hall9k.Cli.Commands;
 /// both lenses): Claude Code runs it before every shell tool call in a pr-review session's own
 /// permission file — Bash, and on a Windows node the PowerShell tool beside it — hands it the call
 /// as JSON on stdin, and it refuses a <c>git diff</c>/<c>git log</c> call that escapes the
-/// checkout, in either direction (see <see cref="GitReadOnlyGuardRoutes"/>'s own doc): an
-/// <c>--output</c> write, or a <c>--no-index</c> read, despite the allow list's own prefix rules
-/// treating both subcommands as read-only.
+/// checkout or runs a configured program (see <see cref="GitReadOnlyGuardRoutes"/>'s own doc): an
+/// <c>--output</c> write, a <c>--no-index</c> or <c>-O</c> read, or an <c>--ext-diff</c> or
+/// <c>--show-signature</c> program, despite the allow list's own prefix rules treating both
+/// subcommands as read-only.
 /// <para>
 /// Not a command an operator ever types. It is registered in the tree anyway rather than hidden,
 /// on the identical terms <see cref="PullRequestReplyGuardCommand"/> states for itself: an

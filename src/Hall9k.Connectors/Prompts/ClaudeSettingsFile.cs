@@ -397,16 +397,40 @@ public static class ClaudeSettingsFile
     /// a pr-review session never posts to GitHub at all, but the hook costs nothing to carry and
     /// nothing here should depend on the deny list alone. The git read-only guard beside it
     /// (<see cref="GitReadOnlyGuardMatcher"/>) refuses what the allow list's own prefix rules
-    /// cannot, in either direction (<see cref="GitReadOnlyGuardRoutes"/>'s own doc): <c>git
-    /// diff</c>/<c>git log</c>'s own <c>--output=&lt;path&gt;</c> flag writes arbitrary content to
-    /// any path the owner can write, and either subcommand's own <c>--no-index</c> mode — entered
-    /// explicitly or implicitly, by naming an absolute path — reads one instead of the checkout's
-    /// own history. Neither is something a prefix-only allow rule (<c>Bash(git diff:*)</c>) has
-    /// any way to refuse — a deny list matches a command as spelled, and both are still spelled
-    /// "git diff" (independent pre-PR review, cycle 1, both lenses; verified in a throwaway repo:
-    /// <c>git log -1 --format='format:...' --output=&lt;path&gt;</c> wrote the formatted text to
-    /// that path, and <c>git diff /dev/null ~/.config/gh/hosts.yml</c> printed that file's own
-    /// content).
+    /// cannot (<see cref="GitReadOnlyGuardRoutes"/>'s own doc): <c>git diff</c>/<c>git log</c>'s own
+    /// <c>--output=&lt;path&gt;</c> flag writes arbitrary content to any path the owner can write,
+    /// either subcommand's own <c>--no-index</c> mode and <c>-O</c> flag read a path instead of the
+    /// checkout's own history, and <c>--ext-diff</c> and <c>--show-signature</c> run a program that
+    /// configuration names.
+    /// </para>
+    /// <para>
+    /// <b>The two git prefix rules stay, and no other git prefix rule may be added.</b>
+    /// Claude Code's own built-in read-only git allowance does not apply in a dispatched worktree:
+    /// its bare-repository check treats the <c>.git</c> file's <c>gitdir</c> target
+    /// (<c>repo/&lt;name&gt;.git/worktrees/wt-*</c>) as plantable, so a git command with no allow
+    /// rule falls through to a prompt and <c>dontAsk</c> refuses it. Observed in production: a
+    /// pr-review run had <c>git ls-files</c>, <c>git ls-tree</c> and <c>git show</c> denied while
+    /// <c>git diff</c> and <c>git log</c>, which had prefix rules, ran. Dropping the two rules
+    /// would leave every lens unable to read its own diff. Keeping them has a price, which is why
+    /// nothing may be added beside them: a prefix rule matches the command as spelled and turns off
+    /// Claude Code's own flag checks for it, so each rule needs something of ours standing in for
+    /// those checks. For <c>git diff</c> and <c>git log</c> there are two such things, one for each
+    /// way a spelling can go wrong. The git read-only guard (<see cref="GitReadOnlyGuardRoutes"/>)
+    /// reads the command text and refuses the flags that write or read outside the checkout or run
+    /// a configured program, for those two subcommands only. It cannot see what git does with the
+    /// checkout's own contents, so the <c>env</c> block below also sets
+    /// <c>safe.bareRepository=explicit</c> for the session, which makes git refuse a repository it
+    /// finds laid out inside the checkout rather than run the configuration that repository
+    /// carries. A rule for any further git command would have neither: the guard does not look at
+    /// that command's flags.
+    /// </para>
+    /// <para>
+    /// <b>A session with gate commands does not get that setting.</b> A QA session builds and runs
+    /// the project's own tests (<paramref name="qaGateCommands"/>), some of which create bare
+    /// repositories on purpose and would fail under it, and a session that runs the pull request's
+    /// own code is not made safer by one git setting. It is set per session in this file, never in a
+    /// global git configuration: project homes are bare clones, which that setting would break for
+    /// every other process on the node.
     /// </para>
     /// </summary>
     /// <param name="worktreePath">The checkout this session reads — the one directory, besides the run directory, its own <c>Read</c> may reach.</param>
@@ -431,6 +455,9 @@ public static class ClaudeSettingsFile
         long defaultMilliseconds = (long)commandTimeout.TotalMilliseconds;
         long maxMilliseconds = defaultMilliseconds * 2;
         string effortLevel = effort is { IsWellFormed: true } ? $", \"effortLevel\": \"{effort.Value}\"" : string.Empty;
+        // A QA session runs the project's own gates, some of which create bare repositories on
+        // purpose, so it is left without the setting (see this method's doc).
+        string bareRepositoryEnv = qaGateCommands is { Count: > 0 } ? string.Empty : PrReviewBareRepositoryEnvJson;
         List<string> allow =
         [
             AbsolutePathRule("Read", worktreePath),
@@ -461,7 +488,7 @@ public static class ClaudeSettingsFile
 
         string allowJson = string.Join(", ", allow.Select(rule => $"\"{rule}\""));
         string denyJson = string.Join(", ", PrReviewDeniedTools.Select(tool => $"\"{tool}\""));
-        return $$$"""{"includeCoAuthoredBy": false{{{effortLevel}}}, "env": {"BASH_DEFAULT_TIMEOUT_MS": "{{{defaultMilliseconds}}}", "BASH_MAX_TIMEOUT_MS": "{{{maxMilliseconds}}}"}, "permissions": {"defaultMode": "dontAsk", "allow": [{{{allowJson}}}], "deny": [{{{denyJson}}}]}, {{{PrReviewHooksJson}}}}""";
+        return $$$"""{"includeCoAuthoredBy": false{{{effortLevel}}}, "env": {"BASH_DEFAULT_TIMEOUT_MS": "{{{defaultMilliseconds}}}", "BASH_MAX_TIMEOUT_MS": "{{{maxMilliseconds}}}"{{{bareRepositoryEnv}}}}, "permissions": {"defaultMode": "dontAsk", "allow": [{{{allowJson}}}], "deny": [{{{denyJson}}}]}, {{{PrReviewHooksJson}}}}""";
     }
 
     /// <summary>
@@ -498,11 +525,33 @@ public static class ClaudeSettingsFile
     }
 
     /// <summary>
+    /// The three <c>env</c> entries that give a session git's <c>safe.bareRepository=explicit</c>
+    /// through the environment's own config variables, leading comma included so it splices after
+    /// the last entry already in the block. Git then refuses to work inside a bare repository it
+    /// discovers on its own, which is how a repository laid out inside the checkout's files would
+    /// otherwise be adopted along with the configuration it carries. The checkout itself is an
+    /// ordinary linked worktree and is unaffected.
+    /// </summary>
+    private const string PrReviewBareRepositoryEnvJson =
+        ", \"GIT_CONFIG_COUNT\": \"1\", \"GIT_CONFIG_KEY_0\": \"safe.bareRepository\", "
+        + "\"GIT_CONFIG_VALUE_0\": \"explicit\"";
+
+    /// <summary>
     /// The tool rules <see cref="BuildForPrReview"/> allows on every pr-review session, beside the
     /// <c>Read</c>/<c>Grep</c> rules it scopes itself (worktree and run directory) and whatever
     /// <paramref name="qaGateCommands"/> a QA session earns on top. What the lenses actually run:
     /// <c>review-mechanics.md</c>'s own ordinary-diff-range for <c>git diff</c>/<c>git log</c>,
     /// and the QA rules' own never-post line for the four <c>gh</c> reads.
+    /// <para>
+    /// The two git rules cannot be dropped: Claude Code's built-in read-only git allowance does not
+    /// apply in a dispatched worktree (see <see cref="BuildForPrReview"/>), so without them
+    /// <c>dontAsk</c> refuses both commands. No other git rule may be added beside them: a prefix
+    /// rule turns off Claude Code's own flag checks for the command it names, and the stand-ins
+    /// this project supplies (the git read-only guard hook and the <c>safe.bareRepository</c>
+    /// setting, both described on <see cref="BuildForPrReview"/>) are written for <c>git diff</c>
+    /// and <c>git log</c> alone, so any other git command's flags would run with nothing looking at
+    /// them. A test pins that these two are the only git rules.
+    /// </para>
     /// <para>
     /// <c>Glob</c> is the one tool left unscoped: it returns matching file NAMES only, never file
     /// contents, so an unscoped rule cannot read anything outside the checkout the way an unscoped

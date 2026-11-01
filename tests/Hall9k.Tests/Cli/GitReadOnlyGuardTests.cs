@@ -206,6 +206,10 @@ public sealed class GitReadOnlyGuardTests
     [InlineData("git log --oneline -20")]
     [InlineData("git diff --stat")]
     [InlineData("git diff origin/main...HEAD -- src/Foo.cs")]
+    [InlineData("git diff --no-ext-diff origin/main...HEAD")]
+    [InlineData("git log -SOrder --oneline")]
+    [InlineData("git log -S'Order book' --oneline")]
+    [InlineData("git log -1 --format='Orders --ext-diff --show-signature'")]
     public void An_ordinary_git_diff_or_log_with_no_output_flag_runs(string command) =>
         GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeFalse();
 
@@ -235,6 +239,26 @@ public sealed class GitReadOnlyGuardTests
     [InlineData("git \\\n log --output=/tmp/out.txt HEAD~1")]
     public void A_line_continuation_between_git_and_the_subcommand_is_refused_like_the_one_line_spelling(
         string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
+    /// <summary>
+    /// <c>--ext-diff</c> and <c>--show-signature</c> hand git's output to a program that
+    /// configuration names, and <c>-O&lt;orderfile&gt;</c> reads the file it names, alone or
+    /// bundled after other short flags. A prefix rule allows each as spelled, so the guard refuses
+    /// them, in the plain spelling and once the shell has removed quoting or a line continuation.
+    /// Git accepts none of the long flags abbreviated, so only the full spelling needs refusing.
+    /// </summary>
+    [Theory]
+    [InlineData("git diff --ext-diff HEAD~1")]
+    [InlineData("git log -1 --show-signature")]
+    [InlineData("git log -p --ext-diff")]
+    [InlineData("git diff -O/tmp/orderfile HEAD~1")]
+    [InlineData("git diff -pO/tmp/orderfile HEAD~1")]
+    [InlineData("git log -O orderfile")]
+    [InlineData("git diff '--ext-diff' HEAD~1")]
+    [InlineData("git diff --ext\\\n-diff HEAD~1")]
+    [InlineData("git log -p -'O'orderfile")]
+    public void A_flag_that_runs_a_program_or_reads_an_order_file_is_refused(string command) =>
         GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
 
     /// <summary>
