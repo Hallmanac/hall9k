@@ -237,13 +237,56 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                 }
             }
 
-            string worktreePath = WorktreePathFor(repositoryPath, request.TaskId, request.RunId);
-            await RunGitAsync(repositoryPath, $"worktree add --detach \"{worktreePath}\" {trackingRef}", cancellationToken);
+            string checkoutPath = WorktreePathFor(repositoryPath, request.TaskId, request.RunId);
+            await CutStandaloneCheckoutAsync(repositoryPath, checkoutPath, trackingRef, cancellationToken);
 
             logger.LogInformation(
-                "Read-only worktree {Path} checked out detached at pull request #{Number}'s head",
-                worktreePath, request.PullRequestNumber);
-            return new Worktree(worktreePath, $"pr/{request.PullRequestNumber}", trackingRef);
+                "Read-only standalone checkout {Path} detached at pull request #{Number}'s head",
+                checkoutPath, request.PullRequestNumber);
+            return new Worktree(checkoutPath, $"pr/{request.PullRequestNumber}", trackingRef);
+        }
+    }
+
+    /// <summary>
+    /// Cuts <paramref name="checkoutPath"/> as a standalone clone of <paramref name="repositoryPath"/>
+    /// (<see cref="PrReviewCheckoutPlan"/>'s own doc has the shape and the reason). A creation that
+    /// fails partway, cancellation included, removes what it made, so no half-built directory is
+    /// left for a later cleanup that records nothing about it to miss.
+    /// </summary>
+    private async Task CutStandaloneCheckoutAsync(
+        string repositoryPath, string checkoutPath, string trackingRef, CancellationToken cancellationToken)
+    {
+        // Refused rather than reused or cleared: the failure cleanup below deletes the directory,
+        // so it must only ever delete one this call made.
+        if (Path.Exists(checkoutPath))
+        {
+            throw new WorktreeException($"{checkoutPath} already exists, so a review checkout cannot be cut there.");
+        }
+
+        // The object directory is resolved the way the lock directory is, from git's own
+        // common-dir answer, so a bare clone and an ordinary clone's .git both work.
+        string objectsDirectory = Path.Combine(
+            await ResolveCommonDirectoryAsync(repositoryPath, cancellationToken) ?? repositoryPath, "objects");
+
+        try
+        {
+            IReadOnlyList<PrReviewCheckoutStep> steps = PrReviewCheckoutPlan.Steps(checkoutPath, repositoryPath, trackingRef);
+            await RunGitAsync(steps[0].WorkingDirectory, steps[0].Arguments, cancellationToken);
+
+            string alternatesFile = PrReviewCheckoutPlan.AlternatesFile(checkoutPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(alternatesFile)
+                ?? throw new WorktreeException($"{alternatesFile} has no parent directory."));
+            await File.WriteAllTextAsync(alternatesFile, objectsDirectory + "\n", cancellationToken);
+
+            foreach (PrReviewCheckoutStep step in steps.Skip(1))
+            {
+                await RunGitAsync(step.WorkingDirectory, step.Arguments, cancellationToken);
+            }
+        }
+        catch
+        {
+            DeleteDirectoryBestEffort(checkoutPath);
+            throw;
         }
     }
 
@@ -252,6 +295,18 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         repositoryPath = Path.GetFullPath(repositoryPath);
         await using RepositoryLock repositoryLock = await AcquireRepositoryLockCoreAsync(repositoryPath, cancellationToken);
         {
+            // A review checkout cut as a standalone clone is not registered with the repository, so
+            // `git worktree remove` cannot take it down; it is deleted as a directory instead, and
+            // only when it is provably one this manager cut (IsOwnStandaloneCheckoutAsync). Anything
+            // else, linked worktrees included, goes to git, which refuses a path that is not a
+            // linked worktree, so no other directory is ever deleted from here.
+            if (await IsOwnStandaloneCheckoutAsync(repositoryPath, worktreePath, cancellationToken))
+            {
+                DeleteDirectory(Path.GetFullPath(worktreePath));
+                logger.LogInformation("Standalone review checkout {Path} removed", worktreePath);
+                return;
+            }
+
             await RunGitAsync(repositoryPath, $"worktree remove --force \"{worktreePath}\"", cancellationToken);
             logger.LogInformation("Worktree {Path} removed", worktreePath);
         }
@@ -271,6 +326,86 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                 repositoryPath, $"update-ref -d {PrReviewTrackingRef(pullRequestNumber)}", cancellationToken);
             logger.LogInformation(
                 "Pr-review tracking ref for pull request #{Number} deleted", pullRequestNumber);
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="path"/> is a standalone review checkout this manager cut for
+    /// <paramref name="repositoryPath"/>, which is the only thing <see cref="RemoveAsync"/> deletes as
+    /// a directory. Every condition has to hold: the path is not the repository, it sits directly
+    /// beside it (where <see cref="WorktreePathFor(string, Guid, Guid)"/> puts every checkout) under the
+    /// <c>wt-</c> name, it is not a link, its <c>.git</c> is a real directory rather than the file a
+    /// linked worktree has, and its alternates file names this repository's object directory. The
+    /// last one is what ties the directory to this project; a sibling that merely looks like a clone
+    /// does not pass it.
+    /// </summary>
+    private static async Task<bool> IsOwnStandaloneCheckoutAsync(
+        string repositoryPath, string path, CancellationToken cancellationToken)
+    {
+        string checkout = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        string repository = Path.TrimEndingDirectorySeparator(Path.GetFullPath(repositoryPath));
+        StringComparison comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (string.Equals(checkout, repository, comparison)
+            || !string.Equals(Path.GetDirectoryName(checkout), Path.GetDirectoryName(repository), comparison)
+            || !Path.GetFileName(checkout).StartsWith("wt-", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        DirectoryInfo directory = new(checkout);
+        DirectoryInfo gitDirectory = new(Path.Combine(checkout, ".git"));
+        if (!directory.Exists || directory.LinkTarget is not null || !gitDirectory.Exists || gitDirectory.LinkTarget is not null)
+        {
+            return false;
+        }
+
+        string alternatesFile = PrReviewCheckoutPlan.AlternatesFile(checkout);
+        if (!File.Exists(alternatesFile)
+            || await ResolveCommonDirectoryAsync(repositoryPath, cancellationToken) is not { } commonDirectory)
+        {
+            return false;
+        }
+
+        string objectsDirectory = Path.TrimEndingDirectorySeparator(Path.Combine(commonDirectory, "objects"));
+        string[] alternates = await File.ReadAllLinesAsync(alternatesFile, cancellationToken);
+        return alternates.Any(line => string.Equals(
+            Path.TrimEndingDirectorySeparator(line.Trim()), objectsDirectory, comparison));
+    }
+
+    /// <summary>
+    /// Recursive delete. On Windows it first clears the read-only attribute git puts on object
+    /// files, which that platform otherwise refuses to delete; elsewhere a read-only file in a
+    /// writable directory deletes as it is, and attributes are not touched at all, because setting
+    /// one on a symbolic link a pull request committed would change the file it points at.
+    /// </summary>
+    private static void DeleteDirectory(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            foreach (FileInfo file in new DirectoryInfo(path).EnumerateFiles("*", SearchOption.AllDirectories))
+            {
+                if (file.LinkTarget is null && file.Attributes.HasFlag(FileAttributes.ReadOnly))
+                {
+                    file.Attributes &= ~FileAttributes.ReadOnly;
+                }
+            }
+        }
+
+        Directory.Delete(path, recursive: true);
+    }
+
+    private void DeleteDirectoryBestEffort(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                DeleteDirectory(path);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning(exception, "Half-built review checkout {Path} could not be removed (safe to delete by hand)", path);
         }
     }
 
@@ -790,16 +925,21 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     /// has already vanished), so the DirectoryNotFoundException case above still behaves exactly
     /// as it did before this method existed.
     /// </summary>
-    private static async Task<string> ResolveLockDirectoryAsync(string repositoryPath, CancellationToken cancellationToken)
+    private static async Task<string> ResolveLockDirectoryAsync(string repositoryPath, CancellationToken cancellationToken) =>
+        await ResolveCommonDirectoryAsync(repositoryPath, cancellationToken) ?? repositoryPath;
+
+    /// <summary>
+    /// <c>git rev-parse --git-common-dir</c> as an absolute path, or null when git cannot answer.
+    /// The one place the repository's shared git directory is read, for the lock directory and for
+    /// the object directory a review checkout borrows from.
+    /// </summary>
+    private static async Task<string?> ResolveCommonDirectoryAsync(string repositoryPath, CancellationToken cancellationToken)
     {
         (int exitCode, string commonDirectory, _) = await TryRunGitAsync(
             repositoryPath, "rev-parse --git-common-dir", cancellationToken);
-        if (exitCode != 0 || commonDirectory.Trim() is not { Length: > 0 } answer)
-        {
-            return repositoryPath;
-        }
-
-        return Path.GetFullPath(answer, Path.GetFullPath(repositoryPath));
+        return exitCode != 0 || commonDirectory.Trim() is not { Length: > 0 } answer
+            ? null
+            : Path.GetFullPath(answer, Path.GetFullPath(repositoryPath));
     }
 
     /// <summary>
