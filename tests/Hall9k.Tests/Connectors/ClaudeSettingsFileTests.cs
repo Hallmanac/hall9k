@@ -200,7 +200,7 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
             "on a Windows node");
         allow.Should().Contain("Grep(//c/Users/owner/checkout/**)");
         allow.Should().Contain("Read(//c/Users/owner/run/**)");
-        allow.Should().Contain("Write(//c/Users/owner/run/mention-answer.md)",
+        allow.Should().Contain("Edit(//c/Users/owner/run/mention-answer.md)",
             "the mention-answer write rule is built from the same normalization, not just the Read/Grep rules");
     }
 
@@ -228,11 +228,37 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
         string[] without = Rules(null);
         string[] with = Rules("/tmp/run/feedback-assessment-0123456789ab.md");
 
-        with.Except(without).Should().Equal(["allow:Write(//tmp/run/feedback-assessment-0123456789ab.md)"]);
+        with.Except(without).Should().Equal(["allow:Edit(//tmp/run/feedback-assessment-0123456789ab.md)"]);
         without.Except(with).Should().BeEmpty("no rule is removed to make room for it");
-        with.Count(rule => rule.StartsWith("allow:Write(", StringComparison.Ordinal)).Should().Be(2,
+        with.Count(rule => rule.StartsWith("allow:Edit(", StringComparison.Ordinal)).Should().Be(2,
             "mention-answer.md plus the one assessment file, and no directory-wide write");
+        with.Should().NotContain(rule => rule.StartsWith("allow:Write(", StringComparison.Ordinal),
+            "Claude Code 2.1.316 refuses the Write tool under a Write(...) allow rule and allows it under Edit(...)");
         with.Should().NotContain(rule => rule.Contains("--dangerously-skip-permissions", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A draft challenge reads the idea's workspace and the draft's own directory beside the checkout and its own
+    /// session directory: each extra root adds one Read and one Grep rule, scoped like the first two, and nothing
+    /// else changes.
+    /// </summary>
+    [Fact]
+    public void Extra_read_roots_add_one_read_and_one_grep_rule_each_and_nothing_else()
+    {
+        string[] Allow(IReadOnlyList<string>? roots)
+        {
+            using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+                TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run", extraReadRoots: roots));
+            return [.. document.RootElement.GetProperty("permissions").GetProperty("allow")
+                .EnumerateArray().Select(element => element.GetString()!)];
+        }
+
+        string[] without = Allow(null);
+        string[] with = Allow(["/tmp/idea/workspace", "/tmp/task"]);
+
+        with.Except(without).Should().BeEquivalentTo(
+            ["Read(//tmp/idea/workspace/**)", "Grep(//tmp/idea/workspace/**)", "Read(//tmp/task/**)", "Grep(//tmp/task/**)"]);
+        without.Except(with).Should().BeEmpty();
     }
 
     [Fact]
@@ -244,7 +270,7 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
         string[] allow = [.. document.RootElement.GetProperty("permissions").GetProperty("allow")
             .EnumerateArray().Select(element => element.GetString()!)];
 
-        allow.Should().Contain("Write(//tmp/run/mention-answer.md)",
+        allow.Should().Contain("Edit(//tmp/run/mention-answer.md)",
             "a mention-minted primary session's own prompt (MentionFollowUpPromptBuilder.BuildMintAddendum) " +
             "asks it to write this exact file, and with no allow rule the write is refused under dontAsk");
     }
