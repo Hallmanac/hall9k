@@ -1739,7 +1739,12 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
     {
         view.HumanFixes.Add(new HumanFixRecord(
             @event.Data.Cycle, @event.Data.NoChangeReason, @event.Data.AppliedAt));
-        if (view.ParkedIsHumanGate)
+        // The aggregate reopens the verdict at the pull-request boundary, which is the human gate or interactive
+        // mode's own park there. The view keeps no park phase, but a hand fix is accepted only at the
+        // review-verdict-to-fix park (which holds a NeedsFixes verdict) and at this boundary, so an interactive
+        // park over a merge-ready verdict that receives one is the boundary.
+        if (view.ParkedIsHumanGate
+            || (view.ParkedIsInteractiveGate && view.LastReviewVerdict == ReviewVerdict.MergeReady))
         {
             // Review had settled merge-ready; the person's commits reopen it, as they do on the aggregate.
             view.LastReviewVerdict = ReviewVerdict.NeedsFixes;

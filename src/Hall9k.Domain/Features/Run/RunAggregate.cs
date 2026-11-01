@@ -931,6 +931,14 @@ public sealed class RunAggregate
     public bool PullRequestBoundaryParkedAsHumanGate { get; private set; }
 
     /// <summary>
+    /// Whether this run has ever been held at the boundary between a settled review and the pull request,
+    /// by the human gate or by interactive mode's own park. Unlike <see cref="HumanGateTipSha"/> and
+    /// <see cref="HumanGateAnswer"/>, which a fix lever clears, nothing withdraws it, so it can say
+    /// "an owner may be walking this worktree" after the run has left the park.
+    /// </summary>
+    public bool HasParkedAtPullRequestBoundary { get; private set; }
+
+    /// <summary>
     /// The branch tip the pull-request boundary held the run at, which is the tip automated review read. Set by a
     /// park there (the human gate's or interactive mode's), cleared again by a fix dispatch or a hand fix (the branch is then being reviewed anew
     /// and the next gate park records a fresh tip). Null when no gate park has happened since, or when the
@@ -1682,17 +1690,24 @@ public sealed class RunAggregate
         ParkedNeedsFixesOffersNoProgress = @event.NeedsFixesOffersNoProgress;
         ParkedIsInteractiveGate = @event.IsInteractiveGate;
         ParkedIsHumanGate = @event.IsHumanGate;
-        if (@event.IsHumanGate)
+        // A merge-ready resolve at the boundary that is sent back from Settling (it met uncommitted work
+        // before its gates ran) is a re-park at the same boundary, whether the boundary is the human gate
+        // or interactive mode's own gates-to-pull-request stop: the answer on the record is what says the
+        // Settling phase was reached by answering there, since no other interactive park is raised from it.
+        bool sentBackToBoundaryFromSettling = @event.IsInteractiveGate
+            && ReviewPhase == ReviewPhase.Settling
+            && HumanGateAnswer == HumanGateAnswer.ResolvedMergeReady;
+        if (@event.IsHumanGate || sentBackToBoundaryFromSettling)
         {
             // The gate is always the boundary between a settled review and the pull request, even
-            // when the park was recorded from Settling (a merge-ready resolve over uncommitted work
-            // is sent back here before its gates run): proceed restores this phase and the levers
-            // name this boundary.
+            // when the park was recorded from Settling: proceed restores this phase, the hand-fix
+            // lever stays open, and the levers name this boundary.
             ParkedFromReviewPhase = ReviewPhase.MergeReady;
         }
 
         if (ParkedAtPullRequestBoundary)
         {
+            HasParkedAtPullRequestBoundary = true;
             // A fresh park at this boundary records the tip it holds and withdraws any earlier answer,
             // and a human-ended loop that this park refuses to honour.
             PullRequestBoundaryParkedAsHumanGate = @event.IsHumanGate;
@@ -1857,12 +1872,14 @@ public sealed class RunAggregate
             LastReviewVerdict = ReviewVerdict.NeedsFixes;
             ReviewPhase = ReviewPhase.FixNeeded;
             PendingHumanFindings = @event.Reason;
-            // A human's redirect reopens review of whatever the fix produces, however the loop was
-            // ended before: nothing clears this today, and without it the settle short-circuit takes
-            // the earlier merge-ready as its answer and the fix reaches the pull request unread.
-            _humanEndedTheLoop = false;
-            if (resolvedAtHumanGate)
+            // A redirect while an answer at the pull-request boundary is still on the record (a merge-ready
+            // given there, then a park raised later in Settling, such as the rebase recovery cap) withdraws
+            // that answer and the human-ended loop it started: otherwise the settle short-circuit takes the
+            // earlier merge-ready as its answer and the fix reaches the pull request unread. A boundary park
+            // already cleared the flag itself, and a run with no answer on the record keeps its behaviour.
+            if (resolvedAtHumanGate || HumanGateAnswer != HumanGateAnswer.None)
             {
+                _humanEndedTheLoop = false;
                 HumanGateTipSha = null;
                 ClearHumanGateAnswer();
             }

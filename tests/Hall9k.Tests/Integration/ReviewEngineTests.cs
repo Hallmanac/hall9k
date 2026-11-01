@@ -1905,20 +1905,6 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         details.ParkedIsHumanGate.Should().BeTrue();
     }
 
-    /// <summary>A task without the flag reviews and hands on to the pull request exactly as it always did.</summary>
-    [Fact]
-    public async Task A_task_without_the_gate_hands_straight_on_to_the_pull_request()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token);
-
-        bool mergeReady = await NewGateEngine(store, CleanReview()).ReviewAsync(runId, taskId, cts.Token);
-
-        mergeReady.Should().BeTrue();
-        (await StreamAsync(store, runId, cts.Token)).OfType<ReviewParked>().Should().BeEmpty();
-    }
-
     /// <summary>Composition none dispatches no reviewer at all, and the gate holds it anyway.</summary>
     [Fact]
     public async Task A_gated_run_under_composition_none_still_stops_at_the_gate()
@@ -2159,6 +2145,32 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             ReviewSettlement.Settled, "a human ended the loop, which is not a reviewer reading the tip");
         events.OfType<VerificationPassed>().Last().HeadSha.Should().Be(movedTip, "the gates ran on the moved tip");
         events.OfType<ReviewParked>().Should().ContainSingle("it opens the pull request without stopping at the gate again");
+    }
+
+    /// <summary>
+    /// Composition none keeps no review pass, so the gates over the owner's own commits are the only check
+    /// they get: a merge-ready resolve at the gate over a moved tip must run them, though no rebase raised the
+    /// awaiting-gate flag.
+    /// </summary>
+    [Fact]
+    public async Task Merge_ready_at_the_gate_under_composition_none_gates_the_moved_tip_before_opening_the_pull_request()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, humanGate: true, reviewStageComposition: ReviewStageComposition.None);
+        (await NewGateEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse();
+        CommitDocOnlyChange(worktreePath);
+        string movedTip = GitOutput(worktreePath, "rev-parse HEAD");
+        await ResolveParkAsync(store, runId, ReviewVerdict.MergeReady, "my own commits", cts.Token);
+
+        ScriptedExecutor after = new();
+        bool mergeReady = await NewGateEngine(store, after).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        after.Spawns.Should().BeEmpty("composition none dispatches no reviewer");
+        List<object> events = await StreamAsync(store, runId, cts.Token);
+        events.OfType<VerificationPassed>().Last().HeadSha.Should().Be(movedTip, "the gates ran on the moved tip");
     }
 
     /// <summary>With uncommitted work in the worktree a merge-ready resolve opens nothing and commits nothing.</summary>

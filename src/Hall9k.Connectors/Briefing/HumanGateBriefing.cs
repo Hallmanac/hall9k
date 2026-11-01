@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -122,8 +123,9 @@ public static class HumanGateBriefing
         summaryWrittenAt is { } written && tipAuthoredAt is { } authored && authored > written;
 
     /// <summary>Lays out the page.</summary>
-    public static string Render(HumanGateBriefingFacts facts)
+    public static string Render(HumanGateBriefingFacts unsafeFacts)
     {
+        HumanGateBriefingFacts facts = Sanitized(unsafeFacts);
         StringBuilder page = new();
         string id = facts.TaskId.ToString("D", CultureInfo.InvariantCulture);
         page.AppendLine(facts.StoppedFor == Stop.HumanGate
@@ -142,6 +144,31 @@ public static class HumanGateBriefing
         return page.ToString().Replace("\r\n", "\n", StringComparison.Ordinal).TrimEnd() + "\n";
     }
 
+    /// <summary>
+    /// The facts with every free-text field made safe to print on a terminal. The objective and criteria can
+    /// come from an issue anyone could file, the commit subjects and the summary from a build session, and
+    /// a branch name from git, so each is folded onto one line with its control characters dropped: raw, an
+    /// escape sequence or a lone carriage return could overwrite the very lines this page is read for, such
+    /// as the count of findings left unfixed.
+    /// </summary>
+    private static HumanGateBriefingFacts Sanitized(HumanGateBriefingFacts facts) => facts with
+    {
+        ProjectName = RelayedText.OneLine(facts.ProjectName),
+        Objective = RelayedText.OneLine(facts.Objective),
+        AcceptanceCriteria = [.. facts.AcceptanceCriteria.Select(RelayedText.OneLine)],
+        SummaryPath = RelayedText.OneLine(facts.SummaryPath),
+        MergedReportPath = RelayedText.OneLine(facts.MergedReportPath),
+        Commits = [.. facts.Commits.Select(commit => commit with
+        {
+            Sha = RelayedText.OneLine(commit.Sha),
+            Subject = RelayedText.OneLine(commit.Subject),
+        })],
+        WorktreePath = RelayedText.OneLine(facts.WorktreePath),
+        Branch = RelayedText.OneLine(facts.Branch),
+        BaseCommit = RelayedText.OneLine(facts.BaseCommit),
+        HeadCommit = RelayedText.OneLine(facts.HeadCommit),
+    };
+
     private static void AppendSummary(StringBuilder page, HumanGateBriefingFacts facts)
     {
         page.AppendLine("What changed");
@@ -154,7 +181,7 @@ public static class HumanGateBriefing
         }
         else
         {
-            (string text, bool cut) = Limit(paragraph);
+            (string text, bool cut) = Limit(RelayedText.OneLine(paragraph));
             page.AppendLine($"  {text}");
             if (cut)
             {
@@ -283,7 +310,9 @@ public static class HumanGateBriefing
         page.AppendLine("Step in");
         page.AppendLine(
             $"  h9k task drive {id} prints a line that starts a Claude Code session in the worktree, for questions and "
-            + "changes. It registers nothing and changes neither the claim nor this stop.");
+            + "changes. On a run a headless dispatch holds at the human gate it registers nothing and changes neither "
+            + "the claim nor this stop; on an interactive claim it re-enters that claim the usual way, and the "
+            + "session registers itself.");
         page.AppendLine();
 
         page.AppendLine("Your choices");

@@ -112,13 +112,7 @@ public sealed class TaskRunLocalCommand : Hall9kAsyncCommand<TaskRunLocalCommand
         IInteractiveConfirmation confirmation, CancellationToken cancellationToken)
     {
         string worktree = RequireWorktree(task, run);
-        // On a gated task the worktree is the person's only at the gate. Anywhere the run is live, the
-        // gates and sessions own it, and the launch the sweep tears down on its own would not be torn
-        // down before they started.
-        if (task.HumanGate && run.State.IsLive)
-        {
-            throw new DomainConflictException(LocalLaunchRefusal.GatedRunIsWorking(task.Id));
-        }
+        RefuseWhileGatedRunIsWorking(task, run);
 
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"No project {task.ProjectId} for task {task.Id}.");
@@ -151,6 +145,10 @@ public sealed class TaskRunLocalCommand : Hall9kAsyncCommand<TaskRunLocalCommand
         // let this invocation start a second live launch alongside it.
         run = await session.LoadAsync<RunDetails>(run.Id, cancellationToken)
             ?? throw new DomainConflictException(LocalLaunchRefusal.NoRun(task.Id));
+        // The gated-run refusal is judged against the reloaded copy too: the owner can answer the gate from
+        // another terminal while the prompt is open, which sets the run working again, and a launch recorded
+        // now would race the gates or the fix session it just started.
+        RefuseWhileGatedRunIsWorking(task, run);
         RefuseOrClearExisting(session, task, run);
 
         Guid launchId = DomainId.New();
@@ -174,6 +172,19 @@ public sealed class TaskRunLocalCommand : Hall9kAsyncCommand<TaskRunLocalCommand
             Path.GetDirectoryName(log) is { Length: > 0 } directory ? directory : worktree);
         File.WriteAllText(log, string.Empty);
         return await WalkAndRecordAsync(session, task, run, launchId, plan, worktree, log, 1, cancellationToken);
+    }
+
+    /// <summary>
+    /// On a gated task the worktree is the person's only at the gate. Anywhere the run is live, the
+    /// gates and sessions own it, and the launch the sweep tears down on its own would not be torn
+    /// down before they started.
+    /// </summary>
+    private static void RefuseWhileGatedRunIsWorking(TaskDetails task, RunDetails run)
+    {
+        if (task.HumanGate && run.State.IsLive)
+        {
+            throw new DomainConflictException(LocalLaunchRefusal.GatedRunIsWorking(task.Id));
+        }
     }
 
     /// <summary>

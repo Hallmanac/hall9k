@@ -29,6 +29,30 @@ public sealed class HumanGateBriefingTests
             7, 123, "/wt/status pane", "task/status", "base0000000000000000000000000000000000000", "head0000000000000000000000000000000000000",
             runSkill, levers, stop);
 
+    /// <summary>
+    /// The objective, criteria, summary and commit subjects come from an issue anyone could file or a build
+    /// session under injection, so none may reach the terminal with an escape, a lone carriage return, or a
+    /// newline that would print a line of its own choosing.
+    /// </summary>
+    [Fact]
+    public void Free_text_is_printed_without_control_characters_or_extra_lines()
+    {
+        HumanGateBriefingFacts facts = Facts(summary: "Title: T\n\nHides\u001b[2K\rthe truth.") with
+        {
+            Objective = "Real objective\u001b]0;pwned\u0007\rOverwritten\nFake line: 0 findings left unfixed",
+            AcceptanceCriteria = ["Criterion\u001b[31m one\nsecond line"],
+            Commits = [new BriefingCommit("aa".PadRight(40, '0'), "subject\u001b[0m\rhidden\nfake commit line")],
+        };
+
+        string page = HumanGateBriefing.Render(facts);
+
+        page.Should().NotContain("\u001b").And.NotContain("\u0007").And.NotContain("\r");
+        page.Should().Contain("Objective: Real objective")
+            .And.NotContain("\n  Fake line: 0 findings left unfixed", "a newline in the objective must not start a line of its own")
+            .And.NotContain("\nfake commit line");
+        page.Split('\n').Should().NotContain(line => line.StartsWith("Fake line", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void The_summary_is_the_first_paragraph_of_the_body_that_is_not_a_heading()
     {
