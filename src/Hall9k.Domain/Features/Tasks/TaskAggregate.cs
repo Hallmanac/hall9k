@@ -1384,7 +1384,11 @@ public sealed class TaskAggregate
     // the criteria were retyped identically (Optional carries that distinction).
     public void Apply(TaskRevised @event)
     {
-        RevisedSinceChallengeVerdict |= LatestChallengeVerdict is not null;
+        if (@event.ChangesDraftText())
+        {
+            RevisedSinceChallengeVerdict |= LatestChallengeVerdict is not null;
+            RevisedWhileChallengeRan |= RunningChallengeSessionId is not null;
+        }
 
         if (@event.Objective.HasValue)
         {
@@ -2615,12 +2619,20 @@ public sealed class TaskAggregate
     /// </summary>
     public bool RevisedSinceChallengeVerdict { get; private set; }
 
+    /// <summary>
+    /// Whether the draft's text was revised after the running challenge was dispatched. The session's prompt was
+    /// built from the text at dispatch and the session runs for up to half an hour, so a verdict that lands after a
+    /// revision judged text that is no longer the draft's: it is recorded as already revised since, not as fresh.
+    /// </summary>
+    public bool RevisedWhileChallengeRan { get; private set; }
+
     public void Apply(DraftChallengeRequested @event) => ChallengeRequested = true;
 
     public void Apply(DraftChallengeDispatched @event)
     {
         ChallengeRequested = false;
         RunningChallengeSessionId = @event.SessionId;
+        RevisedWhileChallengeRan = false;
     }
 
     public void Apply(DraftChallengeRecorded @event)
@@ -2631,8 +2643,10 @@ public sealed class TaskAggregate
         if (@event.IsVerdict)
         {
             LatestChallengeVerdict = @event;
-            RevisedSinceChallengeVerdict = false;
+            RevisedSinceChallengeVerdict = RevisedWhileChallengeRan;
         }
+
+        RevisedWhileChallengeRan = false;
     }
 
     public void Apply(WorkItemPublicationCompleted @event)

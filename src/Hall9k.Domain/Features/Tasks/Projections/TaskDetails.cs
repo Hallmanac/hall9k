@@ -109,6 +109,9 @@ public sealed class TaskDetails
     /// <summary>Whether the draft was revised after <see cref="LatestChallengeVerdict"/> landed.</summary>
     public bool RevisedSinceChallengeVerdict { get; set; }
 
+    /// <summary>Whether the draft's text was revised after the running challenge was dispatched; see <see cref="TaskAggregate.RevisedWhileChallengeRan"/>.</summary>
+    public bool RevisedWhileChallengeRan { get; set; }
+
     /// <summary>The reason the publisher gave for publishing past the challenge gate; null when the gate asked for nothing.</summary>
     public string? ChallengeSkipReason { get; set; }
 
@@ -813,7 +816,11 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
     // the criteria were retyped identically.
     public void Apply(IEvent<TaskRevised> @event, TaskDetails view)
     {
-        view.RevisedSinceChallengeVerdict |= view.LatestChallengeVerdict is not null;
+        if (@event.Data.ChangesDraftText())
+        {
+            view.RevisedSinceChallengeVerdict |= view.LatestChallengeVerdict is not null;
+            view.RevisedWhileChallengeRan |= view.RunningChallengeSessionId is not null;
+        }
 
         if (@event.Data.Objective.HasValue)
         {
@@ -1826,6 +1833,7 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         view.ChallengeRequested = false;
         view.ChallengeRequestedAt = null;
         view.RunningChallengeSessionId = @event.Data.SessionId;
+        view.RevisedWhileChallengeRan = false;
         view.RunningChallengeNodeId = @event.Data.NodeId;
         view.RunningChallengeDispatchedAt = @event.Data.DispatchedAt;
         view.RunningChallengeModel = @event.Data.Model;
@@ -1845,8 +1853,10 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         if (@event.Data.IsVerdict)
         {
             view.LatestChallengeVerdict = @event.Data;
-            view.RevisedSinceChallengeVerdict = false;
+            view.RevisedSinceChallengeVerdict = view.RevisedWhileChallengeRan;
         }
+
+        view.RevisedWhileChallengeRan = false;
     }
 
     public void Apply(IEvent<WorkItemPublicationSessionStarted> @event, TaskDetails view)

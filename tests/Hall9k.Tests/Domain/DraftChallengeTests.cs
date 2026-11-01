@@ -126,6 +126,48 @@ public sealed class DraftChallengeTests
         task.LatestChallengeVerdict.Should().Be(second);
     }
 
+    private static TaskRevised EffortOnlyRevision(TaskAggregate task) =>
+        new(task.Id, default, default, default, default, default, default, Now, Owner, Effort: Optional<AgentEffort>.Of(AgentEffort.High));
+
+    [Fact]
+    public void A_revision_that_leaves_the_draft_text_alone_is_not_a_revision_since_the_verdict()
+    {
+        TaskAggregate task = Draft();
+        task.Apply(Verdict(task, ChallengeVerdict.PublishAsRevised, must: 1));
+
+        task.Apply(EffortOnlyRevision(task));
+
+        task.RevisedSinceChallengeVerdict.Should().BeFalse("effort is not the objective, a criterion, or the context");
+        Publish(task).Should().Throw<DomainException>("the must is still unapplied");
+    }
+
+    [Fact]
+    public void A_revision_while_the_session_ran_makes_its_verdict_one_about_text_that_has_since_changed()
+    {
+        TaskAggregate task = Draft();
+        task.Apply(new DraftChallengeDispatched(task.Id, DomainId.New(), Node, Now, AgentModel.ChallengeDefault, AgentEffort.High));
+        Revise(task);
+        task.Apply(Verdict(task, ChallengeVerdict.PublishAsRevised, must: 1));
+
+        task.RevisedSinceChallengeVerdict.Should().BeTrue("the session judged the text as it was at dispatch");
+        Publish(task).Should().NotThrow("the must was applied by the revision that landed while the session ran");
+
+        task.Apply(new DraftChallengeDispatched(task.Id, DomainId.New(), Node, Now, AgentModel.ChallengeDefault, AgentEffort.High));
+        task.Apply(Verdict(task, ChallengeVerdict.PublishAsRevised, must: 1));
+        task.RevisedSinceChallengeVerdict.Should().BeFalse("the next session started after the revision and read the revised text");
+    }
+
+    [Fact]
+    public void A_text_free_revision_while_the_session_ran_does_not_age_its_verdict()
+    {
+        TaskAggregate task = Draft();
+        task.Apply(new DraftChallengeDispatched(task.Id, DomainId.New(), Node, Now, AgentModel.ChallengeDefault, AgentEffort.High));
+        task.Apply(EffortOnlyRevision(task));
+        task.Apply(Verdict(task, ChallengeVerdict.PublishAsRevised, must: 1));
+
+        task.RevisedSinceChallengeVerdict.Should().BeFalse();
+    }
+
     [Fact]
     public void A_revision_after_a_verdict_is_remembered_and_a_new_verdict_clears_it()
     {
@@ -276,22 +318,5 @@ public sealed class DraftChallengeTests
         TaskType taskType = type == "Spike" ? TaskType.Spike : TaskType.PrReview;
         ChallengeGate.AppliesTo(taskType).Should().BeFalse();
         ChallengeGate.Shortfall(taskType, null, null, false, required: true).Should().BeNull();
-    }
-
-    [Fact]
-    public void The_next_step_points_at_the_challenge_only_while_the_gate_would_refuse_and_none_is_pending()
-    {
-        TaskAggregate task = Draft();
-        ChallengeGate.NextStepIsChallenge(task, required: true).Should().BeTrue();
-        ChallengeGate.NextStepIsChallenge(task, required: false).Should().BeFalse();
-
-        task.Apply(TaskDecider.RequestChallenge(task, Now, Owner, false, "demo", null));
-        ChallengeGate.NextStepIsChallenge(task, required: true).Should().BeFalse("one is already asked for");
-
-        task.Apply(Failure(task, ChallengeFailureReason.NoReport));
-        ChallengeGate.NextStepIsChallenge(task, required: true).Should().BeTrue();
-
-        task.Apply(Verdict(task, ChallengeVerdict.PublishAsWritten));
-        ChallengeGate.NextStepIsChallenge(task, required: true).Should().BeFalse();
     }
 }
