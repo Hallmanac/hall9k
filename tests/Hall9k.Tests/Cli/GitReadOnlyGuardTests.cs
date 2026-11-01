@@ -226,6 +226,18 @@ public sealed class GitReadOnlyGuardTests
         GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
 
     /// <summary>
+    /// A backslash-newline between <c>git</c> and the subcommand is bash's line continuation: the
+    /// shell removes it, so the command runs exactly as the one-line spelling does. The guard must
+    /// refuse each of these the same way it refuses that spelling.
+    /// </summary>
+    [Theory]
+    [InlineData("git \\\n diff --output=/tmp/out.txt HEAD~1")]
+    [InlineData("git \\\n log --output=/tmp/out.txt HEAD~1")]
+    public void A_line_continuation_between_git_and_the_subcommand_is_refused_like_the_one_line_spelling(
+        string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
+    /// <summary>
     /// Cycle 8 adversarial-lens bypass: bash brace expansion and unquoted <c>$IFS</c> word
     /// splitting build or split a refused flag or path only once bash runs the command, after every
     /// text-based check above has already looked at the unexpanded text and found nothing. Verified
