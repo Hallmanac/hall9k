@@ -26,6 +26,8 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
+using Hall9k.Domain.Features.Tasks.Notes;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -2548,7 +2550,8 @@ public sealed class ReviewEngine(
                 commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill,
                 lessons: await LoadRecordedLessonsAsync(
                     context.Project.Id, context.TaskId, context.RunId, carriesRecordedPick: true, cancellationToken),
-                localFleet: localFleet, humanResolutionIsForeign: foreignResolver is not null)
+                localFleet: localFleet, humanResolutionIsForeign: foreignResolver is not null,
+                taskNotes: await LoadTaskNotesAsync(context.Project.Id, context.TaskId, context.RunId, cancellationToken))
             : AgentPromptBuilder.BuildReviewFix(
                 context.Task, context.Project, context.Run.Branch, findings, cycle,
                 context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled,
@@ -2558,7 +2561,8 @@ public sealed class ReviewEngine(
                 baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit,
                 commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill,
                 lessons: await LoadRecordedLessonsAsync(
-                    context.Project.Id, context.TaskId, context.RunId, carriesRecordedPick: true, cancellationToken));
+                    context.Project.Id, context.TaskId, context.RunId, carriesRecordedPick: true, cancellationToken),
+                taskNotes: await LoadTaskNotesAsync(context.Project.Id, context.TaskId, context.RunId, cancellationToken));
         ExecutorMode mode = context.Run.ExecutorMode;
 
         // A retry of the very same round reuses whatever it already decided rather than asking
@@ -4995,7 +4999,8 @@ public sealed class ReviewEngine(
             mechanicalRetryAttempted: mechanicalRetryAttempted,
             lessons: await LoadRecordedLessonsAsync(
                     context.Project.Id, context.TaskId, context.RunId, carriesRecordedPick: true, cancellationToken),
-            humanResolutionIsForeign: resolutionIsForeign);
+            humanResolutionIsForeign: resolutionIsForeign,
+            taskNotes: await LoadTaskNotesAsync(context.Project.Id, context.TaskId, context.RunId, cancellationToken));
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
         AgentEffort effort = _options.ResolveEffort(AgentRole.Fix, context.Task.Effort, context.Project.Effort);
@@ -5555,7 +5560,8 @@ public sealed class ReviewEngine(
             commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill,
             lessons: await LoadRecordedLessonsAsync(
                     context.Project.Id, context.TaskId, context.RunId, carriesRecordedPick: true, cancellationToken),
-            humanGuidanceIsForeign: guidanceIsForeign);
+            humanGuidanceIsForeign: guidanceIsForeign,
+            taskNotes: await LoadTaskNotesAsync(context.Project.Id, context.TaskId, context.RunId, cancellationToken));
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
         AgentEffort effort = _options.ResolveEffort(AgentRole.Fix, context.Task.Effort, context.Project.Effort);
@@ -8522,6 +8528,38 @@ public sealed class ReviewEngine(
                 "Run {RunId}: could not read the project's recorded lessons, so this session's prompt "
                 + "carries no lesson section; h9k learn list still shows them", runId);
             return InjectedLessons.None;
+        }
+    }
+
+    /// <summary>
+    /// The task's notes section for a fix, rebase or gate-repair prompt about to be composed, or null
+    /// when it could not be read, which composes the prompt without the section. Read fresh per
+    /// dispatch, in its own session, for the staleness reasoning <see cref="LoadRecordedLessonsAsync"/>
+    /// documents. Only the fix side calls this: the review passes never read notes, so none of their
+    /// prompts can carry one.
+    /// </summary>
+    private async Task<InjectedTaskNotes?> LoadTaskNotesAsync(
+        Guid projectId, Guid taskId, Guid runId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IQuerySession query = store.QuerySession();
+            return await TaskNoteFeed.LoadForPromptAsync(
+                query, taskId,
+                fleets is null
+                    ? null
+                    : async token => (await fleets.GetAsync(projectId, token))?.NodeIds,
+                cancellationToken,
+                exception => logger.LogWarning(exception,
+                    "Run {RunId}: could not read task {TaskId}'s notes, so this session's prompt carries no "
+                    + "notes section", runId, taskId));
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Run {RunId}: could not open a session to read task {TaskId}'s notes, so this session's "
+                + "prompt carries no notes section", runId, taskId);
+            return null;
         }
     }
 

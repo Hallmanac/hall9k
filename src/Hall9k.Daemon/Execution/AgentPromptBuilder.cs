@@ -10,6 +10,7 @@ using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Notes;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -130,12 +131,13 @@ public static class AgentPromptBuilder
         TimeSpan? commandTimeout = null,
         VoiceSkillName? voiceSkill = null,
         InjectedLessons? lessons = null,
-        LocalFleet? localFleet = null) =>
+        LocalFleet? localFleet = null,
+        InjectedTaskNotes? taskNotes = null) =>
         WorkPromptBuilder.Build(
             task, project, branch, worktreePath, resumesPreviousWork, blockerContext, task.RetryReason,
             isHandback: task.ResumesFromHandback, interactiveMilestoneAddress: interactiveMilestoneAddress,
             baseBranch: baseBranch, baseCommit: baseCommit, commandTimeout: commandTimeout,
-            voiceSkill: voiceSkill, lessons: lessons, localFleet: localFleet);
+            voiceSkill: voiceSkill, lessons: lessons, localFleet: localFleet, taskNotes: taskNotes);
 
     /// <summary>
     /// A spike's own build session prompt (task: a spike is a run, not a walk) — the kind decides
@@ -484,7 +486,8 @@ public static class AgentPromptBuilder
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
         string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null,
         TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null, InjectedLessons? lessons = null,
-        LocalFleet? localFleet = null)
+        LocalFleet? localFleet = null,
+        InjectedTaskNotes? taskNotes = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         const string file = $"{TemplateDirectory}/follow-up.md";
@@ -528,6 +531,7 @@ public static class AgentPromptBuilder
         AppendThreadDisputeRules(prompt, voiceSkill);
 
         AppendRecordedLessons(prompt, lessons, task.Id);
+        AppendTaskNotes(prompt, taskNotes, task.Id, asksForClosingBlock: true);
         prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "worktree-note", ("Branch", branch));
@@ -594,7 +598,8 @@ public static class AgentPromptBuilder
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
         string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null,
         TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null, InjectedLessons? lessons = null,
-        LocalFleet? localFleet = null)
+        LocalFleet? localFleet = null,
+        InjectedTaskNotes? taskNotes = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         const string file = $"{TemplateDirectory}/review-requested-changes.md";
@@ -638,6 +643,7 @@ public static class AgentPromptBuilder
         AppendChangesRequestedDisagreementRules(prompt, voiceSkill);
 
         AppendRecordedLessons(prompt, lessons, task.Id);
+        AppendTaskNotes(prompt, taskNotes, task.Id);
         prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "worktree-note", ("Branch", branch));
@@ -1105,7 +1111,8 @@ public static class AgentPromptBuilder
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
         string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null,
         TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null, InjectedLessons? lessons = null,
-        LocalFleet? localFleet = null)
+        LocalFleet? localFleet = null,
+        InjectedTaskNotes? taskNotes = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         const string file = $"{TemplateDirectory}/fix-checks.md";
@@ -1145,6 +1152,7 @@ public static class AgentPromptBuilder
         AppendProjectHome(prompt, project);
 
         AppendRecordedLessons(prompt, lessons, task.Id);
+        AppendTaskNotes(prompt, taskNotes, task.Id);
         prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "worktree-note", ("Branch", branch));
@@ -1230,7 +1238,8 @@ public static class AgentPromptBuilder
         string? humanResolution = null, string? interactiveMilestoneAddress = null,
         bool? interactiveModeEnabledOverride = null, string? baseBranch = null, string? baseCommit = null,
         TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null, InjectedLessons? lessons = null,
-        LocalFleet? localFleet = null, bool humanResolutionIsForeign = false)
+        LocalFleet? localFleet = null, bool humanResolutionIsForeign = false,
+        InjectedTaskNotes? taskNotes = null)
     {
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
@@ -1297,6 +1306,7 @@ public static class AgentPromptBuilder
         AppendProjectHome(prompt, project);
 
         AppendRecordedLessons(prompt, lessons, task.Id);
+        AppendTaskNotes(prompt, taskNotes, task.Id);
         prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "worktree-note", ("Branch", branch));
@@ -1760,7 +1770,8 @@ public static class AgentPromptBuilder
         string? baseBranch = null, TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null,
         string? assessmentGuidance = null, string? baseCommit = null, bool precedesFirstReviewCycle = false,
         bool mechanicalRetryAttempted = true,
-        InjectedLessons? lessons = null, bool humanResolutionIsForeign = false)
+        InjectedLessons? lessons = null, bool humanResolutionIsForeign = false,
+        InjectedTaskNotes? taskNotes = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         // Keyed to baseCommit's own presence, not to effectiveBaseBranch's name, unlike every other
@@ -1841,6 +1852,7 @@ public static class AgentPromptBuilder
         AppendProjectHome(prompt, project);
 
         AppendRecordedLessons(prompt, lessons, task.Id);
+        AppendTaskNotes(prompt, taskNotes, task.Id);
         prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "worktree-lead"));
@@ -1938,7 +1950,8 @@ public static class AgentPromptBuilder
         TaskDetails task, ProjectDetails project, string branch, CommitStyle commitStyle,
         string? pullRequestUrl, string baseBranch, string rebasedFromCommit, string rebasedOntoCommit,
         bool rebaseWasRecovered, string gateOutput, string? humanGuidance = null, TimeSpan? commandTimeout = null,
-        VoiceSkillName? voiceSkill = null, InjectedLessons? lessons = null, bool humanGuidanceIsForeign = false)
+        VoiceSkillName? voiceSkill = null, InjectedLessons? lessons = null, bool humanGuidanceIsForeign = false,
+        InjectedTaskNotes? taskNotes = null)
     {
         const string file = $"{TemplateDirectory}/settling-gate-repair.md";
         StringBuilder prompt = new();
@@ -1994,6 +2007,7 @@ public static class AgentPromptBuilder
         AppendProjectHome(prompt, project);
 
         AppendRecordedLessons(prompt, lessons, task.Id);
+        AppendTaskNotes(prompt, taskNotes, task.Id);
         prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "worktree-lead"));
@@ -4203,7 +4217,8 @@ public static class AgentPromptBuilder
         string? baseCommit = null,
         TimeSpan? commandTimeout = null,
         VoiceSkillName? voiceSkill = null,
-        InjectedLessons? lessons = null)
+        InjectedLessons? lessons = null,
+        InjectedTaskNotes? taskNotes = null)
     {
         const string file = $"{TemplateDirectory}/review-fix.md";
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
@@ -4222,6 +4237,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine(findings);
         prompt.AppendLine();
         AppendRecordedLessons(prompt, lessons, task.Id);
+        AppendTaskNotes(prompt, taskNotes, task.Id, asksForClosingBlock: true);
         prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "worktree-note", ("Branch", branch));

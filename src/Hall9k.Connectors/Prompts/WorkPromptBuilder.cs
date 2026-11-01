@@ -7,6 +7,7 @@ using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Handlers;
+using Hall9k.Domain.Features.Tasks.Notes;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -90,7 +91,8 @@ public static class WorkPromptBuilder
         TimeSpan? commandTimeout = null,
         VoiceSkillName? voiceSkill = null,
         InjectedLessons? lessons = null,
-        LocalFleet? localFleet = null)
+        LocalFleet? localFleet = null,
+        InjectedTaskNotes? taskNotes = null)
     {
         // The branch this session's work sits on top of, resolved by the caller at dispatch
         // (RunDispatched.BaseBranch): the project's own for every ordinary run, a stacked child's
@@ -298,6 +300,11 @@ public static class WorkPromptBuilder
         // arriving by a route that does not depend on the session choosing to open anything, so it
         // belongs beside the pointer rather than buried among the rules (idea d805fd8b, piece 5).
         AppendRecordedLessons(prompt, lessons, task.Id);
+        // Asks for the closing block only where the daemon reads this session's final message: a
+        // headless dispatch or an h9k task start launch. An attended session ends in a conversation
+        // and a delegated contractor's final message is recorded by nothing (h9k task deliver only
+        // strips the block), so a request there would invite notes that go nowhere.
+        AppendTaskNotes(prompt, taskNotes, task.Id, asksForClosingBlock: !isInteractive && !isDelegatedContractor);
 
         AppendFragment(prompt, file, "working-rules-heading");
         prompt.AppendLine();
@@ -2003,6 +2010,97 @@ public static class WorkPromptBuilder
         }
 
         prompt.AppendLine();
+    }
+
+    /// <summary>
+    /// The notes section of a prompt that carries one: the task's own notes and its epic siblings',
+    /// bounded, then what was left out and what the trust rule held, then how to leave a note. Null
+    /// composes nothing at all, which is what a caller with no store to read and a failed read both
+    /// pass, so a prompt composed without notes is byte-identical to what it was before notes
+    /// existed. A task that merely holds none still gets the section, because the verbs it teaches
+    /// are how the first note ever gets written.
+    /// <para>
+    /// Only the builders for the work sessions that read notes call this: a review prompt carries no
+    /// notes section, with or without notes on record, and nothing here is reachable from one.
+    /// </para>
+    /// </summary>
+    /// <param name="asksForClosingBlock">
+    /// Whether to also ask for the <see cref="TaskNotesBlock"/> closing block. True only where the
+    /// daemon reads the session's final message.
+    /// </param>
+    public static void AppendTaskNotes(
+        StringBuilder prompt, InjectedTaskNotes? notes, Guid taskId, bool asksForClosingBlock = false)
+    {
+        if (notes is null)
+        {
+            return;
+        }
+
+        const string file = $"{TemplateDirectory}/task-notes.md";
+        string id = taskId.ToString();
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "heading");
+        prompt.AppendLine();
+        if (notes.Any)
+        {
+            AppendFragment(prompt, file, "lead");
+            prompt.AppendLine();
+            foreach (InjectedTaskNote note in notes.Notes)
+            {
+                prompt.AppendLine(RelayedText.Printable(note.Line));
+            }
+        }
+        else
+        {
+            AppendFragment(prompt, file, "nothing");
+        }
+
+        if (notes.LeftOut > 0)
+        {
+            prompt.AppendLine();
+            AppendFragment(prompt, file, "left-out",
+                ("LeftOut", notes.LeftOut.ToString(CultureInfo.InvariantCulture)),
+                ("MaxNotes", TaskNoteLimits.MaxPromptNotes.ToString(CultureInfo.InvariantCulture)),
+                ("MaxCharacters", TaskNoteLimits.MaxPromptCharacters.ToString(CultureInfo.InvariantCulture)),
+                ("TaskId", id));
+        }
+
+        if (notes.HeldForProvenance > 0)
+        {
+            prompt.AppendLine();
+            AppendFragment(prompt, file, "held", ("Held", HeldNotesPhrase(notes)), ("TaskId", id));
+        }
+
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "verbs",
+            ("TaskId", id),
+            ("MaxTextLength", TaskNoteLimits.MaxTextLength.ToString(CultureInfo.InvariantCulture)));
+        if (asksForClosingBlock)
+        {
+            prompt.AppendLine();
+            AppendFragment(prompt, file, "closing-block",
+                ("NotesMarker", TaskNotesBlock.Marker),
+                ("HandoffMarker", HandoffParser.Marker),
+                ("MaxClosingBlockNotes", TaskNoteLimits.MaxClosingBlockNotes.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        prompt.AppendLine();
+    }
+
+    /// <summary>
+    /// What the notes section says it held back, counted under each mark that actually held
+    /// something, in the words the marks already use, as <see cref="HeldForProvenancePhrase"/> does
+    /// for lessons.
+    /// </summary>
+    private static string HeldNotesPhrase(InjectedTaskNotes notes)
+    {
+        static string Count(int count) => count == 1 ? "one note" : $"{count} notes";
+        return notes.HeldByMark switch
+        {
+            [HeldLessonCount only] => $"{Count(only.Count)} {only.Mark.Label}",
+            var byMark => $"{Count(notes.HeldForProvenance)}: " + string.Join(
+                "; ", byMark.Select(held => $"{held.Count} {held.Mark.Label}")),
+        };
     }
 
     /// <summary>

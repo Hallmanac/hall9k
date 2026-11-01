@@ -341,7 +341,11 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
         return WorkPromptBuilder.Build(
             taskDetails, project, branch, worktreePath, resumesPreviousWork, blockerContext, taskDetails.RetryReason,
             isInteractive: true, requiresSelfRegistration: requiresSelfRegistration, lessons: lessons,
-            localFleet: await fleet.GetIfCarriedByAsync(taskDetails, cancellationToken));
+            localFleet: await fleet.GetIfCarriedByAsync(taskDetails, cancellationToken),
+            // The task's notes too, through the same Domain read the daemon uses. An attended session
+            // is taught the verb but not asked for the closing block: nothing records its final message.
+            taskNotes: await TaskNoteFeed.LoadForPromptAsync(
+                session, taskDetails.Id, fleet.LessonReader, cancellationToken));
     }
 
     /// <summary>

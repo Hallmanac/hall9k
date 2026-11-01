@@ -9,6 +9,7 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -525,7 +526,11 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
             // A recorded pick rides in under the daemon's own rules; the CLI never spawns the picker.
             lessons: await LessonPromptFeed.LoadAsync(
                 session, project.Id, fleet.LessonReader, taskDetails.LessonPick, cancellationToken),
-            localFleet: await fleet.GetIfCarriedByAsync(taskDetails, cancellationToken));
+            localFleet: await fleet.GetIfCarriedByAsync(taskDetails, cancellationToken),
+            // The task's notes, through the same Domain read the daemon uses. A failed read composes
+            // the prompt without the section.
+            taskNotes: await TaskNoteFeed.LoadForPromptAsync(
+                session, taskDetails.Id, fleet.LessonReader, cancellationToken));
 
         return new DelegationPlan(
             runId, run.WorktreePath, run.Branch, run.RunDirectory, resumesPreviousWork, model, effort, prompt,
