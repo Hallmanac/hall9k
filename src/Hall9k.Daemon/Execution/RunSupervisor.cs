@@ -1350,6 +1350,12 @@ public sealed class RunSupervisor(
         CancellationToken cancellationToken)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
+        // The closing notes block, if a work session wrote one, is recorded and removed here, where
+        // the final message enters, so the handoff, the pull request summary, the park and failure
+        // reasons and the dispute and reply paths below all read text that never carried it. A review,
+        // pr-review or spike primary is returned untouched (TaskNoteCapture).
+        result = await TaskNoteCapture.ExtractAndRecordAsync(
+            store, logger, node.NodeId, runId, taskId, result, cancellationToken);
         await CaptureHandoffAsync(runId, runDirectory, result, cancellationToken);
 
         // Loaded here, ahead of the launch-hold decisions below, rather than inside the
@@ -1886,6 +1892,14 @@ public sealed class RunSupervisor(
     private async Task HandleDeliberateHeadlessStartExitAsync(
         Guid runId, Guid taskId, string runDirectory, AgentResult? result, CancellationToken cancellationToken)
     {
+        // The same split CompleteRunAsync makes, for the same reason: this is where a deliberate
+        // headless start's (h9k task start) final message enters.
+        if (result is not null)
+        {
+            result = await TaskNoteCapture.ExtractAndRecordAsync(
+                store, logger, node.NodeId, runId, taskId, result, cancellationToken);
+        }
+
         await using IDocumentSession session = store.LightweightSession();
         RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
         TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);

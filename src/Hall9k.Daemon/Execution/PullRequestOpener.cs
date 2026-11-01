@@ -916,7 +916,13 @@ public sealed class PullRequestOpener(
             {
                 if (StreamJsonParser.TryParseResult(line, out AgentResult result) && result.Summary.IsNotBlank())
                 {
-                    return result.Summary.Length <= 4000 ? result.Summary : result.Summary[..4000];
+                    // The closing notes block is a session's note to its colleagues, not a pull
+                    // request description, so it never reaches the fallback body. A pull request is
+                    // only ever opened for a work session, never a review, so the split is safe here.
+                    string summary = TaskNotesBlock.Extract(result.Summary).Clean ?? string.Empty;
+                    return summary.IsBlank()
+                        ? null
+                        : summary.Length <= 4000 ? summary : summary[..4000];
                 }
             }
         }

@@ -83,6 +83,9 @@ internal static class PromptContractTokens
         // ever discusses a fix. The colon-qualified marker itself is the actual two-way contract;
         // its value words are not distinctive enough to police the same way.
         Hall9k.Connectors.Prompts.HandoffParser.Marker,
+        // The closing block of task notes, read out of a work session's final message; the notes
+        // section injects it through a placeholder, so no template can type it.
+        Hall9k.Connectors.Prompts.TaskNotesBlock.Marker,
         Hall9k.Connectors.Prompts.PrSummaryParser.Marker,
         Hall9k.Connectors.Prompts.PrSummaryParser.TitlePrefix,
         // The CLI's own command-name registrations (Hall9k.Cli.Infrastructure.CliCommandTree),

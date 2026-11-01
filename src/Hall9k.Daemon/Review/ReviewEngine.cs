@@ -1839,6 +1839,16 @@ public sealed class ReviewEngine(
             context.RunId, streamFile, processId, processStartedAt,
             $"the fix session (cycle {run.ReviewCycle})", cancellationToken);
         await ClearLaunchHoldIfEvidencedAsync(context.Run.NodeId, result, processStartedAt, cancellationToken);
+        if (result is not null)
+        {
+            // The fix session's closing notes block is recorded and removed ahead of everything that
+            // reads its message: the budget and error reasons below, and the position file and
+            // thread replies RecordFixResultAsync derives from it.
+            result = await TaskNoteCapture.ExtractAndRecordAsync(
+                store, logger, context.Run.NodeId, context.RunId, context.TaskId, result, cancellationToken,
+                sessionId, SessionRoleName.For(DomainId.Short(context.TaskId), SessionRoleName.Fix(run.ReviewCycle)));
+        }
+
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
         {
             // External and clock-recoverable, same as the primary session (backlog 40): the
