@@ -168,10 +168,26 @@ public interface IWorktreeManager
     /// which GitHub exposes on the base repository regardless of whether the pull request is
     /// from a fork — no second remote needed either way). No local branch is created, so there
     /// is nothing here a session could accidentally push.
+    /// <para>
+    /// The checkout is a standalone clone, not a worktree of the project's repository
+    /// (<see cref="PrReviewCheckoutPlan"/>): a repository of its own with a real <c>.git</c>
+    /// directory, borrowing the project's objects, holding every remote-tracking ref and tag the
+    /// project's repository holds, and with no remote and no hooks. A review session can therefore
+    /// run read-only git against any revision of any file. Build and fix worktrees are unchanged.
+    /// </para>
+    /// <para>
+    /// A creation that fails partway leaves no directory behind.
+    /// </para>
     /// </summary>
     Task<Worktree> CreatePrReviewCheckoutAsync(PrReviewWorktreeRequest request, CancellationToken cancellationToken);
 
-    /// <summary>Removes a worktree (force — done worktrees may hold build debris). The branch survives.</summary>
+    /// <summary>
+    /// Removes a worktree (force — done worktrees may hold build debris). The branch survives.
+    /// A standalone review checkout (<see cref="CreatePrReviewCheckoutAsync"/>) is deleted as a
+    /// directory, and only when it sits directly beside <paramref name="repositoryPath"/> and is
+    /// provably one of its own; any other path is left to <c>git worktree remove</c>, which refuses
+    /// what is not a linked worktree, so the repository and its other worktrees are never touched.
+    /// </summary>
     Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken);
 
     /// <summary>
