@@ -1070,7 +1070,8 @@ request somebody else wrote, whether GitHub requested your review or you adopted
 reviews it and parks a findings report for you to walk. That checkout is a standalone clone, a
 repository of its own that borrows the project's objects and holds its remote-tracking refs and tags
 but has no remote, so the session can run read-only git (`git show`, `git grep`, `git blame`,
-`git ls-files`) against any revision of any file. Nothing is posted to the pull request
+`git ls-files`) against any revision of any file. Git LFS files are not downloaded into it, so an
+LFS-tracked path holds its pointer text, and the review prompts say so. Nothing is posted to the pull request
 without your explicit go, and never under any login but your own.
 
 **A persona is the lens the review is read through.** Each member declares the personas they hold
@@ -1086,7 +1087,7 @@ is fixed, because each persona maps to its own prompt and criteria in the platfo
   shape, and the user-facing flows that cross either. Each entry is graded as covered by a named
   existing test, owed a new automated end-to-end test the review specifies, or owed a human
   walk-through it writes out step by step, and every later finding cites its entry. The session runs
-  the project's end-to-end tests on the review worktree and reports pass, fail, or absent with
+  the project's end-to-end tests on the review checkout and reports pass, fail, or absent with
   evidence.
 - **The designer review answers seven lenses, in the same order every time:** user experience,
   conformance to the proposed design, motion, CSS practice, accessibility, look and feel, and the
@@ -1116,7 +1117,7 @@ pass is dispatched, so a change to it applies from the next pass. A review stage
 runs no Adversarial pass (`ConformanceOnly`, `None`) does no pre-PR security reading at all.
 
 **Whether a review may run the product is a per-project consent.** Both of the declarable personas above (QA and the designer) can launch the
-running product on the review worktree, walk the changed flows through browser automation, and put a
+running product on the review checkout, walk the changed flows through browser automation, and put a
 screenshot beside each finding it supports in a `Driven` section of the report, on an ephemeral port
 the session reports and then tears down. That starts a real process on this machine, so it is a
 project setting with a deliberate default for each. `h9k project set <project> --design-review-drive

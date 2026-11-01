@@ -9,7 +9,7 @@ Report the end-to-end outcome on a line of exactly this shape, once, in the sect
 
 That is the honest answer here: nothing was run, and it is not the same claim as this project having no end-to-end tests at all — say so in prose next to the map's evidence rather than leaving the marker to speak for itself.
 ===tests-intro===
-Run this project's end-to-end tests in this worktree, for real. This is the one part of the review that is not reading, and it is the part a human cannot cheaply repeat.
+Run this project's end-to-end tests in this checkout, for real. This is the one part of the review that is not reading, and it is the part a human cannot cheaply repeat.
 
 Scope them to the blast radius wherever the project's own test layout lets you: a directory, a suite name, a tag, a filter expression, whatever the harness gives you that maps onto the behaviours on your map. Where it gives you nothing that maps cleanly, run them in full rather than inventing a filter and reporting a narrower run as though it were the suite. Say which of the two you did.
 ===tests-gates===
@@ -41,9 +41,9 @@ That is a real constraint and it has a cost, which you handle rather than work a
 ===drive-on-heading===
 ## Driving the product
 ===drive-on-intro===
-This project's `qa-review-drive` setting is on and it has a run skill on its ledger, so you may start the product on this worktree and drive it. Do it after the tests, not instead of them.
+This project's `qa-review-drive` setting is on and it has a run skill on its ledger, so you may start the product on this checkout and drive it. Do it after the tests, not instead of them.
 ===drive-on-intro-tests-withheld===
-This project's `qa-review-drive` setting is on and it has a run skill on its ledger, so you may start the product on this worktree and drive it. This project's end-to-end tests are withheld above, and driving the product is not a substitute for them: do it in addition to the walk-through the map records for what you could not test, never as a way to satisfy testing that was held back.
+This project's `qa-review-drive` setting is on and it has a run skill on its ledger, so you may start the product on this checkout and drive it. This project's end-to-end tests are withheld above, and driving the product is not a substitute for them: do it in addition to the walk-through the map records for what you could not test, never as a way to satisfy testing that was held back.
 ===drive-on-skill===
 Start it from the project's own run skill, below — follow what it says rather than inferring a command from the repository. It is the project's own record of how this thing runs, and if it turns out to be wrong, that is itself a finding worth reporting (the standing question at the end of this prompt is exactly about that).
 ===drive-on-skill-missing===

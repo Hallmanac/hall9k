@@ -71,7 +71,7 @@ so posting a review under their login as their review is exactly what this skill
    - **Blast radius** — how many behaviours the review mapped and how each was graded (covered by
      an existing test, owed a new automated end-to-end test, owed a human walk-through). An entry
      counted as having no verdict stated is a gap in the review itself, not in the diff; say so.
-   - **End-to-end tests** — whether the suite ran on the review worktree and passed, ran and
+   - **End-to-end tests** — whether the suite ran on the review checkout and passed, ran and
      failed, was absent, or was never reported. A failure's own output is quoted in the section
      below; do not summarize it away when you present it.
    - **Driven** — the user-facing flows the session walked through the running product, or

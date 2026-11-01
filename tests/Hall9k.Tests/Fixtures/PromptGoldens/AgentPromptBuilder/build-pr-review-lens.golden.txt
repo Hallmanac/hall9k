@@ -54,17 +54,18 @@ request and gets exactly the suspicion everything else here does.
   deliverable rather than the diff.
 - You are in a read-only, detached checkout of this pull request's current head — there is no branch to be "on"; do not attempt to commit.
   The diff under review: `git diff origin/develop...HEAD` (commits:
-  `git log origin/develop..HEAD`). Fall back to the local `develop` ref only
-  when this worktree carries no `origin/develop` at all: a task worktree's local
-  base-branch ref, when one exists, is shared with the project home's `dev/` worktree and
-  is routinely stale relative to this task's actual base.
+  `git log origin/develop..HEAD`). This checkout is a standalone clone with no local
+  branches at all, only remote-tracking refs, so `origin/develop` is the base to use and
+  there is no local `develop` ref to fall back to. Git LFS files are not downloaded here:
+  a path the project tracks with LFS holds its small pointer text rather than the real file.
+  That is how this checkout is cut, not a defect in the pull request, so do not report it as one.
 - Report verified findings only. For every suspected defect, read the surrounding
   code until you can confirm it is real; discard anything you cannot confirm.
 - Each finding must carry: the file and line (`path/to/file.cs:123`), a one-sentence
   statement of the defect, and a concrete failure scenario (the input or state that
   makes it misbehave, and what goes wrong).
 - Do NOT modify files, commit, push, or open pull requests. You are read-only.
-- **Do NOT build, test, or run anything that writes into this worktree.** This is
+- **Do NOT build, test, or run anything that writes into this checkout.** This is
   someone else's already-open pull request, not this task's own diff to fix — there
   is nothing here for a build or test run to verify, only to disturb.
   Reading, searching, and read-only git are what this pass is made of. This session

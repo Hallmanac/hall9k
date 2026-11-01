@@ -481,7 +481,7 @@ Full behaviour: [concepts.md](concepts.md#stacked-pull-requests).
 `h9k pr approve <task> --note "…"` · `h9k pr request-changes <task> --note "…" [--finding "…"]`
 
 `--from-pr` creates a read-only `pr-review` task: the node pulls the pull request into a detached
-worktree, runs an adversarial-weighted independent review over it (never a build or a fix), and
+standalone checkout, runs an adversarial-weighted independent review over it (never a build or a fix), and
 parks a findings report for the owner to walk — `h9k review resolve <id> --merge-ready` once every
 finding has been directed, since a pr-review task has no diff of its own for `--needs-fixes` to
 act on. Nothing is ever posted to the pull request without an explicit human go: the
@@ -551,7 +551,7 @@ request from any other repository is refused before anything is claimed or check
 checkout is always cut from the project's origin. The project's repository is its recorded URL, or the
 checkout's own `origin` when none is recorded, and it must be on github.com unless it is an ssh URL. It attaches to your own live task even when a teammate's replicated one is newer,
 and when every live task belongs to another owner it refuses, naming that owner the way the task
-commands do, before it attaches, claims or records anything on it. It reuses that task's read-only worktree (`--no-worktree` skips the checkout,
+commands do, before it attaches, claims or records anything on it. It reuses that task's read-only checkout (`--no-worktree` skips the checkout,
 for reviewing against a deployed environment) and prints a briefing to paste into a Claude Code
 session you start yourself: the stated objective and acceptance criteria when this node can read
 the authoring task, the surfaces touched with a blast-radius summary, what CI ran, and the
@@ -1587,7 +1587,7 @@ language, as the report's first section: what the diff changes, what sits next t
 shared code path or a shared data shape, and the user-facing flows crossing either. Each entry is
 graded covered by a named existing test, owed a new automated end-to-end test it specifies, or
 owed a human walk-through it writes out step by step, and every later finding cites its entry. The
-session runs the project's end-to-end tests on the review worktree — scoped to the blast radius
+session runs the project's end-to-end tests on the review checkout — scoped to the blast radius
 where the test layout allows, in full where it does not — and reports pass, fail, or absent with
 evidence. Whether it may also launch the running product and drive it through browser automation
 is the project's own `--qa-review-drive on|off`, off by default; with it off, a verdict that needs
@@ -1607,7 +1607,7 @@ cites the token or component behind every design-system finding.
 
 Whether that review stands the product up is a project setting, `h9k project set <name>
 --design-review-drive on|off`, default **on** and printed by `project show` with its origin. On,
-and with a run skill on the project's ledger, the session launches the app on the review worktree
+and with a run skill on the project's ledger, the session launches the app on the review checkout
 on an ephemeral port it reports, walks the changed user-facing flows through browser automation,
 runs an automated accessibility audit on each screen it walked, tears the app down, and cites each
 screenshot beside the finding it supports in a `Driven` section of the report. Off, or with no run

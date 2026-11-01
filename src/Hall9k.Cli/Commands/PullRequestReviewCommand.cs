@@ -608,7 +608,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// the briefing) leaves a claimed task naming a Dispatched sentinel run with
     /// <c>ReviewLapOpen</c> still false. Re-entry is the honest recovery, so this is read as one
     /// rather than refused — the refusal that stood here credited the automated review's own
-    /// adversarial pass with reading the pull request in that worktree, for a run that has no
+    /// adversarial pass with reading the pull request in that checkout, for a run that has no
     /// process at all, and pointed the reviewer away from every way out (independent pre-PR
     /// review, cycle 1, adversarial lens).
     /// <para>
@@ -675,12 +675,12 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             // applied to a refusal's own text (Copilot review, pull request #271). The checkout
             // is already cut at dispatch, so the double-booking half holds for both.
             var state when state == RunState.Dispatched =>
-                ("the automated review's own adversarial pass has been dispatched into that worktree and "
+                ("the automated review's own adversarial pass has been dispatched into that checkout and "
                     + "has not reported starting yet, and a second session in it would double-book the "
                     + "checkout", OnceItParks),
             var state when state == RunState.Running =>
                 ("the automated review's own adversarial pass is still reading the pull request in that "
-                    + "worktree, and a second session in it would double-book the checkout", OnceItParks),
+                    + "checkout, and a second session in it would double-book the checkout", OnceItParks),
             var state when state == RunState.Verifying =>
                 ("the automated review's adversarial pass has finished and the engine has not dispatched its "
                     + "conformance pass yet", OnceItParks),
@@ -689,7 +689,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
                     "the daemon is finalizing that task now; run h9k pr review again once it closes out and "
                     + "you get a fresh lap (a Done pr-review task does not hold its pull request hostage)"),
             var state when state == RunState.UnderReview =>
-                ("the automated review's conformance pass is still running in that worktree", OnceItParks),
+                ("the automated review's conformance pass is still running in that checkout", OnceItParks),
             var state when state.IsTerminal =>
                 ($"its run is {state.Value}, which is terminal — that run will never park a findings report",
                     $"h9k task retry {taskId} dispatches a fresh review, and the lap attaches to it once it "
@@ -1054,8 +1054,8 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// <summary>
     /// Removes a checkout that was cut and then never recorded on any run, plus the tracking ref
     /// the cut fetched — the same two cleanups <c>PrReviewEngine.FinalizeAsync</c> does at the
-    /// other end of a run's life, and in the same order, because a checked-out worktree pins the
-    /// ref it detached.
+    /// other end of a run's life, and in the same order: the checkout first, because while it
+    /// stands it holds the commit it detached at alive in the project's repository.
     /// <para>
     /// Best-effort and loud rather than silent: this runs while another failure is already on its
     /// way out, so a removal that fails must not replace it — but a directory left behind gets
@@ -1595,13 +1595,13 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         FormattableString guardLine = guard switch
         {
             ReviewLapGuardOutcome.Written =>
-                $"[dim]Push guard installed at {ReviewLapGuardFile.PathIn(worktreePath)} — any Claude Code session started in that worktree is denied git push, every gh write verb, gh api (the endpoint they all reach), and your own two verdict commands, with no flag needed.[/]",
+                $"[dim]Push guard installed at {ReviewLapGuardFile.PathIn(worktreePath)} — any Claude Code session started in that checkout is denied git push, every gh write verb, gh api (the endpoint they all reach), and your own two verdict commands, with no flag needed.[/]",
             ReviewLapGuardOutcome.AlreadyGuarded =>
-                $"[dim]Push guard already at {ReviewLapGuardFile.PathIn(worktreePath)} from an earlier entry into this lap, unchanged — any Claude Code session started in that worktree is still covered by it, with no flag needed.[/]",
+                $"[dim]Push guard already at {ReviewLapGuardFile.PathIn(worktreePath)} from an earlier entry into this lap, unchanged — any Claude Code session started in that checkout is still covered by it, with no flag needed.[/]",
             ReviewLapGuardOutcome.AlreadyPresent =>
-                $"[yellow]The worktree already had a {ReviewLapGuardFile.RelativePath}, so the push guard was NOT written there[/] [dim]— nothing of the pull request's own was overwritten. Start your session with --settings {settingsFile}, which carries the same denials.[/]",
+                $"[yellow]The checkout already had a {ReviewLapGuardFile.RelativePath}, so the push guard was NOT written there[/] [dim]— nothing of the pull request's own was overwritten. Start your session with --settings {settingsFile}, which carries the same denials.[/]",
             ReviewLapGuardOutcome.Failed =>
-                $"[yellow]The push guard could not be written into the worktree.[/] [dim]Start your session with --settings {settingsFile}, which carries the same denials.[/]",
+                $"[yellow]The push guard could not be written into the checkout.[/] [dim]Start your session with --settings {settingsFile}, which carries the same denials.[/]",
             _ =>
                 $"[dim]No worktree, so the push guard travels with the settings file: start your session with --settings {settingsFile}.[/]",
         };
@@ -1617,7 +1617,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         AnsiConsole.MarkupLineInterpolated(
             $"[dim]This lap ends only when you run h9k pr approve {taskId} --note \"…\" or h9k pr request-changes {taskId} --note \"…\" — never on its own.[/]");
         AnsiConsole.MarkupLine(
-            "[dim]Paste the briefing below into a Claude Code session started anywhere — the worktree above is "
+            "[dim]Paste the briefing below into a Claude Code session started anywhere — the checkout above is "
             + "the natural place, but nothing requires it:[/]");
         AnsiConsole.WriteLine();
         // WriteLine, not MarkupLine: the briefing is the reviewer's to paste verbatim, and

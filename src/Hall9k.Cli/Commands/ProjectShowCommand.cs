@@ -594,7 +594,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         string name = project.Name.EscapeMarkup();
         string value = $"{setting.OnOff} [dim]({OriginNote(setting.Recorded)})[/]";
         return setting.Enabled
-            ? $"{value} [dim]— a design review here stands the product up on the review worktree, walks the "
+            ? $"{value} [dim]— a design review here stands the product up on the review checkout, walks the "
               + "changed user-facing flows, and cites a screenshot beside each finding it drove out. It "
               + "still needs a run skill on this project's ledger; with none the review is "
               + $"code-and-design-file only and says so. Turn it off:[/] h9k project set {name} "

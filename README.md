@@ -337,7 +337,7 @@ task runs one review session per declared persona on its single worktree. Declar
 ordinary case and reads as the engineer's review of code, logic, and functionality. The **QA**
 persona reviews for compliance and functionality through the lens of blast radius: it maps what the
 change touches and what sits close enough to be worth re-testing, then runs the project's
-end-to-end tests on the review worktree. The **designer** persona answers seven fixed lenses
+end-to-end tests on the review checkout. The **designer** persona answers seven fixed lenses
 (user experience, conformance to the proposed design, motion, CSS practice, accessibility, look and
 feel, and the project's design system).
 

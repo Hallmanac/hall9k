@@ -301,7 +301,7 @@ public static class DesignReviewSection
               + $"because {drive.WhyNotDriven}. Nothing below was seen running."
               + StaticSessionWalkedAnyway(walkedScreens)
         : walkedScreens > 0
-            ? "**Drive:** driven — the session stood this project's product up on the review worktree "
+            ? "**Drive:** driven — the session stood this project's product up on the review checkout "
               + $"and walked {walkedScreens} screen(s), cited below under Driven."
             // Driving was authorised (the project setting is on and a run skill exists), and
             // still refused: this session's own real permission file (security review idea
