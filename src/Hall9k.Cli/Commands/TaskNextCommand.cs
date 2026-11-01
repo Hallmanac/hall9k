@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.Globalization;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -90,7 +92,10 @@ public sealed class TaskNextCommand : Hall9kAsyncCommand<TaskNextCommand.Setting
         }
 
         TaskListItem? listItem = await session.LoadAsync<TaskListItem>(details.Id, cancellationToken);
-        TaskNextFacts facts = new(row, details, hasOpenDependency, listItem?.IsInteractiveClaim ?? false, now);
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(details.ProjectId, cancellationToken);
+        TaskNextFacts facts = new(
+            row, details, hasOpenDependency, listItem?.IsInteractiveClaim ?? false, now,
+            ChallengeRequired: (project?.ChallengeRequirementSetting ?? ChallengeRequirement.Unrecorded).IsOn);
         if (row is not { IsTeammates: false } || listItem?.CurrentRunId is not { } runId)
         {
             return facts;
@@ -143,7 +148,7 @@ public sealed class TaskNextCommand : Hall9kAsyncCommand<TaskNextCommand.Setting
             // printing; it says what it read rather than nothing at all.
             lines.Add($"Task {shortId}: {ExternalText.OneLine(details.Objective)}");
             lines.Add($"State: {details.State.Value} (no lifecycle row could be composed)");
-            AppendNextStep(lines, details, facts.HasOpenDependency);
+            AppendNextStep(lines, details, facts.HasOpenDependency, facts.ChallengeRequired);
             return lines;
         }
 
@@ -195,7 +200,7 @@ public sealed class TaskNextCommand : Hall9kAsyncCommand<TaskNextCommand.Setting
             AppendParkChoices(lines, run, details.Id);
         }
 
-        AppendNextStep(lines, details, facts.HasOpenDependency);
+        AppendNextStep(lines, details, facts.HasOpenDependency, facts.ChallengeRequired);
         return lines;
     }
 
@@ -257,9 +262,10 @@ public sealed class TaskNextCommand : Hall9kAsyncCommand<TaskNextCommand.Setting
             : ("the platform", "Nothing is asked of you; the pipeline carries it on.");
     }
 
-    private static void AppendNextStep(List<string> lines, TaskDetails details, bool hasOpenDependency)
+    private static void AppendNextStep(
+        List<string> lines, TaskDetails details, bool hasOpenDependency, bool challengeRequired)
     {
-        foreach (string line in TaskNextStep.Lines(details, hasOpenDependency))
+        foreach (string line in TaskNextStep.Lines(details, hasOpenDependency, challengeRequired))
         {
             lines.Add(Markup.Remove(line));
         }
@@ -351,6 +357,7 @@ public sealed class TaskNextCommand : Hall9kAsyncCommand<TaskNextCommand.Setting
 /// <param name="Now">The one clock every elapsed figure measures against.</param>
 /// <param name="Run">The current run folded from its stream, null when there is none to read.</param>
 /// <param name="Closeout">What closeout last recorded, only for an open pull request.</param>
+/// <param name="ChallengeRequired">Whether the task's project requires a challenge verdict before publish, which decides whether a Draft's next step is the challenge.</param>
 internal sealed record TaskNextFacts(
     TaskStatusRow? Row,
     TaskDetails Details,
@@ -358,7 +365,8 @@ internal sealed record TaskNextFacts(
     bool HoldsInteractiveClaim,
     DateTimeOffset Now,
     TaskNextRun? Run = null,
-    CloseoutObservation? Closeout = null);
+    CloseoutObservation? Closeout = null,
+    bool ChallengeRequired = false);
 
 /// <summary>The parts of a folded run stream the answer reads.</summary>
 /// <param name="ActiveSessionIsOwners">

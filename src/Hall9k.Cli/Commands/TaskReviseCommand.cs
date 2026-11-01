@@ -536,7 +536,13 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             AnsiConsole.MarkupLineInterpolated($"[dim]review-stage-composition consequence: {consequence}[/]");
         }
 
-        AnsiConsole.MarkupLine($"[dim]Next:[/] h9k task publish {shortId}");
+        ProjectDetails? taskProject = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+        bool challengeRequired = (taskProject?.ChallengeRequirementSetting ?? ChallengeRequirement.Unrecorded).IsOn;
+        AnsiConsole.MarkupLine(
+            "[dim]Next:[/] "
+            + TaskNextStep.PublishStep(
+                shortId, ChallengeGate.Shortfall(task, challengeRequired) is not null,
+                task.ChallengeRequested || task.RunningChallengeSessionId is not null));
         return ExitCodes.Ok;
     }
 

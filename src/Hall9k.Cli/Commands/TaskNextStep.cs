@@ -26,10 +26,10 @@ internal static class TaskNextStep
     /// order. A blank string is a blank line. Empty when the state has no pre-dispatch step and is
     /// not Failed, which is every state where the phase and attention lines already say what moves.
     /// </summary>
-    public static IReadOnlyList<string> Lines(TaskDetails details, bool hasOpenDependency)
+    public static IReadOnlyList<string> Lines(TaskDetails details, bool hasOpenDependency, bool challengeRequired = false)
     {
         List<string> lines = [];
-        if (Next(details, hasOpenDependency) is { } next)
+        if (Next(details, hasOpenDependency, challengeRequired) is { } next)
         {
             lines.Add(string.Empty);
             lines.Add(next);
@@ -48,7 +48,20 @@ internal static class TaskNextStep
         return lines;
     }
 
-    private static string? Next(TaskDetails details, bool hasOpenDependency)
+    /// <summary>
+    /// What follows the criteria step for a Draft, as markup: publish, or, while the publish gate would refuse the
+    /// draft for want of a usable challenge verdict, the challenge first. A challenge already asked for is waited for
+    /// rather than asked for twice. Every command that prints a Draft's <c>Next:</c> line goes through here, so none of
+    /// them sends a newcomer straight into the refusal.
+    /// </summary>
+    internal static string PublishStep(string shortId, bool gateWouldRefuse, bool challengePending) =>
+        !gateWouldRefuse
+            ? $"h9k task publish {shortId}"
+            : challengePending
+                ? $"[dim]the challenge you asked for (h9k task show {shortId} says when its verdict lands), then[/] h9k task publish {shortId}"
+                : $"h9k task challenge {shortId} [dim]then, with its verdict read and applied,[/] h9k task publish {shortId}";
+
+    private static string? Next(TaskDetails details, bool hasOpenDependency, bool challengeRequired)
     {
         string shortId = TaskListCommand.ShortId(details.Id);
         // h9k task drive is refused outright for a pr-review task (TaskDriveCommand.ClaimAndCutAsync:
@@ -66,7 +79,7 @@ internal static class TaskNextStep
         {
             "Draft" => details.AcceptanceCriteria.Count == 0
                 ? $"[dim]Next:[/] h9k task revise {shortId} --criteria \"…\" [dim]— publishing needs at least one[/]"
-                : $"[dim]Next:[/] h9k task publish {shortId} [dim]then[/] h9k task queue {shortId}",
+                : $"[dim]Next:[/] {PublishStep(shortId, ChallengeGate.Shortfall(details, challengeRequired) is not null, details.ChallengeRequested || details.RunningChallengeSessionId is not null)} [dim]then[/] h9k task queue {shortId}",
             "Published" => $"[dim]Next:[/] h9k task queue {shortId} [dim]— it will not run until you do"
                 + $"{interactiveClaimHint}[/]",
             "Blocked" => $"[dim]It queues itself when its dependencies close out. To stop waiting:[/] "

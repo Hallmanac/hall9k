@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Bootstrap;
@@ -47,9 +49,11 @@ public sealed class TaskDraftCommand : Hall9kAsyncCommand<TaskDraftCommand.Setti
 
         string shortId = TaskListCommand.ShortId(taskId);
         AnsiConsole.MarkupLine($"[blue]Task {shortId} returned to Draft[/] — editable again.");
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+        bool challengeRequired = (project?.ChallengeRequirementSetting ?? ChallengeRequirement.Unrecorded).IsOn;
         AnsiConsole.MarkupLine(
             $"[dim]Next:[/] h9k task revise {shortId} --objective/--criteria/--context/--blocked-by "
-            + $"[dim]then[/] h9k task publish {shortId}");
+            + $"[dim]then[/] {TaskNextStep.PublishStep(shortId, ChallengeGate.Shortfall(task, challengeRequired) is not null, task.ChallengeRequested || task.RunningChallengeSessionId is not null)}");
         return ExitCodes.Ok;
     }
 }

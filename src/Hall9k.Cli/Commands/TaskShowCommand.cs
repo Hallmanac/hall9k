@@ -18,6 +18,7 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
@@ -415,6 +416,19 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Publication", $"[yellow]{ExternalText.OneLineMarkup(details.PublicationOutcome)}[/]");
         }
 
+        Guid? thisNodeId = details.LatestChallengeOutcome is not null || details.ChallengeRequested
+            || details.RunningChallengeSessionId is not null
+                ? await OrchestratorStatusCommand.ThisNodeIdAsync(session, cancellationToken)
+                : null;
+        OwnerDetails? challengeSkipper = details.ChallengeSkippedByOwnerId is { } skipperId
+            ? await session.LoadAsync<OwnerDetails>(skipperId, cancellationToken)
+            : null;
+        foreach ((string label, string markup) in ChallengeRows(
+            details, project, thisNodeId, labels, challengeSkipper?.Name))
+        {
+            header.AddRow(label, markup);
+        }
+
         if (details.PendingJiraWriteId is not null)
         {
             header.AddRow("Jira write", JiraWriteMarkup(details));
@@ -808,7 +822,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         await WriteHandoffAsync(session, details, runs, cancellationToken);
 
-        foreach (string line in TaskNextStep.Lines(details, hasOpenDependency))
+        foreach (string line in TaskNextStep.Lines(details, hasOpenDependency, (project?.ChallengeRequirementSetting ?? ChallengeRequirement.Unrecorded).IsOn))
         {
             AnsiConsole.MarkupLine(line);
         }
@@ -2881,6 +2895,120 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
               + $"{string.Join(", ", neverCloseLabels).EscapeMarkup()})[/]"
             : string.Empty;
         return $"{effective.CliSpelling.EscapeMarkup()} [dim](inherited from the project's close-linked-issue setting)[/]{labelNote}";
+    }
+
+    /// <summary>
+    /// The rows that tell a draft's challenge (<c>h9k task challenge</c>): the latest challenge as requested, running,
+    /// failed with its reason, or a verdict with its counts, when it landed, its model and effort, where its report is, and
+    /// whether the draft was revised since; the verdict the publish gate is reading when a later challenge failed; what the
+    /// gate would say now; and the reason a publish gave for skipping it. Pure over its arguments so every wording is
+    /// testable with no database.
+    /// <para>
+    /// The report path is derived from the session id, because no event carries a machine path. On a node that does not
+    /// hold the report, the node that does is named instead of a path that exists on somebody else's disk.
+    /// </para>
+    /// </summary>
+    internal static IReadOnlyList<(string Label, string Markup)> ChallengeRows(
+        TaskDetails details, ProjectDetails? project, Guid? thisNodeId, MemberLabelLookup labels, string? skippedBy)
+    {
+        List<(string Label, string Markup)> rows = [];
+        string shortId = TaskListCommand.ShortId(details.Id);
+
+        if (details.RunningChallengeSessionId is { } running)
+        {
+            string where = details.RunningChallengeNodeId switch
+            {
+                { } runningNode when runningNode == thisNodeId => "on this node",
+                { } runningNode => $"on {MemberLabelling.NodeMarkup(runningNode, labels)}",
+                _ => "on a node that is not recorded",
+            };
+            string when = details.RunningChallengeDispatchedAt is { } dispatchedAt
+                ? $", dispatched {dispatchedAt.ToLocalTime():g}"
+                : string.Empty;
+            string tier = details.RunningChallengeModel is { } model
+                ? $", {ModelEffortMarkup(model, details.RunningChallengeEffort)}"
+                : string.Empty;
+            rows.Add((
+                "Challenge",
+                $"[yellow]running[/]: [dim]one headless session {where}{when}{tier}; its verdict lands here and in the "
+                + "orchestrator feed. It changes nothing about the draft[/]"));
+        }
+        else if (details.ChallengeRequested)
+        {
+            rows.Add((
+                "Challenge",
+                "[yellow]requested[/]: [dim]waiting for the daemon on this node to start the session "
+                + "(h9k daemon status); a request made while the daemon is stopped waits for it[/]"));
+        }
+        else if (details.LatestChallengeOutcome is { } outcome)
+        {
+            rows.Add(("Challenge", ChallengeOutcomeMarkup(details, outcome, thisNodeId, labels)));
+        }
+
+        if (details.LatestChallengeOutcome is { IsVerdict: false } && details.LatestChallengeVerdict is { } earlier)
+        {
+            rows.Add((
+                "Verdict on record",
+                $"[dim]the publish gate still reads the earlier verdict:[/] {ChallengeOutcomeMarkup(details, earlier, thisNodeId, labels)}"));
+        }
+
+        if (details.State == TaskState.Draft
+            && ChallengeGate.Shortfall(details, (project?.ChallengeRequirementSetting ?? ChallengeRequirement.Unrecorded).IsOn)
+                is { } shortfall)
+        {
+            rows.Add((
+                "Publish gate",
+                $"[yellow]would refuse[/]: [dim]{shortfall.EscapeMarkup()}. h9k task challenge {shortId}, or state why: "
+                + $"h9k task publish {shortId} --skip-challenge \"<reason>\"[/]"));
+        }
+
+        if (details.ChallengeSkipReason.IsNotBlank())
+        {
+            string who = skippedBy.IsNotBlank()
+                ? skippedBy.EscapeMarkup()
+                : "[dim]unknown[/]";
+            string when = details.ChallengeSkippedAt is { } skippedAt
+                ? skippedAt.ToLocalTime().ToString("g")
+                : "an unrecorded time";
+            rows.Add((
+                "Challenge skipped",
+                $"[yellow]published without a usable verdict[/]: [dim]{who} said, at {when}:[/] "
+                + ExternalText.OneLineMarkup(details.ChallengeSkipReason)));
+        }
+
+        return rows;
+    }
+
+    private static string ModelEffortMarkup(AgentModel model, AgentEffort? effort) =>
+        effort is { } level && level != AgentEffort.Unknown
+            ? $"{model.Value.EscapeMarkup()} at {level.Value.EscapeMarkup()} effort"
+            : model.Value.EscapeMarkup();
+
+    private static string ChallengeOutcomeMarkup(
+        TaskDetails details, DraftChallengeRecorded outcome, Guid? thisNodeId, MemberLabelLookup labels)
+    {
+        string landed = outcome.RecordedAt.ToLocalTime().ToString("g");
+        string tier = ModelEffortMarkup(outcome.Model, outcome.Effort);
+        string report = outcome.SessionId is not { } sessionId
+            ? "no session ran, so there is no report"
+            : outcome.NodeId == thisNodeId
+                ? $"report: {RunPaths.ChallengeReportFile(sessionId).EscapeMarkup()}"
+                : $"the report is on {MemberLabelling.NodeMarkup(outcome.NodeId, labels)}, which ran the session";
+        if (!outcome.IsVerdict)
+        {
+            return $"[red]failed[/]: {outcome.Failure.Description.EscapeMarkup()} [dim]recorded {landed}; {tier}; {report}. "
+                + $"Challenge again with h9k task challenge {TaskListCommand.ShortId(details.Id)}[/]";
+        }
+
+        // Revised-since is a fact about the newest verdict only: an older one a newer verdict replaced is history.
+        bool isLatestVerdict = details.LatestChallengeVerdict == outcome;
+        string revised = !isLatestVerdict
+            ? string.Empty
+            : details.RevisedSinceChallengeVerdict
+                ? "; the draft was revised since"
+                : "; the draft was not revised since";
+        return $"[green]{outcome.Verdict.Phrase.EscapeMarkup()}[/]: [dim]{outcome.MustCount} must, "
+            + $"{outcome.ShouldCount} should, {outcome.ParkCount} park; landed {landed}; {tier}; {report}{revised}[/]";
     }
 
     /// <summary>

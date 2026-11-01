@@ -1641,6 +1641,23 @@ public static class CliCommandTree
                 .WithExample("task", "publish", "28b19893", "--pre-approved", "after-human-review")
                 .WithExample("task", "publish", "28b19893", "--close-linked-issue", "on-closeout")
                 .WithExample("task", "publish", "28b19893", "--skip-challenge", "\"a typo fix; nothing to test\"");
+            task.AddCommand<TaskChallengeCommand>("challenge")
+                .WithDescription(
+                    "Ask for an independent challenge of a draft before it publishes. It records a request and "
+                    + "returns without waiting; the daemon on this node starts exactly one headless session that "
+                    + "tests the draft's claims against the code at the project's checkout and writes a report "
+                    + "whose closing block carries a verdict (publish as written, publish as revised, or do not "
+                    + "publish) and one line per change, each marked must, should, or park with its evidence. The "
+                    + "verdict and the counts are recorded on the task and reach the project's orchestrator feed; "
+                    + "the report stays on this node. A challenge changes nothing about the draft: read the "
+                    + "verdict with h9k task show, apply what you accept with h9k task revise, then publish. "
+                    + "Refused for anyone who may not publish the task, and for a task that is not a Draft, has no "
+                    + "acceptance criteria, belongs to an archived project, has no working checkout, or already has "
+                    + "a challenge requested or running. Repeat the verb for another challenge after a recorded "
+                    + "verdict or failure; nothing repeats it on its own. It runs on Opus 5.5 at high effort unless "
+                    + "h9k config set --model-challenge or --effort-challenge, or the project's own model or "
+                    + "effort, say otherwise. Refused inside a dispatched session.")
+                .WithExample("task", "challenge", "28b19893");
             task.AddCommand<TaskAssignCommand>("assign")
                 .WithDescription(
                     "Record who holds a task, at any stage before it runs: the assignee. It never dispatches. "
