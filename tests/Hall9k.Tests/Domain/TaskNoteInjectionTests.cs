@@ -159,7 +159,7 @@ public sealed class TaskNoteInjectionTests
     }
 
     [Fact]
-    public void A_replicated_note_missing_its_text_or_provenance_is_left_out_and_one_missing_its_source_reads_as_unknown()
+    public void A_replicated_note_missing_its_text_is_left_out_and_one_missing_its_provenance_or_source_is_kept_as_unknown()
     {
         TaskDetails view = new() { Id = TheTask };
         TaskDetailsProjection projection = new();
@@ -172,8 +172,16 @@ public sealed class TaskNoteInjectionTests
         projection.Apply(new FakeEvent<TaskNoteRecorded>(
             new TaskNoteRecorded(TheTask, DomainId.New(), "no source", Provenance(), null!, Now)), view);
 
-        view.Notes.Should().ContainSingle().Which.Note.Should().Match<TaskNoteRecorded>(
-            note => note.Text == "no source" && note.Source == TaskNoteSource.Unknown);
+        view.Notes.Select(entry => entry.Note.Text).Should().BeEquivalentTo("no provenance", "no source");
+        view.Notes.Single(entry => entry.Note.Text == "no source").Note.Source.Should().Be(TaskNoteSource.Unknown);
+
+        TaskNoteView withoutProvenance = TaskNoteInjection.Classify(
+            TheTask, view.Notes.Where(entry => entry.Note.Text == "no provenance"), [], ThisNode, null).Single();
+        withoutProvenance.Mark.Should().Be(LessonProvenanceMark.Unknown);
+        withoutProvenance.ReachesAPrompt.Should().BeFalse("a note recorded with no provenance stays out of prompts");
+        TaskNoteInjection.Select([withoutProvenance]).HeldForProvenance.Should().Be(1);
+        Hall9k.Daemon.ProjectHomes.TaskNotesDocument.Author(withoutProvenance.Entry, null)
+            .Should().Be("unknown author", "the author read must not fail on a note with no recorded owner");
     }
 
     [Fact]

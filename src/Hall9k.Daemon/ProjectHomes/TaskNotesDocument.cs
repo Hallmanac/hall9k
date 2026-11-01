@@ -77,5 +77,7 @@ public static class TaskNotesDocument
     public static string Author(TaskNoteEntry entry, LocalFleet? localFleet) =>
         entry.ReceivedFromNodeId is { } sender
             ? ReplicatedNote.Origin(sender, entry.OriginNodeId, localFleet)
-            : $"owner {DomainId.Short(entry.Note.Provenance.RecordedByOwnerId)}";
+            : entry.Note.Provenance is { } provenance
+                ? $"owner {DomainId.Short(provenance.RecordedByOwnerId)}"
+                : "unknown author";
 }

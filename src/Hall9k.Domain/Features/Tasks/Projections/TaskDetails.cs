@@ -1305,9 +1305,10 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         // A replicated event is deserialized without the checks the CLI's decider runs, so a member's
         // node can send one with a field omitted, and every reader of a note (the prompt read, the
         // terminal list, the project-home render) would fail on it for as long as the ledger keeps
-        // it. A note with no text or no provenance says nothing a reader could use, so it is left
-        // out of the projection; one with no source is kept and reads as an unknown source.
-        if (string.IsNullOrWhiteSpace(note.Text) || note.Provenance is null)
+        // it. A note with no text says nothing a reader could use, so it is left out of the
+        // projection; one with no source or no provenance is kept, reads as an unknown source, and
+        // (for provenance) is marked Unknown and held back from prompts rather than vanishing.
+        if (string.IsNullOrWhiteSpace(note.Text))
         {
             return;
         }
