@@ -242,6 +242,32 @@ public sealed class GitReadOnlyGuardTests
         GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
 
     /// <summary>
+    /// A shell control operator ends a word with no whitespace beside it, so a quoted argument glued
+    /// to <c>;</c>, <c>&amp;&amp;</c>, <c>|</c> or a closing parenthesis, followed by <c>git</c>, is
+    /// two separate words. Each of these runs the earlier command and then a refused
+    /// <c>git diff</c>/<c>git log</c>, and the guard must refuse it the same as the spelling with
+    /// spaces (independent pre-PR review, cycle 5, both lenses).
+    /// </summary>
+    [Theory]
+    [InlineData("grep 'foo' src;git diff --output=/tmp/out.txt")]
+    [InlineData("grep \"foo\" src&&git log -1 --output=/tmp/out.txt")]
+    [InlineData("echo 'a'|git diff /dev/null /etc/hosts")]
+    [InlineData("echo 'a'&git diff --output /tmp/out.txt")]
+    [InlineData("(echo 'a');git diff --output=/tmp/out.txt")]
+    [InlineData("echo $'a'||git log --output=/tmp/out.txt")]
+    public void A_quoted_word_glued_to_a_control_operator_does_not_hide_the_git_command_after_it(
+        string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
+    [Theory]
+    [InlineData("grep 'foo' src;git diff origin/main...HEAD")]
+    [InlineData("echo \"a\"&&git log -1 --format=%H")]
+    [InlineData("echo 'a'|git diff --stat")]
+    public void A_quoted_word_glued_to_a_control_operator_before_an_ordinary_git_command_still_runs(
+        string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeFalse();
+
+    /// <summary>
     /// <c>--ext-diff</c> and <c>--show-signature</c> hand git's output to a program that
     /// configuration names, and <c>-O&lt;orderfile&gt;</c> reads the file it names, alone or
     /// bundled after other short flags. A prefix rule allows each as spelled, so the guard refuses

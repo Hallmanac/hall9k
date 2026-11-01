@@ -379,7 +379,7 @@ public static class GitReadOnlyGuardRoutes
         int index = 0;
         while (index < command.Length)
         {
-            if (char.IsWhiteSpace(command[index]))
+            if (char.IsWhiteSpace(command[index]) || IsUnquotedShellOperator(command[index]))
             {
                 result.Append(command[index]);
                 index++;
@@ -389,7 +389,9 @@ public static class GitReadOnlyGuardRoutes
             int wordStart = index;
             StringBuilder decodedWord = new();
             bool wordHasQuoting = false;
-            while (index < command.Length && !char.IsWhiteSpace(command[index]))
+            while (index < command.Length
+                && !char.IsWhiteSpace(command[index])
+                && !IsUnquotedShellOperator(command[index]))
             {
                 char current = command[index];
                 if (current == '$' && index + 1 < command.Length && command[index + 1] == '\'')
@@ -526,6 +528,18 @@ public static class GitReadOnlyGuardRoutes
 
         return result.ToString();
     }
+
+    /// <summary>
+    /// Whether an unquoted character is one of the shell's control or redirection operators
+    /// (<c>;</c>, <c>&amp;</c>, <c>|</c>, <c>(</c>, <c>)</c>, <c>&lt;</c>, <c>&gt;</c>), each of
+    /// which ends a word the way whitespace does, with no space needed on either side. Treating
+    /// them as part of a word glued a quoted argument to the <c>git</c> that follows it, so the
+    /// whole glued word was blanked and every check downstream lost its anchor (independent pre-PR
+    /// review, cycle 5, both lenses). Only asked about characters outside any quoting, because the
+    /// word loop consumes each quoted span whole before it reaches this test.
+    /// </summary>
+    private static bool IsUnquotedShellOperator(char character) =>
+        character is ';' or '&' or '|' or '(' or ')' or '<' or '>';
 
     /// <summary>
     /// Whether a reassembled shell word is exactly the <c>git</c>, <c>diff</c>, or <c>log</c> token
