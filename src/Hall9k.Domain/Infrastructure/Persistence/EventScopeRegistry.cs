@@ -55,6 +55,9 @@ public static class EventScopeRegistry
         // The task's one lesson pick: lesson ids and counts, no session text. It travels so a node that
         // picks up the task's later laps composes with the same set, and an older peer skips the type.
         [typeof(LessonPickRecorded)] = EventScope.ProjectScoped,
+        // The closeout step's one record of which of a task's notes became a lesson: ids and closed
+        // words, no note text, and it travels as far as the task and its notes do.
+        [typeof(NotePromotionRecorded)] = EventScope.ProjectScoped,
         // A short note a task's sessions leave each other: it travels exactly as far as its task.
         [typeof(TaskNoteRecorded)] = EventScope.ProjectScoped,
         // The closeout triage of a driven task's unresolved threads (task: analysis-only closeout): the

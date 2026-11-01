@@ -1,5 +1,6 @@
 using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Notes;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Marten;
@@ -36,6 +37,12 @@ public static class TaskNoteFeed
         }
 
         List<(Guid TaskId, TaskNoteEntry Entry)> siblings = [];
+        Dictionary<Guid, NotePromotionRecorded> promotions = [];
+        if (task.NotePromotion is { } own)
+        {
+            promotions[taskId] = own;
+        }
+
         if (task.EpicId is { } epicId)
         {
             Guid projectId = task.ProjectId;
@@ -46,6 +53,13 @@ public static class TaskNoteFeed
             [
                 .. inEpic.SelectMany(sibling => sibling.Notes.Select(entry => (sibling.Id, entry))),
             ];
+            foreach (TaskDetails sibling in inEpic)
+            {
+                if (sibling.NotePromotion is { } siblingRecord)
+                {
+                    promotions[sibling.Id] = siblingRecord;
+                }
+            }
         }
 
         bool anyReplicated = task.Notes.Concat(siblings.Select(pair => pair.Entry)).Any(entry => entry.IsReplicated);
@@ -59,7 +73,11 @@ public static class TaskNoteFeed
             .Take(1)
             .ToListAsync(cancellationToken)).FirstOrDefault();
 
-        return TaskNoteInjection.Classify(taskId, task.Notes, siblings, node?.Id ?? Guid.Empty, fleet);
+        return
+        [
+            .. TaskNoteInjection.Classify(taskId, task.Notes, siblings, node?.Id ?? Guid.Empty, fleet)
+                .Select(view => view.DecidedBy(promotions.GetValueOrDefault(view.TaskId))),
+        ];
     }
 
     /// <summary>

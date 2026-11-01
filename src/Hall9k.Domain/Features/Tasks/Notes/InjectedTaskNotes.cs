@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Learning;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Infrastructure.Ids;
 
 namespace Hall9k.Domain.Features.Tasks.Notes;
@@ -12,10 +13,31 @@ namespace Hall9k.Domain.Features.Tasks.Notes;
 /// <param name="IsOwn">True for a note on the task being read, false for a sibling's in the same epic.</param>
 /// <param name="Entry">The note and the node ids it was projected with.</param>
 /// <param name="Mark">What <see cref="LessonProvenanceMark"/> says about it for the reading node.</param>
-public sealed record TaskNoteView(Guid TaskId, bool IsOwn, TaskNoteEntry Entry, LessonProvenanceMark Mark)
+/// <param name="Decision">What the closeout promotion step recorded about this note, or null when its task's record does not name it.</param>
+public sealed record TaskNoteView(
+    Guid TaskId, bool IsOwn, TaskNoteEntry Entry, LessonProvenanceMark Mark, NotePromotionDecision? Decision = null)
 {
     /// <summary>Whether the trust rule lets this note into a prompt, by the same rule lessons use.</summary>
     public bool ReachesAPrompt => Mark.ReachesAPrompt;
+
+    /// <summary>This view with what <paramref name="record"/>, the note's own task's promotion record, decided about the note; unchanged when there is no record.</summary>
+    public TaskNoteView DecidedBy(NotePromotionRecorded? record) =>
+        record is null
+            ? this
+            : this with { Decision = record.DecisionFor(Entry.Note.NoteId) };
+
+    /// <summary>
+    /// What became of the note, for the two surfaces that show it: the promotion record's word when
+    /// that record names the note, otherwise held when the reading node holds it, otherwise
+    /// undecided, which means no promotion step decided it.
+    /// </summary>
+    public string OutcomeLabel => Decision switch
+    {
+        { LessonId: { } lessonId } => $"kept as lesson {DomainId.Short(lessonId)}",
+        { Dropped: { } reason } => $"dropped ({reason.Value})",
+        _ when !ReachesAPrompt => "held",
+        _ => "undecided",
+    };
 }
 
 /// <summary>One note as a prompt carries it: a single line of text, labelled with the task it is on.</summary>
