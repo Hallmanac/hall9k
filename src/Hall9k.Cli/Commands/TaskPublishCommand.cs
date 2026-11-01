@@ -153,6 +153,16 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {taskId} names a project that is not registered.");
 
+        // Set only by the daemon's own publish for a plan. The plan checked that no person revised the draft since a session
+        // read it, but a revision can land after that check, so the publish asks again here, against the version it is fenced on.
+        if (Environment.GetEnvironmentVariable(TaskPublished.PlanPublishEnvironmentVariable).IsNotBlank()
+            && task.State == TaskState.Draft && task.RevisedSinceLastDraftSession)
+        {
+            throw new DomainConflictException(
+                $"Draft {taskId} was revised after a challenge or a refinement session last read it, so a plan does not publish it: "
+                + "its text has not been judged. Nothing was published; the plan parks on it, and h9k plan show says what to do.");
+        }
+
         // The whole reachable chain, not just the first hop: a cycle three tasks away is still
         // a cycle this task could never run inside.
         TaskDependencyGraph graph = await TaskDependencyQuery.LoadGraphAsync(
