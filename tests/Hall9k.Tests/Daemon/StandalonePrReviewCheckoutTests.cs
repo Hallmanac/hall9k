@@ -90,11 +90,57 @@ public sealed class StandalonePrReviewCheckoutTests : IDisposable
 
         string alternates = File.ReadAllText(PrReviewCheckoutPlan.AlternatesFile(checkout.Path));
         alternates.Trim().Should().EndWith(Path.Combine(bareProject ? "project.git" : Path.Combine("repo", ".git"), "objects"));
-        Git(project, $"rev-parse {PrReviewCheckoutPlan.PinRef(checkout.Path)}").Trim().Should().Be(
+        Git(project, $"rev-parse {PrReviewCheckoutPlan.HeadPinRef(checkout.Path)}").Trim().Should().Be(
             _headSha, "the project's repository holds a ref that keeps the checkout's head alive");
         Git(checkout.Path, "show HEAD:README.md").Should().Contain("needle in the readme");
         Git(checkout.Path, "grep needle HEAD").Should().Contain("README.md");
         Git(checkout.Path, "ls-files").Should().Contain("README.md");
+    }
+
+    [Fact]
+    public async Task A_force_pushed_base_that_the_project_then_garbage_collects_still_diffs_in_the_open_checkout()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        // A base tip that is not an ancestor of the head: a commit on main that the pull request's
+        // head (the seed commit) does not contain.
+        File.WriteAllText(Path.Combine(_seedPath, "base-only.txt"), "base\n");
+        Git(_seedPath, "add -A");
+        Git(_seedPath, "-c user.name=Test -c user.email=test@test commit -m base-only");
+        Git(_seedPath, "push origin main");
+        string oldBase = Git(_seedPath, "rev-parse HEAD").Trim();
+        Git(_clonePath, "fetch origin");
+        Worktree checkout = await _manager.CreatePrReviewCheckoutAsync(
+            new PrReviewWorktreeRequest(_clonePath, 7, DomainId.New(), DomainId.New(), _headSha, "main"), cts.Token);
+        Git(_clonePath, $"rev-parse {PrReviewCheckoutPlan.BasePinRef(checkout.Path)}").Trim().Should().Be(oldBase);
+
+        // The base is force-pushed back to the head and the project's repository forgets the old tip.
+        Git(_clonePath, $"update-ref refs/remotes/origin/main {_headSha}");
+        Git(_clonePath, "reflog expire --expire=now --all");
+        Git(_clonePath, "gc --prune=now --quiet");
+
+        Git(checkout.Path, "rev-parse origin/main").Trim().Should().Be(oldBase);
+        TryGit(checkout.Path, "diff --stat origin/main...HEAD").ExitCode.Should().Be(0, "the old base tip is still reachable through its pin");
+
+        await _manager.RemoveAsync(_clonePath, checkout.Path, cts.Token);
+        Git(_clonePath, $"for-each-ref {PrReviewCheckoutPlan.PinRefPrefix}").Should().BeEmpty("both pins are released with the checkout");
+    }
+
+    [Fact]
+    public async Task A_hand_cut_bare_clone_with_no_fetch_refspec_still_gives_the_checkout_an_origin_base_ref()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        // `git clone --bare` writes no remote.origin.fetch, so its branches live under refs/heads/
+        // and `git fetch origin` maps nothing: the shape a project registered with --repo can be.
+        string handCut = Path.Combine(_root, "handcut", "repo", "project.git");
+        Git(_root, $"clone --bare \"{_originPath}\" \"{handCut}\"");
+        TryGit(handCut, "config --get remote.origin.fetch").ExitCode.Should().NotBe(0, "the fixture must have no refspec");
+
+        Worktree checkout = await _manager.CreatePrReviewCheckoutAsync(
+            new PrReviewWorktreeRequest(handCut, 7, DomainId.New(), DomainId.New(), _headSha), cts.Token);
+
+        Git(checkout.Path, "rev-parse origin/main").Trim().Should().Be(_headSha);
+        Git(checkout.Path, "diff origin/main...HEAD").Should().BeEmpty("the head and the base are the same commit here");
+        Git(checkout.Path, "for-each-ref --format=%(refname)").Should().NotContain("refs/heads/", "no local branch exists to commit onto");
     }
 
     [Fact]
@@ -143,6 +189,11 @@ public sealed class StandalonePrReviewCheckoutTests : IDisposable
         // A sibling that looks like a standalone clone but borrows no objects from this repository.
         string lookalike = Path.Combine(beside, "wt-lookalike");
         Git(_root, $"clone \"{_originPath}\" \"{lookalike}\"");
+        // A sibling a person cut with `git clone --shared`: a real .git directory and the very same
+        // alternates entry, but this manager never made it, so the repository holds no pin for it.
+        string sharedSibling = Path.Combine(beside, "wt-personal");
+        Git(_root, $"clone --shared \"{_clonePath}\" \"{sharedSibling}\"");
+        File.ReadAllText(PrReviewCheckoutPlan.AlternatesFile(sharedSibling)).Should().Contain("objects", "the fixture must carry an alternates entry");
         // A standalone checkout cut for the repository, but moved out from beside it.
         Worktree genuine = await _manager.CreatePrReviewCheckoutAsync(
             new PrReviewWorktreeRequest(_clonePath, 7, DomainId.New(), DomainId.New()), cts.Token);
@@ -154,7 +205,7 @@ public sealed class StandalonePrReviewCheckoutTests : IDisposable
         Directory.CreateDirectory(plain);
         File.WriteAllText(Path.Combine(plain, "keep.txt"), "x");
 
-        foreach (string path in new[] { _clonePath, _barePath, lookalike, elsewhere, plain, _root })
+        foreach (string path in new[] { _clonePath, _barePath, lookalike, sharedSibling, elsewhere, plain, _root })
         {
             Func<Task> act = () => _manager.RemoveAsync(_clonePath, path, cts.Token);
 

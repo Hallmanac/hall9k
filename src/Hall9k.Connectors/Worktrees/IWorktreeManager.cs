@@ -53,7 +53,13 @@ public sealed record PrReviewWorktreeRequest(
     /// one of these: it passes <c>facts.HeadRefOid</c> the same as the ordinary pr-review dispatch
     /// does, since it runs through the identical pre-flight gate (<c>RunLauncher.EnsurePrReviewPreflightSafeAsync</c>).
     /// </summary>
-    string? ExpectedHeadOid = null);
+    string? ExpectedHeadOid = null,
+    /// <summary>
+    /// The pull request's base branch name (<c>main</c>, not <c>origin/main</c>). When set, the commit
+    /// the checkout's <c>origin/&lt;base&gt;</c> names is pinned in the project's repository for the
+    /// checkout's lifetime, so a force-pushed or deleted base cannot take it away. Null skips the pin.
+    /// </summary>
+    string? BaseBranch = null);
 
 /// <summary>
 /// A checkout a run works in. <paramref name="StartPoint"/> is the ref the branch was cut from as

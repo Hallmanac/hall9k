@@ -238,7 +238,8 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             }
 
             string checkoutPath = WorktreePathFor(repositoryPath, request.TaskId, request.RunId);
-            await CutStandaloneCheckoutAsync(repositoryPath, checkoutPath, trackingRef, cancellationToken);
+            await CutStandaloneCheckoutAsync(
+                repositoryPath, checkoutPath, trackingRef, request.BaseBranch, cancellationToken);
 
             logger.LogInformation(
                 "Read-only standalone checkout {Path} detached at pull request #{Number}'s head",
@@ -254,7 +255,8 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     /// left for a later cleanup that records nothing about it to miss.
     /// </summary>
     private async Task CutStandaloneCheckoutAsync(
-        string repositoryPath, string checkoutPath, string trackingRef, CancellationToken cancellationToken)
+        string repositoryPath, string checkoutPath, string trackingRef, string? baseBranch,
+        CancellationToken cancellationToken)
     {
         // Refused rather than reused or cleared: the failure cleanup below deletes the directory,
         // so it must only ever delete one this call made.
@@ -268,14 +270,17 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         string objectsDirectory = Path.Combine(
             await ResolveCommonDirectoryAsync(repositoryPath, cancellationToken) ?? repositoryPath, "objects");
 
-        string pinRef = PrReviewCheckoutPlan.PinRef(checkoutPath);
+        string pinDirectory = PrReviewCheckoutPlan.PinRefDirectory(checkoutPath);
         try
         {
             // Pinned first, while the tracking ref still names the head, so the commit is never
             // reachable only through a ref the next `fetch --prune origin` can remove.
-            await RunGitAsync(repositoryPath, $"update-ref {pinRef} {trackingRef}", cancellationToken);
+            await RunGitAsync(
+                repositoryPath, $"update-ref {PrReviewCheckoutPlan.HeadPinRef(checkoutPath)} {trackingRef}", cancellationToken);
 
-            IReadOnlyList<PrReviewCheckoutStep> steps = PrReviewCheckoutPlan.Steps(checkoutPath, repositoryPath, trackingRef);
+            bool mapLocalBranches = !await HoldsOriginTrackingRefsAsync(repositoryPath, cancellationToken);
+            IReadOnlyList<PrReviewCheckoutStep> steps = PrReviewCheckoutPlan.Steps(
+                checkoutPath, repositoryPath, trackingRef, mapLocalBranches);
             await RunGitAsync(steps[0].WorkingDirectory, steps[0].Arguments, cancellationToken, endGitOnCancel: true);
 
             string alternatesFile = PrReviewCheckoutPlan.AlternatesFile(checkoutPath);
@@ -287,6 +292,21 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             {
                 await RunGitAsync(step.WorkingDirectory, step.Arguments, cancellationToken, endGitOnCancel: true);
             }
+
+            // The base is pinned from what the checkout itself now holds, not from a second read of
+            // the project's repository, so the pin is exactly the commit `origin/<base>` names there.
+            // A base the checkout does not hold (a blank name, or a branch that is not there) is
+            // simply not pinned: the diff against it could not have worked either.
+            if (baseBranch.IsNotBlank())
+            {
+                (int baseExit, string baseCommit, _) = await TryRunGitAsync(
+                    checkoutPath, $"rev-parse --verify --quiet \"refs/remotes/origin/{baseBranch}^{{commit}}\"", cancellationToken);
+                if (baseExit == 0 && baseCommit.Trim() is { Length: > 0 } baseOid)
+                {
+                    await RunGitAsync(
+                        repositoryPath, $"update-ref {PrReviewCheckoutPlan.BasePinRef(checkoutPath)} {baseOid}", cancellationToken);
+                }
+            }
         }
         catch
         {
@@ -294,24 +314,46 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             // By here a cancelled cut step's git has been killed (endGitOnCancel), so nothing is
             // still writing into the directory.
             DeleteDirectoryBestEffort(checkoutPath);
-            await DeletePinRefBestEffortAsync(repositoryPath, pinRef);
+            await DeletePinRefsBestEffortAsync(repositoryPath, pinDirectory, CancellationToken.None);
             throw;
         }
     }
 
     /// <summary>
-    /// Deletes the pin <see cref="PrReviewCheckoutPlan.PinRef"/> names. <c>update-ref -d</c> of a
-    /// ref that is not there succeeds, so this is safe to call whether or not the cut got as far as
-    /// making one. A failure is logged, not thrown: a stray pin costs a few bytes and a held object,
-    /// and <see cref="PruneAsync"/> sweeps any whose checkout is gone.
+    /// Whether the project's repository holds any <c>refs/remotes/origin/*</c> ref beyond the
+    /// pull-request tracking refs this manager writes itself, which is what <c>remote.origin.fetch</c>
+    /// being configured leaves behind. A hand-cut <c>git clone --bare</c> has none: its branches
+    /// are under <c>refs/heads/</c> and <c>git fetch origin</c> never maps them, so the checkout's
+    /// cut has to map them (<see cref="PrReviewCheckoutPlan.Steps"/>). An unreadable listing counts
+    /// as "holds some", so a git failure never adds a refspec that could collide with real refs.
     /// </summary>
-    private async Task DeletePinRefBestEffortAsync(string repositoryPath, string pinRef)
+    private async Task<bool> HoldsOriginTrackingRefsAsync(string repositoryPath, CancellationToken cancellationToken)
     {
-        (int exitCode, _, string error) = await TryRunGitAsync(
-            repositoryPath, $"update-ref -d {pinRef}", CancellationToken.None);
-        if (exitCode != 0)
+        (int exitCode, string refs, _) = await TryRunGitAsync(
+            repositoryPath, "for-each-ref --format=%(refname) refs/remotes/origin/", cancellationToken);
+        return exitCode != 0
+            || refs.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Any(name => !name.StartsWith(PrReviewTrackingRefPrefix, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Deletes the pins under <paramref name="pinDirectory"/> (<see cref="PrReviewCheckoutPlan.PinRefDirectory"/>),
+    /// the head's and the base's. <c>update-ref -d</c> of a ref that is not there succeeds, so this is
+    /// safe to call whether or not the cut got as far as making either. A failure is logged, not thrown: a stray pin costs a few bytes and a held object,
+    /// and <see cref="PruneAsync"/> sweeps any whose checkout is gone. The failed-cut cleanup passes
+    /// <see cref="CancellationToken.None"/> because a cancelled cut is exactly when it must still run.
+    /// </summary>
+    private async Task DeletePinRefsBestEffortAsync(
+        string repositoryPath, string pinDirectory, CancellationToken cancellationToken)
+    {
+        foreach (string pinRef in new[] { $"{pinDirectory}/head", $"{pinDirectory}/base" })
         {
-            logger.LogWarning("Review checkout pin {PinRef} could not be deleted: {Error}", pinRef, error.Trim());
+            (int exitCode, _, string error) = await TryRunGitAsync(
+                repositoryPath, $"update-ref -d {pinRef}", cancellationToken);
+            if (exitCode != 0)
+            {
+                logger.LogWarning("Review checkout pin {PinRef} could not be deleted: {Error}", pinRef, error.Trim());
+            }
         }
     }
 
@@ -328,7 +370,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             if (await IsOwnStandaloneCheckoutAsync(repositoryPath, worktreePath, cancellationToken))
             {
                 DeleteDirectory(Path.GetFullPath(worktreePath));
-                await DeletePinRefBestEffortAsync(repositoryPath, PrReviewCheckoutPlan.PinRef(worktreePath));
+                await DeletePinRefsBestEffortAsync(repositoryPath, PrReviewCheckoutPlan.PinRefDirectory(worktreePath), cancellationToken);
                 logger.LogInformation("Standalone review checkout {Path} removed", worktreePath);
                 return;
             }
@@ -361,9 +403,11 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     /// a directory. Every condition has to hold: the path is not the repository, it sits directly
     /// beside it (where <see cref="WorktreePathFor(string, Guid, Guid)"/> puts every checkout) under the
     /// <c>wt-</c> name, it is not a link, its <c>.git</c> is a real directory rather than the file a
-    /// linked worktree has, and its alternates file names this repository's object directory. The
-    /// last one is what ties the directory to this project; a sibling that merely looks like a clone
-    /// does not pass it.
+    /// linked worktree has, its alternates file names this repository's object directory, and this
+    /// repository holds the head pin <see cref="PrReviewCheckoutPlan.HeadPinRef"/> names for it. The
+    /// alternates entry ties the directory to this project, but a sibling made by hand with
+    /// <c>git clone --shared</c> has the same one; only a checkout this manager cut has a pin, so the
+    /// pin is what keeps someone else's clone, and its local work, from being deleted.
     /// </summary>
     private static async Task<bool> IsOwnStandaloneCheckoutAsync(
         string repositoryPath, string path, CancellationToken cancellationToken)
@@ -394,8 +438,15 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
 
         string objectsDirectory = Path.TrimEndingDirectorySeparator(Path.Combine(commonDirectory, "objects"));
         string[] alternates = await File.ReadAllLinesAsync(alternatesFile, cancellationToken);
-        return alternates.Any(line => string.Equals(
-            Path.TrimEndingDirectorySeparator(line.Trim()), objectsDirectory, comparison));
+        if (!alternates.Any(line => string.Equals(
+                Path.TrimEndingDirectorySeparator(line.Trim()), objectsDirectory, comparison)))
+        {
+            return false;
+        }
+
+        (int pinExit, _, _) = await TryRunGitAsync(
+            repositoryPath, $"rev-parse --verify --quiet {PrReviewCheckoutPlan.HeadPinRef(checkout)}", cancellationToken);
+        return pinExit == 0;
     }
 
     /// <summary>
@@ -443,7 +494,9 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         }
     }
 
-    private static string PrReviewTrackingRef(int pullRequestNumber) => $"refs/remotes/origin/pr-review/{pullRequestNumber}";
+    private const string PrReviewTrackingRefPrefix = "refs/remotes/origin/pr-review/";
+
+    private static string PrReviewTrackingRef(int pullRequestNumber) => $"{PrReviewTrackingRefPrefix}{pullRequestNumber}";
 
     public async Task PruneAsync(string repositoryPath, CancellationToken cancellationToken)
     {
@@ -473,10 +526,13 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         string? parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(repositoryPath));
         foreach (string pinRef in refs.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            string name = pinRef[PrReviewCheckoutPlan.PinRefPrefix.Length..];
+            // A pin is <prefix><checkout directory name>/head or /base; the first segment is the directory.
+            string remainder = pinRef[PrReviewCheckoutPlan.PinRefPrefix.Length..];
+            string name = remainder.Split('/')[0];
             if (parent is not null && !Directory.Exists(Path.Combine(parent, name)))
             {
-                await DeletePinRefBestEffortAsync(repositoryPath, pinRef);
+                await DeletePinRefsBestEffortAsync(
+                    repositoryPath, PrReviewCheckoutPlan.PinRefPrefix + name, cancellationToken);
             }
         }
     }

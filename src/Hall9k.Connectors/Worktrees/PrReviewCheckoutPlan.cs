@@ -31,22 +31,34 @@ public static class PrReviewCheckoutPlan
     public const string PinRefPrefix = "refs/hall9k/pr-review-checkouts/";
 
     /// <summary>
-    /// The ref in the <em>project's</em> repository that keeps a checkout's head commit reachable for
-    /// as long as the checkout stands. The checkout owns no objects, so nothing it holds is visible
-    /// to the project repository's garbage collection: git's own <c>clone --shared</c> documentation
-    /// warns about exactly this. A linked worktree was safe because git treats its detached
-    /// <c>HEAD</c> as a root; this ref is the same protection, and it sits outside
-    /// <c>refs/remotes/origin/</c> so the <c>fetch --prune origin</c> a merged-branch closeout runs
-    /// cannot take it. Named for the checkout's directory, which is unique per task and run.
+    /// The refs in the <em>project's</em> repository that keep a checkout's commits alive for as long
+    /// as the checkout stands: <see cref="HeadPinRef"/> and <see cref="BasePinRef"/>, both under one
+    /// directory named for the checkout's directory, which is unique per task and run. The checkout
+    /// owns no objects, so nothing it holds is visible to the project repository's garbage
+    /// collection: git's own <c>clone --shared</c> documentation warns about exactly this. A linked
+    /// worktree was safe because git treats its detached <c>HEAD</c> as a root; these refs are the
+    /// same protection, and they sit outside <c>refs/remotes/origin/</c> so the
+    /// <c>fetch --prune origin</c> a merged-branch closeout runs cannot take them.
     /// <para>
-    /// It pins the head only. The other remote-tracking refs and tags copied into the checkout are
-    /// not pinned, so one deleted upstream and pruned from the project repository after git's
+    /// Only those two tips are pinned. The other remote-tracking refs and tags copied into the
+    /// checkout are not, so one deleted upstream and pruned from the project repository after git's
     /// two-week expiry stops resolving in the checkout (<c>git log --all</c> reports a bad object);
-    /// the pull request's own head and its base are unaffected, and those are what a review reads.
+    /// the pull request's own head and its base branch are what a review reads, and both are held.
     /// </para>
     /// </summary>
-    public static string PinRef(string checkoutPath) =>
+    public static string PinRefDirectory(string checkoutPath) =>
         PinRefPrefix + Path.GetFileName(Path.TrimEndingDirectorySeparator(checkoutPath));
+
+    /// <summary>The pin on the pull request's head commit. Its presence also marks a checkout this manager cut.</summary>
+    public static string HeadPinRef(string checkoutPath) => PinRefDirectory(checkoutPath) + "/head";
+
+    /// <summary>
+    /// The pin on the commit <c>origin/&lt;base&gt;</c> named in the checkout when it was cut. It is
+    /// needed because a force-pushed or deleted base branch, once the source repository garbage
+    /// collects its old tip, would otherwise leave <c>git diff origin/&lt;base&gt;...HEAD</c> failing
+    /// in a checkout that is still open when that tip is not an ancestor of the head.
+    /// </summary>
+    public static string BasePinRef(string checkoutPath) => PinRefDirectory(checkoutPath) + "/base";
 
     /// <summary>
     /// The four steps, in order. <paramref name="sourceRepositoryPath"/> is the project's
@@ -65,6 +77,12 @@ public static class PrReviewCheckoutPlan
     /// One fetch from the project's repository by path (no remote is configured) of every
     /// remote-tracking ref it holds, which carries the pull request's head and <c>origin/&lt;base&gt;</c>,
     /// and of its tags. Automatic tag following is off because the refspec already names them.
+    /// When <paramref name="mapLocalBranches"/> is set the same fetch also maps the project's
+    /// <c>refs/heads/*</c> onto <c>refs/remotes/origin/*</c>: a repository registered with
+    /// <c>--repo</c> against a hand-cut <c>git clone --bare</c> has no <c>remote.origin.fetch</c>,
+    /// so its branches live only under <c>refs/heads/</c> and the checkout would otherwise hold no
+    /// base ref at all. The caller sets it only when the project holds no remote-tracking refs of
+    /// its own, since two refspecs may not write the same destination.
     /// </item>
     /// <item>
     /// A detached checkout of the pull request's head with Git LFS smudging switched off: there is
@@ -73,13 +91,14 @@ public static class PrReviewCheckoutPlan
     /// </list>
     /// </summary>
     public static IReadOnlyList<PrReviewCheckoutStep> Steps(
-        string checkoutPath, string sourceRepositoryPath, string trackingRef) =>
+        string checkoutPath, string sourceRepositoryPath, string trackingRef, bool mapLocalBranches = false) =>
     [
         new(sourceRepositoryPath, $"init --quiet --template= \"{checkoutPath}\""),
         new(checkoutPath, "config core.longpaths true"),
         new(checkoutPath,
             $"-c gc.auto=0 fetch --quiet --no-tags \"{sourceRepositoryPath}\" "
-            + "\"+refs/remotes/*:refs/remotes/*\" \"+refs/tags/*:refs/tags/*\""),
+            + "\"+refs/remotes/*:refs/remotes/*\" \"+refs/tags/*:refs/tags/*\""
+            + (mapLocalBranches ? " \"+refs/heads/*:refs/remotes/origin/*\"" : "")),
         new(checkoutPath,
             "-c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false "
             + $"checkout --quiet --detach {trackingRef}"),
