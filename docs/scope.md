@@ -617,6 +617,14 @@ retire what it merged: that stays the explicit act with its own reason, which is
 shipped without a second terminal status. `h9k status` names the lever for each project whose
 active lessons have passed the count cap, and goes no further than naming it.
 
+The daemon still never distils, and the closeout note promotion does not change that. A promotion
+copies one task note into one lesson and cites it (`h9k learn show` prints the note's id and its
+task's id); it merges no lessons, replaces nothing and retires nothing, so it is the other kind of
+act from the one a distillation is. It is cautious on purpose: the default for every note is drop,
+a task yields at most one lesson, made only of the note's own words, from a task whose scope already reaches the team, the lesson is live at once and a person retires it, and a daemon
+stopped or killed during the step records nothing, so the notes read as undecided. A by-hand
+promotion verb, a search over notes and a sweep that recovers a lost step are not built.
+
 The Decisions Log renumberer, its placeholder value object, the tail-append conflict resolver and
 the numbering guard test are all gone (idea d805fd8b): nothing assigns a log entry a number any
 more, and no prompt tells a session to append one. An in-flight branch that appended a placeholder

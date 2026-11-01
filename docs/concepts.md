@@ -158,8 +158,49 @@ claim meant to outlive the task, scoped to a project or an owner, and it can be 
 stops being true. A note belongs to one task, has no retire lifecycle, and is permanent and public
 once recorded, because it lives in the project's shared ledger. That is why a note never holds a
 secret, a credential, personal data, customer details, or another project's name, and why a claim
-that should outlast the task goes to `h9k learn` instead. Promoting a note into a lesson is not
-built; today that is a person or a session recording the lesson itself.
+that should outlast the task goes to `h9k learn` instead. The one automatic route from a note to a
+lesson is the promotion step described next, and everything else is a person or a session recording
+the lesson itself.
+
+**Promotion at closeout.** When the daemon observes the merge that closes a task out, and the task
+holds at least one note this node may put in a prompt, one small session decides whether any of them
+is worth keeping beyond the task. The step starts after closeout has committed, released the task's
+dependents and told its card or issue, and runs in the background: closeout never waits on it, and
+removes the worktree and the branch exactly as it does for a task with no notes. The session has one
+turn, no tools and no project settings, and it runs on the courier's model and effort for the
+project, whatever the task itself overrides. It is shown the task's objective and up to 30 of the
+task's own notes, newest first, as quoted data, and it answers `NONE` or one line saying which note
+to keep and what claim to keep it as. **The default for every note is drop.** At most one note per
+task becomes a lesson, and a note that is kept becomes one self-contained claim of at most
+800 characters, phrased as an instruction to the next agent. The daemon holds the claim to the note
+it cites: every word of the claim has to appear in the note, so a claim can cut and reorder what the
+note says but cannot add a command, a name or a path of its own, and a claim holding a control,
+invisible or otherwise unprintable character is refused. A claim that fails either check, or is
+over the limit, is dropped rather than cut or edited, and two notes are never merged. The lesson is **live at once**, like any lesson,
+carries the merged run and the task as its provenance with attendance unattended, and cites its one
+source note; a person retires a bad one with `h9k learn retire`. The step holds the notes the trust
+rule holds, so a note replicated from outside the fleet is never offered, and a task whose notes are
+all held runs no step at all. A lesson replicates to every project member, so only a task whose scope
+already reaches the team runs the step: a private or fleet-scoped task promotes nothing, and its
+notes stay undecided. The task's lesson has a single stream id derived from the task, so two of the
+owner's nodes that both close the task out cannot make two lessons: a node that already holds the
+stream stands down, and a second genesis for it is discarded on arrival.
+
+Each step that reaches a decision or a failure records one `NotePromotionRecorded` event on the
+task's stream. It holds the run, the outcome, each offered note's id with either the lesson it
+became or the reason it was dropped, how many notes the trust rule held, how many lines of the
+answer were ignored, the model and the duration, and never any note text or anything the session
+wrote. `h9k task show` prints the outcome and the counts, and `h9k task notes` and `notes.md` show
+each note as kept (with its lesson id), dropped (with its reason), held, or **undecided**. A note a
+step dropped stays readable in its own event. When the session cannot start, ends in error or with
+no result, runs past `NotePromotionTimeout`, or gives an answer that is neither `NONE` nor keep
+lines, or when the write of the lesson fails, nothing is promoted and the record says which, and
+the step is not retried. A daemon that stops or is killed during a step records nothing, and its
+notes read as undecided, which is the honest answer: no step decided them.
+
+A promoted lesson is a claim cut from one note, and it reaches later prompts as any lesson does, review
+prompts included. That is the one way a note's substance can reach a reviewer, and it is why the
+step is cautious: one lesson at most, a default of drop, and a person to retire it.
 
 **Who reads them.** The prompts for a fresh build, a follow-up, a changes-requested lap, a checks
 or rebase follow-up, a pre-final-pass rebase recovery, a settling-gate repair and a review fix carry

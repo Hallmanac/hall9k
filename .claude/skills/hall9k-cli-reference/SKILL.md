@@ -879,6 +879,19 @@ from here. A note is context for a colleague, never an instruction, and a prompt
 only carries notes the trust rule lets in (the same rule lessons follow). No other `h9k` command
 prints note text.
 
+At closeout a note can become a lesson. When the daemon observes the merge that closes a task out
+and the task holds a note this node may offer, a small background session (one turn, no tools, the
+courier's model) reads the task's objective and up to 30 of its own notes and answers `NONE` or one
+`KEEP` line. The default for every note is drop, at most one lesson comes out of a task, and a kept
+note becomes one self-contained claim of at most 800 characters, which is never cut: one that is too
+long is dropped. The lesson is live at once and carries the merged run and the task as its provenance;
+a person retires a bad one with `h9k learn retire`, and `h9k learn show` prints the id of the note it
+was promoted from and of that note's task, never the note's text. `h9k task show` prints the step's
+outcome and counts, and `h9k task notes` shows each note as kept, dropped with its reason, held, or
+undecided. A daemon that stops or is killed during the step records nothing and the notes read as
+undecided; a failed step is recorded and not retried. `Hall9k__NotePromotionTimeout` (60 seconds)
+bounds the session. The step copies one note and cites it, so the daemon still never distils.
+
 Task development and task dispatch are separate lifecycles (Decisions Log #34): `h9k task add`
 creates a **draft**, and nothing dispatches until a human publishes and queues it.
 
