@@ -449,10 +449,15 @@ public static class ClaudeSettingsFile
     /// feedback, inside <paramref name="runDirectory"/>. Set only for an evaluator session, and adds
     /// exactly one <c>Write</c> rule for exactly that path; null for every other session.
     /// </param>
+    /// <param name="extraReadRoots">
+    /// Further directories the session may <c>Read</c> and <c>Grep</c> beside the checkout and the run directory,
+    /// each scoped the way those two are. Set only for a draft challenge, which reads the idea's workspace and the
+    /// draft's own directory; null for every other session.
+    /// </param>
     public static string BuildForPrReview(
         TimeSpan commandTimeout, string worktreePath, string runDirectory,
         IReadOnlyList<VerifyCommand>? qaGateCommands = null, AgentEffort? effort = null,
-        string? assessmentFile = null)
+        string? assessmentFile = null, IReadOnlyList<string>? extraReadRoots = null)
     {
         long defaultMilliseconds = (long)commandTimeout.TotalMilliseconds;
         long maxMilliseconds = defaultMilliseconds * 2;
@@ -470,6 +475,7 @@ public static class ClaudeSettingsFile
             AbsolutePathRule("Read", runDirectory),
             AbsolutePathRule("Grep", worktreePath),
             AbsolutePathRule("Grep", runDirectory),
+            .. (extraReadRoots ?? []).SelectMany(root => new[] { AbsolutePathRule("Read", root), AbsolutePathRule("Grep", root) }),
             // The one write this session's own prompt can ask for (RunLauncher's mint addendum,
             // MentionFollowUpPromptBuilder.BuildMintAddendum): a mention-minted primary session
             // drafts its answer to `<runDirectory>/mention-answer.md`, which
@@ -481,7 +487,7 @@ public static class ClaudeSettingsFile
             // run directory (see AbsolutePathRule's own doc) so this rule matches on a Windows
             // node too, not only the /tmp paths every test uses (independent pre-PR review,
             // cycle 1, both lenses).
-            $"Write(/{EscapeJsonString($"{NormalizeForPermissionRule(runDirectory)}/mention-answer.md")})",
+            $"Edit(/{EscapeJsonString($"{NormalizeForPermissionRule(runDirectory)}/mention-answer.md")})",
             .. PrReviewAllowedTools,
             .. (qaGateCommands ?? []).Select(gate => $"Bash({EscapeJsonString(gate.Command)}:*)"),
         ];
@@ -489,7 +495,7 @@ public static class ClaudeSettingsFile
         {
             // The only write beyond mention-answer.md: a feedback evaluator's own assessment of its
             // one piece of feedback. A path rule, never a directory, so it can write nowhere else.
-            allow.Add($"Write(/{EscapeJsonString(NormalizeForPermissionRule(assessmentFile))})");
+            allow.Add($"Edit(/{EscapeJsonString(NormalizeForPermissionRule(assessmentFile))})");
         }
 
         string allowJson = string.Join(", ", allow.Select(rule => $"\"{rule}\""));
