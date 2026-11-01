@@ -795,6 +795,14 @@ public sealed class DaemonOptions
     public TimeSpan LessonPickerTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
+    /// How long the closeout note-promotion session may run before it is terminated (60 seconds). It
+    /// runs in the background after closeout has finished, so nothing waits on it; the bound only
+    /// stops a session that never answers from living on. A session past it records the step as
+    /// timed out, promotes nothing, and is not retried.
+    /// </summary>
+    public TimeSpan NotePromotionTimeout { get; set; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>
     /// This node's default answer to "ask the reviewers for another pass once a fix
     /// follow-up pushed?" (Decisions Log #62), under both the project and the owner
     /// settings in the resolution chain. Off, because each pass costs review quota and a

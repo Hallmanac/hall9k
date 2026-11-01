@@ -67,6 +67,12 @@ public static class SessionRoleName
     public const string LessonPicker = "lesson-picker";
 
     /// <summary>
+    /// The small closeout session that decides whether a merged task's notes become a lesson. A
+    /// session name, not a role, and it resolves its model and effort as the <see cref="Courier"/> does.
+    /// </summary>
+    public const string NotePromoter = "note-promoter";
+
+    /// <summary>
     /// Delivers a project's orchestrator feed to its live orchestrator session and exits (idea
     /// 89471598, piece 3). Composed with the project's own short id rather than a task's — a
     /// courier runs as a run with no task, so there is no task short id to prefix it with.

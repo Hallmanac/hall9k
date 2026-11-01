@@ -5463,6 +5463,220 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         task.PendingJiraWriteId.Should().NotBeNull("the earlier write is still the one outstanding");
     }
 
+    /// <summary>
+    /// Closeout never waits on the note promotion: with a session that starts and never answers, the
+    /// merge still completes the run and the task and removes the worktree and the branch exactly as it
+    /// does for a task with no notes, the session was started in the background, and a daemon that stops
+    /// leaves no record, so the note reads as undecided.
+    /// </summary>
+    [Fact]
+    public async Task A_merge_of_a_task_holding_a_note_closes_out_whole_while_the_promotion_session_never_answers()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, string originPath, string repoPath) =
+            await SetUpAsync(cts.Token);
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+        (Guid taskId, Guid runId, Worktree worktree) =
+            await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+        Guid noteId = await AddNoteForPromotionAsync(store, node, taskId, runId, "a note nobody has decided on", cts.Token);
+
+        FakeProcessManager processes = new();
+        NeverAnswers executor = new(processes);
+        NotePromotionSessions promotions = NewPromotions(store, node, executor, processes);
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+
+        CloseoutSweepResult sweep = await NewEngine(store, node, inspector, worktrees, notePromotions: promotions)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(new CloseoutSweepResult(RunsInspected: 1, MergesObserved: 1));
+        await using (IQuerySession query = store.QuerySession())
+        {
+            (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(RunState.Completed);
+            (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
+        }
+
+        Directory.Exists(worktree.Path).Should().BeFalse("the worktree is removed whether or not the promotion has answered");
+        TryGit(repoPath, $"rev-parse --verify refs/heads/{worktree.Branch}").ExitCode.Should().NotBe(0);
+        TryGit(originPath, $"rev-parse --verify refs/heads/{worktree.Branch}").ExitCode.Should().NotBe(0);
+
+        await WaitForAsync(() => executor.Spawns.Count == 1, cts.Token);
+        executor.Spawns.Single().TaskId.Should().Be(taskId);
+        executor.Spawns.Single().RunId.Should().Be(runId);
+
+        promotions.Dispose();
+        await promotions.WhenIdleAsync().WaitAsync(cts.Token);
+        await using IQuerySession after = store.QuerySession();
+        (await after.LoadAsync<TaskDetails>(taskId, cts.Token))!.NotePromotion.Should().BeNull(
+            "a daemon that stops during the step records nothing");
+        (await Hall9k.Domain.Features.Tasks.Queries.TaskNoteFeed.LoadViewsAsync(after, taskId, null, cts.Token))
+            .Single(view => view.Entry.Note.NoteId == noteId).OutcomeLabel.Should().Be("undecided");
+    }
+
+    [Fact]
+    public async Task A_merge_of_a_task_holding_a_note_promotes_it_after_closeout_has_finished()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+        Guid noteId = await AddNoteForPromotionAsync(store, node, taskId, runId, "Force the board projection to rebuild before asserting on it.", cts.Token);
+
+        FakeProcessManager processes = new();
+        AnswersWith executor = new($"KEEP {DomainId.Short(noteId)}: Force the board projection to rebuild before asserting on it.");
+        NotePromotionSessions promotions = NewPromotions(store, node, executor, processes);
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+
+        await NewEngine(store, node, inspector, worktrees, notePromotions: promotions).PollOnceAsync(cts.Token);
+        await promotions.WhenIdleAsync().WaitAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.NotePromotion!.Outcome.Should().Be(Hall9k.Domain.Features.Tasks.Notes.NotePromotionOutcome.Kept);
+        task.NotePromotion.RunId.Should().Be(runId);
+        Guid lessonId = task.NotePromotion.Decisions.Single().LessonId!.Value;
+        (await query.LoadAsync<Hall9k.Domain.Features.Learning.LearningDetails>(lessonId, cts.Token))!.PromotedFromNote
+            .Should().Be(noteId);
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(RunState.Completed);
+    }
+
+    [Fact]
+    public async Task A_merge_of_a_task_with_no_notes_starts_no_promotion_session()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+        (Guid taskId, _, Worktree worktree) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeProcessManager processes = new();
+        AnswersWith executor = new("NONE");
+        NotePromotionSessions promotions = NewPromotions(store, node, executor, processes);
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+
+        await NewEngine(store, node, inspector, worktrees, notePromotions: promotions).PollOnceAsync(cts.Token);
+        await promotions.WhenIdleAsync().WaitAsync(cts.Token);
+
+        executor.Spawns.Should().BeEmpty();
+        Directory.Exists(worktree.Path).Should().BeFalse();
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.NotePromotion.Should().BeNull();
+    }
+
+    /// <summary>
+    /// Every merged path goes through <c>CompleteCloseoutAsync</c>, so the one call that starts the
+    /// promotion sits there: after the card is told and before the kept-worktree and preserved-workspace
+    /// early returns, which would otherwise skip it. Read as text because the property is a position.
+    /// </summary>
+    [Fact]
+    public void The_promotion_is_started_by_one_call_after_the_card_is_told_and_before_the_early_returns()
+    {
+        string source = File.ReadAllText(Path.Combine(
+            Hall9k.Tests.Cli.PublishTestSupport.FindRepositoryRoot(), "src", "Hall9k.Daemon", "Closeout", "CloseoutEngine.cs"));
+
+        System.Text.RegularExpressions.Regex.Matches(source, @"notePromotions\??\.Start\(").Should().ContainSingle();
+        int told = source.IndexOf("await TellTheCardAsync(run.TaskId, project, task, cancellationToken);", StringComparison.Ordinal);
+        int start = source.IndexOf("notePromotions?.Start(", StringComparison.Ordinal);
+        int keptReturn = source.IndexOf("if (keptWorktreePath is not null)", start, StringComparison.Ordinal);
+        int preserved = source.IndexOf("if (preserveWorkspaceOnCaptureFailure)", start, StringComparison.Ordinal);
+        told.Should().BeGreaterThan(0);
+        start.Should().BeGreaterThan(told);
+        keptReturn.Should().BeGreaterThan(start);
+        preserved.Should().BeGreaterThan(start);
+    }
+
+    private NotePromotionSessions NewPromotions(
+        DocumentStore store, NodeContext node, IExecutor executor, FakeProcessManager processes) =>
+        new(store, node, executor, processes, Options.Create(new DaemonOptions { NotePromotionTimeout = TimeSpan.FromMinutes(5) }),
+            NullLogger<NotePromotionSessions>.Instance);
+
+    /// <summary>Records a note on the task as the merged run's own dispatched agent would have.</summary>
+    private static async Task<Guid> AddNoteForPromotionAsync(
+        DocumentStore store, NodeContext node, Guid taskId, Guid runId, string text, CancellationToken cancellationToken)
+    {
+        Guid noteId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        StreamAction stream = session.Events.Append(taskId, new TaskEvents.TaskNoteRecorded(
+            taskId, noteId, text, new RecordedProvenance(node.OwnerId, runId, taskId, HumanAttendance.Unattended),
+            Hall9k.Domain.Features.Tasks.Notes.TaskNoteSource.ClosingBlock, Now));
+        Hall9k.Domain.Infrastructure.Persistence.EventRecordingNode.StampAtAppend(stream, node.NodeId);
+        await session.SaveChangesAsync(cancellationToken);
+        return noteId;
+    }
+
+    private static async Task WaitForAsync(Func<bool> condition, CancellationToken cancellationToken)
+    {
+        while (!condition())
+        {
+            await Task.Delay(20, cancellationToken);
+        }
+    }
+
+    /// <summary>A promotion session that starts and never writes a result.</summary>
+    private sealed class NeverAnswers(FakeProcessManager processes) : IExecutor
+    {
+        private readonly object _gate = new();
+        private readonly List<AgentSpawnRequest> _spawns = [];
+
+        public IReadOnlyList<AgentSpawnRequest> Spawns
+        {
+            get { lock (_gate) { return [.. _spawns]; } }
+        }
+
+        public Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            lock (_gate)
+            {
+                _spawns.Add(request);
+            }
+
+            processes.MarkAlive(9300);
+            return Task.FromResult(new SpawnedAgent(9300, Now));
+        }
+    }
+
+    /// <summary>A promotion session that answers at once with a fixed result.</summary>
+    private sealed class AnswersWith(string summary) : IExecutor
+    {
+        private readonly object _gate = new();
+        private readonly List<AgentSpawnRequest> _spawns = [];
+
+        public IReadOnlyList<AgentSpawnRequest> Spawns
+        {
+            get { lock (_gate) { return [.. _spawns]; } }
+        }
+
+        public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            lock (_gate)
+            {
+                _spawns.Add(request);
+            }
+
+            Directory.CreateDirectory(request.RunDirectory);
+            string line = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["type"] = "result",
+                ["subtype"] = "success",
+                ["is_error"] = false,
+                ["usage"] = new Dictionary<string, long> { ["input_tokens"] = 10, ["output_tokens"] = 20 },
+                ["result"] = summary,
+            });
+            await File.WriteAllTextAsync(
+                RunPaths.SessionStreamFile(request.RunDirectory, request.SessionArtifactName!), line + "\n", cancellationToken);
+            return new SpawnedAgent(9400, Now);
+        }
+    }
+
     private async Task<(DocumentStore Store, NodeContext Node, GitWorktreeManager Worktrees, string OriginPath, string RepoPath)>
         SetUpAsync(CancellationToken cancellationToken)
     {
@@ -6002,7 +6216,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         int maxMechanicalResolutionAttempts = 3,
         TimeSpan? copilotReviewSettleWindow = null,
         TimeSpan? checksRegistrationSettleWindow = null,
-        ILogger<CloseoutEngine>? logger = null) =>
+        ILogger<CloseoutEngine>? logger = null,
+        NotePromotionSessions? notePromotions = null) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
             new StackedParentWatch(worktrees, new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance),
             (github ?? RecordingProcessRunner.Succeeding(string.Empty)).Runner,
@@ -6016,7 +6231,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
                 CopilotReviewSettleWindow = copilotReviewSettleWindow ?? TimeSpan.FromHours(24),
                 ChecksRegistrationSettleWindow = checksRegistrationSettleWindow ?? TimeSpan.FromMinutes(15),
             }),
-            logger ?? NullLogger<CloseoutEngine>.Instance);
+            logger ?? NullLogger<CloseoutEngine>.Instance,
+            notePromotions: notePromotions);
 
     /// <summary>
     /// A Jira fake whose GET calls (the write's own mandatory read-back verification) answer with
