@@ -24,3 +24,7 @@ context: |-
   Remove the two allow rules and update the test that pins them. The guard stays as the second layer. Do not add allow rules, do not widen the guard to other commands, and do not add tests that create repositories.
 
   Brian ruled on 2026-10-31 that this ships ahead of the Windows check in the note, which he will run from the release on his Windows node, so do not wait on it.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-11-01 02:34:48Z
