@@ -28,6 +28,9 @@ namespace Hall9k.Tests.Daemon;
 [Trait("Category", "Environment")]
 public sealed class ClaudeExecutorNoToolsSpawnTests : IDisposable
 {
+    // The stand-in writes this last, so seeing it means every argument is already in the file.
+    private const string DoneMarker = "hall9k-stand-in-done";
+
     private static readonly TimeSpan ObservationDeadline = TimeSpan.FromSeconds(30);
 
     private readonly string _directory = Directory.CreateTempSubdirectory("hall9k-no-tools-spawn-").FullName;
@@ -88,7 +91,7 @@ public sealed class ClaudeExecutorNoToolsSpawnTests : IDisposable
     {
         string path = Path.Combine(_directory, "fake-claude.sh");
         // One bracketed line per argument, so an empty argument shows as "[]" rather than as nothing.
-        File.WriteAllText(path, "#!/bin/sh\nfor argument in \"$@\"; do printf '[%s]\\n' \"$argument\"; done\n");
+        File.WriteAllText(path, $"#!/bin/sh\nfor argument in \"$@\"; do printf '[%s]\\n' \"$argument\"; done\necho {DoneMarker}\n");
         using Process chmod = Process.Start(new ProcessStartInfo("chmod") { ArgumentList = { "+x", path } })!;
         chmod.WaitForExit();
         return path;
@@ -97,7 +100,7 @@ public sealed class ClaudeExecutorNoToolsSpawnTests : IDisposable
     private string WriteWindowsStandIn()
     {
         string path = Path.Combine(_directory, "fake-claude.cmd");
-        File.WriteAllText(path, "@echo off\r\necho %*\r\n");
+        File.WriteAllText(path, $"@echo off\r\necho %*\r\necho {DoneMarker}\r\n");
         return path;
     }
 
@@ -109,9 +112,10 @@ public sealed class ClaudeExecutorNoToolsSpawnTests : IDisposable
             if (File.Exists(file))
             {
                 string text = await File.ReadAllTextAsync(file);
-                if (text.Contains("tools", StringComparison.Ordinal) && text.TrimEnd().Length > 0 && text.EndsWith('\n'))
+                int marker = text.IndexOf(DoneMarker, StringComparison.Ordinal);
+                if (marker >= 0 && text.EndsWith('\n'))
                 {
-                    return text;
+                    return text[..marker];
                 }
             }
 

@@ -249,7 +249,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         [CommandOption("--effort-courier <low|medium|high|xhigh>")]
         [Description(
             "This node's reasoning effort for the Courier role, delivering a project's orchestrator feed to its live orchestrator session. It sits above the node-wide --effort and below a "
-            + "project's (h9k project set --effort) and a task's (h9k task revise --effort) own value. Accepts low, "
+            + "project's (h9k project set --effort) own value. Accepts low, "
             + "medium, high or xhigh; 'default' clears it, falling through to the node-wide --effort, then the model's own default. "
             + "It also moves the lesson picker (--lesson-picker), which resolves its effort exactly as the courier does, "
             + "and a task's own effort never moves either.")]
