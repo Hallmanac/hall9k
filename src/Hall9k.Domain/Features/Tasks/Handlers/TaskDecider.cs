@@ -43,7 +43,8 @@ public static class TaskDecider
         SpikeKind? spikeKind = null,
         string? exitCriterion = null,
         bool humanGate = false,
-        Guid? evolvedFromTaskId = null)
+        Guid? evolvedFromTaskId = null,
+        ReplicationScope? initialScope = null)
     {
         if (projectId == Guid.Empty)
         {
@@ -110,7 +111,7 @@ public static class TaskDecider
             SecondaryExternalReference: secondaryExternalReference,
             SpikeKind: spikeKind,
             ExitCriterion: exitCriterion.IsNotBlank() ? exitCriterion!.Trim() : null,
-            InitialScope: ReplicationScope.Fleet,
+            InitialScope: initialScope ?? ReplicationScope.Fleet,
             HumanGate: humanGate,
             EvolvedFromTaskId: evolvedFromTaskId);
     }

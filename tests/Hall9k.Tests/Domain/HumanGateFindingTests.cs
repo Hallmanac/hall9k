@@ -17,13 +17,13 @@ public sealed class HumanGateFindingTests
     [Fact]
     public void A_branch_still_at_the_reviewed_tip_with_a_clean_worktree_is_clear()
     {
-        HumanGateFinding.Decide(Reviewed, Reviewed, [], requireUnchangedTip: true).IsClear.Should().BeTrue();
+        HumanGateFinding.Decide(Reviewed, Reviewed, Reviewed, [], requireUnchangedTip: true).IsClear.Should().BeTrue();
     }
 
     [Fact]
     public void A_moved_tip_is_a_finding_for_a_proceed_and_names_both_tips()
     {
-        HumanGateFinding finding = HumanGateFinding.Decide(Reviewed, Later, [], requireUnchangedTip: true);
+        HumanGateFinding finding = HumanGateFinding.Decide(Reviewed, Later, Later, [], requireUnchangedTip: true);
 
         finding.Kind.Should().Be(HumanGateFindingKind.TipMoved);
         finding.Detail.Should().Contain("aaaaaaaaaaaa").And.Contain("bbbbbbbbbbbb");
@@ -32,7 +32,22 @@ public sealed class HumanGateFindingTests
     [Fact]
     public void A_moved_tip_is_not_a_finding_for_a_merge_ready_resolve_which_owns_it()
     {
-        HumanGateFinding.Decide(Reviewed, Later, [], requireUnchangedTip: false).IsClear.Should().BeTrue();
+        HumanGateFinding.Decide(Reviewed, Later, Later, [], requireUnchangedTip: false).IsClear.Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_worktree_not_on_the_branch_tip_is_a_finding_either_way_because_the_gates_would_judge_another_commit()
+    {
+        foreach (bool requireUnchangedTip in new[] { true, false })
+        {
+            HumanGateFinding finding = HumanGateFinding.Decide(Reviewed, Later, Reviewed, [], requireUnchangedTip);
+
+            finding.Kind.Should().Be(HumanGateFindingKind.HeadOffBranch);
+            finding.Detail.Should().Contain("aaaaaaaaaaaa").And.Contain("bbbbbbbbbbbb");
+        }
+
+        HumanGateFinding.Decide(Reviewed, Later, null, [], requireUnchangedTip: false).Kind
+            .Should().Be(HumanGateFindingKind.TipUnobservable);
     }
 
     [Fact]
@@ -41,7 +56,7 @@ public sealed class HumanGateFindingTests
         foreach (bool requireUnchangedTip in new[] { true, false })
         {
             HumanGateFinding finding = HumanGateFinding.Decide(
-                Reviewed, Reviewed, ["src/A.cs", "tests/ATests.cs"], requireUnchangedTip);
+                Reviewed, Reviewed, Reviewed, ["src/A.cs", "tests/ATests.cs"], requireUnchangedTip);
 
             finding.Kind.Should().Be(HumanGateFindingKind.UncommittedWork);
             finding.Detail.Should().Contain("src/A.cs").And.Contain("tests/ATests.cs");
@@ -53,7 +68,7 @@ public sealed class HumanGateFindingTests
     {
         string[] files = [.. Enumerable.Range(0, 25).Select(index => $"src/F{index}.cs")];
 
-        HumanGateFinding finding = HumanGateFinding.Decide(Reviewed, Reviewed, files, requireUnchangedTip: true);
+        HumanGateFinding finding = HumanGateFinding.Decide(Reviewed, Reviewed, Reviewed, files, requireUnchangedTip: true);
 
         finding.Detail.Should().Contain("src/F19.cs").And.NotContain("src/F20.cs").And.Contain("and 5 more");
     }
@@ -61,13 +76,13 @@ public sealed class HumanGateFindingTests
     [Fact]
     public void An_unreadable_tip_or_status_counts_against_the_gate_never_for_it()
     {
-        HumanGateFinding.Decide(Reviewed, null, [], requireUnchangedTip: true).Kind
+        HumanGateFinding.Decide(Reviewed, null, null, [], requireUnchangedTip: true).Kind
             .Should().Be(HumanGateFindingKind.TipUnobservable);
-        HumanGateFinding.Decide(null, Reviewed, [], requireUnchangedTip: true).Kind
+        HumanGateFinding.Decide(null, Reviewed, Reviewed, [], requireUnchangedTip: true).Kind
             .Should().Be(HumanGateFindingKind.TipUnobservable);
-        HumanGateFinding.Decide(Reviewed, Reviewed, null, requireUnchangedTip: true).Kind
+        HumanGateFinding.Decide(Reviewed, Reviewed, Reviewed, null, requireUnchangedTip: true).Kind
             .Should().Be(HumanGateFindingKind.StatusUnobservable);
-        HumanGateFinding.Decide(Reviewed, Reviewed, null, requireUnchangedTip: false).IsClear
+        HumanGateFinding.Decide(Reviewed, Reviewed, Reviewed, null, requireUnchangedTip: false).IsClear
             .Should().BeFalse("an unreadable status is not a clean one, even when the tip may move");
     }
 
@@ -78,8 +93,8 @@ public sealed class HumanGateFindingTests
 
         foreach (HumanGateFinding finding in new[]
         {
-            HumanGateFinding.Decide(Reviewed, Later, [], requireUnchangedTip: true),
-            HumanGateFinding.Decide(Reviewed, Reviewed, ["src/A.cs"], requireUnchangedTip: true),
+            HumanGateFinding.Decide(Reviewed, Later, Later, [], requireUnchangedTip: true),
+            HumanGateFinding.Decide(Reviewed, Reviewed, Reviewed, ["src/A.cs"], requireUnchangedTip: true),
         })
         {
             string reason = finding.ReparkReason(taskId);
@@ -95,18 +110,18 @@ public sealed class HumanGateFindingTests
     {
         Guid taskId = Guid.Parse("01a19510-0000-7000-8000-0000000000aa");
 
-        string uncommitted = HumanGateFinding.Decide(Reviewed, Reviewed, ["src/A.cs"], requireUnchangedTip: true).ReparkReason(taskId);
+        string uncommitted = HumanGateFinding.Decide(Reviewed, Reviewed, Reviewed, ["src/A.cs"], requireUnchangedTip: true).ReparkReason(taskId);
         uncommitted.Should().Contain("If you discarded it").And.Contain($"h9k review proceed {taskId}");
 
-        string noStatus = HumanGateFinding.Decide(Reviewed, Reviewed, null, requireUnchangedTip: true).ReparkReason(taskId);
+        string noStatus = HumanGateFinding.Decide(Reviewed, Reviewed, Reviewed, null, requireUnchangedTip: true).ReparkReason(taskId);
         noStatus.Should().Contain("Check the worktree yourself").And.NotContain("Commit the work or discard it");
 
-        string noTip = HumanGateFinding.Decide(Reviewed, null, [], requireUnchangedTip: true).ReparkReason(taskId);
+        string noTip = HumanGateFinding.Decide(Reviewed, null, null, [], requireUnchangedTip: true).ReparkReason(taskId);
         noTip.Should().Contain("Check the branch yourself")
             .And.NotContain("review proceed", "a proceed cannot compare a tip that could not be read")
             .And.NotContain("Hand the commits to review");
 
-        string moved = HumanGateFinding.Decide(Reviewed, Later, [], requireUnchangedTip: true).ReparkReason(taskId);
+        string moved = HumanGateFinding.Decide(Reviewed, Later, Later, [], requireUnchangedTip: true).ReparkReason(taskId);
         moved.Should().Contain("Hand the commits to review").And.NotContain("review proceed");
     }
 }

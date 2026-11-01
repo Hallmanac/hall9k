@@ -113,6 +113,15 @@ public sealed class HumanGateBriefingTests
     }
 
     [Fact]
+    public void Commits_that_could_not_be_read_are_reported_as_unknown_rather_than_as_none()
+    {
+        string page = HumanGateBriefing.Render(Facts() with { Commits = null });
+
+        page.Should().Contain("The commits could not be read")
+            .And.NotContain("No commits found on the branch beyond its base");
+    }
+
+    [Fact]
     public void The_sections_come_in_the_fixed_order()
     {
         string page = HumanGateBriefing.Render(Facts());

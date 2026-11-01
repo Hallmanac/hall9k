@@ -719,6 +719,13 @@ public sealed class RunDetails : IJsonOnDeserialized
     public bool ResumedAtPullRequestOpen { get; set; }
 
     /// <summary>
+    /// True when this run is a resume at pull-request-open whose failed predecessor had an answer at the
+    /// human gate on its record (<see cref="ResumedReviewSettlement.HumanGateAnswered"/>). Such a run runs no
+    /// review pass and so records no answer of its own; this is how a later retry still sees the approval.
+    /// </summary>
+    public bool ResumedHumanGateAnswered { get; set; }
+
+    /// <summary>
     /// The reason recorded when the closeout monitor observed this run's pull request closed
     /// without a merge. Named rather than written twice, because a reader has to be able to tell
     /// that case apart from every other way a run reaches <see cref="RunState.Failed"/>: it is the
@@ -1213,6 +1220,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         CacheCreationInputTokens = @event.Data.ResumedReviewSettlement?.CacheCreationInputTokens ?? 0,
         OutputTokens = @event.Data.ResumedReviewSettlement?.OutputTokens ?? 0,
         ResumedAtPullRequestOpen = @event.Data.ResumedReviewSettlement is not null,
+        ResumedHumanGateAnswered = @event.Data.ResumedReviewSettlement?.HumanGateAnswered ?? false,
     };
 
     /// <summary>See the event's own doc: a reconstructed stream for a run that never actually dispatched.</summary>

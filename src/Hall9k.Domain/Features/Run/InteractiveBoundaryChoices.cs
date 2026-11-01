@@ -104,8 +104,9 @@ public static class InteractiveBoundaryChoices
                 $"`h9k review brief {id}`: read the briefing again: the summary, how review settled, the "
                 + "commits, and where the branch lives.",
                 $"`h9k review proceed {id}`: approve: the pull request opens on the next sweep and the task "
-                + "continues as any other. Refused over commits or uncommitted work made since the park, "
-                + "which re-parks here instead of opening anything unread.",
+                + "continues as any other. Refused over commits made since the park, or over a changed tracked "
+                + "file or a new file under src/ or tests/ left uncommitted, which re-parks here instead of "
+                + "opening anything unread.",
                 $"`h9k review resolve {id} --needs-fixes \"<what to change>\"`: change it by session: a fix "
                 + "session carries that text, the gates and a review pass read the result, and the run stops "
                 + "here again.",
@@ -115,8 +116,8 @@ public static class InteractiveBoundaryChoices
                 + "finding is waiting for an answer.",
                 $"`h9k review resolve {id} --merge-ready --reason \"<why it is sound>\"`: open the pull "
                 + "request over commits you made yourself without another review pass: the gates run on the "
-                + "tip and the settlement is recorded as Settled, not Clean. Refused while the worktree "
-                + "holds uncommitted work.",
+                + "tip and the settlement is recorded as Settled, not Clean. Refused while a tracked file is "
+                + "changed or a new file under src/ or tests/ is uncommitted.",
                 $"`h9k task abandon {id}`, then `h9k task add --evolved-from {id}`: discard it and start a "
                 + "fresh draft from the same objective, criteria, and context.",
             ],

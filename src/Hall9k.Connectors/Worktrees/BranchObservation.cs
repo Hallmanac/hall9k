@@ -38,6 +38,31 @@ public static class BranchObservation
     }
 
     /// <summary>
+    /// Where the worktree's HEAD stands, which is what the gates and a review pass read, as opposed to
+    /// <see cref="ReadBranchTipAsync"/>, which is what the pull request opener pushes. Null when git could
+    /// not be asked.
+    /// </summary>
+    public static async Task<string?> ReadHeadAsync(
+        ProcessRunner runner, string worktreePath, CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(worktreePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            ProcessResult result = await runner("git", ["rev-parse", "--verify", "--quiet", "HEAD"], worktreePath, cancellationToken);
+            string head = result.StandardOutput.Trim();
+            return result.ExitCode == 0 && head.Length > 0 ? head : null;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// The uncommitted paths that block a hand-back, counted exactly as <c>h9k review fixed</c> counts
     /// them: every modified or staged tracked file, plus untracked files under src/ or tests/ that are not
     /// a known build output. An untracked path elsewhere can be a gate byproduct and is left out. Null when

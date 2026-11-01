@@ -2056,8 +2056,8 @@ public static class CliCommandTree
                 .WithExample("task", "resolve", "28b19893", "--reason", "\"Objective met by hand in the worktree\"", "--pr", "https://github.com/x/y/pull/7");
             task.AddCommand<TaskDriveCommand>("drive")
                 .WithDescription(
-                    "At a task's human gate on a run a headless dispatch holds (h9k status lists it as needing "
-                    + "you), this prints a launch line for an attended Claude Code session in the run's "
+                    "At a task's human gate, whether a headless dispatch or your own interactive claim holds the run "
+                    + "(h9k status lists it as needing you), this prints a launch line for an attended Claude Code session in the run's "
                     + "worktree instead of claiming anything: the session registers nothing, and entering or "
                     + "leaving it changes neither the claim, the interactive flag, nor the stop. Its anchor "
                     + "names the gate, the briefing command, and the outcomes. At every other park on a "

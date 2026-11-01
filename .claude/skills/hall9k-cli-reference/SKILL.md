@@ -1871,7 +1871,7 @@ h9k review fixed <id>                    # CHANGE by hand: commit in the worktre
 h9k review resolve <id> --merge-ready --reason "<why>"   # open over your own commits: gates on the tip, no review session, settlement Settled; refuses (re-parks) over uncommitted work
 h9k task abandon <id> && h9k task add --evolved-from <id>   # DISCARD and start again
 h9k task run-local <id>                  # the briefing's "run it" step when the project has a run skill; refuses while a gated run's gates or sessions are working
-h9k task drive <id>                      # at the gate on a headless run: prints a launch line for an attended session in the worktree; claims and registers nothing
+h9k task drive <id>                      # at the gate, under any claim: prints a launch line for an attended session in the worktree; claims and registers nothing
 ```
 
 Interactive mode's own gates-to-pull-request park is held to the same tip rules (it records the tip, a proceed over

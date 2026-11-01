@@ -1628,16 +1628,18 @@ public sealed class RunLauncher(
 
     /// <summary>
     /// Whether a task's human gate is on and the run being resumed gives no sign it was answered. A run that
-    /// is itself a resume at pull-request-open records neither an answer nor a skip of its own: it was
-    /// dispatched only after this same check passed against the run before it, so a second consecutive
-    /// failure to open is still an approved branch, and reading it as unanswered would send an approved task
-    /// through a whole build and review to stop at the gate a second time.
+    /// is itself a resume at pull-request-open records neither an answer nor a skip of its own, so it vouches
+    /// only for what it carried forward (<see cref="RunDetails.ResumedHumanGateAnswered"/>): a second
+    /// consecutive failure to open is still an approved branch when the first one was approved, and reading it
+    /// as unanswered would send an approved task through a whole build and review to stop at the gate a second
+    /// time. When the gate was off at the time, the resume carries no approval, and a gate turned on since
+    /// stands unanswered however many failed opens came between.
     /// </summary>
     internal static bool HumanGateStandsUnanswered(bool humanGate, RunDetails failedRun) =>
         humanGate
         && failedRun.HumanGateAnsweredAt is null
         && failedRun.ReviewSkip is null
-        && !failedRun.ResumedAtPullRequestOpen;
+        && !failedRun.ResumedHumanGateAnswered;
 
     /// <summary>
     /// True means "do not dispatch a build or review session": the failed run this task's own
@@ -1818,7 +1820,10 @@ public sealed class RunLauncher(
                 failedRun.ReviewResidualsRoutingFailed, failedRun.ReviewResidualsRideAlong,
                 failedRun.ReviewRideAlongFindings, failedRun.ReviewResidualsUnfixed, failedRun.ReviewUnfixedFindings,
                 failedRun.InputTokens, failedRun.CacheReadInputTokens, failedRun.CacheCreationInputTokens,
-                failedRun.OutputTokens)));
+                failedRun.OutputTokens,
+                HumanGateAnswered: failedRun.HumanGateAnsweredAt is not null
+                    || failedRun.ReviewSkip is not null
+                    || failedRun.ResumedHumanGateAnswered)));
         await session.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(

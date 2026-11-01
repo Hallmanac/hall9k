@@ -33,9 +33,17 @@ public sealed class RunLauncherHumanGateRetryTests
     }
 
     [Fact]
-    public void A_failed_run_that_was_itself_a_resume_at_pull_request_open_keeps_the_approval_the_run_before_it_was_given()
+    public void A_failed_run_that_was_itself_a_resume_keeps_the_approval_it_carried_forward()
+    {
+        RunLauncher.HumanGateStandsUnanswered(
+                humanGate: true, new RunDetails { ResumedAtPullRequestOpen = true, ResumedHumanGateAnswered = true })
+            .Should().BeFalse("a second consecutive failure to open must not send an approved task back through a full build and review");
+    }
+
+    [Fact]
+    public void A_failed_run_that_was_a_resume_carrying_no_approval_stands_unanswered_once_the_gate_is_on()
     {
         RunLauncher.HumanGateStandsUnanswered(humanGate: true, new RunDetails { ResumedAtPullRequestOpen = true })
-            .Should().BeFalse("a second consecutive failure to open must not send an approved task back through a full build and review");
+            .Should().BeTrue("the gate was off when that resume was made, so it never approved anything");
     }
 }

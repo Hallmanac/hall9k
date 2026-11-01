@@ -19,6 +19,14 @@ namespace Hall9k.Domain.Features.Run;
 /// itself spends none, since it only re-attempts <c>gh pr create</c>, and reporting that as the
 /// pull request's token footer would understate the branch's real cost to zero.
 /// </para>
+/// <para>
+/// <paramref name="HumanGateAnswered"/> carries the answer at a task's human gate forward: true when the
+/// failed run recorded an answer at the gate, an owner's skip to the pull request, or was itself a resume
+/// that carried one. The resumed run runs no review pass and so can never stop at the gate or record an
+/// answer of its own; without this a later retry could only tell "approved" from "the gate was off at the
+/// time" by assuming, and the assumption opened an unapproved pull request once the gate was turned on
+/// between two failed opens.
+/// </para>
 /// </summary>
 public sealed record ResumedReviewSettlement(
     ReviewSettlement Settlement,
@@ -32,4 +40,5 @@ public sealed record ResumedReviewSettlement(
     long InputTokens,
     long CacheReadInputTokens,
     long CacheCreationInputTokens,
-    long OutputTokens);
+    long OutputTokens,
+    bool HumanGateAnswered = false);
