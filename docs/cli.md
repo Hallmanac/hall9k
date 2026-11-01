@@ -190,7 +190,9 @@ machines relayed does not. When the fleet cannot be read the replicated lesson i
 `h9k learn distill [--project <name>|--owner]` authors the task that merges a scope's lessons into
 fewer, better ones. It creates a research spike **draft** and stops there: the daemon
 never distils on its own judgment, because merging two claims into one is a judgment about meaning
-and a wrong merge replaces two things somebody observed with one thing nobody did. The task's
+and a wrong merge replaces two things somebody observed with one thing nobody did. The closeout note
+promotion (see [Task notes](#task-notes)) is not a distillation for that reason: it copies one note
+and cites it, and it merges nothing and replaces nothing. The task's
 instructions are merge-and-cite only, and the citation half is enforced rather than requested:
 `h9k learn "<merged claim>" --distilled-from <id> --distilled-from <id>` records the merge with its
 sources, and the decider refuses one whose citations resolve to nothing, repeat, or name the lesson
@@ -1201,6 +1203,19 @@ session receives notes through its prompt; a plain terminal and an attended sess
 note text. The daemon also records a note for each bullet in the closing block a build, follow-up or
 fix session may end its final message with, and the prompts that carry notes are bounded by caps
 that are constants rather than `h9k config` settings.
+
+Each note is listed with its **outcome**, which says what the closeout promotion step made of it:
+`kept as lesson <id>`, `dropped (<reason>)`, `held` when this node's trust rule keeps it out of
+prompts, or `undecided` when no step decided it (the task has not merged yet, the note was recorded
+after the step, or the daemon stopped or was killed during it). The step itself needs no command. When
+the daemon observes the merge that closes a task out and the task holds a note this node may offer, a
+small background session reads the objective and up to 30 of the task's own notes and may keep one.
+The default for every note is drop, at most one lesson comes out of a task, and a kept note becomes
+one self-contained claim of at most 800 characters, in printable text. Only a task whose scope reaches the team runs the step. The lesson is live at once and a person retires
+it with `h9k learn retire`; `h9k learn show` prints the id of the note it was promoted from and of
+that note's task, and no note text. `h9k task show` prints the step's outcome and counts. If the
+daemon stops or is killed during the step it records nothing, and the task's notes read as
+undecided. `NotePromotionTimeout` bounds the session (see [operations.md](operations.md)).
 
 ### Messages: node-to-node notes
 
