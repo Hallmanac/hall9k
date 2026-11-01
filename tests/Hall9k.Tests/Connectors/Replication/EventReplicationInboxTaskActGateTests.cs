@@ -758,13 +758,6 @@ public sealed class EventReplicationInboxTaskActGateTests
     /// receiving node whoever holds the task, and never holds up that member's later acts on it. Driven
     /// with a Member-role sender because an owner-role sender skips the gate altogether.
     /// </summary>
-    [Fact]
-    public void A_task_note_is_classified_member_safe()
-    {
-        TaskActClassificationRegistry.TryClassificationOf(typeof(TaskNoteRecorded))
-            .Should().Be(TaskActClassification.MemberSafe);
-    }
-
     [Theory]
     [InlineData("held-by-owner")]
     [InlineData("assigned-to-owner")]

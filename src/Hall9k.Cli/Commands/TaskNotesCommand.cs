@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Notes;
@@ -45,9 +46,19 @@ public sealed class TaskNotesCommand : Hall9kAsyncCommand<TaskNotesCommand.Setti
         TaskDetails task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
-        Guid ownerId = (await OwnerResolver.ResolveOrSoleAsync(session, null, cancellationToken)).Id;
+        // The reading node's own owner, as task show and learning show take it: an install with several
+        // owners still has exactly one node for this machine, and that node names the owner whose
+        // fleet this read is about. No node, or no project, means no fleet, which holds every
+        // replicated note.
+        string machineName = Environment.MachineName;
+        NodeDetails? node = (await session.Query<NodeDetails>()
+            .Where(candidate => candidate.MachineName == machineName)
+            .Take(1)
+            .ToListAsync(cancellationToken)).FirstOrDefault();
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
-        LocalFleetSource? fleet = project is null ? null : new LocalFleetSource(session, project, ownerId);
+        LocalFleetSource? fleet = node is null || project is null
+            ? null
+            : new LocalFleetSource(session, project, node.OwnerId);
 
         IReadOnlyList<TaskNoteView> views = await TaskNoteFeed.LoadViewsAsync(
             session, taskId, fleet?.LessonReader, cancellationToken);
