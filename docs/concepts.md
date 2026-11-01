@@ -1023,6 +1023,38 @@ default, without needing that acknowledgment.
 
 Depth: [TASK-MODEL.md §3.1](../TASK-MODEL.md), Decisions Log #24, #59, #62, #63, #88, #90, #92, #93, #113.
 
+### The human gate: one stop before the pull request
+
+Automated review is built so that an owner's time, which is scarcer than tokens, is spent where it counts. A
+task can ask for one more stop: marked with `h9k task add --human-gate` (or `h9k task revise
+--human-gate` on any live task whose pull request has not opened), its run parks once, after automated review
+has settled and before its GitHub pull request opens. The owner reads a short briefing, walks and runs the
+branch, and then approves, changes, or discards the work from inside hall9k, before anything exists on GitHub
+for a teammate to see.
+
+The gate is a property of one task and never a project or node default, because a stop on every task makes
+the owner the bottleneck. It is deliberately not interactive mode. That flag parks at all four phase
+boundaries and changes prompts and closeout, while the gate wants exactly one stop, so the gate has its own
+fact on the run: an answer given at this boundary (an approval, a merge-ready resolve, or the owner's skip to
+the pull request) releases it, and an answer given at any earlier park does not. It reuses the interactive park
+for its levers, so a task with both flags stops once here, not twice.
+
+The reviewed tip is recorded at the park, and at interactive mode's own gates-to-pull-request park too, which
+is held to the same rules. Because commits made while a run waits would otherwise reach the pull
+request unread, still recorded as a clean review, the daemon compares the branch against that tip when the
+approval arrives, on whichever machine it was typed, and parks at the same boundary again over a moved tip or
+uncommitted work. The person's own commits are not left unread either: `h9k review fixed` hands them back, the
+gates run over them, and a review pass reads them as it would read a fix session's, whatever ended the loop
+before, with the run stopping at the gate again. The recorded way to skip that read is `h9k review resolve
+--merge-ready --reason`, which runs the gates on the tip and settles as `Settled` rather than `Clean`.
+
+The briefing (`h9k review brief`) is composed from facts the run already holds and starts no session of its own:
+the opening paragraph of the run's `PR SUMMARY:` block, which for a gated task the build and fix prompts ask to
+be a plain, behaviour-first paragraph, the objective and criteria, how review settled, the commits, and the
+levers. Discarding is `h9k task abandon` followed by `h9k task add --evolved-from`, which starts a fresh draft
+from the old one, because code is cheap. Commands and the full list of outcomes are in
+[cli.md](cli.md#the-human-gate).
+
 ### Reviewing a pull request that is not yours: personas
 
 Everything above reviews a run's own diff. A **`pr-review` task** does the same job for a pull

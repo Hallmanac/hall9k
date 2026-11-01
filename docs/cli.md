@@ -205,7 +205,8 @@ whose active lessons have passed the count cap.
 `add` creates a Draft. `revise` is Draft-only, with a few exceptions, the main one being `--queue-first`/
 `--clear-queue-first` sets or clears a task-level scheduling marker — the next free dispatch slot
 takes this task regardless of assignment age — and is settable in any live state except Abandoned
-(Decisions Log #127). `--clear-interactive-mode` is another, and so are a spike's kind, exit
+(Decisions Log #127). `--clear-interactive-mode` is another, `--human-gate` and `--clear-human-gate`
+are two more (see [The human gate](#the-human-gate)), and so are a spike's kind, exit
 criterion, and budget while it is Draft or Published. `publish` is the readiness gate. Two verbs then
 split what `assign` used to do on its own, and each is named for the board column the task lands in:
 `assign` records who holds a task and never dispatches it, and `queue` is the go signal that puts a
@@ -357,6 +358,10 @@ change how the pipeline runs, and each has its own flags; what the types mean is
 | `h9k project set <project> --non-executable-path <glob>\|default` | Adds a glob to the set of paths whose diffs skip the verification gates, layered on the compiled defaults, with `default` clearing the project's own additions, where a glob ending in `/` matches anything under it from the repository root, one with no `/` matches a file name at any depth, anything else matches the whole path (`assets/**/*.png`), and a `!` prefix is refused. |
 | `h9k task revise --clear-dependencies` | Drops every `--blocked-by` edge so nothing blocks the task. |
 | `h9k task revise --clear-interactive-mode` | Clears the task's interactive-mode flag directly, for the cases where neither `handback` nor `release` has an active interactive claim to act on. |
+| `h9k task add --human-gate` | Puts a human gate on the new task, so its run stops once after automated review has settled and before its GitHub pull request opens. Refused on a pr-review task and on a spike, which open no pull request of their own. |
+| `h9k task revise --human-gate` | Puts the gate on any live task whose pull request has not opened, not only a Draft, and may be the only thing revised in the call. |
+| `h9k task revise --clear-human-gate` | Takes the gate off. A run still in review then opens its pull request without stopping, while a run already parked at the gate stays parked until it is answered. |
+| `h9k task add --evolved-from <id>` | Creates a Draft that copies the source task's objective, criteria, context, type, epic, idea provenance, and human gate, and adds the source's abandon reason to the context when it has one. `h9k task show` on the new draft names the task it evolved from. |
 
 **A task can link both a GitHub issue and a Jira card, and one of them is primary.** Passing
 `--from-issue` and `--from-jira` together to `h9k task add` adopts both. `--primary-tracker
@@ -1118,7 +1123,7 @@ spike, since neither of those opens a pull request of its own.
 It has two doors. From the build, under your claim, it delivers through the same code `deliver` uses (the
 same refusals, the uncommitted-file check, the push, the `--handoff` text or prompt, and token recording)
 and records the override in the same step. Otherwise it runs at any review park on the run, whether an
-interactive boundary or any other park. At the gates-to-pull-request park, where review has already
+interactive boundary or any other park. At the gates-to-pull-request park and at a task's human gate, where review has already
 settled, it refuses and names `h9k review proceed`, because there is nothing left to skip. While a gate or
 a review session is live it refuses and says the next park will offer it.
 
@@ -1333,8 +1338,9 @@ holder has gone quiet ([Identity, fleet, and team](concepts.md#identity-fleet-an
 interactive mode's own: `review proceed` is the bare-approval lever
 for a routine phase-boundary park, alongside `review resolve`'s redirect verbs, and `review fixed`
 is the newest — you did the fix yourself, in your own worktree, and the review agents check it the
-way they would check a fix session's. It applies at the review-verdict-to-fix boundary only (on
-either side of the pull request), refuses over an uncommitted worktree, and refuses an unmoved
+way they would check a fix session's. It applies at the review-verdict-to-fix boundary (on
+either side of the pull request) and at the boundary before the pull request opens ([the human
+gate](#the-human-gate), or interactive mode's gates-to-pull-request park), refuses over an uncommitted worktree, and refuses an unmoved
 branch tip unless `--no-change "<why>"` says why. `review resolve` also carries the one lever whose
 effect another person sees: on a park where a lap deliberately said nothing to a human reviewer —
 a disagreement with their changes-requested finding, or a decline or route of a thread they
@@ -1368,6 +1374,76 @@ or a stacked parent that moved is not a lap any `pr resolve` form dispatches; fo
 `h9k task revise <id> --clear-interactive-mode`, after which the next poll dispatches the lap.
 `h9k task resolve <id> --pr <url>` is the attestation exit from a
 Failed task, and `--pr` records where the work landed.
+
+### The human gate
+
+`h9k task add --human-gate` · `h9k task revise --human-gate | --clear-human-gate` · `h9k review brief` ·
+`h9k task drive` · `h9k task run-local` · `h9k review proceed | resolve | fixed`
+
+A task marked with `--human-gate` stops once, after automated review has settled and before its GitHub
+pull request opens, so its owner can read a short briefing, walk and run the branch, and then approve,
+change, or discard it from inside hall9k. The stop is per task and never a project or node default,
+because a stop on every task makes the owner the bottleneck. It is not interactive mode: that flag parks
+at every phase boundary, while the gate wants exactly one stop, so a task may have either, both, or
+neither, and a task with both stops once at this boundary rather than twice. A task without the flag
+moves through review and opens its pull request exactly as it always did. `--human-gate` and
+`--clear-human-gate` work on any live task whose pull request has not opened; a pr-review task and a
+spike refuse the flag.
+
+A gated run parks at the boundary under any review stage composition, including `none`, however review
+ended, and only an answer given at this boundary releases it: an earlier `h9k review resolve
+--merge-ready` does not. The park pushes nothing and opens nothing, `h9k status` lists it as needing
+you, and `h9k task next` lists the choices. A follow-up run on a task whose pull request is already open
+never stops here. Clearing the gate while the run is still in review lets it open its pull request without
+stopping, and clearing it at the park does not release the park. `h9k task skip-to-pr` from an earlier
+park still opens the pull request without stopping, since it is your recorded override, and at the gate
+itself it refuses, because nothing is left to skip.
+
+`h9k review brief <id>` prints the briefing, at this boundary and at interactive mode's gates-to-pull-request
+boundary, and refuses anywhere else, naming `h9k task next`. It is read-only, needs no GitHub pull request,
+and calls no GitHub. In order it gives the opening paragraph of the run's own `pr-summary.md` (the first
+paragraph of its body that is not a heading, at most 150 words, cut with a pointer to the full file), the
+objective and criteria, how review settled (the settlement word, the cycle count, and the findings left
+unfixed with a pointer to the merged report), the commits oldest first with a total of files and lines
+changed (a count past 20 commits), and then the worktree path, branch, base commit, and head commit,
+ready-to-paste `git difftool` lines that open the whole change and each commit in the compare tool git is
+configured to use (hall9k records no editor setting of its own), how to run it, how to step in, and your
+choices. A run with no summary says so and still prints the rest, and a summary older than the branch (the
+tip commit was authored after it was written, which a rebase alone never causes) says so. For a gated
+task the build and fix prompts ask that the `PR SUMMARY:` body open with a plain, behaviour-first
+paragraph of at most 120 words, and the gate starts no session of its own. It answers only on the machine
+that holds the worktree and names the node that does elsewhere.
+
+To run it, the briefing names `h9k task run-local <id>` when the project has a run skill, which works at the
+gate on a run a headless dispatch holds and refuses while the run's gates or sessions are working; a launch
+still up when the run leaves the gate is stopped and recorded before any gate or session starts in that
+worktree. When the project has none, the briefing says so and names `h9k project set <name>
+--discover-run-skill`, and every outcome still works. To step in, `h9k task drive <id>` at the gate prints a
+launch line for an attended session in the run's worktree, whose anchor names the gate, the briefing, and
+the outcomes, and tells it to leave the worktree alone once a lever has handed the branch back. The session
+registers nothing, and entering or leaving it changes neither the claim, the interactive flag, nor the park.
+At every other park on a headless run `drive` refuses as it always has, and it refuses a task held by another
+owner or a machine that does not hold the worktree.
+
+The outcomes, which the park reason, `h9k task next`, `h9k status`, the briefing, and the step-in anchor
+all offer identically:
+
+| Outcome | Command | What happens |
+|---|---|---|
+| Approve | `h9k review proceed <id>` | The pull request opens on the next sweep and the task continues as any other, including a pre-approved task merging under its own rule. `h9k task show` names who approved and when. |
+| Change by session | `h9k review resolve <id> --needs-fixes "<what to change>"` | A fix session carries the text, the gates run, a review pass reads the fix however review ended before, and the run stops at the gate again. |
+| Change by hand | commit in the worktree, then `h9k review fixed <id>` | Accepted here, where it is otherwise refused for lack of a finding. It refuses uncommitted work, a tip still where the park left it, and `--no-change`. The gates run over your commits, a review pass reads them as it reads a fix session's (composition `none`, and `skip-final-pass` once every track has concluded, owe them none), and the run stops at the gate again. |
+| Open over your own commits | `h9k review resolve <id> --merge-ready --reason "<why>"` | The gates run on the tip, no review session is dispatched, the settlement is recorded as `Settled` rather than `Clean`, and the pull request opens. With uncommitted work in the worktree it opens nothing, commits nothing, and stays at the gate with a reason naming what it found. |
+| Discard | `h9k task abandon <id>`, then `h9k task add --evolved-from <id>` | The task ends as it does today and a fresh Draft starts from its objective, criteria, and context. |
+
+A proceed is checked by the daemon rather than the command, because it may have been typed on a machine
+that holds no worktree. If the branch tip has moved since the park, or the worktree holds uncommitted work,
+the pull request does not open: the run parks at the same boundary again with a reason naming what was found
+and the levers `h9k review fixed` and `h9k review resolve --merge-ready`, whichever machine the proceed came
+from. Interactive mode's own gates-to-pull-request park is held to the same rules, with or without the gate:
+it records the tip it holds, a proceed over a moved tip or uncommitted work parks there again, and `h9k review
+fixed` is accepted at it, so a task with interactive mode alone no longer opens a pull request over commits
+made during that park. Commits made while a run waits here therefore never reach a pull request unread.
 
 ### Projects, owners, connections
 
