@@ -334,7 +334,7 @@ other or from what this skill says next time it runs.
 > | Tier | Agent CLI | Model | Effort |
 > | --- | --- | --- | --- |
 > | Mechanical: probes, scripted checks, sweep grooming, lookups | claude-code | `claude-sonnet-5-5` | high |
-> | Deep-reading: idea discovery, refinement, design walks, deep-reading dispute preparation | claude-code | `claude-opus-5-5[1m]` | high |
+> | Deep-reading: idea discovery, design walks, deep-reading dispute preparation | claude-code | `claude-opus-5-5[1m]` | high |
 > | Hardest-reasoning: cross-product architecture, a second opinion on a doubted answer | claude-code | `claude-fable-5-1[1m]` | high (Fable's own default) |
 >
 > A rendered launch line always carries these exact model ids, never a tier name used as an alias.
@@ -355,8 +355,10 @@ other or from what this skill says next time it runs.
 > the spawn's prepared evidence. A dated `Opt-out` line placed in this section turns this split off
 > for this project: every dispute park then goes to the operator directly, prepared or not.
 >
-> Daemon-dispatched runs, including any future daemon refinement role, keep the node's own
-> per-stage model configuration; nothing here changes it.
+> Daemon-dispatched runs, including a plan's refinement and challenge sessions (`h9k plan start`),
+> keep the node's own per-stage model configuration; nothing here changes it. Refining a draft is
+> no longer a spawn this window launches: it runs `h9k plan start <draft>`, and the daemon runs the
+> session, so no launch line and no model for it belong in any recipe.
 
 ## The provenance header every recipe you write carries
 
@@ -566,20 +568,21 @@ over a class of decision. Do not create that section pre-emptively in a fresh se
 it is actually needed.
 
 **The registry (`sessions.md`, at the project home's own root).** One row per session this window
-has spawned outside the task lifecycle (design walks, idea discovery, task refinement):
+has spawned outside the task lifecycle (design walks, idea discovery):
 when it started, its kind, its subject, its status, the model and effort it ran at, its session id,
 the step-in line that resumes it, and the fresh-start fallback line that opens a fresh session on
 the same subject instead. Liveness comes from `ListAgents`, never from this file. It never holds
 the daemon's own dispatched runs, which `h9k task show` already does.
 
-**Spawning a scoped session.** When work belongs in its own context (an idea walk, refining a
-draft's criteria, a mechanical probe, a deep-reading dispute preparation), spawn a lean session
-instead of doing it here:
+**Spawning a scoped session.** When work belongs in its own context (an idea walk, a mechanical probe, a deep-reading
+dispute preparation), spawn a lean session instead of doing it here. A draft that needs refining
+is not one of these: run `h9k plan start <draft> [<draft>...]` and let the daemon refine,
+challenge, and publish it (see *Plans* below).
 
 1. Write the hand-off first: the subject's own `journal.md` (in the idea's workspace, or the
    task's directory) with what has been said so far and what the session should do. This is the
    safety net — if the operator disappears mid-sentence, the context is already on disk.
-2. Pick the recipe (`recipes/idea-discovery.md` or `recipes/task-refinement.md`), and the tier,
+2. Pick the recipe (`recipes/idea-discovery.md`), and the tier,
    agent CLI, model, and effort from *Model and effort* above, and a short display name. Generate a
    fresh session id in this window's own tool shell (`uuidgen | tr 'A-Z' 'a-z'`, or whatever the
    node's own shell offers for the same thing). Launch it as this window's own backgrounded call,
@@ -593,7 +596,7 @@ instead of doing it here:
 
    This is a **stated exception** to *never write a launch line into a recipe* above, not a second
    rule: the orchestrator window's own launch line is a platform setting because the platform
-   prints and measures it, but idea-discovery and task-refinement sessions have no anchor of their
+   prints and measures it, but idea-discovery sessions have no anchor of their
    own and no `launch-text` entry to read one from, so the only place their line can live today is
    here, in the spawning window's own recipe (Brian's ruling, 2026-09-07 16:10 EDT, on the first
    run of this skill against the real hall9k project — see idea 0567af93's own
@@ -861,11 +864,35 @@ tasks of its own, and the act that belongs to a member is always that member's o
   override` or `House rule` line carries forward on regeneration exactly as *Never invent a standing
   rule* states.
 
+## Plans (what the orchestrator recipe teaches about `h9k plan`)
+
+The orchestrator recipe teaches its window these four things about plans, in its own words and under its
+own heading, and writes no launch line or model for the work a plan does:
+
+- **Start.** A draft that needs refining, challenging, and publishing is handed to the daemon with `h9k plan start <draft>
+  [<draft>...]` (drafts of one project; `--at challenge` to skip refinement; `--no-existing-item` or `--untracked` once,
+  on a project whose publish asks for a tracker attestation). It returns at once and the daemon on that node drives it.
+  The refusals are the answer: a draft whose context still quotes an adopted item is read into the task's own words with
+  `h9k task revise --context` first, with the objective read too.
+- **Read.** The outcome arrives from the project's feed, never by polling: a park is delivered at once and a plan's end is an
+  ordinary item, both carrying ids and a reason alone, and a phase move does not arrive. `h9k plan show <plan>` says where
+  each draft is and where its reports are, and `h9k plan list` lists a project's plans.
+- **Answer a park.** The reasons are rounds exhausted, question, verdict not applied, draft changed, revision refused,
+  session failed, challenge failed, and publish refused. The window reads what `h9k plan show` points at, then either runs
+  `h9k plan resume <plan>` (which re-runs the step that parked, and after rounds exhausted grants one more round) or does the
+  parked draft's step by hand, since publishing or abandoning it answers the park. A refinement that believes a draft should
+  split ends with a question; the answer is `h9k plan cancel <plan> --reason "<why>"` and a plan on the resulting drafts.
+- **Where it ends.** The plan publishes with `h9k task publish --no-queue`: it assigns and queues nothing, so the go signal
+  stays the window's act.
+
 ## The scoped session recipes' contract
 
 `recipes/idea-discovery.md` and `recipes/task-refinement.md` are shorter, single-purpose recipes
-launched by the project orchestrator (usually headless), never spawning further scoped sessions of
-their own. Both:
+launched by the project orchestrator, never spawning further scoped sessions of their own.
+`recipes/task-refinement.md` stays for refinement with the operator in the terminal (a person
+walking a draft with a session they are in); the headless refinement of a draft is a plan's, run by
+the daemon from a template that carries the same house rules, and this recipe is not its source.
+Both:
 
 - State what the session is for in one paragraph (discovery answers "what is this, and does it
   become a task, an epic, several tasks, a ruling, or nothing"; refinement answers "how does this
@@ -900,8 +927,9 @@ their own. Both:
   something to route around, and the Owner-role override (`--holder` with `--reason`) is the
   operator's call. Neither discovery nor refinement ever publishes,
   assigns, queues, dequeues, or touches the daemon, the board, or a running task; refinement revises with
-  `h9k task revise` and reads with `h9k task show`. Publishing waits for the operator to walk the
-  criteria.
+  `h9k task revise` and reads with `h9k task show`. In a terminal session, publishing waits for the
+  operator to walk the criteria; that rule does not apply to a draft in a plan, which the daemon
+  publishes itself once its challenge has passed.
 - State "read by pointer": start from the idea's `idea.md`/`workspace/journal.md`, or the draft's
   `h9k task show <id>` output and its own `journal.md` if one exists; read what is pointed at
   rather than restating it. When a pointer names a run, prefer the task's first run for the

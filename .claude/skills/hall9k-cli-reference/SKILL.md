@@ -157,6 +157,35 @@ force and where it came from. A challenge holds no run slot (the daemon runs one
 `ChallengeTimeout`, thirty minutes). Its spend lands in `h9k status` and `h9k config show` under the model it ran
 on, and the session count in `h9k task show` includes it.
 
+**A plan carries drafts to Published** (`h9k plan start <draft> [<draft>...]`). It records a plan on a stream of
+its own, node-scoped so it never leaves the node it was started on, and returns without waiting; the daemon on that node
+runs one headless refinement session per draft, has it challenged (the same request, session, verdict, and failure
+list as `h9k task challenge`), applies the verdict (publish as revised gets one apply session and no second challenge;
+do not publish gets a session that answers the verdict and then a new challenge), and when every draft is ready publishes
+each as `h9k task publish --no-queue` would, by running the installed `h9k` as a child process, so the challenge gate, the
+tracker item, and the ledger record happen as by hand. The daemon option `PlanRoundCap` (default 2) is the whole cap: one
+round is one challenge of one draft, and only `h9k plan resume` after rounds exhausted, or a new plan, grants more. The
+plan parks, naming the draft, for one of: rounds exhausted, question, verdict not applied, draft changed, revision refused,
+session failed, challenge failed, or publish refused; while parked no new session starts for any of its drafts. `h9k plan
+show <plan>` prints the state and, per draft, phase, round, latest outcome, and where the latest report is, with the reason,
+the way forward, and where to read the rest for a park; `h9k plan list [--project <p>] [--all]` lists plans;
+`h9k plan resume <plan>` re-runs the step that parked; `h9k plan cancel <plan> --reason "<why>"` ends a live plan, stops its
+session without applying anything, and leaves the drafts as Drafts. Publishing or abandoning a parked draft by hand
+answers its park. `plan start` is refused before any session starts for a draft that is not a plain Draft, is a pr-review
+task or a spike, is in a live plan, has a challenge or refinement requested or running, or belongs to a different project;
+for an archived project, one with no working checkout, or one without skip-permissions; for a draft whose context still
+carries an adopted item's quoted description or the notice that its idea's workspace holds a tracker item (replace it with
+`h9k task revise --context`, and read the objective too); and, where a publish would ask for one, without
+`--no-existing-item` or `--untracked` (recorded on the plan with who gave it). `--at challenge` starts a draft at
+challenge. A plan's sessions hold no slot against the node's run ceiling or the project's: the node runs one refinement
+session at a time on a loop of its own, bounded by `PlanRefinementTimeout` (thirty minutes), and a plan starts no session
+and requests no challenge while the node's launch hold stands, its spend budget is spent, or the project's max parallel
+tasks is 0 (`h9k plan show` says which). Its model is the project's `--model`, then `--model-refinement`, then the node's
+default, and its effort the project's `--effort`, `--effort-refinement`, then the node-wide `--effort`; a draft's own
+model or effort does not move it. Its spend lands in `h9k status` and `h9k config show` under the model it ran on. A parked
+plan is listed under Needs you in `h9k status` and reaches the project's orchestrator feed urgently; a plan's end arrives as an
+ordinary item. A dispatched session may run `h9k plan show` and `h9k plan list` and nothing else under `h9k plan`.
+
 **The same bare repo also carries a hidden ledger** (Decisions Log #189, idea
 202383dc), a set of
 git refs under `refs/hall9k/` that GitHub never shows and branch protection never sees (both match
@@ -920,6 +949,11 @@ h9k task set-review-caps <id> --max-compliance-review-cycles <N>   # a task-leve
 h9k task publish <id> [--queue]                   # the readiness gate; --queue publishes and queues in one transaction, for the task's assignee or for you when it has none (no owner argument; refuses when another member is the assignee). --no-queue (alias --no-assign) skips the interactive offer to queue; --assign is refused with a pointer to --queue for one minor release (decision f951013c)
 h9k task publish <id> --no-existing-item          # required if a tracking backlog policy finds no linked item yet and has no publication already pending; under linear it also creates the Linear issue after the commit, and checks the team through Linear first (refused with the task still a Draft when that fails)
 h9k task challenge <id>                            # one independent headless session, started by the daemon on THIS node, tests the draft's claims against the code and records a verdict (publish as written | publish as revised | do not publish) with the counts of its must/should/park changes; returns without waiting, changes nothing about the draft, refused for a non-Draft, a draft with no criteria, an archived project, a missing checkout, or a challenge already requested or running. Repeat it for another. Read the outcome with h9k task show; apply what you accept with h9k task revise, then publish
+h9k plan start <draft> [<draft>...] [--at challenge] [--no-existing-item|--untracked]   # hand drafts of one project to the daemon on THIS node: refine, challenge, apply, publish (--no-queue); returns at once
+h9k plan show <plan>                               # state, each draft's phase / round / latest outcome / report path; a park's reason, way forward, and where to read the rest
+h9k plan list [--project <p>] [--all]              # the plans on this node, live ones by default
+h9k plan resume <plan>                             # re-runs the step that parked; after rounds exhausted, grants one more round
+h9k plan cancel <plan> --reason "<why>"            # ends a live plan, stops its session without applying anything, leaves the drafts as Drafts
 h9k task publish <id> --skip-challenge "<reason>"  # publish past the challenge gate (on by default per project: refused for a draft whose latest verdict is missing, is do-not-publish, or is publish-as-revised holding a must the draft has not been revised for since); the reason and who gave it are recorded and shown by h9k task show; a blank reason is refused; a pr-review task and a spike are never gated
 h9k task publish <id> --untracked                 # the same gate's other exit: deliberately skip tracking for this task, attested on the stream
 h9k task publish <id> --pre-approved              # the owner stops being a synchronous gate at the pull request: the daemon rebase-merges once every real gate (CI, review decision, requested reviewers, threads) reads satisfied (Decisions Log #135)

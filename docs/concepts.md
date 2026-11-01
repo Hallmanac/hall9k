@@ -355,6 +355,16 @@ applying a verdict is the person's act, with `h9k task revise`. With the project
 `h9k project set --require-challenge`), `h9k task publish` then refuses a draft with no usable verdict unless the
 publisher states why with `--skip-challenge "<reason>"`; a spike and a pr-review task are never gated.
 
+A **plan** (`h9k plan start <draft> [<draft>...]`) hands that whole stretch of the lifecycle to the daemon. It is a
+record of its own, not a run: it lives on a stream of its own on the node where it was started, never leaves that node,
+holds ids, phases, rounds, and closed outcomes and no prose, and creates no run, lease, branch, or worktree. For each draft
+the daemon runs a refinement session, then the same independent challenge, then applies what the verdict accepts, under a
+cap of two challenge rounds per draft, and when every draft is ready it publishes each one with the behaviour of
+`h9k task publish --no-queue`. It never assigns or queues. When it cannot finish (a question only a person can settle, rounds
+exhausted, a session or challenge that failed, a revision or publish that was refused) it parks, naming the draft and the
+reason, and starts nothing new for any of the plan's drafts until a person runs `h9k plan resume` or publishes or abandons
+the parked draft by hand.
+
 Each verb names the board column the task lands in (Decisions Log #34, and the assign/queue split):
 `assign` moves no column at all, because it records who holds a task and a Draft, a Published task and an
 idea can all be held; `publish` lands it in Ready; `queue` lands it in Queued and is the go signal; and

@@ -1493,7 +1493,20 @@ parses into one event (a verdict and the counts of its must, should, and park ch
 list). The prose stays in the file on the node that ran it, the event holds nothing the session wrote, and nothing
 applies a verdict. `h9k project set --require-challenge` (on unless recorded otherwise) makes `h9k task publish`
 refuse a draft without a usable verdict unless `--skip-challenge "<reason>"` states why. A challenge holds no run
-slot. Not built: applying a verdict, a refinement-and-challenge loop, and a per-project prompt addendum.
+slot. Not built: a per-project prompt addendum.
+
+### Plans
+
+`h9k plan start <draft> [<draft>...]` records a plan on a stream of its own, on one node, and the daemon on that node
+carries each draft through a refinement session, an independent challenge, and (under a cap of two rounds per draft) the
+changes the verdict accepts, then publishes the drafts with the behaviour of `h9k task publish --no-queue`. It parks
+for a person, for a reason from a closed list, when it cannot finish, and `h9k plan resume` or doing the parked draft's
+step by hand answers the park. A plan creates no run, lease, branch, or worktree, and its sessions hold no slot against
+the run ceiling. It needs a project that runs agents with skip-permissions. Works today: one project's drafts per plan,
+starting at refinement or challenge, and cancelling. Designed but not built: starting a plan from an idea with a discovery
+phase and a gate (the next task in the epic), drafting new tasks from inside a plan, adding a draft to a live plan, an
+epic flag on `h9k plan start`, and a settable round cap. Never doing: plan records that travel to other nodes (a plan is
+a fact about one node's daemon), and automatic retry of a failed session.
 
 ### The macOS signal fence
 
