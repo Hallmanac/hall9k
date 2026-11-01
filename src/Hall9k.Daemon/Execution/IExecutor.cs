@@ -121,6 +121,14 @@ public sealed record AgentSpawnRequest(
     public Guid? TaskId { get; init; }
 
     /// <summary>
+    /// Directories a review-permissions session may read beside its working directory and its own run
+    /// directory (<see cref="UsesReviewPermissions"/>), each as a <c>Read</c> and a <c>Grep</c> rule. Set only by the
+    /// draft challenge on a project that does not skip permissions, for the idea's workspace and the
+    /// draft's own directory; empty for every other session.
+    /// </summary>
+    public IReadOnlyList<string> ExtraReadRoots { get; init; } = [];
+
+    /// <summary>
     /// The name this session's Claude Code process launches under (task: every dispatched agent
     /// session launches under a human-readable id-and-role name) — passed straight through to
     /// <c>claude -n/--name</c>, verified against <c>claude --help</c> and confirmed empirically
