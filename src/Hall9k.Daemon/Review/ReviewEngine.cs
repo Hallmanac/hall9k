@@ -1847,8 +1847,9 @@ public sealed class ReviewEngine(
             // reads its message: the budget and error reasons below, and the position file and
             // thread replies RecordFixResultAsync derives from it.
             result = await TaskNoteCapture.ExtractAndRecordAsync(
-                store, logger, context.Run.NodeId, context.RunId, context.TaskId, result, cancellationToken,
-                sessionId, SessionRoleName.For(DomainId.Short(context.TaskId), SessionRoleName.Fix(run.ReviewCycle)));
+                store, logger, context.Run.NodeId, context.RunId, context.TaskId, result,
+                sessionId, SessionRoleName.For(DomainId.Short(context.TaskId), SessionRoleName.Fix(run.ReviewCycle)),
+                cancellationToken);
         }
 
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
@@ -8549,10 +8550,10 @@ public sealed class ReviewEngine(
                 fleets is null
                     ? null
                     : async token => (await fleets.GetAsync(projectId, token))?.NodeIds,
-                cancellationToken,
                 exception => logger.LogWarning(exception,
                     "Run {RunId}: could not read task {TaskId}'s notes, so this session's prompt carries no "
-                    + "notes section", runId, taskId));
+                    + "notes section", runId, taskId),
+                cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

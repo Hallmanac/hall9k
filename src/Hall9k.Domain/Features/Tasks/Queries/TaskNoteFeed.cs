@@ -72,8 +72,8 @@ public static class TaskNoteFeed
     /// composing caller, daemon or CLI, gets that rule from here rather than repeating it.
     /// </summary>
     public static async Task<InjectedTaskNotes?> LoadForPromptAsync(
-        IQuerySession query, Guid taskId, LocalFleetReader? localFleet, CancellationToken cancellationToken,
-        Action<Exception>? onFailure = null)
+        IQuerySession query, Guid taskId, LocalFleetReader? localFleet, Action<Exception>? onFailure,
+        CancellationToken cancellationToken)
     {
         try
         {

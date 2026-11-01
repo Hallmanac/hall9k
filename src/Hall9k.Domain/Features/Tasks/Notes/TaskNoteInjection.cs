@@ -1,5 +1,4 @@
 using Hall9k.Domain.Features.Learning;
-using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Shared.Rendering;
 
 namespace Hall9k.Domain.Features.Tasks.Notes;

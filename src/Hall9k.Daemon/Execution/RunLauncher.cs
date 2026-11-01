@@ -1847,10 +1847,10 @@ public sealed class RunLauncher(
             fleets is null
                 ? null
                 : async token => (await fleets.GetAsync(project.Id, token))?.NodeIds,
-            cancellationToken,
             exception => logger.LogWarning(exception,
                 "Run {RunId}: could not read task {TaskId}'s notes, so this session's prompt carries no "
-                + "notes section", runId, task.Id));
+                + "notes section", runId, task.Id),
+            cancellationToken);
 
     /// <summary>
     /// Runs the lesson pick for a fresh build and returns the section the prompt carries: the one

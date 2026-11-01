@@ -1,6 +1,5 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
-using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Notes;
 using Hall9k.Domain.Infrastructure.Ids;

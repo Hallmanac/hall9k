@@ -315,7 +315,7 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
                         : null,
                     await TaskNoteFeed.LoadForPromptAsync(
                         session, taskId, new LocalFleetSource(session, project, context.OwnerId).LessonReader,
-                        cancellationToken),
+                        onFailure: null, cancellationToken),
                     cancellationToken);
     }
 
@@ -350,7 +350,7 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
             // The task's notes too, through the same Domain read the daemon uses. An attended session
             // is taught the verb but not asked for the closing block: nothing records its final message.
             taskNotes: await TaskNoteFeed.LoadForPromptAsync(
-                session, taskDetails.Id, fleet.LessonReader, cancellationToken));
+                session, taskDetails.Id, fleet.LessonReader, onFailure: null, cancellationToken));
     }
 
     /// <summary>

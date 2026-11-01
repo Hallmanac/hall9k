@@ -56,11 +56,19 @@ internal static class RecordingProvenanceReader
     /// variable when both are present: one is what the caller typed about this call, the other is
     /// ambient.
     /// </summary>
+    public static Task<ObservedRecordingContext> ObserveAsync(
+        IQuerySession session, string? taskReference, Guid ownerId, CancellationToken cancellationToken) =>
+        ObserveAsync(session, taskReference, ownerId, Environment.GetEnvironmentVariable, cancellationToken);
+
+    /// <summary>
+    /// <see cref="ObserveAsync(IQuerySession, string?, Guid, CancellationToken)"/> reading the process
+    /// environment through <paramref name="readEnvironment"/>, so a caller (and a test) that already
+    /// holds an environment view observes through the very same one.
+    /// </summary>
     public static async Task<ObservedRecordingContext> ObserveAsync(
-        IQuerySession session, string? taskReference, Guid ownerId, CancellationToken cancellationToken,
-        Func<string, string?>? environment = null)
+        IQuerySession session, string? taskReference, Guid ownerId, Func<string, string?> readEnvironment,
+        CancellationToken cancellationToken)
     {
-        Func<string, string?> readEnvironment = environment ?? Environment.GetEnvironmentVariable;
         (TaskDetails Task, RunDetails Run)? observed = taskReference.IsNotBlank()
             ? await FromNamedTaskAsync(session, taskReference, cancellationToken)
             : await FromEnvironmentAsync(session, readEnvironment, cancellationToken);

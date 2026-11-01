@@ -3,7 +3,6 @@ using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Notes;
-using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Infrastructure.Ids;
 
 namespace Hall9k.Daemon.ProjectHomes;

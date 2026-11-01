@@ -530,7 +530,7 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
             // The task's notes, through the same Domain read the daemon uses. A failed read composes
             // the prompt without the section.
             taskNotes: await TaskNoteFeed.LoadForPromptAsync(
-                session, taskDetails.Id, fleet.LessonReader, cancellationToken));
+                session, taskDetails.Id, fleet.LessonReader, onFailure: null, cancellationToken));
 
         return new DelegationPlan(
             runId, run.WorktreePath, run.Branch, run.RunDirectory, resumesPreviousWork, model, effort, prompt,
