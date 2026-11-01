@@ -49,8 +49,9 @@ public static partial class TaskPassageQuery
     /// <see cref="ReviewVerdictReprompted"/> (<c>claude -p --resume</c> for an unparseable
     /// verdict), <see cref="ContextSynthesisDispatched"/> (<c>BlockerContextAssembler</c>'s
     /// synthesis over the blocker-review threshold), a <see cref="LessonPickRecorded"/> or a
-    /// <see cref="NotePromotionRecorded"/> whose session started, and a <see cref="DraftChallengeDispatched"/> (the two entries that sit on the task's own
-    /// stream rather than a run's) each
+    /// <see cref="NotePromotionRecorded"/> whose session started, and a
+    /// <see cref="DraftChallengeDispatched"/> or <see cref="DraftRefinementDispatched"/> (the
+    /// entries that sit on the task's own stream rather than a run's) each
     /// spawn a real process too and are counted alongside the rest (independent pre-PR review, cycle 6, conformance finding — the
     /// enumeration above omitted all three). <see cref="InteractiveSessionStarted"/> is excluded
     /// here on its own, and folded into the loop below instead, because it does not always name a
@@ -72,7 +73,8 @@ public static partial class TaskPassageQuery
         or ContextSynthesisDispatched
         or LessonPickRecorded { Outcome.SpawnedSession: true }
         or NotePromotionRecorded { Outcome.SpawnedSession: true }
-        or DraftChallengeDispatched;
+        or DraftChallengeDispatched
+        or DraftRefinementDispatched;
 
     public static async Task<TaskPassage> ReadAsync(
         IQuerySession session, Guid taskId, TaskType taskType, bool taskConcluded, DateTimeOffset now,

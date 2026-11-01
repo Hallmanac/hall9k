@@ -91,6 +91,9 @@ public static class SessionRoleName
     /// <summary>The independent challenge of a draft (<c>h9k task challenge</c>).</summary>
     public const string Challenge = "challenge";
 
+    /// <summary>A plan's refinement session on one draft (<c>h9k plan start</c>).</summary>
+    public const string Refinement = "refinement";
+
     /// <summary>
     /// The bounded follow-up lap auto-pr-review's own mention trigger dispatches on an
     /// already-reviewed pull request (idea 2f079bcd): a single, narrowly-scoped session answering

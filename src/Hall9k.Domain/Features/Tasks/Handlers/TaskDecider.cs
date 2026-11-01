@@ -481,7 +481,45 @@ public static class TaskDecider
         }
 
         BacklogPolicy policy = backlogPolicy ?? BacklogPolicy.None;
+        (bool noExistingItemRecorded, bool untrackedRecorded) = VetTrackerAttestation(
+            task, policy, noExistingItemAttested, untracked, "Publish", $"h9k task publish {task.Id}");
 
+        string? challengeSkipRecorded = DecideChallengeGate(task, challenge);
+
+        // An unrecognized mode is refused rather than read as off: the publisher typed something,
+        // and silently publishing without the pre-approval they asked for would be the worst of
+        // the three answers. Null is not that — it is nothing passed at all, and pre-approval
+        // already standing on the task is carried forward through it rather than overwritten, so a
+        // publish that says nothing about pre-approval can only leave what was granted alone.
+        // Without that, a task created pre-approved — which is how an adopted task carries the
+        // adopting install's own answer across from Draft (task: a published task's GitHub issue
+        // carries the whole task record) — would silently lose the grant to any publish that did
+        // not repeat the flag. An explicit mode still wins, off included: the three-valued
+        // vocabulary can say "off" out loud, which the boolean this replaced could not tell apart
+        // from saying nothing, and honouring it here beats making `--pre-approved off` a silent
+        // no-op. On a task nobody granted anything to, task.PreApproval is Off and this is exactly
+        // the ordinary default publish.
+        PreApprovalMode preApprovalRecorded =
+            preApproval is null ? task.PreApproval : VetPreApprovalMode(preApproval, task.Id);
+        Optional<CloseLinkedIssueRule?> closeLinkedIssueForEvent = closeLinkedIssue.HasValue
+            ? Optional<CloseLinkedIssueRule?>.Of(CloseLinkedIssueRule.ParseOverride(closeLinkedIssue.Value))
+            : Optional<CloseLinkedIssueRule?>.None;
+        return new TaskPublished(
+            task.Id, publishedAt, publishedByOwnerId, noExistingItemRecorded, untrackedRecorded,
+            preApprovalRecorded.LegacyPreApproved, preApprovalRecorded, closeLinkedIssueForEvent,
+            challengeSkipRecorded);
+    }
+
+    /// <summary>
+    /// The tracker attestation both <see cref="Publish"/> and <c>h9k plan start</c> put to a draft: which of the two
+    /// flags the publish would record, or the refusal the publish would give. One rule in one place, so a plan that
+    /// carries the flags to its publishes can never accept a combination <c>h9k task publish</c> would refuse on that
+    /// project. <paramref name="action"/> and <paramref name="command"/> are how a refusal names the act and the
+    /// command that would retry it.
+    /// </summary>
+    public static (bool NoExistingItemRecorded, bool UntrackedRecorded) VetTrackerAttestation(
+        TaskAggregate task, BacklogPolicy policy, bool noExistingItemAttested, bool untracked, string action, string command)
+    {
         // Two flags asking opposite things is an input error regardless of policy: one confirms
         // a search came back empty and proceeds to create or link an item, the other says skip
         // tracking this task altogether. Neither can be what the caller meant by the other.
@@ -512,7 +550,7 @@ public static class TaskDecider
                 : "an unrecognized policy, which reads as no tracking";
             throw new DomainValidationException(
                 $"Task {task.Id}'s project does not track a backlog ({policyDescription}), so --untracked has "
-                + $"nothing to skip. Publish without it: h9k task publish {task.Id}.");
+                + $"nothing to skip. {action} without it: {command}.");
         }
 
         // A publication already pending (h9k task push-to-jira, run by hand while the task was
@@ -528,8 +566,8 @@ public static class TaskDecider
             throw new DomainBusinessRuleException(
                 $"Task {task.Id} already has a {pendingProvider.Value} publication request outstanding"
                 + (task.PublicationSessionDispatched ? " and its session is running" : " and is waiting for the daemon")
-                + ", and it still runs to completion regardless — --untracked cannot cancel it. Publish "
-                + $"without it: h9k task publish {task.Id}.");
+                + $", and it still runs to completion regardless — --untracked cannot cancel it. {action} "
+                + $"without it: {command}.");
         }
 
         // A pending publication (h9k task push-to-jira, run by hand while the task was still a
@@ -551,9 +589,9 @@ public static class TaskDecider
                 $"This project tracks its backlog in {tracker}, and task {task.Id} carries no linked "
                 + $"item yet. Search {tracker} for an open item that already covers this objective "
                 + "before publishing, so this does not mint a duplicate. Found one? Link it: "
-                + linkCommand + ". Confirmed none exists? Publish anyway with the attestation: "
-                + $"h9k task publish {task.Id} --no-existing-item. Don't want this task tracked in "
-                + $"{tracker} at all? Skip tracking for it deliberately: h9k task publish {task.Id} "
+                + linkCommand + ". Confirmed none exists? {action} anyway with the attestation: "
+                + $"{command} --no-existing-item. Don't want this task tracked in "
+                + $"{tracker} at all? Skip tracking for it deliberately: {command} "
                 + "--untracked.");
         }
 
@@ -567,30 +605,7 @@ public static class TaskDecider
         bool noExistingItemRecorded = needsExistingItemCheck && noExistingItemAttested;
         bool untrackedRecorded = needsExistingItemCheck && untracked;
 
-        string? challengeSkipRecorded = DecideChallengeGate(task, challenge);
-
-        // An unrecognized mode is refused rather than read as off: the publisher typed something,
-        // and silently publishing without the pre-approval they asked for would be the worst of
-        // the three answers. Null is not that — it is nothing passed at all, and pre-approval
-        // already standing on the task is carried forward through it rather than overwritten, so a
-        // publish that says nothing about pre-approval can only leave what was granted alone.
-        // Without that, a task created pre-approved — which is how an adopted task carries the
-        // adopting install's own answer across from Draft (task: a published task's GitHub issue
-        // carries the whole task record) — would silently lose the grant to any publish that did
-        // not repeat the flag. An explicit mode still wins, off included: the three-valued
-        // vocabulary can say "off" out loud, which the boolean this replaced could not tell apart
-        // from saying nothing, and honouring it here beats making `--pre-approved off` a silent
-        // no-op. On a task nobody granted anything to, task.PreApproval is Off and this is exactly
-        // the ordinary default publish.
-        PreApprovalMode preApprovalRecorded =
-            preApproval is null ? task.PreApproval : VetPreApprovalMode(preApproval, task.Id);
-        Optional<CloseLinkedIssueRule?> closeLinkedIssueForEvent = closeLinkedIssue.HasValue
-            ? Optional<CloseLinkedIssueRule?>.Of(CloseLinkedIssueRule.ParseOverride(closeLinkedIssue.Value))
-            : Optional<CloseLinkedIssueRule?>.None;
-        return new TaskPublished(
-            task.Id, publishedAt, publishedByOwnerId, noExistingItemRecorded, untrackedRecorded,
-            preApprovalRecorded.LegacyPreApproved, preApprovalRecorded, closeLinkedIssueForEvent,
-            challengeSkipRecorded);
+        return (noExistingItemRecorded, untrackedRecorded);
     }
 
     /// <summary>

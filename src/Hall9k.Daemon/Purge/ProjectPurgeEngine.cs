@@ -4,6 +4,7 @@ using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Orchestrator;
+using Hall9k.Domain.Features.Plan.Projections;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -64,7 +65,8 @@ internal sealed record PurgeOneResult(
 /// <c>TaskDetails</c>/<c>TaskListItem</c>, <c>RunDetails</c>/<c>RunListItem</c>,
 /// <c>IdeaDetails</c>, <c>EpicDetails</c>, <c>OrchestratorPresenceDetails</c>, and
 /// <c>CourierRunDetails</c> (idea 89471598, piece 3 — a run with no task or run of its own, so
-/// neither of those two ids ever names it). The
+/// neither of those two ids ever names it), and <c>PlanDetails</c> (a plan is a stream of its own that names its
+/// project and its drafts and nothing else's id). The
 /// acceptance criteria for this purge name only tasks, runs, and ideas, but an epic is owned by a
 /// project the same way those three are — <c>EpicAdded.ProjectId</c> is a required field, and
 /// <c>h9k epic add</c> refuses without one — so leaving an epic behind is not a scope decision,
@@ -271,6 +273,14 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
             .Select(run => run.Id)
             .ToListAsync(cancellationToken))];
 
+        // A plan (h9k plan start) is a stream of its own too, keyed by its own id and node-scoped, so it appears in none
+        // of the lists above. Left behind it is the courier run's orphan shape exactly: PlanStarted and its siblings in
+        // mt_events for a project id that no longer resolves, and mt_doc_plandetails still naming the draft ids.
+        Guid[] planIds = [.. (await session.Query<PlanDetails>()
+            .Where(plan => plan.ProjectId == project.Id)
+            .Select(plan => plan.Id)
+            .ToListAsync(cancellationToken))];
+
         // A project-scoped decision or lesson (idea d805fd8b, piece 1) is a stream of this
         // project's too, keyed by its own record id and reached through its scope coordinate
         // rather than a ProjectId field, so neither delete below would find it on its own. Left
@@ -298,7 +308,7 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
         Guid[] everyStreamId =
         [
             project.Id, .. taskIds, .. runIds, .. ideaIds, .. epicIds, .. orchestratorPresenceIds,
-            .. courierRunIds, .. decisionIds, .. learningIds,
+            .. courierRunIds, .. planIds, .. decisionIds, .. learningIds,
         ];
 
         // The spend governor's own undercount (independent pre-PR review, cycle 1, adversarial
@@ -435,6 +445,12 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
         {
             session.QueueSqlCommand(
                 "delete from mt_doc_courierrundetails where id = ANY(?)", courierRunIds);
+        }
+
+        // The identical guard for the plan view: mt_doc_plandetails is created on this install's first-ever plan.
+        if (planIds.Length > 0)
+        {
+            session.QueueSqlCommand("delete from mt_doc_plandetails where id = ANY(?)", planIds);
         }
 
         // The identical lazy-table guard once more: mt_doc_decisiondetails and

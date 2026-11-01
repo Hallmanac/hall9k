@@ -117,6 +117,30 @@ public sealed class TaskDetails
     /// <summary>Whether the draft was revised after the running challenge was dispatched; see <see cref="TaskAggregate.RevisedWhileChallengeRan"/>.</summary>
     public bool RevisedWhileChallengeRan { get; set; }
 
+    /// <summary>Whether the draft was revised since the last challenge verdict or refinement outcome; see <see cref="TaskAggregate.RevisedSinceLastDraftSession"/>.</summary>
+    public bool RevisedSinceLastDraftSession { get; set; }
+
+    /// <summary>The refinement session of a plan dispatched and not yet recorded, which also names the directory its report is in.</summary>
+    public Guid? RunningRefinementSessionId { get; set; }
+
+    /// <summary>The node that dispatched it.</summary>
+    public Guid? RunningRefinementNodeId { get; set; }
+
+    /// <summary>When it was dispatched.</summary>
+    public DateTimeOffset? RunningRefinementDispatchedAt { get; set; }
+
+    /// <summary>The model the running refinement was dispatched on.</summary>
+    public AgentModel? RunningRefinementModel { get; set; }
+
+    /// <summary>The effort the running refinement was dispatched at.</summary>
+    public AgentEffort? RunningRefinementEffort { get; set; }
+
+    /// <summary>The newest recorded refinement outcome, applied or failed: what <c>h9k task show</c> prints.</summary>
+    public DraftRefinementRecorded? LatestRefinementOutcome { get; set; }
+
+    /// <summary>Whether the draft was revised, in a way the prompt carries, after the running refinement was dispatched.</summary>
+    public bool RevisedWhileRefinementRan { get; set; }
+
     /// <summary>The reason the publisher gave for publishing past the challenge gate; null when the gate asked for nothing.</summary>
     public string? ChallengeSkipReason { get; set; }
 
@@ -845,6 +869,8 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         {
             view.RevisedSinceChallengeVerdict |= view.LatestChallengeVerdict is not null;
             view.RevisedWhileChallengeRan |= view.RunningChallengeSessionId is not null;
+            view.RevisedWhileRefinementRan |= view.RunningRefinementSessionId is not null;
+            view.RevisedSinceLastDraftSession = true;
         }
 
         if (@event.Data.Objective.HasValue)
@@ -1920,9 +1946,34 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
             view.LatestChallengeVerdict = @event.Data;
             view.RevisedSinceChallengeVerdict = false;
             view.LatestChallengeVerdictJudgedOlderDraft = view.RevisedWhileChallengeRan;
+            view.RevisedSinceLastDraftSession = false;
         }
 
         view.RevisedWhileChallengeRan = false;
+    }
+
+    // A plan's refinement session is the same kind of side errand: it moves no state, only the standing the daemon's
+    // plan loop and the plan-start checks read, and what h9k task show tells the human.
+    public void Apply(IEvent<DraftRefinementDispatched> @event, TaskDetails view)
+    {
+        view.RunningRefinementSessionId = @event.Data.SessionId;
+        view.RunningRefinementNodeId = @event.Data.NodeId;
+        view.RunningRefinementDispatchedAt = @event.Data.DispatchedAt;
+        view.RunningRefinementModel = @event.Data.Model;
+        view.RunningRefinementEffort = @event.Data.Effort;
+        view.RevisedWhileRefinementRan = false;
+    }
+
+    public void Apply(IEvent<DraftRefinementRecorded> @event, TaskDetails view)
+    {
+        view.RunningRefinementSessionId = null;
+        view.RunningRefinementNodeId = null;
+        view.RunningRefinementDispatchedAt = null;
+        view.RunningRefinementModel = null;
+        view.RunningRefinementEffort = null;
+        view.LatestRefinementOutcome = @event.Data;
+        view.RevisedWhileRefinementRan = false;
+        view.RevisedSinceLastDraftSession = false;
     }
 
     public void Apply(IEvent<WorkItemPublicationSessionStarted> @event, TaskDetails view)

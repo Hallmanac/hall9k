@@ -9,6 +9,7 @@ using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Plan.Events;
 using Hall9k.Domain.Features.PrReviewPreflight;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Run.Events;
@@ -147,6 +148,28 @@ public static class EventScopeRegistry
         [typeof(DraftChallengeRequested)] = EventScope.NodeScoped,
         [typeof(DraftChallengeDispatched)] = EventScope.ProjectScoped,
         [typeof(DraftChallengeRecorded)] = EventScope.ProjectScoped,
+
+        // A plan's refinement session (h9k plan start) on the task it refines, the DraftChallenge pair's shape: the
+        // dispatch lets any node say where a session runs and end one that stood past the foreign-session ceiling, and
+        // the outcome is a team-visible fact about the task whose prose stays in a file on the running node. Neither
+        // names a plan, because a plan's own records never leave the node.
+        [typeof(DraftRefinementDispatched)] = EventScope.ProjectScoped,
+        [typeof(DraftRefinementRecorded)] = EventScope.ProjectScoped,
+
+        // Hall9k.Domain.Features.Plan: a plan is a fact about one node's daemon and the drafts it is driving, and
+        // it holds ids, phases, rounds, and closed outcomes only. Every plan event is node-scoped, so the outbox never
+        // carries one and the inbox refuses one that arrives: that is what makes "no other node starts a session for a
+        // plan" a fact of the registry rather than a rule a sweep has to keep.
+        [typeof(PlanStarted)] = EventScope.NodeScoped,
+        [typeof(PlanRefinementDispatched)] = EventScope.NodeScoped,
+        [typeof(PlanChallengeRequested)] = EventScope.NodeScoped,
+        [typeof(PlanDraftMoved)] = EventScope.NodeScoped,
+        [typeof(PlanParked)] = EventScope.NodeScoped,
+        [typeof(PlanResumed)] = EventScope.NodeScoped,
+        [typeof(PlanDraftPublished)] = EventScope.NodeScoped,
+        [typeof(PlanDraftAbandoned)] = EventScope.NodeScoped,
+        [typeof(PlanPublished)] = EventScope.NodeScoped,
+        [typeof(PlanCancelled)] = EventScope.NodeScoped,
 
         // Records this process's own pid and start time (session/mechanics bookkeeping, the
         // same shape as RunProcessStarted below), not a team-visible work fact, so it stays

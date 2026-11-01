@@ -2,6 +2,7 @@ using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Plan.Events;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
@@ -80,6 +81,9 @@ public static class OrchestratorFeedInterest
         [typeof(ReviewFindingRouted)] = OrchestratorFeedLevel.Actionable,
         // The ask-and-exit park (Decisions Log #5): an agent asked and stopped.
         [typeof(QuestionAsked)] = OrchestratorFeedLevel.Actionable,
+        // A plan parked for a person (h9k plan start): at the level a review park has, because it is the same kind of
+        // stop. A phase move (PlanDraftMoved) is deliberately absent and so never arrives; the plan's end is below.
+        [typeof(PlanParked)] = OrchestratorFeedLevel.Actionable,
 
         // idea 6be68ee2, companion 1bb803e1: an owner-role member write a non-root node's own
         // invite match asked for, parked on this root for its own human to approve
@@ -152,6 +156,10 @@ public static class OrchestratorFeedInterest
         // without polling. An ordinary item, not an urgent one, carrying only the verdict and its counts or the
         // failure reason, since the report's prose stays in a file on the node that ran the session.
         [typeof(DraftChallengeRecorded)] = OrchestratorFeedLevel.Transitions,
+        // A plan ended, published or cancelled: an ordinary item, so the window that started it hears the outcome
+        // without polling. The text carries ids alone; the cancel reason is its person's, and stays in h9k plan show.
+        [typeof(PlanPublished)] = OrchestratorFeedLevel.Transitions,
+        [typeof(PlanCancelled)] = OrchestratorFeedLevel.Transitions,
         [typeof(TaskClaimed)] = OrchestratorFeedLevel.Transitions,
         [typeof(PullRequestOpened)] = OrchestratorFeedLevel.Transitions,
         [typeof(TaskCompleted)] = OrchestratorFeedLevel.Transitions,

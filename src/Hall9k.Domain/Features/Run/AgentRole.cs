@@ -8,9 +8,9 @@ namespace Hall9k.Domain.Features.Run;
 /// configurable because they do different work: the build session writes a feature, the
 /// review session reads far more than it writes, the fix session applies findings someone
 /// else already reasoned out, and the synthesis session (Decisions Log #36) only condenses
-/// text it is handed. Refinement is the (future) draft-refinement run
-/// (backlog IDEA-draft-refinement-runs); its knob exists so that arriving does not have
-/// to re-open this decision.
+/// text it is handed. Refinement is the headless session a plan (<c>h9k plan start</c>)
+/// dispatches to refine a draft; it follows the project's model, then the node's role value,
+/// then the node's default, and a draft's own model does not move it.
 /// </summary>
 [JsonConverter(typeof(AgentRoleJsonConverter))]
 public sealed record AgentRole

@@ -6,6 +6,9 @@ using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Orchestrator;
+using Hall9k.Domain.Features.Plan;
+using Hall9k.Domain.Features.Plan.Events;
+using Hall9k.Domain.Features.Plan.Projections;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -73,6 +76,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         Guid nodeId = DomainId.New();
         Guid purgedPresenceId = await SeedOrchestratorPresenceAsync(store, nodeId, purgedProjectId, cts.Token);
         Guid purgedCourierRunId = await SeedCourierRunAsync(store, purgedProjectId, nodeId, cts.Token);
+        Guid purgedPlanId = await SeedPlanAsync(store, purgedProjectId, cts.Token);
         await SchedulePastDuePurgeAsync(store, purgedProjectId, ownerId, cts.Token);
 
         // A sibling project, untouched by this sweep — the control that proves the purge is
@@ -90,6 +94,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         await SeedMemberLabelsAsync(store, survivingProjectId, cts.Token);
         Guid survivingPresenceId = await SeedOrchestratorPresenceAsync(store, nodeId, survivingProjectId, cts.Token);
         Guid survivingCourierRunId = await SeedCourierRunAsync(store, survivingProjectId, nodeId, cts.Token);
+        Guid survivingPlanId = await SeedPlanAsync(store, survivingProjectId, cts.Token);
 
         ProjectPurgeEngine engine = new(store, NullLogger<ProjectPurgeEngine>.Instance);
         ProjectPurgeSweepResult result = await engine.SweepOnceAsync(cts.Token);
@@ -148,9 +153,13 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
                 + "no task and no run, so a purge has to find it by query the same way it finds "
                 + "orchestrator presence or leave its stream, events, and projection row behind");
 
+            (await query.LoadAsync<PlanDetails>(purgedPlanId, cts.Token)).Should().BeNull(
+                "a plan is a stream of its own, keyed by its own id, so a purge has to find it by query or leave its "
+                + "events and its view behind");
+
             Guid[] purgedStreamIds =
                 [purgedProjectId, .. purgedTaskIds, purgedRunId, purgedIdeaId, purgedEpicId, purgedPresenceId,
-                 purgedCourierRunId, purgedDecisionId, purgedLearningId];
+                 purgedCourierRunId, purgedPlanId, purgedDecisionId, purgedLearningId];
             long eventRows = (await query.QueryAsync<long>(
                 "select count(*) from mt_events where stream_id = ANY(?)", cts.Token, purgedStreamIds)).Single();
             eventRows.Should().Be(0, "no event for the purged project or anything it owned should remain");
@@ -174,9 +183,10 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
                 "an owner-scoped lesson belongs to no project, so no project's purge reaches it");
             (await query.LoadAsync<OrchestratorPresenceDetails>(survivingPresenceId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<CourierRunDetails>(survivingCourierRunId, cts.Token)).Should().NotBeNull();
+            (await query.LoadAsync<PlanDetails>(survivingPlanId, cts.Token)).Should().NotBeNull();
             Guid[] survivingStreamIds =
                 [survivingProjectId, survivingTaskIds[0], survivingRunId, survivingIdeaId, survivingEpicId,
-                 survivingPresenceId, survivingCourierRunId];
+                 survivingPresenceId, survivingCourierRunId, survivingPlanId];
             long survivingEventRows = (await query.QueryAsync<long>(
                 "select count(*) from mt_events where stream_id = ANY(?)", cts.Token, survivingStreamIds)).Single();
             survivingEventRows.Should().BeGreaterThan(0, "the sibling project's own history is untouched");
@@ -531,6 +541,16 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         session.Events.Append(runId, new CourierTokensRecorded(DomainId.New(), 400, 80, null, Now));
         await session.SaveChangesAsync(cancellationToken);
         return runId;
+    }
+
+    private static async Task<Guid> SeedPlanAsync(IDocumentStore store, Guid projectId, CancellationToken cancellationToken)
+    {
+        Guid planId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream<PlanAggregate>(
+            planId, new PlanStarted(planId, projectId, [DomainId.New()], PlanPhase.Refinement, false, false, DomainId.New(), Now));
+        await session.SaveChangesAsync(cancellationToken);
+        return planId;
     }
 
     private static async Task<Guid[]> SeedTasksAsync(

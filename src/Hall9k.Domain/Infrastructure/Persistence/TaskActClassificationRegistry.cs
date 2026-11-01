@@ -117,6 +117,12 @@ public static class TaskActClassificationRegistry
         [typeof(DraftChallengeDispatched)] = TaskActClassification.Conditional,
         [typeof(DraftChallengeRecorded)] = TaskActClassification.Conditional,
 
+        // A plan's refinement session on a draft: the same two reasons as the challenge pair above. Conditional so a
+        // sender that holds nothing cannot close a running refinement on a task it does not hold, and pre-assignment
+        // capable because a draft is usually unassigned and its creator's outcome on it must still apply.
+        [typeof(DraftRefinementDispatched)] = TaskActClassification.Conditional,
+        [typeof(DraftRefinementRecorded)] = TaskActClassification.Conditional,
+
         // The pull-request review pre-flight's own park (idea 6be68ee2, finding 1, phase one)
         // clears the current claim and assignment unconditionally, the identical shape
         // TaskInteractiveClaimUnassigned and TaskRequeued give a member's own give-back — a forged
