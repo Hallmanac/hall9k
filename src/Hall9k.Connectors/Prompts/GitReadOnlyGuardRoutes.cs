@@ -4,9 +4,8 @@ using System.Text.RegularExpressions;
 namespace Hall9k.Connectors.Prompts;
 
 /// <summary>
-/// Which shell commands turn a pr-review session's own read-only <c>git diff</c>/<c>git log</c>
-/// allowance into an escape outside the checkout (independent pre-PR review, cycle 1, both
-/// lenses), in either direction:
+/// Which shell commands let a pr-review session's <c>git diff</c>/<c>git log</c> escape the
+/// checkout (independent pre-PR review, cycle 1, both lenses), in any of three directions:
 /// <list type="bullet">
 /// <item>a write — both subcommands take an <c>--output=&lt;path&gt;</c> flag that redirects
 /// git's own output to any path the process can write. Verified in a throwaway repository:
@@ -16,12 +15,24 @@ namespace Hall9k.Connectors.Prompts;
 /// <item>a read — either subcommand silently switches to <c>--no-index</c> mode, comparing two
 /// filesystem paths instead of the checkout's own history, the moment it is handed a path outside
 /// the working tree (lesson f059f669). <c>git diff /dev/null ~/.config/gh/hosts.yml</c> prints
-/// that file's content as an ordinary diff, with no flag naming the mode at all.</item>
+/// that file's content as an ordinary diff, with no flag naming the mode at all. The
+/// <c>-O&lt;orderfile&gt;</c> flag, alone or bundled after other short flags, reads a file named
+/// outside the checkout too.</item>
+/// <item>a program: <c>--ext-diff</c> and <c>--show-signature</c> hand the output to a program
+/// that configuration names, so the program is not the checkout's to choose.</item>
 /// </list>
 /// and <see cref="ClaudeSettingsFile.PrReviewAllowedTools"/>'s prefix rules (<c>Bash(git
-/// diff:*)</c>, <c>Bash(git log:*)</c>) allow either through: a prefix rule matches the command as
-/// spelled, and both "git diff --output=/Users/owner/.zshrc" and "git diff /dev/null
-/// ~/.config/gh/hosts.yml" still start with "git diff".
+/// diff:*)</c>, <c>Bash(git log:*)</c>) allow any of them through: a prefix rule matches the command
+/// as spelled, and both "git diff --output=/Users/owner/.zshrc" and "git diff /dev/null
+/// ~/.config/gh/hosts.yml" still start with "git diff". The rules cannot be dropped, because Claude
+/// Code's built-in read-only git allowance does not apply in a dispatched worktree and
+/// <c>dontAsk</c> would refuse both commands. This guard answers the <em>flags</em> a prefix rule
+/// lets through, for these two subcommands only; it reads the command text and nothing else, so it
+/// does not and cannot answer what git does with the checkout's own contents, which
+/// <see cref="ClaudeSettingsFile.BuildForPrReview"/>'s <c>safe.bareRepository</c> setting covers.
+/// Because it covers only these two subcommands, no further git prefix rule may be added beside
+/// theirs: a rule for any other git command would allow that command's flags with nothing here
+/// looking at them.
 /// <para>
 /// Matched on the command text, the same terms <see cref="ReviewThreadReplyRoutes"/> states for
 /// its own routes: a <c>PreToolUse</c> hook is given nothing else, so recognition has to survive
@@ -31,8 +42,8 @@ namespace Hall9k.Connectors.Prompts;
 /// quoting, and this recognizer reassembles whole shell words the identical way before matching
 /// (independent pre-PR review, cycles 1 through 4; each spelling verified in a throwaway
 /// repository: it wrote or read its file exactly as the unquoted form does). A word that is not
-/// itself the refused flag or path once reassembled — an ordinary commit message or
-/// <c>--format</c> string that merely names one inside a longer value — is blanked out instead, so
+/// itself a refused flag or path once reassembled (an ordinary commit message or
+/// <c>--format</c> string that merely names one inside a longer value) is blanked out instead, so
 /// naming either term inside one still runs.
 /// </para>
 /// </summary>
@@ -56,6 +67,27 @@ public static class GitReadOnlyGuardRoutes
     /// </summary>
     private static readonly Regex NoIndexFlag = new(
         @"--no-index\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+    /// <summary>
+    /// <c>--ext-diff</c> and <c>--show-signature</c>, the two long flags that run a program named by
+    /// configuration. Git accepts neither abbreviated (verified: <c>--ext</c> and <c>--show-s</c>
+    /// are rejected), and <c>--no-ext-diff</c>, which turns the program off, must keep running, so
+    /// the flag has to start its word rather than merely end in the name.
+    /// </summary>
+    private static readonly Regex ProgramRunningFlag = new(
+        @"(?:^|\s)--(?:ext-diff|show-signature)(?=[=\s]|$)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+    /// <summary>
+    /// <c>-O&lt;orderfile&gt;</c>: a capital <c>O</c> in a short-flag word, alone or bundled after
+    /// other short flags (<c>-pO&lt;file&gt;</c>), reads the named file. Case-sensitive, because
+    /// lowercase <c>-o</c> is a different thing. The flags that take their value attached
+    /// (<c>-S</c>, <c>-G</c>, <c>-L</c>, <c>-I</c>, <c>-U</c>, <c>-M</c>, <c>-C</c>, <c>-B</c>,
+    /// <c>-l</c>) end the bundle, so an <c>O</c> inside their value (<c>-SOrder</c>) is a search
+    /// string and still runs.
+    /// </summary>
+    private static readonly Regex OrderFileFlag = new(
+        @"(?:^|\s)-[^-\sSGLIUMCBl]*O", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     /// <summary>
     /// An argument that names an absolute filesystem path, or one built from an unexpanded
@@ -86,8 +118,9 @@ public static class GitReadOnlyGuardRoutes
 
     /// <summary>
     /// Whether this command reaches <c>git diff</c> or <c>git log</c> in a way that escapes the
-    /// checkout — an <c>--output</c> write, or a <c>--no-index</c> read triggered by an explicit
-    /// flag or an absolute-path argument. False for everything else, including an ordinary
+    /// checkout: an <c>--output</c> write, a <c>--no-index</c> or <c>-O</c> read triggered by an
+    /// explicit flag or an absolute-path argument, or a flag that runs a configured program
+    /// (<c>--ext-diff</c>, <c>--show-signature</c>). False for everything else, including an ordinary
     /// <c>git diff</c>/<c>git log</c> with none of these, and for a command that merely quotes one
     /// of these terms in a search pattern or a commit message.
     /// </summary>
@@ -103,6 +136,8 @@ public static class GitReadOnlyGuardRoutes
             && (hasUnterminatedQuote
                 || OutputFlag.IsMatch(unescaped)
                 || NoIndexFlag.IsMatch(unescaped)
+                || OrderFileFlag.IsMatch(unescaped)
+                || ProgramRunningFlag.IsMatch(unescaped)
                 || AbsolutePathArgument.IsMatch(unescaped)
                 || ParentDirectorySegment.IsMatch(unescaped)
                 || HasUnquotedExpansion(command));
@@ -303,8 +338,8 @@ public static class GitReadOnlyGuardRoutes
     /// overwhelming majority, including the literal <c>git</c>/<c>diff</c>/<c>log</c> tokens this
     /// class's other regexes match on — passes through unchanged. A word that <em>was</em> touched
     /// is judged as a whole: if its reassembled text opens with a refused term
-    /// (<see cref="BeginsWithARefusedTerm"/> — <c>--output</c>, <c>--no-index</c>, or an absolute
-    /// path), the reassembled text is substituted in so the flag regexes see it exactly as git
+    /// (<see cref="BeginsWithARefusedTerm"/>: <c>--output</c>, <c>--no-index</c>, <c>-O</c>,
+    /// <c>--ext-diff</c>, <c>--show-signature</c>, or an absolute path), the reassembled text is substituted in so the flag regexes see it exactly as git
     /// would; otherwise the whole word is blanked out (a word that quoting or a line continuation
     /// reduced to nothing is dropped instead; see the comment where it is dropped). That covers the ordinary multi-word argument
     /// (a commit message, a <c>--format</c> string) that merely names a refused term somewhere
@@ -480,8 +515,8 @@ public static class GitReadOnlyGuardRoutes
                 // the case that matters: it is not a word to bash at all, and blanking it left a
                 // placeholder between "git" and "diff" that broke the anchor, so the command was
                 // not recognized as git diff/log. A real empty '' or "" argument is dropped the
-                // same way, which is safe for the same reason (an option that takes a separate
-                // value, such as --grep, accepts an empty one, so this is not because git rejects it).
+                // same way; that is safe for the same reason, though not because git rejects it
+                // (an option that takes a separate value, such as --grep, accepts an empty one).
                 continue;
             }
 
@@ -539,6 +574,18 @@ public static class GitReadOnlyGuardRoutes
 
         Match noIndexMatch = NoIndexFlag.Match(decoded);
         if (noIndexMatch.Success && noIndexMatch.Index == 0)
+        {
+            return true;
+        }
+
+        Match orderFileMatch = OrderFileFlag.Match(decoded);
+        if (orderFileMatch.Success && orderFileMatch.Index == 0)
+        {
+            return true;
+        }
+
+        Match programMatch = ProgramRunningFlag.Match(decoded);
+        if (programMatch.Success && programMatch.Index == 0)
         {
             return true;
         }
@@ -716,8 +763,10 @@ public static class GitReadOnlyGuardRoutes
     /// </summary>
     public const string RefusalReason =
         "git diff and git log are read-only in this session: --output writes their formatted text "
-        + "to an arbitrary path outside this checkout, and --no-index (explicit, or entered "
-        + "implicitly by naming an absolute path) reads one instead of the checkout's own history "
-        + "— both refused regardless of the path named. Read the command's own stdout instead; "
-        + "nothing about a pr-review lens needs a file on disk or a path outside the checkout.";
+        + "to an arbitrary path outside this checkout, --no-index (explicit, or entered "
+        + "implicitly by naming an absolute path) and -O read one instead of the checkout's own "
+        + "history, and --ext-diff and --show-signature run a program this checkout does not "
+        + "choose, all refused regardless of the path named. Read the command's own stdout "
+        + "instead; nothing about a pr-review lens needs a file on disk, a path outside the "
+        + "checkout, or an external program.";
 }

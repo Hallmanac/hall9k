@@ -633,10 +633,11 @@ public static class CliCommandTree
             pullRequest.AddCommand<PrReviewGitOutputGuardCommand>("review-git-guard")
                 .WithDescription(
                     "Not for you: the PreToolUse hook a pr-review session launches with, which refuses a "
-                    + "git diff/git log call that would write or read outside the checkout: an --output "
-                    + "flag (the one way either otherwise read-only subcommand writes), --no-index or an "
-                    + "absolute/$-rooted/../ path (the ways either switches to reading two filesystem "
-                    + "paths instead of the checkout's own history), or an unterminated quote, an unquoted "
+                    + "git diff/git log call that would write or read outside the checkout or run a "
+                    + "program: an --output flag (the one way either otherwise read-only subcommand "
+                    + "writes), --no-index, -O or an absolute/$-rooted/../ path (the ways either reads "
+                    + "a file instead of the checkout's own history), --ext-diff or --show-signature "
+                    + "(which hand the output to a configured program), or an unterminated quote, an unquoted "
                     + "brace group, or an unquoted $ expansion that could reassemble into any of those "
                     + "once bash runs the command. Reads Claude Code's hook payload "
                     + "on stdin and exits 2 to refuse. Registered rather than hidden so the same check can "

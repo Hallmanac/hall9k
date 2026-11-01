@@ -265,6 +265,45 @@ public sealed class ClaudeSettingsFileBuildForPrReviewTests
     }
 
     [Fact]
+    public void The_two_git_prefix_rules_are_the_only_git_rules()
+    {
+        using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run"));
+
+        string[] gitRules = [.. document.RootElement.GetProperty("permissions").GetProperty("allow")
+            .EnumerateArray().Select(element => element.GetString()!)
+            .Where(rule => rule.StartsWith("Bash(git", StringComparison.Ordinal))];
+
+        gitRules.Should().BeEquivalentTo(["Bash(git diff:*)", "Bash(git log:*)"],
+            "Claude Code's own read-only git allowance does not apply in a dispatched worktree, so these two " +
+            "cannot be dropped; every other git command is refused, and a prefix rule for one would turn off " +
+            "Claude Code's own flag checks for it with nothing of ours looking at its flags");
+    }
+
+    [Fact]
+    public void A_session_without_gate_commands_refuses_a_repository_found_inside_the_checkout()
+    {
+        using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run"));
+
+        JsonElement env = document.RootElement.GetProperty("env");
+
+        env.GetProperty("GIT_CONFIG_COUNT").GetString().Should().Be("1");
+        env.GetProperty("GIT_CONFIG_KEY_0").GetString().Should().Be("safe.bareRepository");
+        env.GetProperty("GIT_CONFIG_VALUE_0").GetString().Should().Be("explicit");
+    }
+
+    [Fact]
+    public void A_session_with_gate_commands_is_left_without_the_bare_repository_setting()
+    {
+        using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
+            TimeSpan.FromMinutes(30), "/tmp/checkout", "/tmp/run", [new VerifyCommand("test", "dotnet test")]));
+
+        document.RootElement.GetProperty("env").TryGetProperty("GIT_CONFIG_COUNT", out _).Should().BeFalse(
+            "the project's own gates create bare repositories on purpose, so the setting would fail QA's run");
+    }
+
+    [Fact]
     public void The_deny_list_keeps_the_review_laps_own_list_and_adds_a_claude_denial()
     {
         using JsonDocument document = JsonDocument.Parse(ClaudeSettingsFile.BuildForPrReview(
