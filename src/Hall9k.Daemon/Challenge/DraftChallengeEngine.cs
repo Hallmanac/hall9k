@@ -549,7 +549,7 @@ public sealed class DraftChallengeEngine(
     /// The idea's workspace and the draft's own directory, when each exists on this node. A path a project's home does
     /// not hold, or an idea workspace replicated from another operating system's layout, is left out rather than guessed.
     /// </summary>
-    private static async Task<(string? IdeaWorkspace, string? TaskDirectory)> LocateDraftFilesAsync(
+    internal static async Task<(string? IdeaWorkspace, string? TaskDirectory)> LocateDraftFilesAsync(
         IDocumentSession session, ProjectDetails project, TaskDetails task, CancellationToken cancellationToken)
     {
         string? taskDirectory = project.HomeDirectory.HasValue
@@ -574,7 +574,7 @@ public sealed class DraftChallengeEngine(
     }
 
     /// <summary>The draft's <c>journal.md</c>, in its directory or its workspace, when there is one.</summary>
-    private static string? FindJournal(string taskDirectory) =>
+    internal static string? FindJournal(string taskDirectory) =>
         new[]
         {
             Path.Combine(taskDirectory, "journal.md"),

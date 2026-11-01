@@ -84,6 +84,14 @@ public sealed record TaskPublished(
     string? ChallengeSkipReason = null)
 {
     /// <summary>
+    /// Read by <c>h9k task publish</c>: set to any non-blank value by the publish the daemon runs for a plan. The publish is
+    /// then refused for a draft a person revised since a challenge or a refinement session last read it
+    /// (<see cref="TaskAggregate.RevisedSinceLastDraftSession"/>), in the same fenced decision that records it, so a revision
+    /// that lands after the plan's own check still cannot publish text nobody judged.
+    /// </summary>
+    public const string PlanPublishEnvironmentVariable = "HALL9K_PLAN_PUBLISH";
+
+    /// <summary>
     /// What this event means, whichever build wrote it — the one home for the mode-from-boolean
     /// mapping, shared with <see cref="TaskPreApprovedSet.EffectivePreApproval"/>. Deliberately not
     /// serialized: the stream carries the facts that were recorded, never a derived one.

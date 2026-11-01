@@ -1,5 +1,6 @@
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -852,6 +853,36 @@ public sealed class DaemonOptions
     public TimeSpan ChallengePollInterval { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
+    /// How long a plan's refinement session (<c>h9k plan start</c>) gets before the daemon terminates it and records the
+    /// failure. Thirty minutes, the challenge session's bound, clears a session that reads the code and rewrites a
+    /// draft by a wide margin; a session past it is spending for nobody, and <c>h9k plan resume</c> runs it again.
+    /// </summary>
+    public TimeSpan PlanRefinementTimeout { get; set; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// How long one child <c>h9k</c> command the daemon runs for a plan (the revise that applies a session's revision,
+    /// the publish at the plan's end) gets before it is killed and counted as a refusal. A publish that files a tracker
+    /// item is the slow one, and five minutes clears a slow tracker by a wide margin.
+    /// </summary>
+    public TimeSpan PlanCommandTimeout { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// How many challenge rounds a plan runs for one draft, where a round is one challenge of one draft. Two: none of the
+    /// 27 verdicts recorded before plans existed was a flat do not publish, and only one draft ever had a second
+    /// challenge. A daemon option and nothing else, with no node, project, or task setting, because only a person's
+    /// <c>h9k plan resume</c> after rounds exhausted, or a new plan, grants more. A do not publish verdict on the last
+    /// round parks the plan rather than starting another.
+    /// </summary>
+    public int PlanRoundCap { get; set; } = Hall9k.Domain.Features.Plan.PlanRoundCap.Default;
+
+    /// <summary>
+    /// How often the daemon looks at its plans. The doorbell usually gets there first (<c>h9k plan start</c> and
+    /// <c>h9k plan resume</c> ring it, and so does a session or a challenge that ends); this is the sweep that covers a
+    /// plan started while the daemon was down, and the one that notices a draft published or abandoned by hand.
+    /// </summary>
+    public TimeSpan PlanPollInterval { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// How often the daemon sweeps every project home and re-renders task.md/idea.md for whatever
     /// changed (backlog 48). The doorbell usually gets there first — most task and idea commands
     /// ring it — so this is the backstop for the ones that do not (a draft revise, since nothing
@@ -887,7 +918,7 @@ public sealed class DaemonOptions
     /// install a new node identity and strands every publication the old one dispatched.
     /// </para>
     /// </summary>
-    public TimeSpan ForeignPublicationCeiling { get; set; } = TimeSpan.FromHours(1);
+    public TimeSpan ForeignPublicationCeiling { get; set; } = ForeignSessionCeiling.Default;
 
     /// <summary>
     /// How often the daemon retries a Jira write stuck on a rejected credential (Brian's design,
@@ -1254,7 +1285,7 @@ public sealed class RoleModelDefaults
     /// <summary>The session that condenses a fan-in of blocker handoffs into one document (log #36).</summary>
     public string Synthesis { get; set; } = string.Empty;
 
-    /// <summary>The (future) draft-refinement run, backlog IDEA-draft-refinement-runs: configurable before it exists.</summary>
+    /// <summary>The headless session a plan (<c>h9k plan start</c>) dispatches to refine a draft.</summary>
     public string Refinement { get; set; } = string.Empty;
 
     /// <summary>The session that writes a task up as a card in an external tracker (backlog 18).</summary>
