@@ -40,6 +40,16 @@ public static class LocalLaunchRefusal
         + "One-time setup, Launch and Human steps sections are all empty or say there is nothing in them, so "
         + "there is a document but no procedure in it.";
 
+    /// <summary>
+    /// A gated task's run is still working: its gates, a fix session, or a review pass own the worktree, and
+    /// a product started in it would race them. The human gate is where the worktree is the person's.
+    /// </summary>
+    public static string GatedRunIsWorking(Guid taskId) =>
+        $"Task {taskId} has a human gate and its run is still working: the gates, a fix session, or a review "
+        + "pass own the worktree until the run parks at the gate, and a product started in it now would race "
+        + $"them. Wait for h9k status to list the task as needing you, then run h9k task run-local {taskId}; "
+        + "h9k review brief then prints the briefing for that stop.";
+
     /// <summary>A launch of this task is already up.</summary>
     public static string AlreadyLaunched(Guid taskId, string what) =>
         $"A local launch of task {taskId} is already up ({what}), and two launches of one branch would race "

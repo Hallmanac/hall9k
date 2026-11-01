@@ -778,6 +778,23 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// <c>h9k review proceed</c> instead of only <c>h9k review resolve</c>.
     /// </summary>
     public bool ParkedIsInteractiveGate { get; set; }
+
+    /// <summary>
+    /// Whether the park in <see cref="ParkedReason"/> is the task's human gate
+    /// (<see cref="RunAggregate.ParkedIsHumanGate"/>), so <c>h9k status</c> and <c>h9k task next</c>
+    /// offer the gate's choices rather than an interactive-mode boundary's.
+    /// </summary>
+    public bool ParkedIsHumanGate { get; set; }
+
+    /// <summary>
+    /// When the human gate was last answered on this run and by whom
+    /// (<see cref="RunAggregate.HumanGateAnsweredAt"/>), for <c>h9k task show</c> to name. Null when it
+    /// was never answered; a skip to the pull request leaves the owner null.
+    /// </summary>
+    public DateTimeOffset? HumanGateAnsweredAt { get; set; }
+
+    /// <summary>See <see cref="HumanGateAnsweredAt"/>.</summary>
+    public Guid? HumanGateAnsweredByOwnerId { get; set; }
     /// <summary>
     /// Every human <c>h9k review proceed</c> this run has ever recorded, oldest first — the
     /// settled-rulings surface's (#88) third source, alongside <see cref="ReviewParkResolutions"/>
@@ -1391,6 +1408,9 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
     public void Apply(IEvent<ReviewFixDispatched> @event, RunDetails view)
     {
         view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
+        // The branch is being reworked, so an approval given at the gate is spent (mirrors RunAggregate).
+        view.HumanGateAnsweredAt = null;
+        view.HumanGateAnsweredByOwnerId = null;
         view.LastFixSessionEscalated = @event.Data.Escalated;
         view.LastFixSessionEscalationReason = @event.Data.EscalationReason;
         view.LastFixSessionEscalationCycle = @event.Data.Cycle;
@@ -1671,6 +1691,15 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
         view.ParkedReason = @event.Data.Reason;
         view.ParkedNeedsFixesOffersNoProgress = @event.Data.NeedsFixesOffersNoProgress;
         view.ParkedIsInteractiveGate = @event.Data.IsInteractiveGate;
+        view.ParkedIsHumanGate = @event.Data.IsHumanGate;
+        if (@event.Data.IsHumanGate)
+        {
+            // A fresh gate park withdraws any earlier answer, so task show never says a stop is approved
+            // while the run is parked at it again.
+            view.HumanGateAnsweredAt = null;
+            view.HumanGateAnsweredByOwnerId = null;
+        }
+
         EndPipelineSessions(view);
         view.State = RunState.ReviewParked;
     }
@@ -1678,6 +1707,13 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
     public void Apply(IEvent<ReviewBoundaryApproved> @event, RunDetails view)
     {
         view.BoundaryApprovals.Add(new BoundaryApprovalRecord(@event.Data.ApprovedAt));
+        if (view.ParkedIsHumanGate)
+        {
+            view.HumanGateAnsweredAt = @event.Data.ApprovedAt;
+            view.HumanGateAnsweredByOwnerId = @event.Data.ApprovedByOwnerId;
+        }
+
+        view.ParkedIsHumanGate = false;
         view.ParkedReason = null;
         view.ParkedNeedsFixesOffersNoProgress = false;
         view.ParkedIsInteractiveGate = false;
@@ -1703,6 +1739,16 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
     {
         view.HumanFixes.Add(new HumanFixRecord(
             @event.Data.Cycle, @event.Data.NoChangeReason, @event.Data.AppliedAt));
+        if (view.ParkedIsHumanGate)
+        {
+            // Review had settled merge-ready; the person's commits reopen it, as they do on the aggregate.
+            view.LastReviewVerdict = ReviewVerdict.NeedsFixes;
+        }
+
+        view.HumanGateAnsweredAt = null;
+        view.HumanGateAnsweredByOwnerId = null;
+
+        view.ParkedIsHumanGate = false;
         view.ParkedReason = null;
         view.ParkedNeedsFixesOffersNoProgress = false;
         view.ParkedIsInteractiveGate = false;
@@ -1759,6 +1805,15 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
                 view.ReviewCycle, @event.Data.Verdict, @event.Data.Reason, @event.Data.ResolvedAt));
         }
 
+        if (view.ParkedIsHumanGate)
+        {
+            // Only a merge-ready resolve answers the gate; a redirect withdraws any earlier answer.
+            bool answered = @event.Data.Verdict == ReviewVerdict.MergeReady;
+            view.HumanGateAnsweredAt = answered ? @event.Data.ResolvedAt : null;
+            view.HumanGateAnsweredByOwnerId = answered ? @event.Data.ResolvedByOwnerId : null;
+        }
+
+        view.ParkedIsHumanGate = false;
         view.ParkedReason = null;
         view.ParkedNeedsFixesOffersNoProgress = false;
         view.ParkedIsInteractiveGate = false;
@@ -1783,6 +1838,7 @@ public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDet
             @event.Data.Reason, @event.Data.ReasonByAgent, [.. @event.Data.Skipped]);
         view.LastReviewVerdict = ReviewVerdict.MergeReady;
         view.ReviewSettlement = ReviewSettlement.Overridden;
+        view.ParkedIsHumanGate = false;
         view.ParkedReason = null;
         view.ParkedNeedsFixesOffersNoProgress = false;
         view.ParkedIsInteractiveGate = false;

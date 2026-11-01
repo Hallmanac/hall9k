@@ -49,6 +49,16 @@ public static class InteractiveBoundaryChoices
     };
 
     /// <summary>
+    /// <see cref="LeversFor(ReviewPhase)"/>, except that a park that is the task's human gate has its
+    /// own set of choices whatever phase it was recorded from: the gate is the one boundary that is
+    /// not decided by phase alone. Every surface that offers choices at a park calls this overload with
+    /// the run's <c>ParkedIsHumanGate</c>, so the park reason, <c>h9k task next</c>, <c>h9k status</c>,
+    /// the briefing, and the step-in anchor cannot disagree about what the gate offers.
+    /// </summary>
+    public static InteractiveBoundaryLevers? LeversFor(ReviewPhase parkedFrom, bool parkedIsHumanGate) =>
+        parkedIsHumanGate ? InteractiveBoundaryLevers.HumanGate : LeversFor(parkedFrom);
+
+    /// <summary>
     /// One line per choice, each opening with the exact command, for a surface that renders a list
     /// (a prompt's bullets, a help topic). Ordered most-expected-first: at the review-verdict-to-fix
     /// boundary that is the fix session the reviewer's verdict already asked for, with the human's
@@ -75,15 +85,40 @@ public static class InteractiveBoundaryChoices
             ],
             InteractiveBoundaryLevers.GatesToPullRequest =>
             [
-                $"`h9k review proceed {id}` — open the pull request now. Interactive mode stays on, so they "
-                + "keep the wheel for whatever the pull request needs next.",
+                $"`h9k review proceed {id}`: open the pull request now, once the daemon has checked the branch is "
+                + "still where this park left it and the worktree holds nothing uncommitted. Interactive mode stays on, "
+                + "so they keep the wheel for whatever the pull request needs next.",
                 $"`h9k review resolve {id} --needs-fixes \"<what to change>\"` — send it back for a fix "
                 + "instead of opening anything.",
+                $"`h9k review fixed {id}`: they changed the branch by hand and committed; this hands it back so the "
+                + "gates and a review pass read their commits before anything opens. Refused over uncommitted work "
+                + "and over a branch still where this park left it.",
                 $"`h9k task revise {id} --clear-interactive-mode`, then `h9k review proceed {id}` once — "
                 + "hand the pull request to the daemon and stop being asked: it shepherds the pull request "
                 + "from there on its own (reviews, checks, follow-up laps, merge). An option, never the "
                 + "default; interactive stays on unless they ask for this. Clearing the flag does not by "
                 + "itself release this park, which is why the proceed still follows it.",
+            ],
+            InteractiveBoundaryLevers.HumanGate =>
+            [
+                $"`h9k review brief {id}`: read the briefing again: the summary, how review settled, the "
+                + "commits, and where the branch lives.",
+                $"`h9k review proceed {id}`: approve: the pull request opens on the next sweep and the task "
+                + "continues as any other. Refused over commits or uncommitted work made since the park, "
+                + "which re-parks here instead of opening anything unread.",
+                $"`h9k review resolve {id} --needs-fixes \"<what to change>\"`: change it by session: a fix "
+                + "session carries that text, the gates and a review pass read the result, and the run stops "
+                + "here again.",
+                $"`h9k review fixed {id}`: change it by hand: commit your changes in the worktree, then hand "
+                + "the branch back; the gates run over your commits, a review pass reads them as it would a "
+                + "fix session's, and the run stops here again. `--no-change` is refused here, since no "
+                + "finding is waiting for an answer.",
+                $"`h9k review resolve {id} --merge-ready --reason \"<why it is sound>\"`: open the pull "
+                + "request over commits you made yourself without another review pass: the gates run on the "
+                + "tip and the settlement is recorded as Settled, not Clean. Refused while the worktree "
+                + "holds uncommitted work.",
+                $"`h9k task abandon {id}`, then `h9k task add --evolved-from {id}`: discard it and start a "
+                + "fresh draft from the same objective, criteria, and context.",
             ],
             _ =>
             [
@@ -113,10 +148,16 @@ public static class InteractiveBoundaryChoices
                 + $"carrying your redirect), h9k review resolve {id} --merge-ready (overrule the finding), or "
                 + $"{SkipParkClause(id)}.",
             InteractiveBoundaryLevers.GatesToPullRequest =>
-                $"h9k review proceed {id} to open it, or h9k review resolve {id} --needs-fixes \"<reason>\" "
-                + $"to send it back instead. To hand the pull request off entirely: h9k task revise {id} "
+                $"h9k review proceed {id} to open it, h9k review resolve {id} --needs-fixes \"<reason>\" "
+                + $"to send it back instead, or h9k review fixed {id} once your own commits are on the branch. To hand the pull request off entirely: h9k task revise {id} "
                 + $"--clear-interactive-mode, then h9k review proceed {id} once — the daemon shepherds it "
                 + "from there without you. Interactive mode is the default; that hand-off is an option.",
+            InteractiveBoundaryLevers.HumanGate =>
+                $"Read the briefing with h9k review brief {id}. Then approve with h9k review proceed {id}, change "
+                + $"it by session with h9k review resolve {id} --needs-fixes \"<what to change>\" or by hand with "
+                + $"h9k review fixed {id} after committing, open it over your own commits without another "
+                + $"review pass with h9k review resolve {id} --merge-ready --reason \"<why>\", or discard it with "
+                + $"h9k task abandon {id} and h9k task add --evolved-from {id}.",
             _ => $"h9k review proceed {id} to continue, h9k review resolve to redirect it, or {SkipParkClause(id)}.",
         };
     }
