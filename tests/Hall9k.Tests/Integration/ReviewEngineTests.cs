@@ -187,6 +187,58 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         }
     }
 
+    /// <summary>
+    /// With the picker on and a pick recorded under on, the conformance pass carries the picked
+    /// lessons and the adversarial pass, which is deliberately told nothing about what the work was
+    /// meant to do, still carries the newest ones: lessons picked from the objective would hint at it.
+    /// </summary>
+    [Fact]
+    public async Task The_conformance_pass_carries_the_picked_lessons_and_the_adversarial_pass_keeps_newest_first()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        await PlatformConfigFile.WriteOperatingSettingsAsync(
+            settings =>
+            {
+                settings.LessonPicker = "on";
+                settings.LessonPromptMaxLessons = 2;
+            },
+            cts.Token);
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        List<Guid> lessonIds = [];
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskDetails seeded = (await session.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            string projectName = (await session.LoadAsync<Hall9k.Domain.Features.Project.Projections.ProjectDetails>(seeded.ProjectId, cts.Token))!.Name;
+            for (int index = 0; index < 5; index++)
+            {
+                (Hall9k.Domain.Features.Learning.LearningRecorded recorded, _) = await Hall9k.Cli.Commands.LearnCommand.RunAsync(
+                    session,
+                    new Hall9k.Cli.Commands.LearnCommand.Settings { Statement = $"Lesson number {index} for review", Project = projectName },
+                    node.OwnerId, node.NodeId, Now.AddMinutes(-index), cts.Token);
+                lessonIds.Add(recorded.Id);
+            }
+
+            session.Events.Append(taskId, new Hall9k.Domain.Features.Tasks.Events.LessonPickRecorded(
+                taskId, Hall9k.Domain.Features.Learning.LessonPickerMode.On, Hall9k.Domain.Features.Learning.LessonPickOutcome.Picked,
+                [lessonIds[4], lessonIds[3]], [lessonIds[0], lessonIds[1]], 5, 0, AgentModel.Sonnet, TimeSpan.FromSeconds(3), Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
+            "Nothing survived verification.\n\nVERDICT: merge-ready");
+        (await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token)).Should().BeTrue();
+
+        string conformance = System.Text.RegularExpressions.Regex.Replace(executor.Spawns[0].Prompt, @"\s+", " ");
+        string adversarial = System.Text.RegularExpressions.Regex.Replace(executor.Spawns[1].Prompt, @"\s+", " ");
+        conformance.Should().Contain("Lesson number 4 ").And.Contain("Lesson number 3 ")
+            .And.Contain("chosen for this task rather than taken newest first").And.NotContain("Lesson number 0 ");
+        adversarial.Should().Contain("Lesson number 0 ").And.Contain("Lesson number 1 ")
+            .And.NotContain("chosen for this task").And.NotContain("Lesson number 4 ");
+    }
+
     [Fact]
     public async Task Merge_ready_needs_both_lenses_clean_and_archives_each_lens_findings()
     {

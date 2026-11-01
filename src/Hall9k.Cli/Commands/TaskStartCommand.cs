@@ -180,7 +180,10 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             baseBranch: baseBranch, baseCommit: baseCommit,
             voiceSkill: (await session.LoadAsync<OwnerDetails>(context.OwnerId, cancellationToken))?.VoiceSkill,
             // The same lesson section a dispatcher-launched build gets (idea d805fd8b, piece 5).
-            lessons: await LessonPromptFeed.LoadAsync(session, project.Id, fleet.LessonReader, cancellationToken),
+            // The CLI never spawns the picker (that session belongs to the daemon); it composes with the
+            // task's recorded pick under the daemon's own rules, or newest-first when there is none.
+            lessons: await LessonPromptFeed.LoadAsync(
+                session, project.Id, fleet.LessonReader, taskDetails.LessonPick, cancellationToken),
             localFleet: await fleet.GetIfCarriedByAsync(taskDetails, cancellationToken));
 
         string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);

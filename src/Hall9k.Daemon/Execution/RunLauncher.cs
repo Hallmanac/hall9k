@@ -367,14 +367,6 @@ public sealed class RunLauncher(
             }
 
             await RenderKnowledgeDocumentsIntoAsync(session, project, worktree.Path, runId, cancellationToken);
-            // The lesson section every prompt this method composes carries (idea d805fd8b, piece
-            // 5). Read once here, beside the render that writes the same store's lessons into the
-            // worktree as a file, and handed to whichever prompt branch below actually runs: the
-            // section is identical for a fresh build, a follow-up, a failing-checks lap and a
-            // changes-requested lap, and a per-branch read would be four chances to disagree.
-            InjectedLessons lessons = await LoadRecordedLessonsAsync(
-                session, project, runId, cancellationToken);
-
             Guid sessionId = DomainId.New();
             ExecutorMode mode = ExecutorMode.Subscription;
             // Resolved once, here, and carried to both the spawn and the record: the model
@@ -736,6 +728,22 @@ public sealed class RunLauncher(
             }
 
             await session.SaveChangesAsync(cancellationToken);
+
+            // The lesson section every prompt this method composes carries (idea d805fd8b, piece 5).
+            // Read once, here, after the run stream's first save and beside the render that writes
+            // the same store's lessons into the worktree as a file, and handed to whichever prompt
+            // branch below actually runs: the section is identical for a fresh build, a follow-up, a
+            // failing-checks lap and a changes-requested lap, and a per-branch read would be four
+            // chances to disagree. It sits below the first save so the picker, which only a fresh
+            // build runs, can record its tokens on a run stream that exists.
+            //
+            // Read as the uncapped eligible list rather than as a finished section, so the picker is
+            // offered exactly what the provenance rule lets into a prompt and the section itself is
+            // composed from the same list. A task with a recorded pick carries it into this prompt
+            // when the setting says it may (LessonCandidates.For), or newest-first.
+            LessonCandidates lessonCandidates = await LoadRecordedLessonsAsync(
+                session, project, runId, cancellationToken);
+            InjectedLessons lessons = lessonCandidates.For(task.LessonPick);
 
             // The reopen's kind picks the follow-up prompt; Unknown (reopens recorded
             // before the vocabulary existed) keeps the historic review-feedback meaning.
@@ -1775,23 +1783,23 @@ public sealed class RunLauncher(
     }
 
     /// <summary>
-    /// This project's bounded lesson section for the prompt about to be composed (idea d805fd8b,
-    /// piece 5; backlog 55).
+    /// Every lesson this node may put in the prompt about to be composed, uncapped, with the caps and
+    /// the picker setting in force (idea d805fd8b, piece 5; backlog 55).
     /// <para>
     /// Best-effort in exactly the way <see cref="RenderKnowledgeDocumentsIntoAsync"/> is, and for
     /// the same reason: the run's point is the work, and a session whose prompt is missing its
     /// lessons is a worse session rather than a failed dispatch. A store or config-file problem is
-    /// logged once and the run goes on with <see cref="InjectedLessons.None"/>, which composes no
+    /// logged once and the run goes on with <see cref="LessonCandidates.None"/>, which composes no
     /// section at all, never a section that claims the project has nothing recorded, which would
     /// be a claim nobody here is in a position to make.
     /// </para>
     /// </summary>
-    private async Task<InjectedLessons> LoadRecordedLessonsAsync(
+    private async Task<LessonCandidates> LoadRecordedLessonsAsync(
         IQuerySession query, ProjectDetails project, Guid runId, CancellationToken cancellationToken)
     {
         try
         {
-            return await LessonPromptFeed.LoadAsync(
+            return await LessonPromptFeed.LoadCandidatesAsync(
                 query, project.Id,
                 fleets is null
                     ? null
@@ -1803,7 +1811,7 @@ public sealed class RunLauncher(
             logger.LogWarning(exception,
                 "Run {RunId}: could not read {Project}'s recorded lessons, so this session's prompt "
                 + "carries no lesson section; h9k learn list still shows them", runId, project.Name);
-            return InjectedLessons.None;
+            return LessonCandidates.None;
         }
     }
 

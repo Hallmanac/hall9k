@@ -9,6 +9,17 @@ unattended agent run is a different kind of claim from one a person typed at a s
 that reads "recorded with no run named" is either of those: no run was named, so nobody observed
 which. None of them is a decision this project ratified. Read them the way you would read a
 colleague's note, not the way you would read the acceptance criteria above.
+===picked-lead===
+The lessons below were recorded by runs on this project, and by its owner, and were chosen for this
+task rather than taken newest first: a short session read this task and the lessons this node may put
+in a prompt, and picked the ones most likely to matter here, so some of them are old. Each one went
+live the moment it was recorded, with no review step in between, which is why the parenthetical at the
+end of every line is load-bearing rather than decoration: it says how far the lesson travels and what
+the platform actually observed about where it came from. A lesson from an unattended agent run is a
+different kind of claim from one a person typed at a shell, and a line that reads "recorded with no
+run named" is either of those: no run was named, so nobody observed which. None of them is a decision
+this project ratified. Read them the way you would read a colleague's note, not the way you would
+read the acceptance criteria above.
 ===verbs===
 Two verbs go with this section. If one of these lessons is wrong, or it has been absorbed into
 something better, retire it and say why instead of quietly working around it:
@@ -24,6 +35,12 @@ This node caps what any one prompt carries at {{MaxLessons}} lessons and {{MaxCh
 of lesson text (both are `h9k config set --lesson-prompt-max-lessons` and
 `--lesson-prompt-max-characters`), so what you just read is the newest that fit rather than
 everything on record.
+===picked-truncation===
+That is {{Shown}} of the {{Eligible}} lessons eligible for this prompt, and {{NotCarried}} are not carried
+here. The ones above were chosen for this task, not taken newest first, and this node caps what any one
+prompt carries at {{MaxLessons}} lessons and {{MaxCharacters}} characters of lesson text (both are
+`h9k config set --lesson-prompt-max-lessons` and `--lesson-prompt-max-characters`), so what you just
+read is a selection rather than everything on record.
 ===truncation-provenance-reconciliation===
 {{Active}} lessons are live across this project and its owner; the difference
 between that and the {{Eligible}} eligible was held back on provenance rather than by either cap.

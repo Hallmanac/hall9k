@@ -183,6 +183,16 @@ public sealed class OperatingSettings
     public int? LessonPromptMaxCharacters { get; set; }
 
     /// <summary>
+    /// What this node does with the lesson picker: <c>off</c>, <c>shadow</c> or <c>on</c>
+    /// (<see cref="Hall9k.Domain.Features.Learning.LessonPickerMode"/>). Null is shadow, and so is a
+    /// word nobody recognizes in a hand-edited file. Read fresh on every prompt composition rather
+    /// than bound through <c>DaemonOptions</c>, for the reason <see cref="LessonPromptMaxLessons"/>
+    /// documents: the CLI composes prompts too and cannot reach <c>DaemonOptions</c>, and a change
+    /// has to take effect at the next composition with no daemon restart.
+    /// </summary>
+    public string? LessonPicker { get; set; }
+
+    /// <summary>
     /// This node's override of the conformance review track's cycle cap (Decisions Log #63);
     /// null defers to <see cref="DefaultMaxComplianceReviewCycles"/>. Task &gt; project &gt; node &gt;
     /// compiled default is the resolution order every one of these four caps shares.

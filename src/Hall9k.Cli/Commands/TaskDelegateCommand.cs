@@ -522,7 +522,9 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
             // And the same lesson section (idea d805fd8b, piece 5): a delegated contractor is a
             // build session on this project's own branch, so what this project's runs have learned
             // applies to it exactly as it does to a dispatched one.
-            lessons: await LessonPromptFeed.LoadAsync(session, project.Id, fleet.LessonReader, cancellationToken),
+            // A recorded pick rides in under the daemon's own rules; the CLI never spawns the picker.
+            lessons: await LessonPromptFeed.LoadAsync(
+                session, project.Id, fleet.LessonReader, taskDetails.LessonPick, cancellationToken),
             localFleet: await fleet.GetIfCarriedByAsync(taskDetails, cancellationToken));
 
         return new DelegationPlan(

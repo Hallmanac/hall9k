@@ -54,13 +54,20 @@ public sealed record HeldLessonCount(LessonProvenanceMark Mark, int Count);
 /// counted under the reason it did not, and the composed prose says so and names
 /// <c>h9k learn list</c>.
 /// </para>
+/// <para>
+/// <see cref="ChosenForTask"/> marks a section whose lessons were picked for the task rather than
+/// taken newest first. <see cref="HeldForCap"/> then counts every eligible lesson the section does
+/// not carry, which for a picked set is the choice and the caps together, so the arithmetic the
+/// prose reports (shown plus not carried equals eligible) holds for both selections.
+/// </para>
 /// </summary>
 public sealed record InjectedLessons(
     IReadOnlyList<InjectedLesson> Lessons,
     int ActiveInScope,
     IReadOnlyList<HeldLessonCount> HeldForProvenanceByMark,
     int HeldForCap,
-    LessonInjectionCaps Caps)
+    LessonInjectionCaps Caps,
+    bool ChosenForTask = false)
 {
     /// <summary>Nothing recorded, nothing held back: what a project with no lessons yields, and what every caller that has no store to read passes.</summary>
     public static readonly InjectedLessons None = new([], 0, [], 0, LessonInjectionCaps.Default);
@@ -95,6 +102,45 @@ public sealed record InjectedLessons(
 }
 
 /// <summary>
+/// Every lesson the composing node's provenance rule lets into a prompt, newest first, before
+/// either cap applies, together with what a section has to report about the rest. This is the one
+/// list the two selections share: <see cref="NewestFirst"/> is what a prompt carries today, and the
+/// lesson picker is offered exactly <see cref="Eligible"/>, so a lesson held back on provenance
+/// reaches no picker prompt and a lesson the caps alone hold back is offered.
+/// </summary>
+/// <param name="Eligible">The lessons the provenance rule let through, newest first (recorded time, then id).</param>
+/// <param name="ActiveInScope">Every active lesson in scope, whatever its provenance.</param>
+/// <param name="HeldForProvenanceByMark">The lessons the provenance rule held back, counted under each mark.</param>
+/// <param name="Caps">The caps in force when this was read.</param>
+/// <param name="PickerMode">The lesson-picker setting in force when this was read.</param>
+public sealed record LessonCandidates(
+    IReadOnlyList<InjectedLesson> Eligible,
+    int ActiveInScope,
+    IReadOnlyList<HeldLessonCount> HeldForProvenanceByMark,
+    LessonInjectionCaps Caps,
+    LessonPickerMode PickerMode)
+{
+    /// <summary>What a read that could not be made offers: no lessons, nothing held, the default caps, and shadow.</summary>
+    public static readonly LessonCandidates None = new([], 0, [], LessonInjectionCaps.Default, LessonPickerMode.Shadow);
+
+    /// <summary>The section a prompt carries when no pick applies: the newest eligible lessons that fit both caps.</summary>
+    public InjectedLessons NewestFirst => LessonInjection.SelectNewestFirst(this);
+
+    /// <summary>
+    /// The section for <paramref name="recordedPick"/>, which is the task's recorded pick or null.
+    /// The picked set is used only when the pick says it may be
+    /// (<see cref="Tasks.Events.LessonPickRecorded.CarriesIntoPrompts"/>, against the setting this
+    /// was read under), and then only as far as it still stands: every id is checked against the
+    /// lessons this node may carry right now, so a lesson since retired or held back on provenance
+    /// drops out, and when none remain the section is newest-first.
+    /// </summary>
+    public InjectedLessons For(Tasks.Events.LessonPickRecorded? recordedPick) =>
+        recordedPick is { } pick && pick.CarriesIntoPrompts(PickerMode)
+            ? LessonInjection.SelectPicked(this, pick.PickedLessonIds) ?? NewestFirst
+            : NewestFirst;
+}
+
+/// <summary>
 /// Turns a project's and an owner's recorded lessons into the bounded section a prompt carries
 /// (idea d805fd8b, piece 5; backlog 55). Pure: the store read and the node's own identity are the
 /// caller's (<see cref="Queries.LessonPromptFeed"/>), so every rule below is provable with no
@@ -104,37 +150,23 @@ public sealed record InjectedLessons(
 public static class LessonInjection
 {
     /// <summary>
-    /// The section's lessons, in the order a prompt lists them, with everything held back counted
-    /// under its reason.
-    /// <para>
-    /// Newest first, which is the one place this deliberately disagrees with
-    /// <see cref="LessonsDocumentRenderer"/>'s oldest-first document. A document is read whole and
-    /// chronology is what makes it legible; a capped feed has to drop something, and dropping the
-    /// oldest keeps what the most recent runs learned, which is also the set that has not yet had
-    /// time to be retired or absorbed into a harder rule. It matches <c>h9k learn list</c>'s own
-    /// ordering too, so a session following the section's pointer reads the same list continuing
-    /// where the section stopped rather than starting from the other end.
-    /// </para>
-    /// <para>
-    /// The two caps are applied to the eligible lessons together, after the provenance filter and
-    /// never before it: a run of another node's lessons at the head of the list must not be able
-    /// to consume the budget and starve the section of the ones that actually reach a prompt. The
-    /// character budget counts the rendered <see cref="InjectedLesson.Line"/> text, which is what
-    /// the prompt actually pays for, and a lesson is never truncated mid-claim: half a claim is a
-    /// different claim, so a lesson that will not fit whole is held back whole and counted.
-    /// </para>
+    /// The eligible lessons, with everything the provenance rule held back counted under its
+    /// reason, and no cap applied. The one place the provenance predicate lives: both selections
+    /// below start from this list, and a second copy of it is the drift
+    /// <see cref="Queries.LessonPromptFeed"/> exists to prevent.
     /// <para>
     /// <paramref name="localFleet"/> is the asking owner's fleet, and it is only consulted for a
     /// lesson that was replicated here (<see cref="LearningDetails.ReceivedFromNodeId"/> non-null):
     /// null means it could not be read, which holds those lessons rather than admitting them.
     /// </para>
     /// </summary>
-    public static InjectedLessons Compose(
+    public static LessonCandidates Eligible(
         IReadOnlyList<LearningDetails> projectLessons,
         IReadOnlyList<LearningDetails> ownerLessons,
         Guid thisNodeId,
         LessonInjectionCaps caps,
-        IReadOnlySet<Guid>? localFleet = null)
+        IReadOnlySet<Guid>? localFleet = null,
+        LessonPickerMode? pickerMode = null)
     {
         List<LearningDetails> active =
         [
@@ -160,20 +192,6 @@ public static class LessonInjection
                 lesson.Id, KnowledgeDocumentText.SingleLine(lesson.Statement), lesson.Scope, mark));
         }
 
-        List<InjectedLesson> shown = [];
-        int characters = 0;
-        foreach (InjectedLesson lesson in eligible)
-        {
-            int cost = lesson.Line.Length;
-            if (shown.Count >= caps.MaxLessons || characters + cost > caps.MaxCharacters)
-            {
-                break;
-            }
-
-            shown.Add(lesson);
-            characters += cost;
-        }
-
         // Reported in the vocabulary's own order rather than in whichever order the lessons
         // happened to arrive, so the same holds read the same way in every prompt, and with the
         // empty buckets dropped so a section never names a reason it held nothing back for.
@@ -184,7 +202,105 @@ public static class LessonInjection
                 .Where(held => held.Count > 0),
         ];
 
+        return new LessonCandidates(eligible, active.Count, heldByMark, caps, pickerMode ?? LessonPickerMode.Shadow);
+    }
+
+    /// <summary>
+    /// The section's lessons, in the order a prompt lists them, with everything held back counted
+    /// under its reason. Newest first through <see cref="Eligible"/> and then
+    /// <see cref="SelectNewestFirst"/>; the parameters are those of <see cref="Eligible"/>.
+    /// </summary>
+    public static InjectedLessons Compose(
+        IReadOnlyList<LearningDetails> projectLessons,
+        IReadOnlyList<LearningDetails> ownerLessons,
+        Guid thisNodeId,
+        LessonInjectionCaps caps,
+        IReadOnlySet<Guid>? localFleet = null) =>
+        SelectNewestFirst(Eligible(projectLessons, ownerLessons, thisNodeId, caps, localFleet));
+
+    /// <summary>
+    /// The eligible lessons newest first, bounded by both caps.
+    /// <para>
+    /// Newest first, which is the one place this deliberately disagrees with
+    /// <see cref="LessonsDocumentRenderer"/>'s oldest-first document. A document is read whole and
+    /// chronology is what makes it legible; a capped feed has to drop something, and dropping the
+    /// oldest keeps what the most recent runs learned, which is also the set that has not yet had
+    /// time to be retired or absorbed into a harder rule. It matches <c>h9k learn list</c>'s own
+    /// ordering too, so a session following the section's pointer reads the same list continuing
+    /// where the section stopped rather than starting from the other end.
+    /// </para>
+    /// <para>
+    /// The two caps are applied to the eligible lessons together, after the provenance filter and
+    /// never before it: a run of another node's lessons at the head of the list must not be able
+    /// to consume the budget and starve the section of the ones that actually reach a prompt. The
+    /// character budget counts the rendered <see cref="InjectedLesson.Line"/> text, which is what
+    /// the prompt actually pays for, and a lesson is never truncated mid-claim: half a claim is a
+    /// different claim, so a lesson that will not fit whole is held back whole and counted. Here
+    /// the first lesson that does not fit ends the section, so the section is always an unbroken run
+    /// of the newest lessons.
+    /// </para>
+    /// </summary>
+    public static InjectedLessons SelectNewestFirst(LessonCandidates candidates)
+    {
+        List<InjectedLesson> shown = [];
+        int characters = 0;
+        foreach (InjectedLesson lesson in candidates.Eligible)
+        {
+            int cost = lesson.Line.Length;
+            if (shown.Count >= candidates.Caps.MaxLessons || characters + cost > candidates.Caps.MaxCharacters)
+            {
+                break;
+            }
+
+            shown.Add(lesson);
+            characters += cost;
+        }
+
         return new InjectedLessons(
-            shown, active.Count, heldByMark, eligible.Count - shown.Count, caps);
+            shown, candidates.ActiveInScope, candidates.HeldForProvenanceByMark,
+            candidates.Eligible.Count - shown.Count, candidates.Caps);
+    }
+
+    /// <summary>
+    /// The eligible lessons among <paramref name="pickedIds"/>, in the order given and within both
+    /// caps, or null when none of them stands. An id that is not eligible now, or repeats one already
+    /// taken, is skipped. A lesson that does not fit whole is left out whole and the next one is still
+    /// tried, which is where this differs from <see cref="SelectNewestFirst"/>: a pick is a set the
+    /// session chose, so one long lesson must not end it. The count cap does end it, because nothing
+    /// after the last slot can fit.
+    /// </summary>
+    public static InjectedLessons? SelectPicked(LessonCandidates candidates, IEnumerable<Guid> pickedIds)
+    {
+        Dictionary<Guid, InjectedLesson> eligibleById = candidates.Eligible.ToDictionary(lesson => lesson.Id);
+        HashSet<Guid> considered = [];
+        List<InjectedLesson> shown = [];
+        int characters = 0;
+        foreach (Guid id in pickedIds)
+        {
+            if (!eligibleById.TryGetValue(id, out InjectedLesson? lesson) || !considered.Add(id))
+            {
+                continue;
+            }
+
+            if (shown.Count >= candidates.Caps.MaxLessons)
+            {
+                break;
+            }
+
+            int cost = lesson.Line.Length;
+            if (characters + cost > candidates.Caps.MaxCharacters)
+            {
+                continue;
+            }
+
+            shown.Add(lesson);
+            characters += cost;
+        }
+
+        return shown.Count == 0
+            ? null
+            : new InjectedLessons(
+                shown, candidates.ActiveInScope, candidates.HeldForProvenanceByMark,
+                candidates.Eligible.Count - shown.Count, candidates.Caps, ChosenForTask: true);
     }
 }

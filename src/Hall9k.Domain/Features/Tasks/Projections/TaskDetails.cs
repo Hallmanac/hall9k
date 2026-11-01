@@ -467,6 +467,13 @@ public sealed class TaskDetails
     /// they are printed.
     /// </summary>
     public List<TrackerAssignmentReassigned> TrackerReassignments { get; set; } = [];
+    /// <summary>
+    /// The task's one lesson pick (<see cref="LessonPickRecorded"/>), or null while it has none. The
+    /// first record wins, so a replicated duplicate or a racing second writer changes nothing. Every
+    /// prompt composition reads it through <c>LessonPromptFeed</c>, which decides whether the set it
+    /// names reaches that prompt.
+    /// </summary>
+    public LessonPickRecorded? LessonPick { get; set; }
     /// <summary>See <see cref="TaskAggregate.PendingTakeRequestedByNodeId"/>'s own doc — mirrored for <c>h9k task show</c> and <c>h9k status</c> (idea 202383dc, item 5).</summary>
     public Guid? PendingTakeRequestedByNodeId { get; set; }
     /// <summary>See <see cref="TaskAggregate.PendingTakeRequestedByOwnerId"/>'s own doc.</summary>
@@ -1213,6 +1220,10 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
     /// <summary>Appends to <see cref="TaskDetails.TrackerReassignments"/>; the task aggregate itself has nothing to change, since no rule reads a tracker reassignment.</summary>
     public void Apply(IEvent<TrackerAssignmentReassigned> @event, TaskDetails view) =>
         view.TrackerReassignments.Add(@event.Data);
+
+    /// <summary>Keeps the first <see cref="LessonPickRecorded"/> only; the task aggregate has nothing to change, since no rule reads a lesson pick.</summary>
+    public void Apply(IEvent<LessonPickRecorded> @event, TaskDetails view) =>
+        view.LessonPick ??= @event.Data;
 
     /// <summary>Mirrors <see cref="TaskAggregate.Apply(Events.TaskHolderTakenOver)"/> — see <see cref="TaskDetails.TakenOverFromNodeId"/>'s own doc.</summary>
     public void Apply(IEvent<TaskHolderTakenOver> @event, TaskDetails view)

@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
@@ -1237,6 +1238,21 @@ public sealed class TaskPassageQueryTests
         TaskPassage passage = Compute([], [run]);
 
         passage.Sessions.Should().Be(3);
+    }
+
+    [Fact]
+    public void Sessions_count_a_lesson_pick_whose_session_started_and_not_one_that_never_did()
+    {
+        // The picker's record sits on the task's own stream, not a run's, so the run folds never see
+        // it: a pick counts once when a Claude Code process was started for it, and a pick whose
+        // session could not start spawned nothing.
+        Guid taskId = DomainId.New();
+        LessonPickRecorded Pick(LessonPickOutcome outcome) => new(
+            taskId, LessonPickerMode.Shadow, outcome, [], [], 6, 0, AgentModel.Sonnet, TimeSpan.FromSeconds(4), Now);
+
+        Compute([Ev(Pick(LessonPickOutcome.Picked))], []).Sessions.Should().Be(1);
+        Compute([Ev(Pick(LessonPickOutcome.TimedOut))], []).Sessions.Should().Be(1);
+        Compute([Ev(Pick(LessonPickOutcome.StartFailed))], []).Sessions.Should().Be(0);
     }
 
     [Fact]

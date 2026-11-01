@@ -74,6 +74,14 @@ public sealed class EventScopeRegistryTests
         "Hall9k.Domain.Features.Learning.InjectedLessons",
         "Hall9k.Domain.Features.Learning.LessonInjectionCaps",
         "Hall9k.Domain.Features.Learning.LessonProvenanceMark",
+        // The lesson picker's own working shapes: the uncapped eligible list a composition reads and
+        // offers the picker, how its answer was read, and the two closed vocabularies the one event
+        // that is appended (LessonPickRecorded, classified in the registry) carries. None is ever
+        // appended to a stream by itself, so none has a scope of its own to classify.
+        "Hall9k.Domain.Features.Learning.LessonCandidates",
+        "Hall9k.Domain.Features.Learning.LessonPickAnswerReading",
+        "Hall9k.Domain.Features.Learning.LessonPickerMode",
+        "Hall9k.Domain.Features.Learning.LessonPickOutcome",
         "Hall9k.Domain.Features.Idea.IdeaSeed",
         "Hall9k.Domain.Features.Idea.IdeaState",
         "Hall9k.Domain.Features.Invite.VouchedProjectRecord",

@@ -2176,7 +2176,8 @@ public sealed class ReviewEngine(
             interactiveModeEnabledOverride: interactiveModeEnabled,
             priorHumanFixes: context.PriorHumanFixes,
             commandTimeout: _options.VerifyGateTimeout,
-            lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken),
+            lessons: await LoadRecordedLessonsAsync(
+                context.Project.Id, context.TaskId, context.RunId, carriesRecordedPick: lens == ReviewLens.Conformance, cancellationToken),
             readSecurityAreas: readSecurityAreas);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // Every lens is review work, so they resolve the same role in the chain (log #33) — except
@@ -2261,7 +2262,8 @@ public sealed class ReviewEngine(
             // parent moves origin/<parent> out from under it.
             baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit,
             priorHumanFixes: context.PriorHumanFixes, commandTimeout: _options.VerifyGateTimeout,
-            lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken));
+            lessons: await LoadRecordedLessonsAsync(
+                context.Project.Id, context.TaskId, context.RunId, carriesRecordedPick: false, cancellationToken));
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // A Verify pass resolves its own knob rather than the plain Review chain (Brian's ruling,
         // 2026-08-29): defaults to whatever Review itself would resolve to, so this is a no-op
@@ -2534,7 +2536,8 @@ public sealed class ReviewEngine(
                 context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled,
                 baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit,
                 commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill,
-                lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken),
+                lessons: await LoadRecordedLessonsAsync(
+                    context.Project.Id, context.TaskId, context.RunId, carriesRecordedPick: true, cancellationToken),
                 localFleet: localFleet, humanResolutionIsForeign: foreignResolver is not null)
             : AgentPromptBuilder.BuildReviewFix(
                 context.Task, context.Project, context.Run.Branch, findings, cycle,
@@ -2544,7 +2547,8 @@ public sealed class ReviewEngine(
                 // the recorded fork point rather than origin/<parent> for the same reason.
                 baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit,
                 commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill,
-                lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken));
+                lessons: await LoadRecordedLessonsAsync(
+                    context.Project.Id, context.TaskId, context.RunId, carriesRecordedPick: true, cancellationToken));
         ExecutorMode mode = context.Run.ExecutorMode;
 
         // A retry of the very same round reuses whatever it already decided rather than asking
@@ -4979,7 +4983,8 @@ public sealed class ReviewEngine(
             assessmentGuidance: assessmentGuidance, baseCommit: baseCommit,
             precedesFirstReviewCycle: precedesFirstReviewCycle,
             mechanicalRetryAttempted: mechanicalRetryAttempted,
-            lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken),
+            lessons: await LoadRecordedLessonsAsync(
+                    context.Project.Id, context.TaskId, context.RunId, carriesRecordedPick: true, cancellationToken),
             humanResolutionIsForeign: resolutionIsForeign);
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
@@ -5538,7 +5543,8 @@ public sealed class ReviewEngine(
             run.LastPreFinalPassRebaseOntoCommit ?? RunRebasedOntoBase.UnreadableCommit,
             run.LastPreFinalPassRebaseRecovered, gateOutput, guidanceText,
             commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill,
-            lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken),
+            lessons: await LoadRecordedLessonsAsync(
+                    context.Project.Id, context.TaskId, context.RunId, carriesRecordedPick: true, cancellationToken),
             humanGuidanceIsForeign: guidanceIsForeign);
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
@@ -8466,7 +8472,18 @@ public sealed class ReviewEngine(
     /// (idea d805fd8b, piece 5; backlog 55). Read fresh per dispatch, in its own session, the same
     /// staleness reasoning <see cref="IsInteractiveModeEnabledAsync"/> documents: a review cycle
     /// can start hours after <c>ReviewContext</c> was loaded, and a lesson the build session
-    /// recorded during that window is exactly the lesson the reviewer reading its diff wants.
+    /// recorded during that window is exactly the lesson the reviewer reading its diff wants,
+    /// which is true of a section taken newest first and not of a picked one: the task's picked set
+    /// is fixed when it is recorded, so it never gains a lesson recorded during the run.
+    /// <para>
+    /// <paramref name="carriesRecordedPick"/> is the lens rule. A fix, rebase or gate-repair session
+    /// and the conformance review pass carry the task's picked set when the setting is on; the
+    /// adversarial pass and the Verify pass, which stands in for the adversarial track, always carry
+    /// newest-first, because that lens is deliberately told nothing about what the work was meant to
+    /// do and lessons picked from the objective would hint at it. Whether the set is actually
+    /// carried is the feed's decision (setting, recorded mode and outcome, and what this node may
+    /// carry right now), never this caller's.
+    /// </para>
     /// <para>
     /// Best-effort, like <c>RunLauncher</c>'s own copy: a failure here composes no section rather
     /// than failing the pass, because the pass is the point and a prompt missing its lessons is a
@@ -8474,17 +8491,20 @@ public sealed class ReviewEngine(
     /// </para>
     /// </summary>
     private async Task<InjectedLessons> LoadRecordedLessonsAsync(
-        Guid projectId, Guid runId, CancellationToken cancellationToken)
+        Guid projectId, Guid taskId, Guid runId, bool carriesRecordedPick, CancellationToken cancellationToken)
     {
         try
         {
             await using IQuerySession query = store.QuerySession();
+            LessonPickRecorded? recordedPick = carriesRecordedPick
+                ? (await query.LoadAsync<TaskDetails>(taskId, cancellationToken))?.LessonPick
+                : null;
             return await LessonPromptFeed.LoadAsync(
                 query, projectId,
                 fleets is null
                     ? null
                     : async token => (await fleets.GetAsync(projectId, token))?.NodeIds,
-                cancellationToken);
+                recordedPick, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
