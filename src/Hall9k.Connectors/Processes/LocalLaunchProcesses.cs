@@ -34,7 +34,23 @@ public static class LocalLaunchProcesses
             .Select(process => process.ProcessId),
     ];
 
-    /// <summary>Everything a live launch left running; nothing at all for one that already ended, whose record carries no processes anybody still owns.</summary>
-    public static IReadOnlyList<int> EndAll(LocalLaunchState? launch) =>
-        launch is { Live: true } ? EndAll(launch.Processes) : [];
+    /// <summary>
+    /// Everything a live launch left running, and the walk still in flight, if any; nothing at all for one
+    /// that already ended, whose record carries no processes anybody still owns. The walker goes first and
+    /// with its whole tree: a pass in the middle of a setup step has recorded no process yet, so ending only
+    /// the recorded ones would stop nothing, and the pass would carry on to start the product in the
+    /// worktree and then record a launch that had already been stopped.
+    /// </summary>
+    public static IReadOnlyList<int> EndAll(LocalLaunchState? launch)
+    {
+        if (launch is not { Live: true })
+        {
+            return [];
+        }
+
+        IReadOnlyList<LocalLaunchProcess> owned = launch.Walker is { } walker
+            ? [walker, .. launch.Processes]
+            : launch.Processes;
+        return EndAll(owned);
+    }
 }

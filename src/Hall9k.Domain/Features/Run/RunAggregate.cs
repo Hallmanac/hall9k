@@ -974,6 +974,11 @@ public sealed class RunAggregate
         {
             HumanGateTipSha = null;
             ClearHumanGateAnswer();
+            // The same answer also cleared interactive mode's own gate for the boundary it answered
+            // (Apply(ReviewParkResolved) and Apply(ReviewProceeded) set it together with the answer), and a task
+            // with interactive mode on but no human gate has nothing else to stop the run once the answer is
+            // gone, so the pull request would open over commits an agent wrote after the owner's word.
+            InteractiveGateCleared = false;
         }
     }
 

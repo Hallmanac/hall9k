@@ -296,6 +296,7 @@ public sealed class HumanGateRunTests
             ParkAtTheGate(run, id);
             run.Apply(new ReviewParkResolved(id, ReviewVerdict.MergeReady, "ship it", Now, DomainId.New()));
             run.HumanGateAnswer.Should().Be(HumanGateAnswer.ResolvedMergeReady);
+            run.InteractiveGateCleared.Should().BeTrue("the answer also cleared interactive mode's own gate for the boundary");
 
             if (recovery)
             {
@@ -311,6 +312,8 @@ public sealed class HumanGateRunTests
             run.HumanGateAnswer.Should().Be(HumanGateAnswer.None);
             run.HumanGateAnsweredAt.Should().BeNull();
             run.HumanGateTipSha.Should().BeNull();
+            run.InteractiveGateCleared.Should().BeFalse(
+                "a task with interactive mode but no human gate is otherwise held by nothing over the agent's new commits");
         }
     }
 

@@ -1034,15 +1034,17 @@ for a teammate to see.
 
 `h9k task revise --clear-human-gate` takes the gate off again. When it is cleared while the run is still in
 review, the run opens its pull request without stopping. When it is cleared while the run is already parked at
-the gate, the park stays: only an answer (`h9k review proceed`, `h9k review resolve --merge-ready`, or `h9k task
-skip-to-pr`) releases a parked run, so the owner still has to say which way the work goes.
+the gate, the park stays: only an answer (`h9k review proceed` or `h9k review resolve --merge-ready`) releases
+a parked run, so the owner still has to say which way the work goes. (`h9k task skip-to-pr` is refused at the
+gate itself, because review has already settled and nothing is left to skip.)
 
 The gate is a property of one task and never a project or node default, because a stop on every task makes
 the owner the bottleneck. It is deliberately not interactive mode. That flag parks at all four phase
 boundaries and changes prompts and closeout, while the gate wants exactly one stop, so the gate has its own
-fact on the run: an answer given at this boundary (an approval, a merge-ready resolve, or the owner's skip to
-the pull request) releases it, and an answer given at any earlier park does not. It reuses the interactive park
-for its levers, so a task with both flags stops once here, not twice.
+fact on the run: an answer given at this boundary (an approval or a merge-ready resolve) releases it, and an
+answer given at any earlier park does not. An owner's skip to the pull request recorded before the run reaches
+the gate also lets it open without stopping, since that is the owner's own recorded override. It reuses the
+interactive park for its levers, so a task with both flags stops once here, not twice.
 
 The reviewed tip is recorded at the park, and at interactive mode's own gates-to-pull-request park too, which
 is held to the same rules. Because commits made while a run waits would otherwise reach the pull

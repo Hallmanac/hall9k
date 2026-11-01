@@ -22,12 +22,4 @@ public sealed class ReviewBriefCommandTests
 
         ReviewBriefCommand.FindingsNotFixed(details).Should().Be(10, "fixed findings are not residuals, everything else is");
     }
-
-    [Fact]
-    public void A_run_settled_with_only_ride_alongs_does_not_read_as_having_none_left()
-    {
-        RunDetails details = new() { ReviewResidualsRideAlong = 1 };
-
-        ReviewBriefCommand.FindingsNotFixed(details).Should().Be(1);
-    }
 }

@@ -4662,7 +4662,7 @@ public static class AgentPromptBuilder
             : Fragment(file, "idea-none"));
         prompt.AppendLine();
         AppendAdoptedContextRule(prompt, task);
-        if (task.ExternalReference.IsNotBlank() && WorkItemContext.CarriesQuotedDescription(task.AgentContext))
+        if (WorkItemContext.CarriesQuotedDescription(task.AgentContext))
         {
             AppendFragment(prompt, file, "adopted-report-note");
         }

@@ -92,7 +92,7 @@ public static class HumanGateBriefing
 
         foreach (string block in parsed.Body.Replace("\r\n", "\n", StringComparison.Ordinal).Split("\n\n"))
         {
-            string[] lines = [.. block.Split('\n').SkipWhile(line => line.TrimStart().StartsWith('#') || line.IsBlank())];
+            string[] lines = [.. block.Split('\n').SkipWhile(line => IsHeading(line) || line.IsBlank())];
             if (lines.Length == 0)
             {
                 continue;
@@ -102,6 +102,17 @@ public static class HumanGateBriefing
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Whether a line is a Markdown heading: one to six hashes followed by a space or the end of the line. A line
+    /// that merely starts with a hash, such as an issue reference, is prose.
+    /// </summary>
+    private static bool IsHeading(string line)
+    {
+        string trimmed = line.TrimStart();
+        int hashes = trimmed.TakeWhile(character => character == '#').Count();
+        return hashes is >= 1 and <= 6 && (trimmed.Length == hashes || char.IsWhiteSpace(trimmed[hashes]));
     }
 
     /// <summary>The paragraph limited to <see cref="MaxSummaryWords"/> words, and whether it had to be cut.</summary>
@@ -130,7 +141,7 @@ public static class HumanGateBriefing
         string id = facts.TaskId.ToString("D", CultureInfo.InvariantCulture);
         page.AppendLine(facts.StoppedFor == Stop.HumanGate
             ? $"Task {id} is stopped at its human gate. Automated review has settled and no GitHub pull request exists yet."
-            : $"Task {id} is stopped at interactive mode's gates-to-pull-request boundary. Review has settled and no GitHub pull request exists yet.");
+            : $"Task {id} is stopped at interactive mode's gates-to-pull-request boundary. Review has settled and the run is held here before its branch goes to GitHub.");
         page.AppendLine();
 
         AppendSummary(page, facts);

@@ -203,10 +203,13 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
-        // A task's human gate on a run a headless dispatch holds: there is no claim to take and nothing to
-        // cut, so this prints a launch line for an attended session in the run's own worktree and records
-        // nothing. Every other park on a headless run falls through to the refusal it has always earned.
-        if (task.State == TaskState.Claimed && !task.IsInteractiveClaim
+        // A task's human gate, whoever holds the claim: there is no claim to take and nothing to cut, so this
+        // prints a launch line for an attended session in the run's own worktree and records nothing. The
+        // interactive claim is included on purpose. h9k task drive and h9k task start both record it, and a
+        // run stopped at the gate has nothing left to build, so the ordinary re-entry anchor (register first,
+        // edit only after a review verdict, skip straight to the pull request) would contradict the gate's own
+        // choices. Every other park falls through to the refusal or the re-entry it has always had.
+        if (task.State == TaskState.Claimed
             && await TryPrintGateStepInAsync(session, task, context, settings, cancellationToken) is { } stepIn)
         {
             return stepIn;
@@ -329,7 +332,8 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
     }
 
     /// <summary>
-    /// At a task's human gate on a run a headless dispatch holds, prints the launch line for an attended
+    /// At a task's human gate, under any claim (a headless dispatch's, or the interactive one h9k task drive and
+    /// h9k task start record), prints the launch line for an attended
     /// session in the run's worktree, whose anchor names the gate, the briefing command, and the outcomes
     /// (<see cref="TaskDriveAnchorBuilder.BuildGate"/>), and returns the exit code. Null when this is not
     /// that case, so the caller continues into the ordinary claim path and its ordinary refusals.
@@ -355,7 +359,7 @@ public sealed class TaskDriveCommand : Hall9kAsyncCommand<TaskDriveCommand.Setti
         if (settings.PrintPrompt || settings.DirectLaunch)
         {
             throw new DomainConflictException(
-                $"Task {task.Id} is stopped at its human gate, where the run belongs to a headless dispatch and the "
+                $"Task {task.Id} is stopped at its human gate, where there is nothing left to build and the "
                 + "build prompt does not apply. Drop --print-prompt and --direct-launch: h9k task drive prints a "
                 + "launch line for a session whose anchor names the gate, the briefing, and the outcomes.");
         }
