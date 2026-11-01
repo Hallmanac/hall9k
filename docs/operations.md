@@ -982,6 +982,7 @@ turn that hangs.
 |---|---|---|
 | `Hall9k__BlockerSynthesisThreshold` | 3 | How many immediate blockers a claimed task may have before their handoffs are condensed by a synthesis session rather than passed through raw (Decisions Log #36). |
 | `Hall9k__BlockerSynthesisTimeout` | 5m | How long a dispatch waits for that synthesis session before it ends it and starts on the raw handoffs; the wait is on the critical path of every other claim. |
+| `Hall9k__LessonPickerTimeout` | 30s | How long a task's first build dispatch waits for the lesson picker session before it terminates it and builds on the newest lessons, recording the pick as timed out. The wait is on the same critical path as the synthesis one, which is why it is seconds and not minutes. |
 | `Hall9k__UncommittedWorkRecoveryMaxTurns` | 20 | The turn cap of the one automatic session that commits finished work a session left uncommitted. |
 | `Hall9k__UncommittedWorkRecoveryTimeout` | 15m | The wall-clock ceiling on that same recovery session. |
 | `Hall9k__StackAssessmentMaxTurns` | 15 | The turn cap of the read-only assessment session dispatched before a stacked checkpoint would park on a git shape. |
@@ -1039,11 +1040,11 @@ Which model runs what is explained in [Which model runs what](#which-model-runs-
 |---|---|---|
 | `Hall9k__DefaultModel` | `claude-opus-5-5[1m]` | The bottom of the agent-model chain: the model every agent session runs on unless something more specific says otherwise (`h9k config set --default-model`). |
 | `Hall9k__Effort` | unset | The node-wide reasoning effort level every headless agent session runs at (`low`, `medium`, `high` or `xhigh`; `max` is session-only in Claude Code and is refused), written into each session's settings file as `effortLevel` (`h9k config set --effort`). It is the level beneath every other one. Unset leaves the key out, so each model's own default decides; that matters because a headless session ignores your user-level `effortLevel` and honors only that file, and Claude Opus 5.5 defaults to medium where earlier Opus models defaulted to high. |
-| `Hall9k__EffortByRole__Build`, `__Review`, `__Fix`, `__Synthesis`, `__Refinement`, `__Publication`, `__Courier`, `__SecurityPreflight` | blank | The node's effort for each role, or blank for no opinion (`--effort-build`, `--effort-review`, `--effort-fix`, `--effort-synthesis`, `--effort-refinement`, `--effort-publication`, `--effort-courier`, `--effort-security-preflight`). A role's value sits above `Hall9k__Effort` and below a project's or a task's own, except `SecurityPreflight`: the pre-flight runs before any task-level context is read, so its own effort sits above `Hall9k__Effort` and below only a project's. |
+| `Hall9k__EffortByRole__Build`, `__Review`, `__Fix`, `__Synthesis`, `__Refinement`, `__Publication`, `__Courier`, `__SecurityPreflight` | blank | The node's effort for each role, or blank for no opinion (`--effort-build`, `--effort-review`, `--effort-fix`, `--effort-synthesis`, `--effort-refinement`, `--effort-publication`, `--effort-courier`, `--effort-security-preflight`; `--effort-courier` also moves the lesson picker). A role's value sits above `Hall9k__Effort` and below a project's or a task's own, except `SecurityPreflight`: the pre-flight runs before any task-level context is read, so its own effort sits above `Hall9k__Effort` and below only a project's. |
 | `Hall9k__EffortByRole__ReviewVerify`, `Hall9k__EffortByRole__ReviewFinalFullPass` | blank | Narrower overrides for a Verify-shape review pass and the mandatory FinalFullPass, each blank falling through to the review role's effort before the node-wide one (`--effort-review-verify`, `--effort-review-finalpass`). |
 | `Hall9k__ModelByRole__Build`, `__Review`, `__Fix`, `__Synthesis`, `__Refinement`, `__Publication` | blank | The node's model for each role, or blank for no opinion (`--model-build`, `--model-review`, `--model-fix`, `--model-synthesis`, `--model-refinement`, `--model-publication`). |
 | `Hall9k__ModelByRole__ReviewVerify`, `Hall9k__ModelByRole__ReviewFinalFullPass` | blank | Not extra roles, but narrower overrides for a Verify-shape review pass and the mandatory FinalFullPass respectively, each blank falling through to whatever review resolves (`--model-review-verify`, `--model-review-finalpass`). |
-| `Hall9k__ModelByRole__Courier` | blank | The node's model for the feed courier (`--model-courier`). Blank does not mean the platform default: a courier's own floor is `claude-sonnet-5-5`. |
+| `Hall9k__ModelByRole__Courier` | blank | The node's model for the feed courier (`--model-courier`), which is also the model the lesson picker runs on. Blank does not mean the platform default: a courier's own floor is `claude-sonnet-5-5`. |
 | `Hall9k__ModelByRole__SecurityPreflight` | blank | The node's model for the pull-request review pre-flight (idea 6be68ee2, finding 1, phase one), the short, no-checkout security lap every pr-review dispatch now runs first, before any worktree is cut, over the pull request's own changed-file list and diff hunks read through `gh` (`--model-security-preflight`). Blank does not mean the platform default: the pre-flight's own floor is `claude-opus-5-5`, since it reads attacker-written text ahead of any worktree or permission scoping to a real checkout. |
 
 Before Decisions Log #111, the ceiling was set in agent sessions and spent in runs, so there was a
@@ -1134,8 +1135,8 @@ The same config file also carries `interactiveClaimStaleAfterDays` (backlog 59, 
 `h9k status` nudges about it, three days by default. It has no environment-variable tier and no
 daemon-startup binding — there is no daemon-side reclaim to configure, ever, so `h9k status`
 resolves it fresh from the config file on every render rather than off a process that started
-once. Five more keys are file-only in the same way: `inviteExpiryHours` and the two
-`lessonPromptMax...` caps, which the CLI reads fresh when it mints an invite or composes a prompt,
+once. Six more keys are file-only in the same way: `inviteExpiryHours`, the two
+`lessonPromptMax...` caps and `lessonPicker`, which the CLI reads fresh when it mints an invite or composes a prompt,
 and `orchestratorModel` and `orchestratorEffort`, which the CLI reads when it renders the
 orchestrator recipe. The [table of keys](#every-key-in-the-hall9k-section) below says which is which.
 
@@ -1168,6 +1169,7 @@ h9k config set --message-poll-active-min 10 --message-poll-active-max 20   # the
 h9k config set --message-poll-idle-min 60 --message-poll-idle-max 90       # and while this node has nothing to send, read, or hold
 h9k config set --lesson-prompt-max-lessons 15               # how many recorded lessons any one dispatched prompt carries
 h9k config set --lesson-prompt-max-characters 4000          # and how many characters of lesson text
+h9k config set --lesson-picker on                           # let the lesson picker's per-task choice into prompts (off, shadow, on; default shadow)
 h9k config set --release-channel all                       # let h9k update see pre-releases too (default: cleared)
 h9k config set --release-check-interval-hours 1             # how often the daemon looks for a newer release (default: 6, minimum 1)
 ```
@@ -1287,6 +1289,7 @@ the file alone.
 | `inviteExpiryHours` | `--invite-expiry-hours` | none | 72 |
 | `lessonPromptMaxLessons` | `--lesson-prompt-max-lessons` | none | 15 |
 | `lessonPromptMaxCharacters` | `--lesson-prompt-max-characters` | none | 4000 |
+| `lessonPicker` | `--lesson-picker` (`off`, `shadow` or `on`) | none | `shadow` |
 | `releaseChannel` | `--release-channel` (`cleared` or `all`) | none | `cleared` |
 | `releaseCheckIntervalHours` | `--release-check-interval-hours` (whole hours, 1 to 8760) | none | 6 |
 | `launchTexts` | none; `h9k orchestrator launch-text set` writes it | none | none; `launch-text show` prints a computed default |
@@ -1331,6 +1334,23 @@ The feed courier is the one role with a floor of its own. Its chain is the proje
 cheap `claude-sonnet-5-5`, unless the project sets a `--model` of its own. Because the project's model
 outranks the node's, a project `--model` chosen for builds also lifts the courier above a cheaper
 `--model-courier`.
+
+The lesson picker has no role of its own. It resolves its model and effort exactly as the courier
+does for the same project and node, so `--model-courier` and `--effort-courier` move it too, and a
+task's own `--model` or `--effort` never does. It is a small session (one turn, no tools) that reads a
+task's objective, criteria and context and the lessons this node may put in a prompt, and answers with
+lesson ids, most relevant first. `h9k config set --lesson-picker` takes three words. `off` runs no
+picker and records nothing. `shadow`, the default, runs it once before the task's first build and
+records the pick on the task (`h9k task show` prints the mode, outcome, the lessons picked, the ones
+newest-first would have carried, the eligible count, the ids dropped from the answer, the model and
+how long it took), while every prompt stays byte-identical to the one composed with the setting off.
+`on` also puts the picked set into the build, follow-up, fix, rebase and gate-repair prompts and the
+conformance review pass; the adversarial and Verify review passes keep newest-first. The setting is
+read fresh at every prompt composition, so a change is in force at the next one with no daemon
+restart, and a set picked under shadow never reaches a prompt after the setting moves to `on`. The
+daemon waits up to `Hall9k__LessonPickerTimeout` (30 seconds) for the session. A session that cannot
+start, ends in error or with no result, runs past that bound, answers with anything but ids, or leaves
+no id standing never delays or fails the build: it dispatches on newest-first and the record says why.
 
 The pull-request review pre-flight (idea 6be68ee2, finding 1, phase one) has the identical
 floor-not-default shape. Before any pr-review dispatch cuts a worktree, this node now runs a short,

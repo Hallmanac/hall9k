@@ -644,7 +644,9 @@ h9k config set --model-courier claude-sonnet-5-5      # this node's model for th
 
 `--model-courier default` does not clear to the platform default the way every other role's does:
 the courier's own floor is `claude-sonnet-5-5`, so clearing the override still leaves it on a
-deliberately inexpensive model. See
+deliberately inexpensive model. `--model-courier` and `--effort-courier` also move the lesson picker
+(`h9k config set --lesson-picker off|shadow|on`), the small session that chooses which recorded lessons a
+task's prompts carry, which resolves its model and effort as the courier does. See
 [docs/concepts.md](docs/concepts.md#the-feed-courier) for the full delivery model.
 
 `h9k orchestrator node` and `h9k orchestrator project [PROJECT]` print that window's daemon
