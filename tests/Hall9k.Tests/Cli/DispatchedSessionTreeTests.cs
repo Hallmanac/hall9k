@@ -20,7 +20,7 @@ public sealed class DispatchedSessionTreeTests
 
     [Theory]
     [MemberData(nameof(EveryCommand))]
-    public void Every_command_is_classified_read_only_allowed_or_refused(string path)
+    public void Every_command_is_classified_read_only_allowed_refused_or_person_only(string path)
     {
         string[] segments = path.Split(' ');
         string help = CommandTreeHelpTests.Help(segments);
@@ -32,7 +32,7 @@ public sealed class DispatchedSessionTreeTests
         DispatchedSessionCommandClassification.BySettingsType.Should().ContainKey(
             settingsType,
             $"h9k {path} (settings {settingsType.Name}) reaches a dispatched session unclassified — " +
-            "add it to DispatchedSessionCommandClassification as read-only, allowed, or refused");
+            "add it to DispatchedSessionCommandClassification as read-only, allowed, refused, or person-only");
     }
 
     /// <summary>
@@ -47,6 +47,27 @@ public sealed class DispatchedSessionTreeTests
     {
         DispatchedSessionCommandClassification.BySettingsType[settingsType]
             .Should().Be((DispatchedSessionAccess.Refused, verb));
+    }
+
+    /// <summary>
+    /// A session receives its task's notes through its prompt, and <c>h9k logs</c> prints a session's own
+    /// transcript with its notes and closing block in it, so a dispatched session is refused both reads
+    /// (person-only), while leaving a note stays its own legitimate act. Reclassifying any of the three
+    /// would either reopen the review session's way to a note or take the write away from a session
+    /// taught to use it.
+    /// </summary>
+    [Theory]
+    [InlineData(typeof(Hall9k.Cli.Commands.TaskNotesCommand.Settings), nameof(DispatchedSessionAccess.PersonOnly), "task notes")]
+    [InlineData(typeof(Hall9k.Cli.Commands.LogsCommand.Settings), nameof(DispatchedSessionAccess.PersonOnly), "logs")]
+    [InlineData(typeof(Hall9k.Cli.Commands.TaskNoteCommand.Settings), nameof(DispatchedSessionAccess.Allowed), "task note")]
+    public void The_note_verbs_are_classified_as_the_notes_design_requires(
+        Type settingsType, string access, string verb)
+    {
+        (DispatchedSessionAccess actualAccess, string actualVerb) =
+            DispatchedSessionCommandClassification.BySettingsType[settingsType];
+
+        actualAccess.ToString().Should().Be(access);
+        actualVerb.Should().Be(verb);
     }
 
     /// <summary>

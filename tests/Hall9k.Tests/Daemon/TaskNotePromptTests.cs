@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
+using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -226,10 +227,21 @@ public sealed class TaskNotePromptTests : IDisposable
             task, project, "task/1-slug", ReviewLens.Conformance, "main"));
         yield return ("pr-review adversarial", task => AgentPromptBuilder.BuildPrReviewLens(
             task, project, "task/1-slug", ReviewLens.Adversarial, "main"));
+        // The persona builders take the whole task in a ReviewPersonaPromptRequest, so each is a place a
+        // later change could start reading task.Notes into a pr-review prompt.
+        yield return ("pr-review QA persona", task => QaReviewPromptBuilder.Build(
+            new ReviewPersonaPromptRequest(task, project, "task/1-slug", "main", CommandTimeout: null)));
+        yield return ("pr-review security persona", task => SecurityReviewPromptBuilder.Build(
+            new ReviewPersonaPromptRequest(task, project, "task/1-slug", "main", CommandTimeout: null)));
+        yield return ("pr-review design persona", task => DesignReviewPromptBuilder.Build(
+            new ReviewPersonaPromptRequest(task, project, "task/1-slug", "main", CommandTimeout: null)));
         yield return ("stack replay", task => AgentPromptBuilder.BuildStackReplay(
             task, project, "task/1-slug", "https://github.test/pull/1", CommitStyle.Narrative, "main", "abc1234", "def5678"));
-        // These three take no task at all, so a task holding a note cannot change them; what this guards is
+        // These take no task at all, so a task holding a note cannot change them; what this guards is
         // a later change that gives one of them a notes section of its own.
+        yield return ("pr-review preflight", _ => PrReviewPreflightPromptBuilder.Build(
+            "acme/web#1", null, ["src/App.cs"], ["src/App.cs"], matchedHunks: "@@ -1 +1 @@\n-old\n+new",
+            "abc123headoid", "/runs/some-run/pull-request.diff"));
         yield return ("review lap", _ => ReviewLapPromptBuilder.Build(ReviewLapBriefing()));
         yield return ("mention follow-up", _ => MentionFollowUpPromptBuilder.Build(
             "acme/web", 42, _worktreePath, "main",
