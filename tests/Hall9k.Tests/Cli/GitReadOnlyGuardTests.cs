@@ -392,6 +392,54 @@ public sealed class GitReadOnlyGuardTests
             GitReadOnlyGuardRoutes.RefusalReason, "the reason reaches the model verbatim or not at all");
     }
 
+    /// <summary>
+    /// A quote in a comment pairs with nothing in the shell, but a recognizer that reads quotes
+    /// without reading comments pairs it with a later one and blanks the real command lines between
+    /// them (independent pre-PR review, cycle 7, conformance lens). Each row is a multi-line call
+    /// whose second line is a refused command, hidden by a quote opened in the first line's comment
+    /// and closed in the second line's.
+    /// </summary>
+    [Theory]
+    [InlineData("git diff origin/main...HEAD # it's\ngit diff --output=/tmp/pwn # '")]
+    [InlineData("git log -1 # say \"hi\ngit log --output=/tmp/pwn # \"")]
+    [InlineData("git diff HEAD # it's\ngit diff /dev/null /etc/hosts # '")]
+    [InlineData("git diff HEAD # it's\ngit diff --ext-diff # '")]
+    [InlineData("echo ok # it's\ngit diff --output=/tmp/pwn # '")]
+    [InlineData("# it's\ngit log --show-signature # '")]
+    public void A_refused_command_after_a_comment_holding_a_quote_is_still_refused(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
+    /// <summary>
+    /// A here-document body is not command text either, and the guard cannot tell where one ends
+    /// without the delimiter rules, so any command holding the operator is refused, whether or not
+    /// a <c>git</c> appears before it.
+    /// </summary>
+    [Theory]
+    [InlineData("cat <<EOF\nit's\nEOF\ngit diff --output=/tmp/pwn\n# '")]
+    [InlineData("cat <<'EOF'\nit's\nEOF\ngit diff /dev/null /etc/hosts\n# '")]
+    [InlineData("cat <<-EOF\n\tit's\n\tEOF\ngit diff --ext-diff\n# '")]
+    [InlineData("(( 1 << 2 ))\ngit diff --output=/tmp/pwn")]
+    [InlineData("git diff HEAD <<< text")]
+    public void A_command_holding_a_here_document_operator_is_refused(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeTrue();
+
+    /// <summary>
+    /// A comment is only a comment where it starts a word. A backslash-newline pair is removed by
+    /// the shell, so a <c>#</c> after one continues the word and the text after it is live.
+    /// </summary>
+    [Fact]
+    public void A_hash_that_continues_a_word_across_a_line_continuation_does_not_hide_a_flag() =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout("git diff a\\\n#  --output=/tmp/pwn").Should().BeTrue();
+
+    [Theory]
+    [InlineData("git diff origin/main...HEAD # it's a note")]
+    [InlineData("git diff origin/main...HEAD # --output=/tmp/pwn is only mentioned here")]
+    [InlineData("git log --oneline origin/main..HEAD\n# first, 'quoted' note\ngit diff HEAD~1 # it's\n")]
+    [InlineData("git log --grep='#123' --oneline")]
+    [InlineData("git diff a#b")]
+    public void A_comment_and_a_quoted_hash_still_run(string command) =>
+        GitReadOnlyGuardRoutes.EscapesTheCheckout(command).Should().BeFalse();
+
     private static string Payload(string tool, string command) => JsonSerializer.Serialize(new
     {
         hook_event_name = "PreToolUse",
