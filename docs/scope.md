@@ -297,6 +297,20 @@ the pull request unattended; an option, never the default). The starting prompt 
 prints teaches the operator's own session the same three sets, from the same source, so a session
 the operator is sitting at can offer the choices in words rather than sending them to these docs.
 
+### The human gate
+
+A task marked `h9k task add --human-gate` (or `h9k task revise --human-gate` on any live task whose pull
+request has not opened) stops its run once, after automated review has settled and before its GitHub pull
+request opens, under every review stage composition including `none`. The owner reads `h9k review brief`,
+walks and runs the branch (`h9k task run-local` when the project has a run skill, `h9k task drive` for an
+attended session in the worktree), and approves with `h9k review proceed`, changes with `h9k review resolve
+--needs-fixes` or by hand with `h9k review fixed`, opens over their own commits with `h9k review resolve
+--merge-ready --reason`, or discards with `h9k task abandon` then `h9k task add --evolved-from`. The daemon
+compares the branch against the tip recorded at the park before a proceed opens anything, so commits made
+during the park are never opened unread. It is per task only: there is no project or node default, a pr-review
+task and a spike refuse it, a follow-up on an open pull request never stops at it, and it adds no session of its
+own. Contract: [cli.md](cli.md#the-human-gate) and [concepts.md](concepts.md#the-human-gate-one-stop-before-the-pull-request).
+
 ### A deliberate human kick-off
 
 `h9k task start <id>` dispatches a Published, Queued, or already-Blocked task on the spot, headless, instead of
