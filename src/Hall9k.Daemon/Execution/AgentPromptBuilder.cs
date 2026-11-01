@@ -4547,6 +4547,171 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
+    /// The prompt for an independent challenge of a draft (<c>h9k task challenge</c>). It holds the draft exactly
+    /// as the store has it at dispatch, says where the session stands (the project home the draft's pointers are
+    /// relative to, the checkout, the commit it is at, and when the daemon could not bring it up to the remote
+    /// base branch), and tells the session to test claims against that commit rather than improve the draft. The
+    /// closing block of the report it asks for is the contract <see cref="Challenge.ChallengeReport"/> reads.
+    /// <para>
+    /// An adopted draft's Context is a stranger's quoted text, so the build prompt's data-only rule is appended
+    /// when the context carries one (<see cref="AppendAdoptedContextRule"/>), gated the way every builder here
+    /// gates it. Whether a probe can run is the permissions the session was spawned with, not a choice made here:
+    /// <see cref="ChallengePromptFacts.ProbeModel"/> is null exactly when the project does not skip permissions,
+    /// and the prompt then says no probe can run and that untested claims must be marked.
+    /// </para>
+    /// </summary>
+    public static string BuildChallenge(TaskDetails task, ProjectDetails project, ChallengePromptFacts facts)
+    {
+        const string file = $"{TemplateDirectory}/draft-challenge.md";
+        StringBuilder prompt = new();
+        prompt.AppendLine(Fragment(file, "heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "intro");
+        prompt.AppendLine();
+
+        prompt.AppendLine(Fragment(file, "draft-heading"));
+        prompt.AppendLine();
+        prompt.AppendLine($"Task `{task.Id}` in project '{project.Name}'.");
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "draft-note"));
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "objective-label"));
+        prompt.AppendLine();
+        prompt.AppendLine(task.Objective);
+        prompt.AppendLine();
+        if (task.AcceptanceCriteria.Count == 0)
+        {
+            prompt.AppendLine($"{Fragment(file, "criteria-heading")} {Fragment(file, "criteria-none")}");
+        }
+        else
+        {
+            prompt.AppendLine(Fragment(file, "criteria-heading"));
+            prompt.AppendLine();
+            for (int index = 0; index < task.AcceptanceCriteria.Count; index++)
+            {
+                prompt.AppendLine($"{index + 1}. {task.AcceptanceCriteria[index]}");
+            }
+        }
+
+        prompt.AppendLine();
+        if (task.AgentContext.IsNotBlank())
+        {
+            prompt.AppendLine(Fragment(file, "context-heading"));
+            prompt.AppendLine();
+            prompt.AppendLine(task.AgentContext);
+        }
+        else
+        {
+            prompt.AppendLine(Fragment(file, "context-none"));
+        }
+
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "facts-heading"));
+        prompt.AppendLine();
+        prompt.AppendLine(task.Type == TaskType.Unknown
+            ? Fragment(file, "type-none")
+            : Fragment(file, "type-line", ("Type", task.Type.Value)));
+        prompt.AppendLine(task.BlockedBy.Count == 0
+            ? Fragment(file, "dependencies-none")
+            : Fragment(file, "dependencies-line", ("Dependencies", string.Join(", ", task.BlockedBy))));
+        if (task.StackedOnTaskId is { } stackedOn)
+        {
+            prompt.AppendLine(Fragment(file, "stacked-task-line", ("Parent", stackedOn.ToString())));
+        }
+        else if (task.StackedOnPullRequestNumber is { } pullRequestNumber)
+        {
+            prompt.AppendLine(Fragment(
+                file, "stacked-pull-request-line", ("Number", pullRequestNumber.ToString(CultureInfo.InvariantCulture))));
+        }
+        else
+        {
+            prompt.AppendLine(Fragment(file, "stacked-none"));
+        }
+
+        prompt.AppendLine(task.EpicId is { } epicId
+            ? Fragment(file, "epic-line", ("Epic", epicId.ToString()))
+            : Fragment(file, "epic-none"));
+        prompt.AppendLine(task.SourceIdeaId is { } ideaId
+            ? Fragment(file, "idea-line", ("Idea", ideaId.ToString()))
+            : Fragment(file, "idea-none"));
+        prompt.AppendLine();
+        AppendAdoptedContextRule(prompt, task);
+        if (task.ExternalReference.IsNotBlank() && WorkItemContext.CarriesQuotedDescription(task.AgentContext))
+        {
+            AppendFragment(prompt, file, "adopted-report-note");
+        }
+
+        prompt.AppendLine();
+
+        prompt.AppendLine(Fragment(file, "where-heading"));
+        prompt.AppendLine();
+        prompt.AppendLine(facts.ProjectHome is { } home
+            ? Fragment(file, "where-home", ("ProjectName", project.Name), ("ProjectHome", home))
+            : Fragment(file, "where-home-none", ("ProjectName", project.Name)));
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "where-checkout", ("Checkout", facts.Checkout)));
+        prompt.AppendLine(facts.Commit.IsNotBlank()
+            ? Fragment(file, "where-commit", ("Commit", facts.Commit))
+            : Fragment(file, "where-commit-unknown"));
+        prompt.AppendLine(facts.Refresh switch
+        {
+            null => Fragment(file, "refresh-not-attempted"),
+            { UpToDate: true } ok => Fragment(file, "refresh-ok", ("Detail", OneLine(ok.Detail))),
+            var failed => Fragment(file, "refresh-failed", ("Detail", OneLine(failed.Detail))),
+        });
+        if (facts.IdeaWorkspace is not null)
+        {
+            prompt.AppendLine();
+            prompt.AppendLine(Fragment(file, "idea-workspace", ("IdeaWorkspace", facts.IdeaWorkspace)));
+        }
+
+        if (facts.Journal is not null)
+        {
+            prompt.AppendLine();
+            prompt.AppendLine(Fragment(file, "journal", ("Journal", facts.Journal)));
+        }
+
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "job-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "job");
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "rules-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "rules");
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "probes-heading"));
+        prompt.AppendLine();
+        if (facts.ProbeModel is { } probeModel)
+        {
+            AppendFragment(
+                prompt, file, "probes-yes", ("ProbeModel", probeModel), ("SessionDirectory", facts.SessionDirectory));
+        }
+        else
+        {
+            AppendFragment(prompt, file, "probes-no", ("SessionDirectory", facts.SessionDirectory));
+        }
+
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "security-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "security");
+        AppendWritingConventions(
+            prompt, string.Empty, project.WritingConventions, Fragment(file, "writing-conventions-lead-in"));
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "report-heading"));
+        prompt.AppendLine();
+        AppendFragment(
+            prompt, file, "report",
+            ("ReportPath", OneLine(facts.ReportPath)),
+            ("VerdictMarker", Challenge.ChallengeReport.VerdictMarker),
+            ("ChangeMarker", Challenge.ChallengeReport.ChangeMarker));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "closing");
+        return PromptLineEndings.Finish(prompt);
+    }
+
+    /// <summary>
     /// The prompt for a card-publication session (backlog 18): compose this task as a card in
     /// Jira, then submit the composed payload through the surface that actually writes it.
     /// <para>

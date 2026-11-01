@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Project;
@@ -540,6 +541,50 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
             "h9k task write-jira", routingGuidance: "File epics first, then ask for the parent.");
         AssertMatchesGolden("build-card-publication", prompt);
     }
+
+    private static readonly Guid IdeaId = Guid.Parse("01a09285-8c43-7259-a883-c5ebe5482c3e");
+    private static readonly Guid EpicId = Guid.Parse("01a09285-9d54-7259-a883-c5ebe5482c3e");
+    private static readonly Guid BlockerId = Guid.Parse("01a09285-ae65-7259-a883-c5ebe5482c3e");
+    private static readonly Guid ParentId = Guid.Parse("01a09285-bf76-7259-a883-c5ebe5482c3e");
+
+    private static TaskDetails SomeDraftToChallenge()
+    {
+        TaskDetails task = SomeTask();
+        task.CurrentRunId = null;
+        task.Type = TaskType.Feature;
+        task.AgentContext = "Pointers are relative to the home: see notes/plan/brief.md.";
+        task.BlockedBy = [BlockerId];
+        task.StackedOnTaskId = ParentId;
+        task.EpicId = EpicId;
+        task.SourceIdeaId = IdeaId;
+        return task;
+    }
+
+    private static ChallengePromptFacts SomeChallengeFacts(string? probeModel, CheckoutRefresh? refresh) => new(
+        "/home/agent/.hall9k/projects/hall9k", "/home/agent/.hall9k/projects/hall9k/repo/dev",
+        "0123456789abcdef0123456789abcdef01234567", refresh,
+        "/home/agent/.hall9k/runs/01a09285-6a21-7259-a883-c5ebe5482c3e/challenge-report.md",
+        "/home/agent/.hall9k/runs/01a09285-6a21-7259-a883-c5ebe5482c3e",
+        "/home/agent/.hall9k/projects/hall9k/ideas/01a09285-idea/workspace",
+        "/home/agent/.hall9k/projects/hall9k/tasks/01a09285-draft/journal.md",
+        probeModel);
+
+    [Fact]
+    public void BuildChallenge_with_probes_matches_its_golden() =>
+        AssertMatchesGolden(
+            "build-challenge",
+            AgentPromptBuilder.BuildChallenge(
+                SomeDraftToChallenge(), SomeProject(),
+                SomeChallengeFacts("claude-sonnet-5-5", new CheckoutRefresh(true, "is up to date with origin/main."))));
+
+    [Fact]
+    public void BuildChallenge_without_probes_matches_its_golden() =>
+        AssertMatchesGolden(
+            "build-challenge-no-probe",
+            AgentPromptBuilder.BuildChallenge(
+                SomeDraftToChallenge(), SomeProject(),
+                SomeChallengeFacts(
+                    null, new CheckoutRefresh(false, "could not be fast-forwarded: origin was unreachable."))));
 
     private static void AssertMatchesGolden(string name, string actual)
     {
